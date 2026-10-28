@@ -46,5 +46,6 @@ coral-test-support.workspace = true
 coral-telemetry = { workspace = true, features = ["test-support"] }
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
+tracing-opentelemetry.workspace = true
 url.workspace = true
 wiremock.workspace = true

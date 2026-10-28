@@ -24,10 +24,16 @@ serde.workspace = true
 serde_json.workspace = true
 sse-stream.workspace = true
 thiserror.workspace = true
+coral-telemetry.workspace = true
+tracing.workspace = true
 tokio.workspace = true
 url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+coral-telemetry = { workspace = true, features = ["test-support"] }
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+tracing-opentelemetry.workspace = true
 wiremock.workspace = true

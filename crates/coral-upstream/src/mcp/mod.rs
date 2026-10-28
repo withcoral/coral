@@ -18,6 +18,8 @@ use coral_catalog::AuthenticationConfiguration;
 use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 
+use tracing::Instrument as _;
+
 use coral_catalog::{
     ExecutionBinding, MaterializedTool, McpExecutionBinding, McpInvocationMethod, ToolAvailability,
 };
@@ -290,6 +292,43 @@ impl McpUpstream {
     /// # Errors
     /// Returns an error when no complete bounded MCP result is available.
     pub async fn send(&self, dispatch: ReadyMcpDispatch) -> Result<McpOutcome, Error> {
+        let span = client_span(&dispatch);
+        let traceparent = coral_telemetry::traceparent(&span);
+        let sent = self
+            .send_session(dispatch, traceparent)
+            .instrument(span.clone())
+            .await;
+        match &sent {
+            Ok(outcome) if outcome.class() == crate::OutcomeClass::ErrorResponse => {
+                coral_telemetry::record_failure(&span, "tool_error", "MCP tool result is an error");
+            }
+            Ok(_) => {}
+            // The JSON-RPC error code, as the MCP conventions name it.
+            Err(Error::McpRejected(rejection)) => coral_telemetry::record_failure(
+                &span,
+                match rejection {
+                    McpRejection::InvalidParams | McpRejection::UnknownTool => -32602,
+                    McpRejection::Other(code) => *code,
+                }
+                .to_string(),
+                "MCP request returned a JSON-RPC error",
+            ),
+            Err(_) => coral_telemetry::record_failure(
+                &span,
+                "incomplete",
+                "MCP request ended without a complete result",
+            ),
+        }
+        sent
+    }
+
+    /// One session that sends `dispatch`, each of its requests carrying
+    /// `traceparent`.
+    async fn send_session(
+        &self,
+        dispatch: ReadyMcpDispatch,
+        traceparent: Option<String>,
+    ) -> Result<McpOutcome, Error> {
         let mut config = StreamableHttpClientTransportConfig::with_uri(
             dispatch.binding.server_url().to_string(),
         )
@@ -305,6 +344,7 @@ impl McpUpstream {
                 client: self.client.clone(),
                 limit: dispatch.limits.upstream_bytes(),
                 result: captured.clone(),
+                traceparent,
             },
             config,
         );
@@ -388,4 +428,28 @@ impl McpUpstream {
         )?;
         McpOutcome::from_data(data, dispatch.binding.invocation_method(), dispatch.limits)
     }
+}
+
+/// The OpenTelemetry MCP client span of one dispatch: its method, the
+/// upstream tool name, and the server's scheme, address and port. Never the
+/// arguments, the result, a session identifier or the full URL.
+fn client_span(dispatch: &ReadyMcpDispatch) -> tracing::Span {
+    let (method, target) = match dispatch.binding.invocation_method() {
+        McpInvocationMethod::CallTool => ("tools/call", dispatch.binding.tool_name()),
+        McpInvocationMethod::ReadResource => ("resources/read", None),
+    };
+    let server = url::Url::parse(dispatch.binding.server_url()).ok();
+    tracing::info_span!(
+        "mcp.client",
+        otel.name = target.map_or_else(|| method.to_string(), |target| format!("{method} {target}")),
+        otel.kind = "client",
+        mcp.method.name = method,
+        gen_ai.tool.name = target,
+        url.scheme = server.as_ref().map(url::Url::scheme),
+        server.address = server.as_ref().and_then(url::Url::host_str),
+        server.port = server.as_ref().and_then(url::Url::port_or_known_default),
+        status = tracing::field::Empty,
+        error.type = tracing::field::Empty,
+        exception.message = tracing::field::Empty,
+    )
 }

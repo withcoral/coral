@@ -177,6 +177,16 @@ pub fn inject_span_context(span: &tracing::Span, injector: &mut dyn Injector) {
     inject_context(&span.context(), injector);
 }
 
+/// `span`'s W3C `traceparent`, for a request Coral sends on its behalf;
+/// `None` when it has no valid trace context. Nothing else of the trace
+/// context, such as `tracestate`, is returned.
+#[must_use]
+pub fn traceparent(span: &tracing::Span) -> Option<String> {
+    let mut carrier = std::collections::HashMap::new();
+    inject_span_context(span, &mut carrier);
+    carrier.remove(TRACEPARENT_HEADER)
+}
+
 /// Injects the current tracing span's OpenTelemetry context into a carrier.
 pub fn inject_current_context(injector: &mut dyn Injector) {
     inject_context(&tracing::Span::current().context(), injector);

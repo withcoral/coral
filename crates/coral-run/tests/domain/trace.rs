@@ -3,9 +3,37 @@
 use super::*;
 
 use coral_telemetry::testing::{SpanCapture, attribute};
-use opentelemetry::trace::SpanId;
+use opentelemetry::trace::{SpanId, TraceContextExt as _};
 use opentelemetry_sdk::trace::SpanData;
 use tracing::Instrument as _;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+/// The process-wide span capture. A subscriber set for one test's thread
+/// misses a callsite that another test's thread registered first, so every
+/// test here reads this one and selects its own spans.
+fn capture() -> &'static SpanCapture {
+    static CAPTURE: std::sync::OnceLock<SpanCapture> = std::sync::OnceLock::new();
+    CAPTURE.get_or_init(|| {
+        let capture = SpanCapture::default();
+        tracing::subscriber::set_global_default(capture.subscriber())
+            .expect("install the span capture");
+        capture
+    })
+}
+
+/// Every finished span of the traces that hold a span of the Run `run_id`.
+fn of_run(run_id: &crate::RunId) -> Vec<SpanData> {
+    let spans = capture().finished();
+    let traces = spans
+        .iter()
+        .filter(|span| attribute(span, "run.id").as_deref() == Some(run_id.as_str()))
+        .map(|span| span.span_context.trace_id())
+        .collect::<std::collections::HashSet<_>>();
+    spans
+        .into_iter()
+        .filter(|span| traces.contains(&span.span_context.trace_id()))
+        .collect()
+}
 
 /// Every finished span named `name`.
 fn named<'a>(spans: &'a [SpanData], name: &str) -> Vec<&'a SpanData> {
@@ -28,12 +56,12 @@ fn span_names(spans: &[SpanData]) -> Vec<String> {
 /// children, and the Run row stores the accept span's context.
 #[tokio::test]
 async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
-    let capture = SpanCapture::default();
-    let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+    let capture = capture();
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let (workspace_id, principal) = fixture.user_scope("user:run-trace", "Trace one Run").await;
 
     let request = tracing::info_span!("request");
+    let request_trace = request.context().span().span_context().trace_id();
     let accepted = fixture
         .runs
         .start(&principal, &workspace_id, submission("return 1;"))
@@ -45,10 +73,15 @@ async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
         .terminal_record(&workspace_id, accepted.run_id())
         .await;
     assert_eq!(run.state, RunState::Succeeded);
-    wait_until(|| !named(&capture.finished(), "coral.run.complete").is_empty()).await;
+    wait_until(|| !named(&of_run(accepted.run_id()), "coral.run.complete").is_empty()).await;
 
-    let spans = capture.finished();
-    let request = only(&spans, "request");
+    let request = capture
+        .finished()
+        .into_iter()
+        .find(|span| span.span_context.trace_id() == request_trace)
+        .expect("request span");
+    let request = &request;
+    let spans = of_run(accepted.run_id());
     let accept = only(&spans, "coral.run.accept");
     let run_trace = accept.span_context.trace_id();
     assert_ne!(run_trace, request.span_context.trace_id());
@@ -90,8 +123,7 @@ async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
 #[tokio::test]
 async fn a_recovered_run_continues_its_trace_on_another_coral_instance() {
     for stored in [true, false] {
-        let capture = SpanCapture::default();
-        let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+        capture();
         let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
         let (workspace_id, principal) = fixture
             .user_scope("user:recovered-trace", "Recover one Run")
@@ -116,9 +148,9 @@ async fn a_recovered_run_continues_its_trace_on_another_coral_instance() {
         );
         let run = fixture.terminal_record(&workspace_id, &run_id).await;
         assert_eq!(run.state, RunState::Interrupted);
-        wait_until(|| !named(&capture.finished(), "coral.run.recover").is_empty()).await;
+        wait_until(|| !named(&of_run(&run_id), "coral.run.recover").is_empty()).await;
 
-        let spans = capture.finished();
+        let spans = of_run(&run_id);
         let accept = only(&spans, "coral.run.accept");
         let recover = only(&spans, "coral.run.recover");
         assert_eq!(
@@ -191,43 +223,54 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
             ),
         ]
     };
-    let capture = SpanCapture::default();
-    tracing::subscriber::with_default(capture.subscriber(), || {
-        for (state, _) in runs {
+    capture();
+    let run_ids = runs
+        .iter()
+        .map(|(state, _)| {
             let run_id = crate::RunId::generate().expect("Run identifier");
             crate::trace::phase_span(None, &run_id, crate::trace::Phase::Complete)
-                .in_scope(|| crate::trace::record_run_end(state));
-        }
-        for (ended, sent, _, _) in invocations() {
+                .in_scope(|| crate::trace::record_run_end(*state));
+            run_id
+        })
+        .collect::<Vec<_>>();
+    let invocation_ids = invocations()
+        .into_iter()
+        .map(|(ended, sent, _, _)| {
+            let id = crate::InvocationId::generate();
             let span = crate::trace::invocation_span(
-                &crate::InvocationId::generate(),
+                &id,
                 "coral.providers.weather.getForecast",
                 "provider",
             );
             let (kind, code) = crate::invocation::invocation_end(&ended, sent);
             crate::trace::record_invocation_end(&span, kind, code);
-        }
-    });
-    let spans = capture.finished();
+            id.to_string()
+        })
+        .collect::<Vec<_>>();
+    let spans = capture().finished();
+    let with = |key: &str, value: &str| {
+        spans
+            .iter()
+            .find(|span| attribute(span, key).as_deref() == Some(value))
+            .unwrap_or_else(|| panic!("a span with {key} {value}"))
+    };
     let is_error =
         |span: &SpanData| matches!(span.status, opentelemetry::trace::Status::Error { .. });
-    let completions = named(&spans, "coral.run.complete");
-    assert_eq!(completions.len(), runs.len());
-    for ((state, error), span) in runs.into_iter().zip(completions) {
+    for ((state, error), run_id) in runs.into_iter().zip(&run_ids) {
+        let span = with("run.id", run_id.as_str());
         assert_eq!(
             attribute(span, "run.status").as_deref(),
             Some(state.as_storage_str())
         );
         assert_eq!(is_error(span), error, "{state:?}");
     }
-    let ended = named(&spans, "coral.invocation");
-    assert_eq!(ended.len(), invocations().len());
-    for ((_, _, kind, error), span) in invocations().into_iter().zip(ended) {
+    for ((_, _, kind, error), id) in invocations().into_iter().zip(&invocation_ids) {
+        let span = with("invocation.id", id);
         assert_eq!(attribute(span, "invocation.result_kind").as_deref(), kind);
         assert_eq!(is_error(span), error, "{kind:?}");
     }
     assert_eq!(
-        attribute(named(&spans, "coral.invocation")[1], "failure.code").as_deref(),
+        attribute(with("invocation.id", &invocation_ids[1]), "failure.code").as_deref(),
         Some(crate::CoralFailure::ToolDisabled.code())
     );
 }
@@ -236,8 +279,7 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
 /// the end, and each step it takes on the way to its dispatch is a child.
 #[tokio::test]
 async fn a_tool_invocation_traces_its_gates_fence_and_persistence_under_the_run() {
-    let capture = SpanCapture::default();
-    let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+    capture();
     let upstream = Arc::new(ScriptedUpstream::json(
         500,
         serde_json::json!({"down": true}),
@@ -260,9 +302,9 @@ async fn a_tool_invocation_traces_its_gates_fence_and_persistence_under_the_run(
     fixture
         .terminal_record(&tool.workspace_id, accepted.run_id())
         .await;
-    wait_until(|| !named(&capture.finished(), "coral.run.complete").is_empty()).await;
+    wait_until(|| !named(&of_run(accepted.run_id()), "coral.run.complete").is_empty()).await;
 
-    let spans = capture.finished();
+    let spans = of_run(accepted.run_id());
     let execute = only(&spans, "coral.run.execute");
     let invocation = only(&spans, "coral.invocation");
     assert_eq!(
@@ -316,8 +358,7 @@ async fn a_tool_invocation_traces_its_gates_fence_and_persistence_under_the_run(
 /// Program saw. A Run that succeeds names none.
 #[tokio::test]
 async fn a_failed_run_and_its_coral_failure_name_the_run_trace() {
-    let capture = SpanCapture::default();
-    let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+    capture();
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let runs = fixture.live_runs(None);
     let tool = fixture

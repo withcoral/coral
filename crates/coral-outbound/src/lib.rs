@@ -38,6 +38,10 @@ pub use destination::{
 mod transport;
 #[cfg(feature = "transport")]
 pub use transport::{Client, FetchError};
+#[cfg(feature = "transport")]
+mod trace;
+#[cfg(feature = "transport")]
+pub use trace::with_trace_parent;
 
 use std::collections::BTreeSet;
 use std::fmt;
