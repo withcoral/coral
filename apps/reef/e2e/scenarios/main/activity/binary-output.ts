@@ -2,6 +2,7 @@ import { expect, type TestContext } from 'vitest'
 
 import { createWorkspace, programRunner } from '../../../support/providers.ts'
 import { withOwner } from '../../../support/topology.ts'
+import { retainedPayload, shownPayload } from '../../../support/payloads.ts'
 
 // Bytes that are not UTF-8 text, with a CR LF that text handling would change.
 const image = {
@@ -38,12 +39,9 @@ export async function binaryOutput(context: TestContext) {
     })
     await step('Reef shows the same value on the Run Status Page', async () => {
       await page.goto(`/${runName}`)
-      const shown = page
-        .getByRole('region', { name: 'Final value', exact: true })
-        .locator('pre')
-        .filter({ hasText: image.data })
-      await shown.waitFor()
-      expect(JSON.parse((await shown.textContent()) ?? '')).toEqual(image)
+      const value = page.getByRole('region', { name: 'Final value', exact: true })
+      await shownPayload(value, image.data).waitFor()
+      expect(JSON.parse(await retainedPayload(page, value, 'Final value'))).toEqual(image)
     })
   })
 }

@@ -3,6 +3,7 @@ import { withBrowserSession } from '../../support/browser-session.ts'
 import { managementClients } from '../../support/management.ts'
 import { openApiDocument } from '../../support/provider-fixtures.ts'
 import { addProviderFromFile, programRunner, observeRun } from '../../support/providers.ts'
+import { shownPayload } from '../../support/payloads.ts'
 
 test('Local activity streams new records without a sign-in ceremony or a load button', async (context) => {
   const api = managementClients()
@@ -28,7 +29,7 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
         expect(response.status()).toBe(200)
         expect(response.headers()['content-type']).toContain('text/event-stream')
       }
-      await page.locator('pre').filter({ hasText: 'local-live-value' }).first().waitFor()
+      await shownPayload(page, 'local-live-value').waitFor()
       const second = programRunner(page, target, id, { taskIntent: 'Second local goal' })
       await observeRun(second, await second.exec('return 42;'))
       await page

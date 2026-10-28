@@ -12,11 +12,22 @@ import {
   setToolPolicy,
 } from '../../../support/providers.ts'
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
+import { shownPayload } from '../../../support/payloads.ts'
 
 /**
  * Opens the recorded description's Details, which keep its source collapsed, and waits until
  * the recorded source that holds `marker` shows.
  */
+/** The Activity list anchored at `record` in `run` of `task`, with nothing selected. */
+function revealedAt(task: string, run: string, record: string) {
+  const query = new URLSearchParams({ anchor: task, tree: '1' })
+  query.append('expand', task)
+  query.append('expand', run)
+  query.set(`anchor.${task}`, run)
+  query.set(`anchor.${run}`, record)
+  return `/${task.split('/tasks/')[0]}/activity?${query}`
+}
+
 async function openRecordedSource(page: Page, marker: string) {
   const details = page
     .getByRole('dialog')
@@ -279,17 +290,15 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         await table
           .getByRole('link', { name: 'emission #31', exact: true, includeHidden: true })
           .waitFor()
-        await page.locator('pre').filter({ hasText: '29' }).first().waitFor()
+        await shownPayload(page, '29').waitFor()
+        // The list anchored at the emission, as Activity reveals a record, opens no drawer.
         await page.goto(
-          `/workspaces/${first}/activity?record=${encodeURIComponent(selected)}&tree=1`,
+          revealedAt(
+            `workspaces/${first}/tasks/${task}`,
+            `workspaces/${first}/runs/${run}`,
+            selected,
+          ),
         )
-        // Beside its Run's source, the emission leads back to history from its own
-        // detail, and the drawer gives way to the list anchored at it.
-        await page
-          .getByRole('dialog', { name: 'Activity details' })
-          .getByRole('region', { name: 'Selected record', exact: true })
-          .getByRole('link', { name: 'View in history', exact: true })
-          .click()
         await page.waitForURL(
           (url) => url.searchParams.get(`anchor.workspaces/${first}/runs/${run}`) === selected,
         )
@@ -331,7 +340,8 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           .filter({ has: page.getByRole('link', { name: 'final value', exact: true }) })
         await finalRow.getByLabel('23 B added', { exact: true }).waitFor()
         await finalRow.getByRole('link', { name: 'final value', exact: true }).click()
-        await page.locator('pre').filter({ hasText: 'historical-source-249' }).first().waitFor()
+        // The Run returns the snapshot's own value.
+        await shownPayload(page, 'historical-source-249').waitFor()
         await page.getByRole('button', { name: 'Close details', exact: true }).click()
         await page.waitForURL((url) => !url.searchParams.has('record'))
       })
@@ -358,11 +368,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             )
             if (explicit) {
               await page.getByText('Outside this workspace or page:', { exact: true }).waitFor()
-              await page
-                .getByRole('dialog', { name: 'Activity details' })
-                .getByRole('region', { name: 'Selected record', exact: true })
-                .getByRole('link', { name: 'View in history', exact: true })
-                .click()
+              await page.goto(revealedAt(`workspaces/${first}/tasks/${task}`, runName, selected))
               await page.waitForURL(
                 (url) =>
                   url.searchParams.get(`anchor.${runName}`) === selected &&
@@ -505,7 +511,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             })
             .waitFor()
           await page.getByRole('link', { name: 'Call one Tool', exact: true }).click()
-          await page.locator('pre').filter({ hasText: 'retained-agent-output' }).first().waitFor()
+          await shownPayload(page, 'retained-agent-output').waitFor()
           expect(
             await page
               .getByRole('navigation', { name: 'breadcrumb', exact: true, includeHidden: true })
@@ -514,7 +520,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           ).toEqual([firstName, 'Agents', 'History worker'])
           expect(await page.content()).not.toContain(issued.credential)
           await page.goto(`/${runName}?tree=1`)
-          await page.locator('pre').filter({ hasText: 'retained-agent-output' }).first().waitFor()
+          await shownPayload(page, 'retained-agent-output').waitFor()
         },
       )
     },
