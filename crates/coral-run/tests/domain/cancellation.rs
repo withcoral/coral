@@ -1340,6 +1340,9 @@ enum Abandoned {
     RunDeadline,
     /// Its owner recorded a cancellation and died before it settled.
     RecordedCancel,
+    /// A cancellation waits, and its owner recorded a cancellation first:
+    /// the waiting one is a repeat that changes nothing.
+    WaitingCancelAfterRecordedCancel,
     /// A cancellation waits in its Run Inbox: the Run is canceled.
     WaitingCancel,
     /// A cancellation waits, and the Run deadline passed: the timers come
@@ -1360,11 +1363,11 @@ enum Abandoned {
 /// fails `approval_expired` before the Run ends, even with a decision
 /// waiting; a passed Run deadline records `timed_out`, not `interrupted`,
 /// even with a cancellation waiting; a recorded termination is finished as
-/// recorded; a waiting cancellation is recorded and ends the Run
-/// `canceled`; a waiting decision is recorded, and its Invocation still ends
-/// `run_terminated`; otherwise the Run is interrupted, its waiting
-/// Invocation ends `run_terminated` and its request closes. The Run is taken
-/// over with a new claim.
+/// recorded, even with a cancellation waiting; a waiting cancellation is
+/// recorded and ends the Run `canceled`; a waiting decision is recorded,
+/// and its Invocation still ends `run_terminated`; otherwise the Run is
+/// interrupted, its waiting Invocation ends `run_terminated` and its request
+/// closes. The Run is taken over with a new claim.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -1375,66 +1378,64 @@ async fn the_sweep_ends_an_abandoned_run_after_its_passed_timers_and_waiting_req
     use crate::approval::{ApprovalDecision, ApprovalState};
     use crate::run_inbox::OutsideRequest;
     // (what the Run carries, the Run's end, its request's end, the
-    // Invocation's end, whether the chunk records `cancellation.requested`)
+    // Invocation's end)
     let cases = [
         (
             Abandoned::Nothing,
             RunState::Interrupted,
             ApprovalState::Closed,
             RunTerminated,
-            false,
         ),
         (
             Abandoned::ApprovalDeadline,
             RunState::Interrupted,
             ApprovalState::Expired,
             CoralFailure,
-            false,
         ),
         (
             Abandoned::RunDeadline,
             RunState::TimedOut,
             ApprovalState::Expired,
             CoralFailure,
-            false,
         ),
         (
             Abandoned::RecordedCancel,
             RunState::Canceled,
             ApprovalState::Closed,
             RunTerminated,
-            false,
+        ),
+        (
+            Abandoned::WaitingCancelAfterRecordedCancel,
+            RunState::Canceled,
+            ApprovalState::Closed,
+            RunTerminated,
         ),
         (
             Abandoned::WaitingCancel,
             RunState::Canceled,
             ApprovalState::Closed,
             RunTerminated,
-            true,
         ),
         (
             Abandoned::WaitingCancelPastRunDeadline,
             RunState::TimedOut,
             ApprovalState::Expired,
             CoralFailure,
-            false,
         ),
         (
             Abandoned::WaitingDecision,
             RunState::Interrupted,
             ApprovalState::Approved,
             RunTerminated,
-            false,
         ),
         (
             Abandoned::WaitingDecisionPastApprovalDeadline,
             RunState::Interrupted,
             ApprovalState::Expired,
             CoralFailure,
-            false,
         ),
     ];
-    for (case, run_end, request_end, invocation_end, cancel_requested) in cases {
+    for (case, run_end, request_end, invocation_end) in cases {
         // The request waits 20 s at most, well inside the Run's 60 s.
         let held =
             HeldApproval::expiring(&format!("user:abandoned-{case:?}"), Duration::from_secs(20))
@@ -1451,7 +1452,9 @@ async fn the_sweep_ends_an_abandoned_run_after_its_passed_timers_and_waiting_req
             .await;
         // Each request was sent while the Run's deadlines were still ahead.
         match case {
-            Abandoned::WaitingCancel | Abandoned::WaitingCancelPastRunDeadline => {
+            Abandoned::WaitingCancel
+            | Abandoned::WaitingCancelPastRunDeadline
+            | Abandoned::WaitingCancelAfterRecordedCancel => {
                 fixture
                     .submit_to_inbox(
                         workspace_id,
@@ -1490,7 +1493,7 @@ async fn the_sweep_ends_an_abandoned_run_after_its_passed_timers_and_waiting_req
                 .clock
                 .next
                 .store(handed.deadline_at_unix_nanos, Ordering::SeqCst),
-            Abandoned::RecordedCancel => {
+            Abandoned::RecordedCancel | Abandoned::WaitingCancelAfterRecordedCancel => {
                 fixture
                     .inject_fault(&format!(
                         "UPDATE program_run_records SET termination_kind = 'canceled', \
@@ -1540,14 +1543,21 @@ async fn the_sweep_ends_an_abandoned_run_after_its_passed_timers_and_waiting_req
             .events_after(workspace_id, run_id, last_sequence(&handed))
             .await;
         let kinds = events.iter().map(RunEvent::kind).collect::<Vec<_>>();
-        let (requested, end) = kinds.split_at(usize::from(cancel_requested));
+        let (requested, ending) = match kinds.as_slice() {
+            [
+                RunEventKind::CancellationRequested { principal },
+                ending @ ..,
+            ] => (Some(principal), ending),
+            ending => (None, ending),
+        };
+        assert_eq!(
+            requested,
+            matches!(case, Abandoned::WaitingCancel).then(|| held.actor.principal()),
+            "{case:?}: only a cancellation the chunk applies is requested: {events:?}"
+        );
         assert!(
-            requested.iter().all(|kind| matches!(
-                kind,
-                RunEventKind::CancellationRequested { principal }
-                    if principal == held.actor.principal()
-            )) && matches!(
-                end,
+            matches!(
+                ending,
                 [
                     RunEventKind::InvocationEnded { result_kind, .. },
                     RunEventKind::Ended { state, .. },
@@ -1555,6 +1565,15 @@ async fn the_sweep_ends_an_abandoned_run_after_its_passed_timers_and_waiting_req
             ),
             "{case:?}: {events:?}"
         );
+        if matches!(
+            case,
+            Abandoned::RecordedCancel | Abandoned::WaitingCancelAfterRecordedCancel
+        ) {
+            assert_eq!(
+                ended.termination, handed.termination,
+                "{case:?}: the recorded termination stands"
+            );
+        }
         let request_after = held
             .approvals
             .get(&held.actor, workspace_id, &request.id)
@@ -1690,8 +1709,9 @@ async fn an_abandoned_runs_dispatching_and_waiting_invocations_end_in_one_chunk(
 /// Run Inbox. A cancel and a decision wait there, which no reader reads for
 /// a Run whose holder is gone, and each is answered "not yet recorded" past
 /// its wait, with nothing written to the Run. Once the chunk landed, the Run
-/// ended without them: a retried decision still waiting is answered from the
-/// record before its own wait is out, and so is the retried cancel.
+/// ended without them, and they stay: a retried decision still waiting is
+/// answered from the record before its own wait is out, and so is the
+/// retried cancel.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_request_for_a_run_being_recovered_waits_until_its_chunk_lands() {
     use crate::approval::{ApprovalDecision, ApprovalState};
@@ -1760,6 +1780,11 @@ async fn a_request_for_a_run_being_recovered_waits_until_its_chunk_lands() {
         .expect("release the recovered owner's chunk");
     let ended = fixture.terminal_record(workspace_id, run_id).await;
     assert_eq!(ended.chunk_sequence, handed.chunk_sequence + 1, "one chunk");
+    assert_eq!(
+        fixture.inbox_rows(workspace_id, run_id).await,
+        2,
+        "the chunk deletes only the rows its owner applied"
+    );
     let decided = deciding
         .await
         .expect("join")

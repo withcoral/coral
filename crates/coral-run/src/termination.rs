@@ -312,39 +312,40 @@ impl RunModule {
 
 /// The one chunk that ends `run`, as read in `transaction`. `events`, from
 /// work the caller already ran in `transaction`, come first. The Run ends
-/// with the termination its row records, else the `applied` cancellation
-/// and its `cancellation.requested`, else timed out at `now` past its
-/// deadline (as every deadline path records), else interrupted at `now`.
-/// Every nonterminal Invocation ends (`run_terminated` before its dispatch,
-/// `indeterminate` once dispatching) with its Approval Request closed, then
-/// `run.ended`, never before the termination. The worker claim is released
-/// and, for a started Run, the execution claim taken over by `takeover`.
-/// One head move, predicated on the claim and the head `run` shows.
+/// with the termination its row records, else the `cancellation` the
+/// writer applied, with its `cancellation.requested`, else timed out at
+/// `now_unix_nanos` past its deadline (as every deadline path records), else
+/// interrupted then. Every nonterminal Invocation ends (`run_terminated`
+/// before its dispatch, `indeterminate` once dispatching) with its Approval
+/// Request closed, then `run.ended`, never before the termination. The
+/// worker claim is released and, for a started Run, the execution claim
+/// taken over by `takeover`. One head move, predicated on the claim and the
+/// head `run` shows.
 pub(crate) async fn end_in_one_chunk(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
-    applied: Option<RequestedTermination>,
+    cancellation: Option<RequestedTermination>,
     mut events: Vec<OwnedEvent>,
     takeover: Option<run_repository::Takeover<'_>>,
-    now: i64,
+    now_unix_nanos: i64,
 ) -> Result<(), Error> {
-    let termination = match (run.termination, applied) {
+    let termination = match (run.termination, cancellation) {
         (Some(recorded), _) => RequestedTermination::recorded(recorded),
-        (None, Some(applied)) => {
-            events.extend(applied.requester.clone().map(|requester| {
+        (None, Some(cancellation)) => {
+            events.extend(cancellation.requester.clone().map(|requester| {
                 OwnedEvent::new(
                     OwnedEventKind::CancellationRequested(requester),
-                    applied.termination.started_at_unix_nanos,
+                    cancellation.termination.started_at_unix_nanos,
                 )
             }));
-            applied
+            cancellation
         }
-        (None, None) if now >= run.deadline_at_unix_nanos => {
-            run.request_termination(RunTerminationKind::TimedOut, now)?
+        (None, None) if now_unix_nanos >= run.deadline_at_unix_nanos => {
+            run.request_termination(RunTerminationKind::TimedOut, now_unix_nanos)?
         }
-        (None, None) => run.request_termination(RunTerminationKind::Interrupted, now)?,
+        (None, None) => run.request_termination(RunTerminationKind::Interrupted, now_unix_nanos)?,
     };
-    let ended_at_unix_nanos = now.max(termination.termination.started_at_unix_nanos);
+    let ended_at_unix_nanos = now_unix_nanos.max(termination.termination.started_at_unix_nanos);
     events.extend(
         invocation_lifecycle::end_nonterminal_invocations(transaction, run, ended_at_unix_nanos)
             .await?,

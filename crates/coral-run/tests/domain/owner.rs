@@ -2686,43 +2686,59 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
 
 /// A recovered owner applies the Run Inbox requests the sweep queued after
 /// the timers, as a live owner applies them: a decision past its request's
-/// deadline is a repeat of its expiry; a cancellation is the first
-/// termination unless the Run deadline passed, whose timeout comes first; a
-/// decision after a termination closes its request. Its chunk deletes every
-/// row it applied.
+/// deadline is a repeat of its expiry, even past the Run deadline; a
+/// cancellation is the first termination unless the Run deadline passed,
+/// whose timeout comes first; a decision after a termination closes its
+/// request. Its chunk deletes every row it applied.
 #[test]
 fn a_recovered_owner_applies_its_run_inbox_requests_in_insert_order() {
     use crate::run_inbox::InboxRow;
+    #[derive(Debug, Clone, Copy)]
+    enum Sent {
+        Cancel,
+        Decision,
+    }
     #[derive(Debug, PartialEq)]
     enum Step {
         Expire,
-        Decide(bool),
+        Record,
+        Close,
         Cancel,
     }
     let run_deadline = LIMITS.deadline_at_unix_nanos;
-    // (the rows delivered: (row, at), a cancel or a decision; what the
-    // chunk writes, the cancellation last)
+    // (the requests delivered, in order, each with when it was applied;
+    // what the chunk writes, the cancellation last)
     let cases = [
-        (vec![("decision", 3)], vec![Step::Decide(true)]),
-        (vec![("decision", APPROVAL_DEADLINE)], vec![Step::Expire]),
+        (vec![(Sent::Decision, 3)], vec![Step::Record]),
         (
-            vec![("decision", 3), ("cancel", 4)],
-            vec![Step::Decide(true), Step::Cancel],
+            vec![(Sent::Decision, APPROVAL_DEADLINE)],
+            vec![Step::Expire],
+        ),
+        (vec![(Sent::Decision, run_deadline)], vec![Step::Expire]),
+        (
+            vec![(Sent::Decision, 3), (Sent::Cancel, 4)],
+            vec![Step::Record, Step::Cancel],
         ),
         (
-            vec![("cancel", 3), ("decision", 4)],
-            vec![Step::Decide(false), Step::Cancel],
+            vec![(Sent::Cancel, 3), (Sent::Decision, 4)],
+            vec![Step::Close, Step::Cancel],
         ),
-        (vec![("cancel", run_deadline)], vec![]),
+        (
+            vec![(Sent::Cancel, 3), (Sent::Decision, APPROVAL_DEADLINE)],
+            vec![Step::Close, Step::Cancel],
+        ),
+        (vec![(Sent::Cancel, run_deadline)], vec![]),
     ];
     for (delivered, written) in cases {
         let approval = approval_id();
         let mut state = OwnerState::recovered(LIMITS, 1);
-        for &(row, at) in &delivered {
-            let effects = if row == "cancel" {
-                cancel(&mut state, row, at)
-            } else {
-                decide(&mut state, &approval, row, at)
+        let rows = (0..delivered.len())
+            .map(|index| format!("row-{index}"))
+            .collect::<Vec<_>>();
+        for (&(sent, at), row) in delivered.iter().zip(&rows) {
+            let effects = match sent {
+                Sent::Cancel => cancel(&mut state, row, at),
+                Sent::Decision => decide(&mut state, &approval, row, at),
             };
             assert!(effects.is_empty(), "{delivered:?}: {effects:?}");
         }
@@ -2738,7 +2754,8 @@ fn a_recovered_owner_applies_its_run_inbox_requests_in_insert_order() {
                     assert_eq!(*expired, approval);
                     Step::Expire
                 }
-                RecoveryStep::Decide { decide, .. } => Step::Decide(*decide),
+                RecoveryStep::Decide { record: true, .. } => Step::Record,
+                RecoveryStep::Decide { record: false, .. } => Step::Close,
             })
             .chain(recovered.termination.iter().map(|intent| {
                 assert_eq!(intent.requester, Some(requester()));
@@ -2748,10 +2765,7 @@ fn a_recovered_owner_applies_its_run_inbox_requests_in_insert_order() {
         assert_eq!(steps, written, "{delivered:?}");
         assert_eq!(
             recovered.rows,
-            delivered
-                .iter()
-                .map(|(row, _)| InboxRow((*row).to_string()))
-                .collect::<Vec<_>>(),
+            rows.into_iter().map(InboxRow).collect::<Vec<_>>(),
             "{delivered:?}"
         );
     }

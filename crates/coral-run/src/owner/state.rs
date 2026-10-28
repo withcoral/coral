@@ -83,11 +83,11 @@ pub(crate) struct Recovered {
 pub(crate) enum RecoveryStep {
     /// An Approval Request's deadline passed: it expires.
     Expire(ApprovalId),
-    /// A decision from the Run Inbox: recorded when `decide`, else it closes
-    /// its request, a termination applied before it.
+    /// A decision from the Run Inbox: recorded when `record`, else it closes
+    /// its request, the owner accepting no more requests when it applied it.
     Decide {
         request: DecisionRequest,
-        decide: bool,
+        record: bool,
     },
 }
 
@@ -128,21 +128,23 @@ impl Recovered {
     /// A decision, as [`OwnerState::decide`] applies it: past the request's
     /// deadline its expiry comes first and the decision is a repeat, as it
     /// is after an expiry applied before; once the owner accepts no more
-    /// requests, the decision closes the request.
+    /// requests, the decision closes the request. Past the Run deadline the
+    /// expiry still comes first, since the request's timer comes no later: a
+    /// live owner's has fired by then.
     fn decide(&mut self, request: DecisionRequest, limits: &OwnerLimits, now_unix_nanos: i64) {
-        let decide = self.accepts(limits, now_unix_nanos);
         if self.steps.iter().any(
             |step| matches!(step, RecoveryStep::Expire(expired) if *expired == request.approval),
         ) {
             return;
         }
-        self.steps.push(
-            if decide && now_unix_nanos >= request.deadline_at_unix_nanos {
-                RecoveryStep::Expire(request.approval)
-            } else {
-                RecoveryStep::Decide { request, decide }
-            },
-        );
+        let expired =
+            self.termination.is_none() && now_unix_nanos >= request.deadline_at_unix_nanos;
+        self.steps.push(if expired {
+            RecoveryStep::Expire(request.approval)
+        } else {
+            let record = self.accepts(limits, now_unix_nanos);
+            RecoveryStep::Decide { request, record }
+        });
     }
 }
 
