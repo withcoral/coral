@@ -135,10 +135,16 @@ impl TestModules {
         .await
     }
 
-    /// Modules over a database that the migrations before `version` built, as
-    /// one from before that migration's upgrade.
-    pub(crate) async fn before_migration(version: i64, engine: Arc<dyn ProgramEngine>) -> Self {
-        let plan = coral_test_support::migration_plan_before(version);
+    /// Modules over a database that every migration but `version` built: one
+    /// from before that migration's upgrade, with the columns this release's
+    /// Runs write, so the test can fill it through the modules.
+    pub(crate) async fn without_migration(version: i64, engine: Arc<dyn ProgramEngine>) -> Self {
+        let plan = coral_test_support::edited_migration_plan(|migrations| {
+            migrations
+                .into_iter()
+                .filter(|migration| migration.version != version)
+                .collect()
+        });
         Self::on_plan(
             &plan,
             engine,
@@ -1477,6 +1483,7 @@ pub(crate) async fn admitted_invocation(
         arguments_json: "{}".to_string(),
         source_location: None,
         admitted_at_unix_nanos: now,
+        span: tracing::Span::none(),
     })
 }
 

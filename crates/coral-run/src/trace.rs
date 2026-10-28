@@ -94,3 +94,102 @@ pub(crate) fn record_run_end(state: RunState) {
     };
     coral_telemetry::record_failure(&span, state.as_storage_str(), message);
 }
+
+/// The `coral.invocation` span of one admitted Tool Invocation, a child of
+/// the current span (the Run's execute phase).
+pub(crate) fn invocation_span(
+    id: &crate::InvocationId,
+    call_path: &str,
+    provider_id: &str,
+) -> tracing::Span {
+    tracing::info_span!(
+        "coral.invocation",
+        invocation.id = %id,
+        tool.call_path = call_path,
+        provider.id = provider_id,
+        provider.protocol = Empty,
+        dispatch.started = Empty,
+        invocation.result_kind = Empty,
+        failure.code = Empty,
+        status = Empty,
+        error.type = Empty,
+        exception.message = Empty,
+    )
+}
+
+/// One step of a Tool Invocation on its way to dispatch.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Step {
+    Plan,
+    Credentials,
+    DispatchFence,
+    Persist,
+}
+
+/// A gate a Tool Invocation passes before its Dispatch Fence.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Gate {
+    /// The held recheck of the Workspace, Principal, Provider and policy.
+    Authority,
+    /// Selecting the Account, including a wait on a connection request.
+    Account,
+    /// The Approval Request, including the wait for its decision.
+    Approval,
+}
+
+/// A span for `step` of the Invocation whose span is `invocation`.
+pub(crate) fn step_span(invocation: &tracing::Span, step: Step) -> tracing::Span {
+    match step {
+        Step::Plan => tracing::info_span!(parent: invocation, "coral.invocation.plan"),
+        Step::Credentials => {
+            tracing::info_span!(parent: invocation, "coral.invocation.credentials")
+        }
+        Step::DispatchFence => {
+            tracing::info_span!(parent: invocation, "coral.invocation.dispatch_fence")
+        }
+        Step::Persist => tracing::info_span!(parent: invocation, "coral.invocation.persist"),
+    }
+}
+
+/// A span for `gate` of the Invocation whose span is `invocation`.
+pub(crate) fn gate_span(invocation: &tracing::Span, gate: Gate) -> tracing::Span {
+    let kind = match gate {
+        Gate::Authority => "authority",
+        Gate::Account => "account",
+        Gate::Approval => "approval",
+    };
+    tracing::info_span!(parent: invocation, "coral.invocation.gate", gate.kind = kind)
+}
+
+/// Records how a Tool Invocation ended: `kind`, or a host defect for
+/// `None`. A complete Upstream Outcome is never an error, whatever its
+/// status; a Coral Failure, `indeterminate` and a host defect are.
+/// `run_terminated` is not.
+pub(crate) fn record_invocation_end(
+    span: &tracing::Span,
+    kind: Option<crate::InvocationResultKind>,
+    failure_code: Option<&'static str>,
+) {
+    use crate::InvocationResultKind;
+    if let Some(kind) = kind {
+        span.record("invocation.result_kind", kind.as_storage_str());
+    }
+    match kind {
+        Some(InvocationResultKind::UpstreamOutcome | InvocationResultKind::RunTerminated) => {}
+        Some(InvocationResultKind::CoralFailure) => {
+            let code = failure_code.unwrap_or("coral_failure");
+            span.record("failure.code", code);
+            coral_telemetry::record_failure(span, code, "Tool Invocation ended in a Coral Failure");
+        }
+        Some(InvocationResultKind::Indeterminate) => coral_telemetry::record_failure(
+            span,
+            "indeterminate",
+            "Tool Invocation ended without a known result after its dispatch",
+        ),
+        None => coral_telemetry::record_failure(
+            span,
+            "host_defect",
+            "Tool Invocation ended on a host defect",
+        ),
+    }
+}
