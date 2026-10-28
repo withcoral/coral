@@ -531,7 +531,7 @@ impl ToolInvoker {
         // Invocation and never fences again.
         if let Err(error) = self
             .authorize(admitted, progress, &mut ready)
-            .instrument(step_span(&admitted.span, Step::Credentials))
+            .instrument(step_span(&admitted.span, Step::Authorize))
             .await
         {
             return match error {

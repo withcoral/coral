@@ -370,6 +370,7 @@ async fn a_tool_invocation_traces_its_gates_fence_and_persistence_under_the_run(
         "coral.invocation.plan",
         "coral.invocation.credentials",
         "coral.invocation.dispatch_fence",
+        "coral.invocation.authorize",
         "coral.invocation.persist",
     ] {
         assert!(!children(step).is_empty(), "{step} under the Invocation");

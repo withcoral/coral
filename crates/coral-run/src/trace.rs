@@ -121,8 +121,11 @@ pub(crate) fn invocation_span(
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Step {
     Plan,
+    /// Readying the Account's credentials, including a token refresh.
     Credentials,
     DispatchFence,
+    /// Opening the credentials the Dispatch Fence judged current.
+    Authorize,
     Persist,
 }
 
@@ -147,6 +150,7 @@ pub(crate) fn step_span(invocation: &tracing::Span, step: Step) -> tracing::Span
         Step::DispatchFence => {
             tracing::info_span!(parent: invocation, "coral.invocation.dispatch_fence")
         }
+        Step::Authorize => tracing::info_span!(parent: invocation, "coral.invocation.authorize"),
         Step::Persist => tracing::info_span!(parent: invocation, "coral.invocation.persist"),
     }
 }
