@@ -5,8 +5,12 @@
 //! decides what spans may leave the host.
 
 mod export;
+mod request;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 
 pub use export::OtlpSpanFilter;
+pub use request::{REQUEST_TARGET, request_span, trace_grpc_routes, trace_http_routes};
 
 use opentelemetry::Context;
 use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator as _};
@@ -61,9 +65,6 @@ impl TraceId {
 
 const TRACEPARENT_HEADER: &str = "traceparent";
 const TRACESTATE_HEADER: &str = "tracestate";
-
-/// Stable message recorded for failed gRPC requests.
-pub const GRPC_REQUEST_ERROR_MESSAGE: &str = "gRPC request failed";
 
 /// Prefix for host-only span attributes that must not be exported over OTLP.
 pub const LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX: &str = "coral.local.";
@@ -131,7 +132,7 @@ pub fn set_parent_from_trace_headers(
 ///
 /// More than one `traceparent` line is invalid and starts a new trace. Every
 /// `tracestate` line is kept, joined in order. `baggage` is never read.
-pub fn set_parent_from_http_headers(span: &tracing::Span, headers: &http::HeaderMap) {
+fn set_parent_from_http_headers(span: &tracing::Span, headers: &http::HeaderMap) {
     let mut traceparents = headers.get_all(TRACEPARENT_HEADER).iter();
     let (Some(traceparent), None) = (traceparents.next(), traceparents.next()) else {
         return;
@@ -148,169 +149,6 @@ pub fn set_parent_from_http_headers(span: &tracing::Span, headers: &http::Header
         .filter(|lines| !lines.is_empty())
         .map(|lines| lines.join(","));
     set_parent_from_trace_headers(span, Some(traceparent), tracestate.as_deref());
-}
-
-/// Stable message recorded for HTTP requests that end in a server error.
-const HTTP_REQUEST_ERROR_MESSAGE: &str = "HTTP request failed";
-
-/// Opens the server span of one inbound HTTP request, under the caller's
-/// target, and continues a valid inbound W3C trace.
-///
-/// `$name` names the listener's request span in Coral's own logs; exported,
-/// it is named `{method} {route}`, as OpenTelemetry's HTTP conventions ask.
-/// `$request` is the inbound `http::Request`, and `$route` its matched route
-/// template, never the request path. The span carries only the method, route
-/// and response status; headers, body, query, cookies and the full URL stay
-/// off it. Record the response with [`record_http_response`].
-#[macro_export]
-macro_rules! http_request_span {
-    ($name:literal, $request:expr, $route:expr) => {{
-        let request: &$crate::__http::Request<_> = $request;
-        let route: ::core::option::Option<&str> = $route;
-        let method = $crate::http_method(request.method());
-        let span = ::tracing::info_span!(
-            parent: None,
-            $name,
-            otel.name = $crate::http_span_name(method, route),
-            otel.kind = "server",
-            http.request.method = method,
-            http.route = route,
-            http.response.status_code = ::tracing::field::Empty,
-            error.type = ::tracing::field::Empty,
-            exception.message = ::tracing::field::Empty,
-            status = ::tracing::field::Empty,
-        );
-        $crate::set_parent_from_http_headers(&span, request.headers());
-        span
-    }};
-}
-
-#[doc(hidden)]
-pub use http as __http;
-
-/// The exported name of an HTTP server span: `{method} {route}`, the method
-/// alone without a route, and `HTTP` for a method outside the standard set.
-/// [`http_request_span!`] records it.
-#[doc(hidden)]
-#[must_use]
-pub fn http_span_name(method: &'static str, route: Option<&str>) -> String {
-    let method = if method == "_OTHER" { "HTTP" } else { method };
-    route.map_or_else(|| method.to_owned(), |route| format!("{method} {route}"))
-}
-
-/// The request method as a span field: a standard method's name, else
-/// `_OTHER`, so a caller cannot choose the text. [`http_request_span!`]
-/// records it.
-#[doc(hidden)]
-#[must_use]
-pub fn http_method(method: &http::Method) -> &'static str {
-    match method.as_str() {
-        "GET" => "GET",
-        "HEAD" => "HEAD",
-        "POST" => "POST",
-        "PUT" => "PUT",
-        "DELETE" => "DELETE",
-        "CONNECT" => "CONNECT",
-        "OPTIONS" => "OPTIONS",
-        "TRACE" => "TRACE",
-        "PATCH" => "PATCH",
-        _ => "_OTHER",
-    }
-}
-
-/// Records the response status on a span opened by [`http_request_span!`].
-/// A server error fails the span; a client error is the caller's.
-pub fn record_http_response(span: &tracing::Span, status: http::StatusCode) {
-    span.record("http.response.status_code", i64::from(status.as_u16()));
-    if status.is_server_error() {
-        record_failure(span, status.as_str(), HTTP_REQUEST_ERROR_MESSAGE);
-    } else {
-        span.record("status", "ok");
-    }
-}
-
-/// Opens the server span of one inbound gRPC call, under the caller's target,
-/// and continues a valid inbound W3C trace.
-///
-/// `$name` names the listener's request span in Coral's own logs. Record the
-/// method and status with [`record_grpc_response`], which also gives the
-/// exported span its name. Metadata and messages stay off the span.
-#[macro_export]
-macro_rules! grpc_request_span {
-    ($name:literal, $request:expr) => {{
-        let request: &$crate::__http::Request<_> = $request;
-        let span = ::tracing::info_span!(
-            parent: None,
-            $name,
-            otel.name = "grpc",
-            otel.kind = "server",
-            rpc.system.name = "grpc",
-            rpc.method = ::tracing::field::Empty,
-            rpc.response.status_code = ::tracing::field::Empty,
-            error.type = ::tracing::field::Empty,
-            exception.message = ::tracing::field::Empty,
-            status = ::tracing::field::Empty,
-        );
-        $crate::set_parent_from_http_headers(&span, request.headers());
-        span
-    }};
-}
-
-/// gRPC status names, indexed by code.
-const GRPC_STATUS_NAMES: [&str; 17] = [
-    "OK",
-    "CANCELLED",
-    "UNKNOWN",
-    "INVALID_ARGUMENT",
-    "DEADLINE_EXCEEDED",
-    "NOT_FOUND",
-    "ALREADY_EXISTS",
-    "PERMISSION_DENIED",
-    "RESOURCE_EXHAUSTED",
-    "FAILED_PRECONDITION",
-    "ABORTED",
-    "OUT_OF_RANGE",
-    "UNIMPLEMENTED",
-    "INTERNAL",
-    "UNAVAILABLE",
-    "DATA_LOSS",
-    "UNAUTHENTICATED",
-];
-
-/// Codes that mark a server span failed: the server's faults, not the caller's.
-const GRPC_SERVER_ERRORS: [i32; 6] = [2, 4, 12, 13, 14, 15];
-
-const GRPC_UNIMPLEMENTED: i32 = 12;
-
-/// Records how a gRPC call ended on a span opened by [`grpc_request_span!`].
-///
-/// `path` is the request path, `/package.Service/Method`, and `code` the
-/// call's gRPC status code. A served method names the span. A call that ended
-/// UNIMPLEMENTED records `_OTHER`, since its caller chose the method.
-pub fn record_grpc_response(span: &tracing::Span, path: &str, code: i32) {
-    let method = path.strip_prefix('/').filter(|method| !method.is_empty());
-    match method {
-        Some(method) if code != GRPC_UNIMPLEMENTED => {
-            // The span has usually started by now, and a started span takes
-            // its new name only through OpenTelemetry, not `otel.name`.
-            span.context().span().update_name(method.to_owned());
-            span.record("rpc.method", method);
-        }
-        _ => {
-            span.record("rpc.method", "_OTHER");
-        }
-    }
-    let status = usize::try_from(code)
-        .ok()
-        .and_then(|code| GRPC_STATUS_NAMES.get(code))
-        .copied()
-        .unwrap_or("UNKNOWN");
-    span.record("rpc.response.status_code", status);
-    if GRPC_SERVER_ERRORS.contains(&code) {
-        record_failure(span, status, GRPC_REQUEST_ERROR_MESSAGE);
-    } else {
-        span.record("status", "ok");
-    }
 }
 
 /// Sets `span`'s parent from a text-map carrier.
@@ -349,16 +187,13 @@ fn context_has_valid_span(context: &Context) -> bool {
 mod tests {
     use std::collections::HashMap;
 
-    use opentelemetry::baggage::BaggageExt as _;
-    use opentelemetry::trace::{SpanId, Status as OtelStatus, TraceId, TracerProvider as _};
-    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-    use tracing_subscriber::prelude::*;
+    use opentelemetry::trace::{SpanId, Status as OtelStatus, TraceId};
 
     use super::{
         context_from_extractor, context_from_trace_headers, record_failure,
         set_parent_from_trace_headers,
     };
+    use crate::testing::{SpanCapture, attribute};
 
     /// Persisted trace IDs are decoded through this parser, so it admits only
     /// the one spelling Coral writes.
@@ -385,15 +220,8 @@ mod tests {
 
     #[test]
     fn record_failure_sets_shared_error_fields() {
-        let memory = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(memory.clone())
-            .build();
-        let tracer = provider.tracer("failure-test");
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(tracing_opentelemetry::layer().with_tracer(tracer));
-
-        tracing::subscriber::with_default(subscriber, || {
+        let capture = SpanCapture::default();
+        tracing::subscriber::with_default(capture.subscriber(), || {
             let span = tracing::info_span!(
                 "failure",
                 error.type = tracing::field::Empty,
@@ -403,20 +231,12 @@ mod tests {
             record_failure(&span, "INVALID_ARGUMENT", "request failed");
             span.in_scope(|| {});
         });
-        provider.force_flush().expect("flush spans");
-
-        let spans = memory.get_finished_spans().expect("finished spans");
+        let spans = capture.finished();
         let failure = spans
             .iter()
             .find(|span| span.name == "failure")
             .expect("failure span");
-        let string_attribute = |name: &str| {
-            failure
-                .attributes
-                .iter()
-                .find(|attribute| attribute.key.as_str() == name)
-                .map(|attribute| attribute.value.as_str().into_owned())
-        };
+        let string_attribute = |name: &str| attribute(failure, name);
         assert_eq!(string_attribute("status").as_deref(), Some("error"));
         assert_eq!(
             string_attribute("error.type").as_deref(),
@@ -427,20 +247,12 @@ mod tests {
             Some("request failed")
         );
         assert_eq!(failure.status, OtelStatus::error("request failed"));
-        provider.shutdown().expect("provider shutdown");
     }
 
     #[test]
     fn rejects_missing_or_invalid_traceparent_under_active_span() {
-        let memory = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(memory.clone())
-            .build();
-        let tracer = provider.tracer("trace-context-test");
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(tracing_opentelemetry::layer().with_tracer(tracer));
-
-        tracing::subscriber::with_default(subscriber, || {
+        let capture = SpanCapture::default();
+        tracing::subscriber::with_default(capture.subscriber(), || {
             let ambient = tracing::info_span!("ambient");
             let _guard = ambient.enter();
 
@@ -448,271 +260,12 @@ mod tests {
             assert!(context_from_trace_headers(Some("not-a-traceparent"), None).is_none());
             assert!(context_from_extractor(&HashMap::new()).is_none());
         });
-        provider.shutdown().expect("provider shutdown");
-    }
-
-    /// A request span carries the method, route template and status, never
-    /// the path, query, headers or cookies. A server error fails it.
-    #[test]
-    fn http_request_spans_carry_only_safe_fields() {
-        for (method, status, expected_method, expected_name, failed) in [
-            (
-                "GET",
-                200,
-                "GET",
-                "GET /workspaces/{workspace_id}/mcp",
-                false,
-            ),
-            (
-                "BREW-CANARY",
-                404,
-                "_OTHER",
-                "HTTP /workspaces/{workspace_id}/mcp",
-                false,
-            ),
-            (
-                "POST",
-                503,
-                "POST",
-                "POST /workspaces/{workspace_id}/mcp",
-                true,
-            ),
-        ] {
-            let request = http::Request::builder()
-                .method(method)
-                .uri("/workspaces/canary-path/mcp?query=canary-query")
-                .header("cookie", "session=canary-cookie")
-                .header("authorization", "Bearer canary-token")
-                .body(())
-                .expect("request");
-            let memory = InMemorySpanExporter::default();
-            let provider = SdkTracerProvider::builder()
-                .with_simple_exporter(memory.clone())
-                .build();
-            let subscriber = tracing_subscriber::Registry::default()
-                .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("http-test")));
-            tracing::subscriber::with_default(subscriber, || {
-                let span = crate::http_request_span!(
-                    "request",
-                    &request,
-                    Some("/workspaces/{workspace_id}/mcp")
-                );
-                crate::record_http_response(
-                    &span,
-                    http::StatusCode::from_u16(status).expect("status"),
-                );
-                span.in_scope(|| {});
-            });
-            provider.force_flush().expect("flush spans");
-            let spans = memory.get_finished_spans().expect("finished spans");
-            let span = spans.first().expect("request span");
-            assert_eq!(span.name, expected_name, "{method}");
-            let attribute = |name: &str| {
-                span.attributes
-                    .iter()
-                    .find(|attribute| attribute.key.as_str() == name)
-                    .map(|attribute| attribute.value.to_string())
-            };
-            assert_eq!(
-                attribute("http.request.method").as_deref(),
-                Some(expected_method),
-                "{method}"
-            );
-            assert_eq!(
-                attribute("http.route").as_deref(),
-                Some("/workspaces/{workspace_id}/mcp"),
-                "{method}"
-            );
-            assert_eq!(
-                attribute("http.response.status_code"),
-                Some(status.to_string()),
-                "{method}"
-            );
-            assert_eq!(
-                span.status == OtelStatus::error("HTTP request failed"),
-                failed,
-                "{method}"
-            );
-            assert!(
-                !format!("{span:?}").contains("canary"),
-                "{method}: {span:?}"
-            );
-            provider.shutdown().expect("provider shutdown");
-        }
-    }
-
-    /// A gRPC request span is named by its method, unless the call ended
-    /// UNIMPLEMENTED: then the caller chose the method, and it stays off.
-    /// Only the server-fault statuses fail the span.
-    #[test]
-    fn grpc_request_spans_name_only_served_methods() {
-        const METHOD: &str = "coral.management.v1.WorkspaceService/UpdateWorkspace";
-        for (path, code, name, method, status, failed) in [
-            (format!("/{METHOD}"), 0, METHOD, METHOD, "OK", false),
-            (
-                format!("/{METHOD}"),
-                3,
-                METHOD,
-                METHOD,
-                "INVALID_ARGUMENT",
-                false,
-            ),
-            (format!("/{METHOD}"), 13, METHOD, METHOD, "INTERNAL", true),
-            (
-                "/coral.management.v1.WorkspaceService/CanaryMethod".to_owned(),
-                12,
-                "grpc",
-                "_OTHER",
-                "UNIMPLEMENTED",
-                true,
-            ),
-        ] {
-            let request = http::Request::builder()
-                .uri(path.as_str())
-                .body(())
-                .expect("request");
-            let memory = InMemorySpanExporter::default();
-            let provider = SdkTracerProvider::builder()
-                .with_simple_exporter(memory.clone())
-                .build();
-            let subscriber = tracing_subscriber::Registry::default()
-                .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("grpc-test")));
-            tracing::subscriber::with_default(subscriber, || {
-                let span = crate::grpc_request_span!("request", &request);
-                // The call runs, and so starts the span, before its status is known.
-                span.in_scope(|| {
-                    crate::record_grpc_response(&span, request.uri().path(), code);
-                });
-            });
-            provider.force_flush().expect("flush spans");
-            let spans = memory.get_finished_spans().expect("finished spans");
-            let span = spans.first().expect("request span");
-            let attribute = |name: &str| {
-                span.attributes
-                    .iter()
-                    .find(|attribute| attribute.key.as_str() == name)
-                    .map(|attribute| attribute.value.to_string())
-            };
-            assert_eq!(span.name, name, "{path} {code}");
-            assert_eq!(span.span_kind, opentelemetry::trace::SpanKind::Server);
-            assert_eq!(attribute("rpc.system.name").as_deref(), Some("grpc"));
-            assert_eq!(attribute("rpc.method").as_deref(), Some(method), "{path}");
-            assert_eq!(
-                attribute("rpc.response.status_code").as_deref(),
-                Some(status),
-                "{path} {code}"
-            );
-            assert_eq!(
-                span.status == OtelStatus::error("gRPC request failed"),
-                failed,
-                "{path} {code}"
-            );
-            assert_eq!(
-                attribute("error.type").as_deref(),
-                failed.then_some(status),
-                "{path} {code}"
-            );
-            assert!(!format!("{span:?}").contains("Canary"), "{span:?}");
-            provider.shutdown().expect("provider shutdown");
-        }
-    }
-
-    /// A public listener continues only one well-formed inbound trace, keeps
-    /// every `tracestate` line, and never takes `baggage`.
-    #[test]
-    fn http_headers_continue_only_one_valid_trace_and_never_baggage() {
-        const PARENT: &str = "00-00000000000000000000000000000077-0000000000000088-01";
-        let continued = TraceId::from_hex("00000000000000000000000000000077").expect("trace id");
-        for (case, headers, continues, trace_state) in [
-            ("one traceparent", vec![("traceparent", PARENT)], true, ""),
-            (
-                "tracestate lines join in order",
-                vec![
-                    ("traceparent", PARENT),
-                    ("tracestate", "first=1"),
-                    ("tracestate", "second=2"),
-                ],
-                true,
-                "first=1,second=2",
-            ),
-            (
-                "two traceparents are invalid",
-                vec![
-                    ("traceparent", PARENT),
-                    (
-                        "traceparent",
-                        "00-00000000000000000000000000000099-0000000000000088-01",
-                    ),
-                ],
-                false,
-                "",
-            ),
-            (
-                "a malformed traceparent is ignored",
-                vec![("traceparent", "00-not-a-trace-01")],
-                false,
-                "",
-            ),
-            (
-                "a malformed tracestate is dropped and the trace kept",
-                vec![("traceparent", PARENT), ("tracestate", "not a list member")],
-                true,
-                "",
-            ),
-            (
-                "baggage is never taken",
-                vec![("traceparent", PARENT), ("baggage", "tenant=canary")],
-                true,
-                "",
-            ),
-        ] {
-            let mut map = http::HeaderMap::new();
-            for (name, value) in headers {
-                map.append(name, http::HeaderValue::from_static(value));
-            }
-            let memory = InMemorySpanExporter::default();
-            let provider = SdkTracerProvider::builder()
-                .with_simple_exporter(memory.clone())
-                .build();
-            let subscriber = tracing_subscriber::Registry::default()
-                .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("http-test")));
-            let baggage = tracing::subscriber::with_default(subscriber, || {
-                let span = tracing::info_span!("request");
-                super::set_parent_from_http_headers(&span, &map);
-                let baggage = span.context().baggage().len();
-                span.in_scope(|| {});
-                baggage
-            });
-            provider.force_flush().expect("flush spans");
-            let spans = memory.get_finished_spans().expect("finished spans");
-            let request = spans.first().expect("request span");
-            assert_eq!(
-                request.span_context.trace_id() == continued,
-                continues,
-                "{case}"
-            );
-            assert_eq!(request.parent_span_is_remote, continues, "{case}");
-            assert_eq!(
-                request.span_context.trace_state().header(),
-                trace_state,
-                "{case}"
-            );
-            assert_eq!(baggage, 0, "{case}");
-            provider.shutdown().expect("provider shutdown");
-        }
     }
 
     #[test]
     fn sets_span_parent_from_trace_headers() {
-        let memory = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(memory.clone())
-            .build();
-        let tracer = provider.tracer("trace-context-test");
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(tracing_opentelemetry::layer().with_tracer(tracer));
-
-        tracing::subscriber::with_default(subscriber, || {
+        let capture = SpanCapture::default();
+        tracing::subscriber::with_default(capture.subscriber(), || {
             let span = tracing::info_span!("child");
             set_parent_from_trace_headers(
                 &span,
@@ -721,9 +274,7 @@ mod tests {
             );
             let _guard = span.enter();
         });
-        provider.force_flush().expect("flush spans");
-
-        let spans = memory.get_finished_spans().expect("finished spans");
+        let spans = capture.finished();
         let child = spans
             .iter()
             .find(|span| span.name == "child")
@@ -738,6 +289,5 @@ mod tests {
         );
         assert!(child.parent_span_is_remote);
         assert_eq!(child.span_context.trace_state().header(), "vendor=value");
-        provider.shutdown().expect("provider shutdown");
     }
 }

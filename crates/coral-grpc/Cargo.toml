@@ -24,7 +24,6 @@ coral-search.workspace = true
 coral-task.workspace = true
 coral-telemetry.workspace = true
 coral-workspace.workspace = true
-http-body.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tonic-health.workspace = true
@@ -36,15 +35,13 @@ tokio.workspace = true
 tokio-stream.workspace = true
 
 [dev-dependencies]
+coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-search = { workspace = true, features = ["test-fixtures"] }
 coral-provider = { workspace = true, features = ["test-fixtures"] }
 coral-db.workspace = true
 coral-outbound.workspace = true
 coral-test-support.workspace = true
-opentelemetry.workspace = true
-opentelemetry_sdk = { workspace = true, features = ["testing"] }
-tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true

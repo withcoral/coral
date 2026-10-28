@@ -28,7 +28,7 @@ pub mod config;
 
 use crate::bootstrap::AppError;
 pub use config::TelemetryConfig;
-use config::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER, REQUEST_CONTEXT_FILTER};
+use config::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER, TRACE_CONTEXT_FILTER};
 static INIT: OnceLock<Result<(), String>> = OnceLock::new();
 static PROVIDER: Mutex<Option<SdkTracerProvider>> = Mutex::new(None);
 static LOGGER_PROVIDER: Mutex<Option<SdkLoggerProvider>> = Mutex::new(None);
@@ -62,10 +62,10 @@ fn trace_layer_filter(otlp_filter: &str) -> (Targets, Option<String>) {
     build_trace_targets(otlp_filter, DEFAULT_TRACE_FILTER)
 }
 
-fn request_context_targets() -> Targets {
-    REQUEST_CONTEXT_FILTER
+fn trace_context_targets() -> Targets {
+    TRACE_CONTEXT_FILTER
         .parse()
-        .expect("request context filter must be valid")
+        .expect("trace context filter must be valid")
 }
 
 fn normalize_otlp_endpoint(endpoint: &str, signal: &str) -> String {
@@ -284,8 +284,8 @@ type TraceLayer = Filtered<
 /// The tracer provider and the layer that gives spans their trace context.
 ///
 /// Both exist whatever the export settings, so a request's spans, operational
-/// logs and safe errors share one trace identifier. Request spans get context
-/// even when `trace_filter` does not export them. The OTLP exporter is
+/// logs and safe errors share one trace identifier. Every Coral span gets
+/// context even when `trace_filter` does not export it. The OTLP exporter is
 /// attached only when `[otel]` configures an endpoint, and it sends only what
 /// `trace_filter` admits. Also returns a trace filter parse error, after which
 /// the default filter applies.
@@ -303,7 +303,7 @@ fn trace_pipeline(
     let layer = tracing_opentelemetry::layer()
         .with_tracer(provider.tracer("coral"))
         .with_level(true)
-        .with_filter(trace_targets.or(request_context_targets()));
+        .with_filter(trace_targets.or(trace_context_targets()));
     Ok((provider, layer, filter_error))
 }
 
@@ -404,9 +404,9 @@ mod tests {
 
     use super::{TelemetryConfig, telemetry_resource, trace_pipeline};
 
-    /// With `[otel]` unset, or with a trace filter that exports no request
-    /// span, one request's operational logs and safe errors still share the
-    /// trace identifier of its request span.
+    /// With `[otel]` unset, or with a trace filter that exports none of a
+    /// request's spans, Coral work anywhere inside the request still reads the
+    /// trace identifier of its request span, whichever crate's span is current.
     #[test]
     fn a_request_keeps_one_trace_id_whatever_the_export_settings() {
         for (case, raw) in [
@@ -424,30 +424,19 @@ mod tests {
             let subscriber = tracing_subscriber::Registry::default().with(layer);
 
             tracing::subscriber::with_default(subscriber, || {
-                // One request span per listener, under each one's real target.
-                let requests = [
-                    tracing::info_span!(target: "coral_mcp::http", "mcp request"),
-                    tracing::info_span!(
-                        target: "coral_app::auth::authorization_server",
-                        "auth request"
-                    ),
-                    tracing::info_span!(target: "coral_grpc::grpc", "private request"),
-                ];
-                for request in requests {
-                    let _entered = request.enter();
-                    let first = coral_telemetry::TraceId::current_or_new();
-                    let tool = tracing::info_span!(target: "coral_mcp::server", "tool");
-                    assert_eq!(
-                        tool.in_scope(coral_telemetry::TraceId::current_or_new),
-                        first,
-                        "{case}: {request:?}"
-                    );
-                    assert_eq!(
-                        coral_telemetry::TraceId::current_or_new(),
-                        first,
-                        "{case}: {request:?}"
-                    );
-                }
+                let request =
+                    tracing::info_span!(target: coral_telemetry::REQUEST_TARGET, "request");
+                let _entered = request.enter();
+                let trace = coral_telemetry::TraceId::current_or_new();
+                // A handler span, and one from a crate no filter names.
+                let handler = tracing::info_span!(target: "coral_grpc::grpc", "handler");
+                let _handler = handler.enter();
+                let nested = tracing::info_span!(target: "coral_unnamed::module", "nested");
+                assert_eq!(
+                    nested.in_scope(coral_telemetry::TraceId::current_or_new),
+                    trace,
+                    "{case}"
+                );
             });
             provider.shutdown().expect("provider shutdown");
         }

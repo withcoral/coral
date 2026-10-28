@@ -19,14 +19,12 @@ use coral_provider::{ManagementRequestId, ProviderModule, WorkspaceProviderPubli
 use coral_run::RunModule;
 use coral_search::UniversalSearchModule;
 use coral_task::TaskModule;
-use coral_telemetry as _;
+use coral_telemetry::testing::SpanCapture;
 use coral_test_support::TestDatabase;
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, TraceId, WorkspaceDisplayName, WorkspaceId, WorkspaceModule,
     local_organization_owner,
 };
-use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 use reqwest::header::{HeaderMap, HeaderValue};
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation,
@@ -1494,11 +1492,7 @@ async fn private_program_content_stays_out_of_traces_and_logs() {
     assert_eq!(structured(&ended)["outcome"], "success");
     client.service.cancel().await.expect("close MCP client");
     tracer.server.shutdown().await.expect("stop MCP server");
-    capture
-        .provider
-        .force_flush()
-        .expect("flush test telemetry");
-    let spans = capture.spans.get_finished_spans().expect("captured spans");
+    let spans = capture.spans.finished();
     assert!(!spans.is_empty(), "capture is active");
     let exported = format!("{spans:?}");
     let logs = capture.logs.0.lock().expect("captured logs");
@@ -1524,28 +1518,25 @@ async fn private_program_content_stays_out_of_traces_and_logs() {
 /// The process-wide trace and log capture of the production Adapter and domain
 /// targets, not the test client's wire dumps. It installs once per process.
 struct Capture {
-    spans: InMemorySpanExporter,
-    provider: SdkTracerProvider,
+    spans: SpanCapture,
     logs: LogCapture,
 }
 
 fn capture() -> &'static Capture {
     static CAPTURE: std::sync::OnceLock<Capture> = std::sync::OnceLock::new();
     CAPTURE.get_or_init(|| {
-        let spans = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(spans.clone())
-            .build();
+        let spans = SpanCapture::default();
         let logs = LogCapture::default();
         let log_writer = logs.clone();
         tracing_subscriber::Registry::default()
             .with(
                 tracing_subscriber::filter::Targets::new()
+                    .with_target(coral_telemetry::REQUEST_TARGET, tracing::Level::TRACE)
                     .with_target("coral_mcp", tracing::Level::TRACE)
                     .with_target("coral_run", tracing::Level::TRACE)
                     .with_target("coral_v8", tracing::Level::TRACE),
             )
-            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("mcp-failure-test")))
+            .with(spans.layer())
             .with(
                 tracing_subscriber::fmt::layer()
                     .with_ansi(false)
@@ -1553,11 +1544,7 @@ fn capture() -> &'static Capture {
             )
             .try_init()
             .expect("install telemetry capture");
-        Capture {
-            spans,
-            provider,
-            logs,
-        }
+        Capture { spans, logs }
     })
 }
 

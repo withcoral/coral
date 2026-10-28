@@ -99,7 +99,11 @@ async fn wait(server: &McpServer, run_id: &RunId, wait_ms: Option<Value>) -> Val
     let request =
         CallToolRequestParams::new("wait").with_arguments(arguments.as_object().unwrap().clone());
     let Ok(CallToolResponse::Complete(result)) = server
-        .dispatch(request, Channel::Unavailable, &TraceId::current_or_new())
+        .dispatch(
+            request,
+            Channel::Unavailable,
+            &server.tool_call("wait", None),
+        )
         .await
     else {
         panic!("wait without prompting completes")
@@ -182,18 +186,4 @@ fn owner_lost_and_not_yet_recorded_project_stable_retryable_codes() {
             "{label}"
         );
     }
-}
-
-/// A tool span names its tool only when the tool is in `TOOL_NAMES`, so the
-/// list must be exactly the tools `tools/list` serves.
-#[test]
-fn tool_span_names_cover_exactly_the_served_tools() {
-    let mut served = crate::arguments::tools()
-        .into_iter()
-        .map(|tool| tool.name.into_owned())
-        .collect::<Vec<_>>();
-    served.sort();
-    let mut named = TOOL_NAMES.map(str::to_owned).to_vec();
-    named.sort();
-    assert_eq!(named, served);
 }

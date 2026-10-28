@@ -12,7 +12,7 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
-axum = { workspace = true, features = ["http1", "matched-path", "tokio"] }
+axum = { workspace = true, features = ["http1", "tokio"] }
 coral-run.workspace = true
 coral-functions.workspace = true
 coral-identifier.workspace = true
@@ -31,6 +31,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-outbound.workspace = true
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-search = { workspace = true, features = ["test-fixtures"] }
@@ -39,7 +40,6 @@ coral-catalog.workspace = true
 jsonschema.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
-tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 reqwest.workspace = true
 coral-policy.workspace = true

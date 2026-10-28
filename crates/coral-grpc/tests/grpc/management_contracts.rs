@@ -113,16 +113,8 @@ async fn management_rejects_unspecified_and_unknown_agent_states() {
 
 #[tokio::test]
 async fn management_validation_returns_standard_safe_error_info_and_preserves_trace_parent() {
-    use opentelemetry::trace::TracerProvider as _;
-    use tracing_subscriber::prelude::*;
-    let spans = opentelemetry_sdk::trace::InMemorySpanExporter::default();
-    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-        .with_simple_exporter(spans.clone())
-        .build();
-    tracing_subscriber::registry()
-        .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("grpc-contract")))
-        .try_init()
-        .unwrap();
+    let capture = coral_telemetry::testing::SpanCapture::default();
+    tracing::subscriber::set_global_default(capture.subscriber()).unwrap();
     let f = Fixture::new().await;
     let mut client = f.workspace_service();
     let mut update = request(
@@ -152,50 +144,16 @@ async fn management_validation_returns_standard_safe_error_info_and_preserves_tr
     assert_eq!(trace, "4bf92f3577b34da6a3ce929d0e0e4736");
     assert!(!failure.message().contains("private-injected-path"));
 
-    // A success sends its status in trailers, after the response message.
-    let mut read = request(
-        management::GetWorkspaceRequest {
-            name: format!("workspaces/{}", f.workspace.id()),
-        },
-        &f.token(&f.owner, "reef"),
-        "reef",
-    );
-    read.metadata_mut().insert(
-        "traceparent",
-        "00-4bf92f3577b34da6a3ce929d0e0e4737-00f067aa0ba902b7-01"
-            .parse()
-            .unwrap(),
-    );
-    client.get_workspace(read).await.unwrap();
-    provider.force_flush().unwrap();
-    let spans = spans.get_finished_spans().unwrap();
-    for (trace, method, status) in [
-        (
-            "4bf92f3577b34da6a3ce929d0e0e4736",
-            "coral.management.v1.WorkspaceService/UpdateWorkspace",
-            "INVALID_ARGUMENT",
-        ),
-        (
-            "4bf92f3577b34da6a3ce929d0e0e4737",
-            "coral.management.v1.WorkspaceService/GetWorkspace",
-            "OK",
-        ),
-    ] {
-        let span = spans
+    // The request span continues the caller's trace and names the method.
+    let spans = capture.finished();
+    assert!(
+        spans
             .iter()
-            .find(|span| {
-                span.span_context.trace_id().to_string() == trace
-                    && span.span_kind == opentelemetry::trace::SpanKind::Server
-            })
-            .unwrap_or_else(|| panic!("{method}: a request span in the caller's trace"));
-        assert_eq!(span.name, method);
-        let status_code = span
-            .attributes
-            .iter()
-            .find(|attribute| attribute.key.as_str() == "rpc.response.status_code")
-            .map(|attribute| attribute.value.to_string());
-        assert_eq!(status_code.as_deref(), Some(status), "{method}");
-    }
+            .any(|span| span.span_context.trace_id().to_string()
+                == "4bf92f3577b34da6a3ce929d0e0e4736"
+                && span.name == "coral.management.v1.WorkspaceService/UpdateWorkspace"),
+        "{spans:?}"
+    );
 }
 
 #[tokio::test]

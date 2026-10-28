@@ -10,6 +10,8 @@ use opentelemetry::trace::SpanKind;
 use opentelemetry_sdk::trace::SpanData;
 use serde_json::{Value, json};
 
+use coral_telemetry::testing::attribute;
+
 use super::{RawSession, Tracer, capture};
 
 const ABSENT: &str = "00000000-0000-4000-8000-000000000000";
@@ -110,11 +112,7 @@ async fn tool_failures_name_the_trace_of_their_request() {
     ));
     session.close().await;
 
-    capture
-        .provider
-        .force_flush()
-        .expect("flush test telemetry");
-    let spans = capture.spans.get_finished_spans().expect("captured spans");
+    let spans = capture.spans.finished();
     let workspace = tracer.workspace_a.to_string();
     for (context, trace, tool, failure) in failures {
         assert_spans_in_trace(&spans, &context, &trace, tool, &workspace, failure);
@@ -144,13 +142,7 @@ fn assert_spans_in_trace(
     let tool_span = in_trace(&format!("tools/call {tool}"))
         .unwrap_or_else(|| panic!("{context}: a tool span shares the failure's trace"));
     assert_eq!(tool_span.span_kind, SpanKind::Server, "{context}");
-    let attribute = |name: &str| {
-        tool_span
-            .attributes
-            .iter()
-            .find(|attribute| attribute.key.as_str() == name)
-            .map(|attribute| attribute.value.to_string())
-    };
+    let attribute = |name: &str| attribute(tool_span, name);
     assert_eq!(
         attribute("coral.workspace.id").as_deref(),
         Some(workspace),
@@ -195,22 +187,12 @@ async fn protocol_errors_record_their_json_rpc_code() {
     assert_eq!(message["error"]["code"], -32602, "{message}");
     session.close().await;
 
-    capture
-        .provider
-        .force_flush()
-        .expect("flush test telemetry");
-    let spans = capture.spans.get_finished_spans().expect("captured spans");
+    let spans = capture.spans.finished();
     let tool_span = spans
         .iter()
         .find(|span| span.span_context.trace_id().to_string() == trace && span.name == "tools/call")
         .expect("an unknown tool's span is named by the method alone");
-    let attribute = |name: &str| {
-        tool_span
-            .attributes
-            .iter()
-            .find(|attribute| attribute.key.as_str() == name)
-            .map(|attribute| attribute.value.to_string())
-    };
+    let attribute = |name: &str| attribute(tool_span, name);
     assert_eq!(
         attribute("rpc.response.status_code").as_deref(),
         Some("-32602")
@@ -321,11 +303,7 @@ async fn records_carry_the_trace_of_their_request() {
         session.close().await;
     }
 
-    capture
-        .provider
-        .force_flush()
-        .expect("flush test telemetry");
-    let spans = capture.spans.get_finished_spans().expect("captured spans");
+    let spans = capture.spans.finished();
     let events = tracer
         .saved_functions
         .list_lifecycle_events(&owner, &tracer.workspace_a)

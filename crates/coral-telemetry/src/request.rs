@@ -1,0 +1,258 @@
+//! Server spans for inbound requests.
+//!
+//! A listener wraps its routes with [`trace_http_routes`] or
+//! [`trace_grpc_routes`]. Each request to them then opens one server span
+//! under [`REQUEST_TARGET`], which continues a valid inbound W3C trace and
+//! carries only safe fields: never headers, bodies, queries, cookies, the full
+//! URL, gRPC metadata or messages.
+
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use axum::Router;
+use axum::body::Body;
+use axum::extract::{MatchedPath, Request};
+use axum::middleware::Next;
+use axum::response::Response;
+use http_body::{Frame, SizeHint};
+use opentelemetry::trace::TraceContextExt as _;
+use tracing::Instrument as _;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+use crate::{record_failure, set_parent_from_http_headers};
+
+/// The target of every request span, for `trace_filter`.
+pub const REQUEST_TARGET: &str = "coral.request";
+
+/// Stable message recorded for HTTP requests that end in a server error.
+const HTTP_REQUEST_ERROR_MESSAGE: &str = "HTTP request failed";
+
+/// Stable message recorded for gRPC calls that end in a server error.
+const GRPC_REQUEST_ERROR_MESSAGE: &str = "gRPC request failed";
+
+const GRPC_STATUS: &str = "grpc-status";
+
+/// gRPC status names, indexed by code.
+const GRPC_STATUS_NAMES: [&str; 17] = [
+    "OK",
+    "CANCELLED",
+    "UNKNOWN",
+    "INVALID_ARGUMENT",
+    "DEADLINE_EXCEEDED",
+    "NOT_FOUND",
+    "ALREADY_EXISTS",
+    "PERMISSION_DENIED",
+    "RESOURCE_EXHAUSTED",
+    "FAILED_PRECONDITION",
+    "ABORTED",
+    "OUT_OF_RANGE",
+    "UNIMPLEMENTED",
+    "INTERNAL",
+    "UNAVAILABLE",
+    "DATA_LOSS",
+    "UNAUTHENTICATED",
+];
+
+/// Codes that mark a server span failed: the server's faults, not the caller's.
+const GRPC_SERVER_ERRORS: [i32; 6] = [2, 4, 12, 13, 14, 15];
+
+const GRPC_UNIMPLEMENTED: i32 = 12;
+
+/// Opens an HTTP server span for each request to the routes `router` has so
+/// far. Routes added after, such as health probes, open none.
+///
+/// The span is named `{method} {route}` after the matched route template,
+/// never the request path, and records the response status. A server error
+/// fails it; a client error is the caller's.
+pub fn trace_http_routes<S>(router: Router<S>) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    router.layer(axum::middleware::from_fn(trace_http_request))
+}
+
+/// Opens a gRPC server span for each call to the routes `router` has so far.
+///
+/// A served method names the span, which stays open until the call's status
+/// arrives, in the response headers or in the trailers after the body. Only
+/// the server-fault statuses fail it.
+pub fn trace_grpc_routes<S>(router: Router<S>) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    router.layer(axum::middleware::from_fn(trace_grpc_request))
+}
+
+/// The span of the traced request whose extensions are `extensions`.
+///
+/// Work that runs outside the request's task, such as an MCP session's tool
+/// handlers, takes it as its parent explicitly.
+#[must_use]
+pub fn request_span(extensions: &http::Extensions) -> Option<&tracing::Span> {
+    extensions.get::<RequestSpan>().map(|span| &span.0)
+}
+
+#[derive(Clone)]
+struct RequestSpan(tracing::Span);
+
+async fn trace_http_request(mut request: Request, next: Next) -> Response {
+    let method = http_method(request.method());
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str);
+    let span = tracing::info_span!(
+        target: REQUEST_TARGET,
+        parent: None,
+        "coral.http.request",
+        otel.name = http_span_name(method, route),
+        otel.kind = "server",
+        http.request.method = method,
+        http.route = route,
+        http.response.status_code = tracing::field::Empty,
+        error.type = tracing::field::Empty,
+        exception.message = tracing::field::Empty,
+        status = tracing::field::Empty,
+    );
+    set_parent_from_http_headers(&span, request.headers());
+    request.extensions_mut().insert(RequestSpan(span.clone()));
+    let response = next.run(request).instrument(span.clone()).await;
+    let status = response.status();
+    span.record("http.response.status_code", i64::from(status.as_u16()));
+    if status.is_server_error() {
+        record_failure(&span, status.as_str(), HTTP_REQUEST_ERROR_MESSAGE);
+    } else {
+        span.record("status", "ok");
+    }
+    response
+}
+
+/// The exported name of an HTTP server span: `{method} {route}`, the method
+/// alone without a route, and `HTTP` for a method outside the standard set.
+fn http_span_name(method: &'static str, route: Option<&str>) -> String {
+    let method = if method == "_OTHER" { "HTTP" } else { method };
+    route.map_or_else(|| method.to_owned(), |route| format!("{method} {route}"))
+}
+
+/// The request method as a span field: a standard method's name, else
+/// `_OTHER`, so a caller cannot choose the text.
+fn http_method(method: &http::Method) -> &'static str {
+    match method.as_str() {
+        "GET" => "GET",
+        "HEAD" => "HEAD",
+        "POST" => "POST",
+        "PUT" => "PUT",
+        "DELETE" => "DELETE",
+        "CONNECT" => "CONNECT",
+        "OPTIONS" => "OPTIONS",
+        "TRACE" => "TRACE",
+        "PATCH" => "PATCH",
+        _ => "_OTHER",
+    }
+}
+
+async fn trace_grpc_request(mut request: Request, next: Next) -> Response {
+    let span = tracing::info_span!(
+        target: REQUEST_TARGET,
+        parent: None,
+        "coral.grpc.request",
+        otel.name = "grpc",
+        otel.kind = "server",
+        rpc.system.name = "grpc",
+        rpc.method = tracing::field::Empty,
+        rpc.response.status_code = tracing::field::Empty,
+        error.type = tracing::field::Empty,
+        exception.message = tracing::field::Empty,
+        status = tracing::field::Empty,
+    );
+    // The parent must be set before the handler enters the span and so starts it.
+    set_parent_from_http_headers(&span, request.headers());
+    request.extensions_mut().insert(RequestSpan(span.clone()));
+    let path = request.uri().path().to_owned();
+    let response = next.run(request).instrument(span.clone()).await;
+    if let Some(code) = grpc_status(response.headers()) {
+        record_grpc_status(&span, &path, code);
+        return response;
+    }
+    response.map(|body| {
+        Body::new(StatusBody {
+            body,
+            span,
+            path,
+            recorded: false,
+        })
+    })
+}
+
+fn grpc_status(headers: &http::HeaderMap) -> Option<i32> {
+    headers.get(GRPC_STATUS)?.to_str().ok()?.parse().ok()
+}
+
+/// Records how a gRPC call ended. `path` is the request path,
+/// `/package.Service/Method`. A call that ended UNIMPLEMENTED records the
+/// method as `_OTHER`, since its caller chose it.
+fn record_grpc_status(span: &tracing::Span, path: &str, code: i32) {
+    let method = path.strip_prefix('/').filter(|method| !method.is_empty());
+    match method {
+        Some(method) if code != GRPC_UNIMPLEMENTED => {
+            // The span has started by now, and a started span takes its new
+            // name only through OpenTelemetry, not `otel.name`.
+            span.context().span().update_name(method.to_owned());
+            span.record("rpc.method", method);
+        }
+        _ => {
+            span.record("rpc.method", "_OTHER");
+        }
+    }
+    let status = usize::try_from(code)
+        .ok()
+        .and_then(|code| GRPC_STATUS_NAMES.get(code))
+        .copied()
+        .unwrap_or("UNKNOWN");
+    span.record("rpc.response.status_code", status);
+    if GRPC_SERVER_ERRORS.contains(&code) {
+        record_failure(span, status, GRPC_REQUEST_ERROR_MESSAGE);
+    } else {
+        span.record("status", "ok");
+    }
+}
+
+/// A response body that records the call's status from its trailers.
+struct StatusBody {
+    body: Body,
+    span: tracing::Span,
+    path: String,
+    recorded: bool,
+}
+
+impl http_body::Body for StatusBody {
+    type Data = axum::body::Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        let frame = Pin::new(&mut this.body).poll_frame(context);
+        if let Poll::Ready(Some(Ok(frame))) = &frame
+            && let Some(code) = frame.trailers_ref().and_then(grpc_status)
+            && !this.recorded
+        {
+            this.recorded = true;
+            record_grpc_status(&this.span, &this.path, code);
+        }
+        frame
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.body.size_hint()
+    }
+}
+
+#[cfg(test)]
+mod tests;

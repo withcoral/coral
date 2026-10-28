@@ -7,7 +7,6 @@ mod organization_memberships;
 mod organization_workspaces;
 mod policies;
 mod providers;
-mod request_trace;
 mod saved_functions;
 mod workspaces;
 use std::sync::Arc;
@@ -16,7 +15,6 @@ use crate::coral::{internal::v1 as internal, management::v1 as management};
 use coral_auth::{PrincipalAuthentication, PrivateAudience};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId, WorkspaceModule};
 use tonic::{Request, Response, Status};
-use tracing::Instrument as _;
 
 /// Application-constructed domain modules, sharing the application's state and identities.
 /// The adapter never opens storage or constructs a replacement domain graph.
@@ -145,23 +143,8 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         ))
         .add_service(internal::task_service_server::TaskServiceServer::new(services));
     let dispatch = routes.axum_router_mut();
-    *dispatch = dispatch
-        .clone()
-        .layer(axum::middleware::from_fn(trace_request));
+    *dispatch = coral_telemetry::trace_grpc_routes(dispatch.clone());
     routes
-}
-
-// Assign the remote parent before entering a span. Entering starts the OpenTelemetry
-// span, after which a handler cannot replace its parent. Handler spans inherit this
-// request context without knowing how HTTP/2 carries W3C metadata.
-async fn trace_request(
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    let span = coral_telemetry::grpc_request_span!("coral.private.request", &request);
-    let path = request.uri().path().to_owned();
-    let response = next.run(request).instrument(span.clone()).await;
-    request_trace::until_status(response, span, path)
 }
 
 #[derive(Clone)]
