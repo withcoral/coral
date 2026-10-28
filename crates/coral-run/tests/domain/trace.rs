@@ -14,11 +14,31 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 fn capture() -> &'static SpanCapture {
     static CAPTURE: std::sync::OnceLock<SpanCapture> = std::sync::OnceLock::new();
     CAPTURE.get_or_init(|| {
-        let capture = SpanCapture::default();
+        let capture = SpanCapture::beside(FailingExporter);
         tracing::subscriber::set_global_default(capture.subscriber())
             .expect("install the span capture");
         capture
     })
+}
+
+/// Every span export attempt [`FailingExporter`] refused.
+static FAILED_EXPORTS: AtomicUsize = AtomicUsize::new(0);
+
+/// An exporter whose collector is down: it refuses every span. Every Run
+/// the capture sees has its spans refused here.
+#[derive(Debug)]
+struct FailingExporter;
+
+impl opentelemetry_sdk::trace::SpanExporter for FailingExporter {
+    fn export(
+        &self,
+        _batch: Vec<SpanData>,
+    ) -> impl Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send {
+        FAILED_EXPORTS.fetch_add(1, Ordering::SeqCst);
+        std::future::ready(Err(
+            opentelemetry_sdk::error::OTelSdkError::InternalFailure("the collector is down".into()),
+        ))
+    }
 }
 
 /// Every finished span of the traces that hold a span of the Run `run_id`.
@@ -501,6 +521,18 @@ async fn requests_about_a_run_link_to_its_trace_only_when_authorized() {
         .await
         .expect("cancel");
 
+    // A request's span ends when the last task that carries it does, which
+    // can be a moment after the request returns.
+    let requests = [probe_trace, wait_trace, decide_trace, cancel_trace];
+    wait_until(|| {
+        let spans = capture.finished();
+        requests.iter().all(|trace| {
+            spans
+                .iter()
+                .any(|span| span.span_context.trace_id() == *trace)
+        })
+    })
+    .await;
     let spans = capture.finished();
     let links = |trace| {
         let span = spans
@@ -519,88 +551,66 @@ async fn requests_about_a_run_link_to_its_trace_only_when_authorized() {
 }
 
 /// Telemetry is best effort: a Run whose every span fails to export ends
-/// exactly as one whose spans export, with the same outcome and Events.
+/// as it would without telemetry, and its Events are all recorded.
 #[tokio::test]
-async fn a_run_ends_the_same_whether_its_spans_export_or_fail() {
-    #[derive(Debug, Default)]
-    struct FailingExporter(Arc<AtomicUsize>);
-    impl opentelemetry_sdk::trace::SpanExporter for FailingExporter {
-        fn export(
-            &self,
-            _batch: Vec<SpanData>,
-        ) -> impl Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            std::future::ready(Err(
-                opentelemetry_sdk::error::OTelSdkError::InternalFailure(
-                    "the collector is down".into(),
-                ),
-            ))
-        }
-    }
+async fn a_run_ends_the_same_when_its_spans_fail_to_export() {
     capture();
-    let attempts = Arc::new(AtomicUsize::new(0));
-    let failing = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-        .with_simple_exporter(FailingExporter(attempts.clone()))
-        .build();
-    let failing = {
-        use opentelemetry::trace::TracerProvider as _;
-        use tracing_subscriber::layer::SubscriberExt as _;
-        tracing::Dispatch::new(
-            tracing_subscriber::Registry::default()
-                .with(tracing_opentelemetry::layer().with_tracer(failing.tracer("failing"))),
-        )
-    };
-
-    let mut ended = Vec::new();
-    for export_fails in [false, true] {
-        let _failing = export_fails.then(|| tracing::dispatcher::set_default(&failing));
-        let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({"t": 21})));
-        let fixture = TestModules::with_upstream(
-            Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-            upstream,
-        )
-        .await;
-        let tool = fixture.user_tool("user:export-fails", "Call weather").await;
-        let accepted = fixture
-            .runs
-            .start(
-                &tool.principal,
-                &tool.workspace_id,
-                submission("invoke-tool"),
-            )
-            .await
-            .expect("accept the Run");
-        let update = wait_for_terminal(
-            &fixture.runs,
+    let refused_before = FAILED_EXPORTS.load(Ordering::SeqCst);
+    let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({"t": 21})));
+    let fixture = TestModules::with_upstream(
+        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
+        upstream,
+    )
+    .await;
+    let tool = fixture.user_tool("user:export-fails", "Call weather").await;
+    let accepted = fixture
+        .runs
+        .start(
             &tool.principal,
             &tool.workspace_id,
-            accepted.run_id(),
-        )
-        .await;
-        let events = retained_events(
-            &fixture.runs,
-            &tool.principal,
-            &tool.workspace_id,
-            accepted.run_id(),
+            submission("invoke-tool"),
         )
         .await
-        .into_iter()
-        .map(|event| std::mem::discriminant(event.kind()))
-        .collect::<Vec<_>>();
-        ended.push((update.terminal_outcome().cloned(), events));
-    }
+        .expect("accept the Run");
+    let ended = wait_for_terminal(
+        &fixture.runs,
+        &tool.principal,
+        &tool.workspace_id,
+        accepted.run_id(),
+    )
+    .await;
+
     assert!(
-        attempts.load(Ordering::SeqCst) > 0,
-        "every span export failed"
+        FAILED_EXPORTS.load(Ordering::SeqCst) > refused_before,
+        "the Run's spans were refused"
     );
-    let [exported, failed] = ended.as_slice() else {
-        unreachable!("two Runs")
-    };
     assert!(matches!(
-        exported.0,
-        Some(RunTerminalOutcome::Succeeded { .. })
+        ended.terminal_outcome(),
+        Some(RunTerminalOutcome::Succeeded {
+            final_value: FinalValue::Present(value)
+        }) if value.as_json() == &scripted_http_result(&serde_json::json!({"t": 21}))
     ));
-    assert_eq!(exported, failed);
+    assert!(matches!(
+        retained_events(
+            &fixture.runs,
+            &tool.principal,
+            &tool.workspace_id,
+            accepted.run_id()
+        )
+        .await
+        .iter()
+        .map(RunEvent::kind)
+        .collect::<Vec<_>>()
+        .as_slice(),
+        [
+            RunEventKind::Started,
+            RunEventKind::InvocationStarted { .. },
+            RunEventKind::InvocationEnded { .. },
+            RunEventKind::Ended {
+                state: RunState::Succeeded
+            },
+        ]
+    ));
 }
 
 /// A cancellation that the Run's owner has not recorded yet still links to
