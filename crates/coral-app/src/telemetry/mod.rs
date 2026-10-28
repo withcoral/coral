@@ -15,7 +15,7 @@ use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLoggerProvider};
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{
-    BatchSpanProcessor, SdkTracer, SdkTracerProvider, TracerProviderBuilder,
+    BatchSpanProcessor, Sampler, SdkTracer, SdkTracerProvider, TracerProviderBuilder,
 };
 use tracing_opentelemetry::{OpenTelemetryLayer, OpenTelemetrySpanExt as _};
 use tracing_subscriber::Layer as _;
@@ -118,28 +118,21 @@ fn telemetry_resource(service_name: &str, instance_id: &str) -> Resource {
         .build()
 }
 
-fn build_otlp_trace_exporter(
-    endpoint: &str,
-    headers: HashMap<String, String>,
-    targets: Targets,
-) -> Result<OtlpSpanFilter<OtlpSpanExporter>, AppError> {
-    let exporter = OtlpSpanExporter::builder()
-        .with_http()
-        .with_endpoint(normalize_otlp_endpoint(endpoint, "traces"))
-        .with_headers(headers)
-        .build()
-        .map_err(|e| AppError::InvalidInput(e.to_string()))?;
-    Ok(OtlpSpanFilter::new(exporter, targets))
-}
-
 fn add_otlp_trace_exporter(
     builder: TracerProviderBuilder,
     endpoint: &str,
     headers: HashMap<String, String>,
     targets: Targets,
 ) -> Result<TracerProviderBuilder, AppError> {
-    let trace_exporter = build_otlp_trace_exporter(endpoint, headers, targets)?;
-    Ok(builder.with_span_processor(BatchSpanProcessor::builder(trace_exporter).build()))
+    let exporter = OtlpSpanExporter::builder()
+        .with_http()
+        .with_endpoint(normalize_otlp_endpoint(endpoint, "traces"))
+        .with_headers(headers)
+        .build()
+        .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+    // Filter ahead of the batch queue, so spans that may not leave never fill it.
+    let batch = BatchSpanProcessor::builder(exporter).build();
+    Ok(builder.with_span_processor(OtlpSpanFilter::new(batch, targets)))
 }
 
 fn build_otlp_logger_provider(
@@ -303,7 +296,11 @@ fn trace_pipeline(
     config: &TelemetryConfig,
     resource: &Resource,
 ) -> Result<(SdkTracerProvider, TraceLayer, Option<String>), AppError> {
-    let mut builder = SdkTracerProvider::builder().with_resource(resource.clone());
+    // Record every span whatever an inbound `traceparent` sampled: a tool
+    // failure returns its trace ID, and `trace_filter` decides what leaves.
+    let mut builder = SdkTracerProvider::builder()
+        .with_resource(resource.clone())
+        .with_sampler(Sampler::AlwaysOn);
     let (trace_targets, filter_error) = trace_layer_filter(&config.otel.trace_filter);
     if let Some(endpoint) = configured_otlp_endpoint(config) {
         let headers = parse_headers(config.otel.headers.as_deref().unwrap_or_default());
@@ -413,7 +410,9 @@ pub fn shutdown_tracing() {
 
 #[cfg(test)]
 mod tests {
+    use opentelemetry::trace::TraceContextExt as _;
     use opentelemetry::{Key, Value};
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{TelemetryConfig, telemetry_resource, trace_pipeline};
@@ -459,6 +458,36 @@ mod tests {
             });
             provider.shutdown().expect("provider shutdown");
         }
+    }
+
+    /// A caller's sampling decision does not stop Coral recording its request,
+    /// so the trace ID a tool failure returns always finds the call.
+    #[test]
+    fn requests_are_recorded_whatever_the_caller_sampled() {
+        let config = TelemetryConfig::from_toml("").expect("telemetry config");
+        let resource = telemetry_resource("coral-test", "instance");
+        let (provider, layer, _filter_error) =
+            trace_pipeline(&config, &resource).expect("trace pipeline");
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            let request = tracing::info_span!(target: coral_telemetry::REQUEST_TARGET, "request");
+            coral_telemetry::set_parent_from_trace_headers(
+                &request,
+                Some("00-00000000000000000000000000000077-0000000000000088-00"),
+                None,
+            );
+            let context = request.context();
+            let span = context.span();
+            assert_eq!(
+                span.span_context().trace_id().to_string(),
+                "00000000000000000000000000000077"
+            );
+            assert!(
+                span.is_recording(),
+                "an unsampled caller's request is recorded"
+            );
+        });
+        provider.shutdown().expect("provider shutdown");
     }
 
     /// Operators filter exported telemetry by `service.instance.id` to find

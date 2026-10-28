@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -104,6 +104,49 @@ async fn http_request_spans_carry_only_safe_fields() {
     assert!(spans.is_empty(), "a probe opens no span: {spans:?}");
 }
 
+/// An HTTP request span stays open while its response body streams, as an
+/// MCP event stream does, and a body that breaks off fails it.
+#[tokio::test]
+async fn http_request_spans_last_until_their_body_ends() {
+    for (case, breaks_off) in [
+        ("a body that ends", false),
+        ("a body that breaks off", true),
+    ] {
+        let capture = SpanCapture::default();
+        let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+        let router = trace_http_routes(Router::new().route(
+            "/",
+            any(move || async move {
+                let event = Ok(Frame::data(Bytes::from_static(b"event")));
+                let failure = breaks_off.then(|| Err(std::io::Error::other("canary")));
+                Frames::body([event].into_iter().chain(failure))
+            }),
+        ));
+        let request = Request::get("/").body(Body::empty()).expect("request");
+        let response = router.oneshot(request).await.expect("response");
+        assert!(
+            capture.finished().is_empty(),
+            "{case}: the span is open while the body streams"
+        );
+        let _body = axum::body::to_bytes(response.into_body(), usize::MAX).await;
+        let spans = capture.finished();
+        let [span] = spans.as_slice() else {
+            panic!("{case}: one request span: {spans:?}");
+        };
+        assert_eq!(
+            span.status == Status::error("HTTP response body failed"),
+            breaks_off,
+            "{case}"
+        );
+        assert_eq!(
+            attribute(span, "error.type").as_deref(),
+            breaks_off.then_some("response_body"),
+            "{case}"
+        );
+        assert!(!format!("{span:?}").contains("canary"), "{case}: {span:?}");
+    }
+}
+
 /// A listener continues only one well-formed inbound trace, keeps every
 /// `tracestate` line, and never takes `baggage`.
 #[tokio::test]
@@ -198,23 +241,24 @@ enum Delivery {
     Trailers,
 }
 
-/// A response body that is only trailers.
-struct Trailers(Option<HeaderMap>);
+/// A response body that yields the given frames, then ends.
+struct Frames(VecDeque<Result<Frame<Bytes>, std::io::Error>>);
 
-impl http_body::Body for Trailers {
+impl Frames {
+    fn body(frames: impl IntoIterator<Item = Result<Frame<Bytes>, std::io::Error>>) -> Body {
+        Body::new(Self(frames.into_iter().collect()))
+    }
+}
+
+impl http_body::Body for Frames {
     type Data = Bytes;
-    type Error = Infallible;
+    type Error = std::io::Error;
 
     fn poll_frame(
         self: Pin<&mut Self>,
         _context: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
-        Poll::Ready(
-            self.get_mut()
-                .0
-                .take()
-                .map(|trailers| Ok(Frame::trailers(trailers))),
-        )
+    ) -> Poll<Option<Result<Frame<Bytes>, std::io::Error>>> {
+        Poll::Ready(self.get_mut().0.pop_front())
     }
 }
 
@@ -262,7 +306,9 @@ async fn grpc_request_spans_name_only_served_methods() {
                 status.insert("grpc-status", HeaderValue::from(code));
                 match delivery {
                     Delivery::Headers => (status, Body::empty()).into_response(),
-                    Delivery::Trailers => Body::new(Trailers(Some(status))).into_response(),
+                    Delivery::Trailers => {
+                        Frames::body([Ok(Frame::trailers(status))]).into_response()
+                    }
                 }
             }),
         ));

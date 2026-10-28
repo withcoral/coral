@@ -78,7 +78,7 @@ All provider calls not covered by an explicit policy in this section are treated
 
 Controls telemetry export to an OpenTelemetry endpoint.
 
-Every request has a trace, even when you do not set `endpoint`. A failed MCP tool call returns its `trace_id`. `trace_filter` controls which spans Coral exports, not which requests are traced. Request spans use the target `coral.request`.
+Every request has a trace, even when you do not set `endpoint`. A failed MCP tool call returns its `trace_id`. `trace_filter` controls which spans Coral exports, not which requests are traced. Coral records a request even when its caller's `traceparent` marks it unsampled. Request spans use the target `coral.request`.
 
 | Key            | Description                                                                        | Required | Default                                                                                                                                 |
 | -------------- | ---------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |

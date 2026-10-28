@@ -2,9 +2,9 @@
 
 use std::time::Duration;
 
-use opentelemetry::{KeyValue, Value};
+use opentelemetry::{Context, KeyValue, Value};
 use opentelemetry_sdk::error::OTelSdkResult;
-use opentelemetry_sdk::trace::{SpanData, SpanExporter};
+use opentelemetry_sdk::trace::{Span, SpanData, SpanProcessor};
 use tracing_subscriber::filter::Targets;
 
 use crate::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX;
@@ -13,11 +13,13 @@ use crate::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX;
 /// host, whatever the operator's trace filter admits.
 const DENIED_TARGETS: &[&str] = &["coral.http.body", "coral.mcp.body"];
 
-/// Wraps an off-host span exporter so that it sends only what may leave the host.
+/// Wraps the span processor of an off-host exporter so that it receives only
+/// what may leave the host.
 ///
 /// A span leaves only when the operator's trace filter admits its target and
-/// level and its target is not a body target. Attributes named
-/// `coral.local.*` are removed from every exported span, event and link.
+/// level and its target is not a body target. The rest never reach `inner`,
+/// so they take no room in its export queue. Attributes named `coral.local.*`
+/// are removed from every exported span, event and link.
 #[derive(Debug)]
 pub struct OtlpSpanFilter<E> {
     inner: E,
@@ -25,33 +27,32 @@ pub struct OtlpSpanFilter<E> {
 }
 
 impl<E> OtlpSpanFilter<E> {
-    /// Filters spans for `inner` with the operator's trace filter `targets`.
+    /// Filters the spans `inner` receives with the operator's trace filter `targets`.
     pub const fn new(inner: E, targets: Targets) -> Self {
         Self { inner, targets }
     }
 }
 
-impl<E> SpanExporter for OtlpSpanFilter<E>
+impl<P> SpanProcessor for OtlpSpanFilter<P>
 where
-    E: SpanExporter,
+    P: SpanProcessor,
 {
-    async fn export(&self, mut batch: Vec<SpanData>) -> OTelSdkResult {
-        batch.retain(|span| {
-            span_matches_targets(span, &self.targets) && !span_has_denied_target(span)
-        });
-        for span in &mut batch {
-            strip_local_attributes(&mut span.attributes);
-            for event in &mut span.events.events {
-                strip_local_attributes(&mut event.attributes);
-            }
-            for link in &mut span.links.links {
-                strip_local_attributes(&mut link.attributes);
-            }
+    fn on_start(&self, span: &mut Span, cx: &Context) {
+        self.inner.on_start(span, cx);
+    }
+
+    fn on_end(&self, mut span: SpanData) {
+        if !span_matches_targets(&span, &self.targets) || span_has_denied_target(&span) {
+            return;
         }
-        if batch.is_empty() {
-            return Ok(());
+        strip_local_attributes(&mut span.attributes);
+        for event in &mut span.events.events {
+            strip_local_attributes(&mut event.attributes);
         }
-        self.inner.export(batch).await
+        for link in &mut span.links.links {
+            strip_local_attributes(&mut link.attributes);
+        }
+        self.inner.on_end(span);
     }
 
     fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
@@ -117,7 +118,9 @@ mod tests {
         SpanContext, SpanId, TraceFlags, TraceId, TraceState, TracerProvider as _,
     };
     use opentelemetry::{KeyValue, Value};
-    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
+    use opentelemetry_sdk::trace::{
+        InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor, SpanData,
+    };
     use tracing_opentelemetry::OpenTelemetrySpanExt as _;
     use tracing_subscriber::prelude::*;
 
@@ -127,8 +130,8 @@ mod tests {
     fn exported(targets: &str) -> Vec<SpanData> {
         let memory = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(OtlpSpanFilter::new(
-                memory.clone(),
+            .with_span_processor(OtlpSpanFilter::new(
+                SimpleSpanProcessor::new(memory.clone()),
                 targets.parse().expect("trace filter"),
             ))
             .build();

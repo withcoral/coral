@@ -30,6 +30,10 @@ const HTTP_REQUEST_ERROR_MESSAGE: &str = "HTTP request failed";
 /// Stable message recorded for gRPC calls that end in a server error.
 const GRPC_REQUEST_ERROR_MESSAGE: &str = "gRPC request failed";
 
+/// Stable messages recorded when a response body breaks off.
+const HTTP_BODY_ERROR_MESSAGE: &str = "HTTP response body failed";
+const GRPC_BODY_ERROR_MESSAGE: &str = "gRPC response body failed";
+
 const GRPC_STATUS: &str = "grpc-status";
 
 /// gRPC status names, indexed by code.
@@ -62,8 +66,10 @@ const GRPC_UNIMPLEMENTED: i32 = 12;
 /// far. Routes added after, such as health probes, open none.
 ///
 /// The span is named `{method} {route}` after the matched route template,
-/// never the request path, and records the response status. A server error
-/// fails it; a client error is the caller's.
+/// never the request path, and records the response status. It stays open
+/// until the response body ends, so a stream's span covers the stream. A
+/// server error or a body that breaks off fails it; a client error is the
+/// caller's.
 pub fn trace_http_routes<S>(router: Router<S>) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -124,7 +130,14 @@ async fn trace_http_request(mut request: Request, next: Next) -> Response {
     } else {
         span.record("status", "ok");
     }
-    response
+    response.map(|body| {
+        Body::new(TracedBody {
+            body,
+            span,
+            body_error: HTTP_BODY_ERROR_MESSAGE,
+            grpc_path: None,
+        })
+    })
 }
 
 /// The exported name of an HTTP server span: `{method} {route}`, the method
@@ -170,16 +183,20 @@ async fn trace_grpc_request(mut request: Request, next: Next) -> Response {
     request.extensions_mut().insert(RequestSpan(span.clone()));
     let path = request.uri().path().to_owned();
     let response = next.run(request).instrument(span.clone()).await;
-    if let Some(code) = grpc_status(response.headers()) {
-        record_grpc_status(&span, &path, code);
-        return response;
-    }
+    // Unless the headers carry the status, the trailers will.
+    let grpc_path = match grpc_status(response.headers()) {
+        Some(code) => {
+            record_grpc_status(&span, &path, code);
+            None
+        }
+        None => Some(path),
+    };
     response.map(|body| {
-        Body::new(StatusBody {
+        Body::new(TracedBody {
             body,
             span,
-            path,
-            recorded: false,
+            body_error: GRPC_BODY_ERROR_MESSAGE,
+            grpc_path,
         })
     })
 }
@@ -217,15 +234,18 @@ fn record_grpc_status(span: &tracing::Span, path: &str, code: i32) {
     }
 }
 
-/// A response body that records the call's status from its trailers.
-struct StatusBody {
+/// A response body that holds its request's span open until it is dropped,
+/// and fails the span if it breaks off.
+struct TracedBody {
     body: Body,
     span: tracing::Span,
-    path: String,
-    recorded: bool,
+    body_error: &'static str,
+    /// The request path of a gRPC call whose status is still to come in the
+    /// trailers.
+    grpc_path: Option<String>,
 }
 
-impl http_body::Body for StatusBody {
+impl http_body::Body for TracedBody {
     type Data = axum::body::Bytes;
     type Error = axum::Error;
 
@@ -234,13 +254,21 @@ impl http_body::Body for StatusBody {
         context: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let this = self.get_mut();
+        let _entered = this.span.enter();
         let frame = Pin::new(&mut this.body).poll_frame(context);
-        if let Poll::Ready(Some(Ok(frame))) = &frame
-            && let Some(code) = frame.trailers_ref().and_then(grpc_status)
-            && !this.recorded
-        {
-            this.recorded = true;
-            record_grpc_status(&this.span, &this.path, code);
+        match &frame {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Some(code) = frame.trailers_ref().and_then(grpc_status)
+                    && let Some(path) = this.grpc_path.take()
+                {
+                    record_grpc_status(&this.span, &path, code);
+                }
+            }
+            // The error's text may come from anywhere, so only its kind is kept.
+            Poll::Ready(Some(Err(_error))) => {
+                record_failure(&this.span, "response_body", this.body_error);
+            }
+            Poll::Ready(None) | Poll::Pending => {}
         }
         frame
     }
