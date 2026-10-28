@@ -1,21 +1,12 @@
-import { createVar, style, styleVariants } from '@/wax/css'
+import { style, styleVariants } from '@/wax/css'
 
-import { theme, zIndex } from '@/wax/theme/theme.css'
+import { theme } from '@/wax/theme/theme.css'
 
 const FADE_SIZE_PX = 40
-
-const fadeColorVar = createVar()
 
 export const root = style({
   overflow: 'hidden',
   position: 'relative',
-})
-
-/** The surface the fade blends into; a dialog floats above the main content. */
-export const surface = styleVariants({
-  content: { vars: { [fadeColorVar]: theme.surface.mainContent } },
-  main: { vars: { [fadeColorVar]: theme.surface.main } },
-  floating: { vars: { [fadeColorVar]: theme.surface.floating } },
 })
 
 export const viewport = style({
@@ -33,99 +24,8 @@ export const viewport = style({
 /** The reading controller, rather than browser heuristics, owns record anchoring. */
 export const anchoredViewport = style({ overflowAnchor: 'none' })
 
-const fadeBase = style({
-  selectors: {
-    '&::before, &::after': {
-      content: '""',
-      display: 'block',
-      left: 0,
-      pointerEvents: 'none',
-      position: 'absolute',
-      transition: 'height 0.1s ease-out',
-      width: '100%',
-      zIndex: zIndex.raised,
-    },
-  },
-})
-
-const fadeColor = fadeColorVar
-
+// A mask fades the viewport itself, so the fade matches any background behind it.
 const fadeTop = style({
-  selectors: {
-    '&::before': {
-      background: `linear-gradient(to bottom, ${fadeColor}, transparent)`,
-      height: `min(${FADE_SIZE_PX}px, var(--scroll-area-overflow-y-start))`,
-      top: 0,
-      vars: {
-        '--scroll-area-overflow-y-start': 'inherit',
-      },
-    },
-  },
-})
-
-const fadeBottom = style({
-  selectors: {
-    '&::after': {
-      background: `linear-gradient(to top, ${fadeColor}, transparent)`,
-      bottom: 0,
-      height: `min(${FADE_SIZE_PX}px, var(--scroll-area-overflow-y-end, ${FADE_SIZE_PX}px))`,
-      vars: {
-        '--scroll-area-overflow-y-end': 'inherit',
-      },
-    },
-  },
-})
-
-const horizontalFadeBase = style({
-  selectors: {
-    '&::before, &::after': {
-      content: '""',
-      display: 'block',
-      height: '100%',
-      pointerEvents: 'none',
-      position: 'absolute',
-      top: 0,
-      transition: 'width 0.1s ease-out',
-      zIndex: zIndex.raised,
-    },
-  },
-})
-
-const fadeLeft = style({
-  selectors: {
-    '&::before': {
-      background: `linear-gradient(to right, ${fadeColor}, transparent)`,
-      left: 0,
-      vars: {
-        '--scroll-area-overflow-x-start': 'inherit',
-      },
-      width: `min(${FADE_SIZE_PX}px, var(--scroll-area-overflow-x-start))`,
-    },
-  },
-})
-
-const fadeRight = style({
-  selectors: {
-    '&::after': {
-      background: `linear-gradient(to left, ${fadeColor}, transparent)`,
-      right: 0,
-      vars: {
-        '--scroll-area-overflow-x-end': 'inherit',
-      },
-      width: `min(${FADE_SIZE_PX}px, var(--scroll-area-overflow-x-end, ${FADE_SIZE_PX}px))`,
-    },
-  },
-})
-
-export const viewportFade = styleVariants({
-  both: [fadeBase, fadeTop, fadeBottom],
-  bottom: [fadeBase, fadeBottom],
-  horizontal: [horizontalFadeBase, fadeLeft, fadeRight],
-  none: [],
-  top: [fadeBase, fadeTop],
-})
-
-const nativeFadeTop = style({
   maskImage: `linear-gradient(
     to bottom,
     transparent 0,
@@ -133,10 +33,9 @@ const nativeFadeTop = style({
     black 100%
   )`,
   maskRepeat: 'no-repeat',
-  scrollPaddingBlockStart: FADE_SIZE_PX,
 })
 
-const nativeFadeBottom = style({
+const fadeBottom = style({
   maskImage: `linear-gradient(
     to bottom,
     black 0,
@@ -144,10 +43,9 @@ const nativeFadeBottom = style({
     transparent 100%
   )`,
   maskRepeat: 'no-repeat',
-  scrollPaddingBlockEnd: FADE_SIZE_PX,
 })
 
-const nativeFadeBoth = style({
+const fadeBoth = style({
   maskImage: `linear-gradient(
     to bottom,
     transparent 0,
@@ -156,10 +54,9 @@ const nativeFadeBoth = style({
     transparent 100%
   )`,
   maskRepeat: 'no-repeat',
-  scrollPaddingBlock: FADE_SIZE_PX,
 })
 
-const nativeFadeHorizontal = style({
+const fadeHorizontal = style({
   maskImage: `linear-gradient(
     to right,
     transparent 0,
@@ -168,15 +65,23 @@ const nativeFadeHorizontal = style({
     transparent 100%
   )`,
   maskRepeat: 'no-repeat',
-  scrollPaddingInline: FADE_SIZE_PX,
 })
 
-export const nativeViewportFade = styleVariants({
-  both: [nativeFadeBoth],
-  bottom: [nativeFadeBottom],
-  horizontal: [nativeFadeHorizontal],
+export const viewportFade = styleVariants({
+  both: [fadeBoth],
+  bottom: [fadeBottom],
+  horizontal: [fadeHorizontal],
   none: {},
-  top: [nativeFadeTop],
+  top: [fadeTop],
+})
+
+/** A native viewport, such as a textarea, keeps the caret clear of its fades. */
+export const nativeViewportFade = styleVariants({
+  both: { scrollPaddingBlock: FADE_SIZE_PX },
+  bottom: { scrollPaddingBlockEnd: FADE_SIZE_PX },
+  horizontal: { scrollPaddingInline: FADE_SIZE_PX },
+  none: {},
+  top: { scrollPaddingBlockStart: FADE_SIZE_PX },
 })
 
 export const content = style({

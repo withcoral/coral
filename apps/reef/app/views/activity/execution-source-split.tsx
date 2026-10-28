@@ -119,12 +119,13 @@ export function ExecutionSourceSplit({
             {/* A labelled Panel, such as a review, names this one region around both its
                 evidence and its decision; without a label it is no region of its own. */}
             <section aria-label={panelLabel} className={styles.detailRegion}>
-              {/* The record's header, with its close control, wraps to the pane's width. */}
+              {/* The record's header, with its close control, wraps to the pane's width. The
+                  sticky header marks the top edge; a top fade would mask the header itself. */}
               <ScrollArea
                 className={styles.detailScroll}
                 viewportRef={detailRef}
-                surface="floating"
                 constrainWidth
+                fade="bottom"
                 scrollDirection="vertical"
               >
                 <div key={record} className={styles.detailContent}>

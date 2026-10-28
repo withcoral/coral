@@ -345,7 +345,6 @@ function SidebarNavigation({
             constrainWidth
             height="auto"
             scrollDirection="vertical"
-            surface="main"
             width="calc(100% + 12px)"
           >
             <div className={styles.treeList}>
