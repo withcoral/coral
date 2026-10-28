@@ -305,6 +305,7 @@ export const OneOfEach: Story = {
         },
       ],
       tools: [tool('gmail.listMessages', [yourself, 38])],
+      callers: [{ ...yourself, calls: 40 }],
       approvals: { approved: 3, declined: 1, medianWaitSeconds: 38 },
     },
   },

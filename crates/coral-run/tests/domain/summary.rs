@@ -264,7 +264,7 @@ async fn summary_counts_only_the_callers_attribution() {
 
     let hidden = summary(&fixture, &member, workspace).await;
     assert_eq!(hidden.calls, CallOutcomes::default());
-    assert!(hidden.callers.is_empty());
+    assert!(hidden.callers.is_empty() && hidden.tools.is_empty());
     assert!(hidden.actors.is_empty());
     assert_eq!(hidden.context_impact_bytes, None);
 }

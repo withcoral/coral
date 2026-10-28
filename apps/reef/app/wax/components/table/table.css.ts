@@ -14,6 +14,7 @@ import {
   HEADING_HEIGHT_PX,
   justifyProperty,
   MAX_ALIGNED_COLUMNS,
+  ROW_CONTROLS,
   ROWS_MAX_HEIGHT_PROPERTY,
   SCROLL_END_ROOM_PROPERTY,
 } from './constants'
@@ -257,7 +258,6 @@ export const scrollArea = style({
 })
 // A row that opens its detail when clicked.
 export const interactiveRow = style({ cursor: 'pointer' })
-const ROW_CONTROLS = 'a, button, input, select, textarea, [role="button"]'
 // The block padding a scroll-layout row has, for a cell that reaches into it.
 const rowPaddingBlock = createVar()
 // A scroll-layout row's inline padding and column gap, which a selection cell reaches into.

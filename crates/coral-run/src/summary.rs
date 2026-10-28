@@ -80,7 +80,7 @@ pub struct ToolCalls {
 pub struct CallerCalls {
     /// Accountable invoking Principal.
     pub principal: Principal,
-    /// Safe retained Agent label, absent for User work or a removed Agent.
+    /// Safe retained Agent label for Agent work; absent for User work or when no label is retained.
     pub agent_label: Option<String>,
     /// Ended Invocations.
     pub calls: i64,
@@ -102,7 +102,7 @@ pub struct ApprovalDecisions {
 pub struct ActorContext {
     /// Accountable invoking Principal.
     pub principal: Principal,
-    /// Safe retained Agent label, absent for User work or a removed Agent.
+    /// Safe retained Agent label for Agent work; absent for User work or when no label is retained.
     pub agent_label: Option<String>,
     /// Net bytes; negative means saved.
     pub bytes: i64,
