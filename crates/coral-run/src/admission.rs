@@ -223,7 +223,7 @@ impl RunModule {
                 )));
             }
         };
-        accept.record("run.id", run.id.as_str());
+        accept.record("coral.run.id", run.id.as_str());
         Ok(StagedRun {
             run,
             actor: actor.clone(),

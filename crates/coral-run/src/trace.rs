@@ -27,7 +27,7 @@ pub(crate) enum Phase {
 /// The `coral.run.accept` span, not yet entered. Its context becomes the
 /// Run Trace (`RunTrace::begin`).
 pub(crate) fn accept_span() -> tracing::Span {
-    tracing::info_span!(parent: None, "coral.run.accept", run.id = Empty)
+    tracing::info_span!(parent: None, "coral.run.accept", coral.run.id = Empty)
 }
 
 /// A new span for `phase` of the Run `run_id`, a child of the stored accept
@@ -37,20 +37,20 @@ pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &RunId, phase: Phase)
         Phase::Start => tracing::info_span!(
             parent: None,
             "coral.run.start",
-            run.id = %run_id,
-            run.status = Empty,
+            coral.run.id = %run_id,
+            coral.run.status = Empty,
             status = Empty,
             error.type = Empty,
             exception.message = Empty,
         ),
         Phase::Execute => {
-            tracing::info_span!(parent: None, "coral.run.execute", run.id = %run_id)
+            tracing::info_span!(parent: None, "coral.run.execute", coral.run.id = %run_id)
         }
         Phase::Complete => tracing::info_span!(
             parent: None,
             "coral.run.complete",
-            run.id = %run_id,
-            run.status = Empty,
+            coral.run.id = %run_id,
+            coral.run.status = Empty,
             status = Empty,
             error.type = Empty,
             exception.message = Empty,
@@ -58,8 +58,8 @@ pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &RunId, phase: Phase)
         Phase::Terminate => tracing::info_span!(
             parent: None,
             "coral.run.terminate",
-            run.id = %run_id,
-            run.status = Empty,
+            coral.run.id = %run_id,
+            coral.run.status = Empty,
             status = Empty,
             error.type = Empty,
             exception.message = Empty,
@@ -67,8 +67,8 @@ pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &RunId, phase: Phase)
         Phase::Recover => tracing::info_span!(
             parent: None,
             "coral.run.recover",
-            run.id = %run_id,
-            run.status = Empty,
+            coral.run.id = %run_id,
+            coral.run.status = Empty,
             status = Empty,
             error.type = Empty,
             exception.message = Empty,
@@ -85,7 +85,7 @@ pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &RunId, phase: Phase)
 /// `canceled` do not.
 pub(crate) fn record_run_end(state: RunState) {
     let span = tracing::Span::current();
-    span.record("run.status", state.as_storage_str());
+    span.record("coral.run.status", state.as_storage_str());
     let message = match state {
         RunState::Failed => "Run failed",
         RunState::TimedOut => "Run timed out",
@@ -104,13 +104,13 @@ pub(crate) fn invocation_span(
 ) -> tracing::Span {
     tracing::info_span!(
         "coral.invocation",
-        invocation.id = %id,
-        tool.call_path = call_path,
-        provider.id = provider_id,
-        provider.protocol = Empty,
-        dispatch.started = Empty,
-        invocation.result_kind = Empty,
-        failure.code = Empty,
+        coral.invocation.id = %id,
+        coral.tool.call_path = call_path,
+        coral.provider.id = provider_id,
+        coral.provider.protocol = Empty,
+        coral.invocation.dispatch_started = Empty,
+        coral.invocation.result_kind = Empty,
+        coral.invocation.failure.code = Empty,
         status = Empty,
         error.type = Empty,
         exception.message = Empty,
@@ -162,7 +162,7 @@ pub(crate) fn gate_span(invocation: &tracing::Span, gate: Gate) -> tracing::Span
         Gate::Account => "account",
         Gate::Approval => "approval",
     };
-    tracing::info_span!(parent: invocation, "coral.invocation.gate", gate.kind = kind)
+    tracing::info_span!(parent: invocation, "coral.invocation.gate", coral.invocation.gate.kind = kind)
 }
 
 /// Records how a Tool Invocation ended: `kind`, or a host defect for
@@ -176,13 +176,13 @@ pub(crate) fn record_invocation_end(
 ) {
     use crate::InvocationResultKind;
     if let Some(kind) = kind {
-        span.record("invocation.result_kind", kind.as_storage_str());
+        span.record("coral.invocation.result_kind", kind.as_storage_str());
     }
     match kind {
         Some(InvocationResultKind::UpstreamOutcome | InvocationResultKind::RunTerminated) => {}
         Some(InvocationResultKind::CoralFailure) => {
             let code = failure_code.unwrap_or("coral_failure");
-            span.record("failure.code", code);
+            span.record("coral.invocation.failure.code", code);
             coral_telemetry::record_failure(span, code, "Tool Invocation ended in a Coral Failure");
         }
         Some(InvocationResultKind::Indeterminate) => coral_telemetry::record_failure(

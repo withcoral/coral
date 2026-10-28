@@ -46,7 +46,7 @@ fn of_run(run_id: &crate::RunId) -> Vec<SpanData> {
     let spans = capture().finished();
     let traces = spans
         .iter()
-        .filter(|span| attribute(span, "run.id").as_deref() == Some(run_id.as_str()))
+        .filter(|span| attribute(span, "coral.run.id").as_deref() == Some(run_id.as_str()))
         .map(|span| span.span_context.trace_id())
         .collect::<std::collections::HashSet<_>>();
     spans
@@ -143,7 +143,7 @@ async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
         [(run_trace, accept.span_context.span_id())]
     );
     assert_eq!(
-        attribute(accept, "run.id").as_deref(),
+        attribute(accept, "coral.run.id").as_deref(),
         Some(accepted.run_id().as_str())
     );
     for phase in ["coral.run.start", "coral.run.execute", "coral.run.complete"] {
@@ -202,7 +202,7 @@ async fn a_recovered_run_continues_its_trace_on_another_coral_instance() {
         let accept = only(&spans, "coral.run.accept");
         let recover = only(&spans, "coral.run.recover");
         assert_eq!(
-            attribute(recover, "run.status").as_deref(),
+            attribute(recover, "coral.run.status").as_deref(),
             Some("interrupted")
         );
         assert!(matches!(
@@ -305,25 +305,28 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
     let is_error =
         |span: &SpanData| matches!(span.status, opentelemetry::trace::Status::Error { .. });
     for ((state, error), run_id) in runs.into_iter().zip(&run_ids) {
-        let span = with("run.id", run_id.as_str());
+        let span = with("coral.run.id", run_id.as_str());
         assert_eq!(
-            attribute(span, "run.status").as_deref(),
+            attribute(span, "coral.run.status").as_deref(),
             Some(state.as_storage_str())
         );
         assert_eq!(is_error(span), error, "{state:?}");
     }
     for ((_, _, kind, error), id) in invocations().into_iter().zip(&invocation_ids) {
-        let span = with("invocation.id", id);
-        assert_eq!(attribute(span, "invocation.result_kind").as_deref(), kind);
+        let span = with("coral.invocation.id", id);
+        assert_eq!(
+            attribute(span, "coral.invocation.result_kind").as_deref(),
+            kind
+        );
         assert_eq!(is_error(span), error, "{kind:?}");
     }
     assert_eq!(
         attribute(
             with(
-                "invocation.id",
+                "coral.invocation.id",
                 invocation_ids.get(1).expect("the Coral Failure case")
             ),
-            "failure.code"
+            "coral.invocation.failure.code"
         )
         .as_deref(),
         Some(crate::CoralFailure::ToolDisabled.code())
@@ -368,20 +371,20 @@ async fn a_tool_invocation_traces_its_gates_fence_and_persistence_under_the_run(
     );
     assert_eq!(invocation.parent_span_id, execute.span_context.span_id());
     assert_eq!(
-        attribute(invocation, "tool.call_path").as_deref(),
+        attribute(invocation, "coral.tool.call_path").as_deref(),
         Some(tool.call_path.as_str())
     );
     assert_eq!(
-        attribute(invocation, "invocation.result_kind").as_deref(),
+        attribute(invocation, "coral.invocation.result_kind").as_deref(),
         Some("upstream_outcome"),
         "an HTTP 500 is a complete Upstream Outcome"
     );
     assert_eq!(
-        attribute(invocation, "provider.protocol").as_deref(),
+        attribute(invocation, "coral.provider.protocol").as_deref(),
         Some("http")
     );
     assert_eq!(
-        attribute(invocation, "dispatch.started").as_deref(),
+        attribute(invocation, "coral.invocation.dispatch_started").as_deref(),
         Some("true")
     );
     assert_eq!(invocation.status, opentelemetry::trace::Status::Unset);
@@ -402,7 +405,7 @@ async fn a_tool_invocation_traces_its_gates_fence_and_persistence_under_the_run(
     }
     let mut gates = children("coral.invocation.gate")
         .into_iter()
-        .filter_map(|span| attribute(span, "gate.kind"))
+        .filter_map(|span| attribute(span, "coral.invocation.gate.kind"))
         .collect::<Vec<_>>();
     gates.sort();
     gates.dedup();

@@ -434,7 +434,7 @@ impl ToolInvoker {
             Dispatch::Upstream(ReadyDispatch::Mcp(_)) => "mcp",
             Dispatch::Builtin(_) => "builtin",
         };
-        admitted.span.record("provider.protocol", protocol);
+        admitted.span.record("coral.provider.protocol", protocol);
         Ok(planned)
     }
 
@@ -1142,7 +1142,9 @@ impl ToolInvoker {
         let outcome = receiver.await.map_err(|_lost| Error::OwnerLost)??;
         if matches!(outcome, FenceOutcome::Permitted) {
             progress.dispatch_started = true;
-            admitted.span.record("dispatch.started", true);
+            admitted
+                .span
+                .record("coral.invocation.dispatch_started", true);
         }
         Ok((outcome, DispatchSlot::new(self.owner.clone())))
     }
