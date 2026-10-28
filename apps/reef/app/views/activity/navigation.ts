@@ -63,8 +63,8 @@ export const windowAt = (parent: string, offset: number) => ({
   [`cursor.${parent}`]: null,
 })
 
-/** Reveal the record's authorized history; leaving review clears only its selection. */
-export function revealHref(row: ActivityRow, options: { select?: boolean; request?: string } = {}) {
+/** Reveal the record's authorized history, selected, and the request it reviews, if any. */
+export function revealHref(row: ActivityRow, options: { request?: string } = {}) {
   const task = row.kind === 'task' ? row.name : 'task' in row ? (row.task ?? '') : ''
   const run = row.kind === 'run' ? row.name : 'run' in row ? row.run : ''
   const next = new URLSearchParams({
@@ -76,8 +76,7 @@ export function revealHref(row: ActivityRow, options: { select?: boolean; reques
   if (task && task !== row.name) next.set(`anchor.${task}`, run || row.name)
   if (run && run !== row.name) next.set(`anchor.${run}`, row.name)
   const path = row.agent ? `/${row.agent}` : `/${row.workspace}/activity`
-  if (options.select === false) next.delete('record')
-  else if (options.request) next.set('request', options.request)
+  if (options.request) next.set('request', options.request)
   return `${path}?${next}`
 }
 

@@ -401,6 +401,27 @@ it('names the day of a selected record that sits outside every day group', () =>
   expect(within(row).getByText('Fri 18 Sep 2026')).toBeInTheDocument()
 })
 
+// Catches: a "Reveal record" link below the detail of a record the list does not show. Its
+// row above the table already leads to it.
+it('ends the detail of a record outside the list without a link back to it', () => {
+  renderRoute(
+    <Activity
+      page={activityPage({
+        rows: [],
+        selected: goal.name,
+        selectedRow: goal,
+        detail: { kind: 'task', task: goal },
+      })}
+    />,
+    { entry: '/activity?record=x' },
+  )
+  const drawer = screen.getByRole('dialog', { name: 'Activity details' })
+  expect(within(drawer).getByRole('heading', { level: 2, name: goal.intent })).toBeInTheDocument()
+  expect(within(drawer).queryByRole('link', { name: 'Reveal record' })).toBeNull()
+  // The row outside every day group still opens the record.
+  expect(screen.getByRole('link', { name: goal.intent })).toBeInTheDocument()
+})
+
 const headingLevel = (name: string) =>
   screen
     .getAllByRole('row')

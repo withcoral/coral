@@ -1491,17 +1491,6 @@ export function Activity({
                     <ActivityDetail key={detail.record} page={detailPage} />
                   </PanelClose>
                 )}
-                {/* A record the list does not show, outside a Run's split, leads back to it. */}
-                {outside && page.detail?.kind !== 'run' && !runContext && (
-                  <Button.InternalLink
-                    size="small"
-                    variant="bare"
-                    to={nav.revealHref(outside)}
-                    preventScrollReset
-                  >
-                    Reveal record
-                  </Button.InternalLink>
-                )}
               </Dialog.Popup>
             </Dialog.Portal>
           </Dialog.Rail>
