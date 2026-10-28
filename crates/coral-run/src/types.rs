@@ -827,6 +827,8 @@ pub struct RunUpdate {
     has_more: bool,
     terminal_outcome: Option<RunTerminalOutcome>,
     pub(crate) trace_id: Option<coral_telemetry::TraceId>,
+    /// The Run's Run Trace, which a request about the Run links to.
+    pub(crate) run_trace: Option<coral_telemetry::RunTrace>,
 }
 
 impl RunUpdate {
@@ -858,6 +860,7 @@ impl RunUpdate {
             has_more,
             terminal_outcome,
             trace_id: None,
+            run_trace: None,
         })
     }
 

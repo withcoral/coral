@@ -424,3 +424,86 @@ async fn a_failed_run_and_its_coral_failure_name_the_run_trace() {
     assert_eq!(succeeded.trace_id(), None);
     assert_eq!(succeeded_detail.trace_id, None);
 }
+
+/// A later request about a Run keeps its own trace and links to the Run
+/// Trace once Coral has found the Run visible to its caller: a wait, an
+/// approval decision and a cancellation. A caller who may not see the Run
+/// gets no link.
+#[tokio::test]
+async fn requests_about_a_run_link_to_its_trace_only_when_authorized() {
+    use crate::approval::ApprovalDecision;
+    let capture = capture();
+    let held = HeldApproval::new("user:linked-requests").await;
+    let (fixture, workspace_id, run_id) = (&held.fixture, &held.tool.workspace_id, &held.run);
+    let run_trace = fixture
+        .run_record(workspace_id, run_id)
+        .await
+        .trace
+        .expect("a stored Run Trace")
+        .trace_id();
+    let (_, stranger) = fixture
+        .user_scope("user:linked-stranger", "Probe another Run")
+        .await;
+    let request = held
+        .approvals
+        .list_for_run(&held.actor, workspace_id, run_id)
+        .await
+        .expect("list Approval Requests")
+        .remove(0);
+
+    let traced = |name: &'static str| {
+        let span = tracing::info_span!("request", request.kind = name);
+        let trace = span.context().span().span_context().trace_id();
+        (span, trace)
+    };
+    let (probe, probe_trace) = traced("probe");
+    let concealed = fixture
+        .runs
+        .observe(&stranger, workspace_id, run_id, &immediate(None, 10))
+        .instrument(probe)
+        .await;
+    assert!(matches!(concealed, Err(Error::RunNotFound)));
+    let (wait, wait_trace) = traced("wait");
+    fixture
+        .runs
+        .observe(&held.actor, workspace_id, run_id, &immediate(None, 10))
+        .instrument(wait)
+        .await
+        .expect("wait");
+    let (decide, decide_trace) = traced("decide");
+    held.approvals
+        .decide(
+            &held.tool.principal,
+            workspace_id,
+            &request.id,
+            ApprovalDecision::Approve,
+            None,
+            &TraceId::parse(&"e".repeat(32)).unwrap(),
+        )
+        .instrument(decide)
+        .await
+        .expect("decide");
+    let (cancel, cancel_trace) = traced("cancel");
+    fixture
+        .runs
+        .cancel(&held.actor, workspace_id, run_id, &immediate(None, 10))
+        .instrument(cancel)
+        .await
+        .expect("cancel");
+
+    let spans = capture.finished();
+    let links = |trace| {
+        let span = spans
+            .iter()
+            .find(|span| span.span_context.trace_id() == trace)
+            .expect("request span");
+        span.links
+            .iter()
+            .map(|link| link.span_context.trace_id().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(links(probe_trace), Vec::<String>::new());
+    for trace in [wait_trace, decide_trace, cancel_trace] {
+        assert_eq!(links(trace), vec![run_trace.as_str().to_string()]);
+    }
+}

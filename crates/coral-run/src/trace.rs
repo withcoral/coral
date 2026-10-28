@@ -193,3 +193,11 @@ pub(crate) fn record_invocation_end(
         ),
     }
 }
+
+/// Links the current span, a request about a Run its caller may see, to the
+/// Run's Run Trace. Call it only once the Run is found visible.
+pub(crate) fn link_request(trace: Option<&RunTrace>) {
+    if let Some(trace) = trace {
+        trace.link(&tracing::Span::current());
+    }
+}

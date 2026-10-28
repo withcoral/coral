@@ -86,6 +86,10 @@ impl RunModule {
                 .observe_snapshot(actor, workspace_id, run_id, observation)
                 .await?;
             let read_at = tokio::time::Instant::now();
+            if seen_sequence.is_none() {
+                // The caller may see the Run: this request links to its trace once.
+                crate::trace::link_request(update.run_trace.as_ref());
+            }
             let seen_sequence =
                 *seen_sequence.get_or_insert_with(|| observation.seen_sequence(&update));
             if observation.is_ready(&update, seen_sequence) || read_at >= deadline {
@@ -164,6 +168,7 @@ async fn read_update(
         last_sequence
     };
     let trace_id = run.diagnostic_trace_id();
+    let run_trace = run.trace.clone();
     let mut update = RunUpdate::new(
         run.id.clone(),
         run.state,
@@ -175,6 +180,7 @@ async fn read_update(
     )?;
     update.required_actions = actions;
     update.trace_id = trace_id;
+    update.run_trace = run_trace;
     Ok(update)
 }
 
