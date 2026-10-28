@@ -481,10 +481,6 @@ fn start_program(
     let linked_snapshots = accepted.linked_snapshots.clone();
     let limits = accepted.value_limits;
     let stop = handle.stop();
-    let trace_id = accepted
-        .trace
-        .as_ref()
-        .map(|trace| trace.trace_id().as_str().to_string());
     let handle = handle.clone();
     let span = phase_span(accepted.trace.as_ref(), &accepted.id, Phase::Execute);
     tokio::spawn(
@@ -497,7 +493,6 @@ fn start_program(
                 output,
                 limits,
                 stop,
-                trace_id,
             )
             .await;
             handle.send(Message::ProgramEnded(completion));
@@ -571,7 +566,7 @@ fn spawn_interruption(module: &RunModule, accepted: &AcceptedRun, handle: &Owner
                 .map_err(CommitRejection::from);
             match &recorded {
                 Ok(()) => {
-                    tracing::warn!(run_id = %accepted.id, "Run Owner recorded its interruption")
+                    tracing::warn!(run_id = %accepted.id, "Run Owner recorded its interruption");
                 }
                 Err(rejection) => tracing::warn!(
                     run_id = %accepted.id,

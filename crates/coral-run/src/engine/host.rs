@@ -20,12 +20,11 @@ pub(crate) async fn execute(
     output: ProgramOutputWriter,
     value_limits: ValueLimits,
     stop: Arc<ExecutionStop>,
-    trace_id: Option<String>,
 ) -> ExecutionCompletion {
     let host = Arc::new(RunProgramHost {
         runtime: tokio::runtime::Handle::current(),
         span: tracing::Span::current(),
-        trace_id,
+        trace_id: invoker.trace_id(),
         value_limits,
         stop: stop.clone(),
         linked_snapshots,

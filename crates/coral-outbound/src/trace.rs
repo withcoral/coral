@@ -78,7 +78,9 @@ mod tests {
             assert!(headers.get("tracestate").is_none());
             assert!(headers.get("baggage").is_none());
             assert_eq!(
-                headers.get("x-kept").map(|value| value.as_bytes()),
+                headers
+                    .get("x-kept")
+                    .map(reqwest::header::HeaderValue::as_bytes),
                 Some(&b"kept"[..])
             );
         }

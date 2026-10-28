@@ -18,6 +18,12 @@ pub use mcp::{
 };
 
 #[cfg(test)]
+use opentelemetry as _;
+#[cfg(test)]
+use opentelemetry_sdk as _;
+#[cfg(test)]
+use tracing_opentelemetry as _;
+#[cfg(test)]
 use wiremock as _;
 
 fn media_type_essence(value: &str) -> String {

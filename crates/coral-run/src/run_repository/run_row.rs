@@ -96,6 +96,10 @@ impl RunTerminationKind {
 }
 
 impl RunRow {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one decode checks every lifecycle column of the Run row together"
+    )]
     pub(super) fn decode(self) -> Result<RunRecord, Error> {
         let id = RunId::parse(&self.id)
             .map_err(|_error| Error::CorruptData("Run has invalid identity".to_string()))?;

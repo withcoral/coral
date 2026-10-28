@@ -208,6 +208,8 @@ pub(crate) struct ToolInvoker {
     mcp_resources: Arc<McpResources>,
     upstream: Arc<dyn UpstreamSender>,
     clock: Arc<dyn Clock>,
+    /// The Run's Run Trace, which each Coral Failure names to the Program.
+    trace: Option<coral_telemetry::RunTrace>,
     #[cfg(test)]
     observer: Arc<dyn InvocationObserver>,
 }
@@ -254,9 +256,17 @@ impl ToolInvoker {
             mcp_resources: Arc::new(McpResources::default()),
             upstream,
             clock,
+            trace: accepted.trace.clone(),
             #[cfg(test)]
             observer,
         }
+    }
+
+    /// The Run Trace identifier each Coral Failure names to the Program.
+    pub(crate) fn trace_id(&self) -> Option<String> {
+        self.trace
+            .as_ref()
+            .map(|trace| trace.trace_id().as_str().to_string())
     }
 
     pub(crate) async fn invoke(

@@ -44,7 +44,10 @@ fn named<'a>(spans: &'a [SpanData], name: &str) -> Vec<&'a SpanData> {
 fn only<'a>(spans: &'a [SpanData], name: &str) -> &'a SpanData {
     let found = named(spans, name);
     assert_eq!(found.len(), 1, "one {name} span in {:?}", span_names(spans));
-    found[0]
+    let [span] = found.as_slice() else {
+        unreachable!("one span checked above")
+    };
+    span
 }
 
 fn span_names(spans: &[SpanData]) -> Vec<String> {
@@ -270,7 +273,14 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
         assert_eq!(is_error(span), error, "{kind:?}");
     }
     assert_eq!(
-        attribute(with("invocation.id", &invocation_ids[1]), "failure.code").as_deref(),
+        attribute(
+            with(
+                "invocation.id",
+                invocation_ids.get(1).expect("the Coral Failure case")
+            ),
+            "failure.code"
+        )
+        .as_deref(),
         Some(crate::CoralFailure::ToolDisabled.code())
     );
 }
@@ -515,10 +525,15 @@ async fn a_run_ends_the_same_whether_its_spans_export_or_fail() {
     #[derive(Debug, Default)]
     struct FailingExporter(Arc<AtomicUsize>);
     impl opentelemetry_sdk::trace::SpanExporter for FailingExporter {
-        async fn export(&self, _batch: Vec<SpanData>) -> opentelemetry_sdk::error::OTelSdkResult {
+        fn export(
+            &self,
+            _batch: Vec<SpanData>,
+        ) -> impl Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send {
             self.0.fetch_add(1, Ordering::SeqCst);
-            Err(opentelemetry_sdk::error::OTelSdkError::InternalFailure(
-                "the collector is down".into(),
+            std::future::ready(Err(
+                opentelemetry_sdk::error::OTelSdkError::InternalFailure(
+                    "the collector is down".into(),
+                ),
             ))
         }
     }
@@ -578,9 +593,12 @@ async fn a_run_ends_the_same_whether_its_spans_export_or_fail() {
         attempts.load(Ordering::SeqCst) > 0,
         "every span export failed"
     );
+    let [exported, failed] = ended.as_slice() else {
+        unreachable!("two Runs")
+    };
     assert!(matches!(
-        ended[0].0,
+        exported.0,
         Some(RunTerminalOutcome::Succeeded { .. })
     ));
-    assert_eq!(ended[0], ended[1]);
+    assert_eq!(exported, failed);
 }

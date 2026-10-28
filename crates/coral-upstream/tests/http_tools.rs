@@ -2283,7 +2283,10 @@ paths:
     assert!(matches!(client.status, Status::Error { .. }));
 
     let requests = server.received_requests().await.expect("requests");
-    let headers = &requests[0].headers;
+    let [request] = requests.as_slice() else {
+        panic!("one request: {requests:?}");
+    };
+    let headers = &request.headers;
     assert_eq!(
         headers
             .get_all("traceparent")
