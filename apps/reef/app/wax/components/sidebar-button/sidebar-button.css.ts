@@ -48,7 +48,8 @@ const defaultSurface = {
     [`&.${activeClass}`]: {
       background: theme.sidebar.button.selected,
     },
-    [`&:hover:not(.${disabledClass})`]: {
+    // A menu trigger stays highlighted while its menu is open.
+    [`&:hover:not(.${disabledClass}), &[data-popup-open]`]: {
       background: theme.sidebar.button.hover,
     },
   },
