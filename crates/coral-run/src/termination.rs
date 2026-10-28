@@ -63,6 +63,9 @@ impl RunModule {
             .visible_run_in_transaction(&mut snapshot, actor, workspace_id, run_id)
             .await?;
         snapshot.commit().await?;
+        // The caller may see the Run: this request links to its trace once,
+        // whether or not the owner records it within the wait.
+        crate::trace::link_request(run.trace.as_ref());
         if !run.state.is_terminal() {
             // The caller's access is read again in the transaction that
             // inserts the row, which holds no Run row.
@@ -88,7 +91,8 @@ impl RunModule {
             })
             .await?;
         }
-        self.observe(actor, workspace_id, run_id, observation).await
+        self.observe_linking(actor, workspace_id, run_id, observation, false)
+            .await
     }
 
     /// The Run as `actor` may see it, read in `transaction`.

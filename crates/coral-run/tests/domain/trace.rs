@@ -602,3 +602,53 @@ async fn a_run_ends_the_same_whether_its_spans_export_or_fail() {
     ));
     assert_eq!(exported, failed);
 }
+
+/// A cancellation that the Run's owner has not recorded yet still links to
+/// the Run Trace: its caller was authorized and its request was inserted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unrecorded_cancellation_still_links_to_the_run_trace() {
+    let capture = capture();
+    let held = HeldApproval::new("user:unrecorded-cancel").await;
+    let (fixture, workspace_id, run_id) = (&held.fixture, &held.tool.workspace_id, &held.run);
+    let run_trace = fixture
+        .run_record(workspace_id, run_id)
+        .await
+        .trace
+        .expect("a stored Run Trace")
+        .trace_id();
+    fixture
+        .hand_to(workspace_id, run_id, "dead-holder", None)
+        .await;
+    let (gate, release) = CommitGate::blocking();
+    let next = fixture.next_process_observed(gate.clone());
+    assert_eq!(next.sweep_expired_leases().await.unwrap(), 1);
+    wait_until(|| gate.entered()).await;
+
+    let cancel = tracing::info_span!("request", request.kind = "cancel");
+    let cancel_trace = cancel.context().span().span_context().trace_id();
+    let unrecorded = next
+        .cancel(&held.actor, workspace_id, run_id, &immediate(None, 10))
+        .instrument(cancel)
+        .await;
+    assert!(
+        matches!(unrecorded, Err(Error::RunRequestNotYetRecorded)),
+        "{unrecorded:?}"
+    );
+    release
+        .send(())
+        .expect("release the recovered owner's chunk");
+
+    let spans = capture.finished();
+    let cancel = spans
+        .iter()
+        .find(|span| span.span_context.trace_id() == cancel_trace)
+        .expect("cancel span");
+    assert_eq!(
+        cancel
+            .links
+            .iter()
+            .map(|link| link.span_context.trace_id().to_string())
+            .collect::<Vec<_>>(),
+        vec![run_trace.as_str().to_string()]
+    );
+}

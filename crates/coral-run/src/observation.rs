@@ -70,6 +70,20 @@ impl RunModule {
         run_id: &RunId,
         observation: &RunObservation,
     ) -> Result<RunUpdate, Error> {
+        self.observe_linking(actor, workspace_id, run_id, observation, true)
+            .await
+    }
+
+    /// [`Self::observe`]; `link` links the current request to the Run Trace
+    /// at the first snapshot, unless the caller already has.
+    pub(crate) async fn observe_linking(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        run_id: &RunId,
+        observation: &RunObservation,
+        link: bool,
+    ) -> Result<RunUpdate, Error> {
         validate_cursor(run_id, observation)?;
         let deadline = tokio::time::Instant::now() + observation.wait();
         // Subscribe before the first snapshot so a commit during it still wakes this wait.
@@ -86,7 +100,7 @@ impl RunModule {
                 .observe_snapshot(actor, workspace_id, run_id, observation)
                 .await?;
             let read_at = tokio::time::Instant::now();
-            if seen_sequence.is_none() {
+            if link && seen_sequence.is_none() {
                 // The caller may see the Run: this request links to its trace once.
                 crate::trace::link_request(update.run_trace.as_ref());
             }
