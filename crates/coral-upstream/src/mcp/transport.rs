@@ -86,8 +86,9 @@ pub(super) struct McpHttpClient {
     pub(super) client: coral_outbound::Client,
     pub(super) limit: usize,
     pub(super) result: Arc<Mutex<Option<Captured>>>,
-    /// The dispatch's client span context, on every request of its session.
-    pub(super) traceparent: Option<String>,
+    /// The dispatch's client span, whose trace context every request of its
+    /// session carries.
+    pub(super) span: tracing::Span,
 }
 
 impl StreamableHttpClient for McpHttpClient {
@@ -129,8 +130,7 @@ impl StreamableHttpClient for McpHttpClient {
             request = request.bearer_auth(token);
         }
         let request =
-            coral_outbound::with_trace_parent(request.json(&message), self.traceparent.as_deref())
-                .map_err(|error| TransportError::Client(Error::send(error)))?;
+            crate::traced(request.json(&message), &self.span).map_err(TransportError::Client)?;
         let mut response = request
             .send()
             .await
@@ -211,8 +211,8 @@ impl StreamableHttpClient for McpHttpClient {
         if let Some(token) = auth_header {
             request = request.bearer_auth(token);
         }
-        coral_outbound::with_trace_parent(request, self.traceparent.as_deref())
-            .map_err(|error| TransportError::Client(Error::send(error)))?
+        crate::traced(request, &self.span)
+            .map_err(TransportError::Client)?
             .send()
             .await
             .map_err(|error| self.capture_destination(Error::send(error)))?;

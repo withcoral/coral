@@ -43,6 +43,18 @@ fn http_client(policy: coral_outbound::DestinationPolicy) -> Result<coral_outbou
     coral_outbound::Client::new(policy, std::time::Duration::from_secs(30)).map_err(Error::Client)
 }
 
+/// `request` with only the trace context of `span`, the client span it is
+/// sent in (`coral_telemetry::set_outbound_trace_context`).
+fn traced(
+    request: reqwest::RequestBuilder,
+    span: &tracing::Span,
+) -> Result<reqwest::RequestBuilder, Error> {
+    let (client, request) = request.build_split();
+    let mut request = request.map_err(Error::send)?;
+    coral_telemetry::set_outbound_trace_context(span, request.headers_mut());
+    Ok(reqwest::RequestBuilder::from_parts(client, request))
+}
+
 async fn read_bounded_body(
     response: &mut reqwest::Response,
     result_max_bytes: usize,

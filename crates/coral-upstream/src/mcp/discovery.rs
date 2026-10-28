@@ -242,7 +242,7 @@ async fn discover(
             limit,
             result: captured.clone(),
             // Discovery is not a Provider Tool dispatch: it sends no trace context.
-            traceparent: None,
+            span: tracing::Span::none(),
         },
         config,
     );

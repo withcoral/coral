@@ -293,9 +293,8 @@ impl McpUpstream {
     /// Returns an error when no complete bounded MCP result is available.
     pub async fn send(&self, dispatch: ReadyMcpDispatch) -> Result<McpOutcome, Error> {
         let span = client_span(&dispatch);
-        let traceparent = coral_telemetry::traceparent(&span);
         let sent = self
-            .send_session(dispatch, traceparent)
+            .send_session(dispatch, span.clone())
             .instrument(span.clone())
             .await;
         match &sent {
@@ -322,12 +321,12 @@ impl McpUpstream {
         sent
     }
 
-    /// One session that sends `dispatch`, each of its requests carrying
-    /// `traceparent`.
+    /// One session that sends `dispatch`, each of its requests carrying the
+    /// trace context of `span`, its client span.
     async fn send_session(
         &self,
         dispatch: ReadyMcpDispatch,
-        traceparent: Option<String>,
+        span: tracing::Span,
     ) -> Result<McpOutcome, Error> {
         let mut config = StreamableHttpClientTransportConfig::with_uri(
             dispatch.binding.server_url().to_string(),
@@ -344,7 +343,7 @@ impl McpUpstream {
                 client: self.client.clone(),
                 limit: dispatch.limits.upstream_bytes(),
                 result: captured.clone(),
-                traceparent,
+                span,
             },
             config,
         );

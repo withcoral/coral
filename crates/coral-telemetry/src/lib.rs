@@ -177,14 +177,25 @@ pub fn inject_span_context(span: &tracing::Span, injector: &mut dyn Injector) {
     inject_context(&span.context(), injector);
 }
 
-/// `span`'s W3C `traceparent`, for a request Coral sends on its behalf;
-/// `None` when it has no valid trace context. Nothing else of the trace
-/// context, such as `tracestate`, is returned.
-#[must_use]
-pub fn traceparent(span: &tracing::Span) -> Option<String> {
+const BAGGAGE_HEADER: &str = "baggage";
+
+/// Gives the headers of a request Coral sends in `span`, such as a Provider
+/// Tool dispatch, `span`'s W3C `traceparent` and no other trace context. A
+/// `traceparent`, `tracestate` or `baggage` header already there, such as one
+/// from Program arguments, never leaves, and outside a valid trace none is
+/// sent.
+pub fn set_outbound_trace_context(span: &tracing::Span, headers: &mut http::HeaderMap) {
+    for name in [TRACEPARENT_HEADER, TRACESTATE_HEADER, BAGGAGE_HEADER] {
+        headers.remove(name);
+    }
     let mut carrier = std::collections::HashMap::new();
     inject_span_context(span, &mut carrier);
-    carrier.remove(TRACEPARENT_HEADER)
+    if let Some(value) = carrier
+        .remove(TRACEPARENT_HEADER)
+        .and_then(|value| http::HeaderValue::from_str(&value).ok())
+    {
+        headers.insert(TRACEPARENT_HEADER, value);
+    }
 }
 
 /// Injects the current tracing span's OpenTelemetry context into a carrier.
@@ -302,5 +313,70 @@ mod tests {
         );
         assert!(child.parent_span_is_remote);
         assert_eq!(child.span_context.trace_state().header(), "vendor=value");
+    }
+}
+
+#[cfg(test)]
+mod outbound_tests {
+    use super::set_outbound_trace_context;
+    use crate::testing::SpanCapture;
+
+    fn headers() -> http::HeaderMap {
+        let mut headers = http::HeaderMap::new();
+        for (name, value) in [
+            (
+                "traceparent",
+                "00-ffffffffffffffffffffffffffffffff-ffffffffffffffff-01",
+            ),
+            ("tracestate", "caller=value"),
+            ("baggage", "user=private"),
+            ("x-kept", "kept"),
+        ] {
+            headers.insert(name, http::HeaderValue::from_static(value));
+        }
+        headers
+    }
+
+    /// A request Coral sends carries only the trace context of the span it
+    /// sends it in: never a `traceparent`, `tracestate` or `baggage` that
+    /// came from elsewhere, and none at all outside a valid trace.
+    #[test]
+    fn only_the_sending_span_trace_context_leaves() {
+        let capture = SpanCapture::default();
+        let (inside, expected) = tracing::subscriber::with_default(capture.subscriber(), || {
+            let span = tracing::info_span!("client");
+            let mut headers = headers();
+            set_outbound_trace_context(&span, &mut headers);
+            let expected = {
+                use opentelemetry::trace::TraceContextExt as _;
+                use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+                let context = span.context();
+                let span = context.span();
+                format!(
+                    "00-{}-{}-01",
+                    span.span_context().trace_id(),
+                    span.span_context().span_id()
+                )
+            };
+            (headers, Some(expected))
+        });
+        let mut outside = headers();
+        set_outbound_trace_context(&tracing::Span::none(), &mut outside);
+        for (headers, expected) in [(inside, expected), (outside, None)] {
+            assert_eq!(
+                headers
+                    .get_all("traceparent")
+                    .iter()
+                    .map(|value| value.to_str().expect("ASCII").to_string())
+                    .collect::<Vec<_>>(),
+                expected.into_iter().collect::<Vec<_>>()
+            );
+            assert!(headers.get("tracestate").is_none());
+            assert!(headers.get("baggage").is_none());
+            assert_eq!(
+                headers.get("x-kept").map(http::HeaderValue::as_bytes),
+                Some(&b"kept"[..])
+            );
+        }
     }
 }

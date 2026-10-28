@@ -274,11 +274,7 @@ impl HttpUpstream {
                 redirects.is_empty().then(|| binding.path_template()),
                 body.as_ref().map(Vec::len),
             );
-            let request = coral_outbound::with_trace_parent(
-                request,
-                coral_telemetry::traceparent(&span).as_deref(),
-            )
-            .map_err(Error::send)?;
+            let request = crate::traced(request, &span)?;
             let mut response = request
                 .send()
                 .instrument(span.clone())
