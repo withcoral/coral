@@ -11,6 +11,8 @@ import * as styles from '@/wax/components/inputs/base-input.css'
 export interface TextInputProps {
   ariaLabel?: string
   ariaDescribedBy?: string
+  /** Off for a name the browser should not suggest, such as a new identifier. */
+  autoComplete?: string
   autoFocus?: boolean
   /** Shows no border until hovered or focused, for an input that sits in a table cell. */
   bare?: boolean
@@ -26,10 +28,13 @@ export interface TextInputProps {
   onChange?: (value: string) => void
   onFocus?: () => void
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  /** A regular expression the whole value must match, checked by the browser on submit. */
+  pattern?: string
   placeholder?: string
   readOnly?: boolean
   ref?: React.Ref<HTMLInputElement>
   required?: boolean
+  spellCheck?: boolean
   step?: number | string
   /** A controlled `search` input shows a clear button while it has text. */
   type?: 'datetime-local' | 'email' | 'password' | 'search' | 'tel' | 'text' | 'url'
@@ -39,6 +44,7 @@ export interface TextInputProps {
 export function TextInput({
   ariaLabel,
   ariaDescribedBy,
+  autoComplete,
   autoFocus,
   bare = false,
   className,
@@ -53,10 +59,12 @@ export function TextInput({
   onChange,
   onFocus,
   onKeyDown,
+  pattern,
   placeholder,
   readOnly,
   ref,
   required,
+  spellCheck,
   step,
   type = 'text',
   value,
@@ -81,6 +89,7 @@ export function TextInput({
         <Field.Control
           aria-label={ariaLabel}
           aria-describedby={ariaDescribedBy}
+          autoComplete={autoComplete}
           autoFocus={autoFocus}
           className={classNames(
             styles.input,
@@ -99,10 +108,12 @@ export function TextInput({
           onChange={handleChange}
           onFocus={onFocus}
           onKeyDown={onKeyDown}
+          pattern={pattern}
           placeholder={placeholder}
           readOnly={readOnly}
           ref={inputRef}
           required={required}
+          spellCheck={spellCheck}
           step={step}
           type={type}
           value={value}
