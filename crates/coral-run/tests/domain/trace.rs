@@ -507,3 +507,80 @@ async fn requests_about_a_run_link_to_its_trace_only_when_authorized() {
         assert_eq!(links(trace), vec![run_trace.as_str().to_string()]);
     }
 }
+
+/// Telemetry is best effort: a Run whose every span fails to export ends
+/// exactly as one whose spans export, with the same outcome and Events.
+#[tokio::test]
+async fn a_run_ends_the_same_whether_its_spans_export_or_fail() {
+    #[derive(Debug, Default)]
+    struct FailingExporter(Arc<AtomicUsize>);
+    impl opentelemetry_sdk::trace::SpanExporter for FailingExporter {
+        async fn export(&self, _batch: Vec<SpanData>) -> opentelemetry_sdk::error::OTelSdkResult {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(opentelemetry_sdk::error::OTelSdkError::InternalFailure(
+                "the collector is down".into(),
+            ))
+        }
+    }
+    capture();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let failing = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_simple_exporter(FailingExporter(attempts.clone()))
+        .build();
+    let failing = {
+        use opentelemetry::trace::TracerProvider as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+        tracing::Dispatch::new(
+            tracing_subscriber::Registry::default()
+                .with(tracing_opentelemetry::layer().with_tracer(failing.tracer("failing"))),
+        )
+    };
+
+    let mut ended = Vec::new();
+    for export_fails in [false, true] {
+        let _failing = export_fails.then(|| tracing::dispatcher::set_default(&failing));
+        let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({"t": 21})));
+        let fixture = TestModules::with_upstream(
+            Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
+            upstream,
+        )
+        .await;
+        let tool = fixture.user_tool("user:export-fails", "Call weather").await;
+        let accepted = fixture
+            .runs
+            .start(
+                &tool.principal,
+                &tool.workspace_id,
+                submission("invoke-tool"),
+            )
+            .await
+            .expect("accept the Run");
+        let update = wait_for_terminal(
+            &fixture.runs,
+            &tool.principal,
+            &tool.workspace_id,
+            accepted.run_id(),
+        )
+        .await;
+        let events = retained_events(
+            &fixture.runs,
+            &tool.principal,
+            &tool.workspace_id,
+            accepted.run_id(),
+        )
+        .await
+        .into_iter()
+        .map(|event| std::mem::discriminant(event.kind()))
+        .collect::<Vec<_>>();
+        ended.push((update.terminal_outcome().cloned(), events));
+    }
+    assert!(
+        attempts.load(Ordering::SeqCst) > 0,
+        "every span export failed"
+    );
+    assert!(matches!(
+        ended[0].0,
+        Some(RunTerminalOutcome::Succeeded { .. })
+    ));
+    assert_eq!(ended[0], ended[1]);
+}

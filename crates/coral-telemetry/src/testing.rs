@@ -8,10 +8,11 @@ use tracing_subscriber::registry::LookupSpan;
 
 /// Records every finished span in memory.
 ///
-/// Install [`SpanCapture::subscriber`] for one thread with
-/// `tracing::subscriber::set_default`, or for the process with
-/// `set_global_default` when spans finish on other threads. Add
-/// [`SpanCapture::layer`] to a subscriber that needs other layers too.
+/// In a test binary with other tests, install [`SpanCapture::subscriber`]
+/// once for the process with `set_global_default` and select the test's own
+/// spans, by trace or attribute: a subscriber set for one thread with
+/// `set_default` misses a callsite another test's thread registered first.
+/// Add [`SpanCapture::layer`] to a subscriber that needs other layers too.
 #[derive(Debug, Clone)]
 pub struct SpanCapture {
     provider: SdkTracerProvider,
