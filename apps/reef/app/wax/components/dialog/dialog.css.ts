@@ -147,12 +147,10 @@ globalStyle(`${dockActive} > *`, {
 })
 
 // In the page's flow, beside the content it pushes aside. It sets no stacking order,
-// so a dialog opened from it still draws above the page. It lies on the page's own
-// surface, inside an outline: its pinned headers and fades take that surface too.
+// so a dialog opened from it still draws above the page. It keeps the raised surface,
+// which its pinned headers and fades share, inside an outline instead of a shadow.
 export const dockedPopup = style({
-  backgroundColor: 'transparent',
   borderColor: theme.stroke.secondary,
-  vars: { [theme.surface.floating]: theme.surface.main },
   position: 'relative',
   inset: 'auto',
   flex: '1 1 auto',
