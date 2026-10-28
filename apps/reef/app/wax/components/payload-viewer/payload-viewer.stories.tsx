@@ -39,6 +39,33 @@ export const TextLog: Story = {
     value: 'Fetched page 1\n  then page 2\n\tindented with a tab\n' + 'A long line. '.repeat(20),
   },
 }
+/**
+ * A huge array shows 200 items at a time, and says how many more there are. Catches: every
+ * item rendered at once, or a card that grows with them instead of scrolling to that line.
+ */
+export const HugeArray: Story = {
+  args: {
+    value: JSON.stringify(Array.from({ length: 1000 }, (_, index) => ({ id: index }))),
+  },
+  play: async ({ canvasElement, userEvent }) => {
+    const content = within(canvasElement).getByRole('group', { name: 'Payload content' })
+    const tree = within(content).getByRole('group', { name: 'Structure' })
+    await expect(within(tree).getAllByRole('button', { name: /^Item \d+:/ })).toHaveLength(200)
+    const bound = Math.min(320, canvasElement.ownerDocument.defaultView!.innerHeight / 2)
+    await expect(content.getBoundingClientRect().height).toBeLessThanOrEqual(bound + 0.5)
+    // At the card's end, the line says what follows and shows the next items.
+    content.scrollTop = content.scrollHeight
+    const next = within(tree).getByRole('button', { name: 'Show next 200: Value' })
+    await waitFor(() => {
+      const [box, card] = [next, content].map((element) => element.getBoundingClientRect())
+      expect(box.top).toBeGreaterThanOrEqual(card.top)
+      expect(box.bottom).toBeLessThanOrEqual(card.bottom)
+    })
+    await expect(next.closest('div')).toHaveTextContent('800 more items')
+    await userEvent.click(next)
+    await expect(within(tree).getAllByRole('button', { name: /^Item \d+:/ })).toHaveLength(400)
+  },
+}
 export const MalformedJson: Story = { args: { value: '{"status": 200, "data": [1, 2' } }
 export const JsonNull: Story = { args: { label: 'Final value', value: 'null' } }
 export const Truncated: Story = {

@@ -15,6 +15,7 @@ import { CopyButton } from '@/wax/components/button/copy-button'
 import { token } from '@/wax/components/code-block/code-block.css'
 import { LINE_TERMINATOR } from '@/wax/components/code-block/lines'
 import * as Dialog from '@/wax/components/dialog'
+import { HighlightedMatches, type Highlight } from '@/wax/components/highlighted-matches'
 import { TextInput } from '@/wax/components/inputs/text/text-input'
 import { SegmentedControl } from '@/wax/components/segmented-control'
 import { Typography } from '@/wax/components/typography'
@@ -28,17 +29,36 @@ export const LARGE_PAYLOAD_VALUES = 100
 /** A string longer than this can fold to its start; in a large payload it starts folded. */
 export const LONG_STRING_LENGTH = 200
 const STRING_PREVIEW_LENGTH = 120
+/** A container shows this many children at first, and this many more each time you ask. */
+export const CHILD_WINDOW = 200
 
 type Format = 'json' | 'text'
 type Range = [start: number, end: number]
+/** Where a value sits: its container's offset, and its index among the container's children. */
+type Place = [container: number, index: number]
 /** A piece of the payload Find searches: a key, a scalar or a line. A quoted key or string is
- * searched inside its quotes, so `^` and `$` mean its own start and end, as in a line. */
-type Unit = { start: number; text: string; folds: number[]; quoted?: boolean }
-/** One match: the ranges, within its unit's text, that its pieces matched. */
-type Match = { unit: number; ranges: Range[] }
+ * searched inside its quotes, so `^` and `$` mean its own start and end, as in a line. A key
+ * and its scalar value share an `entry`; any other unit is an entry alone. */
+type Unit = {
+  start: number
+  text: string
+  folds: number[]
+  places: Place[]
+  entry: number
+  quoted?: boolean
+}
+/** One match: the ranges of the payload its pieces matched, and the units it shows in. */
+type Match = { ranges: Range[]; units: number[] }
 type Mode = 'structured' | 'raw'
 /** What the expanded viewer opens with: the view you had. */
-type ViewState = { mode: Mode; wrap: boolean; folded: Set<number>; query: string; current: number }
+type ViewState = {
+  mode: Mode
+  wrap: boolean
+  folded: Set<number>
+  shown: Map<number, number>
+  query: string
+  current: number
+}
 
 export interface PayloadViewerProps {
   /** The payload exactly as retained. */
@@ -98,6 +118,8 @@ function Viewer({
   const [mode, setMode] = useState<Mode>(initial?.mode ?? 'structured')
   const [wrap, setWrap] = useState(initial?.wrap ?? true)
   const [folded, setFolded] = useState(() => initial?.folded ?? initialFolds(structure, large))
+  // By container, how many of its children show, when that is more than the first window.
+  const [shown, setShown] = useState(() => initial?.shown ?? new Map<number, number>())
   const [query, setQuery] = useState(initial?.query ?? '')
   const [current, setCurrent] = useState(initial?.current ?? 0)
   const structured = structure !== null && mode === 'structured'
@@ -108,18 +130,34 @@ function Viewer({
     () => (structured && structure ? structureUnits(structure) : lineUnits(value)),
     [structured, structure, value],
   )
-  const matches = useMemo(() => findMatches(units, search), [search, units])
+  // Structured, Find also searches the payload as retained, across keys and values.
+  const sourceFor = (structuredView: boolean) => (structuredView ? value : null)
+  const matches = useMemo(
+    () => findMatches(units, search, structured ? value : null),
+    [search, units, structured, value],
+  )
   const body = useRef<HTMLDivElement>(null)
   // The expanded viewer opens on the match you were at.
   const revealed = useRef(Boolean(initial?.query))
-  /** Moves to match `index` of `found` in `inUnits`, unfolding whatever hides it. */
+  /** Moves to match `index` of `found` in `inUnits`, unfolding and showing whatever hides it. */
   const go = (index: number, found: Match[], inUnits: Unit[]) => {
     setCurrent(index)
     const match = found[index]
     if (!match) return
-    const hidden = inUnits[match.unit]!.folds
+    const touched = match.units.map((unit) => inUnits[unit]!)
+    const hidden = touched.flatMap((unit) => unit.folds)
     if (hidden.some((fold) => folded.has(fold)))
       setFolded((before) => new Set([...before].filter((fold) => !hidden.includes(fold))))
+    const places = touched.flatMap((unit) => unit.places)
+    if (places.some(([container, at]) => at >= (shown.get(container) ?? CHILD_WINDOW)))
+      setShown((before) => {
+        const next = new Map(before)
+        for (const [container, at] of places) {
+          const window = Math.ceil((at + 1) / CHILD_WINDOW) * CHILD_WINDOW
+          next.set(container, Math.max(next.get(container) ?? CHILD_WINDOW, window))
+        }
+        return next
+      })
     revealed.current = true
   }
   useEffect(() => {
@@ -129,41 +167,41 @@ function Viewer({
   })
   const step = (by: number) =>
     matches.length && go((current + by + matches.length) % matches.length, matches, units)
-  /** The marks of each unit, each with the index of the match it belongs to. */
+  /** The found parts of each unit, within its text, each with the match it belongs to. */
   const marks = useMemo(() => {
     const byUnit = new Map<number, { range: Range; index: number }[]>()
     matches.forEach((match, index) => {
-      const list = byUnit.get(match.unit) ?? []
-      for (const range of match.ranges) list.push({ range, index })
-      byUnit.set(match.unit, list)
+      for (const unit of match.units) {
+        const { start, text } = units[unit]!
+        const list = byUnit.get(unit) ?? []
+        for (const [a, b] of match.ranges) {
+          const range: Range = [
+            Math.max(a, start) - start,
+            Math.min(b, start + text.length) - start,
+          ]
+          if (range[0] < range[1]) list.push({ range, index })
+        }
+        byUnit.set(unit, list)
+      }
     })
     return byUnit
-  }, [matches])
+  }, [matches, units])
   const unitIndex = useMemo(() => new Map(units.map((unit, index) => [unit.start, index])), [units])
-  /** `text`, the unit starting at `start`, with its matches marked; `shown` cuts it short. */
-  const marked = (start: number, text: string, shown = text.length): ReactNode => {
-    const list = marks.get(unitIndex.get(start) ?? -1)
-    if (!list) return text.slice(0, shown)
-    const parts: ReactNode[] = []
-    let from = 0
-    for (const { range, index } of list) {
-      const [a, b] = [Math.min(range[0], shown), Math.min(range[1], shown)]
-      if (a >= b) continue
-      if (a > from) parts.push(text.slice(from, a))
-      parts.push(
-        <mark
-          key={a}
-          className={classNames(styles.mark, index === current && styles.currentMark)}
-          data-current-match={index === current ? '' : undefined}
-        >
-          {text.slice(a, b)}
-        </mark>,
-      )
-      from = b
-    }
-    if (from < shown) parts.push(text.slice(from, shown))
-    return parts
+  /** `text`, the unit starting at `start`, with its matches marked; `cut` cuts it short. */
+  const marked = (start: number, text: string, cut = text.length): ReactNode => {
+    const highlights: Highlight[] = (marks.get(unitIndex.get(start) ?? -1) ?? [])
+      .filter(({ range }) => range[0] < cut)
+      .map(({ range, index }) => ({
+        range: [range[0], Math.min(range[1], cut)],
+        current: index === current,
+      }))
+    return <HighlightedMatches text={text.slice(0, cut)} highlights={highlights} />
   }
+  /** Shows the next window of the container at `start`'s children. */
+  const more = (start: number) =>
+    setShown((before) =>
+      new Map(before).set(start, (before.get(start) ?? CHILD_WINDOW) + CHILD_WINDOW),
+    )
   const toggle = (start: number) =>
     setFolded((before) => {
       const next = new Set(before)
@@ -235,7 +273,7 @@ function Viewer({
                 truncated={truncated}
                 fileName={fileName}
                 expanded
-                initial={{ mode, wrap, folded, query, current }}
+                initial={{ mode, wrap, folded, shown, query, current }}
               />
             </Dialog.Popup>
           </Dialog.Portal>
@@ -261,7 +299,7 @@ function Viewer({
           onChange={(next) => {
             setMode(next)
             const nextUnits = unitsFor(next === 'structured')
-            go(0, findMatches(nextUnits, search), nextUnits)
+            go(0, findMatches(nextUnits, search, sourceFor(next === 'structured')), nextUnits)
           }}
         />
       )}
@@ -285,7 +323,7 @@ function Viewer({
             value={query}
             onChange={(next) => {
               setQuery(next)
-              go(0, findMatches(units, filterQuery(next)), units)
+              go(0, findMatches(units, filterQuery(next), sourceFor(structured)), units)
             }}
             onKeyDown={(event) => {
               if (event.key !== 'Enter') return
@@ -326,6 +364,8 @@ function Viewer({
         trailing=""
         folded={folded}
         toggle={toggle}
+        shown={shown}
+        more={more}
         marked={marked}
       />
     </div>
@@ -421,6 +461,8 @@ function JsonValue({
   trailing,
   folded,
   toggle,
+  shown,
+  more,
   marked,
 }: {
   node: JsonNode
@@ -431,7 +473,9 @@ function JsonValue({
   trailing: string
   folded: Set<number>
   toggle: (start: number) => void
-  marked: (start: number, text: string, shown?: number) => ReactNode
+  shown: Map<number, number>
+  more: (start: number) => void
+  marked: (start: number, text: string, cut?: number) => ReactNode
 }) {
   const key = keyText !== null && (
     <>
@@ -455,7 +499,13 @@ function JsonValue({
         </div>
       )
     const isFolded = folded.has(node.start)
-    const size = `${count} ${nouns[node.kind][count === 1 ? 0 : 1]}`
+    const noun = (n: number) => nouns[node.kind][n === 1 ? 0 : 1]
+    const size = `${count} ${noun(count)}`
+    // A huge container shows its children a window at a time, and says how many follow.
+    const limit = shown.get(node.start) ?? CHILD_WINDOW
+    const rest = count - limit
+    const next = Math.min(rest, CHILD_WINDOW)
+    const passed = { folded, toggle, shown, more, marked }
     return (
       <div>
         <div className={styles.line}>
@@ -486,31 +536,51 @@ function JsonValue({
           <>
             <div className={styles.children}>
               {node.kind === 'object'
-                ? node.entries.map((entry, index) => (
-                    <JsonValue
-                      key={entry.keyStart}
-                      node={entry.value}
-                      name={keyName(entry.key)}
-                      keyText={entry.key}
-                      keyStart={entry.keyStart}
-                      trailing={index < count - 1 ? ',' : ''}
-                      folded={folded}
-                      toggle={toggle}
-                      marked={marked}
-                    />
-                  ))
-                : node.items.map((item, index) => (
-                    <JsonValue
-                      key={item.start}
-                      node={item}
-                      name={`Item ${index + 1}`}
-                      keyText={null}
-                      trailing={index < count - 1 ? ',' : ''}
-                      folded={folded}
-                      toggle={toggle}
-                      marked={marked}
-                    />
-                  ))}
+                ? node.entries
+                    .slice(0, limit)
+                    .map((entry, index) => (
+                      <JsonValue
+                        key={entry.keyStart}
+                        node={entry.value}
+                        name={keyName(entry.key)}
+                        keyText={entry.key}
+                        keyStart={entry.keyStart}
+                        trailing={index < count - 1 ? ',' : ''}
+                        {...passed}
+                      />
+                    ))
+                : node.items
+                    .slice(0, limit)
+                    .map((item, index) => (
+                      <JsonValue
+                        key={item.start}
+                        node={item}
+                        name={`Item ${index + 1}`}
+                        keyText={null}
+                        trailing={index < count - 1 ? ',' : ''}
+                        {...passed}
+                      />
+                    ))}
+              {rest > 0 && (
+                <div className={styles.line}>
+                  <span className={styles.toggleSpacer} />
+                  <span className={styles.lineText}>
+                    <span className={styles.summary}>
+                      {rest} more {noun(rest)}
+                    </span>
+                    <Button.TextButton
+                      className={styles.moreButton}
+                      size="22"
+                      variant="bare"
+                      // The name starts with the visible label, then says which container.
+                      aria-label={`Show next ${next}: ${name}`}
+                      onClick={() => more(node.start)}
+                    >
+                      Show next {next}
+                    </Button.TextButton>
+                  </span>
+                </div>
+              )}
             </div>
             <div className={styles.line}>
               <span className={styles.toggleSpacer} />
@@ -526,14 +596,14 @@ function JsonValue({
   }
   const long = node.kind === 'string' && node.raw.length > LONG_STRING_LENGTH
   const isFolded = long && folded.has(node.start)
-  const shown = isFolded ? STRING_PREVIEW_LENGTH : node.raw.length
+  const cut = isFolded ? STRING_PREVIEW_LENGTH : node.raw.length
   return (
     <div className={styles.line}>
       <span className={styles.toggleSpacer} />
       <span className={styles.lineText}>
         {key}
         <span className={node.kind === 'string' ? token.string : token.constant}>
-          {marked(node.start, node.raw, shown)}
+          {marked(node.start, node.raw, cut)}
           {isFolded && '…'}
         </span>
         {trailing}
@@ -544,10 +614,10 @@ function JsonValue({
             variant="bare"
             aria-expanded={!isFolded}
             // The name starts with the visible label, then says which string it is.
-            aria-label={`${isFolded ? `${node.raw.length - shown} more characters` : 'Fold'}: ${name}`}
+            aria-label={`${isFolded ? `${node.raw.length - cut} more characters` : 'Fold'}: ${name}`}
             onClick={() => toggle(node.start)}
           >
-            {isFolded ? `${node.raw.length - shown} more characters` : 'Fold'}
+            {isFolded ? `${node.raw.length - cut} more characters` : 'Fold'}
           </Button.TextButton>
         )}
       </span>
@@ -572,31 +642,86 @@ function initialFolds(structure: JsonNode | null, large: boolean) {
   return folds
 }
 
-/** Every place `search` matches in `units`, in order. */
-function findMatches(units: Unit[], search: FilterQuery): Match[] {
+/**
+ * Every place `search` matches in `units`, in order. With `source`, the payload as retained,
+ * it also matches across one entry's units, as a key with its value, or a quoted token. A
+ * match that overlaps one found in a unit, or that reaches another entry, is not counted.
+ */
+function findMatches(units: Unit[], search: FilterQuery, source: string | null): Match[] {
   if (!search.text) return []
-  return units.flatMap((unit, index) => {
+  let found = units.flatMap((unit) => {
     const text = unit.quoted ? unit.text.slice(1, -1) : unit.text
-    const shift = unit.quoted ? 1 : 0
-    return search.hits(text).map((ranges): Match => ({
-      unit: index,
-      ranges: ranges.map(([a, b]): Range => [a + shift, b + shift]),
-    }))
+    const shift = unit.start + (unit.quoted ? 1 : 0)
+    return search.hits(text).map((ranges) => ranges.map(([a, b]): Range => [a + shift, b + shift]))
+  })
+  if (source !== null) {
+    // Matches in units never overlap one another, so their spans are in order.
+    const spans = found.map((ranges): Range => [ranges[0]![0], ranges.at(-1)![1]])
+    const overlaps = ([start, end]: Range) => {
+      let low = 0
+      let high = spans.length
+      while (low < high) {
+        const middle = (low + high) >> 1
+        if (spans[middle]![0] < end) low = middle + 1
+        else high = middle
+      }
+      return low > 0 && spans[low - 1]![1] > start
+    }
+    for (const line of lineUnits(source))
+      for (const ranges of search.hits(line.text)) {
+        const shifted = ranges.map(([a, b]): Range => [a + line.start, b + line.start])
+        if (shifted.length && !overlaps([shifted[0]![0], shifted.at(-1)![1]])) found.push(shifted)
+      }
+    found = found.toSorted((a, b) => a[0]![0] - b[0]![0])
+  }
+  return found.flatMap((ranges) => {
+    const touched = touching(units, ranges)
+    const entry = units[touched[0] ?? -1]?.entry
+    return entry !== undefined && touched.every((unit) => units[unit]!.entry === entry)
+      ? [{ ranges, units: touched }]
+      : []
   })
 }
 
-/** Each key and scalar, with the folds that hide it. */
+/** The indexes of the units, in offset order, that `ranges` overlap. */
+function touching(units: Unit[], ranges: Range[]) {
+  const touched = new Set<number>()
+  for (const [start, end] of ranges) {
+    let low = 0
+    let high = units.length
+    while (low < high) {
+      const middle = (low + high) >> 1
+      if (units[middle]!.start <= start) low = middle + 1
+      else high = middle
+    }
+    for (let at = Math.max(low - 1, 0); at < units.length && units[at]!.start < end; at++)
+      if (units[at]!.start + units[at]!.text.length > start) touched.add(at)
+  }
+  return [...touched].toSorted((a, b) => a - b)
+}
+
+/** Each key and scalar, in offset order, with the folds and windows that hide it. */
 function structureUnits(structure: JsonNode): Unit[] {
   const units: Unit[] = []
-  const visit = (node: JsonNode, folds: number[]) => {
+  const visit = (node: JsonNode, folds: number[], places: Place[], entry = node.start) => {
     if (node.kind === 'object') {
       const inner = [...folds, node.start]
-      for (const entry of node.entries) {
-        units.push({ start: entry.keyStart, text: entry.key, folds: inner, quoted: true })
-        visit(entry.value, inner)
-      }
+      node.entries.forEach((item, index) => {
+        const at: Place[] = [...places, [node.start, index]]
+        units.push({
+          start: item.keyStart,
+          text: item.key,
+          folds: inner,
+          places: at,
+          entry: item.keyStart,
+          quoted: true,
+        })
+        visit(item.value, inner, at, item.keyStart)
+      })
     } else if (node.kind === 'array') {
-      for (const item of node.items) visit(item, [...folds, node.start])
+      node.items.forEach((item, index) =>
+        visit(item, [...folds, node.start], [...places, [node.start, index]]),
+      )
     } else
       units.push({
         start: node.start,
@@ -605,10 +730,12 @@ function structureUnits(structure: JsonNode): Unit[] {
           node.kind === 'string' && node.raw.length > LONG_STRING_LENGTH
             ? [...folds, node.start]
             : folds,
+        places,
+        entry,
         quoted: node.kind === 'string',
       })
   }
-  visit(structure, [])
+  visit(structure, [], [])
   return units
 }
 
@@ -617,10 +744,16 @@ function lineUnits(value: string): Unit[] {
   let start = 0
   const units: Unit[] = []
   for (const terminator of value.matchAll(LINE_TERMINATOR)) {
-    units.push({ start, text: value.slice(start, terminator.index), folds: [] })
+    units.push({
+      start,
+      text: value.slice(start, terminator.index),
+      folds: [],
+      places: [],
+      entry: start,
+    })
     start = terminator.index + terminator[0].length
   }
-  units.push({ start, text: value.slice(start), folds: [] })
+  units.push({ start, text: value.slice(start), folds: [], places: [], entry: start })
   return units
 }
 

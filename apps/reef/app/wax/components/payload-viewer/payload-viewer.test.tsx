@@ -349,3 +349,44 @@ it('says when its expanded viewer opens and closes, and when it goes away open',
   unmount()
   expect(onExpandedChange.mock.calls).toEqual([[true], [false], [true], [false]])
 })
+
+// Catches: a Structured Find that searches each key and value alone, so a match of the
+// retained text across a key and its value, or of a quoted token, says "No matches".
+it.each([
+  ['a key with its value', '"name":"x"', ['"name"', '"x"']],
+  ['across the colon', 'e":"', ['e"', '"']],
+  ['a quoted key', '"other"', ['"other"']],
+])('finds %s in the Structured view', async (_, query, parts) => {
+  const user = userEvent.setup()
+  const region = await inspect('{"name":"x","other":"name"}')
+  await user.type(within(region).getByRole('searchbox'), query)
+  expect(within(region).getByRole('status')).toHaveTextContent('1 of 1')
+  const current = structure(region).querySelectorAll('[data-current-match]')
+  expect([...current].map((part) => part.textContent)).toEqual(parts)
+})
+
+// Catches: a huge array that renders every item at once, or that shows only its start
+// without saying what it does not show, so Find, Copy and Download seem to lose items.
+it('shows a huge array 200 items at a time, says how many more, and finds any item', async () => {
+  const value = JSON.stringify(Array.from({ length: 1000 }, (_, index) => `row-${index}`))
+  const user = userEvent.setup()
+  const region = await inspect(value)
+  const tree = structure(region)
+  expect(tree).toHaveTextContent('"row-199"')
+  expect(tree).not.toHaveTextContent('"row-200"')
+  expect(tree).toHaveTextContent('800 more items')
+  await user.click(within(tree).getByRole('button', { name: 'Show next 200: Value' }))
+  expect(tree).toHaveTextContent('"row-399"')
+  expect(tree).toHaveTextContent('600 more items')
+  // Find searches every item, and shows the one it moves to.
+  await user.type(within(region).getByRole('searchbox'), 'row-650')
+  expect(within(region).getByRole('status')).toHaveTextContent('1 of 1')
+  expect(tree.querySelector('[data-current-match]')).toHaveTextContent('row-650')
+  // It shows up to the end of the match's 200 items, and still says what follows.
+  expect(tree).toHaveTextContent('"row-799"')
+  expect(tree).not.toHaveTextContent('"row-800"')
+  expect(tree).toHaveTextContent('200 more items')
+  // Raw keeps the whole value.
+  await user.click(within(region).getByRole('radio', { name: 'Raw' }))
+  expect(within(region).getByRole('group', { name: 'Raw' }).textContent).toBe(value)
+})

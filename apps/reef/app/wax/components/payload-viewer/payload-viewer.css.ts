@@ -94,18 +94,6 @@ export const lineNumber = style({
   userSelect: 'none',
 })
 
-// A match is heavier and tinted, not tinted alone; the current one is also outlined.
-export const mark = style({
-  background: theme.content.warningBackground,
-  borderRadius: 2,
-  color: 'inherit',
-  fontWeight: theme.typography.bodySmallXStrong.fontWeight,
-})
-export const currentMark = style({
-  outline: `2px solid ${theme.stroke.focused}`,
-  outlineOffset: 1,
-})
-
 export const moreButton = style({ marginInlineStart: 6 })
 
 export const expandedPopup = style({
