@@ -377,8 +377,14 @@ The ones that still speak only the `initialize` handshake are Cursor
 (2025-11-25, "No timeline"), VS Code/Copilot (2025-11-25), Gemini CLI
 (2025-06-18), Codex CLI in its default configuration (2025-06-18), the Java SDK
 client (2025-11-25), the TypeScript v2 client in its default `'legacy'` mode,
-and every v1 TypeScript or Python SDK consumer. Every 2026-07-28-capable client
-examined keeps an `initialize` fallback for older servers; none drops it.
+and every v1 TypeScript or Python SDK consumer. Of the 2026-07-28-capable
+clients, the `initialize` fallback is confirmed for Claude Code and the Claude
+Agent SDK (documented, with `MCP_PROTOCOL_NEGOTIATION=legacy`), Claude.ai web
+(observed in September 2026, before its current rollout; see Gaps), the OpenAI
+Agents SDKs (`mode: 'auto'`) and the Go, C#, Python and Rust SDK clients. It is
+unconfirmed for Claude Desktop (undocumented) and Windsurf (inferred from a
+changelog), and ChatGPT's exact behaviour is inferred from OpenAI's extension
+spec. No client examined is known to have dropped the fallback.
 
 Elicitation support correlates with the handshake path rather than the
 revision: the clients that render elicitation in-band are Claude Code (both
@@ -387,8 +393,9 @@ auth path), ChatGPT (form), and the Go, C#, Python, TypeScript, Rust and Java
 SDK clients. Of these, only Claude Code, the Go, C#, Python and Rust SDK
 clients, and (when its flag is on) Codex are verified to drive the
 `input_required` retry on 2026-07-28; Claude.ai web does not retry (#1027) and
-Cowork does not render (#1085, #1046). Claude.ai web, Claude Desktop, Gemini
-CLI, Windsurf and both OpenAI Agents SDKs show no elicitation at all. A server
+Cowork does not render (#1085, #1046). Claude.ai web, Claude Desktop remote
+connectors (local stdio servers are not covered by this survey; see Gaps),
+Gemini CLI, Windsurf and both OpenAI Agents SDKs show no elicitation. A server
 that serves 2026-07-28 statelessly and keeps `initialize` on 2025-11-25 for the
 remaining clients matches what the C# SDK's hybrid mode and rmcp's
 `legacy_session_mode` model; a server that answers only 2026-07-28 is

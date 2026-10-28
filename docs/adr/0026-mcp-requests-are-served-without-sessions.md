@@ -12,8 +12,10 @@ landed elsewhere found no session. It was the last piece of per-instance state i
 ([ADR 0025](0025-outside-run-requests-reach-the-run-owner-through-the-run-inbox.md)) let any instance accept an outside
 Run Request.
 
-Coral now serves every MCP request on its own. No `Mcp-Session-Id` is issued, nothing is kept between requests, and the
-credential on each request alone names the Principal and the Workspace. A client on a protocol version before
+Coral now serves every MCP request on its own. No `Mcp-Session-Id` is issued and nothing is kept between requests: each
+request's credential and endpoint name its Principal and Workspace (a Workspace MCP Endpoint fixes the Workspace in its
+URL, the Organization MCP Endpoint takes it from the credential, and a credential-free request to a local Workspace
+endpoint acts as the implicit local User, as before). A client on a protocol version before
 2026-07-28 still gets its `initialize` answer and uses the same tools; what it no longer gets is an in-band prompt. Its
 Run Update names each required action with its deadline and the Run Status Page, where the invoking User approves or
 connects, and the agent observes the Run again with `wait`. A 2026-07-28 client, which carries its capabilities in
@@ -31,7 +33,9 @@ elicitation, is in
   conversation, since no client holds a session that one instance owned.
 - **Clients on a revision before 2026-07-28 approve in Reef.** Cursor, VS Code Copilot and Codex, which speak
   2025-11-25 or older and prompted in-band, now show the agent's relayed Run Status Page link instead of a form. Claude
-  Code negotiates 2026-07-28 and keeps its prompts; Claude.ai and Claude Desktop never prompted.
+  Code keeps its prompts on connections that negotiate 2026-07-28, its default since the v2 runtime; a connection it
+  falls back to `initialize` on, or that `MCP_PROTOCOL_NEGOTIATION=legacy` forces, loses them too. Claude.ai and Claude
+  Desktop never prompted.
 - **No standalone stream.** `GET` and `DELETE` on an MCP endpoint answer 405. Nothing is announced to a client outside
   the response to its own request, so a prompt is no longer withdrawn when the action is decided elsewhere; the next Run
   Update shows the decision.

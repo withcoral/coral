@@ -321,8 +321,8 @@ takes no `--database`.
 - It balances each request, not each connection. Reef keeps one HTTP/2
   connection to Coral, so a per-connection balancer would never move Reef's
   requests between instances.
-- A request in a 2025-11-25 MCP session goes to the instance that issued the
-  session, which holds it in memory. A 2026-07-28 request has no session.
+- An MCP request carries no session on any protocol version, so the proxy
+  sends it to whichever instance is next, or to the pinned one.
 - The instances share the configuration, the session signing key and the
   credential key (`[credentials] key_env`). Only their listener ports and state
   roots differ. The second instance starts once the first is ready, so it never
@@ -335,8 +335,7 @@ A scenario steers the proxy with `coralInstances()` from `support/instances.ts`:
 - `holder(run)` reads the Run row's `holder_instance_id` with `psql` and returns
   the instance's index. Coral shows an instance's id only there, so the harness
   learns each id from the first Run started through that instance.
-- `on(i, act)` sends every request outside an MCP session to instance `i` while
-  `act` runs.
+- `on(i, act)` sends every request to instance `i` while `act` runs.
 - `during(act)` returns the requests forwarded meanwhile, each with its client
   connection, the instance that served it and its gRPC status.
 - `expectNoUnavailable(requests)` fails on any HTTP 503 or gRPC UNAVAILABLE.

@@ -496,6 +496,7 @@ async fn requests_are_bound_to_host_credential_workspace_and_protocol_window() {
         "Coral Program Runs are not MCP Tasks"
     );
     check_protocol_window(&endpoint).await;
+    check_only_post_is_served(&endpoint).await;
 
     // A client on Workspace B reaches nothing that belongs to Workspace A.
     let task_id = start_task(&client_a, "Keep Workspace A private").await;
@@ -1998,6 +1999,42 @@ async fn check_raw_numeric_inputs(session: &RawSession, task: &str, tools: &[Val
 /// window. Every discover handshake asserts that `server/discover` advertises
 /// exactly the window. The newest version's standard-header obligations are
 /// enforced on tools/call.
+/// Coral keeps no MCP session, so the methods that only a session gives
+/// meaning to, the standalone `GET` stream and `DELETE`, are not served.
+async fn check_only_post_is_served(endpoint: &str) {
+    let client = reqwest::Client::new();
+    for (method, with_session) in [
+        (reqwest::Method::GET, false),
+        (reqwest::Method::GET, true),
+        (reqwest::Method::DELETE, true),
+    ] {
+        let mut request = client
+            .request(method.clone(), endpoint)
+            .header("accept", "application/json, text/event-stream")
+            .header(
+                "mcp-protocol-version",
+                ProtocolVersion::V_2025_11_25.as_str(),
+            );
+        if with_session {
+            request = request.header("mcp-session-id", "issued-by-nobody");
+        }
+        let response = request.send().await.expect("request");
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::METHOD_NOT_ALLOWED,
+            "{method} (session header: {with_session})"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("allow")
+                .and_then(|v| v.to_str().ok()),
+            Some("POST"),
+            "{method} (session header: {with_session})"
+        );
+    }
+}
+
 async fn check_protocol_window(endpoint: &str) {
     let (oldest, newest) = protocol_window_ends();
     assert!(
@@ -2042,8 +2079,8 @@ fn protocol_window_ends() -> (&'static ProtocolVersion, &'static ProtocolVersion
     )
 }
 
-/// Whether `version` predates 2026-07-28: an `initialize` handshake, a
-/// server-issued session id, and no standard-header or `_meta` obligations.
+/// Whether `version` predates 2026-07-28: an `initialize` handshake and no
+/// standard-header or `_meta` obligations.
 fn is_legacy(version: &str) -> bool {
     version < ProtocolVersion::STANDARD_HEADERS.as_str()
 }
