@@ -88,17 +88,24 @@ impl SearchIndex {
     ///
     /// The pass runs in a root span, `coral.search.reconcile`, and each step
     /// in a child span, all at debug level: almost every pass finds nothing
-    /// to do, so the default trace filter exports none of them. A failed
-    /// step marks its span and the pass's span as failed. The statistics
-    /// step and the pass record the Workspaces the step checked and
-    /// recounted, and the statistics rows it wrote. A pass that changed the
-    /// index or failed also logs one info event with what it did. A pass
-    /// that finds no change writes no row.
+    /// to do, so the default trace filter exports none of them. Each write
+    /// the pass makes runs in an info span of its own, which the default
+    /// filter exports: `coral.search.index_generation`,
+    /// `coral.search.index_function` and `coral.search.refresh_statistics`.
+    /// A failed write or step marks its span and the pass's span as failed.
+    /// The pass's span records what it indexed and what failed, and the
+    /// statistics step's span the Workspaces it checked and recounted and
+    /// the statistics rows it wrote. A pass that finds no change writes no
+    /// row.
     pub async fn reconcile(&self) {
         let _write = self.writes.lock().await;
         let pass = tracing::debug_span!(
             parent: None,
             "coral.search.reconcile",
+            coral.search.reconcile.generations_indexed = Empty,
+            coral.search.reconcile.generations_failed = Empty,
+            coral.search.reconcile.functions_indexed = Empty,
+            coral.search.reconcile.functions_failed = Empty,
             coral.search.reconcile.workspaces_checked = Empty,
             coral.search.reconcile.workspaces_recounted = Empty,
             coral.search.reconcile.rows_written = Empty,
@@ -110,19 +117,10 @@ impl SearchIndex {
         if let Some(statistics) = work.statistics {
             statistics.record(&pass);
         }
-        if work.failed {
+        work.generations.record(&pass, "generations");
+        work.functions.record(&pass, "functions");
+        if work.failed() {
             coral_telemetry::record_failure(&pass, "reconcile_failed", "a reconcile step failed");
-        }
-        if work.changed() || work.failed {
-            let statistics = work.statistics.unwrap_or_default();
-            tracing::info!(
-                coral.search.reconcile.stale_generations = work.stale_generations,
-                coral.search.reconcile.stale_functions = work.stale_functions,
-                coral.search.reconcile.workspaces_recounted = statistics.workspaces_recounted,
-                coral.search.reconcile.rows_written = statistics.rows_written,
-                coral.search.reconcile.failed = work.failed,
-                "search index reconcile pass did work"
-            );
         }
     }
 
@@ -134,10 +132,10 @@ impl SearchIndex {
         let Some(now) = crate::unix_now_nanos() else {
             // TODO: an error monitor for failed index writes is still to be set up.
             tracing::error!(error = %IndexError::Clock, "failed to start a search index reconcile pass");
-            work.failed = true;
+            work.step_failed = true;
             return work;
         };
-        work.failed |= step(
+        work.step_failed |= step(
             step_span!("coral.search.reconcile.remove_superseded"),
             self.remove_superseded_generations(),
         )
@@ -149,8 +147,8 @@ impl SearchIndex {
         )
         .await
         {
-            Ok(stale) => work.stale_generations = stale,
-            Err(()) => work.failed = true,
+            Ok(generations) => work.generations = generations,
+            Err(()) => work.step_failed = true,
         }
         match step(
             step_span!("coral.search.reconcile.functions"),
@@ -158,8 +156,8 @@ impl SearchIndex {
         )
         .await
         {
-            Ok(stale) => work.stale_functions = stale,
-            Err(()) => work.failed = true,
+            Ok(functions) => work.functions = functions,
+            Err(()) => work.step_failed = true,
         }
         let span = step_span!(
             "coral.search.reconcile.statistics",
@@ -170,10 +168,9 @@ impl SearchIndex {
         match step(span.clone(), self.refresh_stale_workspaces()).await {
             Ok(statistics) => {
                 statistics.record(&span);
-                work.failed |= statistics.failed;
                 work.statistics = Some(statistics);
             }
-            Err(()) => work.failed = true,
+            Err(()) => work.step_failed = true,
         }
         work
     }
@@ -206,8 +203,8 @@ impl SearchIndex {
 
     /// Step 1 of a pass: indexes each active Generation the index lacks,
     /// holds under an old name, or holds as failed with a retry due at
-    /// `now_unix_nanos`. Returns how many it found.
-    async fn reconcile_generations(&self, now_unix_nanos: i64) -> Result<u64, ()> {
+    /// `now_unix_nanos`.
+    async fn reconcile_generations(&self, now_unix_nanos: i64) -> Result<ItemWork, ()> {
         let stale = self
             .within_limit(async {
                 let mut transaction = self.database.begin_read_snapshot().await?;
@@ -231,19 +228,37 @@ impl SearchIndex {
                 return Err(());
             }
         };
+        let mut work = ItemWork::default();
         for generation in &stale {
-            match self
-                .prepare_stored_generation(generation.workspace_id(), generation.provider_id())
-                .await
-            {
-                Ok(Some(entries)) => self.write_generation(&entries).await,
-                // The Provider was deleted after the pass read it; its rows
-                // cascaded with its Generations.
-                Ok(None) => {}
-                Err(error) => self.fail_generation(generation.into(), &error).await,
+            let span = tracing::info_span!(
+                "coral.search.index_generation",
+                coral.workspace.id = %generation.workspace_id(),
+                coral.provider.id = %generation.provider_id(),
+                coral.search.generation.id = %generation.generation_id(),
+                status = Empty,
+                error.type = Empty,
+                exception.message = Empty,
+            );
+            let indexed = async {
+                match self
+                    .prepare_stored_generation(generation.workspace_id(), generation.provider_id())
+                    .await
+                {
+                    Ok(Some(entries)) => self.write_generation(&entries).await.map(|()| true),
+                    // The Provider was deleted after the pass read it; its rows
+                    // cascaded with its Generations.
+                    Ok(None) => Ok(false),
+                    Err(error) => {
+                        self.fail_generation(generation.into(), &error).await;
+                        Err(error)
+                    }
+                }
             }
+            .instrument(span.clone())
+            .await;
+            work.count(&span, indexed, "indexing a Provider Generation failed");
         }
-        Ok(u64::try_from(stale.len()).unwrap_or(u64::MAX))
+        Ok(work)
     }
 
     /// Prepares the entries of the Provider's current active Generation from
@@ -270,9 +285,8 @@ impl SearchIndex {
     /// Step 2 of a pass: indexes each current Saved Function whose failure
     /// has a retry due at `now_unix_nanos` or another revision, and each
     /// without a failure that the index lacks or holds at another revision.
-    /// A failure of the current revision not yet due waits. Returns how many
-    /// it found.
-    async fn reconcile_functions(&self, now_unix_nanos: i64) -> Result<u64, ()> {
+    /// A failure of the current revision not yet due waits.
+    async fn reconcile_functions(&self, now_unix_nanos: i64) -> Result<ItemWork, ()> {
         let stale = self
             .within_limit(async {
                 let mut transaction = self.database.begin_read_snapshot().await?;
@@ -291,10 +305,24 @@ impl SearchIndex {
             .await;
         match stale {
             Ok(stale) => {
+                let mut work = ItemWork::default();
                 for entry in &stale {
-                    self.write_function(entry).await;
+                    let span = tracing::info_span!(
+                        "coral.search.index_function",
+                        coral.workspace.id = %entry.workspace_id(),
+                        coral.saved_function.id = %entry.id(),
+                        status = Empty,
+                        error.type = Empty,
+                        exception.message = Empty,
+                    );
+                    let indexed = self
+                        .write_function(entry)
+                        .instrument(span.clone())
+                        .await
+                        .map(|()| true);
+                    work.count(&span, indexed, "indexing a Saved Function failed");
                 }
-                Ok(u64::try_from(stale.len()).unwrap_or(u64::MAX))
+                Ok(work)
             }
             Err(error) => {
                 // TODO: an error monitor for failed index writes is still to be set up.
@@ -329,6 +357,14 @@ impl SearchIndex {
             ..StatisticsWork::default()
         };
         for workspace_id in &check.stale {
+            let span = tracing::info_span!(
+                "coral.search.refresh_statistics",
+                coral.workspace.id = %workspace_id,
+                coral.search.rows_written = Empty,
+                status = Empty,
+                error.type = Empty,
+                exception.message = Empty,
+            );
             let refreshed = self
                 .within_limit(async {
                     let mut transaction = self.database.begin().await?;
@@ -336,13 +372,20 @@ impl SearchIndex {
                     transaction.commit().await?;
                     Ok(rows)
                 })
+                .instrument(span.clone())
                 .await;
             match refreshed {
                 Ok(rows) => {
+                    span.record("coral.search.rows_written", rows);
                     work.workspaces_recounted += 1;
                     work.rows_written += rows;
                 }
                 Err(error) => {
+                    coral_telemetry::record_failure(
+                        &span,
+                        error.code(),
+                        "refreshing a Workspace's search statistics failed",
+                    );
                     // TODO: an error monitor for failed index writes is still to be set up.
                     tracing::error!(
                         workspace_id = %workspace_id,
@@ -384,27 +427,67 @@ impl StatisticsWork {
     }
 }
 
+/// The items one step of a pass tried to index: Generations or Saved
+/// Functions it found unindexed or due for a retry.
+#[derive(Debug, Default, Clone, Copy)]
+struct ItemWork {
+    /// The items it indexed.
+    indexed: u64,
+    /// The items whose indexing failed and was recorded for a retry.
+    failed: u64,
+}
+
+impl ItemWork {
+    /// Records the counts on the pass's span under `items`, `generations` or
+    /// `functions`.
+    fn record(self, pass: &tracing::Span, items: &str) {
+        pass.record(
+            format!("coral.search.reconcile.{items}_indexed").as_str(),
+            self.indexed,
+        );
+        pass.record(
+            format!("coral.search.reconcile.{items}_failed").as_str(),
+            self.failed,
+        );
+    }
+
+    /// Counts one item's attempt, `Ok(false)` when the item was gone, and
+    /// marks the item's `span` failed when the attempt failed.
+    fn count(
+        &mut self,
+        span: &tracing::Span,
+        attempt: Result<bool, IndexError>,
+        failure: &'static str,
+    ) {
+        match attempt {
+            Ok(true) => self.indexed += 1,
+            Ok(false) => {}
+            Err(error) => {
+                coral_telemetry::record_failure(span, error.code(), failure);
+                self.failed += 1;
+            }
+        }
+    }
+}
+
 /// What one pass did.
 #[derive(Debug, Default, Clone, Copy)]
 struct PassWork {
-    /// The active Generations the pass found unindexed or due for a retry.
-    stale_generations: u64,
-    /// The Saved Functions the pass found unindexed or due for a retry.
-    stale_functions: u64,
+    generations: ItemWork,
+    functions: ItemWork,
     /// The statistics step's work, when it could read the watermarks.
     statistics: Option<StatisticsWork>,
-    /// Whether any step failed.
-    failed: bool,
+    /// Whether a step failed before it reached its items.
+    step_failed: bool,
 }
 
 impl PassWork {
-    /// Whether the pass wrote to the index.
-    fn changed(&self) -> bool {
-        self.stale_generations > 0
-            || self.stale_functions > 0
-            || self
-                .statistics
-                .is_some_and(|statistics| statistics.workspaces_recounted > 0)
+    /// Whether any step or any item failed.
+    fn failed(&self) -> bool {
+        self.step_failed
+            || self.generations.failed > 0
+            || self.functions.failed > 0
+            || self.statistics.is_some_and(|statistics| statistics.failed)
     }
 }
 

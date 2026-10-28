@@ -541,7 +541,7 @@ async fn a_pass_corrects_the_statistics_a_saved_function_delete_leaves() {
 }
 
 #[tokio::test]
-async fn a_pass_records_its_work_on_its_spans_and_logs_it_only_when_it_changed_the_index() {
+async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let principal = AuthenticatedPrincipal::user(world.user.clone());
@@ -556,9 +556,9 @@ async fn a_pass_records_its_work_on_its_spans_and_logs_it_only_when_it_changed_t
         )
         .await;
 
-    let (recorded, events) = world.traced_pass().await;
+    let (pass, writes) = split_pass(world.traced_pass().await);
     assert_eq!(
-        recorded.iter().map(|span| span.name).collect::<Vec<_>>(),
+        pass.iter().map(|span| span.name).collect::<Vec<_>>(),
         [
             "coral.search.reconcile",
             "coral.search.reconcile.remove_superseded",
@@ -567,7 +567,7 @@ async fn a_pass_records_its_work_on_its_spans_and_logs_it_only_when_it_changed_t
             "coral.search.reconcile.statistics",
         ]
     );
-    for span in &recorded {
+    for span in &pass {
         assert_eq!(span.level, tracing::Level::DEBUG, "{}", span.name);
         assert_eq!(
             span.fields.get("status"),
@@ -576,52 +576,62 @@ async fn a_pass_records_its_work_on_its_spans_and_logs_it_only_when_it_changed_t
             span.name
         );
     }
+    for span in &writes {
+        assert_eq!(span.level, tracing::Level::INFO, "{}", span.name);
+        assert_eq!(
+            span.fields.get("status"),
+            None,
+            "{} did not fail",
+            span.name
+        );
+    }
+    assert_eq!(
+        write_names(&writes),
+        [
+            "coral.search.index_generation",
+            "coral.search.index_function"
+        ],
+        "the first pass indexes the Provider and the function"
+    );
+    assert_eq!(item_work(&pass, "generations"), (1, 0));
+    assert_eq!(item_work(&pass, "functions"), (1, 0));
     // Only Postgres keeps statistics of its own. Each index write counts its
     // Workspace, so the statistics step finds nothing to count after them.
     let checked = match world.modules.search.database.system() {
         DatabaseSystem::Postgres => 1,
         DatabaseSystem::Sqlite => 0,
     };
-    assert_eq!(statistics_work(&recorded), (checked, 0, false));
-    let work = work_logged(&events).expect("the first pass indexes the Provider");
-    assert_eq!(
-        work.fields
-            .get("coral.search.reconcile.stale_generations")
-            .map(String::as_str),
-        Some("1")
-    );
-    let (_, events) = world.traced_pass().await;
-    assert!(
-        work_logged(&events).is_none(),
-        "a pass that changed nothing"
-    );
+    assert_eq!(statistics_work(&pass), (checked, 0, false));
+    let (pass, writes) = split_pass(world.traced_pass().await);
+    assert!(writes.is_empty(), "a pass that changed nothing: {writes:?}");
+    assert_eq!(item_work(&pass, "generations"), (0, 0));
 
     world
         .modules
         .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
         .await;
-    let (recorded, events) = world.traced_pass().await;
+    let (pass, writes) = split_pass(world.traced_pass().await);
     assert_eq!(
-        statistics_work(&recorded),
+        statistics_work(&pass),
         (checked, checked, checked > 0),
         "the pass after a cascade counts the Workspace again"
     );
     assert_eq!(
-        work_logged(&events).is_some(),
-        checked > 0,
-        "a pass logs its work when it recounted a Workspace"
+        write_names(&writes).len(),
+        usize::try_from(checked).expect("a count"),
+        "a recount is a write of its own: {writes:?}"
     );
-    let (recorded, events) = world.traced_pass().await;
+    let (pass, writes) = split_pass(world.traced_pass().await);
     assert_eq!(
-        statistics_work(&recorded),
+        statistics_work(&pass),
         (checked, 0, false),
         "a pass with no changes counts nothing"
     );
-    assert!(work_logged(&events).is_none());
+    assert!(writes.is_empty());
 }
 
 #[tokio::test]
-async fn a_failed_step_marks_its_span_and_the_pass_and_logs_the_pass() {
+async fn a_failed_step_marks_its_span_and_the_pass() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     world
@@ -631,48 +641,91 @@ async fn a_failed_step_marks_its_span_and_the_pass_and_logs_the_pass() {
         .await
         .expect("hide the index states");
 
-    let (recorded, events) = world.traced_pass().await;
+    let (pass, _) = split_pass(world.traced_pass().await);
 
-    let failed = |name: &str| {
-        let span = recorded
-            .iter()
-            .find(|span| span.name == name)
-            .unwrap_or_else(|| panic!("{name} span"));
-        (
-            span.fields.get("status").map(String::as_str),
-            span.fields.get("error.type").map(String::as_str),
-        )
-    };
     for name in [
         "coral.search.reconcile",
         "coral.search.reconcile.generations",
         "coral.search.reconcile.functions",
     ] {
+        let span = pass
+            .iter()
+            .find(|span| span.name == name)
+            .unwrap_or_else(|| panic!("{name} span"));
         assert_eq!(
-            failed(name),
+            failure(span),
             (Some("\"error\""), Some("\"reconcile_failed\"")),
             "{name}"
         );
     }
-    let work = work_logged(&events).expect("a failed pass logs its work");
+}
+
+/// A Generation whose indexing fails is recorded for a retry and the pass
+/// goes on, but its own span, exported by default, names the error, and the
+/// pass counts it as failed.
+#[tokio::test]
+async fn a_pass_counts_and_traces_a_generation_that_fails_to_index() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE materialized_tools RENAME TO hidden_tools")
+        .await
+        .expect("hide the catalog's Tools");
+
+    let (pass, writes) = split_pass(world.traced_pass().await);
+
+    let [generation] = writes.try_into().expect("one Generation span");
+    assert_eq!(generation.name, "coral.search.index_generation");
     assert_eq!(
-        work.fields
-            .get("coral.search.reconcile.failed")
+        generation
+            .fields
+            .get("coral.provider.id")
             .map(String::as_str),
-        Some("true")
+        Some(world.tracer.to_string().as_str())
+    );
+    assert_eq!(
+        failure(&generation),
+        (Some("\"error\""), Some("\"provider\""))
+    );
+    assert_eq!(item_work(&pass, "generations"), (0, 1));
+    assert_eq!(
+        failure(pass.first().expect("the pass span")),
+        (Some("\"error\""), Some("\"reconcile_failed\"")),
+        "the pass fails with its Generation"
     );
 }
 
-/// The one info event a pass logs with its work, if it logged one.
-fn work_logged(events: &[CapturedEvent]) -> Option<&CapturedEvent> {
-    let mut logged = events.iter().filter(|event| {
-        event.fields.get("message").map(String::as_str)
-            == Some("search index reconcile pass did work")
-    });
-    let work = logged.next()?;
-    assert_eq!(work.level, tracing::Level::INFO);
-    assert!(logged.next().is_none(), "a pass logs its work once");
-    Some(work)
+/// Splits a pass's spans into the `coral.search.reconcile` span and its
+/// steps, and the spans of the writes it made, each in start order.
+fn split_pass(recorded: Vec<CapturedSpan>) -> (Vec<CapturedSpan>, Vec<CapturedSpan>) {
+    recorded
+        .into_iter()
+        .partition(|span| span.name.starts_with("coral.search.reconcile"))
+}
+
+fn write_names(writes: &[CapturedSpan]) -> Vec<&'static str> {
+    writes.iter().map(|span| span.name).collect()
+}
+
+/// A span's recorded status and error type.
+fn failure(span: &CapturedSpan) -> (Option<&str>, Option<&str>) {
+    (
+        span.fields.get("status").map(String::as_str),
+        span.fields.get("error.type").map(String::as_str),
+    )
+}
+
+/// The `items` the pass's span counts as indexed and as failed.
+fn item_work(pass: &[CapturedSpan], items: &str) -> (u64, u64) {
+    let count = |outcome: &str| {
+        pass.first()
+            .expect("the pass span")
+            .u64_field(&format!("coral.search.reconcile.{items}_{outcome}"))
+            .unwrap_or_else(|| panic!("{items} {outcome}"))
+    };
+    (count("indexed"), count("failed"))
 }
 
 /// The statistics work a pass's spans record: the Workspaces checked and
@@ -1085,7 +1138,11 @@ async fn a_rewrite_removes_rows_its_entries_no_longer_hold() {
     assert!(!world.tool_rows().await.is_empty());
 
     let generation_id = entries.generation_id().clone();
-    world.index.write_generation(&entries.without_tools()).await;
+    world
+        .index
+        .write_generation(&entries.without_tools())
+        .await
+        .expect("write the Generation without its Tools");
     world.index.settled().await;
 
     assert!(world.tool_rows().await.is_empty());
@@ -1701,20 +1758,16 @@ impl World {
     }
 
     /// Runs one reconcile pass and returns the spans it recorded.
-    /// Runs one pass and returns the spans it started and the events it
-    /// logged.
-    async fn traced_pass(&self) -> (Vec<CapturedSpan>, Vec<CapturedEvent>) {
+    /// Runs one pass and returns the spans it started.
+    async fn traced_pass(&self) -> Vec<CapturedSpan> {
         let spans = CapturedSpans::default();
-        let logs = CapturedLogs::default();
         {
             let _subscriber = tracing::subscriber::set_default(
-                tracing_subscriber::Registry::default()
-                    .with(spans.clone())
-                    .with(logs.clone()),
+                tracing_subscriber::Registry::default().with(spans.clone()),
             );
             self.index.reconcile().await;
         }
-        (spans.recorded(), logs.events())
+        spans.recorded()
     }
 
     /// The version of each of the Workspace's rows in the search-owned tables,

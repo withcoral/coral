@@ -149,7 +149,8 @@ impl SearchIndex {
                         .as_ref()
                         .is_none_or(|expected| expected == entries.generation_id()) =>
                 {
-                    index.write_generation(&entries).await;
+                    // The write logs and records its own failure.
+                    drop(index.write_generation(&entries).await);
                 }
                 // The Provider was deleted, or a later publication replaced
                 // the Generation; that change's own notification follows.
@@ -263,7 +264,8 @@ impl SearchIndex {
         let index = self.clone();
         self.spawn(async move {
             let _write = index.writes.lock().await;
-            index.write_function(&entry).await;
+            // The write logs and records its own failure.
+            drop(index.write_function(&entry).await);
         });
     }
 
@@ -343,14 +345,17 @@ impl SearchIndex {
     }
 
     /// Writes one Generation's entries, then logs each search warning their
-    /// preparation left. A failure is logged and recorded. The caller holds
-    /// the mutex.
-    pub(crate) async fn write_generation(&self, entries: &GenerationEntries) {
+    /// preparation left. A failure is logged and recorded, then returned.
+    /// The caller holds the mutex.
+    pub(crate) async fn write_generation(
+        &self,
+        entries: &GenerationEntries,
+    ) -> Result<(), IndexError> {
         let rows = match self.write(&ToolIndexer, entries).await {
             Ok(rows) => rows,
             Err(error) => {
                 self.fail_generation(entries.into(), &error).await;
-                return;
+                return Err(error);
             }
         };
         for (tool_key, warning) in rows.warnings() {
@@ -364,13 +369,14 @@ impl SearchIndex {
                 warning.message()
             );
         }
+        Ok(())
     }
 
-    /// Writes one Saved Function's entry. A failure is logged and recorded.
-    /// The caller holds the mutex.
-    async fn write_function(&self, entry: &SavedFunctionEntry) {
+    /// Writes one Saved Function's entry. A failure is logged and recorded,
+    /// then returned. The caller holds the mutex.
+    async fn write_function(&self, entry: &SavedFunctionEntry) -> Result<(), IndexError> {
         let Err(error) = self.write(&SavedFunctionIndexer, entry).await else {
-            return;
+            return Ok(());
         };
         // TODO: an error monitor for failed index writes is still to be set up.
         tracing::error!(
@@ -389,6 +395,7 @@ impl SearchIndex {
                 "failed to record a failed Saved Function index attempt"
             );
         }
+        Err(error)
     }
 
     /// Logs a failed Generation attempt and records its `failed` state row.

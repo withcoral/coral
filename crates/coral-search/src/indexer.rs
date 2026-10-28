@@ -74,6 +74,21 @@ pub(crate) enum IndexError {
 }
 
 impl IndexError {
+    /// The error's kind, for a span's `error.type`.
+    pub(crate) const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidEntry(_) => "invalid_entry",
+            Self::TimedOut(_) => "timed_out",
+            Self::Overran(_) => "overran",
+            Self::WriterBusy(_) => "writer_busy",
+            Self::Clock => "clock",
+            Self::Corrupt(_) => "corrupt",
+            Self::Provider(_) => "provider",
+            Self::SavedFunctions(_) => "saved_functions",
+            Self::Database(_) => "database",
+        }
+    }
+
     /// The kind a failed Generation attempt records. A Saved Function error
     /// never fails a Generation.
     pub(crate) const fn failure(&self) -> Option<SearchIndexFailure> {
