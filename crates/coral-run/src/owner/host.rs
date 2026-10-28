@@ -41,7 +41,7 @@ use crate::{Error, RunModule, engine, nanos_duration};
 
 use super::chunk::{ChunkBuild, ChunkItem};
 use super::handle::{CommitRejection, Mailbox, Message, OwnerHandle, OwnerRegistration, Timer};
-use super::state::{Effect, OwnerLimits, OwnerState, apply};
+use super::state::{Effect, OwnerLimits, OwnerState, Recovered, apply};
 
 /// The wait between two settle attempts while a dispatch is still in flight
 /// within the shutdown grace.
@@ -110,10 +110,10 @@ pub(crate) async fn host(
                         *settle_deadline.get_or_insert_with(|| grace_deadline(&module, &shutdown));
                     spawn_settle(&module, &accepted, &handle, shutdown, again, deadline);
                 }
-                Effect::Recover { expired } => {
+                Effect::Recover(recovered) => {
                     if let OwnerStart::Recovery { taken, lease_until } = &start {
                         let swept = (taken.clone(), *lease_until);
-                        spawn_recovery(&module, &accepted, &handle, swept, expired);
+                        spawn_recovery(&module, &accepted, &handle, swept, recovered);
                     }
                 }
                 other => run_effect(&module, &accepted, &start, &handle, other),
@@ -420,7 +420,7 @@ fn run_effect(
         Effect::Commit { .. }
         | Effect::Settle { .. }
         | Effect::Interrupt { .. }
-        | Effect::Recover { .. }
+        | Effect::Recover(_)
         | Effect::ArmTimer { .. }
         | Effect::Subscribe
         | Effect::Unsubscribe
@@ -557,7 +557,7 @@ fn spawn_recovery(
     accepted: &AcceptedRun,
     handle: &OwnerHandle,
     (taken, lease_until): (Option<String>, Option<i64>),
-    expired: Vec<crate::approval::ApprovalId>,
+    recovered: Recovered,
 ) {
     let module = module.clone();
     let accepted = accepted.clone();
@@ -569,7 +569,7 @@ fn spawn_recovery(
             taken: taken.as_deref(),
             lease_until,
             takeover_claim_id: &accepted.claim_id,
-            expired: &expired,
+            recovered: &recovered,
         };
         // A mass recovery writes a few chunks at a time.
         let _permit = module.recovery_writes.acquire().await;
