@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { createRoutesStub } from 'react-router'
+import { createRoutesStub, useLocation, useParams } from 'react-router'
 import { expect, screen, userEvent, waitFor, within } from 'storybook/test'
 import { FunctionDrawer, FunctionDrawerError } from './function-drawer'
 import { dismissAllToasts, ToastContainer } from '@/wax/components/toast'
@@ -280,6 +280,47 @@ export const Detail: Story = {
     )
     await userEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
     await expect(screen.queryByRole('dialog', { name: 'Delete function' })).toBeNull()
+  },
+}
+// The drawer follows the route, as the function route renders it. The story
+// shows the address, so a play can wait for the close to navigate.
+function RoutedDrawer() {
+  const { path } = useParams()
+  const address = <output aria-label="Address">{useLocation().pathname}</output>
+  if (path !== savedFunction.path) return address
+  return (
+    <>
+      {address}
+      <FunctionDrawer listPath={listPath} savedFunction={savedFunction} form={form} canDelete />
+    </>
+  )
+}
+export const CloseToTab: Story = {
+  render: () => (
+    <FunctionsPage workspace={workspace} functions={summaries}>
+      <RoutedDrawer />
+    </FunctionsPage>
+  ),
+  parameters: { initialEntry: '/workspaces/demo/functions/namespaces/finance' },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const current = () =>
+      canvas.getAllByRole('link', { current: 'page' }).map((link) => link.textContent)
+    // Closing a drawer returns to the tab it opened over: a namespace, then All.
+    for (const [tab, address] of [
+      [/^finance/, `${listPath}/namespaces/finance`],
+      [/^All namespaces/, listPath],
+    ] as const) {
+      await userEvent.click(railLink(canvas, tab))
+      await userEvent.click(canvas.getByRole('link', { name: 'monthlyTotals' }))
+      const drawer = await screen.findByRole('dialog', { name: 'finance.monthlyTotals' })
+      await userEvent.click(within(drawer).getByRole('button', { name: 'Close' }))
+      await waitFor(() =>
+        expect(canvas.getByRole('status', { name: 'Address' }).textContent).toBe(address),
+      )
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+      await expect(current()).toEqual([expect.stringMatching(tab)])
+    }
   },
 }
 export const ArchivedWorkspace: Story = {
