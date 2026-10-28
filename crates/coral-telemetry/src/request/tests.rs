@@ -171,7 +171,9 @@ async fn requests_continue_only_one_valid_trace_and_never_baggage() {
                 .append(name, HeaderValue::from_static(value));
         }
         let (spans, baggage) = served(router, request).await;
-        let request = spans.first().expect("request span");
+        let [request] = spans.as_slice() else {
+            panic!("{case}: one request span: {spans:?}");
+        };
         assert_eq!(
             request.span_context.trace_id() == continued,
             continues,

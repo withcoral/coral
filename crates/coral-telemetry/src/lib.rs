@@ -130,8 +130,9 @@ pub fn set_parent_from_trace_headers(
 
 /// Sets `span`'s parent from an inbound HTTP request's W3C trace-context headers.
 ///
-/// More than one `traceparent` line is invalid and starts a new trace. Every
-/// `tracestate` line is kept, joined in order. `baggage` is never read.
+/// More than one `traceparent` line is invalid and starts a new trace. The
+/// `tracestate` lines are joined in order, and all are dropped when any is
+/// invalid. `baggage` is never read.
 fn set_parent_from_http_headers(span: &tracing::Span, headers: &http::HeaderMap) {
     let mut traceparents = headers.get_all(TRACEPARENT_HEADER).iter();
     let (Some(traceparent), None) = (traceparents.next(), traceparents.next()) else {

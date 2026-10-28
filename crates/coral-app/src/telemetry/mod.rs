@@ -68,6 +68,10 @@ fn trace_context_targets() -> Targets {
         .expect("trace context filter must be valid")
 }
 
+fn is_span(metadata: &tracing::Metadata<'_>) -> bool {
+    metadata.is_span()
+}
+
 fn normalize_otlp_endpoint(endpoint: &str, signal: &str) -> String {
     let base = endpoint.trim_end_matches('/');
     let base = ["traces", "logs", "metrics"]
@@ -277,7 +281,11 @@ fn process_executable_name() -> String {
 
 type TraceLayer = Filtered<
     OpenTelemetryLayer<Registry, SdkTracer>,
-    filter::combinator::Or<Targets, Targets, Registry>,
+    filter::combinator::Or<
+        Targets,
+        filter::combinator::And<Targets, filter::FilterFn, Registry>,
+        Registry,
+    >,
     Registry,
 >;
 
@@ -285,7 +293,9 @@ type TraceLayer = Filtered<
 ///
 /// Both exist whatever the export settings, so a request's spans, operational
 /// logs and safe errors share one trace identifier. Every Coral span gets
-/// context even when `trace_filter` does not export it. The OTLP exporter is
+/// context even when `trace_filter` does not export it, but only
+/// `trace_filter` admits events, since an event joins whichever span is
+/// current and leaves the host with it. The OTLP exporter is
 /// attached only when `[otel]` configures an endpoint, and it sends only what
 /// `trace_filter` admits. Also returns a trace filter parse error, after which
 /// the default filter applies.
@@ -303,7 +313,11 @@ fn trace_pipeline(
     let layer = tracing_opentelemetry::layer()
         .with_tracer(provider.tracer("coral"))
         .with_level(true)
-        .with_filter(trace_targets.or(trace_context_targets()));
+        .with_filter(
+            trace_targets.or(trace_context_targets().and(filter::filter_fn(
+                is_span as fn(&tracing::Metadata<'_>) -> bool,
+            ))),
+        );
     Ok((provider, layer, filter_error))
 }
 
@@ -435,6 +449,11 @@ mod tests {
                 assert_eq!(
                     nested.in_scope(coral_telemetry::TraceId::current_or_new),
                     trace,
+                    "{case}"
+                );
+                // Only `trace_filter` admits events, which join an exported span.
+                assert!(
+                    !tracing::event_enabled!(target: "coral_unnamed::module", tracing::Level::ERROR),
                     "{case}"
                 );
             });
