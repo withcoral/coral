@@ -272,15 +272,23 @@ fn process_executable_name() -> String {
         .unwrap_or_else(|| "coral".to_string())
 }
 
-type TraceLayer = Filtered<
-    OpenTelemetryLayer<Registry, SdkTracer>,
-    filter::combinator::Or<
-        Targets,
-        filter::combinator::And<Targets, filter::FilterFn, Registry>,
-        Registry,
-    >,
-    Registry,
->;
+type TraceLayerFilter<S> =
+    filter::combinator::Or<Targets, filter::combinator::And<Targets, filter::FilterFn, S>, S>;
+
+type TraceLayer =
+    Filtered<OpenTelemetryLayer<Registry, SdkTracer>, TraceLayerFilter<Registry>, Registry>;
+
+/// Gives every Coral span trace context, but admits only the events
+/// `trace_targets` admits: an event joins whichever span is current and
+/// leaves the host with it.
+fn trace_layer_filter_for<S>(trace_targets: Targets) -> TraceLayerFilter<S>
+where
+    S: tracing::Subscriber,
+{
+    trace_targets.or(trace_context_targets().and(filter::filter_fn(
+        is_span as fn(&tracing::Metadata<'_>) -> bool,
+    )))
+}
 
 /// The tracer provider and the layer that gives spans their trace context.
 ///
@@ -310,11 +318,7 @@ fn trace_pipeline(
     let layer = tracing_opentelemetry::layer()
         .with_tracer(provider.tracer("coral"))
         .with_level(true)
-        .with_filter(
-            trace_targets.or(trace_context_targets().and(filter::filter_fn(
-                is_span as fn(&tracing::Metadata<'_>) -> bool,
-            ))),
-        );
+        .with_filter(trace_layer_filter_for(trace_targets));
     Ok((provider, layer, filter_error))
 }
 
@@ -415,7 +419,12 @@ mod tests {
     use tracing_opentelemetry::OpenTelemetrySpanExt as _;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    use super::{TelemetryConfig, telemetry_resource, trace_pipeline};
+    use tracing_subscriber::Layer as _;
+
+    use super::{
+        TelemetryConfig, telemetry_resource, trace_layer_filter, trace_layer_filter_for,
+        trace_pipeline,
+    };
 
     /// With `[otel]` unset, or with a trace filter that exports none of a
     /// request's spans, Coral work anywhere inside the request still reads the
@@ -450,14 +459,40 @@ mod tests {
                     trace,
                     "{case}"
                 );
-                // Only `trace_filter` admits events, which join an exported span.
-                assert!(
-                    !tracing::event_enabled!(target: "coral_unnamed::module", tracing::Level::ERROR),
-                    "{case}"
-                );
             });
             provider.shutdown().expect("provider shutdown");
         }
+    }
+
+    /// Only `trace_filter` admits events, since an event joins the current span
+    /// and leaves the host with it.
+    #[test]
+    fn only_the_trace_filter_admits_events() {
+        let capture = coral_telemetry::testing::SpanCapture::default();
+        let (trace_targets, _filter_error) = trace_layer_filter(super::DEFAULT_TRACE_FILTER);
+        let subscriber = tracing_subscriber::Registry::default().with(
+            capture
+                .layer()
+                .with_filter(trace_layer_filter_for(trace_targets)),
+        );
+        tracing::subscriber::with_default(subscriber, || {
+            let request = tracing::info_span!(target: coral_telemetry::REQUEST_TARGET, "request");
+            request.in_scope(|| {
+                tracing::error!(target: "coral_unnamed::module", "unnamed");
+                tracing::error!(target: "coral_mcp::server", "admitted");
+            });
+        });
+        let spans = capture.finished();
+        let request = spans
+            .iter()
+            .find(|span| span.name == "request")
+            .expect("request span");
+        let events = request
+            .events
+            .iter()
+            .map(|event| event.name.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(events, ["admitted"]);
     }
 
     /// A caller's sampling decision does not stop Coral recording its request,
