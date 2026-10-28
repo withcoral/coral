@@ -144,16 +144,26 @@ async fn management_validation_returns_standard_safe_error_info_and_preserves_tr
     assert_eq!(trace, "4bf92f3577b34da6a3ce929d0e0e4736");
     assert!(!failure.message().contains("private-injected-path"));
 
-    // The request span continues the caller's trace and names the method.
-    let spans = capture.finished();
-    assert!(
-        spans
-            .iter()
-            .any(|span| span.span_context.trace_id().to_string()
-                == "4bf92f3577b34da6a3ce929d0e0e4736"
-                && span.name == "coral.management.v1.WorkspaceService/UpdateWorkspace"),
-        "{spans:?}"
-    );
+    // The request span continues the caller's trace and names the method. It
+    // ends once the server has written the response, which can be a moment
+    // after the client reads it.
+    let request_span = || {
+        let spans = capture.finished();
+        let found = spans.iter().any(|span| {
+            span.span_context.trace_id().to_string() == "4bf92f3577b34da6a3ce929d0e0e4736"
+                && span.name == "coral.management.v1.WorkspaceService/UpdateWorkspace"
+        });
+        (found, spans)
+    };
+    let mut found = request_span();
+    for _ in 0..200 {
+        if found.0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        found = request_span();
+    }
+    assert!(found.0, "{:?}", found.1);
 
     // A health probe opens no span, as on the HTTP listeners.
     let mut probe = tonic::Request::new(tonic_health::pb::HealthCheckRequest {

@@ -648,6 +648,14 @@ async fn an_unrecorded_cancellation_still_links_to_the_run_trace() {
         .send(())
         .expect("release the recovered owner's chunk");
 
+    // The request's span ends when the last task that carries it does.
+    wait_until(|| {
+        capture
+            .finished()
+            .iter()
+            .any(|span| span.span_context.trace_id() == cancel_trace)
+    })
+    .await;
     let spans = capture.finished();
     let cancel = spans
         .iter()
