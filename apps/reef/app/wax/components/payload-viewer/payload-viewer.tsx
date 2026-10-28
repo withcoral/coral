@@ -132,7 +132,7 @@ function Viewer({
   )
   // Structured, Find also searches the payload as retained, across keys and values.
   const sourceFor = (structuredView: boolean) => (structuredView ? value : null)
-  const matches = useMemo(
+  const { matches, rawOnly } = useMemo(
     () => findMatches(units, search, structured ? value : null),
     [search, units, structured, value],
   )
@@ -219,11 +219,12 @@ function Viewer({
     link.click()
     setTimeout(() => URL.revokeObjectURL(url))
   }
+  // What Structured cannot show, such as text across two items, Find counts as Raw's.
   const findStatus = !search.text
     ? ''
-    : matches.length
-      ? `${Math.min(current, matches.length - 1) + 1} of ${matches.length}`
-      : 'No matches'
+    : (matches.length
+        ? `${Math.min(current, matches.length - 1) + 1} of ${matches.length}`
+        : 'No matches') + (rawOnly ? ` · ${rawOnly} ${matches.length ? 'more ' : ''}in Raw` : '')
   // Copy, Download and, inline, Expand: compact, above the card or in the viewer's toolbar.
   const actions = (
     <div className={styles.actions} role="group" aria-label="Payload actions">
@@ -250,7 +251,8 @@ function Viewer({
             if (next) setHeld(true)
           }}
           onOpenChangeComplete={(next) => {
-            if (!next) setHeld(false)
+            // A close that ends after you opened it again leaves the hold.
+            if (!next && !open) setHeld(false)
           }}
         >
           <Dialog.Trigger
@@ -299,7 +301,11 @@ function Viewer({
           onChange={(next) => {
             setMode(next)
             const nextUnits = unitsFor(next === 'structured')
-            go(0, findMatches(nextUnits, search, sourceFor(next === 'structured')), nextUnits)
+            go(
+              0,
+              findMatches(nextUnits, search, sourceFor(next === 'structured')).matches,
+              nextUnits,
+            )
           }}
         />
       )}
@@ -323,7 +329,7 @@ function Viewer({
             value={query}
             onChange={(next) => {
               setQuery(next)
-              go(0, findMatches(units, filterQuery(next), sourceFor(structured)), units)
+              go(0, findMatches(units, filterQuery(next), sourceFor(structured)).matches, units)
             }}
             onKeyDown={(event) => {
               if (event.key !== 'Enter') return
@@ -504,7 +510,7 @@ function JsonValue({
     // A huge container shows its children a window at a time, and says how many follow.
     const limit = shown.get(node.start) ?? CHILD_WINDOW
     const rest = count - limit
-    const next = Math.min(rest, CHILD_WINDOW)
+    const batch = Math.min(rest, CHILD_WINDOW)
     const passed = { folded, toggle, shown, more, marked }
     return (
       <div>
@@ -573,10 +579,10 @@ function JsonValue({
                       size="22"
                       variant="bare"
                       // The name starts with the visible label, then says which container.
-                      aria-label={`Show next ${next}: ${name}`}
+                      aria-label={`Show next ${batch}: ${name}`}
                       onClick={() => more(node.start)}
                     >
-                      Show next {next}
+                      Show next {batch}
                     </Button.TextButton>
                   </span>
                 </div>
@@ -645,42 +651,46 @@ function initialFolds(structure: JsonNode | null, large: boolean) {
 /**
  * Every place `search` matches in `units`, in order. With `source`, the payload as retained,
  * it also matches across one entry's units, as a key with its value, or a quoted token. A
- * match that overlaps one found in a unit, or that reaches another entry, is not counted.
+ * match that overlaps one found in a unit is not counted again. One that reaches another
+ * entry, or shows in no unit, shows only in Raw: `rawOnly` counts those, so Find can say so.
  */
-function findMatches(units: Unit[], search: FilterQuery, source: string | null): Match[] {
-  if (!search.text) return []
-  let found = units.flatMap((unit) => {
+function findMatches(
+  units: Unit[],
+  search: FilterQuery,
+  source: string | null,
+): { matches: Match[]; rawOnly: number } {
+  if (!search.text) return { matches: [], rawOnly: 0 }
+  const inUnits = units.flatMap((unit) => {
     const text = unit.quoted ? unit.text.slice(1, -1) : unit.text
     const shift = unit.start + (unit.quoted ? 1 : 0)
     return search.hits(text).map((ranges) => ranges.map(([a, b]): Range => [a + shift, b + shift]))
   })
-  if (source !== null) {
-    // Matches in units never overlap one another, so their spans are in order.
-    const spans = found.map((ranges): Range => [ranges[0]![0], ranges.at(-1)![1]])
-    const overlaps = ([start, end]: Range) => {
-      let low = 0
-      let high = spans.length
-      while (low < high) {
-        const middle = (low + high) >> 1
-        if (spans[middle]![0] < end) low = middle + 1
-        else high = middle
-      }
-      return low > 0 && spans[low - 1]![1] > start
+  const matches = inUnits.map((ranges): Match => ({ ranges, units: touching(units, ranges) }))
+  if (source === null) return { matches, rawOnly: 0 }
+  // Matches in units never overlap one another, so their spans are in order.
+  const spans = inUnits.map((ranges): Range => [ranges[0]![0], ranges.at(-1)![1]])
+  const overlaps = ([start, end]: Range) => {
+    let low = 0
+    let high = spans.length
+    while (low < high) {
+      const middle = (low + high) >> 1
+      if (spans[middle]![0] < end) low = middle + 1
+      else high = middle
     }
-    for (const line of lineUnits(source))
-      for (const ranges of search.hits(line.text)) {
-        const shifted = ranges.map(([a, b]): Range => [a + line.start, b + line.start])
-        if (shifted.length && !overlaps([shifted[0]![0], shifted.at(-1)![1]])) found.push(shifted)
-      }
-    found = found.toSorted((a, b) => a[0]![0] - b[0]![0])
+    return low > 0 && spans[low - 1]![1] > start
   }
-  return found.flatMap((ranges) => {
-    const touched = touching(units, ranges)
-    const entry = units[touched[0] ?? -1]?.entry
-    return entry !== undefined && touched.every((unit) => units[unit]!.entry === entry)
-      ? [{ ranges, units: touched }]
-      : []
-  })
+  let rawOnly = 0
+  for (const line of lineUnits(source))
+    for (const ranges of search.hits(line.text)) {
+      const shifted = ranges.map(([a, b]): Range => [a + line.start, b + line.start])
+      if (!shifted.length || overlaps([shifted[0]![0], shifted.at(-1)![1]])) continue
+      const touched = touching(units, shifted)
+      const entry = units[touched[0] ?? -1]?.entry
+      if (entry !== undefined && touched.every((unit) => units[unit]!.entry === entry))
+        matches.push({ ranges: shifted, units: touched })
+      else rawOnly++
+    }
+  return { matches: matches.toSorted((a, b) => a.ranges[0]![0] - b.ranges[0]![0]), rawOnly }
 }
 
 /** The indexes of the units, in offset order, that `ranges` overlap. */

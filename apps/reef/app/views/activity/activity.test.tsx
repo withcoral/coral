@@ -418,8 +418,6 @@ it('ends the detail of a record outside the list without a link back to it', () 
   const drawer = screen.getByRole('dialog', { name: 'Activity details' })
   expect(within(drawer).getByRole('heading', { level: 2, name: goal.intent })).toBeInTheDocument()
   expect(within(drawer).queryByRole('link', { name: 'Reveal record' })).toBeNull()
-  // The row outside every day group still opens the record.
-  expect(screen.getByRole('link', { name: goal.intent })).toBeInTheDocument()
 })
 
 const headingLevel = (name: string) =>

@@ -1250,7 +1250,7 @@ async function inspect({ canvasElement, userEvent }: Play, find: string) {
   return { expand, viewer }
 }
 /** Changes what Coral holds while the expanded viewer covers the route's buttons. */
-async function arrive(kind: Parameters<typeof world.change>[0]) {
+function arrive(kind: Parameters<typeof world.change>[0]) {
   world.change(kind)
   world.revalidate()
 }
@@ -1275,9 +1275,9 @@ export const HoldsWhileYouInspectAPayload: Story = {
     const { expand, viewer } = await inspect(context, 'x')
 
     // A new operation arrives and the Run ends. The list takes both; the record stays.
-    await arrive('operation')
+    arrive('operation')
     await idle()
-    await arrive('end')
+    arrive('end')
     await idle()
     await waitFor(() =>
       expect(canvas.getByRole('link', { name: 'call.r2-op-4', hidden: true })).toBeInTheDocument(),
@@ -1323,7 +1323,7 @@ export const StaysOffWhenLiveEndsWhileYouInspect: Story = {
     off.delete('live')
     world.navigate(`?${off}`)
     await waitFor(() => expect(address().has('live')).toBe(false))
-    await arrive('operation')
+    arrive('operation')
     await idle()
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(expand).toHaveFocus())

@@ -390,3 +390,17 @@ it('shows a huge array 200 items at a time, says how many more, and finds any it
   await user.click(within(region).getByRole('radio', { name: 'Raw' }))
   expect(within(region).getByRole('group', { name: 'Raw' }).textContent).toBe(value)
 })
+
+// Catches: a Structured Find that says "No matches" for text Raw finds, as across two items
+// or a key and its nested container, or in punctuation alone.
+it.each([
+  ['across two items', '[1,2]', '1,2', 'No matches · 1 in Raw'],
+  ['a key and its container', '{"a":{"b":1}}', '"a":{"b"', 'No matches · 1 in Raw'],
+  ['punctuation', '{"a":1,"b":2}', ',', 'No matches · 1 in Raw'],
+  ['beside a match it counts', '{"a":1,"b":[1,1]}', '1', '1 of 3'],
+])('says what only Raw finds %s', async (_, value, query, status) => {
+  const user = userEvent.setup()
+  const region = await inspect(value)
+  await user.type(within(region).getByRole('searchbox'), query.replace(/[{[]/g, '$&$&'))
+  expect(within(region).getByRole('status').textContent).toBe(status)
+})

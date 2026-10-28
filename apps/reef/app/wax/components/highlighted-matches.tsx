@@ -18,28 +18,24 @@ export function HighlightedMatches({
   ...matches
 }: { text: string } & ({ query: FilterQuery } | { highlights: Highlight[] })) {
   const found = 'highlights' in matches
-  const parts: ReactNode[] = []
-  let from = 0
   const ranges = found
     ? matches.highlights
     : matches.query.ranges(text).map((range): Highlight => ({ range }))
+  // A find's parts are marks; a filter's are bold.
+  const Part = found ? 'mark' : 'strong'
+  const parts: ReactNode[] = []
+  let from = 0
   for (const { range, current } of ranges) {
     const [start, end] = range
     if (start > from) parts.push(text.slice(from, start))
     parts.push(
-      found ? (
-        <mark
-          key={start}
-          className={classNames(styles.match, styles.found, current && styles.current)}
-          data-current-match={current ? '' : undefined}
-        >
-          {text.slice(start, end)}
-        </mark>
-      ) : (
-        <strong key={start} className={styles.match}>
-          {text.slice(start, end)}
-        </strong>
-      ),
+      <Part
+        key={start}
+        className={classNames(styles.match, found && styles.found, current && styles.current)}
+        data-current-match={current ? '' : undefined}
+      >
+        {text.slice(start, end)}
+      </Part>,
     )
     from = end
   }
