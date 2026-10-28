@@ -14,10 +14,6 @@ import {
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
 import { shownPayload } from '../../../support/payloads.ts'
 
-/**
- * Opens the recorded description's Details, which keep its source collapsed, and waits until
- * the recorded source that holds `marker` shows.
- */
 /** The Activity list anchored at `record` in `run` of `task`, with nothing selected. */
 function revealedAt(task: string, run: string, record: string) {
   const query = new URLSearchParams({ anchor: task, tree: '1' })
@@ -28,6 +24,10 @@ function revealedAt(task: string, run: string, record: string) {
   return `/${task.split('/tasks/')[0]}/activity?${query}`
 }
 
+/**
+ * Opens the recorded description's Details, which keep its source collapsed, and waits until
+ * the recorded source that holds `marker` shows.
+ */
 async function openRecordedSource(page: Page, marker: string) {
   const details = page
     .getByRole('dialog')
