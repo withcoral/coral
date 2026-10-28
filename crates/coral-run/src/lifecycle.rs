@@ -32,6 +32,9 @@ pub(crate) struct RunRecord {
     pub(crate) terminal_outcome: Option<RunTerminalOutcome>,
     pub(crate) terminal_at_unix_nanos: Option<i64>,
     pub(crate) value_limits: coral_value::ValueLimits,
+    /// The Run Trace acceptance stored; `None` for a Run accepted before it
+    /// was stored, or without an OpenTelemetry layer.
+    pub(crate) trace: Option<coral_telemetry::RunTrace>,
 }
 
 impl RunRecord {

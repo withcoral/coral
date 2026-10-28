@@ -167,6 +167,11 @@ impl RunModule {
                 Err(Error::HeadMismatch) => return Ok(false),
                 Err(error) => return Err(error),
             }
+            transaction.commit().await?;
+            if let Some(termination) = run.termination {
+                crate::trace::record_run_end(termination.kind.outcome().state());
+            }
+            return Ok(true);
         }
         transaction.commit().await?;
         Ok(true)
@@ -268,7 +273,7 @@ impl RunModule {
             return Err(Error::ClaimMismatch);
         }
         let now = self.now()?.max(run.accepted_at_unix_nanos);
-        end_in_one_chunk(
+        let ended = end_in_one_chunk(
             &mut transaction,
             &run,
             None,
@@ -281,6 +286,7 @@ impl RunModule {
         )
         .await?;
         transaction.commit().await?;
+        crate::trace::record_run_end(ended);
         Ok(())
     }
 
@@ -320,7 +326,7 @@ impl RunModule {
 /// Request closed, then `run.ended`, never before the termination. The
 /// worker claim is released and, for a started Run, the execution claim
 /// taken over by `takeover`. One head move, predicated on the claim and the
-/// head `run` shows.
+/// head `run` shows. Returns the terminal state it wrote.
 pub(crate) async fn end_in_one_chunk(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
@@ -328,7 +334,7 @@ pub(crate) async fn end_in_one_chunk(
     mut events: Vec<OwnedEvent>,
     takeover: Option<run_repository::Takeover<'_>>,
     now_unix_nanos: i64,
-) -> Result<(), Error> {
+) -> Result<RunState, Error> {
     let termination = match (run.termination, cancellation) {
         (Some(recorded), _) => RequestedTermination::recorded(recorded),
         (None, Some(cancellation)) => {
@@ -358,7 +364,8 @@ pub(crate) async fn end_in_one_chunk(
         takeover,
         ended_at_unix_nanos,
     )
-    .await
+    .await?;
+    Ok(termination.termination.kind.outcome().state())
 }
 
 /// A recorded termination to settle: which Run, and until when its

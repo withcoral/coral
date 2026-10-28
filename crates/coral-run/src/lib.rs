@@ -173,6 +173,7 @@ mod source_location_repository;
 mod summary;
 mod summary_repository;
 mod termination;
+mod trace;
 mod types;
 mod worker;
 

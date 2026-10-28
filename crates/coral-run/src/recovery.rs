@@ -139,6 +139,7 @@ impl RunModule {
                 .worker_claim_expires_at_unix_nanos
                 .unwrap_or(run.accepted_at_unix_nanos),
             linked_snapshots: HashMap::new(),
+            trace: run.trace.clone(),
         };
         let run_id = run.id.clone();
         let owner_task = tokio::spawn(owner::host(
@@ -253,7 +254,7 @@ impl RunModule {
         }
         // A cancellation's Event comes after the steps': a decision applied
         // after it only closes its request, which writes no Event.
-        end_in_one_chunk(
+        let ended = end_in_one_chunk(
             &mut transaction,
             &run,
             recovery.recovered.termination.clone(),
@@ -274,6 +275,7 @@ impl RunModule {
             )
             .await?;
         transaction.commit().await?;
+        crate::trace::record_run_end(ended);
         Ok(())
     }
 }

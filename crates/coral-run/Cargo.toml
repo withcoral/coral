@@ -19,6 +19,7 @@ coral-functions.workspace = true
 coral-identifier.workspace = true
 coral-policy.workspace = true
 coral-provider.workspace = true
+coral-telemetry.workspace = true
 coral-upstream.workspace = true
 coral-v8.workspace = true
 coral-value.workspace = true
@@ -42,5 +43,8 @@ coral-administration.workspace = true
 tempfile.workspace = true
 coral-search.workspace = true
 coral-test-support.workspace = true
+coral-telemetry = { workspace = true, features = ["test-support"] }
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
 url.workspace = true
 wiremock.workspace = true

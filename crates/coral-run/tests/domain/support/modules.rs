@@ -1505,6 +1505,7 @@ pub(crate) fn test_invoker(
             .worker_claim_expires_at_unix_nanos
             .unwrap_or(run.deadline_at_unix_nanos),
         linked_snapshots: std::collections::HashMap::new(),
+        trace: run.trace.clone(),
     };
     let (owner, _mailbox) = crate::owner::OwnerHandle::new(run.id.clone(), claim_id);
     crate::invocation::ToolInvoker::new(

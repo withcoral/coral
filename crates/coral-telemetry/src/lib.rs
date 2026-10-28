@@ -6,11 +6,13 @@
 
 mod export;
 mod request;
+mod run;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
 pub use export::OtlpSpanFilter;
 pub use request::{REQUEST_TARGET, request_span, trace_grpc_routes, trace_http_routes};
+pub use run::RunTrace;
 
 use opentelemetry::Context;
 use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator as _};

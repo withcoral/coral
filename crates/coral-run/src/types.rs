@@ -957,6 +957,9 @@ pub(crate) struct AcceptedRun {
     /// Linked Saved Function path to the identity of the snapshot that
     /// acceptance retained for it.
     pub(crate) linked_snapshots: HashMap<String, String>,
+    /// The Run Trace every span of the Run joins; `None` when acceptance
+    /// stored none.
+    pub(crate) trace: Option<coral_telemetry::RunTrace>,
 }
 
 /// The cap on Program output the Run Owner has applied but not yet recorded.
