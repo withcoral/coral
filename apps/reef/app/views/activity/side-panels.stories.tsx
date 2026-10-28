@@ -2650,10 +2650,9 @@ function scroller(element: HTMLElement) {
   return null
 }
 /**
- * Inline, a large response shows its payload and, in the card's top-right corner, Copy,
- * Download and Expand; it scrolls inside the card past its maximum height. Every inspection
- * tool is in the expanded viewer, which opens on the view you had. Closing it returns focus,
- * the record and the pane's scroll position as they were.
+ * A large response in the detail pane: it scrolls inside its card, not the pane, and Expand
+ * opens it from the keyboard. Closing the viewer returns focus, the record and both scroll
+ * positions as they were. Wax's PayloadViewer stories own what the viewer shows and finds.
  */
 function largePayloadStory(story: Story): Story {
   return {
@@ -2665,12 +2664,8 @@ function largePayloadStory(story: Story): Story {
       const opened = await body.findByRole('dialog')
       const response = within(opened).getByRole('region', { name: 'Provider response' })
       const tree = within(response).getByRole('group', { name: 'Structure' })
-      // Exact tokens: the integer past 2^53 keeps every digit.
+      // Opened, its list makes the card scroll.
       await userEvent.click(within(tree).getByRole('button', { name: 'data: 150 items' }))
-      await userEvent.click(within(tree).getByRole('button', { name: 'Item 1: 3 properties' }))
-      await expect(tree).toHaveTextContent('9007199254740993123')
-      // Inline, the payload scrolls inside its card (Wax's PayloadViewer stories own its
-      // layout and bound); here, it does so inside the detail pane.
       const content = within(response).getByRole('group', { name: 'Payload content' })
       const actions = within(response).getByRole('group', { name: 'Payload actions' })
       await expect(content.scrollHeight).toBeGreaterThan(content.clientHeight)
@@ -2695,29 +2690,6 @@ function largePayloadStory(story: Story): Story {
       await waitFor(() =>
         expect(within(viewer).getByRole('group', { name: 'Structure' })).toBeVisible(),
       )
-      // It opens on the view you had: the rows you unfolded stay open.
-      await expect(
-        within(viewer).getByRole('button', { name: 'Item 1: 3 properties' }),
-      ).toHaveAttribute('aria-expanded', 'true')
-      // Every inspection tool is here: type and size, the view, and Find.
-      const tools = within(viewer).getByRole('group', { name: 'Payload tools' })
-      await expect(tools).toHaveTextContent(/^JSON · \d/)
-      await expect(within(tools).getByRole('radio', { name: 'Raw' })).toBeVisible()
-      // Its body fills the rest of the dialog and scrolls on its own.
-      const viewerBody = within(viewer).getByRole('group', { name: 'Structure' }).parentElement!
-      await expect(
-        viewer.getBoundingClientRect().bottom - viewerBody.getBoundingClientRect().bottom,
-      ).toBeLessThan(48)
-      // Find works there, through folded content, and brings the match into view.
-      await userEvent.type(
-        within(viewer).getByRole('searchbox', { name: 'Find in Provider response' }),
-        'Release 149$',
-      )
-      await expect(within(viewer).getByRole('status')).toHaveTextContent('1 of 1')
-      await expect(viewerBody.scrollHeight).toBeGreaterThan(viewerBody.clientHeight)
-      const match = viewer.querySelector('[data-current-match]')!.getBoundingClientRect()
-      const box = viewerBody.getBoundingClientRect()
-      await expect(match.top >= box.top && match.bottom <= box.bottom).toBe(true)
       await userEvent.keyboard('{Escape}')
       await waitFor(() =>
         expect(body.queryByRole('dialog', { name: 'Provider response' })).toBeNull(),

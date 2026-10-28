@@ -1363,3 +1363,33 @@ export const ResumesWhenTheOpenViewerGoesAway: Story = {
     await expect(address().get('live')).toBe('latest')
   },
 }
+
+// Catches: an approval request that arrives while you inspect a payload expanded taking you
+// to its review, which swaps the record and closes the viewer.
+export const HoldsAnApprovalWhileYouInspect: Story = {
+  beforeEach: () => world.reset([]),
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, reviews, idle, canvas } = await surface(context)
+    const page = within(context.canvasElement.ownerDocument.body)
+    await userEvent.click(latest())
+    await press('Add task')
+    await press('Add run to newest task')
+    await press('Add operation')
+    await selects('call.r2-op-3', 'call.r2-op-3')
+    const inspected = address().get('record')
+    const { viewer } = await inspect(context, 'x')
+    // An operation in the Run now waits for your approval. The list shows it; the record stays.
+    arrive('ask')
+    await idle()
+    await waitFor(() =>
+      expect(canvas.getByRole('link', { name: 'call.r2-op-4', hidden: true })).toBeInTheDocument(),
+    )
+    await expect(address().get('record')).toBe(inspected)
+    await expect(address().has('request')).toBe(false)
+    await expect(page.getByRole('dialog', { name: 'Provider response' })).toBe(viewer)
+    // Closed, live mode opens the review.
+    await userEvent.keyboard('{Escape}')
+    await reviews('call.r2-op-4')
+  },
+}

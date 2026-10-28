@@ -24,45 +24,258 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-/** A small value opens whole, every token as retained. */
-export const SmallJson: Story = {}
-/** A large value opens shallow; its long string folds to its start. */
-export const LargeJson: Story = { args: { value: largeJson } }
+type Context = Parameters<NonNullable<Story['play']>>[0]
+/** The inline payload's structure. */
+const structureOf = (canvasElement: HTMLElement) =>
+  within(within(canvasElement).getByRole('group', { name: 'Payload content' })).getByRole('group', {
+    name: 'Structure',
+  })
+/** Opens the expanded viewer of the payload named `label`. */
+const openExpanded = async ({ canvasElement, userEvent }: Context, label = 'Provider response') => {
+  const page = within(canvasElement.ownerDocument.body)
+  await userEvent.click(page.getByRole('button', { name: `Expand ${label}` }))
+  return page.findByRole('dialog', { name: label })
+}
+/** The current match's parts in the expanded `viewer`. */
+const currentMatch = (viewer: HTMLElement) => within(viewer).getAllByRole('mark', { current: true })
+
+/**
+ * A small value opens whole. Catches: a renderer that reparses and reserializes JSON, which
+ * rounds large integers, respells numbers, drops duplicate keys and rewrites escapes.
+ */
+export const SmallJson: Story = {
+  args: {
+    value:
+      '{"id":12345678901234567890,"ratio":1.0e3,"id":"dup","text":"a\\u0041\\n","list":[1,true,null],"empty":{}}',
+  },
+  play: async ({ canvasElement }) => {
+    const tree = structureOf(canvasElement)
+    for (const token of ['12345678901234567890', '1.0e3', '"dup"', '"a\\u0041\\n"', 'true', 'null'])
+      await expect(tree).toHaveTextContent(token)
+    await expect(tree).toHaveTextContent('{}')
+    // Both `id` keys stay, in order.
+    await expect(tree.textContent!.match(/"id": /g)).toHaveLength(2)
+    // Nothing starts folded, and each container states its size.
+    await expect(within(tree).queryAllByRole('button', { expanded: false })).toHaveLength(0)
+    await expect(within(tree).getByRole('button', { name: 'list: 3 items' })).toBeVisible()
+    await expect(within(tree).getByRole('button', { name: 'Value: 6 properties' })).toBeVisible()
+  },
+}
+
+const large = JSON.stringify({
+  rows: Array.from({ length: 120 }, (_, index) => ({ id: index, name: `row-${index}` })),
+  meta: { page: 1 },
+  note: 'n'.repeat(400),
+})
+/**
+ * A large value opens shallow; its long string folds to its start. Catches: a large payload
+ * that opens as one endless document, or folding that drops content.
+ */
+export const LargeJson: Story = {
+  args: { value: large },
+  play: async ({ canvasElement, userEvent }) => {
+    const content = within(canvasElement).getByRole('group', { name: 'Payload content' })
+    const tree = structureOf(canvasElement)
+    // The top level shows; the containers in it fold, each with its size.
+    await expect(within(tree).getByRole('button', { name: 'Value: 3 properties' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    const rows = within(tree).getByRole('button', { name: 'rows: 120 items' })
+    await expect(rows).toHaveAttribute('aria-expanded', 'false')
+    await expect(within(tree).getByRole('button', { name: 'meta: 1 property' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    await expect(tree).not.toHaveTextContent('row-0')
+    // A long string shows its start and folds the rest, which one press shows.
+    // 402 characters with its quotes; the first 120 show.
+    const note = within(tree).getByRole('button', { name: '282 more characters: note' })
+    await expect(note).toHaveAttribute('aria-expanded', 'false')
+    await expect(tree).not.toHaveTextContent(`"${'n'.repeat(400)}"`)
+    await userEvent.click(note)
+    await expect(tree).toHaveTextContent(`"${'n'.repeat(400)}"`)
+    await expect(note).toHaveAccessibleName('Fold: note')
+    // Opened, the list shows its first item, and its last at the card's end.
+    await userEvent.click(rows)
+    await expect(rows).toHaveAttribute('aria-expanded', 'true')
+    await expect(within(tree).getByRole('button', { name: 'Item 1: 2 properties' })).toBeVisible()
+    await waitFor(() => {
+      content.scrollTop = content.scrollHeight
+      insideOf(within(tree).getByRole('button', { name: 'Item 120: 2 properties' }), content)
+    })
+  },
+}
 export const LargeJsonNarrow: Story = {
-  args: { value: largeJson },
+  args: { value: large },
   parameters: { chromatic: { viewports: [390] } },
 }
+
+/** Catches: long strings in a small payload that start folded, or fold together. */
+export const LongStringsFoldAlone: Story = {
+  args: { value: JSON.stringify({ a: 'x'.repeat(201), b: 'x'.repeat(201) }) },
+  play: async ({ canvasElement, userEvent }) => {
+    const tree = structureOf(canvasElement)
+    const [a, b] = [
+      within(tree).getByRole('button', { name: 'Fold: a' }),
+      within(tree).getByRole('button', { name: 'Fold: b' }),
+    ]
+    await expect(a).toHaveAttribute('aria-expanded', 'true')
+    await userEvent.click(a)
+    await expect(a).toHaveAttribute('aria-expanded', 'false')
+    await expect(b).toHaveAttribute('aria-expanded', 'true')
+  },
+}
+
+/** Catches: a Find that searches only what is unfolded, or finds a match it never shows. */
+export const FindsInFoldedContent: Story = {
+  args: { value: large },
+  play: async (context) => {
+    const { userEvent } = context
+    const viewer = await openExpanded(context)
+    const tree = within(viewer).getByRole('group', { name: 'Structure' })
+    const find = within(viewer).getByRole('searchbox', { name: 'Find in Provider response' })
+    const status = within(viewer).getByRole('status')
+    await userEvent.type(find, 'row-11')
+    // row-11 and row-110 to row-119.
+    await expect(status).toHaveTextContent('1 of 11')
+    await waitFor(() => {
+      expect(currentMatch(viewer).map((part) => part.textContent)).toEqual(['row-11'])
+      insideOf(currentMatch(viewer)[0]!, scrollerOf(tree))
+    })
+    await expect(within(tree).getByRole('button', { name: 'rows: 120 items' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    await userEvent.keyboard('{Enter}')
+    await expect(status).toHaveTextContent('2 of 11')
+    await waitFor(() =>
+      expect(currentMatch(viewer)[0]!.parentElement).toHaveTextContent('"row-110"'),
+    )
+    await userEvent.keyboard('{Shift>}{Enter}{/Shift}')
+    await userEvent.keyboard('{Shift>}{Enter}{/Shift}')
+    await expect(status).toHaveTextContent('11 of 11')
+    await waitFor(() => insideOf(currentMatch(viewer)[0]!, scrollerOf(tree)))
+    await userEvent.click(within(viewer).getByRole('button', { name: 'Next match' }))
+    await expect(status).toHaveTextContent('1 of 11')
+    // The folded end of a long string is searched too, and unfolds.
+    await userEvent.clear(find)
+    await userEvent.type(find, 'nnn$')
+    await expect(status).toHaveTextContent('1 of 1')
+    await waitFor(() =>
+      expect(within(tree).getByRole('button', { name: 'Fold: note' })).toHaveAttribute(
+        'aria-expanded',
+        'true',
+      ),
+    )
+    await userEvent.clear(find)
+    await userEvent.type(find, 'absent')
+    await expect(status).toHaveTextContent('No matches')
+    await expect(within(viewer).getByRole('button', { name: 'Next match' })).toBeDisabled()
+  },
+}
+
+/** Catches: a match across a key and its value marked in one of them only. */
+export const MarksAMatchAcrossKeyAndValue: Story = {
+  args: { value: '{"name":"x","other":"name"}' },
+  play: async (context) => {
+    const viewer = await openExpanded(context)
+    await context.userEvent.type(within(viewer).getByRole('searchbox'), '"name":"x"')
+    await expect(within(viewer).getByRole('status')).toHaveTextContent(/^1 of 1$/)
+    await expect(currentMatch(viewer).map((part) => part.textContent)).toEqual(['"name"', '"x"'])
+  },
+}
+
+/** Catches: a view switch that keeps a match index but leaves the match folded away. */
+export const RevealsTheMatchAfterAViewSwitch: Story = {
+  args: { value: large },
+  play: async (context) => {
+    const { userEvent } = context
+    const viewer = await openExpanded(context)
+    await userEvent.click(within(viewer).getByRole('radio', { name: 'Raw' }))
+    await userEvent.type(within(viewer).getByRole('searchbox'), 'row-77')
+    await userEvent.click(within(viewer).getByRole('radio', { name: 'Structured' }))
+    await expect(within(viewer).getByRole('status')).toHaveTextContent('1 of 1')
+    const tree = within(viewer).getByRole('group', { name: 'Structure' })
+    await waitFor(() => {
+      expect(currentMatch(viewer).map((part) => part.textContent)).toEqual(['row-77'])
+      insideOf(currentMatch(viewer)[0]!, scrollerOf(tree))
+    })
+  },
+}
+
+/** Raw shows `value` exactly as retained, every line terminator included. */
+const exactInRaw = (value: string): Story => ({
+  args: { value },
+  play: async (context) => {
+    const viewer = await openExpanded(context)
+    await context.userEvent.click(within(viewer).getByRole('radio', { name: 'Raw' }))
+    await expect(within(viewer).queryByRole('group', { name: 'Structure' })).toBeNull()
+    await expect(within(viewer).getByRole('group', { name: 'Raw' }).textContent).toBe(value)
+  },
+})
+export const RawKeepsPreciseNumbers = exactInRaw('{"n":12345678901234567890.000,"e":-0E+2}')
+export const RawKeepsDuplicateKeys = exactInRaw('{"a":1,"a":2}')
+export const RawKeepsAScalarsSpace = exactInRaw('  "spaced"\n')
+export const RawKeepsLineTerminators = exactInRaw('{"a":\r\n"x",\r"b":\n"x"}')
+
+/** A log keeps its lines and whitespace. Catches: a log shown as JSON, or collapsed whitespace. */
 export const TextLog: Story = {
   args: {
     label: 'Log message',
     format: 'text',
-    value: 'Fetched page 1\n  then page 2\n\tindented with a tab\n' + 'A long line. '.repeat(20),
+    value: 'first  line\n\tindented\n\nlast {"not":"json"}',
+  },
+  play: async (context) => {
+    const { canvasElement, userEvent } = context
+    const shown = `1first  line2\tindented34last {"not":"json"}`
+    await expect(within(canvasElement).getByRole('group', { name: 'Lines' }).textContent).toBe(
+      shown,
+    )
+    const viewer = await openExpanded(context, 'Log message')
+    await expect(within(viewer).getByRole('group', { name: 'Lines' }).textContent).toBe(shown)
+    await expect(within(viewer).queryByRole('radiogroup', { name: 'View' })).toBeNull()
+    await expect(within(viewer).queryByRole('group', { name: 'Structure' })).toBeNull()
+    const wrap = within(viewer).getByRole('button', { name: 'Wrap' })
+    await expect(wrap).toHaveAttribute('aria-pressed', 'true')
+    await userEvent.click(wrap)
+    await expect(wrap).toHaveAttribute('aria-pressed', 'false')
   },
 }
-/**
- * A huge array shows 200 items at a time, and says how many more there are. Catches: a card
- * that grows with its items instead of scrolling to the line that shows the next ones.
- */
-export const HugeArray: Story = {
-  args: {
-    value: JSON.stringify(Array.from({ length: 1000 }, (_, index) => ({ id: index }))),
+/** Catches: malformed JSON that is reformatted, hidden, or offered a structure it lacks. */
+export const MalformedJson: Story = {
+  args: { value: '{"status": 200, "data": [1, 2' },
+  play: async (context) => {
+    const value = '{"status": 200, "data": [1, 2'
+    await expect(
+      within(context.canvasElement).getByRole('group', { name: 'Raw' }).textContent,
+    ).toBe(value)
+    const viewer = await openExpanded(context)
+    await expect(within(viewer).getByRole('group', { name: 'Raw' }).textContent).toBe(value)
+    await expect(within(viewer).queryByRole('radiogroup', { name: 'View' })).toBeNull()
+    await expect(within(viewer).getByRole('group', { name: 'Payload tools' })).toHaveTextContent(
+      'Not valid JSON',
+    )
   },
+}
+/** Catches: JSON nested deep enough to exhaust the stack when its structure is walked. */
+export const VeryDeepJson: Story = {
+  args: { value: '['.repeat(5000) + ']'.repeat(5000) },
+  play: async (context) => {
+    const viewer = await openExpanded(context)
+    await expect(within(viewer).queryByRole('radiogroup', { name: 'View' })).toBeNull()
+    await expect(within(viewer).getByRole('group', { name: 'Raw' }).textContent).toBe(
+      '['.repeat(5000) + ']'.repeat(5000),
+    )
+  },
+}
+/** Catches: JSON null shown as nothing. */
+export const JsonNull: Story = {
+  args: { label: 'Final value', value: 'null' },
   play: async ({ canvasElement }) => {
-    const content = within(canvasElement).getByRole('group', { name: 'Payload content' })
-    const bound = Math.min(320, canvasElement.ownerDocument.defaultView!.innerHeight / 2)
-    await expect(content.getBoundingClientRect().height).toBeLessThanOrEqual(bound + 0.5)
-    // At the card's end, the next items' control shows inside it.
-    content.scrollTop = content.scrollHeight
-    const next = within(content).getByRole('button', { name: 'Show next 200: Value' })
-    await waitFor(() => {
-      const [box, card] = [next, content].map((element) => element.getBoundingClientRect())
-      expect(box.top).toBeGreaterThanOrEqual(card.top)
-      expect(box.bottom).toBeLessThanOrEqual(card.bottom)
-    })
+    await expect(structureOf(canvasElement).textContent).toBe('null')
   },
 }
-export const MalformedJson: Story = { args: { value: '{"status": 200, "data": [1, 2' } }
-export const JsonNull: Story = { args: { label: 'Final value', value: 'null' } }
 export const Truncated: Story = {
   args: { label: 'Upstream response data', value: '{"message":"Too many', truncated: true },
 }
@@ -181,3 +394,119 @@ const expandedHeader: Story['play'] = async ({ canvasElement, userEvent, globals
 }
 export const ExpandedHeader: Story = { args: { value: largeJson }, play: expandedHeader }
 export const ExpandedHeaderNarrow: Story = { ...ExpandedHeader, ...narrow }
+
+// Huge payloads, in Chromium: what a scrolling body mounts, and what you reach in it.
+const hugeArray = JSON.stringify(
+  Array.from({ length: 10_000 }, (_, index) => `item-${String(index).padStart(5, '0')}`),
+)
+const hugeText = Array.from({ length: 100_000 }, (_, index) => `log line ${index + 1}`).join('\n')
+const hugeMalformed = `${Array.from({ length: 50_000 }, (_, index) => `"row ${index + 1}",`).join('\n')} [`
+/** How many times `pattern` shows in what `element` mounts. */
+const mounted = (element: Element, pattern: RegExp) =>
+  (element.textContent ?? '').match(new RegExp(pattern, 'g'))?.length ?? 0
+/** The element that scrolls `element`. */
+const scrollerOf = (element: Element): HTMLElement => {
+  let at = element.parentElement
+  while (at && !/auto|scroll/.test(getComputedStyle(at).overflowY)) at = at.parentElement
+  return at!
+}
+const insideOf = (element: Element, frame: Element) => {
+  const [box, bounds] = [element, frame].map((each) => each.getBoundingClientRect())
+  expect(box.top).toBeGreaterThanOrEqual(bounds.top - 0.5)
+  expect(box.bottom).toBeLessThanOrEqual(bounds.bottom + 0.5)
+}
+/** Scrolls `content` to its end until `text` shows inside it. */
+const scrollsTo = (content: HTMLElement, text: string) =>
+  waitFor(() => {
+    content.scrollTop = content.scrollHeight
+    insideOf(within(content).getByText(text), content)
+  })
+/** Opens the expanded viewer and finds `query` in it. */
+const findExpanded = async (context: Context, label: string, query: string) => {
+  const viewer = await openExpanded(context, label)
+  await context.userEvent.type(within(viewer).getByRole('searchbox'), query)
+  return viewer
+}
+
+/**
+ * Catches: a huge array read through repeated "Show next" chunks, or one that mounts every
+ * item. You scroll the card to its last item, and only the items near the view mount.
+ */
+export const HugeArrayScrolls: Story = {
+  args: { value: hugeArray },
+  play: async ({ canvasElement }) => {
+    const content = within(canvasElement).getByRole('group', { name: 'Payload content' })
+    await expect(within(content).queryByRole('button', { name: /^Show next/ })).toBeNull()
+    await expect(mounted(content, /item-\d{5}/)).toBeLessThan(400)
+    await scrollsTo(content, '"item-09999"')
+    await expect(mounted(content, /item-\d{5}/)).toBeLessThan(400)
+  },
+}
+
+/**
+ * Catches: a Find that mounts every item before the one it moves to, or that leaves it out of
+ * view. The match near the end shows in the expanded viewer, and the bound holds.
+ */
+export const HugeArrayFindsALateMatch: Story = {
+  args: { value: hugeArray },
+  play: async (context) => {
+    const viewer = await findExpanded(context, 'Provider response', 'item-09876')
+    await expect(within(viewer).getByRole('status')).toHaveTextContent(/^1 of 1$/)
+    const tree = within(viewer).getByRole('group', { name: 'Structure' })
+    await waitFor(() => expect(mounted(tree, /item-\d{5}/)).toBeLessThan(400))
+    await waitFor(() => {
+      const match = within(viewer).getByRole('mark', { current: true })
+      expect(match).toHaveTextContent('item-09876')
+      insideOf(match, scrollerOf(tree))
+    })
+  },
+}
+
+/**
+ * Catches: a wildcard that first matches across two entries and so never finds the match
+ * inside one: `k*v` matches the key "k" with its value "v".
+ */
+export const WildcardFindsTheMatchInOneEntry: Story = {
+  args: { value: '{"k0":1,"k":"v"}' },
+  play: async (context) => {
+    const viewer = await findExpanded(context, 'Provider response', 'k*v')
+    await expect(within(viewer).getByRole('status')).toHaveTextContent(/^1 of 1$/)
+    const parts = within(viewer).getAllByRole('mark', { current: true })
+    await expect(parts.map((part) => part.textContent)).toEqual(['k', 'v'])
+  },
+}
+
+/**
+ * Catches: a huge text log that mounts every line. You scroll the card to its last line, and
+ * Find shows a late line in the expanded viewer, with only lines near the view mounted.
+ */
+export const HugeTextScrollsAndFinds: Story = {
+  args: { label: 'Log message', format: 'text', value: hugeText },
+  play: async (context) => {
+    const content = within(context.canvasElement).getByRole('group', { name: 'Payload content' })
+    await expect(mounted(content, /log line \d+/)).toBeLessThan(400)
+    await scrollsTo(content, 'log line 100000')
+    await expect(mounted(content, /log line \d+/)).toBeLessThan(400)
+    const viewer = await findExpanded(context, 'Log message', '^log line 99999$')
+    await expect(within(viewer).getByRole('status')).toHaveTextContent(/^1 of 1$/)
+    const lines = within(viewer).getByRole('group', { name: 'Lines' })
+    await waitFor(() => expect(mounted(lines, /log line \d+/)).toBeLessThan(400))
+    await waitFor(() => {
+      const match = within(viewer).getByRole('mark', { current: true })
+      expect(match).toHaveTextContent('log line 99999')
+      insideOf(match, scrollerOf(lines))
+    })
+  },
+}
+
+/** Catches: huge JSON that shows only in Raw mounting every line. The card scrolls to its end. */
+export const HugeRawScrolls: Story = {
+  args: { value: hugeMalformed },
+  play: async ({ canvasElement }) => {
+    const content = within(canvasElement).getByRole('group', { name: 'Payload content' })
+    await expect(within(content).getByRole('group', { name: 'Raw' })).toBeInTheDocument()
+    await expect(mounted(content, /row \d+/)).toBeLessThan(400)
+    await scrollsTo(content, '"row 50000", [')
+    await expect(mounted(content, /row \d+/)).toBeLessThan(400)
+  },
+}

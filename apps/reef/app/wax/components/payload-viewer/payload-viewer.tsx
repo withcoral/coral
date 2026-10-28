@@ -1,19 +1,11 @@
+import { useVirtualizer } from '@tanstack/react-virtual'
 import classNames from 'classnames'
-import {
-  Fragment,
-  useEffect,
-  useEffectEvent,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react'
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type ReactNode } from 'react'
 
-import { filterQuery, type FilterQuery } from '@/utils/filter-query'
+import { filterQuery } from '@/utils/filter-query'
 import * as Button from '@/wax/components/button'
 import { CopyButton } from '@/wax/components/button/copy-button'
 import { token } from '@/wax/components/code-block/code-block.css'
-import { LINE_TERMINATOR } from '@/wax/components/code-block/lines'
 import * as Dialog from '@/wax/components/dialog'
 import { HighlightedMatches, type Highlight } from '@/wax/components/highlighted-matches'
 import { TextInput } from '@/wax/components/inputs/text/text-input'
@@ -21,44 +13,46 @@ import { SegmentedControl } from '@/wax/components/segmented-control'
 import { Typography } from '@/wax/components/typography'
 
 import { jsonStructure, valueCount, type JsonNode } from './json-structure'
+import {
+  findMatches,
+  lineUnits,
+  LONG_STRING_LENGTH,
+  structureUnits,
+  type Range,
+  type Unit,
+} from './payload-search'
 import * as styles from './payload-viewer.css'
+
+export { LONG_STRING_LENGTH } from './payload-search'
 
 /** Past either bound, JSON opens shallow: its top level shows, deeper containers fold. */
 export const LARGE_PAYLOAD_LENGTH = 4096
 export const LARGE_PAYLOAD_VALUES = 100
-/** A string longer than this can fold to its start; in a large payload it starts folded. */
-export const LONG_STRING_LENGTH = 200
 const STRING_PREVIEW_LENGTH = 120
-/** A container shows this many children at first, and this many more each time you ask. */
-export const CHILD_WINDOW = 200
+/** A row's height until it mounts and measures itself, and the body's padding above and below. */
+const ROW_ESTIMATE = 22
+const BODY_PADDING = 12
+/** Each level of a structure indents its rows this much. */
+const INDENT = 18
 
 type Format = 'json' | 'text'
-type Range = [start: number, end: number]
-/** Where a value sits: its container's offset, and its index among the container's children. */
-type Place = [container: number, index: number]
-/** A piece of the payload Find searches: a key, a scalar or a line. A quoted key or string is
- * searched inside its quotes, so `^` and `$` mean its own start and end, as in a line. A key
- * and its scalar value share an `entry`; any other unit is an entry alone. */
-type Unit = {
-  start: number
-  text: string
-  folds: number[]
-  places: Place[]
-  entry: number
-  quoted?: boolean
-}
-/** One match: the ranges of the payload its pieces matched, and the units it shows in. */
-type Match = { ranges: Range[]; units: number[] }
 type Mode = 'structured' | 'raw'
 /** What the expanded viewer opens with: the view you had. */
-type ViewState = {
-  mode: Mode
-  wrap: boolean
-  folded: Set<number>
-  shown: Map<number, number>
-  query: string
-  current: number
-}
+type ViewState = { mode: Mode; wrap: boolean; folded: Set<number>; query: string; current: number }
+/** One line of a structure: a value, with its key before it and `trailing` (a comma) after
+ * it, or the line that closes an open container. */
+type Row =
+  | {
+      kind: 'value'
+      node: JsonNode
+      depth: number
+      /** What the value's toggle names it: its key, its index, or "Value" at the top. */
+      name: string
+      keyText: string | null
+      keyStart?: number
+      trailing: string
+    }
+  | { kind: 'close'; node: JsonNode; depth: number; trailing: string }
 
 export interface PayloadViewerProps {
   /** The payload exactly as retained. */
@@ -77,10 +71,11 @@ export interface PayloadViewerProps {
 
 /**
  * One retained payload, exact. Inline, a card shows it, foldable, and scrolls it past a
- * maximum height; Copy, Download and Expand sit in the card's top-right corner. Expand opens
+ * maximum height; Copy, Download and Expand sit above the card, at its right. Expand opens
  * the viewer with every inspection tool: type and retained size, Structured or Raw, Find and
  * Wrap. JSON shows as a foldable structure built from its own tokens, or exactly as retained
- * in Raw; text keeps its lines, numbered.
+ * in Raw; text keeps its lines, numbered. Only the rows near the view mount, so a huge
+ * payload scrolls whole.
  */
 export function PayloadViewer(props: PayloadViewerProps) {
   return <Viewer {...props} expanded={false} />
@@ -118,53 +113,82 @@ function Viewer({
   const [mode, setMode] = useState<Mode>(initial?.mode ?? 'structured')
   const [wrap, setWrap] = useState(initial?.wrap ?? true)
   const [folded, setFolded] = useState(() => initial?.folded ?? initialFolds(structure, large))
-  // By container, how many of its children show, when that is more than the first window.
-  const [shown, setShown] = useState(() => initial?.shown ?? new Map<number, number>())
   const [query, setQuery] = useState(initial?.query ?? '')
   const [current, setCurrent] = useState(initial?.current ?? 0)
   const structured = structure !== null && mode === 'structured'
   const search = useMemo(() => filterQuery(query), [query])
-  const unitsFor = (structuredView: boolean) =>
-    structuredView && structure ? structureUnits(structure) : lineUnits(value)
-  const units = useMemo(
-    () => (structured && structure ? structureUnits(structure) : lineUnits(value)),
-    [structured, structure, value],
-  )
-  // Structured, Find also searches the payload as retained, across keys and values.
-  const sourceFor = (structuredView: boolean) => (structuredView ? value : null)
+  const parts = useMemo(() => (structure ? structureUnits(structure) : null), [structure])
+  const lines = useMemo(() => lineUnits(value), [value])
+  /** The units Find searches in a view, and what else it searches there. */
+  const viewOf = (structuredView: boolean) =>
+    structuredView && parts
+      ? { units: parts.units, within: { source: value, entries: parts.entries } }
+      : { units: lines, within: undefined }
+  const units = structured && parts ? parts.units : lines
   const { matches, rawOnly } = useMemo(
-    () => findMatches(units, search, structured ? value : null),
-    [search, units, structured, value],
+    () =>
+      findMatches(
+        units,
+        search,
+        structured && parts ? { source: value, entries: parts.entries } : undefined,
+      ),
+    [units, search, structured, parts, value],
   )
+  const rows = useMemo(
+    () => (structured && structure ? structureRows(structure, folded) : null),
+    [structured, structure, folded],
+  )
+  /** By unit offset, the row that shows it. */
+  const rowOf = useMemo(() => {
+    const at = new Map<number, number>()
+    if (rows)
+      rows.forEach((row, index) => {
+        if (row.kind !== 'value') return
+        if (row.keyStart !== undefined) at.set(row.keyStart, index)
+        if (row.node.kind !== 'object' && row.node.kind !== 'array') at.set(row.node.start, index)
+      })
+    else lines.forEach((line, index) => at.set(line.start, index))
+    return at
+  }, [rows, lines])
   const body = useRef<HTMLDivElement>(null)
+  // oxlint-disable-next-line react/incompatible-library -- TanStack Virtual owns scroll measurements; only its rows and sizes cross into render.
+  const virtualizer = useVirtualizer({
+    count: rows ? rows.length : lines.length,
+    getScrollElement: () => body.current,
+    // Before the body lays out, as on the server, the first rows render, so they show at once.
+    initialRect: { width: 800, height: 720 },
+    estimateSize: () => ROW_ESTIMATE,
+    getItemKey: (index) => (rows ? rowKey(rows[index]!) : lines[index]!.start),
+    paddingStart: BODY_PADDING,
+    paddingEnd: BODY_PADDING,
+    overscan: 20,
+  })
+  // The match to scroll to after the next render, and then its mark, once it has mounted.
   // The expanded viewer opens on the match you were at.
-  const revealed = useRef(Boolean(initial?.query))
-  /** Moves to match `index` of `found` in `inUnits`, unfolding and showing whatever hides it. */
-  const go = (index: number, found: Match[], inUnits: Unit[]) => {
+  const reveal = useRef<'row' | 'mark' | null>(initial?.query ? 'row' : null)
+  useEffect(() => {
+    if (reveal.current === 'row') {
+      const match = matches[current]
+      const row = match && rowOf.get(units[match.units[0]!]!.start)
+      reveal.current = row === undefined ? null : 'mark'
+      if (row !== undefined) virtualizer.scrollToIndex(row, { align: 'center' })
+    } else if (reveal.current === 'mark') {
+      const mark = body.current?.querySelector('[aria-current="true"]')
+      if (!mark) return
+      reveal.current = null
+      mark.scrollIntoView?.({ block: 'nearest' })
+    }
+  })
+  /** Moves to match `index` of `found` in `inUnits`, unfolding whatever hides it. */
+  const go = (index: number, found: typeof matches, inUnits: Unit[]) => {
     setCurrent(index)
     const match = found[index]
     if (!match) return
-    const touched = match.units.map((unit) => inUnits[unit]!)
-    const hidden = touched.flatMap((unit) => unit.folds)
+    const hidden = match.units.flatMap((unit) => inUnits[unit]!.folds)
     if (hidden.some((fold) => folded.has(fold)))
       setFolded((before) => new Set([...before].filter((fold) => !hidden.includes(fold))))
-    const places = touched.flatMap((unit) => unit.places)
-    if (places.some(([container, at]) => at >= (shown.get(container) ?? CHILD_WINDOW)))
-      setShown((before) => {
-        const next = new Map(before)
-        for (const [container, at] of places) {
-          const window = Math.ceil((at + 1) / CHILD_WINDOW) * CHILD_WINDOW
-          next.set(container, Math.max(next.get(container) ?? CHILD_WINDOW, window))
-        }
-        return next
-      })
-    revealed.current = true
+    reveal.current = 'row'
   }
-  useEffect(() => {
-    if (!revealed.current) return
-    revealed.current = false
-    body.current?.querySelector('[data-current-match]')?.scrollIntoView?.({ block: 'nearest' })
-  })
   const step = (by: number) =>
     matches.length && go((current + by + matches.length) % matches.length, matches, units)
   /** The found parts of each unit, within its text, each with the match it belongs to. */
@@ -197,11 +221,6 @@ function Viewer({
       }))
     return <HighlightedMatches text={text.slice(0, cut)} highlights={highlights} />
   }
-  /** Shows the next window of the container at `start`'s children. */
-  const more = (start: number) =>
-    setShown((before) =>
-      new Map(before).set(start, (before.get(start) ?? CHILD_WINDOW) + CHILD_WINDOW),
-    )
   const toggle = (start: number) =>
     setFolded((before) => {
       const next = new Set(before)
@@ -275,7 +294,7 @@ function Viewer({
                 truncated={truncated}
                 fileName={fileName}
                 expanded
-                initial={{ mode, wrap, folded, shown, query, current }}
+                initial={{ mode, wrap, folded, query, current }}
               />
             </Dialog.Popup>
           </Dialog.Portal>
@@ -300,12 +319,8 @@ function Viewer({
           value={mode}
           onChange={(next) => {
             setMode(next)
-            const nextUnits = unitsFor(next === 'structured')
-            go(
-              0,
-              findMatches(nextUnits, search, sourceFor(next === 'structured')).matches,
-              nextUnits,
-            )
+            const view = viewOf(next === 'structured')
+            go(0, findMatches(view.units, search, view.within).matches, view.units)
           }}
         />
       )}
@@ -329,7 +344,8 @@ function Viewer({
             value={query}
             onChange={(next) => {
               setQuery(next)
-              go(0, findMatches(units, filterQuery(next), sourceFor(structured)).matches, units)
+              const view = viewOf(structured)
+              go(0, findMatches(view.units, filterQuery(next), view.within).matches, view.units)
             }}
             onKeyDown={(event) => {
               if (event.key !== 'Enter') return
@@ -361,41 +377,64 @@ function Viewer({
       {actions}
     </div>
   )
-  const content = structured ? (
-    <div role="group" aria-label="Structure" className={styles.wrapped}>
-      <JsonValue
-        node={structure}
-        name="Value"
-        keyText={null}
-        trailing=""
-        folded={folded}
-        toggle={toggle}
-        shown={shown}
-        more={more}
-        marked={marked}
-      />
-    </div>
-  ) : format === 'text' ? (
-    <div role="group" aria-label="Lines" className={styles.numbered}>
-      {units.map((unit, index) => (
-        <LineRow key={unit.start} number={index + 1} wrap={wrap}>
-          {marked(unit.start, unit.text)}
-        </LineRow>
+  /** The rows near the view, each at its place in the whole; only they mount. */
+  const virtual = (
+    name: string,
+    className: string | false,
+    render: (index: number) => ReactNode,
+  ) => (
+    <div
+      role="group"
+      aria-label={name}
+      className={classNames(styles.rows, className)}
+      style={{ blockSize: virtualizer.getTotalSize() }}
+    >
+      {virtualizer.getVirtualItems().map((item) => (
+        <div
+          key={item.key}
+          data-index={item.index}
+          ref={virtualizer.measureElement}
+          className={classNames(styles.row, !structured && !wrap && styles.unwrappedRow)}
+          style={{ transform: `translateY(${item.start}px)` }}
+        >
+          {render(item.index)}
+        </div>
       ))}
     </div>
-  ) : (
-    <div role="group" aria-label="Raw">
-      <pre className={classNames(styles.raw, wrap ? styles.wrapped : styles.unwrapped)}>
-        {/* Each line with its matches, then its own terminator, so the text stays exact. */}
-        {units.map((unit, index) => (
-          <Fragment key={unit.start}>
-            {marked(unit.start, unit.text)}
-            {value.slice(unit.start + unit.text.length, units[index + 1]?.start ?? value.length)}
-          </Fragment>
-        ))}
-      </pre>
-    </div>
   )
+  const content = rows
+    ? virtual('Structure', styles.wrapped, (index) => (
+        <StructureRow row={rows[index]!} folded={folded} toggle={toggle} marked={marked} />
+      ))
+    : format === 'text'
+      ? virtual('Lines', false, (index) => (
+          <div
+            className={styles.numbered}
+            style={{ gridTemplateColumns: `${String(lines.length).length}ch minmax(0, 1fr)` }}
+          >
+            <span className={styles.lineNumber} aria-hidden>
+              {index + 1}
+            </span>
+            <span className={classNames(styles.lineText, wrap ? styles.wrapped : styles.unwrapped)}>
+              {marked(lines[index]!.start, lines[index]!.text)}
+            </span>
+          </div>
+        ))
+      : virtual('Raw', false, (index) => {
+          const line = lines[index]!
+          return (
+            <div className={classNames(styles.rawLine, wrap ? styles.wrapped : styles.unwrapped)}>
+              {marked(line.start, line.text)}
+              {/* Its own terminator, unseen, so the text stays exact. */}
+              <span className={styles.terminator}>
+                {value.slice(
+                  line.start + line.text.length,
+                  lines[index + 1]?.start ?? value.length,
+                )}
+              </span>
+            </div>
+          )
+        })
   const notice = truncated && (
     <Typography.BodySmall>This is only the start of the value.</Typography.BodySmall>
   )
@@ -435,184 +474,135 @@ function Viewer({
   )
 }
 
-function LineRow({
-  number,
-  wrap,
-  children,
-}: {
-  number: number
-  wrap: boolean
-  children: ReactNode
-}) {
-  return (
-    <>
-      <span className={styles.lineNumber} aria-hidden>
-        {number}
-      </span>
-      <span className={classNames(styles.lineText, wrap ? styles.wrapped : styles.unwrapped)}>
-        {children}
-      </span>
-    </>
-  )
+/** Each line of `structure`, its folded containers closed, in order. */
+function structureRows(structure: JsonNode, folded: Set<number>): Row[] {
+  const rows: Row[] = []
+  const visit = (
+    node: JsonNode,
+    depth: number,
+    name: string,
+    keyText: string | null,
+    keyStart: number | undefined,
+    trailing: string,
+  ) => {
+    rows.push({ kind: 'value', node, depth, name, keyText, keyStart, trailing })
+    if (node.kind !== 'object' && node.kind !== 'array') return
+    const count = node.kind === 'object' ? node.entries.length : node.items.length
+    if (!count || folded.has(node.start)) return
+    if (node.kind === 'object')
+      node.entries.forEach((entry, index) =>
+        visit(
+          entry.value,
+          depth + 1,
+          keyName(entry.key),
+          entry.key,
+          entry.keyStart,
+          index < count - 1 ? ',' : '',
+        ),
+      )
+    else
+      node.items.forEach((item, index) =>
+        visit(item, depth + 1, `Item ${index + 1}`, null, undefined, index < count - 1 ? ',' : ''),
+      )
+    rows.push({ kind: 'close', node, depth, trailing })
+  }
+  visit(structure, 0, 'Value', null, undefined, '')
+  return rows
 }
+
+const rowKey = (row: Row) => `${row.kind} ${row.node.start}`
 
 const nouns = { object: ['property', 'properties'], array: ['item', 'items'] } as const
 
-/** One value, its key before it and `trailing` (a comma) after it. */
-function JsonValue({
-  node,
-  name,
-  keyText,
-  keyStart,
-  trailing,
+/** One row of a structure. */
+function StructureRow({
+  row,
   folded,
   toggle,
-  shown,
-  more,
   marked,
 }: {
-  node: JsonNode
-  /** What the value's toggle names it: its key, its index, or "Value" at the top. */
-  name: string
-  keyText: string | null
-  keyStart?: number
-  trailing: string
+  row: Row
   folded: Set<number>
   toggle: (start: number) => void
-  shown: Map<number, number>
-  more: (start: number) => void
   marked: (start: number, text: string, cut?: number) => ReactNode
 }) {
-  const key = keyText !== null && (
+  const { node } = row
+  const indent = { paddingInlineStart: row.depth * INDENT }
+  const container = node.kind === 'object' || node.kind === 'array'
+  const [open, close] = node.kind === 'object' ? ['{', '}'] : ['[', ']']
+  if (row.kind === 'close')
+    return (
+      <div className={styles.line} style={indent}>
+        <span className={styles.toggleSpacer} />
+        <span>
+          {close}
+          {row.trailing}
+        </span>
+      </div>
+    )
+  const key = row.keyText !== null && (
     <>
-      {marked(keyStart!, keyText)}
+      {marked(row.keyStart!, row.keyText)}
       {': '}
     </>
   )
-  if (node.kind === 'object' || node.kind === 'array') {
+  if (container) {
     const count = node.kind === 'object' ? node.entries.length : node.items.length
-    const [open, close] = node.kind === 'object' ? ['{', '}'] : ['[', ']']
     if (count === 0)
       return (
-        <div className={styles.line}>
+        <div className={styles.line} style={indent}>
           <span className={styles.toggleSpacer} />
           <span className={styles.lineText}>
             {key}
             {open}
             {close}
-            {trailing}
+            {row.trailing}
           </span>
         </div>
       )
     const isFolded = folded.has(node.start)
-    const noun = (n: number) => nouns[node.kind][n === 1 ? 0 : 1]
-    const size = `${count} ${noun(count)}`
-    // A huge container shows its children a window at a time, and says how many follow.
-    const limit = shown.get(node.start) ?? CHILD_WINDOW
-    const rest = count - limit
-    const batch = Math.min(rest, CHILD_WINDOW)
-    const passed = { folded, toggle, shown, more, marked }
+    const size = `${count} ${nouns[node.kind][count === 1 ? 0 : 1]}`
     return (
-      <div>
-        <div className={styles.line}>
-          <Button.IconButton
-            className={styles.toggle}
-            name={isFolded ? 'ChevronRight' : 'ChevronDown'}
-            size="22"
-            variant="bare"
-            ariaLabel={`${name}: ${size}`}
-            aria-expanded={!isFolded}
-            onClick={() => toggle(node.start)}
-          />
-          <span className={styles.lineText}>
-            {key}
-            {open}
-            {isFolded ? (
-              <>
-                {' … '}
-                {close}
-                {trailing} <span className={styles.summary}>{size}</span>
-              </>
-            ) : (
-              <span className={styles.summary}> {size}</span>
-            )}
-          </span>
-        </div>
-        {!isFolded && (
-          <>
-            <div className={styles.children}>
-              {node.kind === 'object'
-                ? node.entries
-                    .slice(0, limit)
-                    .map((entry, index) => (
-                      <JsonValue
-                        key={entry.keyStart}
-                        node={entry.value}
-                        name={keyName(entry.key)}
-                        keyText={entry.key}
-                        keyStart={entry.keyStart}
-                        trailing={index < count - 1 ? ',' : ''}
-                        {...passed}
-                      />
-                    ))
-                : node.items
-                    .slice(0, limit)
-                    .map((item, index) => (
-                      <JsonValue
-                        key={item.start}
-                        node={item}
-                        name={`Item ${index + 1}`}
-                        keyText={null}
-                        trailing={index < count - 1 ? ',' : ''}
-                        {...passed}
-                      />
-                    ))}
-              {rest > 0 && (
-                <div className={styles.line}>
-                  <span className={styles.toggleSpacer} />
-                  <span className={styles.lineText}>
-                    <span className={styles.summary}>
-                      {rest} more {noun(rest)}
-                    </span>
-                    <Button.TextButton
-                      className={styles.moreButton}
-                      size="22"
-                      variant="bare"
-                      // The name starts with the visible label, then says which container.
-                      aria-label={`Show next ${batch}: ${name}`}
-                      onClick={() => more(node.start)}
-                    >
-                      Show next {batch}
-                    </Button.TextButton>
-                  </span>
-                </div>
-              )}
-            </div>
-            <div className={styles.line}>
-              <span className={styles.toggleSpacer} />
-              <span>
-                {close}
-                {trailing}
-              </span>
-            </div>
-          </>
-        )}
+      <div className={styles.line} style={indent}>
+        <Button.IconButton
+          className={styles.toggle}
+          name={isFolded ? 'ChevronRight' : 'ChevronDown'}
+          size="22"
+          variant="bare"
+          ariaLabel={`${row.name}: ${size}`}
+          aria-expanded={!isFolded}
+          onClick={() => toggle(node.start)}
+        />
+        <span className={styles.lineText}>
+          {key}
+          {open}
+          {isFolded ? (
+            <>
+              {' … '}
+              {close}
+              {row.trailing} <span className={styles.summary}>{size}</span>
+            </>
+          ) : (
+            <span className={styles.summary}> {size}</span>
+          )}
+        </span>
       </div>
     )
   }
-  const long = node.kind === 'string' && node.raw.length > LONG_STRING_LENGTH
+  const raw = 'raw' in node ? node.raw : ''
+  const long = node.kind === 'string' && raw.length > LONG_STRING_LENGTH
   const isFolded = long && folded.has(node.start)
-  const cut = isFolded ? STRING_PREVIEW_LENGTH : node.raw.length
+  const cut = isFolded ? STRING_PREVIEW_LENGTH : raw.length
   return (
-    <div className={styles.line}>
+    <div className={styles.line} style={indent}>
       <span className={styles.toggleSpacer} />
       <span className={styles.lineText}>
         {key}
         <span className={node.kind === 'string' ? token.string : token.constant}>
-          {marked(node.start, node.raw, cut)}
+          {marked(node.start, raw, cut)}
           {isFolded && '…'}
         </span>
-        {trailing}
+        {row.trailing}
         {long && (
           <Button.TextButton
             className={styles.moreButton}
@@ -620,10 +610,10 @@ function JsonValue({
             variant="bare"
             aria-expanded={!isFolded}
             // The name starts with the visible label, then says which string it is.
-            aria-label={`${isFolded ? `${node.raw.length - cut} more characters` : 'Fold'}: ${name}`}
+            aria-label={`${isFolded ? `${raw.length - cut} more characters` : 'Fold'}: ${row.name}`}
             onClick={() => toggle(node.start)}
           >
-            {isFolded ? `${node.raw.length - cut} more characters` : 'Fold'}
+            {isFolded ? `${raw.length - cut} more characters` : 'Fold'}
           </Button.TextButton>
         )}
       </span>
@@ -646,125 +636,6 @@ function initialFolds(structure: JsonNode | null, large: boolean) {
   }
   visit(structure, 0)
   return folds
-}
-
-/**
- * Every place `search` matches in `units`, in order. With `source`, the payload as retained,
- * it also matches across one entry's units, as a key with its value, or a quoted token. A
- * match that overlaps one found in a unit is not counted again. One that reaches another
- * entry, or shows in no unit, shows only in Raw: `rawOnly` counts those, so Find can say so.
- */
-function findMatches(
-  units: Unit[],
-  search: FilterQuery,
-  source: string | null,
-): { matches: Match[]; rawOnly: number } {
-  if (!search.text) return { matches: [], rawOnly: 0 }
-  const inUnits = units.flatMap((unit) => {
-    const text = unit.quoted ? unit.text.slice(1, -1) : unit.text
-    const shift = unit.start + (unit.quoted ? 1 : 0)
-    return search.hits(text).map((ranges) => ranges.map(([a, b]): Range => [a + shift, b + shift]))
-  })
-  const matches = inUnits.map((ranges): Match => ({ ranges, units: touching(units, ranges) }))
-  if (source === null) return { matches, rawOnly: 0 }
-  // Matches in units never overlap one another, so their spans are in order.
-  const spans = inUnits.map((ranges): Range => [ranges[0]![0], ranges.at(-1)![1]])
-  const overlaps = ([start, end]: Range) => {
-    let low = 0
-    let high = spans.length
-    while (low < high) {
-      const middle = (low + high) >> 1
-      if (spans[middle]![0] < end) low = middle + 1
-      else high = middle
-    }
-    return low > 0 && spans[low - 1]![1] > start
-  }
-  let rawOnly = 0
-  for (const line of lineUnits(source))
-    for (const ranges of search.hits(line.text)) {
-      const shifted = ranges.map(([a, b]): Range => [a + line.start, b + line.start])
-      if (!shifted.length || overlaps([shifted[0]![0], shifted.at(-1)![1]])) continue
-      const touched = touching(units, shifted)
-      const entry = units[touched[0] ?? -1]?.entry
-      if (entry !== undefined && touched.every((unit) => units[unit]!.entry === entry))
-        matches.push({ ranges: shifted, units: touched })
-      else rawOnly++
-    }
-  return { matches: matches.toSorted((a, b) => a.ranges[0]![0] - b.ranges[0]![0]), rawOnly }
-}
-
-/** The indexes of the units, in offset order, that `ranges` overlap. */
-function touching(units: Unit[], ranges: Range[]) {
-  const touched = new Set<number>()
-  for (const [start, end] of ranges) {
-    let low = 0
-    let high = units.length
-    while (low < high) {
-      const middle = (low + high) >> 1
-      if (units[middle]!.start <= start) low = middle + 1
-      else high = middle
-    }
-    for (let at = Math.max(low - 1, 0); at < units.length && units[at]!.start < end; at++)
-      if (units[at]!.start + units[at]!.text.length > start) touched.add(at)
-  }
-  return [...touched].toSorted((a, b) => a - b)
-}
-
-/** Each key and scalar, in offset order, with the folds and windows that hide it. */
-function structureUnits(structure: JsonNode): Unit[] {
-  const units: Unit[] = []
-  const visit = (node: JsonNode, folds: number[], places: Place[], entry = node.start) => {
-    if (node.kind === 'object') {
-      const inner = [...folds, node.start]
-      node.entries.forEach((item, index) => {
-        const at: Place[] = [...places, [node.start, index]]
-        units.push({
-          start: item.keyStart,
-          text: item.key,
-          folds: inner,
-          places: at,
-          entry: item.keyStart,
-          quoted: true,
-        })
-        visit(item.value, inner, at, item.keyStart)
-      })
-    } else if (node.kind === 'array') {
-      node.items.forEach((item, index) =>
-        visit(item, [...folds, node.start], [...places, [node.start, index]]),
-      )
-    } else
-      units.push({
-        start: node.start,
-        text: node.raw,
-        folds:
-          node.kind === 'string' && node.raw.length > LONG_STRING_LENGTH
-            ? [...folds, node.start]
-            : folds,
-        places,
-        entry,
-        quoted: node.kind === 'string',
-      })
-  }
-  visit(structure, [], [])
-  return units
-}
-
-/** Each line, at its exact offset, as `sourceLines` counts them. */
-function lineUnits(value: string): Unit[] {
-  let start = 0
-  const units: Unit[] = []
-  for (const terminator of value.matchAll(LINE_TERMINATOR)) {
-    units.push({
-      start,
-      text: value.slice(start, terminator.index),
-      folds: [],
-      places: [],
-      entry: start,
-    })
-    start = terminator.index + terminator[0].length
-  }
-  units.push({ start, text: value.slice(start), folds: [], places: [], entry: start })
-  return units
 }
 
 /** A key as you read it, for a toggle's name: its escapes read, its quotes gone. */

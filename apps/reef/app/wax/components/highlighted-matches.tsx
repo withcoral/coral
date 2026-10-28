@@ -11,7 +11,7 @@ export type Highlight = { range: [start: number, end: number]; current?: boolean
 /**
  * `text` with each part that a filter query matched in bold. A find passes the parts it
  * found as `highlights` instead, in order: each is tinted as well, and the current match's
- * parts are outlined and carry `data-current-match`, so the find can scroll to them.
+ * parts are outlined and marked `aria-current`, so a reader and the find can tell them.
  */
 export function HighlightedMatches({
   text,
@@ -32,7 +32,7 @@ export function HighlightedMatches({
       <Part
         key={start}
         className={classNames(styles.match, found && styles.found, current && styles.current)}
-        data-current-match={current ? '' : undefined}
+        aria-current={current || undefined}
       >
         {text.slice(start, end)}
       </Part>,

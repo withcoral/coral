@@ -44,7 +44,8 @@ export const body = style({
   color: theme.content.primary,
   margin: 0,
   minWidth: 0,
-  padding: 12,
+  // The rows' list adds the padding above and below, so it scrolls with them.
+  paddingInline: 12,
   tabSize: 2,
 })
 export const framedBody = style(frame)
@@ -71,11 +72,23 @@ export const expandedBody = style({ flex: 1, minHeight: 0, overflow: 'auto' })
 export const wrapped = style({ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' })
 export const unwrapped = style({ whiteSpace: 'pre' })
 
+/** The rows near the view, each placed at its offset in the whole list. */
+export const rows = style({ position: 'relative', minWidth: 0 })
+export const row = style({
+  position: 'absolute',
+  insetBlockStart: 0,
+  insetInlineStart: 0,
+  width: '100%',
+})
+/** An unwrapped row is as wide as its text, so the body scrolls sideways to it. */
+export const unwrappedRow = style({ minWidth: '100%', width: 'max-content' })
+
 export const line = style({ display: 'flex', alignItems: 'baseline', gap: 2, minWidth: 0 })
 export const lineText = style({ minWidth: 0 })
-export const raw = style({ margin: 0, minWidth: 0 })
-
-export const children = style({ paddingInlineStart: 18 })
+/** An empty line keeps its height. */
+export const rawLine = style({ minBlockSize: '1lh' })
+/** A Raw line's own terminator: kept in the text, so it stays exact, but not shown. */
+export const terminator = style({ display: 'none' })
 
 /** A container's toggle sits in the indent, so keys stay aligned with their siblings. */
 export const toggle = style({ flexShrink: 0, marginInlineStart: -4 })
@@ -83,11 +96,8 @@ export const toggleSpacer = style({ display: 'inline-block', flexShrink: 0, widt
 
 export const summary = style({ color: theme.content.tertiary })
 
-export const numbered = style({
-  display: 'grid',
-  gridTemplateColumns: 'max-content minmax(0, 1fr)',
-  columnGap: 12,
-})
+/** A numbered line; its caller sizes the number's column for the last line's number. */
+export const numbered = style({ display: 'grid', columnGap: 12 })
 export const lineNumber = style({
   color: theme.content.tertiary,
   textAlign: 'end',
