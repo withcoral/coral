@@ -7,6 +7,7 @@ import {
   useNavigation,
   useRevalidator,
 } from 'react-router'
+import { useEffect } from 'react'
 import { expect, waitFor, within } from 'storybook/test'
 import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
@@ -98,6 +99,9 @@ const world = {
   stale: {} as Record<string, ActivityRow[]>,
   /** Each loader read, in order: the record it opened and the Tasks whose kept window it served. */
   reads: [] as { record: string | null; kept: string[] }[],
+  /** The route's own reads and navigation, for a play while a modal covers its buttons. */
+  revalidate: () => {},
+  navigate: (_to: string) => {},
   reset(roots: Root[]) {
     this.roots = roots
     this.count = 0
@@ -436,6 +440,10 @@ function ScopesRoute() {
     apply()
     void revalidator.revalidate()
   }
+  useEffect(() => {
+    world.revalidate = () => void revalidator.revalidate()
+    world.navigate = (to) => void navigate(to)
+  })
   const button = (label: string, apply: () => void) => (
     <button type="button" onClick={() => change(apply)}>
       {label}
@@ -1230,3 +1238,128 @@ function endsThenANewRunStarts(press: string): Story {
 // Both successful and failed Runs return to the Run before later work arrives.
 export const ASucceededRunGivesWayToANewRun = endsThenANewRunStarts('End oldest running run')
 export const AFailedRunGivesWayToANewRun = endsThenANewRunStarts('Fail oldest running run')
+
+/** Opens the selected operation's response in its expanded viewer, with `find` in Find. */
+async function inspect({ canvasElement, userEvent }: Play, find: string) {
+  const page = within(canvasElement.ownerDocument.body)
+  const rail = page.getByRole('dialog', { name: 'Activity details' })
+  const expand = within(rail).getByRole('button', { name: 'Expand Provider response' })
+  await userEvent.click(expand)
+  const viewer = await page.findByRole('dialog', { name: 'Provider response' })
+  await userEvent.type(within(viewer).getByRole('searchbox'), find)
+  return { expand, viewer }
+}
+/** Changes what Coral holds while the expanded viewer covers the route's buttons. */
+async function arrive(kind: Parameters<typeof world.change>[0]) {
+  world.change(kind)
+  world.revalidate()
+}
+
+// Catches: live mode moving on while you inspect a payload expanded, which swaps the
+// record and closes the viewer; the list no longer taking new activity meanwhile; or live
+// mode staying held, or turned off, once you close the viewer.
+export const HoldsWhileYouInspectAPayload: Story = {
+  beforeEach: () => world.reset([]),
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, idle, canvas } = await surface(context)
+    const page = within(context.canvasElement.ownerDocument.body)
+    await userEvent.click(latest())
+    await press('Add task')
+    await selects('Task t1', 'Task t1')
+    await press('Add run to newest task')
+    await selects('Run r2', 'run r2')
+    await press('Add operation')
+    await selects('call.r2-op-3', 'call.r2-op-3')
+    const inspected = address().get('record')
+    const { expand, viewer } = await inspect(context, 'x')
+
+    // A new operation arrives and the Run ends. The list takes both; the record stays.
+    await arrive('operation')
+    await idle()
+    await arrive('end')
+    await idle()
+    await waitFor(() =>
+      expect(canvas.getByRole('link', { name: 'call.r2-op-4', hidden: true })).toBeInTheDocument(),
+    )
+    await expect(address().get('record')).toBe(inspected)
+    await expect(address().get('live')).toBe('latest')
+    // Behind the open viewer, the toggle stays pressed.
+    await expect(canvas.getByRole('button', { name: 'Live', hidden: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    // The same viewer stays open, as you left it.
+    await expect(page.getByRole('dialog', { name: 'Provider response' })).toBe(viewer)
+    await expect(within(viewer).getByRole('searchbox')).toHaveValue('x')
+
+    // Closed, focus is back on Expand, then live mode moves on to the Run's newest record.
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() =>
+      expect(page.queryByRole('dialog', { name: 'Provider response' })).toBeNull(),
+    )
+    await waitFor(() => expect(address().get('record')).not.toBe(inspected))
+    await expect(expand.isConnected).toBe(false)
+    await expect(address().get('live')).toBe('latest')
+  },
+}
+
+// Catches: a close that turns live mode back on after you turned it off meanwhile.
+export const StaysOffWhenLiveEndsWhileYouInspect: Story = {
+  beforeEach: () => world.reset([]),
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, idle } = await surface(context)
+    const page = within(context.canvasElement.ownerDocument.body)
+    await userEvent.click(latest())
+    await press('Add task')
+    await press('Add run to newest task')
+    await press('Add operation')
+    await selects('call.r2-op-3', 'call.r2-op-3')
+    const inspected = address().get('record')
+    const { expand } = await inspect(context, 'a')
+    // Live mode ends while you inspect: its address drops it, as its toggle does.
+    const off = new URLSearchParams(address())
+    off.delete('live')
+    world.navigate(`?${off}`)
+    await waitFor(() => expect(address().has('live')).toBe(false))
+    await arrive('operation')
+    await idle()
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(expand).toHaveFocus())
+    await idle()
+    // Nothing moves on, and live mode stays off.
+    await expect(address().get('record')).toBe(inspected)
+    await expect(latest()).toHaveAttribute('aria-pressed', 'false')
+    await expect(page.queryByRole('dialog', { name: 'Provider response' })).toBeNull()
+  },
+}
+
+// Catches: a viewer that goes away open, as when you go back to another record, and leaves
+// live mode held for good.
+export const ResumesWhenTheOpenViewerGoesAway: Story = {
+  beforeEach: () => world.reset([]),
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, idle } = await surface(context)
+    const page = within(context.canvasElement.ownerDocument.body)
+    await userEvent.click(latest())
+    await press('Add task')
+    await press('Add run to newest task')
+    await press('Add operation')
+    await selects('call.r2-op-3', 'call.r2-op-3')
+    await inspect(context, 'a')
+    // Another record opens in live mode, so the open viewer unmounts with its record.
+    const run = new URLSearchParams(address())
+    run.set('record', runRow('r2', '').name)
+    world.navigate(`?${run}`)
+    await waitFor(() =>
+      expect(page.queryByRole('dialog', { name: 'Provider response' })).toBeNull(),
+    )
+    await idle()
+    // Live mode holds no more: a new operation opens as it arrives.
+    await press('Add operation')
+    await selects('call.r2-op-4', 'call.r2-op-4')
+    await expect(address().get('live')).toBe('latest')
+  },
+}

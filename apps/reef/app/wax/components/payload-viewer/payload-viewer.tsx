@@ -1,5 +1,13 @@
 import classNames from 'classnames'
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  Fragment,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 
 import { filterQuery, type FilterQuery } from '@/utils/filter-query'
 import * as Button from '@/wax/components/button'
@@ -42,6 +50,9 @@ export interface PayloadViewerProps {
   truncated?: boolean
   /** The download's file name; defaults to the label. */
   fileName?: string
+  /** Called with true when the expanded viewer opens, and with false once it has closed and
+   * focus is back on Expand, or when it unmounts open. A page can hold still meanwhile. */
+  onExpandedChange?: (expanded: boolean) => void
 }
 
 /**
@@ -61,9 +72,20 @@ function Viewer({
   label,
   truncated = false,
   fileName,
+  onExpandedChange,
   expanded,
   initial,
 }: PayloadViewerProps & { expanded: boolean; initial?: ViewState }) {
+  const [open, setOpen] = useState(false)
+  // From the open until the close has ended, so focus is back on Expand before a page moves.
+  const [held, setHeld] = useState(false)
+  const reportExpanded = useEffectEvent((next: boolean) => onExpandedChange?.(next))
+  // The cleanup also runs when the viewer unmounts open, so no page stays held.
+  useEffect(() => {
+    if (!held) return
+    reportExpanded(true)
+    return () => reportExpanded(false)
+  }, [held])
   const parsed = useMemo(() => (format === 'json' ? jsonStructure(value) : null), [format, value])
   const structure = typeof parsed === 'object' ? parsed : null
   const large = useMemo(
@@ -183,7 +205,16 @@ function Viewer({
         onClick={download}
       />
       {!expanded && (
-        <Dialog.Root>
+        <Dialog.Root
+          open={open}
+          onOpenChange={(next) => {
+            setOpen(next)
+            if (next) setHeld(true)
+          }}
+          onOpenChangeComplete={(next) => {
+            if (!next) setHeld(false)
+          }}
+        >
           <Dialog.Trigger
             render={<Button.Container size="22" variant="bare" ariaLabel={`Expand ${label}`} />}
           >

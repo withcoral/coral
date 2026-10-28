@@ -26,10 +26,10 @@ import { DescribeParameters, DiscoveryEvidence, SearchParameters } from './disco
 import { DetailHeader, StateBadge } from './detail-header'
 import { ContextImpact } from './context-impact'
 import { Instant } from './instant'
-import { PayloadViewer } from '@/wax/components/payload-viewer'
+import { PayloadViewer, type PayloadViewerProps } from '@/wax/components/payload-viewer'
 import { invocationOutcomeLabels, requestedBy, resultUnknown } from './labels'
 import { Panel } from './panel'
-import { useActivityConnected } from './live'
+import { useActivityConnected, useActivityInspect } from './live'
 import { useActivityNavigation } from './navigation'
 import * as styles from './task-activity.css'
 
@@ -575,7 +575,7 @@ function InvocationOutcome({ detail }: { detail: InvocationDetail }) {
   switch (detail.result.kind) {
     case 'upstream_outcome':
       // What the provider answered, which says nothing of whether the goal succeeded.
-      return <PayloadViewer value={detail.result.value} format="json" label="Provider response" />
+      return <Payload value={detail.result.value} format="json" label="Provider response" />
     case 'coral_failure':
       return (
         <ErrorCard
@@ -716,9 +716,9 @@ function EventEvidence({
   recordHref: (name: string) => string
 }) {
   if (event.kind === 'program.logged')
-    return <PayloadViewer value={event.message} format="text" label="Log message" />
+    return <Payload value={event.message} format="text" label="Log message" />
   if (event.kind === 'program.emitted')
-    return <PayloadViewer value={event.value} format="json" label="Emitted value" />
+    return <Payload value={event.value} format="json" label="Emitted value" />
   // Its time is in the list above.
   return (
     <>
@@ -748,7 +748,7 @@ function TerminalEvidence({ terminal }: { terminal: RunTerminal }) {
     case 'succeeded':
       // A program's return value, apart from anything it emitted while it ran.
       return terminal.finalValue === null ? null : (
-        <PayloadViewer value={terminal.finalValue} format="json" label="Final value" />
+        <Payload value={terminal.finalValue} format="json" label="Final value" />
       )
     case 'failed':
       return (
@@ -796,7 +796,7 @@ function ErrorDetail({ error }: { error: ProgramError }) {
       {error.toolBody && (
         <>
           <Typography.BodySmallStrong>Upstream response data</Typography.BodySmallStrong>
-          <PayloadViewer
+          <Payload
             value={error.toolBody}
             format="json"
             label="Upstream response data"
@@ -824,4 +824,9 @@ function ErrorDetail({ error }: { error: ProgramError }) {
       ))}
     </div>
   )
+}
+
+/** A payload in its viewer. Live mode holds while you inspect it expanded. */
+function Payload(props: PayloadViewerProps) {
+  return <PayloadViewer {...props} onExpandedChange={useActivityInspect()} />
 }

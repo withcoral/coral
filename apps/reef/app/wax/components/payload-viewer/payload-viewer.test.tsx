@@ -320,3 +320,32 @@ it('keeps line terminators exact in Raw and finds per line', async () => {
   )
   expect(within(region).getByRole('status')).toHaveTextContent('1 of 3')
 })
+
+// Catches: a page that cannot tell while you inspect a payload, so it moves on under you,
+// or that stays held after the expanded viewer closes or goes away.
+it('says when its expanded viewer opens and closes, and when it goes away open', async () => {
+  const onExpandedChange = vi.fn()
+  const { unmount } = render(
+    <PayloadViewer
+      value='{"a":1}'
+      format="json"
+      label="Provider response"
+      onExpandedChange={onExpandedChange}
+    />,
+  )
+  const user = userEvent.setup()
+  const expand = screen.getByRole('button', { name: 'Expand Provider response' })
+  expect(onExpandedChange).not.toHaveBeenCalled()
+  await user.click(expand)
+  await screen.findByRole('dialog', { name: 'Provider response' })
+  expect(onExpandedChange.mock.calls).toEqual([[true]])
+  await user.keyboard('{Escape}')
+  await vi.waitFor(() => expect(onExpandedChange.mock.calls).toEqual([[true], [false]]))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(expand).toHaveFocus()
+  // Open when it unmounts, it says it closed.
+  await user.click(expand)
+  await screen.findByRole('dialog', { name: 'Provider response' })
+  unmount()
+  expect(onExpandedChange.mock.calls).toEqual([[true], [false], [true], [false]])
+})
