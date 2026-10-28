@@ -1993,12 +1993,6 @@ async fn check_raw_numeric_inputs(session: &RawSession, task: &str, tools: &[Val
     }
 }
 
-/// The protocol window itself. `initialize` exists only before 2026-07-28
-/// (SEP-2567), so asking for the newest version over it, or for a legacy
-/// version outside the window, lands on the newest legacy version in the
-/// window. Every discover handshake asserts that `server/discover` advertises
-/// exactly the window. The newest version's standard-header obligations are
-/// enforced on tools/call.
 /// Coral keeps no MCP session, so the methods that only a session gives
 /// meaning to, the standalone `GET` stream and `DELETE`, are not served.
 async fn check_only_post_is_served(endpoint: &str) {
@@ -2035,6 +2029,12 @@ async fn check_only_post_is_served(endpoint: &str) {
     }
 }
 
+/// The protocol window itself. `initialize` exists only before 2026-07-28
+/// (SEP-2567), so asking for the newest version over it, or for a legacy
+/// version outside the window, lands on the newest legacy version in the
+/// window. Every discover handshake asserts that `server/discover` advertises
+/// exactly the window. The newest version's standard-header obligations are
+/// enforced on tools/call.
 async fn check_protocol_window(endpoint: &str) {
     let (oldest, newest) = protocol_window_ends();
     assert!(
