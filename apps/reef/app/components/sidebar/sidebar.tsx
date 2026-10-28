@@ -5,7 +5,6 @@ import type { BrowserAuth } from '@/auth/types'
 import { Button, Menu, ScrollArea } from '@/wax/components'
 import { Avatar } from '@/wax/components/avatar'
 import { Brand } from '@/wax/components/brand'
-import { Icon } from '@/wax/components/icon'
 import type { IconName } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { SidebarBadge, SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
@@ -58,10 +57,15 @@ interface Pending {
   text: string
 }
 
-// Both open outside Coral; Desktop hands new-window links to the browser. The
-// Slack link signs the person in with Slack and invites them to a shared
-// channel with the Coral team.
-const externalLinks: { href: string; icon: IconName; label: string }[] = [
+// The help menu's links open outside Coral; Desktop hands new-window links to
+// the browser. The Slack link signs the person in with Slack and invites them
+// to a shared channel with the Coral team.
+const helpLinks: { href: string; icon: IconName; label: string }[] = [
+  {
+    href: 'https://withcoral.com/docs',
+    icon: 'BookOpen',
+    label: 'Read the docs',
+  },
   {
     href: 'https://slack.withcoral.com/connect',
     icon: 'Slack',
@@ -71,6 +75,11 @@ const externalLinks: { href: string; icon: IconName; label: string }[] = [
     href: 'https://github.com/withcoral/coral',
     icon: 'GitHub',
     label: 'Star on GitHub',
+  },
+  {
+    href: 'https://github.com/withcoral/coral/issues/new',
+    icon: 'MessageSquare',
+    label: 'Give feedback',
   },
 ]
 
@@ -466,66 +475,42 @@ function SidebarNavigation({
           <NameInput label="Workspace name" />
         </ActionDialog>
       )}
-      {!isMinimized && (
-        <div className={styles.externalLinks}>
-          {externalLinks.map((link) => (
-            <SidebarButton
-              key={link.href}
-              as="a"
-              href={link.href}
-              target="_blank"
-              rel="noreferrer"
-              icon={link.icon}
-              aria-label={link.label}
-              title={link.label}
-            >
-              {link.label}
-            </SidebarButton>
-          ))}
-        </div>
-      )}
-      <div className={classNames(styles.footer, isMinimized && styles.minimizedColumn)}>
-        {isMinimized && (
-          <Menu.Container>
-            <Menu.Trigger
-              render={
-                <Button.Container
-                  ariaLabel="Get help"
-                  title="Get help"
-                  variant="bare"
-                  className={styles.minimizedControl}
-                />
-              }
-            >
-              <Icon name="CircleQuestionMark" size="18" />
-            </Menu.Trigger>
-            <Menu.Content align="end" side="right">
-              {externalLinks.map((link) => (
-                <Menu.Item key={link.href} href={link.href} icon={link.icon}>
-                  {link.label}
-                </Menu.Item>
-              ))}
-            </Menu.Content>
-          </Menu.Container>
-        )}
+      <div className={styles.footer}>
         <Menu.Container>
           <Menu.Trigger
             render={
-              <Button.Container
-                ariaLabel={`Open account menu for ${accountLabel}`}
-                title={accountLabel}
-                variant="bare"
-                className={classNames(
-                  styles.accountTrigger,
-                  isMinimized ? styles.minimizedControl : styles.footerAccount,
-                )}
+              <SidebarButton
+                aria-label="Help and feedback"
+                icon="CircleQuestionMark"
+                isMinimized={isMinimized}
+                title="Help and feedback"
               />
             }
           >
-            <Icon name="User" size="18" />
-            {!isMinimized && <Button.Text>{accountLabel}</Button.Text>}
+            Help and feedback
           </Menu.Trigger>
-          <Menu.Content align="start" side="top">
+          <Menu.Content align={isMinimized ? 'end' : 'start'} side={isMinimized ? 'right' : 'top'}>
+            {helpLinks.map((link) => (
+              <Menu.Item key={link.href} href={link.href} icon={link.icon}>
+                {link.label}
+              </Menu.Item>
+            ))}
+          </Menu.Content>
+        </Menu.Container>
+        <Menu.Container>
+          <Menu.Trigger
+            render={
+              <SidebarButton
+                aria-label={`Open account menu for ${accountLabel}`}
+                icon="User"
+                isMinimized={isMinimized}
+                title={accountLabel}
+              />
+            }
+          >
+            {accountLabel}
+          </Menu.Trigger>
+          <Menu.Content align={isMinimized ? 'end' : 'start'} side={isMinimized ? 'right' : 'top'}>
             <AppearanceMenu />
             <Menu.Separator />
             {organizationOwner && (
