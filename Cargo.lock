@@ -797,8 +797,6 @@ dependencies = [
  "coral-telemetry",
  "coral-test-support",
  "coral-workspace",
- "opentelemetry",
- "opentelemetry_sdk",
  "prost",
  "prost-types",
  "serde_json",
@@ -810,7 +808,6 @@ dependencies = [
  "tonic-health",
  "tonic-prost",
  "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
  "uuid",
@@ -843,6 +840,7 @@ dependencies = [
  "coral-run",
  "coral-search",
  "coral-task",
+ "coral-telemetry",
  "coral-test-support",
  "coral-workspace",
  "jsonschema",
@@ -857,7 +855,6 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
 ]
@@ -1026,8 +1023,13 @@ dependencies = [
 name = "coral-telemetry"
 version = "1.3.0"
 dependencies = [
+ "axum",
+ "http",
+ "http-body",
  "opentelemetry",
  "opentelemetry_sdk",
+ "tokio",
+ "tower",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",

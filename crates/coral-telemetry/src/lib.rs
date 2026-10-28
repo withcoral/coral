@@ -5,8 +5,12 @@
 //! decides what spans may leave the host.
 
 mod export;
+mod request;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 
 pub use export::OtlpSpanFilter;
+pub use request::{REQUEST_TARGET, request_span, trace_grpc_routes, trace_http_routes};
 
 use opentelemetry::Context;
 use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator as _};
@@ -61,9 +65,6 @@ impl TraceId {
 
 const TRACEPARENT_HEADER: &str = "traceparent";
 const TRACESTATE_HEADER: &str = "tracestate";
-
-/// Stable message recorded for failed gRPC requests.
-pub const GRPC_REQUEST_ERROR_MESSAGE: &str = "gRPC request failed";
 
 /// Prefix for host-only span attributes that must not be exported over OTLP.
 pub const LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX: &str = "coral.local.";
@@ -127,6 +128,30 @@ pub fn set_parent_from_trace_headers(
     set_parent_from_context(span, context_from_trace_headers(traceparent, tracestate));
 }
 
+/// Sets `span`'s parent from an inbound HTTP request's W3C trace-context headers.
+///
+/// More than one `traceparent` line is invalid and starts a new trace. The
+/// `tracestate` lines are joined in order, and all are dropped when any is
+/// invalid. `baggage` is never read.
+fn set_parent_from_http_headers(span: &tracing::Span, headers: &http::HeaderMap) {
+    let mut traceparents = headers.get_all(TRACEPARENT_HEADER).iter();
+    let (Some(traceparent), None) = (traceparents.next(), traceparents.next()) else {
+        return;
+    };
+    let Ok(traceparent) = traceparent.to_str() else {
+        return;
+    };
+    let tracestate = headers
+        .get_all(TRACESTATE_HEADER)
+        .iter()
+        .map(http::HeaderValue::to_str)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+        .filter(|lines| !lines.is_empty())
+        .map(|lines| lines.join(","));
+    set_parent_from_trace_headers(span, Some(traceparent), tracestate.as_deref());
+}
+
 /// Sets `span`'s parent from a text-map carrier.
 pub fn set_parent_from_extractor(span: &tracing::Span, extractor: &dyn Extractor) {
     set_parent_from_context(span, context_from_extractor(extractor));
@@ -163,14 +188,13 @@ fn context_has_valid_span(context: &Context) -> bool {
 mod tests {
     use std::collections::HashMap;
 
-    use opentelemetry::trace::{SpanId, Status as OtelStatus, TraceId, TracerProvider as _};
-    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-    use tracing_subscriber::prelude::*;
+    use opentelemetry::trace::{SpanId, Status as OtelStatus, TraceId};
 
     use super::{
         context_from_extractor, context_from_trace_headers, record_failure,
         set_parent_from_trace_headers,
     };
+    use crate::testing::{SpanCapture, attribute};
 
     /// Persisted trace IDs are decoded through this parser, so it admits only
     /// the one spelling Coral writes.
@@ -197,15 +221,8 @@ mod tests {
 
     #[test]
     fn record_failure_sets_shared_error_fields() {
-        let memory = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(memory.clone())
-            .build();
-        let tracer = provider.tracer("failure-test");
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(tracing_opentelemetry::layer().with_tracer(tracer));
-
-        tracing::subscriber::with_default(subscriber, || {
+        let capture = SpanCapture::default();
+        tracing::subscriber::with_default(capture.subscriber(), || {
             let span = tracing::info_span!(
                 "failure",
                 error.type = tracing::field::Empty,
@@ -215,20 +232,12 @@ mod tests {
             record_failure(&span, "INVALID_ARGUMENT", "request failed");
             span.in_scope(|| {});
         });
-        provider.force_flush().expect("flush spans");
-
-        let spans = memory.get_finished_spans().expect("finished spans");
+        let spans = capture.finished();
         let failure = spans
             .iter()
             .find(|span| span.name == "failure")
             .expect("failure span");
-        let string_attribute = |name: &str| {
-            failure
-                .attributes
-                .iter()
-                .find(|attribute| attribute.key.as_str() == name)
-                .map(|attribute| attribute.value.as_str().into_owned())
-        };
+        let string_attribute = |name: &str| attribute(failure, name);
         assert_eq!(string_attribute("status").as_deref(), Some("error"));
         assert_eq!(
             string_attribute("error.type").as_deref(),
@@ -239,20 +248,12 @@ mod tests {
             Some("request failed")
         );
         assert_eq!(failure.status, OtelStatus::error("request failed"));
-        provider.shutdown().expect("provider shutdown");
     }
 
     #[test]
     fn rejects_missing_or_invalid_traceparent_under_active_span() {
-        let memory = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(memory.clone())
-            .build();
-        let tracer = provider.tracer("trace-context-test");
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(tracing_opentelemetry::layer().with_tracer(tracer));
-
-        tracing::subscriber::with_default(subscriber, || {
+        let capture = SpanCapture::default();
+        tracing::subscriber::with_default(capture.subscriber(), || {
             let ambient = tracing::info_span!("ambient");
             let _guard = ambient.enter();
 
@@ -260,20 +261,12 @@ mod tests {
             assert!(context_from_trace_headers(Some("not-a-traceparent"), None).is_none());
             assert!(context_from_extractor(&HashMap::new()).is_none());
         });
-        provider.shutdown().expect("provider shutdown");
     }
 
     #[test]
     fn sets_span_parent_from_trace_headers() {
-        let memory = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(memory.clone())
-            .build();
-        let tracer = provider.tracer("trace-context-test");
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(tracing_opentelemetry::layer().with_tracer(tracer));
-
-        tracing::subscriber::with_default(subscriber, || {
+        let capture = SpanCapture::default();
+        tracing::subscriber::with_default(capture.subscriber(), || {
             let span = tracing::info_span!("child");
             set_parent_from_trace_headers(
                 &span,
@@ -282,9 +275,7 @@ mod tests {
             );
             let _guard = span.enter();
         });
-        provider.force_flush().expect("flush spans");
-
-        let spans = memory.get_finished_spans().expect("finished spans");
+        let spans = capture.finished();
         let child = spans
             .iter()
             .find(|span| span.name == "child")
@@ -299,6 +290,5 @@ mod tests {
         );
         assert!(child.parent_span_is_remote);
         assert_eq!(child.span_context.trace_state().header(), "vendor=value");
-        provider.shutdown().expect("provider shutdown");
     }
 }

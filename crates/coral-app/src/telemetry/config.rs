@@ -4,7 +4,12 @@ use serde::Deserialize;
 
 use crate::bootstrap::AppError;
 
-pub(super) const DEFAULT_TRACE_FILTER: &str = "coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_search=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off";
+pub(super) const DEFAULT_TRACE_FILTER: &str = "coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_search=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off";
+/// Spans that always get trace context, whatever `trace_filter` exports:
+/// every Coral span at info or above. A request's safe errors and records
+/// take their trace identifier from whichever of them is current, so a span
+/// left out would start a new trace.
+pub(super) const TRACE_CONTEXT_FILTER: &str = "coral=info";
 pub(super) const DEFAULT_LOG_FILTER: &str =
     "coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
@@ -64,6 +69,13 @@ mod tests {
     use tracing_subscriber::filter::Targets;
 
     use super::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
+
+    /// Request spans are the root of every request's trace.
+    #[test]
+    fn the_default_trace_filter_exports_request_spans() {
+        let targets: Targets = DEFAULT_TRACE_FILTER.parse().expect("valid default filter");
+        assert!(targets.would_enable(coral_telemetry::REQUEST_TARGET, &tracing::Level::INFO));
+    }
 
     #[test]
     fn default_filters_carry_universal_search_index_errors() {

@@ -78,12 +78,14 @@ All provider calls not covered by an explicit policy in this section are treated
 
 Controls telemetry export to an OpenTelemetry endpoint.
 
+Every request has a trace, even when you do not set `endpoint`. A failed MCP tool call returns its `trace_id`. `trace_filter` controls which spans Coral exports, not which requests are traced. Coral records a request even when its caller's `traceparent` marks it unsampled. Request spans use the target `coral.request`.
+
 | Key            | Description                                                                        | Required | Default                                                                                                                                 |
 | -------------- | ---------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `endpoint`     | URL of the http otel endpoint to which telemetry will be sent.                     | No       | N/A                                                                                                                                     |
 | `headers`      | Additional headers sent to the otel endpoint, formatted as `name=value,name=value` | No       | None                                                                                                                                    |
 | `log_filter`   | Filters to apply to logs before otel export                                        | No       | `coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info`                                             |
-| `trace_filter` | Filters to apply to traces before otel export                                      | No       | `coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_search=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off` |
+| `trace_filter` | Filters to apply to traces before otel export                                      | No       | `coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_search=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off` |
 | `service_name` | Name of the service when exporting OTEL data                                       | No       | `coral`                                                                                                                                 |
 
 ## Auth

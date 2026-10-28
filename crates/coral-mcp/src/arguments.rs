@@ -281,7 +281,21 @@ where
     })
 }
 
+/// Every tool this Adapter serves, as `tools/list` advertises them.
 pub(crate) fn tools() -> Vec<Tool> {
+    TOOLS.clone()
+}
+
+/// The served tool named `name`. The name returned is Coral's own, never the
+/// caller's text.
+pub(crate) fn served_name(name: &str) -> Option<&'static str> {
+    TOOLS
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .find(|served| *served == name)
+}
+
+static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
     vec![
         tool::<StartTaskArguments, crate::projection::StartedTask>(
             "Start one Coral Task for one unit of user work.",
@@ -323,7 +337,7 @@ pub(crate) fn tools() -> Vec<Tool> {
             mutation_annotations("End Task", false, false),
         ),
     ]
-}
+});
 
 fn tool<T, Output: JsonSchema>(description: &'static str, annotations: ToolAnnotations) -> Tool
 where

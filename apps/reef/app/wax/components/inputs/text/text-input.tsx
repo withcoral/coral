@@ -11,7 +11,10 @@ import * as styles from '@/wax/components/inputs/base-input.css'
 export interface TextInputProps {
   ariaLabel?: string
   ariaDescribedBy?: string
-  /** Off for a name the browser should not suggest, such as a new identifier. */
+  /**
+   * Off for a name the browser should not suggest, such as a new identifier.
+   * Off also keeps password managers out of the field.
+   */
   autoComplete?: string
   autoFocus?: boolean
   /** Shows no border until hovered or focused, for an input that sits in a table cell. */
@@ -90,6 +93,10 @@ export function TextInput({
           aria-label={ariaLabel}
           aria-describedby={ariaDescribedBy}
           autoComplete={autoComplete}
+          // Password managers ignore autocomplete="off", so they each need their own opt-out.
+          data-1p-ignore={autoComplete === 'off' || undefined}
+          data-lpignore={autoComplete === 'off' ? 'true' : undefined}
+          data-bwignore={autoComplete === 'off' || undefined}
           autoFocus={autoFocus}
           className={classNames(
             styles.input,

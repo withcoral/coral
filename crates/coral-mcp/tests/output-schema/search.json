@@ -193,11 +193,16 @@
         },
         "message": {
           "type": "string"
+        },
+        "trace_id": {
+          "type": "string",
+          "description": "The W3C trace identifier of this tool call. Give it to the operator\nto find the call in Coral's telemetry. It grants no authority."
         }
       },
       "required": [
         "code",
-        "message"
+        "message",
+        "trace_id"
       ]
     }
   },

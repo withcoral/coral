@@ -594,6 +594,9 @@ async fn a_takeover_after_the_run_deadline_records_timed_out() {
     assert_eq!(update.state(), RunState::TimedOut);
 }
 
+/// The supervisor of an owner task that panicked interrupts the Run in one
+/// chunk under a new claim. It reads no Run Inbox: a cancellation waiting
+/// there is not applied, and stays.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_owner_task_that_panics_mid_run_has_the_supervisor_record_interrupted_once() {
     let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
@@ -611,6 +614,15 @@ async fn an_owner_task_that_panics_mid_run_has_the_supervisor_record_interrupted
              WHERE id = '{run_id}'"
         ))
         .await;
+    // Held by another Coral Instance, the cancellation is not this
+    // instance's to deliver: it waits.
+    fixture
+        .submit_to_inbox(
+            &workspace_id,
+            &run_id,
+            crate::run_inbox::OutsideRequest::Cancel(principal.principal().clone()),
+        )
+        .await;
 
     // Once the Program executes, the owner has consumed its start: the
     // Emission's message is the next one its task dequeues.
@@ -627,6 +639,11 @@ async fn an_owner_task_that_panics_mid_run_has_the_supervisor_record_interrupted
     .await;
     let after = fixture.run_record(&workspace_id, &run_id).await;
     assert_eq!(after.state, RunState::Interrupted);
+    assert_eq!(
+        fixture.inbox_rows(&workspace_id, &run_id).await,
+        1,
+        "the waiting cancellation was not applied"
+    );
     assert!(
         after
             .execution_claim_id

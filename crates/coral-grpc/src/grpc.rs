@@ -15,7 +15,6 @@ use crate::coral::{internal::v1 as internal, management::v1 as management};
 use coral_auth::{PrincipalAuthentication, PrivateAudience};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId, WorkspaceModule};
 use tonic::{Request, Response, Status};
-use tracing::Instrument as _;
 
 /// Application-constructed domain modules, sharing the application's state and identities.
 /// The adapter never opens storage or constructs a replacement domain graph.
@@ -131,9 +130,6 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
                 services.clone(),
             ),
         )
-        .add_service(tonic_health::pb::health_server::HealthServer::new(
-            crate::health::AggregateHealthService::new(context.readiness),
-        ))
         .add_service(
             management::agent_registration_service_server::AgentRegistrationServiceServer::new(
                 services.clone(),
@@ -144,32 +140,11 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         ))
         .add_service(internal::task_service_server::TaskServiceServer::new(services));
     let dispatch = routes.axum_router_mut();
-    *dispatch = dispatch
-        .clone()
-        .layer(axum::middleware::from_fn(trace_request));
-    routes
-}
-
-// Assign the remote parent before entering a span. Entering starts the OpenTelemetry
-// span, after which a handler cannot replace its parent. Handler spans inherit this
-// request context without knowing how HTTP/2 carries W3C metadata.
-async fn trace_request(
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    let span = tracing::info_span!(parent: None, "coral.private.request");
-    coral_telemetry::set_parent_from_trace_headers(
-        &span,
-        request
-            .headers()
-            .get("traceparent")
-            .and_then(|value| value.to_str().ok()),
-        request
-            .headers()
-            .get("tracestate")
-            .and_then(|value| value.to_str().ok()),
-    );
-    next.run(request).instrument(span).await
+    *dispatch = coral_telemetry::trace_grpc_routes(dispatch.clone());
+    // Health probes are added after tracing, so they open no span.
+    routes.add_service(tonic_health::pb::health_server::HealthServer::new(
+        crate::health::AggregateHealthService::new(context.readiness),
+    ))
 }
 
 #[derive(Clone)]

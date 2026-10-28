@@ -13,7 +13,6 @@ use rmcp::model::{
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler};
-use uuid::Uuid;
 
 use crate::McpRuntime;
 use crate::arguments::{
@@ -26,6 +25,9 @@ use crate::prompts::{Modes, Prompting};
 
 #[cfg(test)]
 mod tests;
+mod tool_call;
+
+use tool_call::ToolCall;
 
 /// MCP protocol versions this Adapter serves, oldest first.
 ///
@@ -163,6 +165,7 @@ impl McpServer {
             )
             .await
             .map_err(task_failure)?;
+        tool_call::record_task(task.id());
         projection::success(projection::StartedTask {
             task_id: task.id().to_string(),
             providers: providers
@@ -391,7 +394,7 @@ impl McpServer {
         if answers.is_empty() {
             return Ok(());
         }
-        let trace = generated_trace_id()?;
+        let trace = TraceId::current_or_new();
         for (request, answer) in answers {
             match self
                 .runtime
@@ -448,6 +451,7 @@ impl McpServer {
 
     async fn end_task(&self, arguments: EndTaskArguments) -> Result<CallToolResult, DispatchError> {
         let task_id = TaskId::parse(&arguments.task_id).map_err(invalid_input)?;
+        tool_call::record_task(&task_id);
         let outcome = match arguments.outcome {
             TaskOutcomeArgument::Success => TaskOutcome::Success,
             TaskOutcomeArgument::Failure => TaskOutcome::Failure,
@@ -490,12 +494,14 @@ impl McpServer {
         task_id: &str,
         intent: &str,
     ) -> Result<coral_task::AttributedCommand, DispatchError> {
+        let task_id = TaskId::parse(task_id).map_err(invalid_input)?;
+        tool_call::record_task(&task_id);
         Ok(coral_task::AttributedCommand::new(
             self.runtime.principal.clone(),
             self.workspace_id.clone(),
-            TaskId::parse(task_id).map_err(invalid_input)?,
+            task_id,
             TaskIntent::parse(intent).map_err(invalid_input)?,
-            generated_trace_id()?,
+            TraceId::current_or_new(),
         ))
     }
 }
@@ -530,11 +536,18 @@ impl ServerHandler for McpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        match self.dispatch(request, Modes::negotiated(&context)).await {
-            Ok(response) => Ok(response),
-            Err(DispatchError::Tool(error)) => Ok(projection::failure(&error).into()),
-            Err(DispatchError::Protocol(error)) => Err(error),
-        }
+        let carrier = context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| coral_telemetry::request_span(&parts.extensions));
+        let call = ToolCall::open(
+            request.name.as_ref(),
+            carrier,
+            &self.workspace_id,
+            &self.runtime.principal,
+        );
+        let dispatched = Box::pin(self.dispatch(request, Modes::negotiated(&context)));
+        call.run(dispatched).await
     }
 
     fn list_tools(
@@ -599,11 +612,6 @@ fn now_unix_nanos() -> Result<i64, DispatchError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))?;
     i64::try_from(duration.as_nanos())
-        .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))
-}
-
-fn generated_trace_id() -> Result<TraceId, DispatchError> {
-    TraceId::parse(&Uuid::new_v4().simple().to_string())
         .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))
 }
 
