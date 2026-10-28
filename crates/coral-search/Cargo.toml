@@ -20,6 +20,7 @@ coral-catalog.workspace = true
 coral-db.workspace = true
 coral-policy.workspace = true
 coral-provider.workspace = true
+coral-telemetry.workspace = true
 coral-functions.workspace = true
 coral-workspace.workspace = true
 oxc_allocator.workspace = true

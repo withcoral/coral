@@ -541,7 +541,7 @@ async fn a_pass_corrects_the_statistics_a_saved_function_delete_leaves() {
 }
 
 #[tokio::test]
-async fn a_pass_records_its_duration_and_its_statistics_work_on_its_spans() {
+async fn a_pass_records_its_work_on_its_spans_and_logs_it_only_when_it_changed_the_index() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let principal = AuthenticatedPrincipal::user(world.user.clone());
@@ -555,9 +555,8 @@ async fn a_pass_records_its_duration_and_its_statistics_work_on_its_spans() {
             60,
         )
         .await;
-    let spans = CapturedSpans::default();
 
-    let recorded = world.traced_pass(&spans).await;
+    let (recorded, events) = world.traced_pass().await;
     assert_eq!(
         recorded.iter().map(|span| span.name).collect::<Vec<_>>(),
         [
@@ -569,9 +568,11 @@ async fn a_pass_records_its_duration_and_its_statistics_work_on_its_spans() {
         ]
     );
     for span in &recorded {
-        assert!(
-            span.u64_field("duration_ms").is_some(),
-            "{} records its duration",
+        assert_eq!(span.level, tracing::Level::DEBUG, "{}", span.name);
+        assert_eq!(
+            span.fields.get("status"),
+            None,
+            "{} did not fail",
             span.name
         );
     }
@@ -582,21 +583,96 @@ async fn a_pass_records_its_duration_and_its_statistics_work_on_its_spans() {
         DatabaseSystem::Sqlite => 0,
     };
     assert_eq!(statistics_work(&recorded), (checked, 0, false));
+    let work = work_logged(&events).expect("the first pass indexes the Provider");
+    assert_eq!(
+        work.fields
+            .get("coral.search.reconcile.stale_generations")
+            .map(String::as_str),
+        Some("1")
+    );
+    let (_, events) = world.traced_pass().await;
+    assert!(
+        work_logged(&events).is_none(),
+        "a pass that changed nothing"
+    );
 
     world
         .modules
         .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
         .await;
+    let (recorded, events) = world.traced_pass().await;
     assert_eq!(
-        statistics_work(&world.traced_pass(&spans).await),
+        statistics_work(&recorded),
         (checked, checked, checked > 0),
         "the pass after a cascade counts the Workspace again"
     );
     assert_eq!(
-        statistics_work(&world.traced_pass(&spans).await),
+        work_logged(&events).is_some(),
+        checked > 0,
+        "a pass logs its work when it recounted a Workspace"
+    );
+    let (recorded, events) = world.traced_pass().await;
+    assert_eq!(
+        statistics_work(&recorded),
         (checked, 0, false),
         "a pass with no changes counts nothing"
     );
+    assert!(work_logged(&events).is_none());
+}
+
+#[tokio::test]
+async fn a_failed_step_marks_its_span_and_the_pass_and_logs_the_pass() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE search_index_states RENAME TO hidden_states")
+        .await
+        .expect("hide the index states");
+
+    let (recorded, events) = world.traced_pass().await;
+
+    let failed = |name: &str| {
+        let span = recorded
+            .iter()
+            .find(|span| span.name == name)
+            .unwrap_or_else(|| panic!("{name} span"));
+        (
+            span.fields.get("status").map(String::as_str),
+            span.fields.get("error.type").map(String::as_str),
+        )
+    };
+    for name in [
+        "coral.search.reconcile",
+        "coral.search.reconcile.generations",
+        "coral.search.reconcile.functions",
+    ] {
+        assert_eq!(
+            failed(name),
+            (Some("\"error\""), Some("\"reconcile_failed\"")),
+            "{name}"
+        );
+    }
+    let work = work_logged(&events).expect("a failed pass logs its work");
+    assert_eq!(
+        work.fields
+            .get("coral.search.reconcile.failed")
+            .map(String::as_str),
+        Some("true")
+    );
+}
+
+/// The one info event a pass logs with its work, if it logged one.
+fn work_logged(events: &[CapturedEvent]) -> Option<&CapturedEvent> {
+    let mut logged = events.iter().filter(|event| {
+        event.fields.get("message").map(String::as_str)
+            == Some("search index reconcile pass did work")
+    });
+    let work = logged.next()?;
+    assert_eq!(work.level, tracing::Level::INFO);
+    assert!(logged.next().is_none(), "a pass logs its work once");
+    Some(work)
 }
 
 /// The statistics work a pass's spans record: the Workspaces checked and
@@ -608,11 +684,13 @@ fn statistics_work(recorded: &[CapturedSpan]) -> (u64, u64, bool) {
     };
     let work = |span: &CapturedSpan| {
         (
-            span.u64_field("workspaces_checked")
+            span.u64_field("coral.search.reconcile.workspaces_checked")
                 .expect("Workspaces checked"),
-            span.u64_field("workspaces_recounted")
+            span.u64_field("coral.search.reconcile.workspaces_recounted")
                 .expect("Workspaces recounted"),
-            span.u64_field("rows_written").expect("rows written") > 0,
+            span.u64_field("coral.search.reconcile.rows_written")
+                .expect("rows written")
+                > 0,
         )
     };
     assert_eq!(work(pass), work(statistics));
@@ -1623,14 +1701,20 @@ impl World {
     }
 
     /// Runs one reconcile pass and returns the spans it recorded.
-    async fn traced_pass(&self, spans: &CapturedSpans) -> Vec<CapturedSpan> {
+    /// Runs one pass and returns the spans it started and the events it
+    /// logged.
+    async fn traced_pass(&self) -> (Vec<CapturedSpan>, Vec<CapturedEvent>) {
+        let spans = CapturedSpans::default();
+        let logs = CapturedLogs::default();
         {
             let _subscriber = tracing::subscriber::set_default(
-                tracing_subscriber::Registry::default().with(spans.clone()),
+                tracing_subscriber::Registry::default()
+                    .with(spans.clone())
+                    .with(logs.clone()),
             );
             self.index.reconcile().await;
         }
-        spans.recorded()
+        (spans.recorded(), logs.events())
     }
 
     /// The version of each of the Workspace's rows in the search-owned tables,
@@ -2226,6 +2310,7 @@ struct CapturedSpans(Arc<std::sync::Mutex<Vec<CapturedSpan>>>);
 #[derive(Debug)]
 struct CapturedSpan {
     name: &'static str,
+    level: tracing::Level,
     fields: BTreeMap<String, String>,
 }
 
@@ -2266,6 +2351,7 @@ where
         span.extensions_mut().insert(CapturedSpanIndex(spans.len()));
         spans.push(CapturedSpan {
             name: span.metadata().name(),
+            level: *span.metadata().level(),
             fields: fields.0,
         });
     }

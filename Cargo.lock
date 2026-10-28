@@ -975,6 +975,7 @@ dependencies = [
  "coral-outbound",
  "coral-policy",
  "coral-provider",
+ "coral-telemetry",
  "coral-test-support",
  "coral-workspace",
  "oxc_allocator",
