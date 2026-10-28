@@ -93,7 +93,7 @@ async function expectPinnedFooter(pane: HTMLElement, names: string[]) {
   await expect(scroller.scrollWidth).toBeLessThanOrEqual(scroller.clientWidth)
 }
 
-/** The height of the fade that marks evidence below the visible part of `scroller`. */
+/** How far evidence runs below the visible part of `scroller`; the bottom fade shows while it is above 0. */
 const fadeBelow = (scroller: HTMLElement) =>
   parseFloat(getComputedStyle(scroller).getPropertyValue('--scroll-area-overflow-y-end')) || 0
 
