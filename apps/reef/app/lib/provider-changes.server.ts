@@ -5,7 +5,7 @@ import { providerName, providerFailure, uuidOr404 } from './providers.server'
 import { authorizedWorkspace } from './workspace-route.server'
 import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
 import { decodeSelectedTools, selectionKey, type SelectedTool } from '@/views/providers/selection'
-import { countLabel } from '@/views/providers/configuration-details'
+import { countLabel } from '@/utils/count-label'
 import type { ToolOutcome } from '@/views/providers/types'
 
 /**

@@ -9,10 +9,10 @@ import { FunctionsPage } from '@/views/functions/functions-page'
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
 const listPath = (url: URL) =>
-  /^(\/workspaces\/[^/]+\/functions)(?:\/[^/]+)?$/.exec(url.pathname)?.[1]
+  /^(\/workspaces\/[^/]+\/functions)(?:\/[^/]+|\/namespaces\/[^/]+)?$/.exec(url.pathname)?.[1]
 
-// Opening or closing a function drawer keeps the list: the drawer's own
-// loader reads the function. Refreshes and other pages reload it.
+// Opening or closing a function drawer, or changing tabs, keeps the list: the
+// drawer's own loader reads the function. Refreshes and other pages reload it.
 export function shouldRevalidate({
   currentUrl,
   nextUrl,

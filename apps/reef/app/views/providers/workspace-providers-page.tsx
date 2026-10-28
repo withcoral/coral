@@ -44,7 +44,7 @@ import { ActionNotice, Fields } from '@/views/management/forms'
 import { ArchivedBanner, trail } from '@/views/management/layout'
 
 import { AddProviderLauncher, needsSourceDetails, type AddProviderEntryProps } from './add-provider'
-import { countLabel } from './configuration-details'
+import { countLabel } from '@/utils/count-label'
 import { catalogMatches } from './provider-catalog'
 import { PolicyMutations, usePolicyMutations } from './policy-mutations'
 import { useReadRecipe } from './read-recipe'
