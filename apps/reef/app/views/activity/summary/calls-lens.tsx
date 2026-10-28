@@ -4,7 +4,7 @@ import * as Table from '@/wax/components/table'
 import { FilterField } from '@/components/catalog'
 import type { ActivitySummaryData } from '@/lib/activity-summary'
 import { filterQuery } from '@/utils/filter-query'
-import { number, outcomes, share } from './format'
+import { callerNames, number, outcomes, share } from './format'
 import { STOP_REASONS, toolRows, type SummaryProvider } from './tools'
 import { BarCell, None, ToolName, StatCards, StopSplit } from './parts'
 import * as styles from './summary.css'
@@ -47,9 +47,12 @@ function Split({ summary }: { summary: ActivitySummaryData }) {
 export function CallsLens({
   summary,
   providers,
+  showCallers = false,
 }: {
   summary: ActivitySummaryData
   providers?: readonly SummaryProvider[]
+  /** Names who called each tool, when your agents made some of the calls. */
+  showCallers?: boolean
 }) {
   const [input, setInput] = useState('')
   const query = filterQuery(useDeferredValue(input))
@@ -84,6 +87,7 @@ export function CallsLens({
         columns={[
           { label: 'Tool', width: { fill: 3 } },
           { label: 'Calls', width: { fill: 1.6 } },
+          ...(showCallers ? [{ label: 'Callers', width: { fill: 2 } }] : []),
           { label: 'Share', width: 64, align: 'right' },
           { label: 'Stopped', width: { fill: 1 }, align: 'right' },
         ]}
@@ -92,6 +96,7 @@ export function CallsLens({
           <Table.Row>
             <Table.Heading>Tool</Table.Heading>
             <Table.Heading>Calls</Table.Heading>
+            {showCallers && <Table.Heading>Callers</Table.Heading>}
             <Table.Heading align="right">Share</Table.Heading>
             <Table.Heading align="right">Stopped</Table.Heading>
           </Table.Row>
@@ -112,6 +117,25 @@ export function CallsLens({
                   <Table.Cell>
                     <BarCell value={row.calls} max={max} />
                   </Table.Cell>
+                  {showCallers && (
+                    <Table.Cell
+                      title={row.callers
+                        .map((caller) => `${caller.label}: ${number(caller.calls)}`)
+                        .join('\n')}
+                    >
+                      {row.callers.length ? (
+                        <Typography.BodySmall
+                          as="span"
+                          variant="secondary"
+                          className={styles.truncate}
+                        >
+                          {callerNames(row.callers)}
+                        </Typography.BodySmall>
+                      ) : (
+                        <None />
+                      )}
+                    </Table.Cell>
+                  )}
                   <Table.Cell>
                     <Typography.BodySmall as="span" variant="tertiary" className={styles.count}>
                       {share(row.calls, total)}

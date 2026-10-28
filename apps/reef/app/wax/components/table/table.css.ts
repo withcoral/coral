@@ -257,6 +257,7 @@ export const scrollArea = style({
 })
 // A row that opens its detail when clicked.
 export const interactiveRow = style({ cursor: 'pointer' })
+const ROW_CONTROLS = 'a, button, input, select, textarea, [role="button"]'
 // The block padding a scroll-layout row has, for a cell that reaches into it.
 const rowPaddingBlock = createVar()
 // A scroll-layout row's inline padding and column gap, which a selection cell reaches into.
@@ -271,7 +272,13 @@ export const row = style({
       borderBottom: `1px solid ${theme.stroke.primary}`,
       minHeight: tableVars.cellHeight.value,
     },
-    [`${body} > &:hover, ${group} > &:hover`]: {
+    // Only a row that acts shows hover: it opens something, or holds a control.
+    [[body, group]
+      .flatMap((parent) => [
+        `${parent} > &${interactiveRow}:hover`,
+        `${parent} > &:has(${ROW_CONTROLS}):hover`,
+      ])
+      .join(', ')]: {
       backgroundColor: tableVars.rowHoverBackground.value,
     },
     [`${body} > &:last-child, ${group} > &:last-child`]: {

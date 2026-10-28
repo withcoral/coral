@@ -153,7 +153,21 @@ pub(super) fn actor_label(
         coral_workspace::PrincipalKind::Agent => agent_label.unwrap_or(UNAVAILABLE_AGENT).into(),
     }
 }
-pub(super) fn summary(value: coral_run::ActivitySummary) -> wire::SummarizeActivityResponse {
+fn caller_calls(
+    workspace: &WorkspaceId,
+    caller: &coral_run::CallerCalls,
+) -> wire::ActivityCallerCalls {
+    wire::ActivityCallerCalls {
+        key: caller.principal.id().to_string(),
+        label: actor_label(&caller.principal, caller.agent_label.as_deref()),
+        agent: agent(workspace, &caller.principal),
+        calls: caller.calls,
+    }
+}
+pub(super) fn summary(
+    workspace: &WorkspaceId,
+    value: coral_run::ActivitySummary,
+) -> wire::SummarizeActivityResponse {
     let calls = value.calls;
     wire::SummarizeActivityResponse {
         calls: Some(wire::ActivityCallOutcomes {
@@ -178,6 +192,11 @@ pub(super) fn summary(value: coral_run::ActivitySummary) -> wire::SummarizeActiv
             .tools
             .into_iter()
             .map(|op| wire::ActivityToolCalls {
+                callers: op
+                    .callers
+                    .iter()
+                    .map(|caller| caller_calls(workspace, caller))
+                    .collect(),
                 call_path: op.call_path,
                 calls: op.calls,
             })
@@ -197,6 +216,11 @@ pub(super) fn summary(value: coral_run::ActivitySummary) -> wire::SummarizeActiv
                 label: actor_label(&actor.principal, actor.agent_label.as_deref()),
                 bytes: actor.bytes,
             })
+            .collect(),
+        callers: value
+            .callers
+            .iter()
+            .map(|caller| caller_calls(workspace, caller))
             .collect(),
     }
 }

@@ -1,6 +1,8 @@
 use super::*;
 use crate::approval::ApprovalDecision;
-use crate::{ActivitySummary, ApprovalDecisions, CallOutcomes, StoppedTool, ToolCalls};
+use crate::{
+    ActivitySummary, ApprovalDecisions, CallOutcomes, CallerCalls, StoppedTool, ToolCalls,
+};
 
 const DAY: i64 = 86_400 * 1_000_000_000;
 const CALL: &str = "try { await coral.providers.weather.getForecast({}); return 'sent'; } catch (e) { return e.code; }";
@@ -147,13 +149,20 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
         }
     );
     let call_path = "coral.providers.weather.getForecast";
+    let caller = CallerCalls {
+        principal: actor.principal().clone(),
+        agent_label: None,
+        calls: 4,
+    };
     assert_eq!(
         after.tools,
         [ToolCalls {
             call_path: call_path.into(),
             calls: 4,
+            callers: vec![caller.clone()],
         }]
     );
+    assert_eq!(after.callers, [caller]);
     assert_eq!(
         after.stopped,
         [StoppedTool {
@@ -189,7 +198,7 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
     assert_eq!(after.context_impact_bytes, Some(actor_share.bytes));
 }
 
-/// Work outside the caller's attribution adds nothing.
+/// Work outside the caller's attribution adds nothing. Calls name who made them.
 #[tokio::test(flavor = "multi_thread")]
 async fn summary_counts_only_the_callers_attribution() {
     let (fixture, tool) = forecast_fixture().await;
@@ -206,10 +215,25 @@ async fn summary_counts_only_the_callers_attribution() {
             .await,
     );
     finish(&fixture, owner, workspace, CALL).await;
-    finish(&fixture, &agent, workspace, "return 'agent';").await;
+    finish(&fixture, &agent, workspace, CALL).await;
+    finish(&fixture, &agent, workspace, CALL).await;
 
     let seen = summary(&fixture, owner, workspace).await;
-    assert_eq!(seen.calls.answered, 1);
+    let agent_calls = CallerCalls {
+        principal: agent.principal().clone(),
+        agent_label: Some("Worker".into()),
+        calls: 2,
+    };
+    let owner_calls = CallerCalls {
+        principal: owner.principal().clone(),
+        agent_label: None,
+        calls: 1,
+    };
+    assert_eq!(seen.callers, [agent_calls.clone(), owner_calls.clone()]);
+    let [tool] = seen.tools.as_slice() else {
+        panic!("one Tool: {:?}", seen.tools)
+    };
+    assert_eq!(tool.callers, [agent_calls, owner_calls]);
     let mut actors: Vec<_> = seen
         .actors
         .iter()
@@ -226,8 +250,21 @@ async fn summary_counts_only_the_callers_attribution() {
         .unwrap();
     assert_eq!(agent_share.agent_label.as_deref(), Some("Worker"));
 
+    // Equal counts fall back to Principal order, so both backends return one order.
+    finish(&fixture, owner, workspace, CALL).await;
+    let tied = summary(&fixture, owner, workspace).await;
+    let mut tie = [agent.principal(), owner.principal()];
+    tie.sort_by_key(|principal| principal.id());
+    let order: Vec<_> = tied
+        .callers
+        .iter()
+        .map(|caller| (&caller.principal, caller.calls))
+        .collect();
+    assert_eq!(order, tie.map(|principal| (principal, 2)));
+
     let hidden = summary(&fixture, &member, workspace).await;
     assert_eq!(hidden.calls, CallOutcomes::default());
+    assert!(hidden.callers.is_empty());
     assert!(hidden.actors.is_empty());
     assert_eq!(hidden.context_impact_bytes, None);
 }
@@ -272,7 +309,7 @@ async fn summary_dates_each_fact_by_when_it_ended() {
     let stale = summary(&fixture, actor, workspace).await;
     assert_eq!(stale.calls, CallOutcomes::default());
     assert_eq!(stale.approvals, ApprovalDecisions::default());
-    assert!(stale.tools.is_empty() && stale.actors.is_empty());
+    assert!(stale.tools.is_empty() && stale.actors.is_empty() && stale.callers.is_empty());
     assert_eq!(stale.context_impact_bytes, None);
 }
 

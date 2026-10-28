@@ -28,6 +28,8 @@ pub struct ActivitySummary {
     pub context_impact_partial: bool,
     /// Net context bytes per invoking Principal, most saved first.
     pub actors: Vec<ActorContext>,
+    /// Ended Invocations per invoking Principal, busiest first. They add up to `calls`.
+    pub callers: Vec<CallerCalls>,
 }
 
 /// Ended Invocations by who acts next. The six counts add up to every ended Invocation.
@@ -67,6 +69,19 @@ pub struct StoppedTool {
 pub struct ToolCalls {
     /// Retained Program Call Path.
     pub call_path: String,
+    /// Ended Invocations.
+    pub calls: i64,
+    /// The same Invocations per invoking Principal, busiest first.
+    pub callers: Vec<CallerCalls>,
+}
+
+/// One invoking Principal's ended Invocations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallerCalls {
+    /// Accountable invoking Principal.
+    pub principal: Principal,
+    /// Safe retained Agent label, absent for User work or a removed Agent.
+    pub agent_label: Option<String>,
     /// Ended Invocations.
     pub calls: i64,
 }
@@ -157,6 +172,8 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
 
 /// Grouped ended Invocations, as the repository returns them.
 pub(crate) struct OutcomeEvidence {
+    pub principal: Principal,
+    pub agent_label: Option<String>,
     pub call_path: String,
     pub kind: InvocationResultKind,
     pub failure: Option<CoralFailure>,
@@ -192,10 +209,37 @@ impl StoppedTool {
     }
 }
 
-fn tally(evidence: Vec<OutcomeEvidence>) -> (CallOutcomes, Vec<StoppedTool>, Vec<ToolCalls>) {
+/// Adds `calls` to `principal`'s entry.
+fn add_caller(callers: &mut Vec<CallerCalls>, group: &OutcomeEvidence) {
+    match callers.iter_mut().find(|c| c.principal == group.principal) {
+        Some(caller) => caller.calls += group.calls,
+        None => callers.push(CallerCalls {
+            principal: group.principal.clone(),
+            agent_label: group.agent_label.clone(),
+            calls: group.calls,
+        }),
+    }
+}
+
+/// Busiest first. Principal order breaks ties, so both backends return one order.
+fn busiest_first(callers: &mut [CallerCalls]) {
+    callers.sort_by(|a, b| {
+        (Reverse(a.calls), a.principal.id()).cmp(&(Reverse(b.calls), b.principal.id()))
+    });
+}
+
+struct Tally {
+    calls: CallOutcomes,
+    stopped: Vec<StoppedTool>,
+    tools: Vec<ToolCalls>,
+    callers: Vec<CallerCalls>,
+}
+
+fn tally(evidence: Vec<OutcomeEvidence>) -> Tally {
     let mut calls = CallOutcomes::default();
     let mut stopped = BTreeMap::<String, StoppedTool>::new();
-    let mut ended = BTreeMap::<String, i64>::new();
+    let mut ended = BTreeMap::<String, ToolCalls>::new();
+    let mut callers = Vec::new();
     for group in evidence {
         let outcome = outcome(group.kind, group.failure);
         *calls.total_mut(outcome) += group.calls;
@@ -210,17 +254,32 @@ fn tally(evidence: Vec<OutcomeEvidence>) -> (CallOutcomes, Vec<StoppedTool>, Vec
         if let Some(total) = op.total_mut(outcome) {
             *total += group.calls;
         }
-        *ended.entry(group.call_path).or_default() += group.calls;
+        let tool = ended
+            .entry(group.call_path.clone())
+            .or_insert_with(|| ToolCalls {
+                call_path: group.call_path.clone(),
+                calls: 0,
+                callers: Vec::new(),
+            });
+        tool.calls += group.calls;
+        add_caller(&mut tool.callers, &group);
+        add_caller(&mut callers, &group);
     }
     let mut stopped: Vec<_> = stopped.into_values().filter(|op| op.total() > 0).collect();
     // Stable sorts keep Call Path order among equal counts.
     stopped.sort_by_key(|op| Reverse(op.total()));
-    let mut tools: Vec<_> = ended
-        .into_iter()
-        .map(|(call_path, calls)| ToolCalls { call_path, calls })
-        .collect();
+    let mut tools: Vec<_> = ended.into_values().collect();
     tools.sort_by_key(|op| Reverse(op.calls));
-    (calls, stopped, tools)
+    for tool in &mut tools {
+        busiest_first(&mut tool.callers);
+    }
+    busiest_first(&mut callers);
+    Tally {
+        calls,
+        stopped,
+        tools,
+        callers,
+    }
 }
 
 impl RunModule {
@@ -259,7 +318,12 @@ impl RunModule {
         }
         // Principal order breaks ties, so both backends return one order.
         actors.sort_by(|a, b| (a.bytes, a.principal.id()).cmp(&(b.bytes, b.principal.id())));
-        let (calls, stopped, tools) = tally(evidence);
+        let Tally {
+            calls,
+            stopped,
+            tools,
+            callers,
+        } = tally(evidence);
         Ok(ActivitySummary {
             calls,
             stopped,
@@ -269,6 +333,7 @@ impl RunModule {
                 .then(|| actors.iter().map(|actor| actor.bytes).sum()),
             context_impact_partial,
             actors,
+            callers,
         })
     }
 }
