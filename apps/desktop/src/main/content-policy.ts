@@ -19,7 +19,12 @@ export function navigationDecision(target: string, reefOrigin: string | null): N
   return 'deny'
 }
 
-export type WindowOpenDecision = 'submit-hidden' | 'open-externally' | 'deny'
+export type WindowOpenDecision =
+  | 'submit-hidden'
+  | 'open-externally'
+  | 'deny'
+  /** Desktop offers to install this version. */
+  | { offerUpdate: string }
 
 /**
  * Decides where a request for a new window goes. A link opens in the system
@@ -27,15 +32,43 @@ export type WindowOpenDecision = 'submit-hidden' | 'open-externally' | 'deny'
  * repeat a form's POST, so a Reef form that targets a new tab, such as a
  * device sign-in, runs in a hidden window. Its consent redirect then reaches
  * the hand-off. A form for any other origin goes nowhere.
+ *
+ * `runningVersion` is Desktop's version when it can update itself, else null.
+ * Reef's sidebar notice links to a newer release's notes, and Desktop offers
+ * that update instead of opening the page.
  */
 export function windowOpenDecision(
   target: string,
   submitsForm: boolean,
   reefOrigin: string | null,
+  runningVersion: string | null,
 ): WindowOpenDecision {
   const decision = navigationDecision(target, reefOrigin)
-  if (!submitsForm) return decision === 'deny' ? 'deny' : 'open-externally'
+  if (!submitsForm) {
+    if (decision === 'deny') return 'deny'
+    const release = releaseVersion(target)
+    return runningVersion !== null && release !== null && release !== runningVersion
+      ? { offerUpdate: release }
+      : 'open-externally'
+  }
   return decision === 'allow' ? 'submit-hidden' : 'deny'
+}
+
+const RELEASE_NOTES = 'https://github.com/withcoral/coral/releases/tag/v'
+
+/** The version that a Coral release notes URL names, or null for any other URL. */
+function releaseVersion(target: string): string | null {
+  const url = URL.parse(target)
+  if (url === null || url.username || url.password || url.search || url.hash) return null
+  const href = url.href
+  if (!href.startsWith(RELEASE_NOTES)) return null
+  const version = href.slice(RELEASE_NOTES.length)
+  return /^[0-9A-Za-z.+-]+$/.test(version) ? version : null
+}
+
+/** The release notes page of a Coral version. */
+export function releaseNotesUrl(version: string): string {
+  return `${RELEASE_NOTES}${version}`
 }
 
 export type FormWindowStep = 'wait' | 'show' | 'close'

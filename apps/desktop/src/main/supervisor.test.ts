@@ -65,6 +65,7 @@ function supervise(runtime = 'ready', reef = 'ready', restart = RESTART) {
     runtime: stub('runtime', runtime),
     reef: stub('reef', reef),
     readinessTimeoutMs: 1500,
+    checkUpdates: false,
     stopTimeoutMs: 500,
     restart,
   })
