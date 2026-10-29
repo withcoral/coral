@@ -518,17 +518,21 @@ function Viewer({
   const notice = truncated && (
     <Typography.BodySmall>This is only the start of the value.</Typography.BodySmall>
   )
+  // Inline or expanded, Tab reaches the body, so its keys scroll it in every browser.
+  const bodyProps = {
+    ref: body,
+    role: 'group',
+    'aria-label': 'Payload content',
+    tabIndex: 0,
+  } as const
   if (!expanded)
     return (
       <section className={styles.viewer} aria-label={label}>
         {notice}
         <div className={styles.inlineActions}>{actions}</div>
-        {/* A long payload scrolls in its bordered card; Tab reaches it to scroll by key. */}
+        {/* A long payload scrolls in its bordered card. */}
         <div
-          ref={body}
-          role="group"
-          aria-label="Payload content"
-          tabIndex={0}
+          {...bodyProps}
           className={classNames(styles.body, styles.framedBody, styles.inlineBody)}
         >
           {content}
@@ -540,7 +544,7 @@ function Viewer({
       {toolbar}
       {notice}
       <div
-        ref={body}
+        {...bodyProps}
         className={classNames(
           styles.body,
           styles.framedBody,

@@ -47,6 +47,10 @@ export const body = style({
   // The rows' list adds the padding above and below, so it scrolls with them.
   paddingInline: 12,
   tabSize: 2,
+  // Tab reaches a body to scroll it by key.
+  selectors: {
+    '&:focus-visible': { outline: `2px solid ${theme.stroke.focused}`, outlineOffset: -2 },
+  },
 })
 export const framedBody = style(frame)
 
@@ -57,13 +61,7 @@ export const inlineActions = style({ alignSelf: 'flex-end', marginBlockEnd: -4 }
 /** Inline, a payload shows at most 320px, or half the screen on a short one, then scrolls
  * inside its card at the card's full width. Folding still sets how much there is to scroll. */
 export const INLINE_MAX_HEIGHT = 'min(320px, 50vh)'
-export const inlineBody = style({
-  maxHeight: INLINE_MAX_HEIGHT,
-  overflow: 'auto',
-  selectors: {
-    '&:focus-visible': { outline: `2px solid ${theme.stroke.focused}`, outlineOffset: -2 },
-  },
-})
+export const inlineBody = style({ maxHeight: INLINE_MAX_HEIGHT, overflow: 'auto' })
 
 /** In the expanded viewer, unwrapped lines scroll sideways. */
 export const sideways = style({ overflowX: 'auto' })

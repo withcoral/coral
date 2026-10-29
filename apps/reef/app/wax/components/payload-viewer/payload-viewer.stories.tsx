@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, waitFor, within } from 'storybook/test'
+import { inTestBrowser, press } from '../../../../.storybook/browser'
 import { PayloadViewer } from './payload-viewer'
 
 const largeJson = JSON.stringify({
@@ -397,7 +398,7 @@ const expandedHeader: Story['play'] = async ({ canvasElement, userEvent, globals
   // Tab and Shift+Tab cycle inside the dialog; focus never reaches the page behind it.
   const focusables = dialog.querySelectorAll('button, input, [tabindex="0"]').length
   for (const key of ['{Tab}', '{Shift>}{Tab}{/Shift}'])
-    for (let press = 0; press <= focusables; press++) {
+    for (let tabs = 0; tabs <= focusables; tabs++) {
       await userEvent.keyboard(key)
       // Base UI's focus guard at either end hands focus back into the dialog.
       await waitFor(() =>
@@ -478,6 +479,32 @@ export const ModerateRawMountsWhole: Story = {
     const raw = within(viewer).getByRole('group', { name: 'Raw' })
     await expect(raw.textContent).toBe(moderateRaw)
     await expect(selected(raw)).toBe(moderateRaw)
+  },
+}
+
+/**
+ * Catches: an expanded body that Tab never reaches, or that shows no focus. Its toggles are
+ * focusable, so the browser does not make the body focusable for you. Tab reaches the named
+ * body, it shows its focus, and ArrowDown and PageDown scroll it, pressed as a person would.
+ */
+export const ExpandedBodyScrollsByKey: Story = {
+  args: { value: moderateJson },
+  play: async (context) => {
+    const viewer = await openExpanded(context)
+    const body = within(viewer).getByRole('group', { name: 'Payload content' })
+    await expect(body.scrollHeight).toBeGreaterThan(body.clientHeight)
+    // Storybook's own UI has no test browser to press keys in.
+    if (!(await inTestBrowser())) return
+    const focused = () => context.canvasElement.ownerDocument.activeElement
+    for (let tabs = 0; tabs < 40 && focused() !== body; tabs++) await press('{Tab}')
+    await expect(body).toHaveFocus()
+    await expect(getComputedStyle(body).outlineStyle).toBe('solid')
+    await press('{ArrowDown}')
+    await waitFor(() => expect(body.scrollTop).toBeGreaterThan(0))
+    const after = body.scrollTop
+    await press('{PageDown}')
+    await waitFor(() => expect(body.scrollTop).toBeGreaterThan(after + body.clientHeight / 2))
+    await expect(body).toHaveFocus()
   },
 }
 
