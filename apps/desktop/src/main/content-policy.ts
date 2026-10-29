@@ -35,7 +35,8 @@ export type WindowOpenDecision =
  *
  * `runningVersion` is Desktop's version when it can update itself, else null.
  * Reef's sidebar notice links to a newer release's notes, and Desktop offers
- * that update instead of opening the page.
+ * that update instead of opening the page. The notes of an older or equal
+ * release open in the system browser.
  */
 export function windowOpenDecision(
   target: string,
@@ -47,7 +48,7 @@ export function windowOpenDecision(
   if (!submitsForm) {
     if (decision === 'deny') return 'deny'
     const release = releaseVersion(target)
-    return runningVersion !== null && release !== null && release !== runningVersion
+    return runningVersion !== null && release !== null && isNewer(release, runningVersion)
       ? { offerUpdate: release }
       : 'open-externally'
   }
@@ -56,14 +57,31 @@ export function windowOpenDecision(
 
 const RELEASE_NOTES = 'https://github.com/withcoral/coral/releases/tag/v'
 
-/** The version that a Coral release notes URL names, or null for any other URL. */
+/**
+ * The stable `X.Y.Z` version that a Coral release notes URL names, or null for
+ * any other URL. The runtime announces stable releases only.
+ */
 function releaseVersion(target: string): string | null {
   const url = URL.parse(target)
   if (url === null || url.username || url.password || url.search || url.hash) return null
   const href = url.href
   if (!href.startsWith(RELEASE_NOTES)) return null
   const version = href.slice(RELEASE_NOTES.length)
-  return /^[0-9A-Za-z.+-]+$/.test(version) ? version : null
+  return /^\d+\.\d+\.\d+$/.test(version) ? version : null
+}
+
+/**
+ * Whether the stable `release` is newer than `running`. A prerelease or a build
+ * of `X.Y.Z` is older than `X.Y.Z`. A `running` that is not a version is never
+ * older.
+ */
+function isNewer(release: string, running: string): boolean {
+  const match = /^(\d+)\.(\d+)\.(\d+)([-+].*)?$/.exec(running)
+  if (match === null) return false
+  const current = match.slice(1, 4).map(Number)
+  const next = release.split('.').map(Number)
+  for (let i = 0; i < 3; i++) if (next[i] !== current[i]) return next[i] > current[i]
+  return match[4]?.startsWith('-') ?? false
 }
 
 /** The release notes page of a Coral version. */

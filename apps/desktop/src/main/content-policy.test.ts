@@ -50,8 +50,15 @@ describe('windowOpenDecision', () => {
     // The sidebar notice names a newer release, which Desktop can install.
     [`${notes}/v1.4.0`, '1.3.0', { offerUpdate: '1.4.0' }],
     [`${notes}/v1.4.0`, null, 'open-externally'],
-    // The notes of the version that runs have nothing to install.
+    // Versions compare by number, and a prerelease is older than its release.
+    [`${notes}/v1.10.0`, '1.9.0', { offerUpdate: '1.10.0' }],
+    [`${notes}/v1.4.0`, '1.4.0-rc.1', { offerUpdate: '1.4.0' }],
+    // The notes of the version that runs, or of an older one, have nothing to install.
     [`${notes}/v1.3.0`, '1.3.0', 'open-externally'],
+    [`${notes}/v1.2.9`, '1.3.0', 'open-externally'],
+    [`${notes}/v1.9.0`, '1.10.0', 'open-externally'],
+    [`${notes}/v1.4.0-rc.1`, '1.3.0', 'open-externally'],
+    [`${notes}/v1.4.0`, 'dev', 'open-externally'],
     [`${notes}/v`, '1.3.0', 'open-externally'],
     [`${notes}/v1.4.0/assets`, '1.3.0', 'open-externally'],
     [`${notes}/v1%2F4`, '1.3.0', 'open-externally'],

@@ -53,7 +53,7 @@ bind = "${LOOPBACK}:${ports.mcp}"
 shutdown_drain_seconds = 0
 
 # Shows a newer release in Reef's sidebar only when this package can update
-# itself. A click on the notice installs it.
+# itself. A click on the notice offers Restart to Update, Release Notes or Later.
 [updates]
 check = ${checkUpdates}
 ${databaseSection}`,

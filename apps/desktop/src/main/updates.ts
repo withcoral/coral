@@ -24,6 +24,9 @@ export interface UpdatePrompts {
   notifyReady(version: string, restart: () => void): void
 }
 
+/** Who waits for a check: nobody, the menu's Check for Updates…, or a notice click. */
+type Asker = { by: 'nobody' } | { by: 'menu' } | { by: 'notice'; version: string }
+
 type UpdateState =
   | { status: 'idle' }
   | { status: 'checking' }
@@ -41,7 +44,8 @@ export interface Updates {
   check(options: { interactive: boolean }): Promise<void>
   /**
    * Answers a click on Reef's notice of `version`. It runs as Check for
-   * Updates… does, and ends in the restart question.
+   * Updates… does. When it downloads an update, or one waits already, it
+   * ends in the restart question. Otherwise it says why it cannot.
    */
   offerRelease(version: string): Promise<void>
   menuItem(): UpdateMenuItem
@@ -62,9 +66,8 @@ export function createUpdates(deps: {
 }): Updates {
   const { updater, prompts } = deps
   let state: UpdateState = { status: 'idle' }
-  // Who waits for the check under way: nobody, the person, or the person who
-  // clicked the notice of a version.
-  let asker: { notice: string | null } | null = null
+  // Who waits for the check under way.
+  let asker: Asker = { by: 'nobody' }
   // One restart question at a time.
   let offering = false
 
@@ -76,19 +79,19 @@ export function createUpdates(deps: {
   async function check({ interactive }: { interactive: boolean }) {
     // A downloaded update installs on quit, so nothing replaces it.
     if (state.status !== 'idle') return
-    asker = interactive ? { notice: null } : null
+    asker = interactive ? { by: 'menu' } : { by: 'nobody' }
     await run()
   }
 
   async function offerRelease(version: string) {
     switch (state.status) {
       case 'idle':
-        asker = { notice: version }
+        asker = { by: 'notice', version }
         return run()
       case 'checking':
       case 'downloading':
         // The check under way ends in the restart question instead.
-        asker = { notice: version }
+        asker = { by: 'notice', version }
         return
       case 'downloaded':
         return offerInstall(state.version)
@@ -105,13 +108,13 @@ export function createUpdates(deps: {
     try {
       result = await updater.checkForUpdates()
     } catch (error) {
-      if (endWith({ status: 'idle' })) await prompts.failed('check', error)
+      if (endWith({ status: 'idle' }).by !== 'nobody') await prompts.failed('check', error)
       return
     }
     if (!result?.isUpdateAvailable) {
       const asked = endWith({ status: 'idle' })
-      if (asked?.notice) await prompts.notReady(asked.notice)
-      else if (asked) await prompts.upToDate(deps.currentVersion)
+      if (asked.by === 'notice') await prompts.notReady(asked.version)
+      else if (asked.by === 'menu') await prompts.upToDate(deps.currentVersion)
       return
     }
     const version = result.updateInfo.version
@@ -122,18 +125,18 @@ export function createUpdates(deps: {
     } catch (error) {
       // The next check tries again.
       deps.progress(null)
-      if (endWith({ status: 'idle' })) await prompts.failed('download', error)
+      if (endWith({ status: 'idle' }).by !== 'nobody') await prompts.failed('download', error)
       return
     }
     deps.progress(null)
-    if (endWith({ status: 'downloaded', version })) await offerInstall(version)
+    if (endWith({ status: 'downloaded', version }).by !== 'nobody') await offerInstall(version)
     else prompts.notifyReady(version, () => void install())
   }
 
   /** Ends the check in `next`, and answers who waited for it. */
   function endWith(next: UpdateState) {
     const asked = asker
-    asker = null
+    asker = { by: 'nobody' }
     moveTo(next)
     return asked
   }
