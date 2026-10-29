@@ -136,7 +136,7 @@ pub(crate) async fn finish_approval_failure(
 ) -> Result<Option<OwnedEvent>, Error> {
     if !invocation_repository::end_pending_with_failure(tx, run, invocation, failure, now).await? {
         tracing::warn!(
-            coral.run.id = safe::id(&run.id),
+            coral.run.id = safe::id(&run.held_id()),
             coral.invocation.id = safe::id(&invocation),
             "approval decision found its Invocation no longer pending"
         );

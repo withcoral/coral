@@ -46,15 +46,10 @@ pub(super) struct RunRow {
 }
 
 impl RunFailureCode {
+    /// The stored code is the public one, so a span's `error.type` and the
+    /// stored failure agree.
     pub(crate) const fn as_storage_str(self) -> &'static str {
-        match self {
-            Self::ProgramRejected => "program_rejected",
-            Self::InvalidProgramValue => "invalid_program_value",
-            Self::ResourceLimitExceeded => "resource_limit_exceeded",
-            Self::MemoryLimitExceeded => "memory_limit_exceeded",
-            Self::ProgramExecutionFailed => "program_execution_failed",
-            Self::RunAuthorityLost => "run_authority_lost",
-        }
+        self.code()
     }
 
     pub(crate) fn from_storage_str(value: &str) -> Result<Self, Error> {

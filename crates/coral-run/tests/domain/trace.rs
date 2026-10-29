@@ -290,7 +290,8 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
     let run_ids = runs
         .iter()
         .map(|(outcome, _)| {
-            let run_id = crate::RunId::generate().expect("Run identifier");
+            let run_id =
+                crate::types::HeldRunId::fixture(crate::RunId::generate().expect("Run identifier"));
             crate::trace::phase_span(None, &run_id, crate::trace::Phase::Complete)
                 .in_scope(|| crate::trace::record_run_end(outcome));
             run_id
@@ -323,7 +324,7 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
     let is_error =
         |span: &SpanData| matches!(span.status, opentelemetry::trace::Status::Error { .. });
     for ((outcome, error_type), run_id) in runs.into_iter().zip(&run_ids) {
-        let span = with("coral.run.id", run_id.as_str());
+        let span = with("coral.run.id", run_id.run_id().as_str());
         assert_eq!(
             attribute(span, "coral.run.status").as_deref(),
             Some(outcome.state().as_storage_str())

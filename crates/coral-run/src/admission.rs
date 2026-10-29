@@ -224,7 +224,7 @@ impl RunModule {
                 )));
             }
         };
-        accept.record("coral.run.id", safe::id(&run.id));
+        accept.record("coral.run.id", safe::id(&run.held_id()));
         Ok(StagedRun {
             run,
             actor: actor.clone(),

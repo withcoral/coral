@@ -4,7 +4,8 @@ use std::time::Duration;
 use coral_telemetry::safe;
 use tokio::sync::Notify;
 
-use crate::{Error, RunId};
+use crate::Error;
+use crate::types::HeldRunId;
 
 const CLAIM_LEASE: Duration = Duration::from_secs(30);
 /// Leases without a successful commit after which a Run Owner is suspect: it
@@ -50,13 +51,13 @@ fn retry_backoff(attempt: u32) -> Duration {
 /// The backoff between attempts of one Run write the database did not
 /// answer, with one warn line per attempt.
 pub(crate) struct Backoff<'a> {
-    run_id: &'a RunId,
+    run_id: &'a HeldRunId,
     write: &'static str,
     attempts: u32,
 }
 
 impl<'a> Backoff<'a> {
-    pub(crate) const fn new(run_id: &'a RunId, write: &'static str) -> Self {
+    pub(crate) const fn new(run_id: &'a HeldRunId, write: &'static str) -> Self {
         Self {
             run_id,
             write,
@@ -68,7 +69,7 @@ impl<'a> Backoff<'a> {
     pub(crate) async fn wait(&mut self, error: &Error) {
         self.attempts += 1;
         tracing::warn!(
-            coral.run.id = safe::id(&self.run_id),
+            coral.run.id = safe::id(self.run_id),
             coral.run.write = safe::kind(self.write),
             coral.run.write.attempt = safe::number(self.attempts),
             error.type = safe::kind(error.code()),
@@ -85,7 +86,7 @@ impl<'a> Backoff<'a> {
 /// `keep_trying` says the owner retired meanwhile and nothing is left to
 /// tell it.
 pub(crate) async fn until_answered<T, F>(
-    run_id: &RunId,
+    run_id: &HeldRunId,
     write: &'static str,
     keep_trying: impl Fn() -> bool,
     mut attempt: impl FnMut() -> F,
@@ -112,7 +113,7 @@ where
 pub(crate) trait ExecutionObserver: Send + Sync {
     /// The Run Owner is about to commit its first chunk, the execution-start
     /// mark, under the claim acceptance wrote.
-    async fn owner_starting(&self, _run_id: &RunId, _claim_id: &str) {}
+    async fn owner_starting(&self, _run_id: &crate::RunId, _claim_id: &str) {}
 
     /// The Run Owner is about to commit one chunk; a test may hold it here.
     async fn before_chunk_commit(&self) {}

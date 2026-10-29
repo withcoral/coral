@@ -302,11 +302,12 @@ impl RunModule {
     pub(crate) async fn record_interruption(
         &self,
         workspace_id: &WorkspaceId,
-        run_id: &RunId,
+        held: &crate::types::HeldRunId,
         claim_id: &str,
         takeover_claim_id: Option<&str>,
     ) -> Result<(), Error> {
-        let mut backoff = crate::execution::Backoff::new(run_id, "interruption");
+        let run_id = held.run_id();
+        let mut backoff = crate::execution::Backoff::new(held, "interruption");
         loop {
             match self
                 .interrupt_owned_run(workspace_id, run_id, claim_id, takeover_claim_id)

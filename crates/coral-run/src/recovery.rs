@@ -112,7 +112,7 @@ impl RunModule {
             return false;
         };
         let claim_id = Uuid::new_v4().hyphenated().to_string();
-        let (handle, mailbox) = OwnerHandle::new(run.id.clone(), claim_id.clone());
+        let (handle, mailbox) = OwnerHandle::new(run.held_id(), claim_id.clone());
         for message in queued {
             handle.send(message);
         }
@@ -121,7 +121,7 @@ impl RunModule {
             return false;
         };
         tracing::info!(
-            coral.run.id = safe::id(&run.id),
+            coral.run.id = safe::id(&run.held_id()),
             coral.run.claim.id = crate::trace::claim(&claim_id).as_ref().map(safe::id),
             "expired-lease sweep recreates the Run Owner of a Run no process owns"
         );
@@ -142,7 +142,7 @@ impl RunModule {
             linked_snapshots: HashMap::new(),
             trace: run.trace.clone(),
         };
-        let run_id = run.id.clone();
+        let run_id = run.held_id();
         let owner_task = tokio::spawn(owner::host(
             self.clone(),
             accepted,

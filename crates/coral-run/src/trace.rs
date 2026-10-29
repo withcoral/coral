@@ -7,7 +7,8 @@ use coral_telemetry::RunTrace;
 use coral_telemetry::safe;
 use tracing::field::Empty;
 
-use crate::{RunId, RunTerminalOutcome};
+use crate::RunTerminalOutcome;
+use crate::types::HeldRunId;
 
 /// One phase of a Run under its Run Owner.
 #[derive(Debug, Clone, Copy)]
@@ -33,36 +34,40 @@ pub(crate) fn accept_span() -> tracing::Span {
 
 /// A new span for `phase` of the Run `run_id`, a child of the stored accept
 /// span. Without a stored Run Trace it is a new root.
-pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &RunId, phase: Phase) -> tracing::Span {
+pub(crate) fn phase_span(
+    trace: Option<&RunTrace>,
+    run_id: &HeldRunId,
+    phase: Phase,
+) -> tracing::Span {
     let span = match phase {
         Phase::Start => tracing::info_span!(
             parent: None,
             "coral.run.start",
-            coral.run.id = safe::id(&run_id),
+            coral.run.id = safe::id(run_id),
             coral.run.status = Empty,
             error.type = Empty,
         ),
         Phase::Execute => {
-            tracing::info_span!(parent: None, "coral.run.execute", coral.run.id = safe::id(&run_id))
+            tracing::info_span!(parent: None, "coral.run.execute", coral.run.id = safe::id(run_id))
         }
         Phase::Complete => tracing::info_span!(
             parent: None,
             "coral.run.complete",
-            coral.run.id = safe::id(&run_id),
+            coral.run.id = safe::id(run_id),
             coral.run.status = Empty,
             error.type = Empty,
         ),
         Phase::Terminate => tracing::info_span!(
             parent: None,
             "coral.run.terminate",
-            coral.run.id = safe::id(&run_id),
+            coral.run.id = safe::id(run_id),
             coral.run.status = Empty,
             error.type = Empty,
         ),
         Phase::Recover => tracing::info_span!(
             parent: None,
             "coral.run.recover",
-            coral.run.id = safe::id(&run_id),
+            coral.run.id = safe::id(run_id),
             coral.run.status = Empty,
             error.type = Empty,
         ),

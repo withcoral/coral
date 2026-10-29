@@ -20,6 +20,10 @@ const ABSENT: &str = "00000000-0000-4000-8000-000000000000";
 /// new trace for an invalid one, and is the trace of the exported request and
 /// tool spans either way.
 #[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of tool failures, each checked in every supported protocol version"
+)]
 async fn tool_failures_name_the_trace_of_their_request() {
     let capture = capture();
     let tracer = Tracer::start().await;
@@ -40,8 +44,8 @@ async fn tool_failures_name_the_trace_of_their_request() {
             (
                 "an attributed failure",
                 "describe",
-                json!({"task_id": task, "intent": "Describe a missing tool", "path": "coral.providers.absent.tool"}),
-                "authoring_description_not_found",
+                json!({"task_id": task, "intent": "Describe a malformed path", "path": "not a path"}),
+                "invalid_input",
             ),
             (
                 "a wait failure",
@@ -61,7 +65,12 @@ async fn tool_failures_name_the_trace_of_their_request() {
         {
             let context = format!("{version} {case}");
             let parent = format!("{:032x}", 0xc0_a100 + version_index * 16 + case_index);
-            let named = arguments["task_id"].as_str().map(str::to_owned);
+            // Only a Task Coral found names the span: an absent one is the
+            // caller's text.
+            let named = arguments["task_id"]
+                .as_str()
+                .filter(|named| Some(*named) == task.as_str())
+                .map(str::to_owned);
             let continued = session
                 .tool_with_headers(
                     tool,
@@ -214,10 +223,10 @@ async fn protocol_errors_record_their_json_rpc_code() {
         Some("-32602")
     );
     assert_eq!(attribute("error.type"), None);
-    assert_ne!(
+    assert!(!matches!(
         tool_span.status,
-        opentelemetry::trace::Status::error("MCP tool call failed")
-    );
+        opentelemetry::trace::Status::Error { .. }
+    ));
     assert!(!format!("{tool_span:?}").contains("no_such_tool"));
 }
 

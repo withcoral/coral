@@ -79,8 +79,32 @@ impl fmt::Display for RunId {
     }
 }
 
-/// Words from Coral's word list, or a UUID: it holds no other text.
-impl coral_telemetry::safe::Identifier for RunId {}
+/// The ID of a Run Coral holds a row for: one it inserted at acceptance, or
+/// read from the row. A [`RunId`] a request names is caller text until Coral
+/// finds its Run, so only a Run's record makes one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HeldRunId(RunId);
+
+impl HeldRunId {
+    pub(crate) const fn run_id(&self) -> &RunId {
+        &self.0
+    }
+
+    /// A Run ID as if Coral held its row.
+    #[cfg(test)]
+    pub(crate) const fn fixture(run_id: RunId) -> Self {
+        Self(run_id)
+    }
+}
+
+impl fmt::Display for HeldRunId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Only a Run's record makes one, so Coral holds the Run it names.
+impl coral_telemetry::safe::Identifier for HeldRunId {}
 
 /// Stable Coral-generated Tool Invocation identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1023,6 +1047,20 @@ pub(crate) struct AcceptedRun {
     /// The Run Trace every span of the Run joins; `None` when acceptance
     /// stored none.
     pub(crate) trace: Option<coral_telemetry::RunTrace>,
+}
+
+impl AcceptedRun {
+    /// The Run's ID as a span field.
+    pub(crate) fn held_id(&self) -> HeldRunId {
+        HeldRunId(self.id.clone())
+    }
+}
+
+impl crate::lifecycle::RunRecord {
+    /// The Run's ID as a span field.
+    pub(crate) fn held_id(&self) -> HeldRunId {
+        HeldRunId(self.id.clone())
+    }
 }
 
 /// The cap on Program output the Run Owner has applied but not yet recorded.

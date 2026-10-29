@@ -32,7 +32,7 @@ impl RunModule {
     /// lost) renews nothing more, and the expired-lease sweep ends the Run
     /// once its lease lapses, unless another process took it.
     pub(crate) fn schedule_execution(&self, run: AcceptedRun, actor: AuthenticatedPrincipal) {
-        let (handle, mailbox) = OwnerHandle::new(run.id.clone(), run.claim_id.clone());
+        let (handle, mailbox) = OwnerHandle::new(run.held_id(), run.claim_id.clone());
         let registration = self.owners.register(handle.clone());
         self.inbox.owner_registered(
             &self.owners,
@@ -65,8 +65,11 @@ impl RunModule {
     /// chunk, as the owner's self-interrupt would. Nothing still in flight
     /// under the old claim can land afterwards.
     async fn recover_from_owner_failure(&self, run: &AcceptedRun, ended: &tokio::task::JoinError) {
-        let span =
-            crate::trace::phase_span(run.trace.as_ref(), &run.id, crate::trace::Phase::Complete);
+        let span = crate::trace::phase_span(
+            run.trace.as_ref(),
+            &run.held_id(),
+            crate::trace::Phase::Complete,
+        );
         self.interrupt_after_owner_failure(run, ended)
             .instrument(span)
             .await;
@@ -79,7 +82,7 @@ impl RunModule {
     ) {
         let takeover_claim_id = uuid::Uuid::new_v4().hyphenated().to_string();
         tracing::error!(
-            coral.run.id = safe::id(&run.id),
+            coral.run.id = safe::id(&run.held_id()),
             coral.run.claim.id = crate::trace::claim(&run.claim_id).as_ref().map(safe::id),
             coral.run.takeover_claim.id = crate::trace::claim(&takeover_claim_id).as_ref().map(safe::id),
             error.type = safe::kind(owner_task_end_code(ended)),
@@ -88,7 +91,7 @@ impl RunModule {
         match self
             .record_interruption(
                 &run.workspace_id,
-                &run.id,
+                &run.held_id(),
                 &run.claim_id,
                 Some(&takeover_claim_id),
             )
@@ -97,13 +100,13 @@ impl RunModule {
             Ok(()) => {}
             Err(Error::ClaimMismatch | Error::RunEnded) => {
                 tracing::warn!(
-                    coral.run.id = safe::id(&run.id),
+                    coral.run.id = safe::id(&run.held_id()),
                     "Run of a failed Run Owner was already ended"
                 );
             }
             Err(error) => {
                 tracing::error!(
-                    coral.run.id = safe::id(&run.id),
+                    coral.run.id = safe::id(&run.held_id()),
                     error.type = safe::kind(error.code()),
                     "Run of a failed Run Owner could not be interrupted"
                 );

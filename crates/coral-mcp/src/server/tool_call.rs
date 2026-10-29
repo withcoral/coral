@@ -1,6 +1,6 @@
 //! The span and trace of one MCP tool call.
 
-use coral_task::TaskId;
+use coral_task::FoundTaskId;
 use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, TraceId, WorkspaceId};
 use rmcp::ErrorData;
@@ -82,8 +82,9 @@ impl ToolCall {
     }
 }
 
-/// Names the Task that the current tool call acts in. Call it from the call's
-/// handler, where the tool span is current, not from inside a child span.
-pub(super) fn record_task(task: &TaskId) {
-    tracing::Span::current().record("coral.task.id", safe::id(task));
+/// Names the Task that the current tool call started or ended. Call it from
+/// the call's handler, where the tool span is current, not from inside a
+/// child span. A command in a Task names it itself, once it finds the Task.
+pub(super) fn record_task(task: FoundTaskId<'_>) {
+    tracing::Span::current().record("coral.task.id", safe::id(&task));
 }
