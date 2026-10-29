@@ -215,22 +215,19 @@ impl HttpUpstream {
     /// Returns only when no complete response was received or the complete
     /// response crossed its finite size bound.
     pub async fn send(&self, dispatch: ReadyHttpDispatch) -> Result<HttpOutcome, Error> {
-        let started = std::time::Instant::now();
-        let request_bytes = dispatch.body.as_ref().map(Vec::len);
-        let mut response_bytes = None;
-        let sent = self.exchange(dispatch, &mut response_bytes).await;
-        crate::record_exchange(
+        let measure = crate::exchange::ExchangeMeasure::start(
             coral_telemetry::metric::ProviderProtocol::Http,
-            sent.as_ref().map(|_outcome| ()),
-            started,
-            request_bytes,
-            response_bytes,
         );
+        if let Some(body) = &dispatch.body {
+            measure.sent(body.len());
+        }
+        let sent = self.exchange(dispatch, &measure).await;
+        measure.end(sent.as_ref().map(|_outcome| ()));
         sent
     }
 
-    /// [`Self::send`], noting the body size of the response it reads in
-    /// `response_bytes`.
+    /// [`Self::send`], adding the body of the response it reads to
+    /// `measure`.
     #[expect(
         clippy::too_many_lines,
         reason = "one bounded protocol-continuation loop owns credential stripping and complete response capture"
@@ -238,7 +235,7 @@ impl HttpUpstream {
     async fn exchange(
         &self,
         dispatch: ReadyHttpDispatch,
-        response_bytes: &mut Option<usize>,
+        measure: &crate::exchange::ExchangeMeasure,
     ) -> Result<HttpOutcome, Error> {
         let ReadyHttpDispatch {
             mut credentials,
@@ -372,7 +369,7 @@ impl HttpUpstream {
             )
             .await?;
             span.record("http.response.body.size", safe::number(response_body.len()));
-            *response_bytes = Some(response_body.len());
+            measure.received(response_body.len());
             let content_type =
                 selected_decode_facts(&binding, status, !response_body.is_empty(), content_type);
             let (data, decode_diagnostics) = decode_response_body(

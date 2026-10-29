@@ -295,22 +295,14 @@ impl McpUpstream {
     /// Returns an error when no complete bounded MCP result is available.
     pub async fn send(&self, dispatch: ReadyMcpDispatch) -> Result<McpOutcome, Error> {
         let span = client_span(&dispatch);
-        let started = std::time::Instant::now();
-        let exchanged = Arc::new(transport::Exchanged::default());
+        let measure = Arc::new(crate::exchange::ExchangeMeasure::start(
+            coral_telemetry::metric::ProviderProtocol::Mcp,
+        ));
         let sent = self
-            .send_session(dispatch, span.clone(), exchanged.clone())
+            .send_session(dispatch, span.clone(), measure.clone())
             .instrument(span.clone())
             .await;
-        let bytes = |counter: &std::sync::atomic::AtomicUsize| {
-            Some(counter.load(std::sync::atomic::Ordering::Relaxed)).filter(|bytes| *bytes > 0)
-        };
-        crate::record_exchange(
-            coral_telemetry::metric::ProviderProtocol::Mcp,
-            sent.as_ref().map(|_outcome| ()),
-            started,
-            bytes(&exchanged.sent),
-            bytes(&exchanged.received),
-        );
+        measure.end(sent.as_ref().map(|_outcome| ()));
         match &sent {
             Ok(outcome) if outcome.class() == crate::OutcomeClass::ErrorResponse => {
                 coral_telemetry::record_failure(&span, "tool_error");
@@ -335,7 +327,7 @@ impl McpUpstream {
         &self,
         dispatch: ReadyMcpDispatch,
         span: tracing::Span,
-        exchanged: Arc<transport::Exchanged>,
+        measure: Arc<crate::exchange::ExchangeMeasure>,
     ) -> Result<McpOutcome, Error> {
         let mut config = StreamableHttpClientTransportConfig::with_uri(
             dispatch.binding.server_url().to_string(),
@@ -353,7 +345,7 @@ impl McpUpstream {
                 limit: dispatch.limits.upstream_bytes(),
                 result: captured.clone(),
                 span,
-                exchanged,
+                measure: Some(measure),
             },
             config,
         );

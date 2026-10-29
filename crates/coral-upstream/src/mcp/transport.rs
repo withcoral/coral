@@ -15,6 +15,7 @@ use rmcp::transport::streamable_http_client::{
 use serde_json::Value;
 
 use crate::Error;
+use crate::exchange::ExchangeMeasure;
 
 type TransportError = StreamableHttpError<Error>;
 
@@ -89,21 +90,9 @@ pub(super) struct McpHttpClient {
     /// The dispatch's client span, whose trace context every request of its
     /// session carries.
     pub(super) span: tracing::Span,
-    /// The body bytes the session's requests and responses carried.
-    pub(super) exchanged: Arc<Exchanged>,
-}
-
-/// The body bytes one MCP dispatch's session sent and received.
-#[derive(Debug, Default)]
-pub(super) struct Exchanged {
-    pub(super) sent: std::sync::atomic::AtomicUsize,
-    pub(super) received: std::sync::atomic::AtomicUsize,
-}
-
-impl Exchanged {
-    fn add(counter: &std::sync::atomic::AtomicUsize, bytes: usize) {
-        counter.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
-    }
+    /// The dispatch the session's request and response bodies add to;
+    /// `None` for a session that is no Provider Tool dispatch.
+    pub(super) measure: Option<Arc<ExchangeMeasure>>,
 }
 
 impl StreamableHttpClient for McpHttpClient {
@@ -128,7 +117,9 @@ impl StreamableHttpClient for McpHttpClient {
             return Err(TransportError::Client(Error::InputTooLarge));
         }
         let capture_request = result_request(&request_json);
-        Exchanged::add(&self.exchanged.sent, request_bytes);
+        if let Some(measure) = &self.measure {
+            measure.sent(request_bytes);
+        }
         let mut request = self
             .client
             .post(uri.as_ref())
@@ -191,7 +182,9 @@ impl StreamableHttpClient for McpHttpClient {
                         }
                         TransportError::Client(error)
                     })?;
-                Exchanged::add(&self.exchanged.received, body.len());
+                if let Some(measure) = &self.measure {
+                    measure.received(body.len());
+                }
                 let mut value = serde_json::from_slice(&body)?;
                 capture(&self.result, capture_request.as_ref(), &mut value)
                     .map_err(TransportError::Client)?;
@@ -292,9 +285,9 @@ impl McpHttpClient {
                 response,
                 self.limit,
                 self.result.clone(),
-                self.exchanged.clone(),
+                self.measure.clone(),
             ),
-            |(mut response, remaining, result, exchanged)| async move {
+            |(mut response, remaining, result, measure)| async move {
                 let Some(chunk) = response.chunk().await.map_err(Error::Body)? else {
                     return Ok::<_, Error>(None);
                 };
@@ -304,8 +297,10 @@ impl McpHttpClient {
                     }
                     Error::ResultTooLarge
                 })?;
-                Exchanged::add(&exchanged.received, chunk.len());
-                Ok(Some((chunk, (response, remaining, result, exchanged))))
+                if let Some(measure) = &measure {
+                    measure.received(chunk.len());
+                }
+                Ok(Some((chunk, (response, remaining, result, measure))))
             },
         );
         let result = self.result.clone();
