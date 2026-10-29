@@ -4,8 +4,9 @@ import { useEffect, useState } from 'react'
 import { useLoaderData, useLocation, useRevalidator } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { renderRoute } from '@/test-support/route'
+import { ActionReviewSession } from '../actions/review'
 import { Activity } from './activity'
-import { activityPage, invocationRow, runRow } from './fixtures'
+import { activityPage, approvalRequest, invocationRow, runRow } from './fixtures'
 import { MIN_LIVE_RECORD_STAY_MS } from './navigation'
 import type { ActivityPage, ActivityRow, LiveLatest } from './types'
 
@@ -27,6 +28,8 @@ let refresh = () => {}
 let stream = () => {}
 /** How long each read of the page takes, on the fake clock. */
 let delay = 0
+/** Whether each Run you open asks you to review an approval, where you can write a comment. */
+let review = false
 
 const rowOf = ({ id, running, started }: (typeof runs)[number]): ActivityRow =>
   runRow(id, '', {
@@ -73,7 +76,7 @@ function pageFor(url: URL): ActivityPage {
         ? {
             kind: 'run',
             run: selectedRow,
-            request: null,
+            request: review ? approvalRequest : null,
             source: '',
             linkedFunctions: [],
             terminal: { kind: 'unavailable' },
@@ -115,11 +118,13 @@ function Route() {
       setStreamed({ page: pageFor(new URL(location.search, `http://reef${list}`)), over: loaded })
   })
   return (
-    <Activity
-      page={page}
-      windowKey="live-stay"
-      live={{ connected: true, followRoot: true, atStart() {}, viewport() {} }}
-    />
+    <ActionReviewSession request={page.detail?.kind === 'run' ? page.detail.request : null}>
+      <Activity
+        page={page}
+        windowKey="live-stay"
+        live={{ connected: true, followRoot: true, atStart() {}, viewport() {} }}
+      />
+    </ActionReviewSession>
   )
 }
 
@@ -186,6 +191,7 @@ beforeEach(() => {
   runs = []
   action = undefined
   delay = 0
+  review = false
   refresh = () => {}
   stream = () => {}
 })
@@ -394,3 +400,69 @@ it.each<[string, () => void, boolean]>([
   expect(view.records).not.toContain(runName('new'))
   expect(view.records).not.toContain(runName('newer'))
 })
+
+/** Writes `text` as the comment of the review the rail shows. */
+const write = (text: string) =>
+  act(async () => {
+    fireEvent.change(screen.getByRole('textbox', { name: 'Comment (optional)' }), {
+      target: { value: text },
+    })
+  })
+/**
+ * Writes a comment, before a newer record arrives or while it waits, then picks another
+ * record once the wait ended.
+ */
+async function pickFromComment(waiting: boolean) {
+  review = true
+  start('older', false)
+  start('old', false)
+  const view = await open('old')
+  if (!waiting) await write('Check it')
+  await change(() => start('new'))
+  await pass(1000)
+  if (waiting) await write('Check it')
+  await pass(MIN_LIVE_RECORD_STAY_MS)
+  expect(view.address().get('record')).toBe(runName('old'))
+  await act(async () => pick())
+  await settle()
+  screen.getByRole('dialog', { name: 'Discard your comment?' })
+  return view
+}
+const comments = [
+  ['before the newer record arrives', false],
+  ['while the newer record waits', true],
+] as const
+
+// Catches: the review letting go of your comment before the pick it discarded it for
+// loads, so live mode's step, already due, replaces your pick.
+it.each(comments)(
+  'lets the pick you discard a comment for land, written %s',
+  async (_, waiting) => {
+    const view = await pickFromComment(waiting)
+    delay = 300
+    // A click outside `act`, as in a browser: the router applies your pick in a transition.
+    screen.getByRole('button', { name: 'Discard comment' }).click()
+    await pass(300)
+    await pass(MIN_LIVE_RECORD_STAY_MS)
+    expect(view.records).toEqual([runName('old'), runName('older')])
+    expect(view.address().has('live')).toBe(false)
+  },
+)
+
+// Catches: a pick you gave up to keep your comment holding live mode after you clear it,
+// or the wait starting again from then.
+it.each(comments)(
+  'follows again once you clear the comment you kept, written %s',
+  async (_, waiting) => {
+    const view = await pickFromComment(waiting)
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
+    })
+    await pass(MIN_LIVE_RECORD_STAY_MS)
+    expect(view.address().get('record')).toBe(runName('old'))
+    await write('')
+    await pass(50)
+    expect(view.records).toEqual([runName('old'), runName('new')])
+    expect(view.address().get('live')).toBe('latest')
+  },
+)

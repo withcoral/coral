@@ -1057,7 +1057,7 @@ export function Activity({
       followStep.current = null
     // Only page live mode waits, so another mode, or an advance, keeps no count of yours.
     if (!following || liveScope !== 'latest' || advancing) armed.current = null
-    // Your navigation landed, or you kept the comment it would have discarded.
+    // Your navigation landed, or the review stopped guarding a comment.
     const held = armed.current?.held
     if (
       armed.current &&
@@ -1080,7 +1080,7 @@ export function Activity({
     // A pick, a close or the live mode toggle you started while a step waited goes first,
     // though the router has not applied it yet: any step, even one that only expands,
     // would cancel it. Live mode holds until the location changes, which that navigation
-    // does when it lands, or until the review stops guarding a comment it kept.
+    // does when it lands, or until the review stops guarding a comment.
     if (
       armed.current?.since === since &&
       (armed.current.held !== undefined || tokens.issued() !== armed.current.issued)
