@@ -91,7 +91,9 @@ export const LargeJson: Story = {
     await expect(tree).not.toHaveTextContent('row-0')
     // A long string shows its start and folds the rest, which one press shows.
     // 402 characters with its quotes; the first 120 show.
-    const note = within(tree).getByRole('button', { name: '282 more characters: note' })
+    // Its button says what it does, and its name starts with what it shows.
+    const note = within(tree).getByRole('button', { name: 'Show 282 more characters: note' })
+    await expect(note).toHaveTextContent(/^Show 282 more characters$/)
     await expect(note).toHaveAttribute('aria-expanded', 'false')
     await expect(tree).not.toHaveTextContent(`"${'n'.repeat(400)}"`)
     await userEvent.click(note)

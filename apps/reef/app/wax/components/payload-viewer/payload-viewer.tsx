@@ -692,6 +692,7 @@ function StructureRow({
   const long = node.kind === 'string' && raw.length > LONG_STRING_LENGTH
   const isFolded = long && folded.has(node.start)
   const cut = isFolded ? STRING_PREVIEW_LENGTH : raw.length
+  const more = isFolded ? `Show ${raw.length - cut} more characters` : 'Fold'
   return (
     <div className={styles.line} style={indent}>
       <span className={styles.toggleSpacer} />
@@ -709,10 +710,10 @@ function StructureRow({
             variant="bare"
             aria-expanded={!isFolded}
             // The name starts with the visible label, then says which string it is.
-            aria-label={`${isFolded ? `${raw.length - cut} more characters` : 'Fold'}: ${row.name}`}
+            aria-label={`${more}: ${row.name}`}
             onClick={() => toggle(node.start)}
           >
-            {isFolded ? `${raw.length - cut} more characters` : 'Fold'}
+            {more}
           </Button.TextButton>
         )}
       </span>
