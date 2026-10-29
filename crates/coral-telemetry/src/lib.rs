@@ -4,12 +4,12 @@
 //! shared by application, domain, and adapter crates, the safe fields, and
 //! the filters that decide what spans and log records may leave the host.
 
-#[cfg(test)]
-mod event_text;
 mod export;
-pub mod field;
+mod field;
 mod request;
 mod run;
+#[cfg(test)]
+mod source_scan;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
@@ -74,24 +74,23 @@ const TRACESTATE_HEADER: &str = "tracestate";
 /// Prefix for host-only span attributes that must not be exported over OTLP.
 pub const LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX: &str = "coral.local.";
 
-/// The sanitized type of `error`, for an event's `error.type`: its Rust type
-/// name, never its text or its sources. The event's code location says
-/// where it failed.
+/// The type of `error`, for an event's `error.type` when the error has no
+/// code of its own: its Rust type name, never its text or its sources. The
+/// name is for an operator to read, not a stable contract: it can change with
+/// the compiler, and a boxed error names only the box. The event's code
+/// location says where it failed: a log record's event name, or a span
+/// event's `code.*` keys.
 #[must_use]
 pub fn error_type<E: ?Sized>(error: &E) -> &'static str {
     std::any::type_name_of_val(error).trim_start_matches('&')
 }
 
-/// Records a categorical failure without accepting caller-controlled message text.
-pub fn record_failure(
-    span: &tracing::Span,
-    error_type: impl AsRef<str>,
-    stable_message: &'static str,
-) {
-    span.record("status", "error");
+/// Marks `span` failed with the categorical `error_type` and no message
+/// text, so no caller-controlled text reaches its status.
+pub fn record_failure(span: &tracing::Span, error_type: impl AsRef<str>) {
+    span.record("coral.status", "error");
     span.record("error.type", error_type.as_ref());
-    span.record("exception.message", stable_message);
-    span.set_status(OtelStatus::error(stable_message));
+    span.set_status(OtelStatus::error(""));
 }
 
 /// Links `span`, a span not yet entered, to the current span, when there is
@@ -273,10 +272,9 @@ mod tests {
             let span = tracing::info_span!(
                 "failure",
                 error.type = tracing::field::Empty,
-                exception.message = tracing::field::Empty,
-                status = tracing::field::Empty,
+                coral.status = tracing::field::Empty,
             );
-            record_failure(&span, "INVALID_ARGUMENT", "request failed");
+            record_failure(&span, "INVALID_ARGUMENT");
             span.in_scope(|| {});
         });
         let spans = capture.finished();
@@ -285,16 +283,12 @@ mod tests {
             .find(|span| span.name == "failure")
             .expect("failure span");
         let string_attribute = |name: &str| attribute(failure, name);
-        assert_eq!(string_attribute("status").as_deref(), Some("error"));
+        assert_eq!(string_attribute("coral.status").as_deref(), Some("error"));
         assert_eq!(
             string_attribute("error.type").as_deref(),
             Some("INVALID_ARGUMENT")
         );
-        assert_eq!(
-            string_attribute("exception.message").as_deref(),
-            Some("request failed")
-        );
-        assert_eq!(failure.status, OtelStatus::error("request failed"));
+        assert_eq!(failure.status, OtelStatus::error(""));
     }
 
     #[test]

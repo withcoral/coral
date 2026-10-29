@@ -11,10 +11,7 @@ use tracing::Instrument as _;
 use tracing::field::Empty;
 use tracing::instrument::WithSubscriber as _;
 
-use super::{
-    FUNCTION_FAILURE, GENERATION_FAILURE, SearchIndex, WriteTrigger, function_span,
-    generation_span, in_write_span, skipped,
-};
+use super::{SearchIndex, WriteTrigger, function_span, generation_span, in_write_span, skipped};
 use crate::indexer::functions::SavedFunctionIndexer;
 use crate::indexer::tools::ToolIndexer;
 use crate::indexer::{self, EntityIndexer, IndexError};
@@ -26,9 +23,8 @@ macro_rules! step_span {
         tracing::debug_span!(
             $name,
             $($($field)*)?
-            status = Empty,
+            coral.status = Empty,
             error.type = Empty,
-            exception.message = Empty,
         )
     };
 }
@@ -113,9 +109,8 @@ impl SearchIndex {
             coral.search.reconcile.workspaces_checked = Empty,
             coral.search.reconcile.workspaces_recounted = Empty,
             coral.search.reconcile.rows_written = Empty,
-            status = Empty,
+            coral.status = Empty,
             error.type = Empty,
-            exception.message = Empty,
         );
         let work = self.run_pass().instrument(pass.clone()).await;
         if let Some(statistics) = work.statistics {
@@ -124,7 +119,7 @@ impl SearchIndex {
         work.generations.record(&pass, "generations");
         work.functions.record(&pass, "functions");
         if work.failed() {
-            coral_telemetry::record_failure(&pass, "reconcile_failed", "a reconcile step failed");
+            coral_telemetry::record_failure(&pass, "reconcile_failed");
         }
     }
 
@@ -245,7 +240,7 @@ impl SearchIndex {
                 generation.provider_id(),
                 Some(generation.generation_id()),
             );
-            let indexed = in_write_span(span, WriteTrigger::Reconcile, GENERATION_FAILURE, async {
+            let indexed = in_write_span(span, WriteTrigger::Reconcile, async {
                 match self
                     .prepare_stored_generation(generation.workspace_id(), generation.provider_id())
                     .await
@@ -318,7 +313,6 @@ impl SearchIndex {
                     let indexed = in_write_span(
                         function_span(entry),
                         WriteTrigger::Reconcile,
-                        FUNCTION_FAILURE,
                         self.write_function(entry),
                     )
                     .await
@@ -372,14 +366,12 @@ impl SearchIndex {
                 coral.workspace.id = %workspace_id,
                 coral.search.rows_written = Empty,
                 coral.search.write.trigger = Empty,
-                status = Empty,
+                coral.status = Empty,
                 error.type = Empty,
-                exception.message = Empty,
             );
             let refreshed = in_write_span(
                 span.clone(),
                 WriteTrigger::Reconcile,
-                "refreshing a Workspace's search statistics failed",
                 self.within_limit(async {
                     let mut transaction = self.database.begin().await?;
                     let rows = indexer::refresh_statistics(&mut transaction, workspace_id).await?;
@@ -496,7 +488,7 @@ impl PassWork {
 async fn step<T>(span: tracing::Span, work: impl Future<Output = Result<T, ()>>) -> Result<T, ()> {
     let output = work.instrument(span.clone()).await;
     if output.is_err() {
-        coral_telemetry::record_failure(&span, "reconcile_failed", "a reconcile step failed");
+        coral_telemetry::record_failure(&span, "reconcile_failed");
     }
     output
 }

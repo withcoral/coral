@@ -105,8 +105,8 @@ impl RunModule {
             return;
         }
         tracing::warn!(
-            live = self.owners.live().len(),
-            drain_ms = drain.as_millis(),
+            coral.shutdown.live_runs = self.owners.live().len(),
+            coral.shutdown.drain_ms = drain.as_millis(),
             "the Shutdown Drain is out: interrupting the Runs still live"
         );
         let interrupt_live = || {
@@ -124,7 +124,7 @@ impl RunModule {
         .await;
         if committed.is_err() {
             tracing::warn!(
-                live = self.owners.live().len(),
+                coral.shutdown.live_runs = self.owners.live().len(),
                 "Runs still live after the commit grace keep their lease; \
                  the next process's expired-lease sweep ends them"
             );

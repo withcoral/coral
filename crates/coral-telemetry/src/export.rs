@@ -16,14 +16,18 @@ use crate::field;
 /// never leave the host, whatever the operator's filters admit.
 const DENIED_TARGETS: &[&str] = &["coral.http.body", "coral.mcp.body"];
 
+/// The name a library's span event leaves with, in place of its text.
+const LIBRARY_EVENT_NAME: &str = "event";
+
 /// Wraps the span processor of an off-host exporter so that it receives only
 /// what may leave the host.
 ///
 /// A span leaves only when the operator's trace filter admits its target and
 /// level and its target is not a body target. `inner` sees every span start,
 /// but only those spans end there, so the rest take no room in its export
-/// queue. An event of a body target never leaves with its span. Every
-/// exported span, event and link keeps only the keys [`crate::field`]
+/// queue. An event of a body target never leaves with its span, and a
+/// library's event leaves named `event`, without its text. Every
+/// exported span, event and link keeps only the keys the field catalog
 /// lists, and a failed span keeps its error status without its text.
 #[derive(Debug)]
 pub struct OtlpSpanFilter<E> {
@@ -59,6 +63,11 @@ where
                 .is_some_and(|target| is_body_target(&target))
         });
         for event in &mut span.events.events {
+            if !string_attribute(&event.attributes, "target")
+                .is_some_and(|target| is_coral_target(&target))
+            {
+                event.name = LIBRARY_EVENT_NAME.into();
+            }
             retain_exported(&mut event.attributes);
         }
         for link in &mut span.links.links {
@@ -85,7 +94,7 @@ where
 ///
 /// An event of a body target never reaches `inner`. Every other record
 /// reaches it with its level, target and trace, and with only the keys
-/// [`crate::field`] lists. A Coral record keeps its text; a library's
+/// the field catalog lists. A Coral record keeps its text; a library's
 /// record, which an operator's log filter can admit, leaves without it.
 #[derive(Debug)]
 pub struct OtlpLogFilter<P> {
@@ -291,9 +300,10 @@ mod tests {
                     misclassified = "secret",
                     coral.workspace.id = "workspace-1",
                     coral.local.event = "secret",
-                    "event"
+                    "coral event"
                 );
                 tracing::info!(target: "coral.mcp.body", "secret");
+                tracing::info!(target: "sqlx::query", "secret");
             });
             for body in [
                 tracing::info_span!(target: "coral.http.body", "http body"),
@@ -319,7 +329,8 @@ mod tests {
 
     /// Only admitted spans leave, and they carry only cataloged keys: a
     /// `coral.local.*` key or a misclassified one never leaves with them. A
-    /// failed span leaves failed, without its status text.
+    /// failed span leaves failed, without its status text, and a library's
+    /// event leaves without its text.
     #[test]
     fn only_admitted_spans_leave_and_only_with_cataloged_keys() {
         // The filter admits both body targets, so only the deny list keeps them home.
@@ -333,9 +344,11 @@ mod tests {
 
         assert!(keys(&kept.attributes).contains(&"coral.run.id"));
         assert_eq!(kept.status, Status::error(""));
-        let [event] = kept.events.events.as_slice() else {
-            panic!("only the event of an admitted target: {:?}", kept.events);
+        let [event, library] = kept.events.events.as_slice() else {
+            panic!("only the events of admitted targets: {:?}", kept.events);
         };
+        assert_eq!(event.name, "coral event");
+        assert_eq!(library.name, "event", "a library's event text stays home");
         assert!(keys(&event.attributes).contains(&"coral.workspace.id"));
         let link = kept.links.links.first().expect("link");
         assert_eq!(keys(&link.attributes), ["coral.run.id"]);

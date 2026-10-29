@@ -337,6 +337,16 @@ pub enum EntityKind {
     SavedFunction,
 }
 
+impl EntityKind {
+    /// The kind's stable name, as search results and telemetry spell it.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProviderTool => "provider_tool",
+            Self::SavedFunction => "saved_function",
+        }
+    }
+}
+
 /// Current approval fact exposed for one visible Tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalRequirement {

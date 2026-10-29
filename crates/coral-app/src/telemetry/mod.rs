@@ -187,9 +187,6 @@ pub trait RunErrorTelemetry {
     /// Low-cardinality error class for `error.type`.
     fn telemetry_error_type(&self) -> Cow<'_, str>;
 
-    /// Human-readable failure summary for span status and exception message.
-    fn telemetry_error_message(&self) -> Cow<'_, str>;
-
     /// The status the process exits with for this error, for
     /// `process.exit.code`.
     fn telemetry_exit_code(&self) -> u8 {
@@ -229,12 +226,11 @@ pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
     let span = tracing::info_span!(
         "coral.runtime",
         error.type = tracing::field::Empty,
-        exception.message = tracing::field::Empty,
         otel.kind = "internal",
         process.executable.name = process_executable_name(),
         process.exit.code = tracing::field::Empty,
         process.pid = i64::from(std::process::id()),
-        status = tracing::field::Empty
+        coral.status = tracing::field::Empty
     );
     coral_telemetry::set_parent_from_trace_headers(&span, traceparent, None);
     span
@@ -242,18 +238,13 @@ pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
 
 fn record_run_success(span: &tracing::Span) {
     span.record("process.exit.code", 0_i64);
-    span.record("status", "ok");
+    span.record("coral.status", "ok");
     span.set_status(OtelStatus::Ok);
 }
 
 fn record_run_error(span: &tracing::Span, error: &impl RunErrorTelemetry) {
-    let error_type = error.telemetry_error_type();
-    let message = error.telemetry_error_message();
     span.record("process.exit.code", i64::from(error.telemetry_exit_code()));
-    span.record("error.type", error_type.as_ref());
-    span.record("exception.message", message.as_ref());
-    span.record("status", "error");
-    span.set_status(OtelStatus::error(message.into_owned()));
+    coral_telemetry::record_failure(span, error.telemetry_error_type());
 }
 
 fn process_executable_name() -> String {
@@ -374,16 +365,12 @@ fn try_init_tracing(config: &TelemetryConfig, instance_id: &str) -> Result<(), A
     }
     if let Some(error) = log_filter_error {
         tracing::warn!(
-            provided_filter = %config.otel.log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
-            fallback_filter = DEFAULT_LOG_FILTER,
             error.type = coral_telemetry::error_type(&error),
             "invalid log_filter; falling back to default filter"
         );
     }
     if let Some(error) = trace_filter_error {
         tracing::warn!(
-            provided_filter = %config.otel.trace_filter,
-            fallback_filter = DEFAULT_TRACE_FILTER,
             error.type = coral_telemetry::error_type(&error),
             "invalid trace_filter; falling back to default filter"
         );

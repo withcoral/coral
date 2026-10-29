@@ -200,7 +200,7 @@ impl EntityRetriever for SavedFunctionRetriever {
         }
         let Some(matched) = evidence.build() else {
             tracing::debug!(
-                call_path = function.call_path.as_str(),
+                coral.saved_function.call_path = function.call_path.as_str(),
                 "a ranked Saved Function has no evidence and leaves the page"
             );
             return Ok(Hydrated::Dropped);

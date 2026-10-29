@@ -24,16 +24,6 @@ use crate::{record_failure, set_parent_from_http_headers};
 /// The target of every request span, for `trace_filter`.
 pub const REQUEST_TARGET: &str = "coral.request";
 
-/// Stable message recorded for HTTP requests that end in a server error.
-const HTTP_REQUEST_ERROR_MESSAGE: &str = "HTTP request failed";
-
-/// Stable message recorded for gRPC calls that end in a server error.
-const GRPC_REQUEST_ERROR_MESSAGE: &str = "gRPC request failed";
-
-/// Stable messages recorded when a response body breaks off.
-const HTTP_BODY_ERROR_MESSAGE: &str = "HTTP response body failed";
-const GRPC_BODY_ERROR_MESSAGE: &str = "gRPC response body failed";
-
 const GRPC_STATUS: &str = "grpc-status";
 
 /// gRPC status names, indexed by code.
@@ -122,8 +112,7 @@ async fn trace_http_request(mut request: Request, next: Next) -> Response {
         http.route = route,
         http.response.status_code = tracing::field::Empty,
         error.type = tracing::field::Empty,
-        exception.message = tracing::field::Empty,
-        status = tracing::field::Empty,
+        coral.status = tracing::field::Empty,
     );
     set_parent_from_http_headers(&span, request.headers());
     request.extensions_mut().insert(RequestSpan(span.clone()));
@@ -131,15 +120,14 @@ async fn trace_http_request(mut request: Request, next: Next) -> Response {
     let status = response.status();
     span.record("http.response.status_code", i64::from(status.as_u16()));
     if status.is_server_error() {
-        record_failure(&span, status.as_str(), HTTP_REQUEST_ERROR_MESSAGE);
+        record_failure(&span, status.as_str());
     } else {
-        span.record("status", "ok");
+        span.record("coral.status", "ok");
     }
     response.map(|body| {
         Body::new(TracedBody {
             body,
             span,
-            body_error: HTTP_BODY_ERROR_MESSAGE,
             grpc_path: None,
         })
     })
@@ -180,8 +168,7 @@ async fn trace_grpc_request(mut request: Request, next: Next) -> Response {
         rpc.method = tracing::field::Empty,
         rpc.response.status_code = tracing::field::Empty,
         error.type = tracing::field::Empty,
-        exception.message = tracing::field::Empty,
-        status = tracing::field::Empty,
+        coral.status = tracing::field::Empty,
     );
     // The parent must be set before the handler enters the span and so starts it.
     set_parent_from_http_headers(&span, request.headers());
@@ -211,7 +198,6 @@ async fn trace_grpc_request(mut request: Request, next: Next) -> Response {
         Body::new(TracedBody {
             body,
             span,
-            body_error: GRPC_BODY_ERROR_MESSAGE,
             grpc_path,
         })
     })
@@ -247,9 +233,9 @@ fn record_grpc_status(span: &tracing::Span, path: Option<&str>, code: i32) {
         .unwrap_or("UNKNOWN");
     span.record("rpc.response.status_code", status);
     if GRPC_SERVER_ERRORS.contains(&code) {
-        record_failure(span, status, GRPC_REQUEST_ERROR_MESSAGE);
+        record_failure(span, status);
     } else {
-        span.record("status", "ok");
+        span.record("coral.status", "ok");
     }
 }
 
@@ -259,7 +245,6 @@ fn record_grpc_status(span: &tracing::Span, path: Option<&str>, code: i32) {
 struct TracedBody {
     body: Body,
     span: tracing::Span,
-    body_error: &'static str,
     /// The request path of a gRPC call whose status is still to come in the
     /// trailers.
     grpc_path: Option<String>,
@@ -287,7 +272,7 @@ impl http_body::Body for TracedBody {
             // The error's text may come from anywhere, so only its kind is kept.
             Poll::Ready(Some(Err(_error))) => match this.grpc_path.take() {
                 Some(path) => record_grpc_status(&this.span, Some(&path), GRPC_UNKNOWN),
-                None => record_failure(&this.span, "response_body", this.body_error),
+                None => record_failure(&this.span, "response_body"),
             },
             // A gRPC body that ends without a status broke the protocol.
             Poll::Ready(None) => {

@@ -1,20 +1,33 @@
-//! Keeps error text out of every Coral event.
+//! Checks every span and event in the workspace's production source.
+//!
+//! The export filters drop every key the field catalog does not list, so a
+//! field under any other key never leaves the host. This test turns that
+//! silent drop into a failure: every field of a span or event, and every
+//! key a span records later, must be one the catalog lists. `otel.*` keys
+//! configure the span and are not exported, and `coral.local.*` keys stay on
+//! the host.
 //!
 //! An event leaves the host as a log record whose text is its message, or as
-//! a span event named by its message. The export filters drop every key
-//! [`crate::field`] does not list, but they cannot tell a message written in
-//! the source from one formatted from a value. So this test reads every
-//! event in the workspace's production source and requires that its message
-//! is fixed text and that no field takes an error's value. An event names a
-//! failure with `error.type = coral_telemetry::error_type(&error)`, or with
-//! the error's stable `code()`, instead.
+//! a span event named by its message, and the filters cannot tell a message
+//! written in the source from one formatted from a value. So an event's
+//! message must be fixed text, and no field may take an error's value. A
+//! failure is named by `error.type`, from the error's stable `code()` or from
+//! `coral_telemetry::error_type(&error)`.
 
 use std::path::{Path, PathBuf};
 
 const EVENT_MACROS: [&str; 6] = ["trace!", "debug!", "info!", "warn!", "error!", "event!"];
+const SPAN_MACROS: [&str; 6] = [
+    "trace_span!",
+    "debug_span!",
+    "info_span!",
+    "warn_span!",
+    "error_span!",
+    "span!",
+];
 
 #[test]
-fn every_event_message_is_fixed_text_and_no_field_takes_an_error() {
+fn every_span_and_event_uses_cataloged_keys_and_no_error_text() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("the crates directory");
@@ -25,7 +38,10 @@ fn every_event_message_is_fixed_text_and_no_field_takes_an_error() {
             rust_files(&source, &mut files);
         }
     }
-    assert!(files.len() > 100, "found the workspace source");
+    assert!(
+        files.contains(&crates.join("coral-run/src/trace.rs")),
+        "the scan reads other crates' source"
+    );
     let sources = files
         .into_iter()
         .map(|file| {
@@ -49,36 +65,45 @@ fn every_event_message_is_fixed_text_and_no_field_takes_an_error() {
     }
     assert!(
         violations.is_empty(),
-        "events must not carry error text:\n{}",
+        "spans and events must use cataloged keys and carry no error text:\n{}",
         violations.join("\n")
     );
 }
 
-/// The checks catch what they are written to catch.
+/// The checks catch what they are written to catch: each line here that
+/// breaks a rule is reported, and no other line is.
 #[test]
-fn the_checks_find_formatted_messages_and_error_fields() {
+fn the_checks_find_what_they_check() {
     let source = r#"
-        tracing::warn!(coral.run.id = %id, "fixed text");
+        tracing::warn!(coral.run.id = %id, coral.local.path = %path, "fixed text");
         tracing::warn!("fixed {{braces}}");
         warn!(error.type = coral_telemetry::error_type(&error), "fixed text");
         warn!(error.type = error.code(), "fixed text");
+        tracing::event!(target: "coral_error", tracing::Level::ERROR, "fixed text");
+        tracing::info_span!("coral.run.start", otel.kind = "internal", coral.run.status = Empty);
+        span.record("coral.run.status", "ok");
+        metric.record(1, &[]);
         tracing::warn!("failed: {error}");
         tracing::error!("failed: {}", detail);
-        tracing::warn!(%error, "fixed text");
-        tracing::error!(detail = error.to_string(), "fixed text");
+        tracing::warn!(error.type = %error, "fixed text");
+        tracing::error!(error.type = error.to_string(), "fixed text");
         tracing::error!(error.type = %IndexError::Clock, "fixed text");
-        tracing::event!(tracing::Level::WARN, ?err, "fixed text");
-        tracing::event!(target: "coral_error", tracing::Level::ERROR, "fixed text");
+        tracing::event!(tracing::Level::WARN, coral.run.id = ?err, "fixed text");
+        tracing::warn!(misclassified = 1, "fixed text");
+        tracing::warn!(%claim_id, "fixed text");
+        tracing::warn!({ RUN_ID } = %id, "fixed text");
+        tracing::info_span!("coral.run.start", detail = Empty);
+        span.record("detail", 1);
         #[cfg(test)]
         mod tests {
-            fn ignored() { tracing::warn!("test {error}"); }
+            fn ignored() { tracing::warn!(misclassified = 1, "test {error}"); }
         }
     "#;
     let lines = violations_in(&production_code(source))
         .into_iter()
         .map(|(line, _)| line)
         .collect::<Vec<_>>();
-    assert_eq!(lines, [6, 7, 8, 9, 10, 11]);
+    assert_eq!(lines, (10..=20).collect::<Vec<_>>());
 }
 
 fn rust_files(directory: &Path, files: &mut Vec<PathBuf>) {
@@ -239,71 +264,115 @@ fn char_end(bytes: &[u8], start: usize) -> usize {
     }
 }
 
-/// Each event in `code` that breaks a rule, by line.
+/// Each span and event in `code` that breaks a rule, by line.
 fn violations_in(code: &str) -> Vec<(usize, String)> {
     let mut violations = Vec::new();
     for name in EVENT_MACROS {
-        let mut from = 0;
-        while let Some(found) = code.get(from..).and_then(|rest| rest.find(name)) {
-            let start = from + found;
-            from = start + name.len();
-            let preceded_by_word = code
-                .get(..start)
-                .and_then(|before| before.chars().next_back())
-                .is_some_and(|character| character.is_alphanumeric() || character == '_');
-            let open = code
-                .get(from..)
-                .and_then(|rest| rest.find(|character: char| !character.is_whitespace()))
-                .map(|offset| from + offset);
-            let Some(open) = open.filter(|&open| code.as_bytes().get(open) == Some(&b'(')) else {
-                continue;
-            };
-            if preceded_by_word {
-                continue;
-            }
-            let Some(end) = closing(code, open) else {
-                continue;
-            };
-            let line = code.get(..start).unwrap_or("").matches('\n').count() + 1;
-            let arguments = code.get(open + 1..end - 1).unwrap_or("");
-            if let Some(problem) = problem(arguments) {
-                violations.push((line, problem));
-            }
+        for (line, arguments) in calls(code, name) {
+            violations.extend(event_problem(arguments).map(|problem| (line, problem)));
+        }
+    }
+    for name in SPAN_MACROS {
+        for (line, arguments) in calls(code, name) {
+            let problem = split_arguments(arguments)
+                .into_iter()
+                .find_map(|argument| field_problem(argument.trim()));
+            violations.extend(problem.map(|problem| (line, problem)));
+        }
+    }
+    for (line, arguments) in calls(code, ".record") {
+        let key = split_arguments(arguments)
+            .first()
+            .map(|key| key.trim())
+            .and_then(|key| key.strip_prefix('"')?.strip_suffix('"'));
+        if let Some(key) = key.filter(|key| !is_allowed_key(key)) {
+            violations.push((line, format!("key is not cataloged: {key}")));
         }
     }
     violations.sort();
     violations
 }
 
+/// The line and arguments of each call of the macro or method `name` in
+/// `code`.
+fn calls<'a>(code: &'a str, name: &str) -> Vec<(usize, &'a str)> {
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(offset) = code.get(from..).and_then(|rest| rest.find(name)) {
+        let start = from + offset;
+        from = start + name.len();
+        let preceded_by_word = code
+            .get(..start)
+            .and_then(|before| before.chars().next_back())
+            .is_some_and(|character| character.is_alphanumeric() || character == '_');
+        let open = code
+            .get(from..)
+            .and_then(|rest| rest.find(|character: char| !character.is_whitespace()))
+            .map(|offset| from + offset)
+            .filter(|&open| code.as_bytes().get(open) == Some(&b'('));
+        let (Some(open), false) = (open, preceded_by_word && !name.starts_with('.')) else {
+            continue;
+        };
+        let Some(end) = closing(code, open) else {
+            continue;
+        };
+        let line = code.get(..start).unwrap_or("").matches('\n').count() + 1;
+        found.push((line, code.get(open + 1..end - 1).unwrap_or("")));
+    }
+    found
+}
+
 /// What is wrong with an event whose macro arguments are `arguments`.
-fn problem(arguments: &str) -> Option<String> {
+fn event_problem(arguments: &str) -> Option<String> {
     let arguments = split_arguments(arguments);
     for (index, argument) in arguments.iter().enumerate() {
         let argument = argument.trim();
-        if argument.starts_with('"') {
-            if index + 1 < arguments.len() || argument.replace("{{", "").contains('{') {
-                return Some(format!("message is formatted: {argument}"));
-            }
-            continue;
-        }
-        if ["target:", "parent:", "name:"]
-            .iter()
-            .any(|prefix| argument.starts_with(prefix))
-            || argument.contains("Level::")
+        if argument.starts_with('"')
+            && (index + 1 < arguments.len() || argument.replace("{{", "").contains('{'))
         {
-            continue;
+            return Some(format!("message is formatted: {argument}"));
         }
-        let value = match argument.split_once('=') {
-            Some((_, value)) if !value.starts_with('=') => value.trim(),
-            _ => argument,
-        };
-        let value = value.trim_start_matches(['%', '?']).trim();
-        let names_a_kind = value.contains("error_type(") || value.ends_with(".code()");
-        if !names_a_kind && names_an_error(value) {
-            return Some(format!("field takes an error: {argument}"));
+        if let Some(problem) = field_problem(argument) {
+            return Some(problem);
         }
     }
     None
+}
+
+/// What is wrong with one macro argument of a span or event, if it is a
+/// field.
+fn field_problem(argument: &str) -> Option<String> {
+    // A macro's `$` arguments are fields its own callers name.
+    if argument.starts_with(['"', '$'])
+        || ["target:", "parent:", "name:"]
+            .iter()
+            .any(|prefix| argument.starts_with(prefix))
+        || argument.contains("Level::")
+    {
+        return None;
+    }
+    let (key, value) = match argument.split_once('=') {
+        Some((key, value)) if !value.starts_with('=') => (key.trim(), value.trim()),
+        _ => {
+            let shorthand = argument.trim_start_matches(['%', '?']).trim();
+            (shorthand, shorthand)
+        }
+    };
+    if !is_allowed_key(key) {
+        return Some(format!("key is not cataloged: {argument}"));
+    }
+    let value = value.trim_start_matches(['%', '?']).trim();
+    let names_a_kind = value.contains("error_type(") || value.ends_with(".code()");
+    (!names_a_kind && names_an_error(value)).then(|| format!("field takes an error: {argument}"))
+}
+
+/// Whether a span or event may carry `key`: one the catalog lists, an
+/// `otel.*` key that configures the span, or a `coral.local.*` key that
+/// stays on the host.
+fn is_allowed_key(key: &str) -> bool {
+    crate::field::is_exported(key)
+        || key.starts_with("otel.")
+        || key.starts_with(crate::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX)
 }
 
 fn split_arguments(arguments: &str) -> Vec<&str> {

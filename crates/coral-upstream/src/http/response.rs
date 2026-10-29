@@ -283,11 +283,7 @@ impl HttpUpstream {
             let status = response.status().as_u16();
             span.record("http.response.status_code", status);
             if status >= 400 {
-                coral_telemetry::record_failure(
-                    &span,
-                    status.to_string(),
-                    "HTTP response status is an error",
-                );
+                coral_telemetry::record_failure(&span, status.to_string());
             }
             if binding.redirect_policy() == HttpRedirectPolicy::Follow
                 && redirects.len() < MAX_REDIRECTS
@@ -678,8 +674,7 @@ fn client_span(
         http.request.body.size = request_body_size,
         http.response.status_code = tracing::field::Empty,
         http.response.body.size = tracing::field::Empty,
-        status = tracing::field::Empty,
+        coral.status = tracing::field::Empty,
         error.type = tracing::field::Empty,
-        exception.message = tracing::field::Empty,
     )
 }

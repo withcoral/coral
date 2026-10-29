@@ -333,6 +333,17 @@ pub(crate) enum CommitRejection {
 }
 
 impl CommitRejection {
+    /// The rejection's kind, for an event's `error.type`.
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::ClaimMismatch => "claim_mismatch",
+            Self::RunEnded => "run_ended",
+            Self::Refused => "refused",
+            Self::Failed => "failed",
+            Self::Corrupt => "corrupt",
+        }
+    }
+
     /// The answer every Program request lost with the chunk receives.
     pub(crate) fn lost(self) -> Error {
         match self {

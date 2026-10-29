@@ -269,7 +269,7 @@ impl EntityRetriever for ToolRetriever {
         }
         let Some(matched) = evidence.build() else {
             tracing::debug!(
-                call_path = description.call_path().as_str(),
+                coral.tool.call_path = description.call_path().as_str(),
                 "a ranked Tool has no evidence and leaves the page"
             );
             return Ok(Hydrated::Dropped);

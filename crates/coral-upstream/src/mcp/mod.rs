@@ -299,7 +299,7 @@ impl McpUpstream {
             .await;
         match &sent {
             Ok(outcome) if outcome.class() == crate::OutcomeClass::ErrorResponse => {
-                coral_telemetry::record_failure(&span, "tool_error", "MCP tool result is an error");
+                coral_telemetry::record_failure(&span, "tool_error");
             }
             Ok(_) => {}
             // The JSON-RPC error code, as the MCP conventions name it.
@@ -310,13 +310,8 @@ impl McpUpstream {
                     McpRejection::Other(code) => *code,
                 }
                 .to_string(),
-                "MCP request returned a JSON-RPC error",
             ),
-            Err(_) => coral_telemetry::record_failure(
-                &span,
-                "incomplete",
-                "MCP request ended without a complete result",
-            ),
+            Err(_) => coral_telemetry::record_failure(&span, "incomplete"),
         }
         sent
     }
@@ -447,8 +442,7 @@ fn client_span(dispatch: &ReadyMcpDispatch) -> tracing::Span {
         url.scheme = server.as_ref().map(url::Url::scheme),
         server.address = server.as_ref().and_then(url::Url::host_str),
         server.port = server.as_ref().and_then(url::Url::port_or_known_default),
-        status = tracing::field::Empty,
+        coral.status = tracing::field::Empty,
         error.type = tracing::field::Empty,
-        exception.message = tracing::field::Empty,
     )
 }

@@ -79,8 +79,8 @@ impl RunModule {
         let takeover_claim_id = uuid::Uuid::new_v4().hyphenated().to_string();
         tracing::error!(
             coral.run.id = %run.id,
-            claim_id = %run.claim_id,
-            takeover_claim_id = %takeover_claim_id,
+            coral.run.claim.id = %run.claim_id,
+            coral.run.takeover_claim.id = %takeover_claim_id,
             error.type = if ended.is_panic() { "panic" } else { "cancelled" },
             "Run Owner task ended without retiring; interrupting its Run"
         );

@@ -143,7 +143,7 @@ impl SearchIndex {
     ) {
         let span = generation_span(&workspace_id, &provider_id, expected.as_ref());
         let index = self.clone();
-        self.spawn(span, GENERATION_FAILURE, async move {
+        self.spawn(span, async move {
             let _write = index.writes.lock().await;
             match index
                 .prepare_stored_generation(&workspace_id, &provider_id)
@@ -236,12 +236,11 @@ impl SearchIndex {
             "coral.search.remove_generation",
             coral.search.generation.id = %generation_id,
             coral.search.write.trigger = Empty,
-            status = Empty,
+            coral.status = Empty,
             error.type = Empty,
-            exception.message = Empty,
         );
         let index = self.clone();
-        self.spawn(span, "removing a Provider Generation failed", async move {
+        self.spawn(span, async move {
             let _write = index.writes.lock().await;
             let removal = ToolRemoval::Generation(generation_id.clone());
             let removed = index.erase(&ToolIndexer, &removal).await;
@@ -266,12 +265,11 @@ impl SearchIndex {
             coral.workspace.id = %workspace_id,
             coral.provider.id = %provider_id,
             coral.search.write.trigger = Empty,
-            status = Empty,
+            coral.status = Empty,
             error.type = Empty,
-            exception.message = Empty,
         );
         let index = self.clone();
-        self.spawn(span, "removing a Provider failed", async move {
+        self.spawn(span, async move {
             let _write = index.writes.lock().await;
             let removal = ToolRemoval::Provider {
                 workspace_id: workspace_id.clone(),
@@ -298,7 +296,7 @@ impl SearchIndex {
     pub fn index_function(&self, entry: SavedFunctionEntry) {
         let span = function_span(&entry);
         let index = self.clone();
-        self.spawn(span, FUNCTION_FAILURE, async move {
+        self.spawn(span, async move {
             let _write = index.writes.lock().await;
             index.write_function(&entry).await
         });
@@ -318,8 +316,8 @@ impl SearchIndex {
     /// Runs one write in the background after the previously notified one,
     /// counted until it finishes. The write logs to the caller's subscriber
     /// and runs in `span`, the root of a trace of its own that links to the
-    /// caller's span. A failed write marks `span` with `failure`; it has
-    /// already logged and recorded its error.
+    /// caller's span. A failed write marks `span` failed; it has already
+    /// logged and recorded its error.
     ///
     /// Tasks reach the mutex in no fixed order, so each write first awaits its
     /// predecessor: a rename's rewrite and a later removal of the same
@@ -327,7 +325,6 @@ impl SearchIndex {
     fn spawn(
         &self,
         span: tracing::Span,
-        failure: &'static str,
         write: impl Future<Output = Result<(), IndexError>> + Send + 'static,
     ) {
         #[cfg(any(test, feature = "test-fixtures"))]
@@ -353,7 +350,7 @@ impl SearchIndex {
                     // A predecessor that panicked has finished all the same.
                     drop(previous.await);
                 }
-                drop(in_write_span(span, WriteTrigger::Notified, failure, write).await);
+                drop(in_write_span(span, WriteTrigger::Notified, write).await);
             }
             .with_current_subscriber(),
         ));
@@ -605,12 +602,6 @@ impl SearchIndex {
     }
 }
 
-/// The failure that marks a Provider Generation's write span.
-const GENERATION_FAILURE: &str = "indexing a Provider Generation failed";
-
-/// The failure that marks a Saved Function's write span.
-const FUNCTION_FAILURE: &str = "indexing a Saved Function failed";
-
 /// The span of one Provider Generation's index write, notified or made by a
 /// reconcile pass. The write records the Generation it prepared when none was
 /// named, how long it waited for the writer and wrote, or why it wrote
@@ -630,9 +621,8 @@ fn generation_span(
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,
         coral.search.write.trigger = Empty,
-        status = Empty,
+        coral.status = Empty,
         error.type = Empty,
-        exception.message = Empty,
     )
 }
 
@@ -648,9 +638,8 @@ fn function_span(entry: &SavedFunctionEntry) -> tracing::Span {
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,
         coral.search.write.trigger = Empty,
-        status = Empty,
+        coral.status = Empty,
         error.type = Empty,
-        exception.message = Empty,
     )
 }
 
@@ -680,13 +669,12 @@ impl WriteTrigger {
 }
 
 /// Runs one write in `span`, a root span, records its `trigger`, links it to
-/// the current span, such as a reconcile pass's, and marks it with `failure`
-/// and the error's kind when the write fails. The write is boxed, so a pass's
+/// the current span, such as a reconcile pass's, and marks it with the
+/// error's kind when the write fails. The write is boxed, so a pass's
 /// future holds one pointer for it rather than a second copy.
 fn in_write_span<T>(
     span: tracing::Span,
     trigger: WriteTrigger,
-    failure: &'static str,
     write: impl Future<Output = Result<T, IndexError>>,
 ) -> impl Future<Output = Result<T, IndexError>> {
     span.record("coral.search.write.trigger", trigger.as_str());
@@ -695,7 +683,7 @@ fn in_write_span<T>(
     async move {
         let written = write.await;
         if let Err(error) = &written {
-            coral_telemetry::record_failure(&span, error.code(), failure);
+            coral_telemetry::record_failure(&span, error.code());
         }
         written
     }

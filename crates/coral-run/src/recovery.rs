@@ -121,7 +121,7 @@ impl RunModule {
         };
         tracing::info!(
             coral.run.id = %run.id,
-            claim_id = %claim_id,
+            coral.run.claim.id = %claim_id,
             "expired-lease sweep recreates the Run Owner of a Run no process owns"
         );
         // The Run as its owner needs it; a recovered owner starts no Program,

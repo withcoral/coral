@@ -68,8 +68,8 @@ impl<'a> Backoff<'a> {
         self.attempts += 1;
         tracing::warn!(
             coral.run.id = %self.run_id,
-            write = self.write,
-            attempt = self.attempts,
+            coral.run.write = self.write,
+            coral.run.write.attempt = self.attempts,
             error.type = coral_telemetry::error_type(&error),
             "Run Owner write did not land; retrying after a backoff"
         );

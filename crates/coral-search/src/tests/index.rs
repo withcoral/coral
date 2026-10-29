@@ -570,7 +570,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
     for span in &pass {
         assert_eq!(span.level, tracing::Level::DEBUG, "{}", span.name);
         assert_eq!(
-            span.fields.get("status"),
+            span.fields.get("coral.status"),
             None,
             "{} did not fail",
             span.name
@@ -579,7 +579,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
     for span in &writes {
         assert_eq!(span.level, tracing::Level::INFO, "{}", span.name);
         assert_eq!(
-            span.fields.get("status"),
+            span.fields.get("coral.status"),
             None,
             "{} did not fail",
             span.name
@@ -720,7 +720,7 @@ fn write_names(writes: &[CapturedSpan]) -> Vec<&'static str> {
 /// A span's recorded status and error type.
 fn failure(span: &CapturedSpan) -> (Option<&str>, Option<&str>) {
     (
-        span.fields.get("status").map(String::as_str),
+        span.fields.get("coral.status").map(String::as_str),
         span.fields.get("error.type").map(String::as_str),
     )
 }

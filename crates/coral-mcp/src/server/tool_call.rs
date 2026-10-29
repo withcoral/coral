@@ -9,9 +9,6 @@ use tracing::Instrument as _;
 use super::DispatchError;
 use crate::{arguments, projection};
 
-/// Stable message recorded on a failed tool call's span.
-const TOOL_FAILURE_MESSAGE: &str = "MCP tool call failed";
-
 /// JSON-RPC codes for the caller's mistakes, such as unknown tools and
 /// invalid arguments. An MCP server span does not count them as failures.
 const CALLER_ERROR_CODES: [i32; 5] = [-32700, -32600, -32601, -32602, -32002];
@@ -49,8 +46,7 @@ impl ToolCall {
             coral.mcp.failure.code = tracing::field::Empty,
             rpc.response.status_code = tracing::field::Empty,
             error.type = tracing::field::Empty,
-            exception.message = tracing::field::Empty,
-            status = tracing::field::Empty,
+            coral.status = tracing::field::Empty,
         );
         Self { span }
     }
@@ -66,12 +62,12 @@ impl ToolCall {
         let span = &self.span;
         match dispatched.instrument(span.clone()).await {
             Ok(response) => {
-                span.record("status", "ok");
+                span.record("coral.status", "ok");
                 Ok(response)
             }
             Err(DispatchError::Tool(error)) => {
                 span.record("coral.mcp.failure.code", error.code());
-                coral_telemetry::record_failure(span, "tool_error", TOOL_FAILURE_MESSAGE);
+                coral_telemetry::record_failure(span, "tool_error");
                 let trace = span.in_scope(TraceId::current_or_new);
                 Ok(projection::failure(&error, &trace).into())
             }
@@ -79,9 +75,9 @@ impl ToolCall {
                 let code = error.code.0;
                 span.record("rpc.response.status_code", tracing::field::display(code));
                 if CALLER_ERROR_CODES.contains(&code) {
-                    span.record("status", "ok");
+                    span.record("coral.status", "ok");
                 } else {
-                    coral_telemetry::record_failure(span, code.to_string(), TOOL_FAILURE_MESSAGE);
+                    coral_telemetry::record_failure(span, code.to_string());
                 }
                 Err(error)
             }

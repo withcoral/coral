@@ -69,10 +69,6 @@ impl coral_app::RunErrorTelemetry for ProcessError {
         })
     }
 
-    fn telemetry_error_message(&self) -> Cow<'_, str> {
-        Cow::Owned(self.to_string())
-    }
-
     fn telemetry_exit_code(&self) -> u8 {
         self.exit_status()
     }

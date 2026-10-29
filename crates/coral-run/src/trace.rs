@@ -39,9 +39,8 @@ pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &RunId, phase: Phase)
             "coral.run.start",
             coral.run.id = %run_id,
             coral.run.status = Empty,
-            status = Empty,
+            coral.status = Empty,
             error.type = Empty,
-            exception.message = Empty,
         ),
         Phase::Execute => {
             tracing::info_span!(parent: None, "coral.run.execute", coral.run.id = %run_id)
@@ -51,27 +50,24 @@ pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &RunId, phase: Phase)
             "coral.run.complete",
             coral.run.id = %run_id,
             coral.run.status = Empty,
-            status = Empty,
+            coral.status = Empty,
             error.type = Empty,
-            exception.message = Empty,
         ),
         Phase::Terminate => tracing::info_span!(
             parent: None,
             "coral.run.terminate",
             coral.run.id = %run_id,
             coral.run.status = Empty,
-            status = Empty,
+            coral.status = Empty,
             error.type = Empty,
-            exception.message = Empty,
         ),
         Phase::Recover => tracing::info_span!(
             parent: None,
             "coral.run.recover",
             coral.run.id = %run_id,
             coral.run.status = Empty,
-            status = Empty,
+            coral.status = Empty,
             error.type = Empty,
-            exception.message = Empty,
         ),
     };
     if let Some(trace) = trace {
@@ -86,13 +82,13 @@ pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &RunId, phase: Phase)
 pub(crate) fn record_run_end(state: RunState) {
     let span = tracing::Span::current();
     span.record("coral.run.status", state.as_storage_str());
-    let message = match state {
-        RunState::Failed => "Run failed",
-        RunState::TimedOut => "Run timed out",
-        RunState::Interrupted => "Run interrupted",
-        RunState::Running | RunState::Succeeded | RunState::Canceled => return,
-    };
-    coral_telemetry::record_failure(&span, state.as_storage_str(), message);
+    if matches!(
+        state,
+        RunState::Running | RunState::Succeeded | RunState::Canceled
+    ) {
+        return;
+    }
+    coral_telemetry::record_failure(&span, state.as_storage_str());
 }
 
 /// The `coral.invocation` span of one admitted Tool Invocation, a child of
@@ -111,9 +107,8 @@ pub(crate) fn invocation_span(
         coral.invocation.dispatch_started = Empty,
         coral.invocation.result_kind = Empty,
         coral.invocation.failure.code = Empty,
-        status = Empty,
+        coral.status = Empty,
         error.type = Empty,
-        exception.message = Empty,
     )
 }
 
@@ -183,18 +178,12 @@ pub(crate) fn record_invocation_end(
         Some(InvocationResultKind::CoralFailure) => {
             let code = failure_code.unwrap_or("coral_failure");
             span.record("coral.invocation.failure.code", code);
-            coral_telemetry::record_failure(span, code, "Tool Invocation ended in a Coral Failure");
+            coral_telemetry::record_failure(span, code);
         }
-        Some(InvocationResultKind::Indeterminate) => coral_telemetry::record_failure(
-            span,
-            "indeterminate",
-            "Tool Invocation ended without a known result after its dispatch",
-        ),
-        None => coral_telemetry::record_failure(
-            span,
-            "host_defect",
-            "Tool Invocation ended on a host defect",
-        ),
+        Some(InvocationResultKind::Indeterminate) => {
+            coral_telemetry::record_failure(span, "indeterminate");
+        }
+        None => coral_telemetry::record_failure(span, "host_defect"),
     }
 }
 

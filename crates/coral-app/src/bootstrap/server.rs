@@ -368,7 +368,7 @@ impl PreparedServerBuilder {
         // first start in a process also names it in exported telemetry.
         let instance = coral_run::CoralInstanceId::generate();
         init_server_telemetry(deployment_config.raw(), &instance.to_string())?;
-        tracing::info!(coral_instance_id = %instance, "Coral Instance starting");
+        tracing::info!("Coral Instance starting");
         let mut server = start_server(
             Arc::clone(&coral_db),
             mode,
@@ -883,7 +883,10 @@ pub(crate) async fn start_server(
 async fn sweep_expired_leases(runs: &coral_run::RunModule) {
     match runs.sweep_expired_leases().await {
         Ok(0) => {}
-        Ok(recovered) => tracing::info!(recovered, "expired-lease sweep recovered Runs"),
+        Ok(recovered) => tracing::info!(
+            coral.run.recovered = recovered,
+            "expired-lease sweep recovered Runs"
+        ),
         Err(error) => tracing::warn!(
             error.type = coral_telemetry::error_type(&error),
             "expired-lease sweep failed; the next pass retries"
