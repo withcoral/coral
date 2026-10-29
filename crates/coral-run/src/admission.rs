@@ -260,15 +260,7 @@ impl RunModule {
             admitted,
         } = staged;
         drop(accept);
-        coral_telemetry::metric::run_accepted(match actor.principal().kind() {
-            coral_workspace::PrincipalKind::User => coral_telemetry::metric::PrincipalKind::User,
-            coral_workspace::PrincipalKind::Agent => coral_telemetry::metric::PrincipalKind::Agent,
-        });
-        // The claim written with the Run is uncontested.
-        coral_telemetry::metric::run_claimed(
-            coral_telemetry::metric::ClaimKind::Accept,
-            coral_telemetry::metric::ClaimOutcome::Won,
-        );
+        crate::trace::record_run_accepted(actor.principal());
         self.schedule_execution(run, actor);
         // The owner is registered: shutdown counts it from here.
         drop(admitted);

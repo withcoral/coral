@@ -4,12 +4,17 @@
 //! Instance runs it, and no span of an earlier phase is reopened.
 
 use std::future::Future;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use coral_catalog::ExecutionBinding;
 
 use coral_telemetry::RunTrace;
 use coral_telemetry::{metric, safe};
 use tracing::Instrument as _;
 use tracing::field::Empty;
 
+use crate::invocation::InvocationHostError;
 use crate::lifecycle::{RunRecord, RunTerminationKind};
 use crate::types::HeldRunId;
 use crate::{FinalValue, RunState, RunTerminalOutcome};
@@ -125,6 +130,16 @@ pub(crate) fn claim(claim_id: &str) -> Option<uuid::Uuid> {
     uuid::Uuid::parse_str(claim_id).ok()
 }
 
+/// Counts a Run accepted for `principal`, and the claim written with it,
+/// which is uncontested.
+pub(crate) fn record_run_accepted(principal: &coral_workspace::Principal) {
+    metric::run_accepted(match principal.kind() {
+        coral_workspace::PrincipalKind::User => metric::PrincipalKind::User,
+        coral_workspace::PrincipalKind::Agent => metric::PrincipalKind::Agent,
+    });
+    metric::run_claimed(metric::ClaimKind::Accept, metric::ClaimOutcome::Won);
+}
+
 /// How a Run's committed terminal write ended it, as its end records it.
 #[derive(Debug)]
 pub(crate) enum RunEnd<'a> {
@@ -217,25 +232,132 @@ const fn termination_reason(kind: RunTerminationKind) -> metric::TerminationReas
     }
 }
 
-/// The `coral.invocation` span of one admitted Tool Invocation of the Tool
-/// at `call_path`, a Tool of `provider`, a child of the current span (the
-/// Run's execute phase).
-pub(crate) fn invocation_span(
-    id: &crate::InvocationId,
-    call_path: coral_provider::ResolvedCallPath<'_>,
-    provider: &coral_provider::ProviderId,
-) -> tracing::Span {
-    tracing::info_span!(
-        "coral.invocation",
-        coral.invocation.id = safe::id(id),
-        coral.tool.call_path = safe::id(&call_path),
-        coral.provider.id = safe::id(provider),
-        coral.provider.protocol = Empty,
-        coral.invocation.dispatch_started = Empty,
-        coral.invocation.result_kind = Empty,
-        coral.invocation.failure.code = Empty,
-        error.type = Empty,
-    )
+/// One Tool Invocation's telemetry: its `coral.invocation` span, its
+/// measure from admission, and whether its upstream send began.
+#[derive(Debug)]
+pub(crate) struct InvocationTrace {
+    span: tracing::Span,
+    measure: OnceLock<metric::InvocationMeasure>,
+    sent: AtomicBool,
+}
+
+impl InvocationTrace {
+    /// The Invocation of the Tool at `call_path`, a Tool of `provider`: a
+    /// span that is a child of the current span (the Run's execute phase).
+    pub(crate) fn begin(
+        id: &crate::InvocationId,
+        call_path: coral_provider::ResolvedCallPath<'_>,
+        provider: &coral_provider::ProviderId,
+    ) -> Self {
+        let span = tracing::info_span!(
+            "coral.invocation",
+            coral.invocation.id = safe::id(id),
+            coral.tool.call_path = safe::id(&call_path),
+            coral.provider.id = safe::id(provider),
+            coral.provider.protocol = Empty,
+            coral.invocation.dispatch_started = Empty,
+            coral.invocation.result_kind = Empty,
+            coral.invocation.failure.code = Empty,
+            error.type = Empty,
+        );
+        Self {
+            span,
+            measure: OnceLock::new(),
+            sent: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) const fn span(&self) -> &tracing::Span {
+        &self.span
+    }
+
+    /// Counts the Invocation of `tool` as started, once its Run Owner
+    /// admitted it, and measures it until [`Self::end`]. One the owner
+    /// refuses is never counted.
+    pub(crate) fn admitted(&self, tool: &coral_catalog::MaterializedTool) {
+        let protocol = match tool.execution_binding() {
+            ExecutionBinding::Http(_) => metric::ProviderProtocol::Http,
+            ExecutionBinding::Mcp(_) => metric::ProviderProtocol::Mcp,
+            ExecutionBinding::Builtin(_) => metric::ProviderProtocol::Builtin,
+        };
+        let effect = if coral_policy::reads_only(tool.hints(), tool.http_method()) {
+            metric::ToolEffect::Read
+        } else {
+            metric::ToolEffect::Write
+        };
+        let _first = self
+            .measure
+            .set(metric::invocation_started(protocol, effect));
+    }
+
+    /// Marks the upstream send begun: a stop from now on leaves the
+    /// Invocation `indeterminate`.
+    pub(crate) fn sending(&self) {
+        self.sent.store(true, Ordering::Release);
+    }
+
+    /// Records how the Invocation that returned `ended` ended. A complete
+    /// Upstream Outcome is never an error, whatever its status; a Coral
+    /// Failure, `indeterminate` and a host defect are. `run_terminated` is
+    /// not.
+    pub(crate) fn end(self, ended: &Result<String, InvocationHostError>) {
+        use crate::InvocationResultKind;
+        let (kind, failure_code) = match ended {
+            Ok(_) | Err(InvocationHostError::Upstream { .. }) => {
+                (Some(InvocationResultKind::UpstreamOutcome), None)
+            }
+            Err(InvocationHostError::Rejected(rejection)) => (
+                Some(InvocationResultKind::CoralFailure),
+                Some(rejection.code()),
+            ),
+            Err(InvocationHostError::Fatal(crate::Error::ProgramHostTerminated)) => (
+                Some(if self.sent.load(Ordering::Acquire) {
+                    InvocationResultKind::Indeterminate
+                } else {
+                    InvocationResultKind::RunTerminated
+                }),
+                None,
+            ),
+            Err(InvocationHostError::Fatal(_)) => (None, None),
+        };
+        let Self { span, measure, .. } = self;
+        if let Some(measure) = measure.into_inner() {
+            measure.end(
+                match kind {
+                    Some(InvocationResultKind::UpstreamOutcome) => {
+                        metric::InvocationEnd::UpstreamOutcome
+                    }
+                    Some(InvocationResultKind::CoralFailure) => metric::InvocationEnd::CoralFailure,
+                    Some(InvocationResultKind::RunTerminated) => {
+                        metric::InvocationEnd::RunTerminated
+                    }
+                    Some(InvocationResultKind::Indeterminate) => {
+                        metric::InvocationEnd::Indeterminate
+                    }
+                    None => metric::InvocationEnd::HostDefect,
+                },
+                failure_code,
+            );
+        }
+        if let Some(kind) = kind {
+            span.record(
+                "coral.invocation.result_kind",
+                safe::kind(kind.as_storage_str()),
+            );
+        }
+        match kind {
+            Some(InvocationResultKind::UpstreamOutcome | InvocationResultKind::RunTerminated) => {}
+            Some(InvocationResultKind::CoralFailure) => {
+                let code = failure_code.unwrap_or("coral_failure");
+                span.record("coral.invocation.failure.code", safe::kind(code));
+                coral_telemetry::record_failure(&span, code);
+            }
+            Some(InvocationResultKind::Indeterminate) => {
+                coral_telemetry::record_failure(&span, "indeterminate");
+            }
+            None => coral_telemetry::record_failure(&span, "host_defect"),
+        }
+    }
 }
 
 /// One step of a Tool Invocation on its way to dispatch.
@@ -287,66 +409,6 @@ pub(crate) fn gate_span(invocation: &tracing::Span, gate: Gate) -> TimedSpan {
     TimedSpan {
         span: tracing::info_span!(parent: invocation, "coral.invocation.gate", coral.invocation.gate.kind = safe::kind(kind.as_str())),
         timer: metric::invocation_gate(kind),
-    }
-}
-
-/// Counts one admitted Tool Invocation of `tool`, a Tool of `protocol`,
-/// and measures it until [`record_invocation_end`].
-pub(crate) fn invocation_started(
-    tool: &coral_catalog::MaterializedTool,
-    protocol: metric::ProviderProtocol,
-) -> metric::InvocationMeasure {
-    let effect = if coral_policy::reads_only(tool.hints(), tool.http_method()) {
-        metric::ToolEffect::Read
-    } else {
-        metric::ToolEffect::Write
-    };
-    metric::invocation_started(protocol, effect)
-}
-
-/// Records how a Tool Invocation ended: `kind`, or a host defect for
-/// `None`. A complete Upstream Outcome is never an error, whatever its
-/// status; a Coral Failure, `indeterminate` and a host defect are.
-/// `run_terminated` is not. Its end is counted on `measure`, which an
-/// Invocation its Run Owner never admitted does not have.
-pub(crate) fn record_invocation_end(
-    span: &tracing::Span,
-    measure: Option<metric::InvocationMeasure>,
-    kind: Option<crate::InvocationResultKind>,
-    failure_code: Option<&'static str>,
-) {
-    use crate::InvocationResultKind;
-    if let Some(measure) = measure {
-        measure.end(
-            match kind {
-                Some(InvocationResultKind::UpstreamOutcome) => {
-                    metric::InvocationEnd::UpstreamOutcome
-                }
-                Some(InvocationResultKind::CoralFailure) => metric::InvocationEnd::CoralFailure,
-                Some(InvocationResultKind::RunTerminated) => metric::InvocationEnd::RunTerminated,
-                Some(InvocationResultKind::Indeterminate) => metric::InvocationEnd::Indeterminate,
-                None => metric::InvocationEnd::HostDefect,
-            },
-            failure_code,
-        );
-    }
-    if let Some(kind) = kind {
-        span.record(
-            "coral.invocation.result_kind",
-            safe::kind(kind.as_storage_str()),
-        );
-    }
-    match kind {
-        Some(InvocationResultKind::UpstreamOutcome | InvocationResultKind::RunTerminated) => {}
-        Some(InvocationResultKind::CoralFailure) => {
-            let code = failure_code.unwrap_or("coral_failure");
-            span.record("coral.invocation.failure.code", safe::kind(code));
-            coral_telemetry::record_failure(span, code);
-        }
-        Some(InvocationResultKind::Indeterminate) => {
-            coral_telemetry::record_failure(span, "indeterminate");
-        }
-        None => coral_telemetry::record_failure(span, "host_defect"),
     }
 }
 
