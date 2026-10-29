@@ -996,6 +996,27 @@ async function oldestRunAction(
 }
 
 /**
+ * What one load read of Coral that page live mode reuses, with Coral's own times: when
+ * each top-level record started, and by Task, a read whose window holds its newest child.
+ */
+interface LoadEvidence {
+  /** By top-level record, when it started: a Task, or a standalone Run when accepted. */
+  roots: Map<string, bigint>
+  ends: Map<string, TaskRead>
+}
+type TaskRead = Awaited<ReturnType<ActivityApi['activity']['inspectTask']>>
+type RootRead = Awaited<ReturnType<ActivityApi['activity']['browseActivityRoots']>>['roots'][number]
+/** Notes when `root`, a top-level record Coral listed, started. */
+function noteRoot(seen: LoadEvidence, { record }: RootRead) {
+  if (record.value) seen.roots.set(record.value.name, record.value.startedAtUnixNanos)
+}
+/** Notes `value`, a read of the Task `task`, when its window holds the newest child. */
+function noteEnd(seen: LoadEvidence, task: string, value: TaskRead) {
+  if (Number(value.offset) + value.interactions.length >= Number(value.total))
+    seen.ends.set(task, value)
+}
+
+/**
  * What page live mode needs past the list and its loaded windows, while it follows the
  * newest activity with no Run that runs open. It reads every top-level record in the
  * list's scope, past the loaded list too, and only the Runs it may follow: a standalone
@@ -1013,6 +1034,10 @@ async function oldestRunAction(
  *   read back from its end one window at a time.
  * - `newest`: the newest top-level record, when the page does not hold it, such as a
  *   snapshot of only the records you watch.
+ * - `latest`: with no action and no Run that runs, the newest record it may follow, once
+ *   it read every record. A Task's top-level record says when the Task started, not when
+ *   its newest child did, so it reads the newest child of each such Task: from a window
+ *   of this load that holds the end, else with one read of one child.
  * - `complete`: it read every top-level record and every Task it looked in, so
  *   `running` names every Run that runs that it may follow.
  * It reads the Runs of a Task only while its row in the list says a child Run runs
@@ -1025,6 +1050,7 @@ async function oldestRunAction(
 async function liveLatestWork(
   page: ActivityPage,
   newestPage: ActivityRow[] | undefined,
+  seen: LoadEvidence,
   query: URLSearchParams,
   api: ActivityApi,
   scope: ActivityScope,
@@ -1081,8 +1107,53 @@ async function liveLatestWork(
     if (run) (found.running ??= {})[task.name] = run
   }
   if (roots[0] && !listed.has(roots[0].name)) found.newest = roots[0].name
+  if (!found.action && !found.running && complete && tasksRead)
+    found.latest = await newestRecordOf()
   if (complete && tasksRead && roots.length) found.complete = true
-  return found.action || found.running || found.newest || found.complete ? found : undefined
+  // Even empty, it says the loader looked past the list.
+  return found
+
+  /**
+   * The newest record page live mode may follow, as `LiveLatest.latest` names it. A
+   * Task's top-level record says when the Task started, not when its newest child did,
+   * so it reads the newest child of each such Task. Roots come newest first, so at an
+   * equal time the newer one wins. Undefined when Reef cannot read one of them, which
+   * could hold the newest.
+   */
+  async function newestRecordOf(): Promise<LiveLatest['latest']> {
+    let best: { root: string; record: string; run: boolean; at: bigint } | undefined
+    for (const root of roots) {
+      if (root.kind === 'task' && !recentTask(root, now)) continue
+      const started = seen.roots.get(root.name)
+      const child = root.kind === 'task' ? await newestChild(root.name) : undefined
+      if (child === null || started === undefined) return undefined
+      const record = child ?? { name: root.name, at: started, run: root.kind === 'run' }
+      if (!best || record.at > best.at)
+        best = { root: root.name, record: record.name, run: record.run, at: record.at }
+    }
+    return best && { root: best.root, record: best.record, run: best.run }
+  }
+
+  /**
+   * The newest child of `task` as Coral orders them, and when its tool call started: a
+   * Run by the call that submitted it. Undefined while it has none, and null when Reef
+   * cannot read it.
+   */
+  async function newestChild(
+    task: string,
+  ): Promise<{ name: string; at: bigint; run: boolean } | undefined | null> {
+    // A read of this load that reached the end holds it already. An offset past the end
+    // reads the last window.
+    const value = seen.ends.get(task) ?? (await taskRead(task, Number.MAX_SAFE_INTEGER, 1))
+    if (!value) return null
+    const item = value.interactions.at(-1)
+    if (!item) return undefined
+    return {
+      name: item.run ? item.run.name : item.name,
+      at: item.startedAtUnixNanos,
+      run: Boolean(item.run),
+    }
+  }
 
   /**
    * Reads the Runs of `task` from its newest back, once per snapshot, for its newest
@@ -1120,9 +1191,11 @@ async function liveLatestWork(
         if (!unavailable(error)) throw error
         return { roots: rows, complete: false }
       }
-      for (const { record } of value.roots) {
+      for (const root of value.roots) {
+        const { record } = root
         if (record.case === 'task') rows.push({ ...taskView(record.value), kind: 'task' })
         if (record.case === 'run') rows.push({ ...runView(record.value), kind: 'run' })
+        noteRoot(seen, root)
       }
       more = value.hasAfter && value.roots.length > 0
     }
@@ -1162,13 +1235,17 @@ async function liveLatestWork(
     return true
   }
 
-  /** The Task `name`, with its children from `offset`, or undefined when Reef cannot read it. */
-  async function taskRead(name: string, offset?: number) {
+  /**
+   * The Task `name`, with `size` children from `offset`, or undefined when Reef cannot
+   * read it. Without `offset`, its first child.
+   */
+  async function taskRead(name: string, offset?: number, size = ACTIVITY_CHILD_WINDOW) {
+    let value
     try {
-      return await api.activity.inspectTask(
+      value = await api.activity.inspectTask(
         {
           name,
-          pageSize: offset === undefined ? 1 : ACTIVITY_CHILD_WINDOW,
+          pageSize: offset === undefined ? 1 : size,
           scope,
           viewport:
             offset === undefined ? undefined : { offset: BigInt(offset), anchor: '', preceding: 0 },
@@ -1179,6 +1256,8 @@ async function liveLatestWork(
       if (!unavailable(error)) throw error
       return undefined
     }
+    noteEnd(seen, name, value)
+    return value
   }
 }
 
@@ -1415,6 +1494,7 @@ export async function loadActivity(
 ): Promise<ActivityPage> {
   const query = new URL(request.url).searchParams
   const { signal } = request
+  const seen: LoadEvidence = { roots: new Map(), ends: new Map() }
   // Observation names its reading window directly; navigation names only an anchor.
   const reading = options.reading
   if (
@@ -1573,6 +1653,7 @@ export async function loadActivity(
       },
       { signal },
     )
+    for (const root of value.roots) noteRoot(seen, root)
     page.rows = value.roots.flatMap(({ record }): ActivityRow[] => {
       if (record.case === 'task') return [{ ...taskView(record.value), kind: 'task' }]
       if (record.case === 'run') return [{ ...runView(record.value), kind: 'run' }]
@@ -1640,6 +1721,7 @@ export async function loadActivity(
     if (row.kind !== 'task' || !page.expanded.includes(row.name)) continue
     try {
       const value = await taskPage(row.name)
+      noteEnd(seen, row.name, value)
       page.branches[row.name] = {
         total: value.total.toString(),
         offset: Number(value.offset),
@@ -1664,7 +1746,7 @@ export async function loadActivity(
   }
   // A snapshot of the records you watch holds only those, not the newest page.
   const newestPage = reading && !reading.followRoot ? undefined : page.rows
-  const liveLatest = await liveLatestWork(page, newestPage, query, api, scope, signal)
+  const liveLatest = await liveLatestWork(page, newestPage, seen, query, api, scope, signal)
   if (liveLatest) page.liveLatest = liveLatest
   // Expanded executions stay represented even outside their Task's active child viewport.
   // Their owning read supplies the authorized association and ordinal; references never pin content.

@@ -246,6 +246,10 @@ const output = (parent: string, id: string, position: number): ActivityRow => ({
   agent: '',
   position,
 })
+/** A page where nothing runs, and the loader names `record` of `root` as the newest. */
+const latestOf = (root: string, record: string, isRun: boolean) => ({
+  liveLatest: { running: {}, complete: true, latest: { root, record, run: isRun } },
+})
 const childPage = (rows: ActivityRow[], total: number) => ({
   rows,
   total: String(total),
@@ -434,7 +438,7 @@ describe('live mode', () => {
       },
     ],
     [
-      'selects the final value once the Run ends',
+      'selects the final value while no record of the Run says it ended',
       branchPage([call, log, emission, final], 4),
       {
         kind: 'select',
@@ -497,6 +501,33 @@ describe('live mode', () => {
       }),
       { kind: 'select', record: log.name },
     ],
+    // A Run that ended selects itself, whichever record says it ended. It reads no other window.
+    ...(['succeeded', 'failed', 'canceled', 'timed_out', 'interrupted'] as const).flatMap(
+      (state): [string, ActivityPage, ReturnType<typeof liveStep>][] => {
+        const ended = { ...owner, state }
+        const says: [string, ActivityPage][] = [
+          ['its row', { ...branchPage([call, log, emission, final], 4), rows: [ended] }],
+          ['the selected row', { ...branchPage([emission], 1000, 2), selectedRow: ended }],
+          [
+            'its detail',
+            activityPage({
+              detail: {
+                kind: 'run',
+                run: ended,
+                source: '',
+                linkedFunctions: [],
+                terminal: { kind: 'unavailable' },
+              },
+            }),
+          ],
+        ]
+        return says.map(([record, current]) => [
+          `selects the ${state} Run itself when ${record} says it ended`,
+          current,
+          { kind: 'select', record: owner.name },
+        ])
+      },
+    ),
   ])('%s', (_, current, expected) => {
     expect(liveStep(current, owner.name)).toEqual(expected)
   })
@@ -936,7 +967,7 @@ describe('live scopes', () => {
         ...opened(lookup, [{ ...first, position: undefined }, finished, lookup], []),
         liveLatest: { running: { [work.name]: running } },
       },
-      { kind: 'select', record: lookup.name, chain: [work.name] },
+      { kind: 'wait' },
     ],
     [
       'leaves the Task of the Run you followed once it ends, though the Task has not ended',
@@ -1061,6 +1092,24 @@ describe('live scopes', () => {
       across([fresh, otherEnded], { liveLatest: { running: { [fresh.name]: early } } }),
       followsLate,
     ],
+    [
+      'expands a Run of a newer Task the list does not hold',
+      activityPage({
+        rows: [done],
+        liveLatest: { running: { [other.name]: elsewhere }, newest: other.name, complete: true },
+      }),
+      { kind: 'run', run: elsewhere.name, chain: [other.name, elsewhere.name] },
+    ],
+    [
+      // A snapshot of only the records you watch never loads the window of a newer one.
+      'then reads the newest records, whose read loads its window',
+      activityPage({
+        rows: [done],
+        expanded: [other.name, elsewhere.name],
+        liveLatest: { running: { [other.name]: elsewhere }, newest: other.name, complete: true },
+      }),
+      { kind: 'newest' },
+    ],
   ])('latest running follows the Run submitted last: %s', (_, current, expected) => {
     expect(liveTarget(current, 'latest', now)).toEqual(expected)
   })
@@ -1076,7 +1125,13 @@ describe('live scopes', () => {
     ],
     [
       'shows the newest record when the list holds the newest one the loader names',
-      { ...opened(lookup, [first, lookup], []), liveLatest: { newest: work.name } },
+      {
+        ...opened(lookup, [first, lookup], []),
+        liveLatest: {
+          newest: work.name,
+          latest: { root: work.name, record: lookup.name, run: false },
+        },
+      },
       { kind: 'select', record: lookup.name, chain: [work.name] },
     ],
     [
@@ -1149,6 +1204,93 @@ describe('live scopes', () => {
       { kind: 'wait' },
     ],
   ])('latest shows: %s', (_, current, expected) => {
+    expect(liveTarget(current, 'latest', now)).toEqual(expected)
+  })
+
+  // The list orders Tasks by when they started, not by their newest record, so the
+  // loader names the newest record across the list's scope (`liveLatest.latest`).
+  // Catches: live mode leaving a Run that just ended for an older record of a newer Task.
+  const over2 = runRow('over2', other.name)
+  it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
+    [
+      "shows an older Task's Run that ended after a newer Task's older record",
+      {
+        ...opened(finished, [lookup, finished], [fresh]),
+        ...latestOf(work.name, finished.name, true),
+      },
+      { kind: 'run', run: finished.name, chain: [work.name, finished.name] },
+    ],
+    [
+      "shows an older Task's newer Search over a newer Task's Run that ended",
+      {
+        ...opened(finished, [finished, lookup], [fresh]),
+        ...latestOf(work.name, lookup.name, false),
+      },
+      { kind: 'select', record: lookup.name, chain: [work.name] },
+    ],
+    [
+      'reads the end of the Task that holds it',
+      {
+        ...activityPage({
+          rows: [fresh, work],
+          expanded: [work.name],
+          branches: { [work.name]: childPage([{ ...first, position: 0 }], 4) },
+        }),
+        ...latestOf(work.name, finished.name, true),
+      },
+      { kind: 'load', parent: work.name, offset: 4, chain: [work.name] },
+    ],
+    [
+      'expands the Task that holds it',
+      { ...activityPage({ rows: [fresh, work] }), ...latestOf(work.name, lookup.name, false) },
+      { kind: 'expand', chain: [work.name] },
+    ],
+    [
+      // No window of a record the list does not hold loads, so it shows the Run itself.
+      'shows an ended Run of a Task the list does not hold',
+      { ...activityPage({ rows: [fresh] }), ...latestOf(other.name, over2.name, true) },
+      { kind: 'select', record: over2.name, chain: [other.name] },
+    ],
+    [
+      'shows an ended standalone Run the list does not hold',
+      { ...activityPage({ rows: [fresh] }), ...latestOf(done.name, done.name, true) },
+      { kind: 'select', record: done.name, chain: [] },
+    ],
+    [
+      'shows a Search of a Task the list does not hold',
+      { ...activityPage({ rows: [fresh] }), ...latestOf(other.name, lookup.name, false) },
+      { kind: 'select', record: lookup.name, chain: [other.name] },
+    ],
+    [
+      'shows a Task with no record the list does not hold',
+      { ...activityPage({ rows: [fresh] }), ...latestOf(other.name, other.name, false) },
+      { kind: 'select', record: other.name, chain: [] },
+    ],
+    [
+      'reads the newest records first when the list misses them',
+      {
+        ...activityPage({ rows: [work] }),
+        liveLatest: {
+          newest: fresh.name,
+          latest: { root: fresh.name, record: fresh.name, run: false },
+        },
+      },
+      { kind: 'newest' },
+    ],
+    [
+      "rests on the record it shows when the loader names none, not on the newer Task's",
+      {
+        ...opened(finished, [lookup, finished], [fresh]),
+        liveLatest: { running: {}, complete: true },
+      },
+      { kind: 'wait' },
+    ],
+    [
+      'never takes over an open Run that runs',
+      { ...opened(second, [first, second], [fresh]), ...latestOf(fresh.name, fresh.name, false) },
+      { kind: 'run', run: second.name, chain: [work.name, second.name] },
+    ],
+  ])('latest shows the newest record across the list: %s', (_, current, expected) => {
     expect(liveTarget(current, 'latest', now)).toEqual(expected)
   })
 

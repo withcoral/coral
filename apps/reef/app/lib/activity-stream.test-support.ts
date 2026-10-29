@@ -1,16 +1,25 @@
-/** Deterministic owning-interface invalidations. No timer drives fixture changes. */
+/** Deterministic owning-interface invalidations. No timer drives fixture changes.
+ * Every open watch sees each change; a change made while none is open waits for the next.
+ */
 export function activityChanges() {
-  let controller!: ReadableStreamDefaultController<{ changed: boolean }>
-  const stream = new ReadableStream<{ changed: boolean }>({
-    start(value) {
-      controller = value
-    },
-  })
+  const watches = new Set<ReadableStreamDefaultController<{ changed: boolean }>>()
+  const waiting: { changed: boolean }[] = []
   return {
-    emit: (changed = true) => controller.enqueue({ changed }),
+    emit: (changed = true) => {
+      if (!watches.size) waiting.push({ changed })
+      for (const watch of watches) watch.enqueue({ changed })
+    },
     watch: async function* (_input: unknown, context: { signal: AbortSignal }) {
-      const reader = stream.getReader()
+      let controller!: ReadableStreamDefaultController<{ changed: boolean }>
+      const reader = new ReadableStream<{ changed: boolean }>({
+        start(value) {
+          controller = value
+          for (const change of waiting.splice(0)) value.enqueue(change)
+        },
+      }).getReader()
+      watches.add(controller)
       const abort = () => {
+        watches.delete(controller)
         void reader.cancel()
       }
       context.signal.addEventListener('abort', abort, { once: true })
@@ -22,6 +31,7 @@ export function activityChanges() {
           yield value.value
         }
       } finally {
+        watches.delete(controller)
         context.signal.removeEventListener('abort', abort)
         await reader.cancel()
       }

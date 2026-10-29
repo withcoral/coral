@@ -33,6 +33,7 @@ import {
   liveRun,
   liveStep,
   liveTarget,
+  MIN_LIVE_RECORD_STAY_MS,
   orderedRecordPosition,
   recordParents,
   resolveStop,
@@ -302,6 +303,8 @@ function railTokens() {
   let moved = false
   return {
     next: () => ({ activityRail: (latest = `${mount}-${++count}`) }),
+    /** How many navigations the rail has started. */
+    issued: () => count,
     current: (token: unknown) => !moved && latest !== undefined && token === latest,
     /**
      * Records the shown location, with its token, and the pending one, if a
@@ -529,8 +532,11 @@ function LiveToggle({
   )
 }
 
-/** A step live mode takes: `key` names it, so it never repeats. `last` ends an advance. */
-type FollowStep = { key: string; href: string; last?: boolean }
+/**
+ * A step live mode takes: `key` names it, so it never repeats. `last` ends an advance.
+ * `record` is the record it selects.
+ */
+type FollowStep = { key: string; href: string; last?: boolean; record?: string }
 /**
  * The step live mode, or an advance with live mode off, takes next in `scope`: the
  * followed Run's oldest action, else its newest record. 'done' rests on the record
@@ -574,6 +580,7 @@ function liveFollow(
           key: `select ${target.record}`,
           href: nav.followHref(target.record, undefined, scope, target.chain),
           last: true,
+          record: target.record,
         }
   if (target.kind === 'run') {
     const step = liveStep(page, target.run, actionable, target.action)
@@ -588,6 +595,7 @@ function liveFollow(
         // An advance keeps live mode as it was, and ends here.
         href: nav.followHref(step.record, action, scope, target.chain),
         last: true,
+        record: step.record,
       }
     }
     if (step.kind === 'load')
@@ -936,6 +944,27 @@ export function Activity({
     token: unknown
     from: string
   } | null>(null)
+  // When the rail started to show its record. Page live mode shows each record for
+  // MIN_LIVE_RECORD_STAY_MS before it selects another. Turning it on asks for the newest
+  // record now, so the record you had open does not wait.
+  const presented = useRef<{ record: string | null; at: number } | null>(null)
+  const presentedScope = useRef(liveScope)
+  // The step whose wait ended, and when the record it replaces started to show.
+  const [rested, setRested] = useState<{ step: string; since: number } | null>(null)
+  // How many navigations the rail had started when a step began to wait for the record
+  // shown since `since`, apart from live mode's own. A snapshot that makes it wait again
+  // keeps it, so a navigation you started meanwhile still counts. `held` is the location
+  // a step gave way at, for a navigation of yours that has not landed.
+  const armed = useRef<{ since: number; issued: number; held?: string } | null>(null)
+  useLayoutEffect(() => {
+    if (presented.current?.record !== shownRecord)
+      presented.current = { record: shownRecord, at: Date.now() }
+  }, [shownRecord])
+  useLayoutEffect(() => {
+    if (presentedScope.current !== liveScope && liveScope === 'latest')
+      presented.current = { record: shownRecord, at: -Infinity }
+    presentedScope.current = liveScope
+  }, [liveScope, shownRecord])
   const connected = live?.connected ?? true
   // The review guards a comment until its blocker updates, after the commit that
   // cleared it. Until the next frame, a step would prompt you to discard it.
@@ -946,6 +975,8 @@ export function Activity({
     const frame = requestAnimationFrame(() => setGuarded(false))
     return () => cancelAnimationFrame(frame)
   }, [unsent, guarded])
+  // Whether the review guarded an unsent comment when live mode last looked.
+  const wasGuarded = useRef(guarded)
   // The request the rail reviews, and the decision its approval review submits.
   const reviewed =
     page.detail?.kind === 'invocation' || page.detail?.kind === 'run' ? page.detail.request : null
@@ -1004,6 +1035,13 @@ export function Activity({
   const stalled = follow === 'blocked'
   const followKey = step?.key
   const followTo = step?.href
+  // Another record replaces the one the rail shows. An advance after your decision does not wait.
+  const followReplaces =
+    liveScope === 'latest' &&
+    !advancing &&
+    open &&
+    step?.record !== undefined &&
+    step.record !== shownRecord
   // A read an advance takes first carries its mark, so the advance holds through it.
   const followMark = advancing && step && !step.last ? advance : undefined
   // A selection that opens the rail leaves focus where it is.
@@ -1017,16 +1055,43 @@ export function Activity({
       (last && last.from !== locationKey && railToken(locationState) !== last.token)
     )
       followStep.current = null
+    // Only page live mode waits, so another mode, or an advance, keeps no count of yours.
+    if (!following || liveScope !== 'latest' || advancing) armed.current = null
+    // Your navigation landed, or you kept the comment it would have discarded.
+    const held = armed.current?.held
+    if (
+      armed.current &&
+      ((held !== undefined && held !== locationKey) || (wasGuarded.current && !guarded))
+    )
+      armed.current = { since: armed.current.since, issued: tokens.issued() }
+    wasGuarded.current = guarded
     if (!followKey || !followTo || followStep.current?.step === followKey) return
-    const state = {
-      ...tokens.next(),
-      ...(followMark && { activityAdvance: followMark }),
+    // A step that replaces the record waits until the record showed long enough. A newer
+    // step replaces the one that waits, and waits only for what is left. The timer only
+    // renders again, so the step still starts in a commit.
+    const since = presented.current?.at ?? -Infinity
+    const waited = followReplaces && rested?.step === followKey && rested.since === since
+    const wait = followReplaces && !waited ? since + MIN_LIVE_RECORD_STAY_MS - Date.now() : 0
+    if (wait > 0) {
+      if (armed.current?.since !== since) armed.current = { since, issued: tokens.issued() }
+      const timer = setTimeout(() => setRested({ step: followKey, since }), wait)
+      return () => clearTimeout(timer)
     }
-    followStep.current = {
-      step: followKey,
-      token: state.activityRail,
-      from: locationKey,
+    // A pick, a close or the live mode toggle you started while a step waited goes first,
+    // though the router has not applied it yet: any step, even one that only expands,
+    // would cancel it. Live mode holds until the location changes, which that navigation
+    // does when it lands, or until the review stops guarding a comment it kept.
+    if (
+      armed.current?.since === since &&
+      (armed.current.held !== undefined || tokens.issued() !== armed.current.issued)
+    ) {
+      armed.current = { since, issued: tokens.issued(), held: locationKey }
+      return
     }
+    const state = { ...tokens.next(), ...(followMark && { activityAdvance: followMark }) }
+    // Its own step is no navigation of yours.
+    if (armed.current) armed.current = { ...armed.current, issued: armed.current.issued + 1 }
+    followStep.current = { step: followKey, token: state.activityRail, from: locationKey }
     const rail = popupRef.current
     const active = document.activeElement
     refocus.current =
@@ -1041,12 +1106,17 @@ export function Activity({
     void navigate(followTo, { replace: true, preventScrollReset: true, state })
   }, [
     following,
+    liveScope,
+    advancing,
+    guarded,
     locationKey,
     locationState,
     followKey,
     followTo,
     followMark,
     followOpens,
+    followReplaces,
+    rested,
     shownRecord,
     navigate,
     tokens,

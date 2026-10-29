@@ -41,5 +41,8 @@ export default defineConfig({
     // pages it falls behind, and stories that press keys time out.
     maxWorkers: Math.min(4, availableParallelism()),
     name: 'storybook',
+    // Page live mode shows each record for MIN_LIVE_RECORD_STAY_MS, five seconds, before
+    // it selects another, so a story that follows several records takes longer.
+    testTimeout: 60_000,
   },
 })
