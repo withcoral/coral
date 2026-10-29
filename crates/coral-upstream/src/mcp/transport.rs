@@ -291,7 +291,12 @@ impl McpHttpClient {
     ) -> BoxedSseResponse {
         // Bound bytes before parsing, including peers that never finish an event.
         let bytes = stream::try_unfold(
-            (response, self.limit, self.result.clone(), self.exchanged.clone()),
+            (
+                response,
+                self.limit,
+                self.result.clone(),
+                self.exchanged.clone(),
+            ),
             |(mut response, remaining, result, exchanged)| async move {
                 let Some(chunk) = response.chunk().await.map_err(Error::Body)? else {
                     return Ok::<_, Error>(None);

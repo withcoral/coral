@@ -2370,7 +2370,10 @@ paths:
             "{uri}"
         );
         assert_eq!(
-            duration.attributes.get("provider.protocol").map(String::as_str),
+            duration
+                .attributes
+                .get("provider.protocol")
+                .map(String::as_str),
             Some("http")
         );
         let sizes = |name: &str| {

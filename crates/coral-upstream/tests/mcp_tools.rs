@@ -1124,7 +1124,11 @@ async fn an_mcp_dispatch_records_its_exchange() {
     assert_eq!(*attributes, protocol(&[("outcome", "response")]));
     assert_eq!(
         points("coral.upstream.request.size"),
-        [(protocol(&[]), 1, f64::from(u32::try_from(sent).expect("small")))]
+        [(
+            protocol(&[]),
+            1,
+            f64::from(u32::try_from(sent).expect("small"))
+        )]
     );
     let responses = points("coral.upstream.response.size");
     let [(attributes, 1, received)] = responses.as_slice() else {
