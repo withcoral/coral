@@ -643,6 +643,7 @@ dependencies = [
  "coral-outbound",
  "coral-policy",
  "coral-provider",
+ "coral-release",
  "coral-run",
  "coral-search",
  "coral-task",
@@ -791,6 +792,7 @@ dependencies = [
  "coral-outbound",
  "coral-policy",
  "coral-provider",
+ "coral-release",
  "coral-run",
  "coral-search",
  "coral-task",
@@ -799,6 +801,7 @@ dependencies = [
  "coral-workspace",
  "prost",
  "prost-types",
+ "semver",
  "serde_json",
  "sqlx",
  "tempfile",
@@ -921,6 +924,22 @@ dependencies = [
  "uuid",
  "wiremock",
  "zeroize",
+]
+
+[[package]]
+name = "coral-release"
+version = "1.3.0"
+dependencies = [
+ "coral-outbound",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "wiremock",
 ]
 
 [[package]]

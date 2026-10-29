@@ -29,17 +29,23 @@ import * as styles from './app-shell.css'
 export async function loader({ request, context }: Route.LoaderArgs) {
   try {
     const api = management(request, context)
-    const [all, membership] = await Promise.all([
+    const [all, membership, release] = await Promise.all([
       memberWorkspaces(api).catch(() => []),
       api.organizationMemberships.getCurrentOrganizationMembership({}).catch(() => null),
+      api.releases.getNewerRelease({}).catch(() => null),
     ])
+    const organizationOwner = membership?.role === OrganizationRole.OWNER
     const workspaces = all.filter((w) => w.state === WorkspaceState.ACTIVE)
     const archived = all.filter((w) => w.state === WorkspaceState.ARCHIVED)
     const profile = membership?.profile
     return data(
       {
         actionCounts: await loadActionCounts(api, workspaces, request.signal).catch(() => null),
-        organizationOwner: membership?.role === OrganizationRole.OWNER,
+        organizationOwner,
+        newerRelease:
+          organizationOwner && release?.release
+            ? { version: release.release.version, notesUrl: release.release.notesUrl }
+            : undefined,
         auth: browserAuth(context.get(requestAuthContext)),
         userName: profile?.displayName.trim() || profile?.email.trim() || undefined,
         workspaces: workspaces.map(sidebarWorkspaceView),
@@ -91,6 +97,7 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
               actionCounts={actionCounts}
               auth={loaderData.auth}
               organizationOwner={loaderData.organizationOwner}
+              newerRelease={loaderData.newerRelease}
               userName={loaderData.userName}
               initialIsMinimized={rootData?.sidebarIsMinimized ?? false}
               workspaces={loaderData.workspaces}
