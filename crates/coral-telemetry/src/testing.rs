@@ -140,10 +140,13 @@ impl MetricCapture {
         self.metrics.clone()
     }
 
-    /// A subscriber through which domain code records to this capture.
+    /// A subscriber through which domain code records to this capture. It
+    /// keeps no spans: a span that ends on another thread closes its parent
+    /// through that thread's subscriber, which would not hold a span kept
+    /// here.
     #[must_use]
     pub fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync + use<> {
-        tracing_subscriber::Registry::default().with(self.layer())
+        Spanless.with(self.layer())
     }
 
     /// The layer through which domain code records to this capture.
@@ -237,4 +240,27 @@ const fn u64_value(value: u64) -> f64 {
 #[expect(clippy::cast_precision_loss, reason = "test values are small")]
 const fn i64_value(value: i64) -> f64 {
     value as f64
+}
+
+/// A subscriber that enables no span or event.
+struct Spanless;
+
+impl tracing::Subscriber for Spanless {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        false
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, _event: &tracing::Event<'_>) {}
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
 }
