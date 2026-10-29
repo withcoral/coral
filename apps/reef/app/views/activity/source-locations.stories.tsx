@@ -440,7 +440,10 @@ export const ExpandsTheSource: Story = {
     const detail = [...record.querySelectorAll<HTMLElement>('*')].find((element) =>
       /auto|scroll/.test(getComputedStyle(element).overflowY),
     )!
-    const detailTop = detail.scrollTop
+    // The record's detail is scrolled too, so its return to that place shows.
+    await expect(detail.scrollHeight - detail.clientHeight).toBeGreaterThanOrEqual(40)
+    detail.scrollTop = 40
+    await waitFor(() => expect(detail.scrollTop).toBe(40))
 
     const expand = within(pane).getByRole('button', { name: 'Expand Accepted source' })
     await userEvent.click(expand)
@@ -474,7 +477,7 @@ export const ExpandsTheSource: Story = {
     await expect(pane.querySelector('pre')).toBe(code)
     await expect(viewport.scrollTop).toBe(200)
     await expect(separator).toHaveAttribute('aria-valuenow', split!)
-    await expect(detail.scrollTop).toBe(detailTop)
+    await expect(detail.scrollTop).toBe(40)
     await expect(highlighted(pane)).toEqual([66])
   },
 }
