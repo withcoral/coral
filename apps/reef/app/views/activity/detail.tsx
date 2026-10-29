@@ -781,6 +781,8 @@ const runFailureHeadings = {
  */
 function ErrorDetail({ error, place }: { error: ProgramError; place?: string }) {
   const named = [error.name, place].filter(Boolean).join(', ')
+  // What a cause or a grouped error says it belongs to: an error with no name is "the error".
+  const parent = named || 'the error'
   return (
     <div className={styles.stack}>
       <Typography.BodySmallStrong>Program error: {error.name}</Typography.BodySmallStrong>
@@ -819,12 +821,12 @@ function ErrorDetail({ error, place }: { error: ProgramError; place?: string }) 
       )}
       {error.cause && (
         <Disclosure title="Cause" open>
-          <ErrorDetail error={error.cause} place={`cause of ${named}`} />
+          <ErrorDetail error={error.cause} place={`cause of ${parent}`} />
         </Disclosure>
       )}
       {error.errors.map((member, index) => (
         <Disclosure key={index} title={`Grouped error ${index + 1}`}>
-          <ErrorDetail error={member} place={`grouped error ${index + 1} of ${named}`} />
+          <ErrorDetail error={member} place={`grouped error ${index + 1} of ${parent}`} />
         </Disclosure>
       ))}
     </div>

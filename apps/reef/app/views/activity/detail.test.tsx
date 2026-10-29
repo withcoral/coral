@@ -419,32 +419,46 @@ const failure = (name: string, more: Partial<ProgramError> = {}): ProgramError =
 })
 
 // Catches: upstream response data that every error in a chain names alike, so a screen
-// reader hears the same region, Expand, Copy and Download for each. Each is named by its
-// error and that error's place, even when names repeat.
-it('names each upstream response by its error and where that error sits', () => {
+// reader hears the same region, Expand, Copy and Download for each; or, under an error with
+// no name, a name that ends in "cause of " or "grouped error 1 of ". Each is named by its
+// error and that error's place, even when names repeat or are empty.
+it.each([
+  [
+    'named errors, some alike',
+    failure('ToolError', {
+      cause: failure('ToolError', { cause: failure('ToolError') }),
+      errors: [failure('ToolError'), failure('RangeError')],
+    }),
+    [
+      'Upstream response data for ToolError',
+      'Upstream response data for ToolError, cause of ToolError',
+      'Upstream response data for ToolError, cause of ToolError, cause of ToolError',
+      'Upstream response data for ToolError, grouped error 1 of ToolError',
+      'Upstream response data for RangeError, grouped error 2 of ToolError',
+    ],
+  ],
+  [
+    'an error with no name',
+    failure('', { cause: failure('TypeError'), errors: [failure(''), failure('')] }),
+    [
+      'Upstream response data',
+      'Upstream response data for TypeError, cause of the error',
+      'Upstream response data for grouped error 1 of the error',
+      'Upstream response data for grouped error 2 of the error',
+    ],
+  ],
+])('names each upstream response by its error and where it sits: %s', (_, error, names) => {
   const container = show({
     ...runPanel({ state: 'failed', endedAt: '2026-09-22T09:05:00Z' }),
-    terminal: {
-      kind: 'failed',
-      code: 'program_rejected',
-      message: '',
-      error: failure('ToolError', {
-        cause: failure('ToolError', { cause: failure('ToolError') }),
-        errors: [failure('ToolError'), failure('RangeError')],
-      }),
-    },
+    terminal: { kind: 'failed', code: 'program_rejected', message: '', error },
   } as RunDetail)
-  const names = [
-    'Upstream response data for ToolError',
-    'Upstream response data for ToolError, cause of ToolError',
-    'Upstream response data for ToolError, cause of ToolError, cause of ToolError',
-    'Upstream response data for ToolError, grouped error 1 of ToolError',
-    'Upstream response data for RangeError, grouped error 2 of ToolError',
-  ]
-  for (const name of names) {
-    expect(within(container).getAllByRole('region', { name })).toHaveLength(1)
+  const regions = within(container)
+    .getAllByRole('region')
+    .map((region) => region.getAttribute('aria-label'))
+    .filter((label) => label?.startsWith('Upstream response data'))
+  expect(regions.toSorted()).toEqual(names.toSorted())
+  for (const name of names)
     expect(within(container).getAllByRole('button', { name: `Expand ${name}` })).toHaveLength(1)
-  }
 })
 
 it('heads a Run that failed for a reason this Reef does not know, without a code line', () => {
