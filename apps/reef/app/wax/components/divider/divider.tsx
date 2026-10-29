@@ -1,3 +1,4 @@
+import classNames from 'classnames'
 import { useRef } from 'react'
 import { Icon } from '@/wax/components/icon'
 import * as styles from './divider.css'
@@ -8,10 +9,12 @@ import * as styles from './divider.css'
  * the split size and its clamping, so a resize never remounts either pane.
  */
 export function Divider({
+  className,
   label,
   onResize,
   percent,
 }: {
+  className?: string
   label: string
   onResize: (deltaY: number) => void
   /** The pane above the divider's share of the split, for the separator's ARIA value. */
@@ -27,7 +30,7 @@ export function Divider({
       aria-valuemax={100}
       aria-valuenow={Math.round(percent)}
       tabIndex={0}
-      className={styles.divider}
+      className={classNames(styles.divider, className)}
       onPointerDown={(event) => {
         event.currentTarget.setPointerCapture(event.pointerId)
         dragStartY.current = event.clientY

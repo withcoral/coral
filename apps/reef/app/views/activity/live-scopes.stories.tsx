@@ -482,8 +482,11 @@ async function surface({ canvasElement, userEvent }: Play) {
     canvas,
     rail,
     address,
-    /** The toggle above the list. */
-    latest: () => canvas.getByRole('button', { name: 'Follow latest activity' }),
+    /** The toggle above the list. A docked rail sits in the page too, so leave out its own. */
+    latest: () =>
+      canvas
+        .getAllByRole('button', { name: 'Follow latest activity' })
+        .find((button) => !button.closest('[role="dialog"]'))!,
     railToggle: (name: string) => within(rail()).getByRole('button', { name }),
     press: (name: string) => userEvent.click(canvas.getByRole('button', { name })),
     idle: async () => {

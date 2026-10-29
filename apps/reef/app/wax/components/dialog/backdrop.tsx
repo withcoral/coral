@@ -13,7 +13,7 @@ export function Backdrop({ className, ref, ...props }: BackdropProps) {
   const rail = useContext(RailContext)
   const force = useContext(ForceBackdropContext)
   // A rail beside the page leaves the page in view and usable.
-  if (rail && !rail.modal) return null
+  if (rail && rail.mode !== 'modal') return null
   return (
     <BaseDialog.Backdrop
       className={classNames(styles.backdrop, className)}

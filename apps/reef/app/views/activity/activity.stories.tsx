@@ -920,10 +920,15 @@ export const DrawerNavigation: Story = {
       await waitFor(() =>
         expect(dialog.contains(canvasElement.ownerDocument.activeElement)).toBe(true),
       )
-      // The drawer rests against the right edge once it has slid in.
-      await waitFor(() =>
-        expect(Math.abs(dialog.getBoundingClientRect().right - window.innerWidth)).toBeLessThan(2),
-      )
+      // Once it has slid in, the drawer rests at the list's right, inside the window:
+      // against its edge when it floats, at the page's edge when it docks.
+      await waitFor(() => {
+        expect(dialog.getAnimations()).toHaveLength(0)
+        expect(dialog.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth)
+        expect(dialog.getBoundingClientRect().right).toBeGreaterThan(
+          list.getBoundingClientRect().right,
+        )
+      })
       if (close === 'escape') await userEvent.keyboard('{Escape}')
       else await userEvent.click(within(dialog).getByRole('button', { name: 'Close details' }))
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())

@@ -5,16 +5,15 @@ import { theme } from '@/wax/theme/theme.css'
 // its own max-height cap, instead of a fixed card size disconnected from the
 // real available space; `minHeight` only keeps the split usable when the
 // drawer is short. The two panes inside own their own scrolling, so the
-// drawer itself does not also scroll past this point.
+// drawer itself does not also scroll past this point. It draws no box of its
+// own: the split sits directly in the drawer, and only the divider parts the panes.
+// It clips nothing, so the divider can reach through the drawer's padding.
 export const root = style({
   display: 'flex',
   flexDirection: 'column',
   flex: '1 1 auto',
   minHeight: 360,
   minWidth: 0,
-  border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: 8,
-  overflow: 'hidden',
 })
 export const split = style({
   flex: 1,

@@ -535,8 +535,11 @@ export const UnsentComment: Story = {
     // A row click asks first; Keep editing keeps the comment, detail, address and focus.
     await userEvent.click(link('Task 1'))
     const asked = await confirm()
-    const layer = (element: Element) =>
-      Number(getComputedStyle(element.closest('[role="dialog"]')!).zIndex)
+    // A docked rail sets no stacking order of its own: it draws at the page's level.
+    const layer = (element: Element) => {
+      const z = getComputedStyle(element.closest('[role="dialog"]')!).zIndex
+      return z === 'auto' ? 0 : Number(z)
+    }
     await expect(layer(asked)).toBeGreaterThan(layer(review))
     await choose('Keep editing')
     await expect(rail()).toBe(review)
@@ -601,5 +604,178 @@ export const Mobile: Story = {
     await userEvent.click(within(opened).getByRole('button', { name: 'Close details' }))
     await waitFor(() => expect(rail()).toBeNull())
     await waitFor(() => expect(table).toHaveFocus())
+  },
+}
+
+/** The box of an element as it renders now. */
+const box = (element: Element) => element.getBoundingClientRect()
+
+/**
+ * At 1200px or more the rail docks beside the list: the table shrinks to make room,
+ * and no record sits under the rail. Narrower, the rail floats over the table as before.
+ */
+export const Docked: Story = {
+  play: async ({ canvasElement, userEvent }) => {
+    loads.open()
+    // Storybook's own UI cannot resize its viewport, so this play needs the test runner.
+    if (!(await resizeViewport(1440, 900))) return
+    const { table, link, rail, shows } = await surface(canvasElement)
+    const full = box(table).width
+
+    await userEvent.click(link('Task 1'))
+    await shows('Task 1')
+    const opened = rail()!
+    // Once it slides in, the table ends before the rail starts, and the rail stays in the window.
+    const docked = () =>
+      waitFor(() => {
+        expect(box(table).right).toBeLessThanOrEqual(box(opened).left)
+        expect(box(opened).right).toBeLessThanOrEqual(window.innerWidth)
+      })
+    await docked()
+    await expect(box(table).width).toBeLessThan(full)
+    // Every record stays in reach beside the rail, and another one replaces its detail.
+    await userEvent.click(link('Task 3'))
+    await shows('Task 3')
+    await expect(rail()).toBe(opened)
+
+    // Narrower than 1200px, the open rail floats over the table, which takes the width back.
+    await resizeViewport(1000, 900)
+    await waitFor(() => expect(box(opened).left).toBeLessThan(box(table).right))
+    await expect(rail()).toBe(opened)
+    await shows('Task 3')
+    // Wide again, the same rail docks with the record it shows.
+    await resizeViewport(1440, 900)
+    await docked()
+    await expect(rail()).toBe(opened)
+    await shows('Task 3')
+
+    // Closing gives the table its width back, and focus returns to it.
+    await userEvent.click(within(opened).getByRole('button', { name: 'Close details' }))
+    await waitFor(() => expect(rail()).toBeNull())
+    await waitFor(() => expect(box(table).width).toBeCloseTo(full, 0))
+    await waitFor(() => expect(table).toHaveFocus())
+  },
+}
+
+/**
+ * Docked, the table resizes in step with the rail as it opens and closes, and turns back
+ * from where it is when the reader reverses a close. Another record or a window resize
+ * changes the width at once, and so does opening or closing with reduced motion.
+ */
+export const DockedTransition: Story = {
+  play: async ({ canvasElement, userEvent }) => {
+    loads.open()
+    // Storybook's own UI cannot resize its viewport, so this play needs the test runner.
+    if (!(await resizeViewport(1440, 900))) return
+    const { table, link, rail, shows } = await surface(canvasElement)
+    const full = box(table).width
+    const closeRail = () =>
+      userEvent.click(within(rail()!).getByRole('button', { name: 'Close details' }))
+    // The element the rail portals into, beside the table in the page's row: the width
+    // the table gives up.
+    const dockOf = (popup: Element) => {
+      let dock = popup
+      while (!dock.parentElement!.contains(table)) dock = dock.parentElement!
+      return dock
+    }
+    const duration = (animation: Animation) => Number(animation.effect!.getTiming().duration)
+    /**
+     * Does `act`, then holds the dock's width transition at `fraction` of its duration,
+     * and the rail's own motion with it, on the frame they start: a short one cannot end,
+     * nor the rail unmount, before the play reads the frame. `release` resumes what is
+     * still held; a change of course has replaced the rest.
+     */
+    const hold = async (act: () => Promise<void>, fraction: number, phase: string) => {
+      const doc = canvasElement.ownerDocument
+      const started = new Promise<{ dock: Element; transition: Animation; release: () => void }>(
+        (resolve) => {
+          const onTransition = (event: TransitionEvent) => {
+            const dock = event.target as Element
+            if (event.propertyName !== 'flex-basis' || !dock.parentElement?.contains(table)) return
+            doc.removeEventListener('transitionrun', onTransition)
+            const [transition] = dock.getAnimations()
+            const motion = [transition!, ...(rail()?.getAnimations() ?? [])]
+            for (const animation of motion) animation.pause()
+            transition!.currentTime = duration(transition!) * fraction
+            const release = () => {
+              for (const animation of motion) if (animation.playState === 'paused') animation.play()
+            }
+            resolve({ dock, transition: transition!, release })
+          }
+          doc.addEventListener('transitionrun', onTransition)
+        },
+      )
+      await act()
+      const held = await started
+      // The transition the play reads is still the dock's own, and the only one.
+      await expect(held.dock.getAnimations(), phase).toEqual([held.transition])
+      return held
+    }
+
+    // Opening, the dock widens with the rail's own entrance, over the same time.
+    const open = await hold(() => userEvent.click(link('Task 1')), 0.5, 'opening')
+    const { dock } = open
+    await expect(duration(open.transition)).toBe(200)
+    const opened = rail()!
+    await expect(dockOf(opened)).toBe(dock)
+    await expect(opened.getAnimations().map(duration)).toContain(200)
+    const midway = box(table).width
+    const railWidth = box(opened).width
+    // Halfway, the table has given up part of its width, and nothing overlaps.
+    await expect(midway).toBeLessThan(full)
+    await expect(box(table).right + 16).toBeCloseTo(box(opened).left, 0)
+    open.release()
+    await open.transition.finished
+    await shows('Task 1')
+    const settled = box(table).width
+    await expect(settled).toBeLessThan(midway)
+    // The rail keeps its width throughout, so its content never rewraps.
+    await expect(box(opened).width).toBeCloseTo(railWidth, 0)
+
+    // Another record and another window width resize nothing gradually.
+    await userEvent.click(link('Task 3'))
+    await shows('Task 3')
+    await expect(dock.getAnimations()).toHaveLength(0)
+    await expect(box(table).width).toBeCloseTo(settled, 0)
+    await resizeViewport(1300, 900)
+    await expect(dock.getAnimations()).toHaveLength(0)
+    await expect(box(table).width).toBeLessThan(settled)
+    await resizeViewport(1440, 900)
+    await waitFor(() => expect(box(table).width).toBeCloseTo(settled, 0))
+
+    // Closing, the dock narrows over the rail's own exit, which keeps the rail until then.
+    const close = await hold(closeRail, 0.5, 'closing')
+    await expect(duration(close.transition)).toBe(175)
+    const half = box(table).width
+    await expect(half).toBeGreaterThan(settled)
+    await expect(half).toBeLessThan(full)
+    // Another record reopens the same rail, and the dock widens again from where it was.
+    const reopen = await hold(() => userEvent.click(link('Task 2')), 0, 'reopening')
+    await expect(box(table).width).toBeCloseTo(half, 0)
+    close.release()
+    reopen.release()
+    await reopen.transition.finished
+    await shows('Task 2')
+    await expect(rail()).toBe(opened)
+    await expect(box(table).width).toBeCloseTo(settled, 0)
+
+    // A close that runs its course gives the table its whole width back.
+    await closeRail()
+    await waitFor(() => expect(rail()).toBeNull())
+    await expect(box(table).width).toBeCloseTo(full, 0)
+
+    // With reduced motion, the width changes at once both ways.
+    if (!(await emulateReducedMotion(true))) return
+    try {
+      await userEvent.click(link('Task 1'))
+      await shows('Task 1')
+      await expect(dock.getAnimations()).toHaveLength(0)
+      await expect(box(table).width).toBeCloseTo(settled, 0)
+      await closeRail()
+      await waitFor(() => expect(rail()).toBeNull())
+      await expect(box(table).width).toBeCloseTo(full, 0)
+    } finally {
+      await emulateReducedMotion(false)
+    }
   },
 }
