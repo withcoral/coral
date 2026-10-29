@@ -1,7 +1,7 @@
 //! Tracing and OpenTelemetry initialization for the local Coral process.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use coral_telemetry::metric::Metrics;
@@ -14,7 +14,7 @@ use opentelemetry_otlp::{
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::error::OTelSdkError;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
-use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{Sampler, SdkTracer, SdkTracerProvider, TracerProviderBuilder};
 use tracing_opentelemetry::OpenTelemetryLayer;
@@ -178,20 +178,11 @@ fn build_otlp_meter_provider(
         .with_headers(headers)
         .build()
         .map_err(|e| AppError::InvalidInput(e.to_string()))?;
-    let catalog = Arc::new(OnceLock::new());
-    let provider = SdkMeterProvider::builder()
-        .with_resource(resource.clone())
-        .with_reader(
-            PeriodicReader::builder(coral_telemetry::counted_metric_exporter(
-                exporter,
-                Arc::clone(&catalog),
-            ))
-            .with_interval(METRICS_INTERVAL)
-            .build(),
-        )
-        .build();
-    let metrics = catalog.get_or_init(|| Metrics::new(&provider)).clone();
-    Ok((provider, metrics))
+    Ok(coral_telemetry::meter_provider(
+        SdkMeterProvider::builder().with_resource(resource.clone()),
+        exporter,
+        METRICS_INTERVAL,
+    ))
 }
 
 /// Per-process context read from the environment at bootstrap.

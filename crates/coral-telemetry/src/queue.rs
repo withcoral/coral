@@ -19,11 +19,13 @@ use opentelemetry_sdk::error::OTelSdkResult;
 use opentelemetry_sdk::logs::{
     self, BatchLogProcessor, LogBatch, LogExporter, LogProcessor, SdkLogRecord,
 };
-use opentelemetry_sdk::metrics::Temporality;
 use opentelemetry_sdk::metrics::data::{
     AggregatedMetrics, MetricData, ResourceMetrics, ScopeMetrics,
 };
 use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
+use opentelemetry_sdk::metrics::{
+    MeterProviderBuilder, PeriodicReader, SdkMeterProvider, Temporality,
+};
 use opentelemetry_sdk::trace::{
     self, BatchSpanProcessor, Span, SpanData, SpanExporter, SpanProcessor,
 };
@@ -76,11 +78,38 @@ where
     Queue { inner, gate }
 }
 
-/// Counts every metric point of an export `exporter` fails, to the catalog
-/// `metrics` holds by then: the catalog of the meter provider that exports
-/// through `exporter`, so it is set once that provider is built. Metrics have
-/// no queue: the reader aggregates them in place.
-pub fn counted_metric_exporter<E>(exporter: E, metrics: Arc<OnceLock<Metrics>>) -> CountedMetrics<E>
+/// The meter provider `builder` makes with a reader that exports through
+/// `exporter` every `interval`, and the catalog of Coral's metrics built from
+/// it. A failed export's delta points are counted in that same catalog.
+/// Metrics have no queue: the reader aggregates them in place.
+pub fn meter_provider<E>(
+    builder: MeterProviderBuilder,
+    exporter: E,
+    interval: Duration,
+) -> (SdkMeterProvider, Metrics)
+where
+    E: PushMetricExporter + 'static,
+{
+    // The exporter counts to the catalog of the provider it exports for,
+    // which exists only once the provider is built.
+    let catalog = Arc::new(OnceLock::new());
+    let provider = builder
+        .with_reader(
+            PeriodicReader::builder(counted_metric_exporter(exporter, Arc::clone(&catalog)))
+                .with_interval(interval)
+                .build(),
+        )
+        .build();
+    let metrics = catalog.get_or_init(|| Metrics::new(&provider)).clone();
+    (provider, metrics)
+}
+
+/// Counts the delta points of each export `exporter` fails, to the catalog
+/// `metrics` holds by then.
+pub(crate) fn counted_metric_exporter<E>(
+    exporter: E,
+    metrics: Arc<OnceLock<Metrics>>,
+) -> CountedMetrics<E>
 where
     E: PushMetricExporter,
 {
@@ -285,7 +314,7 @@ impl<E: LogExporter> LogExporter for Counted<E> {
 /// A metric exporter that counts the delta points of each export it fails.
 /// A cumulative point loses nothing: the next export carries its total.
 #[derive(Debug)]
-pub struct CountedMetrics<E> {
+pub(crate) struct CountedMetrics<E> {
     inner: E,
     metrics: Arc<OnceLock<Metrics>>,
 }

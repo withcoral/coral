@@ -17,9 +17,7 @@ mod source_scan;
 pub mod testing;
 
 pub use export::{OtlpLogFilter, OtlpSpanFilter};
-pub use queue::{
-    CountedMetrics, Queue, batch_log_processor, batch_span_processor, counted_metric_exporter,
-};
+pub use queue::{Queue, batch_log_processor, batch_span_processor, meter_provider};
 pub use request::{
     REQUEST_TARGET, name_request_operation, request_span, trace_grpc_routes, trace_http_routes,
 };
