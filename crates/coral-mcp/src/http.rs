@@ -220,23 +220,24 @@ async fn start_server(
             axum::routing::get(metadata),
         );
     // Health probes are added after tracing, so they open no span.
-    let router = coral_telemetry::trace_http_routes(mcp_routes)
-        .route("/healthz", axum::routing::get(|| async { StatusCode::OK }))
-        .route(
-            "/readyz",
-            axum::routing::get(move || {
-                let readiness = readiness.clone();
-                let state = health_state.clone();
-                async move {
-                    if !state.config.cancellation_token.is_cancelled() && readiness().await {
-                        StatusCode::OK
-                    } else {
-                        StatusCode::SERVICE_UNAVAILABLE
+    let router =
+        coral_telemetry::trace_http_routes(mcp_routes, coral_telemetry::metric::Interface::Mcp)
+            .route("/healthz", axum::routing::get(|| async { StatusCode::OK }))
+            .route(
+                "/readyz",
+                axum::routing::get(move || {
+                    let readiness = readiness.clone();
+                    let state = health_state.clone();
+                    async move {
+                        if !state.config.cancellation_token.is_cancelled() && readiness().await {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::SERVICE_UNAVAILABLE
+                        }
                     }
-                }
-            }),
-        )
-        .with_state(state.clone());
+                }),
+            )
+            .with_state(state.clone());
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let task_state = state.clone();
     let task = tokio::spawn(async move {

@@ -6,6 +6,8 @@
 
 mod export;
 mod field;
+pub mod metric;
+mod queue;
 mod request;
 mod run;
 pub mod safe;
@@ -15,6 +17,9 @@ mod source_scan;
 pub mod testing;
 
 pub use export::{OtlpLogFilter, OtlpSpanFilter};
+pub use queue::{
+    CountedMetrics, Queue, batch_log_processor, batch_span_processor, counted_metric_exporter,
+};
 pub use request::{REQUEST_TARGET, request_span, trace_grpc_routes, trace_http_routes};
 pub use run::RunTrace;
 
