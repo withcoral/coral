@@ -246,7 +246,7 @@ function SidebarNavigation({
       icon="CircleArrowUp"
       variant="accent"
       isMinimized={isMinimized}
-      aria-label={`Coral ${newerRelease.version} is available. Read the release notes.`}
+      aria-label={`Coral ${newerRelease.version} is available`}
       title={`Coral ${newerRelease.version} is available`}
       className={classNames(isMinimized && styles.minimizedControl)}
     >
