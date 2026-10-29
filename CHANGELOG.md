@@ -1,5 +1,52 @@
 # Changelog
 
+## [1.4.0](https://github.com/withcoral/coral/compare/v1.3.0...v1.4.0) (2026-10-29)
+
+
+### Features
+
+* **desktop:** restart to update from the sidebar notice ([#2725](https://github.com/withcoral/coral/issues/2725)) ([cad7792](https://github.com/withcoral/coral/commit/cad7792e896619ba0a62fbb123a2f42c1ef88c65))
+* **mcp:** serve a fixed /mcp endpoint that takes its workspace from sign-in ([#2664](https://github.com/withcoral/coral/issues/2664)) ([cf830db](https://github.com/withcoral/coral/commit/cf830dbd3dddc6116ac432675dda21ca9e37f521))
+* **mcp:** trace MCP and auth requests and return the trace ID on tool failures ([#2716](https://github.com/withcoral/coral/issues/2716)) ([7dac856](https://github.com/withcoral/coral/commit/7dac8562e4c4a92b741d74b44169b3e11e507eee))
+* **provider:** let Coral decide which routes fit a source and when Connect can start ([#2652](https://github.com/withcoral/coral/issues/2652)) ([ce3975b](https://github.com/withcoral/coral/commit/ce3975b9005fa819f9041b50238d810c61e6ef54))
+* **provider:** report each provider's callRoot and callable operations in listProviders ([#2643](https://github.com/withcoral/coral/issues/2643)) ([9eda089](https://github.com/withcoral/coral/commit/9eda089211ee1b6dedcaf77ca13dc74886c9db6e))
+* **recipes:** add the Keenable recipe ([#2651](https://github.com/withcoral/coral/issues/2651)) ([1afb93f](https://github.com/withcoral/coral/commit/1afb93f8a910924c15151a144fa96a2e89584b33))
+* rename operations to provider tools ([#2702](https://github.com/withcoral/coral/issues/2702)) ([041653c](https://github.com/withcoral/coral/commit/041653c85b7a3617b2597db329a886bd2df09f78))
+* **run:** apply a Run's waiting Run Inbox requests when recovery ends it ([#2708](https://github.com/withcoral/coral/issues/2708)) ([8b69a0a](https://github.com/withcoral/coral/commit/8b69a0aa647b06979a170f90b3e9609b3d8cc2a8))
+* **run:** change a provider's operation policy with coral.workspace.updatePolicy ([#2667](https://github.com/withcoral/coral/issues/2667)) ([d7f6ee8](https://github.com/withcoral/coral/commit/d7f6ee827d161d895ed21b35b1147e6992c95e7d))
+* **run:** give each Program Run a Coral-owned trace ([#2723](https://github.com/withcoral/coral/issues/2723)) ([913a3e8](https://github.com/withcoral/coral/commit/913a3e8aa8916858e0a01f46eea0708195df8993))
+* **run:** let approval decisions and MCP prompt answers reach the Run Owner from any Coral Instance ([#2695](https://github.com/withcoral/coral/issues/2695)) ([0134e7a](https://github.com/withcoral/coral/commit/0134e7a4c4805f9661a758f7b49eb3e8760ae267))
+* **run:** let cancellations reach the Run Owner from any Coral Instance ([#2683](https://github.com/withcoral/coral/issues/2683)) ([ed45afc](https://github.com/withcoral/coral/commit/ed45afc0ddbddc164a57a31f9d56a2b58c67d88f))
+* **run:** read a provider's configuration with coral.workspace.getProvider ([#2598](https://github.com/withcoral/coral/issues/2598)) ([37f37a5](https://github.com/withcoral/coral/commit/37f37a50b254b640d2dab6689ebf94d0515cfaaf))
+* **run:** read a provider's operation policy with coral.workspace.getPolicy ([#2661](https://github.com/withcoral/coral/issues/2661)) ([ac517ab](https://github.com/withcoral/coral/commit/ac517abdb6b1aff8fa144695756e5717111f8a65))
+* **run:** record which Coral Instance owns each Run ([#2680](https://github.com/withcoral/coral/issues/2680)) ([0d3f43a](https://github.com/withcoral/coral/commit/0d3f43ad38507d173eaa5c42775b8fbd7bced4ca))
+* **run:** rename coral.workspace.createProvider to addProvider ([#2648](https://github.com/withcoral/coral/issues/2648)) ([191d095](https://github.com/withcoral/coral/commit/191d09524c10512e2a36bc31a5f2dbc13bf322f2))
+* **ui:** add a Brand label and keep password managers out of autocomplete-off fields ([#2718](https://github.com/withcoral/coral/issues/2718)) ([c05bf83](https://github.com/withcoral/coral/commit/c05bf83290dee5bb89f960141d061376d6ae45ff))
+* **ui:** add namespace tabs and collapsible groups to the functions table ([#2713](https://github.com/withcoral/coral/issues/2713)) ([ec2824d](https://github.com/withcoral/coral/commit/ec2824d9042f9feb82827c8ec678f9aae4e4a6b1))
+* **ui:** dock activity detail beside the table ([#2704](https://github.com/withcoral/coral/issues/2704)) ([79f68bf](https://github.com/withcoral/coral/commit/79f68bfde43102173bb170c0e32241c0241830e7))
+* **ui:** gather help links into one sidebar menu ([#2714](https://github.com/withcoral/coral/issues/2714)) ([daba1a0](https://github.com/withcoral/coral/commit/daba1a0cc619c3e42555a765359ce7dea89f85f1))
+* **ui:** make the namespace follow the display name until you type one ([#2694](https://github.com/withcoral/coral/issues/2694)) ([ca4b3e4](https://github.com/withcoral/coral/commit/ca4b3e40fb1201a65f1d13122898173455ae7687))
+* **ui:** offer the catalog when the provider filter matches nothing ([#2687](https://github.com/withcoral/coral/issues/2687)) ([fd24c93](https://github.com/withcoral/coral/commit/fd24c931185821089263310258b97012361f3e46))
+* **ui:** show organization owners a newer Coral release in the sidebar ([#2707](https://github.com/withcoral/coral/issues/2707)) ([f62f69d](https://github.com/withcoral/coral/commit/f62f69d29bb16df7ecf4b16ede95945281aeb8f2))
+* **ui:** show progress while a cancel or decision is being recorded ([#2706](https://github.com/withcoral/coral/issues/2706)) ([3604b29](https://github.com/withcoral/coral/commit/3604b29cf51d2b802f41d736b5e76db8a0a878cc))
+* **ui:** show the Overview summary as calls, needs you and context ([#2628](https://github.com/withcoral/coral/issues/2628)) ([a788ba3](https://github.com/withcoral/coral/commit/a788ba396b921e6430dfd8aa2b33454396e95bd9))
+* **ui:** show who called each tool in workspace activity ([#2722](https://github.com/withcoral/coral/issues/2722)) ([aca342d](https://github.com/withcoral/coral/commit/aca342d8e45c5c3c274b26b6246c77d9813f8348))
+* **ui:** title each browser tab with the page's breadcrumb trail ([#2649](https://github.com/withcoral/coral/issues/2649)) ([6bb6918](https://github.com/withcoral/coral/commit/6bb69181ef9ba2e2559126ca761b0b3e26ecee6e))
+
+
+### Bug Fixes
+
+* **db:** renumber the Run Inbox migration to 0043 ([#2691](https://github.com/withcoral/coral/issues/2691)) ([1e13b83](https://github.com/withcoral/coral/commit/1e13b839ce6d53b3b6e32eada238897a26aa277e))
+* **desktop:** update Electron and UI test tooling past security advisories ([#2678](https://github.com/withcoral/coral/issues/2678)) ([ea9a5a5](https://github.com/withcoral/coral/commit/ea9a5a5c4d8110e1b09265a1dd89ebdca4742b98))
+* **provider:** offer Connect for a typed credential held during discovery, and say where replacement credentials go ([#2653](https://github.com/withcoral/coral/issues/2653)) ([cde6ddc](https://github.com/withcoral/coral/commit/cde6ddc3ee2b0da12655d61902069109db2e5605))
+* **provider:** tell an agent to call addProvider again after provider_publication_failed ([#2654](https://github.com/withcoral/coral/issues/2654)) ([f13750d](https://github.com/withcoral/coral/commit/f13750d9242310cfe78185fdedebd154a50cf573))
+* **ui:** advance Activity Live after the followed run ends ([#2618](https://github.com/withcoral/coral/issues/2618)) ([919ed54](https://github.com/withcoral/coral/commit/919ed54ff733152b88a110f127e91df5c3b0a799))
+* **ui:** connect your account in a dialog and remove the operation policy page ([#2647](https://github.com/withcoral/coral/issues/2647)) ([3bf6fd6](https://github.com/withcoral/coral/commit/3bf6fd638772aac77d155c2d842486dd9e2869e5))
+* **ui:** fade scroll areas into whatever background is behind them ([#2720](https://github.com/withcoral/coral/issues/2720)) ([09aa0be](https://github.com/withcoral/coral/commit/09aa0beebdaff66cf6267509b1fae0e66b6a3a8d))
+* **ui:** show the members-only info tip beside the page title ([#2658](https://github.com/withcoral/coral/issues/2658)) ([d705a2c](https://github.com/withcoral/coral/commit/d705a2ceddb96310703f40ef74cc1088c2a82eda))
+* **ui:** show the white coral mark in dark browser tabs ([#2696](https://github.com/withcoral/coral/issues/2696)) ([0e2d89a](https://github.com/withcoral/coral/commit/0e2d89ae005d720fdc0c7143b13b264585be36d2))
+* **ui:** use the website's coral mark for the browser tab and app icons ([#2690](https://github.com/withcoral/coral/issues/2690)) ([27ccfd0](https://github.com/withcoral/coral/commit/27ccfd0206ca360b9e65b75950ee913344afe8e8))
+
 ## [1.3.0](https://github.com/withcoral/coral/compare/v1.2.0...v1.3.0) (2026-10-23)
 
 
