@@ -22,10 +22,8 @@ pub struct Transaction<'a> {
     measure: Measure<'a>,
 }
 
-/// Records how long one transaction was open and how it ended, and the
-/// connections its pools have in use as it begins: sqlx hands a connection
-/// back to its pool on a task of its own, so no count after the end is
-/// exact. A transaction dropped without a commit or a rollback rolled back.
+/// Records how long one transaction was open and how it ended. A
+/// transaction dropped without a commit or a rollback rolled back.
 struct Measure<'a> {
     pools: &'a DatabaseBackend,
     started: Instant,
@@ -34,7 +32,6 @@ struct Measure<'a> {
 
 impl<'a> Measure<'a> {
     fn start(pools: &'a DatabaseBackend) -> Self {
-        record_pool_in_use(pools);
         Self {
             pools,
             started: Instant::now(),
@@ -60,17 +57,39 @@ fn db_system(pools: &DatabaseBackend) -> DbSystem {
     }
 }
 
-/// Records how many connections of the database's pools are in use.
-fn record_pool_in_use(pools: &DatabaseBackend) {
-    fn in_use(size: u32, idle: usize) -> u64 {
-        u64::from(size).saturating_sub(u64::try_from(idle).unwrap_or(u64::MAX))
+/// How many of a pool's `size` connections are not `idle`.
+fn in_use(size: u32, idle: usize) -> u64 {
+    u64::from(size).saturating_sub(u64::try_from(idle).unwrap_or(u64::MAX))
+}
+
+impl Database {
+    /// Observes the pools' connections in use from the first transaction
+    /// that begins under the metrics layer: the database connects before
+    /// telemetry starts.
+    fn observe_pools(&self) {
+        if self.access.pool_metric.get().is_some() {
+            return;
+        }
+        let observed = match &self.backend {
+            DatabaseBackend::Sqlite { reads, writes } => {
+                let (reads, writes) = (reads.clone(), writes.clone());
+                metric::observe_pool_in_use(DbSystem::Sqlite, move || {
+                    in_use(reads.size(), reads.num_idle())
+                        .saturating_add(in_use(writes.size(), writes.num_idle()))
+                })
+            }
+            DatabaseBackend::Postgres(pool) => {
+                let pool = pool.clone();
+                metric::observe_pool_in_use(DbSystem::Postgresql, move || {
+                    in_use(pool.size(), pool.num_idle())
+                })
+            }
+        };
+        if let Some(observed) = observed {
+            // Another transaction may have set it first; this one then drops.
+            self.access.pool_metric.get_or_init(|| observed);
+        }
     }
-    let connections = match pools {
-        DatabaseBackend::Sqlite { reads, writes } => in_use(reads.size(), reads.num_idle())
-            .saturating_add(in_use(writes.size(), writes.num_idle())),
-        DatabaseBackend::Postgres(pool) => in_use(pool.size(), pool.num_idle()),
-    };
-    metric::pool_in_use(db_system(pools), connections);
 }
 
 /// Counts a transaction on `pools` that failed to begin or commit.
@@ -109,6 +128,7 @@ impl Database {
                 .map(TransactionBackend::Postgres),
         }
         .inspect_err(|error| record_failure(&self.backend, error))?;
+        self.observe_pools();
         Ok(Transaction {
             backend,
             changes: &self.access.changes,
@@ -144,6 +164,7 @@ impl Database {
             .map(TransactionBackend::Postgres),
         }
         .inspect_err(|error| record_failure(&self.backend, error))?;
+        self.observe_pools();
         Ok(Transaction {
             backend,
             changes: &self.access.changes,

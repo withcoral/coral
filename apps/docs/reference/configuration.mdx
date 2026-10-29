@@ -101,7 +101,11 @@ Every request has a trace, even when you do not set `endpoint`. A failed MCP too
 
 #### Metrics
 
-With `endpoint` set, Coral exports the `coral.*` metrics below. Their names, units and attributes are stable within a major version. No attribute holds an identifier, a provider name, a tool call path, a client or an endpoint. Durations are in seconds and sizes in bytes.
+With `endpoint` set, you receive the `coral.*` metrics below. Their names, units and attributes are stable within a major version. No attribute holds an identifier, a provider name, a tool call path, a client or an endpoint. Durations are in seconds and sizes in bytes. Gauges show the value when Coral collects metrics, every 5 seconds.
+
+- On `coral.request.duration`, `operation` is the route template or the gRPC method. An MCP tool call is `tools/call` followed by the tool's name, such as `tools/call exec`.
+- On `coral.worker.claims`, `operation` is the claim: `accept`, `start`, `recover` or `takeover`.
+- `coral.run.queue.depth` counts the program runs on this Coral instance that are accepted but not started yet.
 
 | Metric                                   | Kind      | Attributes                                                              |
 | ---------------------------------------- | --------- | ----------------------------------------------------------------------- |
@@ -133,7 +137,7 @@ With `endpoint` set, Coral exports the `coral.*` metrics below. Their names, uni
 | `coral.worker.claims`                    | Counter   | `operation`, `outcome`                                                  |
 | `coral.telemetry.dropped`                | Counter   | `signal.kind`, `drop.reason`                                            |
 
-Coral queues at most 2048 spans and 2048 log records for export. When a queue is full, Coral drops the next span or log record at once and counts it in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans, log records or metric points with `export_failed`. Neither delays a request or a Program Run.
+At most 2048 spans and 2048 log records wait for export. When a queue is full, the next span or log record is dropped and counted in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans, log records or metric points with `export_failed`. Neither delays a request or a program run. If you see drops, check that your collector is reachable and keeps up.
 
 ## Auth
 

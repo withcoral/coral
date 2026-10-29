@@ -503,3 +503,30 @@ async fn grpc_request_spans_name_only_served_methods() {
         );
     }
 }
+
+/// A handler that knows what a request carried, such as the MCP tool a
+/// `tools/call` names, names its operation: its duration records that name
+/// in place of the route template.
+#[tokio::test]
+async fn a_handler_names_the_operation_its_request_carried() {
+    let router = trace_http_routes(
+        Router::new().route(
+            ROUTE,
+            any(|request: Request<Body>| async move {
+                super::name_request_operation(request.extensions(), "tools/call", Some("exec"));
+                // A later name does not replace the first.
+                super::name_request_operation(request.extensions(), "tools/call", None);
+                StatusCode::OK
+            }),
+        ),
+        Interface::Mcp,
+    );
+    let request = Request::post("/workspaces/one/mcp")
+        .body(Body::empty())
+        .expect("request");
+    let (_spans, _body, durations) = measured(router, request, usize::MAX).await;
+    assert_eq!(
+        duration(&durations),
+        Some(("mcp".into(), "tools/call exec".into(), "ok".into(), 1))
+    );
+}

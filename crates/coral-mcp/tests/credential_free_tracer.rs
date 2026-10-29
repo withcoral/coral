@@ -1500,7 +1500,19 @@ async fn private_program_content_stays_out_of_traces_and_logs() {
     tracer.server.shutdown().await.expect("stop MCP server");
     let spans = capture.spans.finished();
     assert!(!spans.is_empty(), "capture is active");
-    let exported = format!("{spans:?}");
+    let metrics = capture.metrics.points();
+    let operations = metrics
+        .iter()
+        .filter(|point| point.name == "coral.request.duration")
+        .filter_map(|point| point.attributes.get("operation").cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    for tool in ["start_task", "exec", "save_function", "end_task"] {
+        assert!(
+            operations.contains(&format!("tools/call {tool}")),
+            "each tool call's request is named by its tool: {operations:?}"
+        );
+    }
+    let exported = format!("{spans:?}{metrics:?}");
     let logs = capture.logs.0.lock().expect("captured logs");
     let logs = String::from_utf8_lossy(&logs);
     for canary in [
@@ -1512,7 +1524,7 @@ async fn private_program_content_stays_out_of_traces_and_logs() {
     ] {
         assert!(
             !exported.contains(canary),
-            "Private content must not reach traces"
+            "Private content must not reach traces or metrics"
         );
         assert!(
             !logs.contains(canary),
@@ -1526,6 +1538,7 @@ async fn private_program_content_stays_out_of_traces_and_logs() {
 struct Capture {
     spans: SpanCapture,
     logs: LogCapture,
+    metrics: coral_telemetry::testing::MetricCapture,
 }
 
 fn capture() -> &'static Capture {
@@ -1533,6 +1546,7 @@ fn capture() -> &'static Capture {
     CAPTURE.get_or_init(|| {
         let spans = SpanCapture::default();
         let logs = LogCapture::default();
+        let metrics = coral_telemetry::testing::MetricCapture::default();
         let log_writer = logs.clone();
         tracing_subscriber::Registry::default()
             .with(
@@ -1543,6 +1557,7 @@ fn capture() -> &'static Capture {
                     .with_target("coral_v8", tracing::Level::TRACE),
             )
             .with(spans.layer())
+            .with(metrics.layer())
             .with(
                 tracing_subscriber::fmt::layer()
                     .with_ansi(false)
@@ -1550,7 +1565,11 @@ fn capture() -> &'static Capture {
             )
             .try_init()
             .expect("install telemetry capture");
-        Capture { spans, logs }
+        Capture {
+            spans,
+            logs,
+            metrics,
+        }
     })
 }
 

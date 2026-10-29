@@ -20,7 +20,9 @@ pub use export::{OtlpLogFilter, OtlpSpanFilter};
 pub use queue::{
     CountedMetrics, Queue, batch_log_processor, batch_span_processor, counted_metric_exporter,
 };
-pub use request::{REQUEST_TARGET, request_span, trace_grpc_routes, trace_http_routes};
+pub use request::{
+    REQUEST_TARGET, name_request_operation, request_span, trace_grpc_routes, trace_http_routes,
+};
 pub use run::RunTrace;
 
 use opentelemetry::Context;

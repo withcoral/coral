@@ -103,6 +103,26 @@ pub fn request_span(extensions: &http::Extensions) -> Option<&tracing::Span> {
 #[derive(Clone)]
 struct RequestSpan(tracing::Span);
 
+/// The operation a traced request's handler found it carried, shared by
+/// every copy of the request's extensions.
+#[derive(Clone, Default)]
+struct RequestOperation(std::sync::Arc<std::sync::OnceLock<String>>);
+
+/// Names the operation the traced request whose extensions are
+/// `extensions` carried, `{operation} {target}`, such as `tools/call exec`
+/// for an MCP tool call, so its `coral.request.duration` records that name in
+/// place of its route template. `target` is a name Coral serves, never
+/// caller text. The first name stands.
+pub fn name_request_operation(
+    extensions: &http::Extensions,
+    operation: &'static str,
+    target: Option<&'static str>,
+) {
+    if let Some(slot) = extensions.get::<RequestOperation>() {
+        slot.0.get_or_init(|| safe::span_name(operation, target.as_ref()));
+    }
+}
+
 /// A request's duration, recorded when its response body drops.
 struct Duration {
     metrics: Option<Metrics>,
@@ -110,6 +130,8 @@ struct Duration {
     started: Instant,
     /// The route template or served method, else `_OTHER`.
     operation: String,
+    /// The operation the request's handler named, which takes its place.
+    named: RequestOperation,
     outcome: RequestOutcome,
 }
 
@@ -120,6 +142,7 @@ impl Duration {
             interface,
             started: Instant::now(),
             operation: OTHER.to_owned(),
+            named: RequestOperation::default(),
             outcome: RequestOutcome::Ok,
         }
     }
@@ -130,7 +153,11 @@ impl Drop for Duration {
         if let Some(metrics) = &self.metrics {
             metrics.request_duration(
                 self.interface,
-                std::mem::take(&mut self.operation),
+                self.named
+                    .0
+                    .get()
+                    .cloned()
+                    .unwrap_or_else(|| std::mem::take(&mut self.operation)),
                 self.outcome,
                 self.started.elapsed(),
             );
@@ -163,6 +190,7 @@ async fn trace_http_request(mut request: Request, next: Next, interface: Interfa
     }
     set_parent_from_http_headers(&span, request.headers());
     request.extensions_mut().insert(RequestSpan(span.clone()));
+    request.extensions_mut().insert(duration.named.clone());
     let response = next.run(request).instrument(span.clone()).await;
     let status = response.status();
     span.record("http.response.status_code", safe::number(status.as_u16()));

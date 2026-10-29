@@ -12,11 +12,14 @@
 //! gauges, transitions are counters and distributions are histograms.
 //! Metrics are never sampled.
 
-use std::sync::Arc;
+use std::fmt;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use opentelemetry::metrics::{Counter, Gauge, Histogram, Meter, MeterProvider};
+use opentelemetry::metrics::{
+    AsyncInstrument, Counter, Histogram, Meter, MeterProvider, ObservableGauge,
+};
 use opentelemetry::{InstrumentationScope, KeyValue};
 
 mod attribute;
@@ -76,18 +79,20 @@ struct Catalog {
     upstream_response_size: Histogram<u64>,
     persistence_transaction_duration: Histogram<f64>,
     persistence_transaction_failures: Counter<u64>,
-    persistence_pool_in_use: Gauge<u64>,
+    pools: Pools,
+    _persistence_pool_in_use: ObservableGauge<u64>,
     output_size: Histogram<u64>,
     output_rejections: Counter<u64>,
     worker_claims: Counter<u64>,
     telemetry_dropped: Counter<u64>,
 }
 
-/// A gauge of how many of something are live on this Coral Instance.
+/// A gauge of how many of something are live on this Coral Instance,
+/// read when metrics are collected.
 #[derive(Debug)]
 struct Level {
-    gauge: Gauge<i64>,
-    count: AtomicI64,
+    count: Arc<AtomicI64>,
+    _gauge: ObservableGauge<i64>,
 }
 
 impl Level {
@@ -97,19 +102,69 @@ impl Level {
         unit: &'static str,
         description: &'static str,
     ) -> Self {
+        let count = Arc::new(AtomicI64::new(0));
+        let observed = Arc::clone(&count);
         Self {
-            gauge: meter
-                .i64_gauge(name)
+            _gauge: meter
+                .i64_observable_gauge(name)
                 .with_unit(unit)
                 .with_description(description)
+                .with_callback(move |gauge| gauge.observe(observed.load(Ordering::Relaxed), &[]))
                 .build(),
-            count: AtomicI64::new(0),
+            count,
         }
     }
 
     fn add(&self, delta: i64) {
-        let count = self.count.fetch_add(delta, Ordering::Relaxed) + delta;
-        self.gauge.record(count, &[]);
+        self.count.fetch_add(delta, Ordering::Relaxed);
+    }
+}
+
+/// The database pools whose connections in use are read when metrics are
+/// collected: each [`PoolObservation`] that is still held.
+type Pools = Arc<Mutex<Vec<Weak<PoolSource>>>>;
+
+struct PoolSource {
+    system: DbSystem,
+    in_use: Box<dyn Fn() -> u64 + Send + Sync>,
+}
+
+impl fmt::Debug for PoolSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PoolSource")
+            .field("system", &self.system)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Keeps one database's pools in `coral.persistence.pool.in_use` while it
+/// is held.
+#[derive(Debug)]
+#[must_use = "the pool is observed while this is held"]
+pub struct PoolObservation(
+    #[expect(dead_code, reason = "held for its registration")] Arc<PoolSource>,
+);
+
+fn observe_pools(pools: &Pools, gauge: &dyn AsyncInstrument<u64>) {
+    let mut sources = pools
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    sources.retain(|source| source.strong_count() > 0);
+    for system in [DbSystem::Sqlite, DbSystem::Postgresql] {
+        let mut connections = None;
+        for source in sources.iter().filter_map(Weak::upgrade) {
+            if source.system == system {
+                connections = Some(
+                    connections
+                        .unwrap_or(0_u64)
+                        .saturating_add((source.in_use)()),
+                );
+            }
+        }
+        if let Some(connections) = connections {
+            gauge.observe(connections, &[KeyValue::new("db.system", system.as_str())]);
+        }
     }
 }
 
@@ -149,6 +204,7 @@ impl Metrics {
                 .with_description(description)
                 .build()
         };
+        let pools = Pools::default();
         Self(Arc::new(Catalog {
             request_duration: seconds(
                 "coral.request.duration",
@@ -243,11 +299,16 @@ impl Metrics {
                 "{transaction}",
                 "Database transactions that failed to begin or commit.",
             ),
-            persistence_pool_in_use: meter
-                .u64_gauge("coral.persistence.pool.in_use")
-                .with_unit("{connection}")
-                .with_description("Database connections in use.")
-                .build(),
+            _persistence_pool_in_use: {
+                let observed = Arc::clone(&pools);
+                meter
+                    .u64_observable_gauge("coral.persistence.pool.in_use")
+                    .with_unit("{connection}")
+                    .with_description("Database connections in use.")
+                    .with_callback(move |gauge| observe_pools(&observed, gauge))
+                    .build()
+            },
+            pools,
             output_size: bytes(
                 "coral.output.size",
                 "The size of one output a Program Run kept.",
@@ -551,13 +612,25 @@ pub fn transaction_failed(system: DbSystem, code: &'static str) {
     });
 }
 
-/// Records how many connections of the `system` pool are in use.
-pub fn pool_in_use(system: DbSystem, connections: u64) {
-    with(|catalog| {
-        catalog
-            .persistence_pool_in_use
-            .record(connections, &[KeyValue::new("db.system", system.as_str())]);
+/// Observes a database's connections in use on `system`, as `in_use`
+/// counts them, whenever metrics are collected, until the returned
+/// observation drops. `None` without a catalog to observe them in.
+pub fn observe_pool_in_use(
+    system: DbSystem,
+    in_use: impl Fn() -> u64 + Send + Sync + 'static,
+) -> Option<PoolObservation> {
+    let metrics = current()?;
+    let source = Arc::new(PoolSource {
+        system,
+        in_use: Box::new(in_use),
     });
+    metrics
+        .0
+        .pools
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(Arc::downgrade(&source));
+    Some(PoolObservation(source))
 }
 
 /// Records the size of one output of `kind` a Program Run kept.

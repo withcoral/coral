@@ -931,24 +931,35 @@ async fn record(executor: impl QueryExecutor, id: &str) -> Option<Record> {
 }
 
 /// Each transaction records how long it was open by how it ended: a commit,
-/// an explicit rollback, or a drop, which rolls back. As it begins, its own
-/// connection counts as in use.
+/// an explicit rollback, or a drop, which rolls back. Its connection counts
+/// as in use while it is open, and no longer once its pool has it back.
 #[tokio::test]
 async fn transactions_record_their_duration_by_outcome_and_return_their_connection() {
     let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
     let database = fixture.database();
     let metrics = coral_telemetry::testing::MetricCapture::default();
     let _measured = tracing::subscriber::set_default(metrics.subscriber());
-    let open = database.begin().await.unwrap();
-    let pool = metrics.named("coral.persistence.pool.in_use");
-    let [in_use] = pool.as_slice() else {
-        panic!("one pool gauge: {pool:?}");
+    let in_use = || {
+        metrics
+            .named("coral.persistence.pool.in_use")
+            .into_iter()
+            .map(|point| point.value)
+            .collect::<Vec<_>>()
     };
-    assert!(
-        in_use.value >= 1.0,
-        "the open transaction's connection is in use"
-    );
+    let open = database.begin().await.unwrap();
+    let [held] = in_use()[..] else {
+        panic!("one pool gauge");
+    };
+    assert!(held >= 1.0, "the open transaction's connection is in use");
     open.commit().await.unwrap();
+    // The pool takes a connection back on a task of its own.
+    for _ in 0..200 {
+        if in_use() == [held - 1.0] {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(in_use(), [held - 1.0], "the committed connection is back");
     database.begin().await.unwrap().rollback().await.unwrap();
     drop(database.begin_read_snapshot().await.unwrap());
 

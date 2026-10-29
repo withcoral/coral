@@ -1,5 +1,8 @@
 use std::time::Duration;
 
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
 use super::*;
 use crate::testing::MetricCapture;
 
@@ -136,8 +139,9 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
     ),
 ];
 
-/// Records every instrument once, with every attribute it can carry.
-fn record_each(metrics: &Metrics) {
+/// Records every instrument once, with every attribute it can carry. The
+/// pool it returns is observed while it is held.
+fn record_each(metrics: &Metrics) -> Option<PoolObservation> {
     metrics.request_duration(
         Interface::Mcp,
         "/mcp".to_string(),
@@ -175,17 +179,20 @@ fn record_each(metrics: &Metrics) {
         Duration::from_millis(3),
     );
     transaction_failed(DbSystem::Sqlite, "writer_busy");
-    pool_in_use(DbSystem::Sqlite, 2);
+    let pool = observe_pool_in_use(DbSystem::Sqlite, || 2);
     output_kept(OutputKind::Emission, 512);
     output_rejected(OutputKind::FinalValue);
     metrics.telemetry_dropped(SignalKind::Span, DropReason::QueueFull, 3);
     drop((active, queued));
+    pool
 }
 
 #[test]
 fn every_instrument_exports_with_its_unit_and_only_its_attributes() {
     let capture = MetricCapture::default();
-    tracing::subscriber::with_default(capture.subscriber(), || record_each(&capture.metrics()));
+    let pool =
+        tracing::subscriber::with_default(capture.subscriber(), || record_each(&capture.metrics()));
+    assert!(pool.is_some(), "the pool is observed under the layer");
     let points = capture.points();
     for (name, kind, unit, keys) in CATALOG {
         let found = points
@@ -257,11 +264,40 @@ fn levels_follow_their_guards_and_a_dropped_invocation_is_a_host_defect() {
     );
 }
 
+/// A pool is observed only while its observation is held, and each
+/// database's connections in use are read when metrics are collected.
+#[test]
+fn pools_are_read_at_collection_while_observed() {
+    let capture = MetricCapture::default();
+    let in_use = Arc::new(std::sync::atomic::AtomicU64::new(3));
+    let read = Arc::clone(&in_use);
+    let observed = tracing::subscriber::with_default(capture.subscriber(), || {
+        observe_pool_in_use(DbSystem::Postgresql, move || read.load(Ordering::Relaxed))
+    });
+    assert_eq!(values(&capture, "coral.persistence.pool.in_use"), [3.0]);
+    in_use.store(0, Ordering::Relaxed);
+    assert_eq!(values(&capture, "coral.persistence.pool.in_use"), [0.0]);
+    drop(observed);
+    assert!(
+        capture
+            .points()
+            .iter()
+            .all(|point| point.name != "coral.persistence.pool.in_use" || point.value == 0.0),
+        "a dropped pool reports nothing new"
+    );
+}
+
 /// Without the layer, domain code records nothing and does not fail.
 #[test]
 fn nothing_records_without_the_layer() {
     let capture = MetricCapture::default();
     run_accepted(PrincipalKind::User);
     drop(run_active());
-    assert!(capture.points().is_empty());
+    assert!(
+        capture
+            .points()
+            .iter()
+            .all(|point| point.kind == "gauge" && point.value == 0.0),
+        "only the levels read, at zero"
+    );
 }
