@@ -1,4 +1,11 @@
-import { app, autoUpdater as nativeAutoUpdater, dialog, Notification } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  autoUpdater as nativeAutoUpdater,
+  dialog,
+  Notification,
+  shell,
+} from 'electron'
 import {
   AppImageUpdater,
   MacUpdater,
@@ -9,6 +16,7 @@ import {
 import { existsSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 
+import { releaseNotesUrl } from './content-policy'
 import { createUpdates, type UpdatePrompts, type Updates } from './updates'
 
 const FIRST_CHECK_DELAY_MS = 10_000
@@ -69,7 +77,9 @@ export function startUpdates(options: {
       showReady(updates.ready() !== null)
       options.onMenuChange()
     },
+    progress: showProgress,
   })
+  updater.on('download-progress', ({ percent }) => showProgress(percent / 100))
 
   setTimeout(() => void updates.check({ interactive: false }), FIRST_CHECK_DELAY_MS)
   setInterval(() => void updates.check({ interactive: false }), CHECK_INTERVAL_MS)
@@ -82,6 +92,12 @@ export function startUpdates(options: {
 function showReady(ready: boolean) {
   if (process.platform === 'darwin') app.dock?.setBadge(ready ? '•' : '')
   else if (process.platform === 'linux') app.setBadgeCount(ready ? 1 : 0)
+}
+
+// Shows a download's progress on Coral's Dock or taskbar icon. Electron draws
+// it there from any window, and removes it for a negative value.
+function showProgress(fraction: number | null) {
+  for (const window of BrowserWindow.getAllWindows()) window.setProgressBar(fraction ?? -1)
 }
 
 // Names each platform's updater class rather than taking electron-updater's
@@ -148,15 +164,27 @@ const prompts: UpdatePrompts = {
       detail: `You have Coral ${version}, the latest version.`,
     })
   },
+  notReady: async (version) => {
+    const { response } = await dialog.showMessageBox({
+      type: 'info',
+      message: `Coral ${version} is not ready to install yet.`,
+      detail: 'Try again later.',
+      buttons: ['Release Notes', 'OK'],
+      defaultId: 1,
+      cancelId: 1,
+    })
+    if (response === 0) openReleaseNotes(version)
+  },
   offerInstall: async (version) => {
     const { response } = await dialog.showMessageBox({
       type: 'info',
       message: `Coral ${version} is ready`,
       detail: 'Restart Coral to update now.',
-      buttons: ['Restart to Update', 'Later'],
+      buttons: ['Restart to Update', 'Release Notes', 'Later'],
       defaultId: 0,
-      cancelId: 1,
+      cancelId: 2,
     })
+    if (response === 1) openReleaseNotes(version)
     return response === 0
   },
   failed: async (step, error) => {
@@ -175,4 +203,8 @@ const prompts: UpdatePrompts = {
     notification.on('click', restart)
     notification.show()
   },
+}
+
+function openReleaseNotes(version: string) {
+  void shell.openExternal(releaseNotesUrl(version))
 }
