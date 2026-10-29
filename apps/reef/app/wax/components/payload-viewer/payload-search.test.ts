@@ -48,6 +48,10 @@ it.each([
   [',', 'Structured', '{"a":1,"b":2}', [], 1],
   [':', 'Structured', '{"a":1}', [], 1],
   ['1', 'Structured', '{"a":1,"b":[1,1]}', ['1', '1', '1'], 0],
+  // Raw's match `1,12` is not Structured's `12`, though they overlap: Raw also shows it.
+  ['1*2', 'Structured', '[1,12]', ['12'], 1],
+  // Raw's match is Structured's own: it counts once.
+  ['k*v', 'Structured', '{"k":"v"}', ['k":"v'], 0],
   // Raw searches each line, whatever ends it.
   ['^"', 'Raw', '{"a":\r\n"x",\r"b":\n"x"}', ['"', '"', '"'], 0],
 ] as const)('finds %j in %s %#', (query, view, value, matches, rawOnly) => {

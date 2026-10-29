@@ -19,8 +19,8 @@ export type Structure = { units: Unit[]; entries: Range[] }
  * Every place `search` matches in `units`, in order. With `structure`, it also searches each
  * entry's retained text in `source` alone, so it matches a key with its value or a quoted
  * token, and never reaches into another entry. A match that overlaps one already found is
- * not counted again. `rawOnly` counts what only the whole text matches, such as text across
- * two entries or in punctuation alone, so Find can say that Raw shows it.
+ * not counted again. `rawOnly` counts each match of the whole text that is not one of these,
+ * such as text across two entries or in punctuation alone, so Find can say that Raw shows it.
  */
 export function findMatches(
   units: Unit[],
@@ -46,10 +46,13 @@ export function findMatches(
     units,
     [...found, ...inEntries].toSorted((a, b) => a[0]![0] - b[0]![0]),
   )
-  const spans = matches.map((match) => span(match.ranges))
+  // A Raw match counts unless it is one of these, range for range; one that only
+  // overlaps them, such as `1,12` beside `12`, Raw alone shows.
+  // Ranges are number pairs, so their text names them exactly.
+  const shown = new Set(matches.map((match) => String(match.ranges)))
   const rawOnly = lineUnits(structure.source)
     .flatMap((line) => hitsAt(search, line.text, line.start))
-    .filter((ranges) => !overlaps(spans, span(ranges))).length
+    .filter((ranges) => !shown.has(String(ranges))).length
   return { matches, rawOnly }
 }
 

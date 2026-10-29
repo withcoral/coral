@@ -577,13 +577,14 @@ export const HugeArrayFindsALateMatch: Story = {
 
 /**
  * Catches: a wildcard that first matches across two entries and so never finds the match
- * inside one: `k*v` matches the key "k" with its value "v".
+ * inside one: `k*v` matches the key "k" with its value "v". Raw's own match starts at
+ * "k0" and reaches across both entries, so Find also says that Raw shows it.
  */
 export const WildcardFindsTheMatchInOneEntry: Story = {
   args: { value: '{"k0":1,"k":"v"}' },
   play: async (context) => {
     const viewer = await findExpanded(context, 'Provider response', 'k*v')
-    await expect(within(viewer).getByRole('status')).toHaveTextContent(/^1 of 1$/)
+    await expect(within(viewer).getByRole('status')).toHaveTextContent(/^1 of 1 · 1 more in Raw$/)
     const parts = within(viewer).getAllByRole('mark', { current: true })
     await expect(parts.map((part) => part.textContent)).toEqual(['k', 'v'])
   },
