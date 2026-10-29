@@ -350,6 +350,21 @@ export interface LiveLatest {
    */
   newest?: string
   /**
+   * The newest record page live mode may follow when it has nothing else to follow, read
+   * only while no action waits and no Run runs. Its candidates are:
+   * - each standalone Run, timed by when Coral accepted it;
+   * - the newest child, as Coral orders them, of each Task that started `TAKS_MAX_AGE`
+   *   ago or less, timed by when its tool call started;
+   * - each such Task that has no child yet, timed by when it started.
+   *
+   * The one that started last wins, to the nanosecond, and at an equal time the newer
+   * top-level record. `root` is its top-level record, and `run` says the record is a Run.
+   * Absent unless the loader read every record and the newest child of every such Task.
+   * When it is absent and no held Run, action or running Run gives page live mode a
+   * target, page live mode keeps the record it shows.
+   */
+  latest?: { root: string; record: string; run: boolean }
+  /**
    * The loader read every top-level record and every Task it looked in, so `running`
    * names every Run that runs that page live mode may follow. A row or a Task window
    * of the list it did not refresh can lag its Run's end, so `running` wins over them.
