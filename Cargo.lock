@@ -978,6 +978,8 @@ dependencies = [
  "coral-telemetry",
  "coral-test-support",
  "coral-workspace",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "oxc_allocator",
  "oxc_ast",
  "oxc_parser",

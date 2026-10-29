@@ -82,6 +82,18 @@ pub fn record_failure(
     span.set_status(OtelStatus::error(stable_message));
 }
 
+/// Links `span`, a span not yet entered, to the current span, when there is
+/// one. Work that a request starts and does not wait for runs in a root span
+/// of its own, so it does not hold the request's span open, and keeps a path
+/// back to the request this way.
+pub fn link_to_current(span: &tracing::Span) {
+    let current = tracing::Span::current().context();
+    let current = current.span().span_context().clone();
+    if current.is_valid() {
+        span.add_link(current);
+    }
+}
+
 struct TraceHeaders<'a> {
     traceparent: &'a str,
     tracestate: Option<&'a str>,

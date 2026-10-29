@@ -11,7 +11,10 @@ use tracing::Instrument as _;
 use tracing::field::Empty;
 use tracing::instrument::WithSubscriber as _;
 
-use super::SearchIndex;
+use super::{
+    FUNCTION_FAILURE, GENERATION_FAILURE, SearchIndex, function_span, generation_span,
+    in_write_span, skipped,
+};
 use crate::indexer::functions::SavedFunctionIndexer;
 use crate::indexer::tools::ToolIndexer;
 use crate::indexer::{self, EntityIndexer, IndexError};
@@ -89,9 +92,10 @@ impl SearchIndex {
     /// The pass runs in a root span, `coral.search.reconcile`, and each step
     /// in a child span, all at debug level: almost every pass finds nothing
     /// to do, so the default trace filter exports none of them. Each write
-    /// the pass makes runs in an info span of its own, which the default
-    /// filter exports: `coral.search.index_generation`,
-    /// `coral.search.index_function` and `coral.search.refresh_statistics`.
+    /// the pass makes runs in an info root span of its own, which the
+    /// default filter exports, linked to its step's span when that is traced:
+    /// `coral.search.index_generation` and `coral.search.index_function`, as
+    /// a notified write's, and `coral.search.refresh_statistics`.
     /// A failed write or step marks its span and the pass's span as failed.
     /// The pass's span records what it indexed and what failed, and the
     /// statistics step's span the Workspaces it checked and recounted and
@@ -230,16 +234,12 @@ impl SearchIndex {
         };
         let mut work = ItemWork::default();
         for generation in &stale {
-            let span = tracing::info_span!(
-                "coral.search.index_generation",
-                coral.workspace.id = %generation.workspace_id(),
-                coral.provider.id = %generation.provider_id(),
-                coral.search.generation.id = %generation.generation_id(),
-                status = Empty,
-                error.type = Empty,
-                exception.message = Empty,
+            let span = generation_span(
+                generation.workspace_id(),
+                generation.provider_id(),
+                Some(generation.generation_id()),
             );
-            let indexed = async {
+            let indexed = in_write_span(span, GENERATION_FAILURE, async {
                 match self
                     .prepare_stored_generation(generation.workspace_id(), generation.provider_id())
                     .await
@@ -247,16 +247,18 @@ impl SearchIndex {
                     Ok(Some(entries)) => self.write_generation(&entries).await.map(|()| true),
                     // The Provider was deleted after the pass read it; its rows
                     // cascaded with its Generations.
-                    Ok(None) => Ok(false),
+                    Ok(None) => {
+                        skipped("provider_deleted");
+                        Ok(false)
+                    }
                     Err(error) => {
                         self.fail_generation(generation.into(), &error).await;
                         Err(error)
                     }
                 }
-            }
-            .instrument(span.clone())
+            })
             .await;
-            work.count(&span, indexed, "indexing a Provider Generation failed");
+            work.count(&indexed);
         }
         Ok(work)
     }
@@ -307,20 +309,14 @@ impl SearchIndex {
             Ok(stale) => {
                 let mut work = ItemWork::default();
                 for entry in &stale {
-                    let span = tracing::info_span!(
-                        "coral.search.index_function",
-                        coral.workspace.id = %entry.workspace_id(),
-                        coral.saved_function.id = %entry.id(),
-                        status = Empty,
-                        error.type = Empty,
-                        exception.message = Empty,
-                    );
-                    let indexed = self
-                        .write_function(entry)
-                        .instrument(span.clone())
-                        .await
-                        .map(|()| true);
-                    work.count(&span, indexed, "indexing a Saved Function failed");
+                    let indexed = in_write_span(
+                        function_span(entry),
+                        FUNCTION_FAILURE,
+                        self.write_function(entry),
+                    )
+                    .await
+                    .map(|()| true);
+                    work.count(&indexed);
                 }
                 Ok(work)
             }
@@ -358,6 +354,7 @@ impl SearchIndex {
         };
         for workspace_id in &check.stale {
             let span = tracing::info_span!(
+                parent: None,
                 "coral.search.refresh_statistics",
                 coral.workspace.id = %workspace_id,
                 coral.search.rows_written = Empty,
@@ -365,15 +362,17 @@ impl SearchIndex {
                 error.type = Empty,
                 exception.message = Empty,
             );
-            let refreshed = self
-                .within_limit(async {
+            let refreshed = in_write_span(
+                span.clone(),
+                "refreshing a Workspace's search statistics failed",
+                self.within_limit(async {
                     let mut transaction = self.database.begin().await?;
                     let rows = indexer::refresh_statistics(&mut transaction, workspace_id).await?;
                     transaction.commit().await?;
                     Ok(rows)
-                })
-                .instrument(span.clone())
-                .await;
+                }),
+            )
+            .await;
             match refreshed {
                 Ok(rows) => {
                     span.record("coral.search.rows_written", rows);
@@ -381,11 +380,6 @@ impl SearchIndex {
                     work.rows_written += rows;
                 }
                 Err(error) => {
-                    coral_telemetry::record_failure(
-                        &span,
-                        error.code(),
-                        "refreshing a Workspace's search statistics failed",
-                    );
                     // TODO: an error monitor for failed index writes is still to be set up.
                     tracing::error!(
                         workspace_id = %workspace_id,
@@ -451,21 +445,12 @@ impl ItemWork {
         );
     }
 
-    /// Counts one item's attempt, `Ok(false)` when the item was gone, and
-    /// marks the item's `span` failed when the attempt failed.
-    fn count(
-        &mut self,
-        span: &tracing::Span,
-        attempt: Result<bool, IndexError>,
-        failure: &'static str,
-    ) {
+    /// Counts one item's attempt, `Ok(false)` when the item was gone.
+    fn count(&mut self, attempt: &Result<bool, IndexError>) {
         match attempt {
             Ok(true) => self.indexed += 1,
             Ok(false) => {}
-            Err(error) => {
-                coral_telemetry::record_failure(span, error.code(), failure);
-                self.failed += 1;
-            }
+            Err(_) => self.failed += 1,
         }
     }
 }

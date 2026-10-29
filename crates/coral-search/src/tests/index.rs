@@ -12,7 +12,10 @@ use std::sync::Arc;
 
 use coral_db::DatabaseSystem;
 use coral_provider::GenerationEntries;
+use coral_telemetry::testing::{SpanCapture, attribute};
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
+use opentelemetry::trace::SpanId;
+use opentelemetry_sdk::trace::SpanData;
 use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
 use tracing_subscriber::layer::SubscriberExt as _;
 use wiremock::MockServer;
@@ -887,11 +890,121 @@ async fn a_notice_for_a_replaced_generation_writes_nothing() {
         replaced.generation_id()
     );
 
-    notify(&world.index, &replaced);
-    world.index.settled().await;
+    let (_, write) = world.traced_notice(|index| notify(index, &replaced)).await;
 
     assert!(world.tool_rows().await.is_empty());
     assert!(world.states().await.is_empty());
+    assert_eq!(
+        attribute(&write, "coral.search.skipped").as_deref(),
+        Some("generation_replaced")
+    );
+}
+
+/// A notified write is the root of a trace of its own, linked to the span
+/// that notified it, such as the request that published a Generation. Its
+/// span names the Generation it wrote and how long it waited for the writer
+/// and wrote, and a failed write marks it with its error's kind.
+#[tokio::test]
+async fn a_notified_write_traces_itself_and_links_to_its_notifier() {
+    type Notice = fn(&SearchIndex, &GenerationEntries);
+    let by_generation: Notice = notify;
+    let by_provider: Notice = |index, entries| {
+        index.index_active_generation(
+            entries.workspace_id().clone(),
+            entries.provider_id().clone(),
+        );
+    };
+    let removal: Notice = |index, entries| {
+        index.remove_provider(
+            entries.workspace_id().clone(),
+            entries.provider_id().clone(),
+        );
+    };
+    for (case, notice, fails, name) in [
+        (
+            "a Generation",
+            by_generation,
+            false,
+            "coral.search.index_generation",
+        ),
+        (
+            "a renamed Provider",
+            by_provider,
+            false,
+            "coral.search.index_generation",
+        ),
+        (
+            "a failed Generation",
+            by_generation,
+            true,
+            "coral.search.index_generation",
+        ),
+        ("a removal", removal, false, "coral.search.remove_provider"),
+        (
+            "a failed removal",
+            removal,
+            true,
+            "coral.search.remove_provider",
+        ),
+    ] {
+        let upstream = MockServer::start().await;
+        let world = World::publish_tracer(&upstream).await;
+        let entries = world.stored_entries(&world.tracer).await;
+        let removes = name == "coral.search.remove_provider";
+        if removes {
+            notify(&world.index, &entries);
+            world.index.settled().await;
+        }
+        if fails && removes {
+            world.reject_state_removals().await;
+        } else if fails {
+            world.reject_complete_states().await;
+        }
+
+        let (request, write) = world.traced_notice(|index| notice(index, &entries)).await;
+
+        assert_eq!(write.name, name, "{case}");
+        assert_eq!(write.parent_span_id, SpanId::INVALID, "{case} is a root");
+        assert!(
+            request.end_time < write.end_time,
+            "{case} does not hold its notifier's span open"
+        );
+        assert_ne!(
+            write.span_context.trace_id(),
+            request.span_context.trace_id(),
+            "{case}"
+        );
+        assert_eq!(
+            write
+                .links
+                .iter()
+                .map(|link| (link.span_context.trace_id(), link.span_context.span_id()))
+                .collect::<Vec<_>>(),
+            [(
+                request.span_context.trace_id(),
+                request.span_context.span_id()
+            )],
+            "{case} links to its notifier"
+        );
+        assert_eq!(
+            attribute(&write, "error.type"),
+            fails.then(|| "database".to_string()),
+            "{case}"
+        );
+        if !removes {
+            assert_eq!(
+                attribute(&write, "coral.search.generation.id"),
+                Some(entries.generation_id().to_string()),
+                "{case}"
+            );
+            for field in ["coral.search.writer_wait_ms", "coral.search.write_ms"] {
+                assert!(
+                    attribute(&write, field).is_some_and(|ms| ms.parse::<u64>().is_ok()),
+                    "{case}: {field}"
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -1002,28 +1115,7 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
         let error = state.error.expect("a failed state carries its error");
         assert!(error.contains(INJECTED_FAULT), "{error}");
 
-        let [times, event] = logs
-            .events()
-            .try_into()
-            .expect("the write's times, then its error");
-        assert_eq!(times.level, tracing::Level::INFO);
-        assert_eq!(
-            times.fields.get("workspace_id"),
-            Some(&world.workspace.to_string())
-        );
-        assert_eq!(
-            times.fields.get("succeeded").map(String::as_str),
-            Some("false")
-        );
-        for field in ["writer_wait_ms", "write_ms"] {
-            assert!(
-                times
-                    .fields
-                    .get(field)
-                    .is_some_and(|ms| ms.parse::<u64>().is_ok()),
-                "{field}"
-            );
-        }
+        let [event] = logs.events().try_into().expect("the write's error");
         assert_eq!(event.level, tracing::Level::ERROR);
         assert_eq!(event.target, "coral_search::index");
         for (field, value) in [
@@ -1757,7 +1849,43 @@ impl World {
         row.is_some()
     }
 
-    /// Runs one reconcile pass and returns the spans it recorded.
+    /// Sends `notice` in a request span and waits for the write it starts.
+    /// Returns the request's span and the write's.
+    async fn traced_notice(&self, notice: impl FnOnce(&SearchIndex)) -> (SpanData, SpanData) {
+        let capture = SpanCapture::default();
+        {
+            let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+            tracing::info_span!("request").in_scope(|| notice(&self.index));
+        }
+        self.index.settled().await;
+        // A database driver may hold the write's span for a moment after the
+        // write returns.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let spans = loop {
+            let spans = capture.finished();
+            if spans
+                .iter()
+                .any(|span| span.name.starts_with("coral.search."))
+                || tokio::time::Instant::now() > deadline
+            {
+                break spans;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        let request = spans
+            .iter()
+            .find(|span| span.name == "request")
+            .expect("the request span")
+            .clone();
+        let [write] = spans
+            .into_iter()
+            .filter(|span| span.name.starts_with("coral.search."))
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("one write span");
+        (request, write)
+    }
+
     /// Runs one pass and returns the spans it started.
     async fn traced_pass(&self) -> Vec<CapturedSpan> {
         let spans = CapturedSpans::default();
