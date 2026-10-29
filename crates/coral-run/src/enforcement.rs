@@ -1,16 +1,16 @@
-//! The Dispatch Fence's facts and decision (ADR 0018): one loader reads the
-//! shared Workspace, Provider, policy and Account facts a batch of ready
-//! Invocations depends on, under the lock mode the caller chooses, and one
-//! evaluator decides each Invocation in memory against those facts, the
+//! The Policy Enforcement Point's facts and decision (ADR 0018): one loader
+//! reads the shared Workspace, Provider, policy and Account facts a batch of
+//! ready Invocations depends on, under the lock mode the caller chooses, and
+//! one evaluator decides each Invocation in memory against those facts, the
 //! Run-scoped facts the owner holds, and one clock sample.
 //!
-//! The fence loads the facts with a shared hold inside the owner's chunk
-//! commit, so fences of different Runs read side by side and an authority
-//! writer's `UPDATE` waits for the fences in flight: a revocation that commits
-//! first is seen, one that commits after the recorded dispatch start does not
-//! stop that dispatch. The parked-wait precheck loads the same facts from a
-//! read snapshot with no hold and runs the same evaluator, only to learn
-//! whether a held check could change its wait.
+//! The enforcement point loads the facts with a shared hold inside the owner's
+//! chunk commit, so enforcement checks of different Runs read side by side and
+//! an authority writer's `UPDATE` waits for the enforcement checks in flight: a
+//! revocation that commits first is seen, one that commits after the recorded
+//! dispatch start does not stop that dispatch. The parked-wait precheck loads
+//! the same facts from a read snapshot with no hold and runs the same
+//! evaluator, only to learn whether a held check could change its wait.
 
 use std::collections::BTreeMap;
 
@@ -27,7 +27,7 @@ use crate::lifecycle::RunRecord;
 use crate::{CoralFailure, Error};
 
 /// Whose facts are read: the Run's authenticated actor in its Workspace.
-pub(crate) struct FenceScope<'a> {
+pub(crate) struct EnforcementScope<'a> {
     pub(crate) workspaces: &'a WorkspaceModule,
     pub(crate) actor: &'a AuthenticatedPrincipal,
     pub(crate) workspace_id: &'a WorkspaceId,
@@ -36,7 +36,7 @@ pub(crate) struct FenceScope<'a> {
 /// One Invocation the facts are read for: its retained target and, once
 /// selected, the credentials it will dispatch with.
 #[derive(Clone, Copy)]
-pub(crate) struct FenceTarget<'a> {
+pub(crate) struct EnforcementTarget<'a> {
     pub(crate) admitted: &'a AdmittedInvocation,
     pub(crate) credential_evidence: Option<&'a CredentialEvidence>,
 }
@@ -61,9 +61,9 @@ impl RunFacts<'_> {
 }
 
 /// An Invocation's Approval Request as the decision sees it, from owner
-/// memory: in the fence, what the held approval gate recorded (a request is
-/// never needed again once approved, and an approval never changes); in the
-/// parked-wait precheck, the pending request the Invocation is parked on
+/// memory: in the enforcement point, what the held approval gate recorded (a
+/// request is never needed again once approved, and an approval never changes);
+/// in the parked-wait precheck, the pending request the Invocation is parked on
 /// (only its owner decides it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ApprovalFact {
@@ -83,7 +83,7 @@ pub(crate) enum ApprovalFact {
 
 /// The Invocation-scoped facts beside the shared ones.
 pub(crate) struct InvocationFacts<'a> {
-    pub(crate) target: FenceTarget<'a>,
+    pub(crate) target: EnforcementTarget<'a>,
     /// Set while the Invocation is parked on a connection request that is
     /// still pending: when that request expires.
     pub(crate) connection_pending_until_unix_nanos: Option<i64>,
@@ -98,7 +98,7 @@ pub(crate) enum Decision {
     /// A fact refuses the dispatch; the Invocation ends with this failure.
     Deny(CoralFailure),
     /// The Account's material must be renewed before dispatch; the
-    /// Invocation parks on the refresh and fences again.
+    /// Invocation parks on the refresh and meets the enforcement point again.
     RefreshRequired,
     /// The Invocation keeps waiting (for a connection or a decision) until
     /// this instant at the latest, when nothing commits before.
@@ -167,9 +167,9 @@ impl SharedFacts {
     pub(crate) async fn load(
         transaction: &mut Transaction<'_>,
         lock: RowLock,
-        scope: &FenceScope<'_>,
+        scope: &EnforcementScope<'_>,
         now_unix_nanos: i64,
-        targets: &[FenceTarget<'_>],
+        targets: &[EnforcementTarget<'_>],
     ) -> Result<Self, Error> {
         let authority = match scope
             .workspaces
@@ -231,7 +231,7 @@ impl SharedFacts {
     pub(crate) fn checked(
         &self,
         run: &RunFacts<'_>,
-        target: FenceTarget<'_>,
+        target: EnforcementTarget<'_>,
         now_unix_nanos: i64,
     ) -> Result<Checked, Refusal> {
         if !run.is_current(now_unix_nanos) {

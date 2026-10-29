@@ -27,9 +27,9 @@ writer in the predicate of the history write itself. A lock without a write fenc
 ## The shape
 
 - **Run Owner.** Created in the acceptance transaction, which also writes its claim, and retired at termination. It owns
-  Event persistence and the Run's lifecycle: the Dispatch Fence, the pre-send terminal check, deadlines, wait prechecks
-  and every outcome decision. Decryption and the upstream call run in the dispatch it starts and report back through
-  its mailbox. Every re-claim mints a new claim id, and that id in every commit predicate fences a stale owner.
+  Event persistence and the Run's lifecycle: the Policy Enforcement Point, the pre-send terminal check, deadlines, wait
+  prechecks and every outcome decision. Decryption and the upstream call run in the dispatch it starts and report back
+  through its mailbox. Every re-claim mints a new claim id, and that id in every commit predicate fences a stale owner.
 - **Run Request.** Admit, Emit, Log and Finish come from the Program; Decide Approval and Cancel come from outside. A
   request is Applied (decided in memory), then Recorded (its chunk committed), then Settled (what it started has ended).
   The Program shares the owner's fate, so it is answered at Applied; outside requesters are answered at Recorded. A
@@ -41,10 +41,10 @@ writer in the predicate of the history write itself. A lock without a write fenc
   commit renews the worker lease. A fenced owner acts on its commit's evidence: a claim mismatch is definitive, a head
   mismatch under a matching claim means the chunk landed, and no answer means reread and resolve.
 - **Run Output Budget.** Exact, decided at apply time against the owner's in-memory total.
-- **Dispatch Fence.** Still a held transaction, but one per batch of ready Invocations, merged into the next chunk
-  commit. Run-scoped facts come from owner memory, and the database predicate keeps only the claim and the Invocation's
-  `pending` state. Authority facts are read under shared locks, so concurrent fences do not serialize and an authority
-  writer waits for the fences in flight. Decryption runs outside the fence.
+- **Policy Enforcement Point.** Still a held transaction, but one per batch of ready Invocations, merged into the next
+  chunk commit. Run-scoped facts come from owner memory, and the database predicate keeps only the claim and the
+  Invocation's `pending` state. Authority facts are read under shared locks, so concurrent enforcement checks do not
+  serialize and an authority writer waits for the checks in flight. Decryption runs outside the enforcement point.
 - **Fan-out Limit.** Only a bounded number of one Run's Invocations dispatch at once. Admission stays eager, and
   approval and account waits hold no slot, so every Approval Request is visible at once.
 - **Wake-ups.** The change signal stays content-free. An owner subscribes only while an Invocation is parked on a
@@ -66,9 +66,9 @@ writer in the predicate of the history write itself. A lock without a write fenc
 1. Events are prefix-complete per Run: once a sequence is visible, every lower one is committed. Gapless numbering is
    not required.
 2. The Run Output Budget is exact. A Run never exceeds it by a byte.
-3. Dispatch starts only after one authoritative Dispatch Fence against current authority, policy, account and approval
-   facts. A revocation that commits first always wins; a change committed after the recorded dispatch start does not
-   stop that dispatch. A cached decision never authorizes.
+3. Dispatch starts only after one authoritative enforcement check against current authority, policy, account and
+   approval facts. A revocation that commits first always wins; a change committed after the recorded dispatch start
+   does not stop that dispatch. A cached decision never authorizes.
 4. No Event after `run.ended`. While the Run is nonterminal, only the owner writes Run-scoped rows, with one
    exception: the Coral Instance that receives an outside Run Request inserts it into the Run's Run Inbox. Only the
    owner deletes that row.
@@ -81,9 +81,9 @@ writer in the predicate of the history write itself. A lock without a write fenc
 
 - A shared durable head allocator with owner renumbering, or two Event streams merged at read time: optimistic appends
   degrade to one winner per round trip under the burst.
-- A versioned decision in place of a held fence: a snapshot compare plus a separate compare-and-set is unsafe under
-  READ COMMITTED.
-- A fence transaction separate from the chunk commit, and decryption inside the fence.
+- A versioned decision in place of a held enforcement check: a snapshot compare plus a separate compare-and-set is
+  unsafe under READ COMMITTED.
+- An enforcement transaction separate from the chunk commit, and decryption inside the enforcement point.
 - Lazy admission, an admitted-count cap, and approximate output accounting.
 - Resuming a Run after restart; recovering lazily on read; taking over a live lease at boot, which would interrupt the
   other process of a rolling deploy; taking over a claim on demand, which would turn a decision into an interruption.

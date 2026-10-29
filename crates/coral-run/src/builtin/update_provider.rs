@@ -1,5 +1,5 @@
 //! Performs `coral.workspace.updateProvider`, and settles one whose worker was
-//! lost after the Dispatch Fence.
+//! lost after the Policy Enforcement Point.
 //!
 //! The call takes the path of Reef's update page: an Update Setup of the
 //! saved source or a new one, the sent fields confirmed over the configuration
@@ -357,9 +357,9 @@ async fn rename(
         .map_err(result_error)
 }
 
-/// Settles an `updateProvider` whose worker was lost after the dispatch
-/// fence, from the regeneration Publication Coral attempted under the
-/// Invocation's identity. A published change becomes the Tool Result;
+/// Settles an `updateProvider` whose worker was lost after the policy
+/// enforcement point, from the regeneration Publication Coral attempted under
+/// the Invocation's identity. A published change becomes the Tool Result;
 /// otherwise the Run ended first. A Setup that was never published expires at
 /// its deadline. A rename leaves no record of the call that made it, so a lost
 /// rename is indeterminate.

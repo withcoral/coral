@@ -32,8 +32,9 @@ test.for(['user', 'shared', 'agent'] as const)(
     const refreshed = `refreshed-${crypto.randomUUID()}`
     const upstream = await oauthMcpServer(context, access, {
       refreshAccess: refreshed,
-      // The first renewed token also expires before the fence. Re-preparation
-      // stays in this Invocation and must not create a second Tool send.
+      // The first renewed token also expires before the enforcement point.
+      // Re-preparation stays in this Invocation and must not create a second
+      // Tool send.
       firstRefreshExpiresIn: scope === 'shared' ? 0 : 3600,
     })
     const api = managementClients(actor.accessToken)

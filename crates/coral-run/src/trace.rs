@@ -125,13 +125,13 @@ pub(crate) enum Step {
     Plan,
     /// Readying the Account's credentials, including a token refresh.
     Credentials,
-    DispatchFence,
-    /// Opening the credentials the Dispatch Fence judged current.
+    Enforcement,
+    /// Opening the credentials the Policy Enforcement Point judged current.
     Authorize,
     Persist,
 }
 
-/// A gate a Tool Invocation passes before its Dispatch Fence.
+/// A gate a Tool Invocation passes before its Policy Enforcement Point.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Gate {
     /// The held recheck of the Workspace, Principal, Provider and policy.
@@ -149,8 +149,8 @@ pub(crate) fn step_span(invocation: &tracing::Span, step: Step) -> tracing::Span
         Step::Credentials => {
             tracing::info_span!(parent: invocation, "coral.invocation.credentials")
         }
-        Step::DispatchFence => {
-            tracing::info_span!(parent: invocation, "coral.invocation.dispatch_fence")
+        Step::Enforcement => {
+            tracing::info_span!(parent: invocation, "coral.invocation.policy_enforcement_point")
         }
         Step::Authorize => tracing::info_span!(parent: invocation, "coral.invocation.authorize"),
         Step::Persist => tracing::info_span!(parent: invocation, "coral.invocation.persist"),

@@ -1,11 +1,12 @@
-//! Final-fence races observed through the Run interface. Private controls only
-//! schedule external changes or time; they do not supply authorization decisions.
+//! Final enforcement races observed through the Run interface. Private controls
+//! only schedule external changes or time; they do not supply authorization
+//! decisions.
 use super::*;
 
 #[tokio::test]
 async fn organization_ownership_neither_grants_nor_retains_workspace_authority() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
@@ -24,7 +25,8 @@ async fn organization_ownership_neither_grants_nor_retains_workspace_authority()
     let actor = AuthenticatedPrincipal::user(user.clone());
     let source = "try { await coral.providers.weather.getForecast(); } catch (e) { coral.emit('still computing'); return e.code; } return 'unexpected dispatch';";
 
-    // Without a Membership, an Organization Owner is denied like any non-Member.
+    // Without a Membership, an Organization Owner is denied like any
+    // non-Member.
     let runs_before = fixture.runs.count_runs().await.unwrap();
     let denied = fixture
         .runs
@@ -39,8 +41,8 @@ async fn organization_ownership_neither_grants_nor_retains_workspace_authority()
     );
     assert_eq!(fixture.runs.count_runs().await.unwrap(), runs_before);
 
-    // A Membership grants the authority, and losing it at the fence blocks
-    // dispatch although the User is still an Organization Owner.
+    // A Membership grants the authority, and losing it at the enforcement point
+    // blocks dispatch although the User is still an Organization Owner.
     let owner = change(tool.user.clone(), 40, '4');
     fixture
         .workspaces
@@ -71,7 +73,7 @@ async fn organization_ownership_neither_grants_nor_retains_workspace_authority()
         .unwrap();
     let terminal = wait_for_terminal(&fixture.runs, &actor, &tool.workspace_id, run.run_id()).await;
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
-    gate.fences.assert_no_dispatch();
+    gate.enforcement_checks.assert_no_dispatch();
     assert_final_code(&terminal, "dispatch_authority_lost");
     assert!(
         terminal
@@ -82,9 +84,9 @@ async fn organization_ownership_neither_grants_nor_retains_workspace_authority()
 }
 
 #[tokio::test]
-async fn workspace_membership_loss_at_the_fence_blocks_dispatch() {
+async fn workspace_membership_loss_at_the_enforcement_point_blocks_dispatch() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
@@ -107,7 +109,7 @@ async fn workspace_membership_loss_at_the_fence_blocks_dispatch() {
     .unwrap();
     release.send(()).unwrap();
     wait_until(|| gate.failure_code.lock().unwrap().is_some()).await;
-    gate.fences.assert_no_dispatch();
+    gate.enforcement_checks.assert_no_dispatch();
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
     // Restore access only after the Invocation has durably failed, so the User
     // can inspect their own history through normal authorization.
@@ -229,7 +231,7 @@ async fn offboarding_ends_a_waiting_connection_and_rejoin_cannot_resume_it() {
 #[tokio::test]
 async fn an_organization_downgrade_keeps_current_explicit_workspace_authority() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
@@ -288,7 +290,7 @@ async fn an_organization_downgrade_keeps_current_explicit_workspace_authority() 
 #[tokio::test]
 async fn user_disablement_cannot_be_undone_by_stale_login_or_administration() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
@@ -337,7 +339,7 @@ async fn user_disablement_cannot_be_undone_by_stale_login_or_administration() {
     )
     .await;
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
-    gate.fences.assert_no_dispatch();
+    gate.enforcement_checks.assert_no_dispatch();
     assert_final_code(&terminal, "dispatch_authority_lost");
 }
 
@@ -369,12 +371,12 @@ async fn missing_organization_evidence_never_falls_back_to_authenticated_owner_c
 }
 
 #[tokio::test]
-async fn organization_loss_commits_while_fenced_upstream_work_is_blocked() {
+async fn organization_loss_commits_while_permitted_upstream_work_is_blocked() {
     let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
         200,
         serde_json::json!({}),
     )));
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     release.send(()).unwrap();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
@@ -383,7 +385,10 @@ async fn organization_loss_commits_while_fenced_upstream_work_is_blocked() {
     )
     .await;
     let tool = fixture
-        .user_tool("user:post-fence-owner", "Post-fence Organization loss")
+        .user_tool(
+            "user:post-enforcement-owner",
+            "Post-enforcement Organization loss",
+        )
         .await;
     let run = fixture.runs.start(&tool.principal, &tool.workspace_id, submission("await coral.providers.weather.getForecast(); try { await coral.providers.weather.getForecast(); } catch (e) { return e.code; } return 'unexpected dispatch';",
     )).await.unwrap();
@@ -416,9 +421,9 @@ async fn organization_loss_commits_while_fenced_upstream_work_is_blocked() {
 }
 
 #[tokio::test]
-async fn provider_disablement_at_the_fence_blocks_dispatch() {
+async fn provider_disablement_at_the_enforcement_point_blocks_dispatch() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
@@ -491,15 +496,15 @@ async fn provider_disablement_at_the_fence_blocks_dispatch() {
     release.send(()).unwrap();
     let terminal = wait_for_terminal(&fixture.runs, &actor, &workspace, run.run_id()).await;
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
-    gate.fences.assert_no_dispatch();
+    gate.enforcement_checks.assert_no_dispatch();
     assert_final_code(&terminal, "dispatch_authority_lost");
 }
 
 #[tokio::test]
-/// The Run deadline passing during the fence's final checks refuses the
-/// dispatch. The worker lease lapsing there does not: the lease is ownership
-/// between processes, and the owner's own fence rides a commit predicated on
-/// its claim, which the lapse leaves in place.
+/// The Run deadline passing during the enforcement point's final checks refuses
+/// the dispatch. The worker lease lapsing there does not: the lease is
+/// ownership between processes, and the owner's own enforcement check rides a
+/// commit predicated on its claim, which the lapse leaves in place.
 async fn run_expiry_during_final_checks_prevents_dispatch_and_a_lapsed_lease_does_not() {
     for (now, expected, sends) in [
         (2_000_000_000, RunState::Succeeded, 1),
@@ -511,9 +516,11 @@ async fn run_expiry_during_final_checks_prevents_dispatch_and_a_lapsed_lease_doe
             upstream.clone(),
         )
         .await;
-        let observer = AdvanceFenceTime::new(fixture.clock.clone(), now);
+        let observer = AdvanceEnforcementTime::new(fixture.clock.clone(), now);
         fixture.runs.invocation_observer = observer.clone();
-        let tool = fixture.user_tool("user:late-time", "Late fence time").await;
+        let tool = fixture
+            .user_tool("user:late-time", "Late enforcement time")
+            .await;
         let run = fixture.runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (_) { return 'termination must bypass catch'; }",
         )).await.unwrap();
         let terminal = wait_for_terminal(
@@ -543,7 +550,7 @@ async fn run_expiry_during_final_checks_prevents_dispatch_and_a_lapsed_lease_doe
             )
         });
         if sends == 0 {
-            observer.fences.assert_no_dispatch();
+            observer.enforcement_checks.assert_no_dispatch();
             assert!(run_terminated, "at {now}");
         } else {
             assert!(!run_terminated, "at {now}");
@@ -552,10 +559,10 @@ async fn run_expiry_during_final_checks_prevents_dispatch_and_a_lapsed_lease_doe
 }
 
 #[tokio::test]
-async fn provider_disablement_and_deletion_after_the_fence_preserve_dispatched_work() {
+async fn provider_disablement_and_deletion_after_the_enforcement_point_preserve_dispatched_work() {
     for lifecycle in [
-        PostFenceLifecycle::Disablement,
-        PostFenceLifecycle::Deletion,
+        PostEnforcementLifecycle::Disablement,
+        PostEnforcementLifecycle::Deletion,
     ] {
         let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
             200,
@@ -567,7 +574,10 @@ async fn provider_disablement_and_deletion_after_the_fence_preserve_dispatched_w
         )
         .await;
         let tool = fixture
-            .user_tool("user:post-fence-lifecycle", "Preserve dispatched work")
+            .user_tool(
+                "user:post-enforcement-lifecycle",
+                "Preserve dispatched work",
+            )
             .await;
         let accepted = fixture
             .runs
@@ -582,7 +592,7 @@ async fn provider_disablement_and_deletion_after_the_fence_preserve_dispatched_w
 
         tokio::time::timeout(Duration::from_secs(2), async {
             match lifecycle {
-                PostFenceLifecycle::Disablement => {
+                PostEnforcementLifecycle::Disablement => {
                     fixture
                         .providers
                         .disable_provider(
@@ -591,9 +601,9 @@ async fn provider_disablement_and_deletion_after_the_fence_preserve_dispatched_w
                             &tool.provider_id,
                         )
                         .await
-                        .expect("revoke Provider after fence");
+                        .expect("revoke Provider after enforcement");
                 }
-                PostFenceLifecycle::Deletion => {
+                PostEnforcementLifecycle::Deletion => {
                     fixture
                         .providers
                         .delete_provider(
@@ -602,12 +612,12 @@ async fn provider_disablement_and_deletion_after_the_fence_preserve_dispatched_w
                             &tool.provider_id,
                         )
                         .await
-                        .expect("remove Provider after fence");
+                        .expect("remove Provider after enforcement");
                 }
             }
         })
         .await
-        .expect("post-fence lifecycle change must not wait for upstream work");
+        .expect("post-enforcement lifecycle change must not wait for upstream work");
         upstream.release.store(true, Ordering::SeqCst);
 
         let terminal = wait_for_terminal(
@@ -633,13 +643,13 @@ async fn an_in_flight_dispatch_cannot_be_marked_dispatched_again() {
         upstream.clone(),
     )
     .await;
-    let tool = fixture.user_tool("user:fence-once", "Fence once").await;
+    let tool = fixture.user_tool("user:enforce-once", "Enforce once").await;
     let accepted = fixture
         .runs
         .start(
             &tool.principal,
             &tool.workspace_id,
-            submission("fence-once"),
+            submission("enforce-once"),
         )
         .await
         .expect("accept Program");
@@ -658,7 +668,8 @@ async fn an_in_flight_dispatch_cannot_be_marked_dispatched_again() {
     })
     .expect("dispatching Invocation");
 
-    // A second fence reaches this conditional write; it must not claim the dispatch again.
+    // A second enforcement check reaches this conditional write; it must not
+    // claim the dispatch again.
     let mut transaction = fixture.database.begin().await.unwrap();
     let marked_again = crate::invocation_repository::mark_dispatch_started_batch(
         &mut transaction,
@@ -687,16 +698,16 @@ async fn an_in_flight_dispatch_cannot_be_marked_dispatched_again() {
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one deterministic matrix exercises every current pre-fence authority race"
+    reason = "one deterministic matrix exercises every current pre-enforcement authority race"
 )]
 async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
     for race in [
-        FenceRace::Run,
-        FenceRace::Workspace,
-        FenceRace::Provider,
-        FenceRace::ProviderRemoval,
-        FenceRace::CredentialRoute,
-        FenceRace::Policy,
+        EnforcementRace::Run,
+        EnforcementRace::Workspace,
+        EnforcementRace::Provider,
+        EnforcementRace::ProviderRemoval,
+        EnforcementRace::CredentialRoute,
+        EnforcementRace::Policy,
     ] {
         let upstream = Arc::new(ScriptedUpstream::json(
             200,
@@ -704,7 +715,7 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
                 "temperature": 21
             }),
         ));
-        let (observer, release_fence) = FenceGate::blocking();
+        let (observer, release_enforcement) = EnforcementGate::blocking();
         let fixture = TestModules::with_invocation_adapters(
             Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
             upstream.clone(),
@@ -724,7 +735,7 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
         wait_until(|| observer.entered()).await;
 
         match race {
-            FenceRace::Run => {
+            EnforcementRace::Run => {
                 fixture
                     .runs
                     .cancel(
@@ -734,16 +745,16 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
                         &immediate(None, 100),
                     )
                     .await
-                    .expect("cancel before fence");
+                    .expect("cancel before enforcement");
             }
-            FenceRace::Workspace => {
+            EnforcementRace::Workspace => {
                 fixture
                     .workspaces
                     .archive(&change(tool.user.clone(), 100, 'a'), &tool.workspace_id)
                     .await
-                    .expect("archive before fence");
+                    .expect("archive before enforcement");
             }
-            FenceRace::Provider => {
+            EnforcementRace::Provider => {
                 fixture
                     .providers
                     .disable_provider(
@@ -752,9 +763,9 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
                         &tool.provider_id,
                     )
                     .await
-                    .expect("revoke Provider before fence");
+                    .expect("revoke Provider before enforcement");
             }
-            FenceRace::ProviderRemoval => {
+            EnforcementRace::ProviderRemoval => {
                 fixture
                     .providers
                     .delete_provider(
@@ -763,12 +774,12 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
                         &tool.provider_id,
                     )
                     .await
-                    .expect("remove Provider before fence");
+                    .expect("remove Provider before enforcement");
             }
-            FenceRace::CredentialRoute => {
+            EnforcementRace::CredentialRoute => {
                 move_to_caller_route(&fixture, &tool).await;
             }
-            FenceRace::Policy => {
+            EnforcementRace::Policy => {
                 fixture
                     .policies
                     .set_access_state(
@@ -777,10 +788,12 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
                         ToolAccessState::Disabled,
                     )
                     .await
-                    .expect("disable before fence");
+                    .expect("disable before enforcement");
             }
         }
-        release_fence.send(()).expect("release dispatch fence");
+        release_enforcement
+            .send(())
+            .expect("release Policy Enforcement Point");
         let terminal = wait_for_terminal(
             &fixture.runs,
             &tool.principal,
@@ -790,9 +803,9 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
         .await;
 
         assert!(terminal.state().is_terminal(), "race: {race:?}");
-        observer.fences.assert_no_dispatch();
+        observer.enforcement_checks.assert_no_dispatch();
         assert_eq!(upstream.sends.load(Ordering::SeqCst), 0, "race: {race:?}");
-        if matches!(race, FenceRace::CredentialRoute) {
+        if matches!(race, EnforcementRace::CredentialRoute) {
             assert_eq!(
                 *observer
                     .failure_code
@@ -810,7 +823,7 @@ async fn admitted_invocation_dispatches_its_retained_generation_after_provider_r
         200,
         serde_json::json!({"temperature": 21}),
     ));
-    let (observer, release_fence) = FenceGate::blocking();
+    let (observer, release_enforcement) = EnforcementGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
         upstream.clone(),
@@ -874,7 +887,7 @@ async fn admitted_invocation_dispatches_its_retained_generation_after_provider_r
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .expect("activate replacement Generation before the fence");
+        .expect("activate replacement Generation before the enforcement point");
     assert!(matches!(
         fixture
             .providers
@@ -888,7 +901,9 @@ async fn admitted_invocation_dispatches_its_retained_generation_after_provider_r
         Err(coral_provider::Error::ToolNotFound)
     ));
 
-    release_fence.send(()).expect("release dispatch fence");
+    release_enforcement
+        .send(())
+        .expect("release Policy Enforcement Point");
     let terminal = wait_for_terminal(
         &fixture.runs,
         &tool.principal,
@@ -908,13 +923,13 @@ async fn admitted_invocation_dispatches_its_retained_generation_after_provider_r
 }
 
 #[derive(Debug, Clone, Copy)]
-enum PostFenceLifecycle {
+enum PostEnforcementLifecycle {
     Disablement,
     Deletion,
 }
 
 #[derive(Debug, Clone, Copy)]
-enum FenceRace {
+enum EnforcementRace {
     Run,
     Workspace,
     Provider,
@@ -923,9 +938,10 @@ enum FenceRace {
     Policy,
 }
 
-/// The three parallel calls of one Run ask the owner for the fence together;
-/// one Dispatch Fence decides them, each on its own facts, and records the
-/// two permitted dispatch starts in one chunk commit at one clock sample.
+/// The three parallel calls of one Run ask the owner for the enforcement point
+/// together; one enforcement check decides them, each on its own facts, and
+/// records the two permitted dispatch starts in one chunk commit at one clock
+/// sample.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -936,14 +952,16 @@ async fn a_batch_of_ready_invocations_dispatches_in_one_chunk_commit_with_indepe
         200,
         serde_json::json!({}),
     )));
-    let latch = FenceLatch::holding_arrivals_and_failures();
+    let latch = EnforcementLatch::holding_arrivals_and_failures();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
         latch.clone(),
     )
     .await;
-    let tool = fixture.user_tool("user:batch-fence", "Batched fence").await;
+    let tool = fixture
+        .user_tool("user:batch-enforcement", "Batched enforcement")
+        .await;
     let alerts = fixture
         .publish_tool_under(&tool, "alerts", "getItems")
         .await;
@@ -964,7 +982,8 @@ async fn a_batch_of_ready_invocations_dispatches_in_one_chunk_commit_with_indepe
         .await
         .unwrap();
     latch.until_arrived(3).await;
-    // Every held gate has landed: the head moves once for the fence from here.
+    // Every held gate has landed: the head moves once for the enforcement point
+    // from here.
     let head_before = fixture
         .run_record(&tool.workspace_id, run.run_id())
         .await
@@ -979,14 +998,18 @@ async fn a_batch_of_ready_invocations_dispatches_in_one_chunk_commit_with_indepe
         .await
         .unwrap();
     latch.release_arrivals();
-    // The denied call's own end is held, so the fence's chunk is the one
-    // commit between the two head reads.
+    // The denied call's own end is held, so the enforcement point's chunk is
+    // the one commit between the two head reads.
     wait_until(|| upstream.sends.load(Ordering::SeqCst) == 2).await;
-    let fenced = fixture
+    let enforced = fixture
         .run_record(&tool.workspace_id, run.run_id())
         .await
         .chunk_sequence;
-    assert_eq!(fenced, head_before + 1, "one chunk commit fenced the batch");
+    assert_eq!(
+        enforced,
+        head_before + 1,
+        "one chunk commit enforced the batch"
+    );
     let rows = fixture
         .invocation_rows(&tool.workspace_id, run.run_id())
         .await;
@@ -1033,7 +1056,7 @@ async fn a_batch_of_ready_invocations_dispatches_in_one_chunk_commit_with_indepe
     assert_eq!(denied.state, "ended");
     assert_eq!(denied.failure_code.as_deref(), Some("tool_disabled"));
     assert_eq!(denied.dispatch_started_at_unix_nanos, None);
-    let attempts = latch.fences.pairs();
+    let attempts = latch.enforcement_checks.pairs();
     assert_eq!(attempts.len(), 3);
     assert_eq!(
         attempts
@@ -1046,15 +1069,16 @@ async fn a_batch_of_ready_invocations_dispatches_in_one_chunk_commit_with_indepe
     );
 }
 
-/// A policy change that commits before the fence reads its facts denies the
-/// whole batch, with the exact failure and no dispatch start on any row; one
-/// that commits after the recorded dispatch starts stops none of them.
+/// A policy change that commits before the enforcement point reads its facts
+/// denies the whole batch, with the exact failure and no dispatch start on any
+/// row; one that commits after the recorded dispatch starts stops none of them.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "the revocation before and the revocation after, side by side"
 )]
-async fn a_revocation_that_commits_before_the_fence_denies_the_batch_and_after_it_stops_nothing() {
+async fn a_revocation_that_commits_before_the_enforcement_point_denies_the_batch_and_after_it_stops_nothing()
+ {
     const PROGRAM: &str = "const results = await Promise.allSettled([\
         coral.providers.weather.getForecast(),\
         coral.providers.weather.getForecast(),\
@@ -1062,10 +1086,11 @@ async fn a_revocation_that_commits_before_the_fence_denies_the_batch_and_after_i
     ]);\
     return results.map((r) => r.status === 'fulfilled' ? 'ok' : r.reason.code);";
 
-    // Before: the revocation commits while the batch waits for its fence.
+    // Before: the revocation commits while the batch waits for its enforcement
+    // point.
     {
         let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
-        let latch = FenceLatch::holding_arrivals();
+        let latch = EnforcementLatch::holding_arrivals();
         let fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             upstream.clone(),
@@ -1105,7 +1130,7 @@ async fn a_revocation_that_commits_before_the_fence_denies_the_batch_and_after_i
             "{terminal:?}"
         );
         assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
-        latch.fences.assert_no_dispatch();
+        latch.enforcement_checks.assert_no_dispatch();
         let rows = fixture
             .invocation_rows(&tool.workspace_id, run.run_id())
             .await;
@@ -1166,16 +1191,16 @@ async fn a_revocation_that_commits_before_the_fence_denies_the_batch_and_after_i
     }
 }
 
-/// Two Runs' fences hold the Workspace, Provider and policy rows they share
-/// at the same time (on Postgres: `FOR SHARE`; on `SQLite` the second fence
-/// waits for the writer lock the first one holds), and a Provider change
-/// waits for every fence in flight before it commits, so both dispatch: on
-/// Postgres it still waits once the first fence has committed and only the
-/// second holds the rows.
+/// Two Runs' enforcement checks hold the Workspace, Provider and policy rows
+/// they share at the same time (on Postgres: `FOR SHARE`; on `SQLite` the
+/// second enforcement check waits for the writer lock the first one holds), and
+/// a Provider change waits for every enforcement check in flight before it
+/// commits, so both dispatch: on Postgres it still waits once the first
+/// enforcement check has committed and only the second holds the rows.
 #[tokio::test]
-async fn fences_of_two_runs_share_their_locks_and_an_authority_writer_waits_for_both() {
+async fn enforcement_checks_of_two_runs_share_their_locks_and_an_authority_writer_waits_for_both() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
-    let latch = FenceLatch::holding_both();
+    let latch = EnforcementLatch::holding_both();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
@@ -1183,7 +1208,7 @@ async fn fences_of_two_runs_share_their_locks_and_an_authority_writer_waits_for_
     )
     .await;
     let tool = fixture
-        .user_tool("user:shared-fences", "Shared fence locks")
+        .user_tool("user:shared-enforcement", "Shared enforcement locks")
         .await;
     let source = "try { await coral.providers.weather.getForecast(); return 'sent'; } catch (e) { return e.code; }";
     let mut runs = Vec::new();
@@ -1196,7 +1221,8 @@ async fn fences_of_two_runs_share_their_locks_and_an_authority_writer_waits_for_
                 .unwrap(),
         );
     }
-    // Both Runs are admitted and ready; their fences now read side by side.
+    // Both Runs are admitted and ready; their enforcement checks now read side
+    // by side.
     latch.until_arrived(2).await;
     latch.release_arrivals();
     let postgres = fixture.database.system() == coral_db::DatabaseSystem::Postgres;
@@ -1208,7 +1234,7 @@ async fn fences_of_two_runs_share_their_locks_and_an_authority_writer_waits_for_
         assert_eq!(
             latch.loaded.load(Ordering::SeqCst),
             1,
-            "SQLite serializes the second fence behind the first one's writer lock"
+            "SQLite serializes the second enforcement check behind the first one's writer lock"
         );
     }
     let providers = fixture.providers.clone();
@@ -1224,26 +1250,26 @@ async fn fences_of_two_runs_share_their_locks_and_an_authority_writer_waits_for_
         tokio::time::timeout(Duration::from_millis(300), &mut writer)
             .await
             .is_err(),
-        "the Provider change waits for the fences holding its row"
+        "the Provider change waits for the enforcement checks holding its row"
     );
     if postgres {
-        // The first fence commits and releases its share (its dispatch sends
-        // only after that commit); the second still holds the rows, so the
-        // writer keeps waiting.
+        // The first enforcement check commits and releases its share (its
+        // dispatch sends only after that commit); the second still holds the
+        // rows, so the writer keeps waiting.
         latch.release_one_loaded();
         wait_until(|| upstream.sends.load(Ordering::SeqCst) >= 1).await;
         assert!(
             tokio::time::timeout(Duration::from_millis(300), &mut writer)
                 .await
                 .is_err(),
-            "the Provider change waits for the second fence too"
+            "the Provider change waits for the second enforcement check too"
         );
     }
     latch.release_loaded();
     writer
         .await
         .expect("the writer task runs to its end")
-        .expect("the Provider change commits once the fences have");
+        .expect("the Provider change commits once the enforcement checks have");
     for run in &runs {
         let terminal = wait_for_terminal(
             &fixture.runs,
@@ -1263,27 +1289,27 @@ async fn fences_of_two_runs_share_their_locks_and_an_authority_writer_waits_for_
     assert_eq!(latch.loaded.load(Ordering::SeqCst), 2);
 }
 
-/// The parked-wait precheck (a snapshot, no holds) and the fence (the owner's
-/// commit, shared holds) load the same facts through one loader and decide
-/// them through one evaluator, so they agree in every situation.
+/// The parked-wait precheck (a snapshot, no holds) and the enforcement point
+/// (the owner's commit, shared holds) load the same facts through one loader
+/// and decide them through one evaluator, so they agree in every situation.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "one table of fact situations decided twice each"
 )]
-async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() {
+async fn the_precheck_and_the_enforcement_point_reach_the_same_decision_on_the_same_facts() {
     use crate::CoralFailure;
-    use crate::fence::{ApprovalFact, Decision};
+    use crate::enforcement::{ApprovalFact, Decision};
 
     async fn decide_twice(
         fixture: &TestModules,
         invoker: &crate::invocation::ToolInvoker,
         record: &crate::lifecycle::RunRecord,
         admitted: &crate::invocation::AdmittedInvocation,
-        approval: crate::fence::ApprovalFact,
-    ) -> (crate::fence::Decision, crate::fence::Decision) {
-        use crate::fence::{FenceTarget, InvocationFacts, SharedFacts};
-        let target = FenceTarget {
+        approval: crate::enforcement::ApprovalFact,
+    ) -> (crate::enforcement::Decision, crate::enforcement::Decision) {
+        use crate::enforcement::{EnforcementTarget, InvocationFacts, SharedFacts};
+        let target = EnforcementTarget {
             admitted,
             credential_evidence: None,
         };
@@ -1292,7 +1318,7 @@ async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() 
         let in_snapshot = SharedFacts::load(
             &mut snapshot,
             coral_db::RowLock::None,
-            &invoker.fence_scope(),
+            &invoker.enforcement_scope(),
             now,
             std::slice::from_ref(&target),
         )
@@ -1303,7 +1329,7 @@ async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() 
         let under_holds = SharedFacts::load(
             &mut held,
             coral_db::RowLock::Shared,
-            &invoker.fence_scope(),
+            &invoker.enforcement_scope(),
             now,
             std::slice::from_ref(&target),
         )
@@ -1318,8 +1344,8 @@ async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() 
         let run_facts = invoker.run_facts(record);
         let decided_at = now + 1;
         (
-            crate::fence::decide(&in_snapshot, &run_facts, &facts, decided_at),
-            crate::fence::decide(&under_holds, &run_facts, &facts, decided_at),
+            crate::enforcement::decide(&in_snapshot, &run_facts, &facts, decided_at),
+            crate::enforcement::decide(&under_holds, &run_facts, &facts, decided_at),
         )
     }
 
@@ -1381,10 +1407,10 @@ async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() 
             .set_access_state(&context, tool.policy_target.clone(), policy)
             .await
             .unwrap();
-        let (precheck, fence) =
+        let (precheck, enforced) =
             decide_twice(&fixture, &invoker, &record, &admitted, approval).await;
-        assert_eq!(precheck, fence, "{case}");
-        assert_eq!(fence, expected, "{case}");
+        assert_eq!(precheck, enforced, "{case}");
+        assert_eq!(enforced, expected, "{case}");
     }
     // Archiving the Workspace cannot be undone, so it is the last situation,
     // outside the table, with every other fact current again.
@@ -1402,7 +1428,7 @@ async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() 
         .archive(&context, &tool.workspace_id)
         .await
         .unwrap();
-    let (precheck, fence) = decide_twice(
+    let (precheck, enforced) = decide_twice(
         &fixture,
         &invoker,
         &record,
@@ -1410,8 +1436,8 @@ async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() 
         ApprovalFact::NotRequested,
     )
     .await;
-    assert_eq!(precheck, fence, "the Workspace is archived");
-    assert_eq!(fence, Decision::Deny(CoralFailure::AuthorityLost));
+    assert_eq!(precheck, enforced, "the Workspace is archived");
+    assert_eq!(enforced, Decision::Deny(CoralFailure::AuthorityLost));
 }
 
 /// Two Invocations in one batch that retained the same Generation and
@@ -1421,7 +1447,9 @@ async fn the_precheck_and_the_fence_reach_the_same_decision_on_the_same_facts() 
 #[tokio::test]
 async fn a_batch_verifies_each_retained_provider_access_not_one_per_tool() {
     use crate::CoralFailure;
-    use crate::fence::{ApprovalFact, Decision, FenceTarget, InvocationFacts, SharedFacts};
+    use crate::enforcement::{
+        ApprovalFact, Decision, EnforcementTarget, InvocationFacts, SharedFacts,
+    };
 
     let (engine, _release) = BlockingEngine::new();
     let fixture = TestModules::new(Arc::new(engine)).await;
@@ -1454,7 +1482,7 @@ async fn a_batch_verifies_each_retained_provider_access_not_one_per_tool() {
         ("the current admission first", [&current, &stale]),
     ];
     for (order, admitted) in orders {
-        let targets = admitted.map(|admitted| FenceTarget {
+        let targets = admitted.map(|admitted| EnforcementTarget {
             admitted: admitted.as_ref(),
             credential_evidence: None,
         });
@@ -1463,7 +1491,7 @@ async fn a_batch_verifies_each_retained_provider_access_not_one_per_tool() {
         let shared = SharedFacts::load(
             &mut held,
             coral_db::RowLock::Shared,
-            &invoker.fence_scope(),
+            &invoker.enforcement_scope(),
             now,
             &targets,
         )
@@ -1471,7 +1499,7 @@ async fn a_batch_verifies_each_retained_provider_access_not_one_per_tool() {
         .unwrap();
         held.rollback().await.unwrap();
         let decided = targets.map(|target| {
-            crate::fence::decide(
+            crate::enforcement::decide(
                 &shared,
                 &run_facts,
                 &InvocationFacts {
@@ -1494,17 +1522,17 @@ async fn a_batch_verifies_each_retained_provider_access_not_one_per_tool() {
 }
 
 /// An Invocation whose token expired after it prepared its credentials is
-/// parked by the fence on a refresh, without the fence reading its
-/// material, and dispatches on its next fence once the refresh renewed it.
-/// Material the dispatch cannot open ends the Invocation as
-/// `account_required` whichever side of the fence the failure shows, and
-/// never fences it again.
+/// parked by the enforcement point on a refresh, without the enforcement point
+/// reading its material, and dispatches on its next enforcement check once the
+/// refresh renewed it. Material the dispatch cannot open ends the Invocation as
+/// `account_required` whichever side of the enforcement point the failure
+/// shows, and never checks it again.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one table of token and material situations through the fence"
+    reason = "one table of token and material situations through the enforcement point"
 )]
-async fn a_refresh_wait_parked_by_the_fence_resumes_on_the_next_fence_and_never_decrypts_under_the_lock()
+async fn a_refresh_wait_parked_by_the_enforcement_point_resumes_on_the_next_check_and_never_decrypts_under_the_lock()
  {
     #[derive(Debug, Clone, Copy)]
     enum Material {
@@ -1550,7 +1578,7 @@ async fn a_refresh_wait_parked_by_the_fence_resumes_on_the_next_fence_and_never_
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
             .mount(&server)
             .await;
-        let latch = FenceLatch::holding_arrivals();
+        let latch = EnforcementLatch::holding_arrivals();
         let fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             Arc::new(
@@ -1564,7 +1592,11 @@ async fn a_refresh_wait_parked_by_the_fence_resumes_on_the_next_fence_and_never_
         )
         .await;
         let tool = fixture
-            .user_tool_at("user:fenced-refresh-wait", "Fence refresh", &server.uri())
+            .user_tool_at(
+                "user:enforced-refresh-wait",
+                "Enforcement refresh",
+                &server.uri(),
+            )
             .await;
         let (_directory, accounts) = oauth_account(&fixture, &tool, &server, &endpoint.url).await;
         let runs = fixture.runs.clone().with_accounts(accounts);
@@ -1580,7 +1612,8 @@ async fn a_refresh_wait_parked_by_the_fence_resumes_on_the_next_fence_and_never_
             .await
             .unwrap();
         // The Invocation prepared its credentials and is about to ask for the
-        // fence: now the token expires, and the material becomes what the case says.
+        // enforcement point: now the token expires, and the material becomes
+        // what the case says.
         latch.until_arrived(1).await;
         if initial_expires_in == TOKEN_LIFETIME_SECS {
             let expired_at = i64::try_from(TOKEN_LIFETIME_SECS).unwrap() * 1_000_000_000 + 1_000;
@@ -1595,7 +1628,7 @@ async fn a_refresh_wait_parked_by_the_fence_resumes_on_the_next_fence_and_never_
         if exchanges > 0 {
             tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
                 .await
-                .expect("the parked Invocation refreshes its token outside the fence");
+                .expect("the parked Invocation refreshes its token outside the enforcement point");
             endpoint.release.notify_one();
         }
         let terminal =
@@ -1616,7 +1649,7 @@ async fn a_refresh_wait_parked_by_the_fence_resumes_on_the_next_fence_and_never_
             requests,
             "{case}"
         );
-        assert_eq!(latch.fences.pairs(), attempts, "{case}");
+        assert_eq!(latch.enforcement_checks.pairs(), attempts, "{case}");
         let rows = fixture
             .invocation_rows(&tool.workspace_id, run.run_id())
             .await;
@@ -1639,8 +1672,8 @@ async fn a_refresh_wait_parked_by_the_fence_resumes_on_the_next_fence_and_never_
 
 /// Moves the forecast Provider to the `caller` route in storage, as an
 /// earlier Coral could. Its source is credential-free, so Publication now
-/// keeps it on `none`, but the fence still refuses an Invocation that
-/// retained the earlier route.
+/// keeps it on `none`, but the enforcement point still refuses an Invocation
+/// that retained the earlier route.
 async fn move_to_caller_route(fixture: &TestModules, tool: &ToolFixture) {
     let changed = fixture
         .test_database

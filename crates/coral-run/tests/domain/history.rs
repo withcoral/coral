@@ -9,7 +9,7 @@ use coral_workspace::HistoryScope;
     reason = "one gated child verifies independent Event identity, scoping, and retained approval after resolution"
 )]
 async fn execution_children_keep_exact_event_identity_and_retained_requests_after_resolution() {
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
         Arc::new(RejectingUpstream),

@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::approval::{ApprovalDecision, ApprovalId};
 use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::execution::ExecutionStop;
-use crate::invocation::{FenceRequest, ParkedInvocation};
+use crate::invocation::{EnforcementRequest, ParkedInvocation};
 use crate::run_inbox::InboxRow;
 use crate::termination::ShutdownAction;
 use crate::types::HeldRunId;
@@ -92,8 +92,8 @@ pub(crate) enum Check {
     /// After the change signal rang: the connection requests the parked
     /// waits are on, and nothing else.
     Connections,
-    /// The periodic precheck: every parked wait against the Dispatch Fence's
-    /// facts, for a wait that ended or became moot without a wake-up.
+    /// The periodic precheck: every parked wait against the Policy Enforcement
+    /// Point's facts, for a wait that ended or became moot without a wake-up.
     Periodic,
 }
 
@@ -166,15 +166,16 @@ pub(crate) enum Message {
     },
     /// Row work whose outcome is known only once its chunk is recorded.
     Work(Box<dyn ChunkWork>),
-    /// One ready Invocation asks for the Dispatch Fence: it joins the batch
-    /// the next chunk commit decides, and answers once that chunk is recorded.
-    Fence(Box<FenceRequest>),
-    /// A fenced Invocation gave back its slot under the Fan-out Limit
-    /// without an upstream result: the fence denied it, another writer ended
-    /// it, it stopped to refresh a token, its dispatch failed before a result
-    /// was recorded (the credentials, the send, a Built-in Tool), or the
-    /// Run is ending. An Invocation that does record a result frees its slot
-    /// through [`Self::InvocationResult`] instead.
+    /// One ready Invocation asks for the Policy Enforcement Point: it joins the
+    /// batch the next chunk commit decides, and answers once that chunk is
+    /// recorded.
+    Enforce(Box<EnforcementRequest>),
+    /// An Invocation past the enforcement point gave back its slot under the
+    /// Fan-out Limit without an upstream result: the enforcement point denied
+    /// it, another writer ended it, it stopped to refresh a token, its dispatch
+    /// failed before a result was recorded (the credentials, the send, a
+    /// Built-in Tool), or the Run is ending. An Invocation that does record a
+    /// result frees its slot through [`Self::InvocationResult`] instead.
     DispatchEnded,
     /// A decision on one Approval Request from the Run Inbox, with the row
     /// that carried it. The first decision on a request rides the next chunk,
@@ -261,7 +262,7 @@ impl fmt::Debug for Message {
                 .field("work", work)
                 .finish(),
             Self::Work(work) => formatter.debug_tuple("Work").field(work).finish(),
-            Self::Fence(request) => formatter.debug_tuple("Fence").field(request).finish(),
+            Self::Enforce(request) => formatter.debug_tuple("Enforce").field(request).finish(),
             Self::DispatchEnded => formatter.write_str("DispatchEnded"),
             Self::Decide { request, row } => formatter
                 .debug_struct("Decide")
@@ -508,17 +509,17 @@ impl OwnerHandle {
             .map_err(|_retired| Error::OwnerLost)
     }
 
-    /// Queues a request for the Dispatch Fence; its outcome arrives through
-    /// the request.
-    pub(crate) fn fence(&self, request: FenceRequest) -> Result<(), Error> {
+    /// Queues a request for the Policy Enforcement Point; its outcome arrives
+    /// through the request.
+    pub(crate) fn enforce(&self, request: EnforcementRequest) -> Result<(), Error> {
         self.shared
             .sender
-            .send(Message::Fence(Box::new(request)))
+            .send(Message::Enforce(Box::new(request)))
             .map_err(|_retired| Error::OwnerLost)
     }
 
-    /// Tells the owner that the dispatch one of its fences decided is over,
-    /// so the slot it held under the Fan-out Limit is free.
+    /// Tells the owner that the dispatch one of its enforcement checks decided
+    /// is over, so the slot it held under the Fan-out Limit is free.
     pub(crate) fn dispatch_ended(&self) {
         self.send(Message::DispatchEnded);
     }

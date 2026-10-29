@@ -6,8 +6,8 @@
 //! - the Run Output Budget, against the owner's exact total;
 //! - the Applied cap on unrecorded output;
 //! - how Events and row work fill chunks, and when a chunk commits;
-//! - which ready Invocations one chunk's Dispatch Fence decides together,
-//!   and that a stop answers the ones not yet committed at once;
+//! - which ready Invocations one chunk's Policy Enforcement Point decides
+//!   together, and that a stop answers the ones not yet committed at once;
 //! - the Fan-out Limit: a ready Invocation above the owner's count of
 //!   dispatching ones waits in memory, in readiness order, for an earlier
 //!   one to end;
@@ -54,7 +54,7 @@ use coral_workspace::Principal;
 
 use crate::approval::{ApprovalId, DecideWork};
 use crate::engine::{ExecutionCompletion, ProgramPackage};
-use crate::invocation::{FenceBatch, FenceRequest, ParkedInvocation, PrecheckBatch};
+use crate::invocation::{EnforcementBatch, EnforcementRequest, ParkedInvocation, PrecheckBatch};
 use crate::lifecycle::{RequestedTermination, RunTerminationKind};
 use crate::run_inbox::InboxRow;
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
@@ -362,14 +362,14 @@ pub(crate) struct OwnerState {
     /// No commit succeeded for longer than the suspect bound: Program
     /// requests answer only once recorded, until one does.
     suspect: bool,
-    /// Slots held under the Fan-out Limit: one per fence request the owner
-    /// has batched whose dispatch it has not seen end. Owner memory only; a
-    /// recovered owner never dispatches, so nothing recomputes it from rows.
+    /// Slots held under the Fan-out Limit: one per enforcement request the
+    /// owner has batched whose dispatch it has not seen end. Owner memory only;
+    /// a recovered owner never dispatches, so nothing recomputes it from rows.
     slots_held: usize,
     /// Ready Invocations waiting for a slot, in readiness order (their
     /// mailbox arrival order). Each one stays `pending`, with no Event, and
-    /// joins a fence batch when an earlier dispatch ends.
-    waiting: VecDeque<Box<FenceRequest>>,
+    /// joins an enforcement batch when an earlier dispatch ends.
+    waiting: VecDeque<Box<EnforcementRequest>>,
     /// Invocations parked on a wait, holding nothing, by the serial the owner
     /// gave each park. Owner memory only: nothing is registered again after
     /// a restart, since a recovered owner runs no Program.
@@ -670,10 +670,10 @@ impl OwnerState {
 
     /// An upstream result the owner applies ends the dispatch that produced
     /// it: its slot under the Fan-out Limit goes to the Invocation that has
-    /// waited longest, whose fence joins the chunk after this row's end. A
-    /// result the owner refuses (over budget, or no longer taking work)
-    /// leaves the row `dispatching` and the slot with the Invocation task,
-    /// which frees it once the row's end is recorded.
+    /// waited longest, whose enforcement request joins the chunk after this
+    /// row's end. A result the owner refuses (over budget, or no longer taking
+    /// work) leaves the row `dispatching` and the slot with the Invocation
+    /// task, which frees it once the row's end is recorded.
     fn invocation_result(
         &mut self,
         bytes: usize,
@@ -723,17 +723,17 @@ impl OwnerState {
         Vec::new()
     }
 
-    /// A ready Invocation asks for the Dispatch Fence. Under the Fan-out
-    /// Limit it takes a slot and joins the batch of the open chunk, which
-    /// commits when free; at the limit it waits in memory, in readiness
+    /// A ready Invocation asks for the Policy Enforcement Point. Under the
+    /// Fan-out Limit it takes a slot and joins the batch of the open chunk,
+    /// which commits when free; at the limit it waits in memory, in readiness
     /// order, with no Event and no required action, until an earlier
     /// dispatch ends. A Run that no longer takes Program requests (stopped,
     /// past its deadline in owner memory) answers at once, without the
     /// database.
-    fn fence(&mut self, request: Box<FenceRequest>, now_unix_nanos: i64) -> Vec<Effect> {
+    fn enforce(&mut self, request: Box<EnforcementRequest>, now_unix_nanos: i64) -> Vec<Effect> {
         if !self.accepts_program_requests(now_unix_nanos) {
             return vec![Effect::Abandon(
-                Box::new(FenceBatch::new(*request)),
+                Box::new(EnforcementBatch::new(*request)),
                 Error::ProgramHostTerminated,
             )];
         }
@@ -742,28 +742,28 @@ impl OwnerState {
             return Vec::new();
         }
         self.slots_held += 1;
-        self.open.push_fence(*request);
+        self.open.push_enforcement(*request);
         if self.open.is_full() {
             self.close_open();
         }
         Vec::new()
     }
 
-    /// The dispatch a fence decided is over, whatever came of it: its slot
-    /// under the Fan-out Limit goes to the Invocation that has waited
-    /// longest, which asks for the fence now. The Run deadline covers a slot
-    /// wait: once the Run takes no more Program requests, every waiting
-    /// Invocation is answered at once instead.
+    /// The dispatch an enforcement check decided is over, whatever came of it:
+    /// its slot under the Fan-out Limit goes to the Invocation that has waited
+    /// longest, which asks for the enforcement point now. The Run deadline
+    /// covers a slot wait: once the Run takes no more Program requests, every
+    /// waiting Invocation is answered at once instead.
     fn dispatch_ended(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
-        // Saturating: the `apply` table sends results no fence preceded. In
-        // production a result or a `DispatchEnded` comes only from a task
-        // whose request the owner batched, so the count is exact.
+        // Saturating: the `apply` table sends results no enforcement check
+        // preceded. In production a result or a `DispatchEnded` comes only from
+        // a task whose request the owner batched, so the count is exact.
         self.slots_held = self.slots_held.saturating_sub(1);
         if !self.accepts_program_requests(now_unix_nanos) {
             return self.release_waiting(|| Error::ProgramHostTerminated);
         }
         match self.waiting.pop_front() {
-            Some(request) => self.fence(request, now_unix_nanos),
+            Some(request) => self.enforce(request, now_unix_nanos),
             None => Vec::new(),
         }
     }
@@ -780,7 +780,7 @@ impl OwnerState {
         let Some(first) = waiting.next() else {
             return effects;
         };
-        let mut batch = FenceBatch::new(*first);
+        let mut batch = EnforcementBatch::new(*first);
         for request in waiting {
             batch.push(*request);
         }
@@ -907,9 +907,9 @@ impl OwnerState {
     }
 
     /// The periodic precheck is due: every parked wait is read in one
-    /// snapshot against the Dispatch Fence's facts. Past the Run deadline on
-    /// the owner's clock, the deadline is applied instead, as its timer
-    /// would have been first.
+    /// snapshot against the Policy Enforcement Point's facts. Past the Run
+    /// deadline on the owner's clock, the deadline is applied instead, as its
+    /// timer would have been first.
     fn precheck_due(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
         self.wakeups.precheck = Precheck::Unarmed;
         if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
@@ -944,11 +944,11 @@ impl OwnerState {
     }
 
     /// A stop reached the owner, from an outside writer's recorded
-    /// termination or from the owner's own termination intent: every fence
-    /// request not yet committed, and every one waiting for a slot, is
-    /// answered at once as terminated, so no dispatch starts after it. A
-    /// fence in flight returns on its own; the pre-send check ends what it
-    /// permitted.
+    /// termination or from the owner's own termination intent: every
+    /// enforcement request not yet committed, and every one waiting for a
+    /// slot, is answered at once as terminated, so no dispatch starts after it.
+    /// An enforcement check in flight returns on its own; the pre-send check
+    /// ends what it permitted.
     fn stop(&mut self) -> Vec<Effect> {
         let mut effects = Vec::new();
         // The first stop arms the shutdown grace: the Program has that long
@@ -965,7 +965,7 @@ impl OwnerState {
             .iter_mut()
             .chain(std::iter::once(&mut self.open))
         {
-            if let Some(batch) = chunk.take_fence() {
+            if let Some(batch) = chunk.take_enforcement() {
                 effects.push(Effect::Abandon(batch, Error::ProgramHostTerminated));
             }
         }
@@ -1334,7 +1334,7 @@ impl OwnerState {
                     effects.push(Effect::Abandon(work, lost()));
                 }
             }
-            if let Some(batch) = chunk.fence {
+            if let Some(batch) = chunk.enforcement {
                 effects.push(Effect::Abandon(batch, lost()));
             }
             effects.extend(
@@ -1648,7 +1648,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
             state.invocation_result(bytes, work, reply, now_unix_nanos)
         }
         Message::Work(work) => state.work(work),
-        Message::Fence(request) => state.fence(request, now_unix_nanos),
+        Message::Enforce(request) => state.enforce(request, now_unix_nanos),
         Message::DispatchEnded => state.dispatch_ended(now_unix_nanos),
         Message::Decide { request, row } => state.decide(request, row, now_unix_nanos),
         Message::Cancel { requester, row } => state.cancel(requester, row, now_unix_nanos),

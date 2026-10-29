@@ -2,10 +2,10 @@ use super::*;
 use coral_credentials::Secret;
 
 #[tokio::test]
-async fn account_authority_loss_fences_already_prepared_credentials_for_both_routes() {
+async fn account_authority_loss_blocks_already_prepared_credentials_for_both_routes() {
     for fixed in [false, true] {
         let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
-        let (gate, release) = FenceGate::blocking();
+        let (gate, release) = EnforcementGate::blocking();
         let mut fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             upstream.clone(),
@@ -20,7 +20,7 @@ async fn account_authority_loss_fences_already_prepared_credentials_for_both_rou
                 &fixture,
                 &mut tool,
                 "https://upstream.example",
-                "fence-credential-canary",
+                "enforcement-credential-canary",
             ))
             .await
         } else {
@@ -53,7 +53,7 @@ async fn account_authority_loss_fences_already_prepared_credentials_for_both_rou
                     &scope,
                     pending.id,
                     coral_credentials::CredentialValues::token(
-                        Secret::new("fence-credential-canary".into()).unwrap(),
+                        Secret::new("enforcement-credential-canary".into()).unwrap(),
                     ),
                 )
                 .await
@@ -77,14 +77,14 @@ async fn account_authority_loss_fences_already_prepared_credentials_for_both_rou
             run.run_id(),
         )
         .await;
-        gate.fences.assert_no_dispatch();
+        gate.enforcement_checks.assert_no_dispatch();
         assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
         assert!(
             matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded {
             final_value: FinalValue::Present(value)
         }) if value.as_json() == &serde_json::json!(if fixed { "account_required" } else { "account_authorization_changed" }))
         );
-        assert!(!format!("{terminal:?}").contains("fence-credential-canary"));
+        assert!(!format!("{terminal:?}").contains("enforcement-credential-canary"));
     }
 }
 
@@ -93,7 +93,7 @@ async fn account_authority_loss_fences_already_prepared_credentials_for_both_rou
     clippy::too_many_lines,
     reason = "the Run seam proves replacement prevents dispatch through both routes and only later calls use the replacement"
 )]
-async fn reconnect_fences_prepared_credentials_without_changing_account_or_route() {
+async fn reconnect_blocks_prepared_credentials_without_changing_account_or_route() {
     for fixed in [false, true] {
         let server = MockServer::start().await;
         let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
@@ -151,7 +151,7 @@ async fn reconnect_fences_prepared_credentials_without_changing_account_or_route
             .inspect_providers(&tool.user, &tool.workspace_id)
             .await
             .unwrap();
-        let (gate, release) = FenceGate::blocking();
+        let (gate, release) = EnforcementGate::blocking();
         let mut runs = fixture.live_runs(None).with_accounts(accounts.clone());
         runs.invocation_observer = gate.clone();
         let pending = runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
@@ -188,7 +188,7 @@ async fn reconnect_fences_prepared_credentials_without_changing_account_or_route
         else {
             panic!("replacement must settle with a safe Coral Failure: {terminal:?}");
         };
-        gate.fences.assert_no_dispatch();
+        gate.enforcement_checks.assert_no_dispatch();
         assert_eq!(
             value.as_json(),
             &serde_json::json!(if fixed {
@@ -616,14 +616,14 @@ async fn a_repaired_public_client_renews_with_the_retained_grant() {
     account.assert_settled_once(&terminal, &approved).await;
 }
 
-/// A token renewed while an approved Invocation waits at its dispatch fence
-/// is the token that Invocation sends.
+/// A token renewed while an approved Invocation waits at its Policy Enforcement
+/// Point is the token that Invocation sends.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_token_renewed_during_the_fence_hold_is_the_one_dispatched() {
+async fn a_token_renewed_during_the_enforcement_check_is_the_one_dispatched() {
     let mut account = Box::pin(PublicClientAccount::new()).await;
     account.broken.store(false, Ordering::SeqCst);
     account.forecast_with("latest-access-canary", 19).await;
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     account.runs.invocation_observer = gate.clone();
     let (run, approved) = account.start_approved().await;
     wait_until(|| gate.entered()).await;
