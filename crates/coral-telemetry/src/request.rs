@@ -119,7 +119,8 @@ pub fn name_request_operation(
     target: Option<&'static str>,
 ) {
     if let Some(slot) = extensions.get::<RequestOperation>() {
-        slot.0.get_or_init(|| safe::span_name(operation, target.as_ref()));
+        slot.0
+            .get_or_init(|| safe::span_name(operation, target.as_ref()));
     }
 }
 
