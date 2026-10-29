@@ -430,7 +430,7 @@ impl McpUpstream {
 /// arguments, the result, a session identifier or the full URL.
 fn client_span(dispatch: &ReadyMcpDispatch) -> tracing::Span {
     let (method, target) = match dispatch.binding.invocation_method() {
-        McpInvocationMethod::CallTool => ("tools/call", dispatch.binding.tool_name().map(Declared)),
+        McpInvocationMethod::CallTool => ("tools/call", Declared::tool_name(&dispatch.binding)),
         McpInvocationMethod::ReadResource => ("resources/read", None),
     };
     let server = url::Url::parse(dispatch.binding.server_url()).ok();

@@ -273,7 +273,9 @@ impl HttpUpstream {
             let span = client_span(
                 &method,
                 &url,
-                redirects.is_empty().then(|| binding.path_template()),
+                redirects
+                    .is_empty()
+                    .then(|| Declared::path_template(&binding)),
                 body.as_ref().map(Vec::len),
             );
             let request = crate::traced(request, &span)?;
@@ -657,10 +659,9 @@ fn push_diagnostic(
 fn client_span(
     method: &reqwest::Method,
     url: &url::Url,
-    template: Option<&str>,
+    template: Option<Declared<'_>>,
     request_body_size: Option<usize>,
 ) -> tracing::Span {
-    let template = template.map(Declared);
     tracing::info_span!(
         "http.client",
         otel.name = safe::http_span_name(method, template.as_ref()),

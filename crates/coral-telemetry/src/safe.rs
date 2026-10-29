@@ -7,12 +7,16 @@
 //! that cannot hold caller text, an error's text or a credential:
 //!
 //! - an [`Identifier`], whose text Coral minted or resolved;
-//! - a `&'static str`, text fixed when Coral was built, such as a code;
+//! - a `&'static str`, text Coral's own code fixes, such as a code;
 //! - a number or a flag.
 //!
 //! What stays trusted is each `impl Identifier`, which says why its type
-//! qualifies, and that a `&'static str` is build-time text: the source check
-//! fails on a call that leaks a runtime string to `'static`.
+//! qualifies, and what a `&'static str` holds. One is a literal, or text in
+//! a static that Coral builds from its own code, such as the status-code
+//! tables here. A static that holds runtime input, such as an environment
+//! variable or a request's text, must never reach [`kind`]. The source
+//! check fails on a call that leaks a runtime string to `'static`, but it
+//! cannot see what a static holds.
 
 use std::fmt;
 use std::sync::LazyLock;
@@ -31,7 +35,7 @@ pub trait Identifier: fmt::Display {}
 
 impl<T: Identifier + ?Sized> Identifier for &T {}
 
-/// Text fixed when Coral was built, such as a name Coral serves.
+/// Text Coral's own code fixes, such as the name of a tool it serves.
 impl Identifier for &'static str {}
 
 /// A UUID holds no text.
@@ -43,8 +47,8 @@ pub fn id<T: Identifier + ?Sized>(value: &T) -> tracing::field::DisplayValue<&T>
 }
 
 /// The field value of a bounded kind or code, such as a state's storage
-/// name or an error's `code()`. Only text fixed at build time is
-/// `'static`.
+/// name or an error's `code()`: a literal, or text in a static that Coral
+/// builds from its own code, never from runtime input.
 #[must_use]
 pub const fn kind(value: &'static str) -> &'static str {
     value

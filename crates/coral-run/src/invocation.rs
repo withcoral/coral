@@ -287,7 +287,8 @@ impl ToolInvoker {
             })?;
         let (target, policy, builtin) = self.resolve(call_path, &arguments).await?;
         let id = InvocationId::generate();
-        let span = crate::trace::invocation_span(&id, call_path, target.provider_access().id());
+        let span =
+            crate::trace::invocation_span(&id, target.call_path(), target.provider_access().id());
         let admitted = Arc::new(AdmittedInvocation {
             id,
             workspace_id: self.workspace_id.clone(),

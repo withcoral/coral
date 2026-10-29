@@ -2,11 +2,25 @@
 
 use std::fmt;
 
+use coral_catalog::{HttpExecutionBinding, McpExecutionBinding};
 use coral_telemetry::safe::Identifier;
 
 /// A name a Provider's declaration gives, as Coral's catalog imported it: an
 /// MCP tool's upstream name, or an HTTP operation's route template.
-pub(crate) struct Declared<'a>(pub(crate) &'a str);
+#[derive(Clone, Copy)]
+pub(crate) struct Declared<'a>(&'a str);
+
+impl<'a> Declared<'a> {
+    /// The upstream name of the MCP tool `binding` calls, if it calls one.
+    pub(crate) fn tool_name(binding: &'a McpExecutionBinding) -> Option<Self> {
+        binding.tool_name().map(Self)
+    }
+
+    /// The route template of the HTTP operation `binding` sends.
+    pub(crate) fn path_template(binding: &'a HttpExecutionBinding) -> Self {
+        Self(binding.path_template())
+    }
+}
 
 /// Coral imported it with the Provider's declaration, so a Program cannot
 /// choose it.

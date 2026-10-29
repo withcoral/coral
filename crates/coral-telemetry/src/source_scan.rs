@@ -53,9 +53,30 @@ const OPENTELEMETRY_SPAN_CALLS: [&str; 8] = [
     ".set_status",
     ".record_error",
 ];
+/// The OpenTelemetry crates, whose API builds names, attributes and links
+/// past the `safe` constructors.
+const OPENTELEMETRY_CRATES: [&str; 5] = [
+    "opentelemetry::",
+    "opentelemetry_sdk::",
+    "opentelemetry_otlp::",
+    "opentelemetry_appender_tracing::",
+    "tracing_opentelemetry::",
+];
 /// The calls that make runtime text `'static`, which [`crate::safe::kind`]
-/// takes for build-time text.
+/// would take for text Coral's code fixes.
 const LEAKS: [&str; 2] = [".leak", "::leak"];
+
+/// What of OpenTelemetry a source file may use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Owner {
+    /// This crate: the OpenTelemetry crates and the span API.
+    Telemetry,
+    /// Application bootstrap, which configures the exporters: the
+    /// OpenTelemetry crates, but not the span API.
+    Exporter,
+    /// Every other file: neither.
+    Neither,
+}
 
 #[test]
 fn every_span_and_event_uses_cataloged_keys_and_safe_values() {
@@ -84,14 +105,22 @@ fn every_span_and_event_uses_cataloged_keys_and_safe_values() {
         .iter()
         .flat_map(|(file, text)| test_module_files(file, text))
         .collect::<Vec<_>>();
-    let owner = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let telemetry = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let exporter = crates.join("coral-app/src/telemetry");
     let mut violations = Vec::new();
     for (file, text) in &sources {
         if test_modules.contains(file) {
             continue;
         }
         let display = file.strip_prefix(crates).unwrap_or(file).display();
-        for (line, problem) in violations_in(&production_code(text), file.starts_with(&owner)) {
+        let owner = if file.starts_with(&telemetry) {
+            Owner::Telemetry
+        } else if file.starts_with(&exporter) {
+            Owner::Exporter
+        } else {
+            Owner::Neither
+        };
+        for (line, problem) in violations_in(&production_code(text), owner) {
             violations.push(format!("{display}:{line}: {problem}"));
         }
     }
@@ -115,6 +144,8 @@ fn the_checks_find_what_they_check() {
         tracing::info_span!("coral.run.start", otel.kind = "internal", coral.run.status = Empty);
         tracing::info_span!(name: "coral.x", otel.name = safe::span_name("GET", route.as_ref()));
         tracing::info_span!("x", http.route = route.map(safe::id), process.pid = 1_i64);
+        use opentelemetry as _;
+        tracing::info_span!("x", http.response.body.size = 1.5, process.exit.code = 0);
         span.record("coral.run.status", safe::kind("ok"));
         span.record("coral.invocation.dispatch_started", true);
         metric.record(1, &[]);
@@ -145,16 +176,21 @@ fn the_checks_find_what_they_check() {
         span.set_status(Status::error(text));
         safe::kind(String::leak(text))
         safe::kind(Box::leak(text.into_boxed_str()))
+        use opentelemetry::KeyValue;
+        let context = tracing_opentelemetry::OpenTelemetrySpanExt::context(&span);
+        tracing::warn!(coral.run.status = "a".to_owned() + &text + "b", "fixed text");
+        tracing::warn!(coral.run.recovered = 1.max(count), "fixed text");
+        tracing::warn!(coral.run.recovered = 1_000x, "fixed text");
         #[cfg(test)]
         mod tests {
             fn ignored() { tracing::warn!(misclassified = 1, "test {error}"); }
         }
     "#;
-    let lines = violations_in(&production_code(source), false)
+    let lines = violations_in(&production_code(source), Owner::Neither)
         .into_iter()
         .map(|(line, _)| line)
         .collect::<Vec<_>>();
-    assert_eq!(lines, (15..=39).collect::<Vec<_>>());
+    assert_eq!(lines, (17..=46).collect::<Vec<_>>());
 }
 
 fn rust_files(directory: &Path, files: &mut Vec<PathBuf>) {
@@ -315,10 +351,9 @@ fn char_end(bytes: &[u8], start: usize) -> usize {
     }
 }
 
-/// Each span, event and span-API call in `code` that breaks a rule, by
-/// line. `owner` is whether `code` is this crate's own, the one place that
-/// calls the OpenTelemetry span API.
-fn violations_in(code: &str, owner: bool) -> Vec<(usize, String)> {
+/// Each span, event and OpenTelemetry use in `code` that breaks a rule, by
+/// line. `owner` says what of OpenTelemetry `code` may use.
+fn violations_in(code: &str, owner: Owner) -> Vec<(usize, String)> {
     let mut violations = Vec::new();
     for name in EVENT_MACROS {
         for (line, arguments) in calls(code, name) {
@@ -341,7 +376,19 @@ fn violations_in(code: &str, owner: bool) -> Vec<(usize, String)> {
     for (line, arguments) in calls(code, ".record") {
         violations.extend(record_problem(arguments).map(|problem| (line, problem)));
     }
-    if !owner {
+    if owner == Owner::Neither {
+        for name in OPENTELEMETRY_CRATES {
+            for line in paths(code, name) {
+                violations.push((
+                    line,
+                    format!(
+                        "only coral-telemetry and exporter bootstrap use OpenTelemetry: {name}"
+                    ),
+                ));
+            }
+        }
+    }
+    if owner != Owner::Telemetry {
         for name in OPENTELEMETRY_SPAN_CALLS {
             for (line, _) in calls(code, name) {
                 violations.push((
@@ -355,7 +402,7 @@ fn violations_in(code: &str, owner: bool) -> Vec<(usize, String)> {
         for (line, _) in calls(code, name) {
             violations.push((
                 line,
-                format!("leaked text passes for build-time text: {name}"),
+                format!("leaked runtime text passes for text Coral's code fixes: {name}"),
             ));
         }
     }
@@ -393,6 +440,20 @@ fn calls<'a>(code: &'a str, name: &str) -> Vec<(usize, &'a str)> {
         found.push((line, code.get(open + 1..end - 1).unwrap_or("")));
     }
     found
+}
+
+/// The line of each use of the path `name` in `code`, where no word runs
+/// into it.
+fn paths(code: &str, name: &str) -> Vec<usize> {
+    code.match_indices(name)
+        .filter(|(start, _)| {
+            !code
+                .get(..*start)
+                .and_then(|before| before.chars().next_back())
+                .is_some_and(|character| character.is_alphanumeric() || character == '_')
+        })
+        .map(|(start, _)| code.get(..start).unwrap_or("").matches('\n').count() + 1)
+        .collect()
 }
 
 /// What is wrong with an event whose macro arguments are `arguments`.
@@ -488,10 +549,32 @@ fn safe_constructor(value: &str) -> Option<&'static str> {
 
 /// Whether `value` is a string, number or `bool` literal.
 fn is_literal(value: &str) -> bool {
-    (value.starts_with('"') && value.ends_with('"') && value.len() > 1)
-        || value.starts_with(|character: char| character.is_ascii_digit())
-        || value == "true"
-        || value == "false"
+    let string = value.starts_with('"') && string_end(value.as_bytes(), 0) == Some(value.len());
+    string || is_number_literal(value) || value == "true" || value == "false"
+}
+
+/// Whether `value` is an integer or float literal, with an optional type
+/// suffix such as `_i64`.
+fn is_number_literal(value: &str) -> bool {
+    const SUFFIXES: [&str; 14] = [
+        "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize",
+        "f32", "f64",
+    ];
+    let digits = SUFFIXES
+        .iter()
+        .find_map(|suffix| value.strip_suffix(suffix))
+        .unwrap_or(value)
+        .trim_end_matches('_');
+    let numeric = |part: &str| {
+        part.starts_with(|character: char| character.is_ascii_digit())
+            && part
+                .chars()
+                .all(|character| character.is_ascii_digit() || character == '_')
+    };
+    match digits.split_once('.') {
+        Some((whole, fraction)) => numeric(whole) && numeric(fraction),
+        None => numeric(digits),
+    }
 }
 
 /// Whether `value` declares a span field that is recorded later.

@@ -93,30 +93,18 @@ pub(crate) fn record_run_end(outcome: &RunTerminalOutcome) {
     }
 }
 
-/// The Call Path a Tool was found at.
-struct ResolvedCallPath<'a>(&'a str);
-
-/// Coral found a Tool at it, so it names one Coral serves.
-impl safe::Identifier for ResolvedCallPath<'_> {}
-
-impl std::fmt::Display for ResolvedCallPath<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.0)
-    }
-}
-
-/// The `coral.invocation` span of one admitted Tool Invocation of a Tool of
-/// `provider`, found at `call_path`, a child of the current span (the Run's
-/// execute phase).
+/// The `coral.invocation` span of one admitted Tool Invocation of the Tool
+/// at `call_path`, a Tool of `provider`, a child of the current span (the
+/// Run's execute phase).
 pub(crate) fn invocation_span(
     id: &crate::InvocationId,
-    call_path: &str,
+    call_path: coral_provider::ResolvedCallPath<'_>,
     provider: &coral_provider::ProviderId,
 ) -> tracing::Span {
     tracing::info_span!(
         "coral.invocation",
         coral.invocation.id = safe::id(id),
-        coral.tool.call_path = safe::id(&ResolvedCallPath(call_path)),
+        coral.tool.call_path = safe::id(&call_path),
         coral.provider.id = safe::id(provider),
         coral.provider.protocol = Empty,
         coral.invocation.dispatch_started = Empty,

@@ -296,13 +296,15 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
             run_id
         })
         .collect::<Vec<_>>();
+    let weather =
+        coral_provider::ProviderCallRoot::parse("coral.providers.weather").expect("Call Root");
     let invocation_ids = invocations()
         .into_iter()
         .map(|(ended, sent, _, _)| {
             let id = crate::InvocationId::generate();
             let span = crate::trace::invocation_span(
                 &id,
-                "coral.providers.weather.getForecast",
+                coral_provider::ResolvedCallPath::fixture(&weather, "getForecast"),
                 &coral_provider::ProviderId::parse("00000000-0000-4000-8000-000000000001")
                     .expect("Provider ID"),
             );
