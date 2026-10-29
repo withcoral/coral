@@ -15,6 +15,7 @@ use crate::execution::ExecutionStop;
 use crate::invocation::{FenceRequest, ParkedInvocation};
 use crate::run_inbox::InboxRow;
 use crate::termination::ShutdownAction;
+use crate::types::HeldRunId;
 use crate::{Error, ProgramLogLevel, ProgramValue, RunId, SourceLocation};
 
 use super::chunk::ChunkWork;
@@ -333,6 +334,17 @@ pub(crate) enum CommitRejection {
 }
 
 impl CommitRejection {
+    /// The rejection's kind, for an event's `error.type`.
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::ClaimMismatch => "claim_mismatch",
+            Self::RunEnded => "run_ended",
+            Self::Refused => "refused",
+            Self::Failed => "failed",
+            Self::Corrupt => "corrupt",
+        }
+    }
+
     /// The answer every Program request lost with the chunk receives.
     pub(crate) fn lost(self) -> Error {
         match self {
@@ -370,7 +382,7 @@ impl From<Error> for CommitRejection {
 pub(crate) type Mailbox = mpsc::UnboundedReceiver<Message>;
 
 struct Shared {
-    run_id: RunId,
+    run_id: HeldRunId,
     claim_id: String,
     sender: mpsc::UnboundedSender<Message>,
     stop: Arc<ExecutionStop>,
@@ -386,7 +398,7 @@ pub(crate) struct OwnerHandle {
 }
 
 impl OwnerHandle {
-    pub(crate) fn new(run_id: RunId, claim_id: String) -> (Self, Mailbox) {
+    pub(crate) fn new(run_id: HeldRunId, claim_id: String) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::unbounded_channel();
         let handle = Self {
             shared: Arc::new(Shared {
@@ -401,6 +413,11 @@ impl OwnerHandle {
     }
 
     pub(crate) fn run_id(&self) -> &RunId {
+        self.shared.run_id.run_id()
+    }
+
+    /// The Run's ID as a span field.
+    pub(crate) fn held_id(&self) -> &HeldRunId {
         &self.shared.run_id
     }
 

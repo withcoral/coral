@@ -119,6 +119,7 @@ impl Launch {
             desktop: flag(CORAL_DESKTOP),
             local_web_url,
             stop_on_stdin_close: flag(CORAL_STOP_ON_STDIN_CLOSE),
+            service_version: None,
         })
     }
 }

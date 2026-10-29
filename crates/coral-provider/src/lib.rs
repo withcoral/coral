@@ -92,7 +92,7 @@ pub use types::{
     AdministrativeLifecycleEvent, InvocationToolVerification, LifecycleAction, LifecycleActor,
     LifecycleOutcome, ManagementRequestId, Provider, ProviderDisplayName, ProviderId,
     ProviderSearchCatalog, ProviderSetup, ProviderSetupId, ProviderSetupState, ProviderState,
-    ResolvedInvocationTool, SetupRequest, ToolAuthoringMaterial,
+    ResolvedCallPath, ResolvedInvocationTool, SetupRequest, ToolAuthoringMaterial,
 };
 
 pub use access::{CredentialRoute, ProviderAccess, ProviderCallRoot, ProviderNamespace, RouteFit};

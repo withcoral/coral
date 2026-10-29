@@ -10,6 +10,7 @@
 //! ending it, once its lease lapses), and every write is predicated on the
 //! claim and the head the row showed.
 
+use coral_telemetry::safe;
 use coral_workspace::AuthenticatedPrincipal;
 use tracing::Instrument as _;
 
@@ -31,7 +32,7 @@ impl RunModule {
     /// lost) renews nothing more, and the expired-lease sweep ends the Run
     /// once its lease lapses, unless another process took it.
     pub(crate) fn schedule_execution(&self, run: AcceptedRun, actor: AuthenticatedPrincipal) {
-        let (handle, mailbox) = OwnerHandle::new(run.id.clone(), run.claim_id.clone());
+        let (handle, mailbox) = OwnerHandle::new(run.held_id(), run.claim_id.clone());
         let registration = self.owners.register(handle.clone());
         self.inbox.owner_registered(
             &self.owners,
@@ -64,8 +65,11 @@ impl RunModule {
     /// chunk, as the owner's self-interrupt would. Nothing still in flight
     /// under the old claim can land afterwards.
     async fn recover_from_owner_failure(&self, run: &AcceptedRun, ended: &tokio::task::JoinError) {
-        let span =
-            crate::trace::phase_span(run.trace.as_ref(), &run.id, crate::trace::Phase::Complete);
+        let span = crate::trace::phase_span(
+            run.trace.as_ref(),
+            &run.held_id(),
+            crate::trace::Phase::Complete,
+        );
         self.interrupt_after_owner_failure(run, ended)
             .instrument(span)
             .await;
@@ -78,16 +82,16 @@ impl RunModule {
     ) {
         let takeover_claim_id = uuid::Uuid::new_v4().hyphenated().to_string();
         tracing::error!(
-            run_id = %run.id,
-            claim_id = %run.claim_id,
-            takeover_claim_id = %takeover_claim_id,
-            ended = %ended,
+            coral.run.id = safe::id(&run.held_id()),
+            coral.run.claim.id = crate::trace::claim(&run.claim_id).as_ref().map(safe::id),
+            coral.run.takeover_claim.id = crate::trace::claim(&takeover_claim_id).as_ref().map(safe::id),
+            error.type = safe::kind(owner_task_end_code(ended)),
             "Run Owner task ended without retiring; interrupting its Run"
         );
         match self
             .record_interruption(
                 &run.workspace_id,
-                &run.id,
+                &run.held_id(),
                 &run.claim_id,
                 Some(&takeover_claim_id),
             )
@@ -96,14 +100,14 @@ impl RunModule {
             Ok(()) => {}
             Err(Error::ClaimMismatch | Error::RunEnded) => {
                 tracing::warn!(
-                    run_id = %run.id,
+                    coral.run.id = safe::id(&run.held_id()),
                     "Run of a failed Run Owner was already ended"
                 );
             }
             Err(error) => {
                 tracing::error!(
-                    run_id = %run.id,
-                    error = %error,
+                    coral.run.id = safe::id(&run.held_id()),
+                    error.type = safe::kind(error.code()),
                     "Run of a failed Run Owner could not be interrupted"
                 );
             }
@@ -196,18 +200,14 @@ impl RunModule {
             if error.database_error().is_some() {
                 return Err(error);
             }
-            run_repository::finish_unstarted_run(
-                &mut transaction,
-                &run,
-                &RunTerminalOutcome::Failed(RunFailure::new(
-                    RunFailureCode::RunAuthorityLost,
-                    "Run authority was lost before Program execution started".to_string(),
-                )),
-                started_at,
-            )
-            .await?;
+            let outcome = RunTerminalOutcome::Failed(RunFailure::new(
+                RunFailureCode::RunAuthorityLost,
+                "Run authority was lost before Program execution started".to_string(),
+            ));
+            run_repository::finish_unstarted_run(&mut transaction, &run, &outcome, started_at)
+                .await?;
             transaction.commit().await?;
-            crate::trace::record_run_end(RunState::Failed);
+            crate::trace::record_run_end(&outcome);
             return Ok(None);
         }
 
@@ -268,7 +268,7 @@ impl RunModule {
         self.finish_termination_in_transaction(&mut transaction, &run, now_unix_nanos)
             .await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(RunState::TimedOut);
+        crate::trace::record_run_end(&RunTerminalOutcome::TimedOut);
         Ok(None)
     }
 
@@ -366,7 +366,7 @@ impl RunModule {
             self.finish_termination_in_transaction(&mut transaction, &run, completed_at)
                 .await?;
             transaction.commit().await?;
-            crate::trace::record_run_end(kind.outcome().state());
+            crate::trace::record_run_end(&kind.outcome());
             return Ok(None);
         }
         let outcome = match completion {
@@ -396,7 +396,7 @@ impl RunModule {
         run_repository::finish_run(&mut transaction, &run, claim_id, &outcome, completed_at)
             .await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(outcome.state());
+        crate::trace::record_run_end(&outcome);
         Ok(None)
     }
 }
@@ -423,5 +423,15 @@ fn termination_for_completion(
         Some(RunTerminationKind::MemoryLimitExceeded)
     } else {
         None
+    }
+}
+
+/// How a Run Owner task ended without retiring, for an event's `error.type`:
+/// it panicked, or its runtime cancelled it.
+pub(crate) fn owner_task_end_code(ended: &tokio::task::JoinError) -> &'static str {
+    if ended.is_panic() {
+        "panic"
+    } else {
+        "cancelled"
     }
 }

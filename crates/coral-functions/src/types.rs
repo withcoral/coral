@@ -60,6 +60,10 @@ impl fmt::Display for SavedFunctionId {
     }
 }
 
+/// A UUID Coral generated, or one parsed in its canonical form: it holds
+/// no text.
+impl coral_telemetry::safe::Identifier for SavedFunctionId {}
+
 /// Principal-owned dotted JavaScript path relative to `coral.functions`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SavedFunctionPath(String);

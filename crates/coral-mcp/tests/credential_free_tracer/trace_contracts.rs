@@ -44,8 +44,8 @@ async fn tool_failures_name_the_trace_of_their_request() {
             (
                 "an attributed failure",
                 "describe",
-                json!({"task_id": task, "intent": "Describe a missing tool", "path": "coral.providers.absent.tool"}),
-                "authoring_description_not_found",
+                json!({"task_id": task, "intent": "Describe a malformed path", "path": "not a path"}),
+                "invalid_input",
             ),
             (
                 "a wait failure",
@@ -65,7 +65,12 @@ async fn tool_failures_name_the_trace_of_their_request() {
         {
             let context = format!("{version} {case}");
             let parent = format!("{:032x}", 0xc0_a100 + version_index * 16 + case_index);
-            let named = arguments["task_id"].as_str().map(str::to_owned);
+            // Only a Task Coral found names the span: an absent one is the
+            // caller's text.
+            let named = arguments["task_id"]
+                .as_str()
+                .filter(|named| Some(*named) == task.as_str())
+                .map(str::to_owned);
             let continued = session
                 .tool_with_headers(
                     tool,
@@ -119,14 +124,13 @@ async fn tool_failures_name_the_trace_of_their_request() {
     session.close().await;
 
     let spans = capture.spans.finished();
-    let workspace = tracer.workspace_a.to_string();
     for (context, trace, tool, failure, task) in &failures {
         assert_spans_in_trace(
             &spans,
             context,
             trace,
             tool,
-            &workspace,
+            &tracer,
             *failure,
             task.as_deref(),
         );
@@ -134,14 +138,14 @@ async fn tool_failures_name_the_trace_of_their_request() {
 }
 
 /// The request span and the tool span both carry `trace`. The tool span is
-/// an MCP server span that names the caller's Workspace and Principal kind,
-/// the Task the call names, and a tool failure's Coral code.
+/// an MCP server span that names `tracer`'s Workspace and authenticated
+/// Principal, the Task the call names, and a tool failure's Coral code.
 fn assert_spans_in_trace(
     spans: &[SpanData],
     context: &str,
     trace: &str,
     tool: &str,
-    workspace: &str,
+    tracer: &Tracer,
     failure: Option<&str>,
     task: Option<&str>,
 ) {
@@ -159,8 +163,13 @@ fn assert_spans_in_trace(
     assert_eq!(tool_span.span_kind, SpanKind::Server, "{context}");
     let attribute = |name: &str| attribute(tool_span, name);
     assert_eq!(
-        attribute("coral.workspace.id").as_deref(),
-        Some(workspace),
+        attribute("coral.workspace.id"),
+        Some(tracer.workspace_a.to_string()),
+        "{context}"
+    );
+    assert_eq!(
+        attribute("coral.principal.id").as_deref(),
+        Some(tracer.local_user.user_id().as_str()),
         "{context}"
     );
     assert_eq!(
@@ -214,10 +223,10 @@ async fn protocol_errors_record_their_json_rpc_code() {
         Some("-32602")
     );
     assert_eq!(attribute("error.type"), None);
-    assert_ne!(
+    assert!(!matches!(
         tool_span.status,
-        opentelemetry::trace::Status::error("MCP tool call failed")
-    );
+        opentelemetry::trace::Status::Error { .. }
+    ));
     assert!(!format!("{tool_span:?}").contains("no_such_tool"));
 }
 
@@ -331,7 +340,6 @@ async fn records_carry_the_trace_of_their_request() {
         .list_lifecycle_events(&owner, &tracer.workspace_a)
         .await
         .expect("lifecycle events");
-    let workspace = tracer.workspace_a.to_string();
     for (context, path, parent, task) in saved {
         let recorded = events
             .iter()
@@ -350,7 +358,7 @@ async fn records_carry_the_trace_of_their_request() {
             &context,
             recorded,
             "save_function",
-            &workspace,
+            &tracer,
             None,
             Some(&task),
         );

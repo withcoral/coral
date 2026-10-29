@@ -153,6 +153,24 @@ pub(super) enum OidcProviderClientError {
     AccessTokenAdmission,
 }
 
+impl OidcProviderClientError {
+    /// The error's stable kind, for an event's `error.type`: a bounded
+    /// code that never carries the error's text.
+    pub(super) const fn code(&self) -> &'static str {
+        match self {
+            Self::ClientInitialization { .. } => "client_initialization",
+            Self::Discovery { .. } => "discovery",
+            Self::IssuerMismatch { .. } => "issuer_mismatch",
+            Self::InvalidEndpoint { .. } => "invalid_endpoint",
+            Self::UnsupportedTokenEndpointAuth { .. } => "unsupported_token_endpoint_auth",
+            Self::Randomness { .. } => "randomness",
+            Self::TokenExchange { .. } => "token_exchange",
+            Self::IdTokenValidation { .. } => "id_token_validation",
+            Self::AccessTokenAdmission { .. } => "access_token_admission",
+        }
+    }
+}
+
 impl OidcProviderClient {
     /// Builds a client that refuses redirects and ignores proxy settings.
     ///

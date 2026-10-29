@@ -612,6 +612,7 @@ dependencies = [
  "coral-outbound",
  "coral-provider",
  "coral-search",
+ "coral-telemetry",
  "coral-test-support",
  "coral-workspace",
  "sea-query",
@@ -710,6 +711,7 @@ dependencies = [
  "coral-catalog",
  "coral-db",
  "coral-outbound",
+ "coral-telemetry",
  "coral-test-support",
  "coral-v8",
  "coral-workspace",
@@ -763,6 +765,7 @@ dependencies = [
  "async-trait",
  "coral-catalog",
  "coral-db",
+ "coral-telemetry",
  "coral-test-support",
  "coral-v8",
  "coral-workspace",
@@ -931,6 +934,7 @@ name = "coral-release"
 version = "1.4.0"
 dependencies = [
  "coral-outbound",
+ "coral-telemetry",
  "reqwest",
  "semver",
  "serde",
@@ -1032,6 +1036,7 @@ dependencies = [
  "coral-provider",
  "coral-run",
  "coral-search",
+ "coral-telemetry",
  "coral-test-support",
  "coral-workspace",
  "sea-query",
@@ -1053,12 +1058,14 @@ dependencies = [
  "http",
  "http-body",
  "opentelemetry",
+ "opentelemetry-appender-tracing",
  "opentelemetry_sdk",
  "tokio",
  "tower",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

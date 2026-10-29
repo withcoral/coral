@@ -316,10 +316,7 @@ async fn a_failed_removal_leaves_the_superseded_generation_and_still_indexes_the
         logs.events()
             .iter()
             .any(|event| event.level == tracing::Level::ERROR
-                && event
-                    .fields
-                    .get("error")
-                    .is_some_and(|error| error.contains(INJECTED_FAULT))),
+                && event.fields.get("error.type").map(String::as_str) == Some("\"database\"")),
         "the failed removal is logged"
     );
 
@@ -572,21 +569,11 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
     );
     for span in &pass {
         assert_eq!(span.level, tracing::Level::DEBUG, "{}", span.name);
-        assert_eq!(
-            span.fields.get("status"),
-            None,
-            "{} did not fail",
-            span.name
-        );
+        assert_eq!(failure(span), None, "{} did not fail", span.name);
     }
     for span in &writes {
         assert_eq!(span.level, tracing::Level::INFO, "{}", span.name);
-        assert_eq!(
-            span.fields.get("status"),
-            None,
-            "{} did not fail",
-            span.name
-        );
+        assert_eq!(failure(span), None, "{} did not fail", span.name);
         assert_eq!(
             span.fields
                 .get("coral.search.write.trigger")
@@ -663,11 +650,7 @@ async fn a_failed_step_marks_its_span_and_the_pass() {
             .iter()
             .find(|span| span.name == name)
             .unwrap_or_else(|| panic!("{name} span"));
-        assert_eq!(
-            failure(span),
-            (Some("\"error\""), Some("\"reconcile_failed\"")),
-            "{name}"
-        );
+        assert_eq!(failure(span), Some("\"reconcile_failed\""), "{name}");
     }
 }
 
@@ -696,14 +679,11 @@ async fn a_pass_counts_and_traces_a_generation_that_fails_to_index() {
             .map(String::as_str),
         Some(world.tracer.to_string().as_str())
     );
-    assert_eq!(
-        failure(&generation),
-        (Some("\"error\""), Some("\"provider\""))
-    );
+    assert_eq!(failure(&generation), Some("\"provider\""));
     assert_eq!(item_work(&pass, "generations"), (0, 1));
     assert_eq!(
         failure(pass.first().expect("the pass span")),
-        (Some("\"error\""), Some("\"reconcile_failed\"")),
+        Some("\"reconcile_failed\""),
         "the pass fails with its Generation"
     );
 }
@@ -720,12 +700,9 @@ fn write_names(writes: &[CapturedSpan]) -> Vec<&'static str> {
     writes.iter().map(|span| span.name).collect()
 }
 
-/// A span's recorded status and error type.
-fn failure(span: &CapturedSpan) -> (Option<&str>, Option<&str>) {
-    (
-        span.fields.get("status").map(String::as_str),
-        span.fields.get("error.type").map(String::as_str),
-    )
+/// The error type a failed span records.
+fn failure(span: &CapturedSpan) -> Option<&str> {
+    span.fields.get("error.type").map(String::as_str)
 }
 
 /// The `items` the pass's span counts as indexed and as failed.
@@ -1054,11 +1031,16 @@ async fn a_bounded_walk_indexes_the_tool_and_logs_a_warning() {
         .expect("one warning");
     assert_eq!(event.target, "coral_search::index");
     for (field, value) in [
-        ("workspace_id", world.workspace.to_string()),
-        ("provider_id", wide.to_string()),
-        ("generation_id", entries.generation_id().to_string()),
-        ("tool_key", "wide".to_string()),
-        ("code", "tool_search_material_truncated".to_string()),
+        ("coral.workspace.id", world.workspace.to_string()),
+        ("coral.provider.id", wide.to_string()),
+        (
+            "coral.search.generation.id",
+            entries.generation_id().to_string(),
+        ),
+        (
+            "coral.search.warning.code",
+            "tool_search_material_truncated".to_string(),
+        ),
     ] {
         assert_eq!(event.fields.get(field), Some(&value), "{field}");
     }
@@ -1105,18 +1087,16 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
         assert_eq!(event.level, tracing::Level::ERROR);
         assert_eq!(event.target, "coral_search::index");
         for (field, value) in [
-            ("workspace_id", world.workspace.to_string()),
-            ("provider_id", world.tracer.to_string()),
-            ("generation_id", entries.generation_id().to_string()),
+            ("coral.workspace.id", world.workspace.to_string()),
+            ("coral.provider.id", world.tracer.to_string()),
+            (
+                "coral.search.generation.id",
+                entries.generation_id().to_string(),
+            ),
+            ("error.type", "\"database\"".to_string()),
         ] {
             assert_eq!(event.fields.get(field), Some(&value), "{field}");
         }
-        assert!(
-            event
-                .fields
-                .get("error")
-                .is_some_and(|error| error.contains(INJECTED_FAULT))
-        );
     }
 }
 
@@ -1458,14 +1438,12 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
     // SQLite's writer stalls the write before the Workspace's lock;
     // Postgres's table lock stalls it after.
     let expected = match database.system() {
-        DatabaseSystem::Sqlite => "waited more than",
-        DatabaseSystem::Postgres => "ran past its",
+        DatabaseSystem::Sqlite => "\"writer_busy\"",
+        DatabaseSystem::Postgres => "\"overran\"",
     };
-    assert!(
-        first
-            .fields
-            .get("error")
-            .is_some_and(|error| error.contains(expected)),
+    assert_eq!(
+        first.fields.get("error.type").map(String::as_str),
+        Some(expected),
         "{first:?}"
     );
 
@@ -1678,7 +1656,7 @@ async fn a_failed_state_read_reports_no_states_and_logs_the_error() {
     let [event] = logs.events().try_into().expect("one log event");
     assert_eq!(event.level, tracing::Level::WARN);
     assert_eq!(
-        event.fields.get("workspace_id"),
+        event.fields.get("coral.workspace.id"),
         Some(&world.workspace.to_string())
     );
 }

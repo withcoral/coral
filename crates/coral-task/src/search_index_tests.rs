@@ -374,18 +374,12 @@ async fn a_failed_index_write_keeps_the_save_and_leaves_only_a_failed_state_unti
         let [event] = logs.events().try_into().expect("the write's error");
         assert_eq!(event.level, tracing::Level::ERROR);
         for (field, value) in [
-            ("workspace_id", fixture.workspace.to_string()),
-            ("principal_id", user.clone()),
-            ("saved_function_id", saved.id().to_string()),
+            ("coral.workspace.id", fixture.workspace.to_string()),
+            ("coral.saved_function.id", saved.id().to_string()),
+            ("error.type", "\"database\"".to_string()),
         ] {
             assert_eq!(event.fields.get(field), Some(&value), "{field}");
         }
-        assert!(
-            event
-                .fields
-                .get("error")
-                .is_some_and(|error| error.contains(INJECTED_FAULT))
-        );
 
         allow_function_rows(&fixture).await;
         fixture

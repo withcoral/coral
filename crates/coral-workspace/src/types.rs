@@ -139,6 +139,10 @@ impl fmt::Display for WorkspaceId {
     }
 }
 
+/// A UUID Coral generated, or one parsed in its canonical form: it holds
+/// no text.
+impl coral_telemetry::safe::Identifier for WorkspaceId {}
+
 /// Mutable human-readable Workspace name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceDisplayName(String);

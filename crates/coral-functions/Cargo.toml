@@ -18,6 +18,7 @@ test-fixtures = []
 async-trait.workspace = true
 coral-catalog.workspace = true
 coral-db.workspace = true
+coral-telemetry.workspace = true
 coral-v8.workspace = true
 coral-workspace.workspace = true
 sea-query.workspace = true

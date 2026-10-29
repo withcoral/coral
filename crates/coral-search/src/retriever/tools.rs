@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_policy::ExactToolRules;
 use coral_provider::ActiveProvider;
+use coral_telemetry::safe;
 
 use super::plan::QueryPlan;
 use super::repository;
@@ -269,7 +270,7 @@ impl EntityRetriever for ToolRetriever {
         }
         let Some(matched) = evidence.build() else {
             tracing::debug!(
-                call_path = description.call_path().as_str(),
+                coral.tool.call_path = safe::id(&super::RankedCallPath(description.call_path())),
                 "a ranked Tool has no evidence and leaves the page"
             );
             return Ok(Hydrated::Dropped);

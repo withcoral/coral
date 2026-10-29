@@ -34,6 +34,22 @@ pub enum Error {
 }
 
 impl Error {
+    /// The error's stable kind, for an event's `error.type`: a bounded
+    /// code that never carries the error's text.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::ObservationUnavailable { .. } => "observation_unavailable",
+            Self::Config { .. } => "config",
+            Self::MissingDatabaseParent { .. } => "missing_database_parent",
+            Self::Io { .. } => "io",
+            Self::WriterBusy { .. } => "writer_busy",
+            Self::Sqlx { .. } => "sqlx",
+            Self::Migration { .. } => "migration",
+            Self::MigrationForeignKeys { .. } => "migration_foreign_keys",
+        }
+    }
+
     /// Reports whether a database constraint rejected a duplicate identity.
     #[must_use]
     pub fn is_unique_violation(&self) -> bool {

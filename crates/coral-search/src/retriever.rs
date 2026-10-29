@@ -71,6 +71,19 @@ pub(crate) struct SavedFunctionRef {
     near_spellings: Arc<[String]>,
 }
 
+/// The Call Path of an entity a retriever ranked, as a span field.
+pub(crate) struct RankedCallPath<'a>(pub(crate) &'a CallPath);
+
+/// The search index holds only the Tools and Saved Functions Coral serves,
+/// so a ranked entity's Call Path names one of them.
+impl coral_telemetry::safe::Identifier for RankedCallPath<'_> {}
+
+impl std::fmt::Display for RankedCallPath<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0.as_str())
+    }
+}
+
 impl EntityRef {
     pub(crate) const fn call_path(&self) -> &CallPath {
         match self {
@@ -124,6 +137,17 @@ pub(crate) enum RetrievalError {
     /// A search-owned row holds a value its column does not admit.
     #[error("corrupt search index: {0}")]
     Corrupt(&'static str),
+}
+
+impl RetrievalError {
+    /// The error's stable kind, for an event's `error.type`: a bounded
+    /// code that never carries the error's text.
+    pub(crate) const fn code(&self) -> &'static str {
+        match self {
+            Self::Database { .. } => "database",
+            Self::Corrupt { .. } => "corrupt",
+        }
+    }
 }
 
 impl QueryError {

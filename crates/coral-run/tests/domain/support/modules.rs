@@ -1514,7 +1514,7 @@ pub(crate) fn test_invoker(
         linked_snapshots: std::collections::HashMap::new(),
         trace: run.trace.clone(),
     };
-    let (owner, _mailbox) = crate::owner::OwnerHandle::new(run.id.clone(), claim_id);
+    let (owner, _mailbox) = crate::owner::OwnerHandle::new(accepted.held_id(), claim_id);
     crate::invocation::ToolInvoker::new(
         None,
         fixture.providers.clone(),

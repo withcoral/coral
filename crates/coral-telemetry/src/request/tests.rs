@@ -110,11 +110,7 @@ async fn http_request_spans_carry_only_safe_fields() {
             Some(status.as_u16().to_string()),
             "{method}"
         );
-        assert_eq!(
-            span.status == Status::error("HTTP request failed"),
-            failed,
-            "{method}"
-        );
+        assert_eq!(span.status == Status::error(""), failed, "{method}");
         assert!(
             !format!("{span:?}").contains("canary"),
             "{method}: {span:?}"
@@ -157,11 +153,7 @@ async fn http_request_spans_last_until_their_body_ends() {
         let [span] = spans.as_slice() else {
             panic!("{case}: one request span: {spans:?}");
         };
-        assert_eq!(
-            span.status == Status::error("HTTP response body failed"),
-            breaks_off,
-            "{case}"
-        );
+        assert_eq!(span.status == Status::error(""), breaks_off, "{case}");
         assert_eq!(
             attribute(span, "error.type").as_deref(),
             breaks_off.then_some("response_body"),
@@ -432,11 +424,7 @@ async fn grpc_request_spans_name_only_served_methods() {
             Some(status),
             "{context}"
         );
-        assert_eq!(
-            span.status == Status::error("gRPC request failed"),
-            failed,
-            "{context}"
-        );
+        assert_eq!(span.status == Status::error(""), failed, "{context}");
         assert_eq!(
             attribute(span, "error.type").as_deref(),
             failed.then_some(status),

@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use coral_db::Transaction;
 use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
+use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -223,7 +224,7 @@ impl RunModule {
                 )));
             }
         };
-        accept.record("coral.run.id", run.id.as_str());
+        accept.record("coral.run.id", safe::id(&run.held_id()));
         Ok(StagedRun {
             run,
             actor: actor.clone(),

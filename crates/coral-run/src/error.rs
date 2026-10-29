@@ -398,6 +398,45 @@ pub enum Error {
 }
 
 impl Error {
+    /// The error's stable kind, for an event's `error.type`: a bounded
+    /// code that never carries the error's text.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidInput { .. } => "invalid_input",
+            Self::RunNotFound { .. } => "run_not_found",
+            Self::ApprovalNotFound { .. } => "approval_not_found",
+            Self::ProgramAdmission { .. } => "program_admission",
+            Self::Functions { .. } => "functions",
+            Self::PermissionDenied { .. } => "permission_denied",
+            Self::CompilationTimedOut { .. } => "compilation_timed_out",
+            Self::PackageTooLarge { .. } => "package_too_large",
+            Self::ProgramRuntimeUnavailable { .. } => "program_runtime_unavailable",
+            Self::ProgramWorkerStopped { .. } => "program_worker_stopped",
+            Self::Clock { .. } => "clock",
+            Self::IdentifierIssuance { .. } => "identifier_issuance",
+            Self::ProgramValueTooLarge { .. } => "program_value_too_large",
+            Self::InvalidProgramValue { .. } => "invalid_program_value",
+            Self::ProgramValueJson { .. } => "program_value_json",
+            Self::InvocationRejected { .. } => "invocation_rejected",
+            Self::InvocationPersistence { .. } => "invocation_persistence",
+            Self::RunEventPersistence { .. } => "run_event_persistence",
+            Self::ClaimMismatch { .. } => "claim_mismatch",
+            Self::HeadMismatch { .. } => "head_mismatch",
+            Self::RunEnded { .. } => "run_ended",
+            Self::OwnerLost { .. } => "owner_lost",
+            Self::RunRequestNotYetRecorded { .. } => "run_request_not_yet_recorded",
+            Self::ShuttingDown { .. } => "shutting_down",
+            Self::ProgramHostTerminated { .. } => "program_host_terminated",
+            Self::Provider { .. } => "provider",
+            Self::Policy { .. } => "policy",
+            Self::Upstream { .. } => "upstream",
+            Self::Workspace { .. } => "workspace",
+            Self::CorruptData { .. } => "corrupt_data",
+            Self::Database { .. } => "database",
+        }
+    }
+
     /// Whether the database gave no answer to a write (a lost connection, a
     /// pool timeout, a lock or serialization race): the write may or may not
     /// have taken effect, and a reread decides. Every other error, a

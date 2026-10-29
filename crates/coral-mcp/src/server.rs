@@ -165,7 +165,7 @@ impl McpServer {
             )
             .await
             .map_err(task_failure)?;
-        tool_call::record_task(task.id());
+        tool_call::record_task(task.telemetry_id());
         projection::success(projection::StartedTask {
             task_id: task.id().to_string(),
             providers: providers
@@ -513,7 +513,6 @@ impl McpServer {
 
     async fn end_task(&self, arguments: EndTaskArguments) -> Result<CallToolResult, DispatchError> {
         let task_id = TaskId::parse(&arguments.task_id).map_err(invalid_input)?;
-        tool_call::record_task(&task_id);
         let outcome = match arguments.outcome {
             TaskOutcomeArgument::Success => TaskOutcome::Success,
             TaskOutcomeArgument::Failure => TaskOutcome::Failure,
@@ -532,6 +531,7 @@ impl McpServer {
             )
             .await
             .map_err(task_failure)?;
+        tool_call::record_task(task.telemetry_id());
         let durable_outcome = task
             .outcome()
             .ok_or_else(|| DispatchError::Tool(ToolFailure::internal()))?;
@@ -557,7 +557,6 @@ impl McpServer {
         intent: &str,
     ) -> Result<coral_task::AttributedCommand, DispatchError> {
         let task_id = TaskId::parse(task_id).map_err(invalid_input)?;
-        tool_call::record_task(&task_id);
         Ok(coral_task::AttributedCommand::new(
             self.runtime.principal.clone(),
             self.workspace_id.clone(),

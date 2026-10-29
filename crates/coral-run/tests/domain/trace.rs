@@ -231,14 +231,29 @@ async fn a_recovered_run_continues_its_trace_on_another_coral_instance() {
 /// end and a host defect, and never for a complete Upstream Outcome or a
 /// Run that ended before its dispatch.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table each of how a Run and an Invocation end"
+)]
 fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
     use crate::invocation::InvocationHostError;
     let runs = [
-        (RunState::Succeeded, false),
-        (RunState::Failed, true),
-        (RunState::Canceled, false),
-        (RunState::TimedOut, true),
-        (RunState::Interrupted, true),
+        (
+            crate::RunTerminalOutcome::Succeeded {
+                final_value: crate::FinalValue::Absent,
+            },
+            None,
+        ),
+        (
+            crate::RunTerminalOutcome::Failed(crate::RunFailure::new(
+                crate::RunFailureCode::ProgramRejected,
+                "the Program threw".to_string(),
+            )),
+            Some("program_rejected"),
+        ),
+        (crate::RunTerminalOutcome::Canceled, None),
+        (crate::RunTerminalOutcome::TimedOut, Some("timed_out")),
+        (crate::RunTerminalOutcome::Interrupted, Some("interrupted")),
     ];
     let invocations = || {
         [
@@ -274,21 +289,25 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
     capture();
     let run_ids = runs
         .iter()
-        .map(|(state, _)| {
-            let run_id = crate::RunId::generate().expect("Run identifier");
+        .map(|(outcome, _)| {
+            let run_id =
+                crate::types::HeldRunId::fixture(crate::RunId::generate().expect("Run identifier"));
             crate::trace::phase_span(None, &run_id, crate::trace::Phase::Complete)
-                .in_scope(|| crate::trace::record_run_end(*state));
+                .in_scope(|| crate::trace::record_run_end(outcome));
             run_id
         })
         .collect::<Vec<_>>();
+    let weather =
+        coral_provider::ProviderCallRoot::parse("coral.providers.weather").expect("Call Root");
     let invocation_ids = invocations()
         .into_iter()
         .map(|(ended, sent, _, _)| {
             let id = crate::InvocationId::generate();
             let span = crate::trace::invocation_span(
                 &id,
-                "coral.providers.weather.getForecast",
-                "provider",
+                coral_provider::ResolvedCallPath::fixture(&weather, "getForecast"),
+                &coral_provider::ProviderId::parse("00000000-0000-4000-8000-000000000001")
+                    .expect("Provider ID"),
             );
             let (kind, code) = crate::invocation::invocation_end(&ended, sent);
             crate::trace::record_invocation_end(&span, kind, code);
@@ -304,13 +323,14 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
     };
     let is_error =
         |span: &SpanData| matches!(span.status, opentelemetry::trace::Status::Error { .. });
-    for ((state, error), run_id) in runs.into_iter().zip(&run_ids) {
-        let span = with("coral.run.id", run_id.as_str());
+    for ((outcome, error_type), run_id) in runs.into_iter().zip(&run_ids) {
+        let span = with("coral.run.id", run_id.run_id().as_str());
         assert_eq!(
             attribute(span, "coral.run.status").as_deref(),
-            Some(state.as_storage_str())
+            Some(outcome.state().as_storage_str())
         );
-        assert_eq!(is_error(span), error, "{state:?}");
+        assert_eq!(attribute(span, "error.type").as_deref(), error_type);
+        assert_eq!(is_error(span), error_type.is_some(), "{outcome:?}");
     }
     for ((_, _, kind, error), id) in invocations().into_iter().zip(&invocation_ids) {
         let span = with("coral.invocation.id", id);

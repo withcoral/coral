@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use coral_db::{Database, Transaction};
+use coral_telemetry::safe;
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, Principal, PrincipalId, PrincipalKind,
     PrincipalWorkspaceEvidence, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
@@ -78,7 +79,10 @@ impl SavedFunctionCompiler for V8SavedFunctionCompiler {
         self.compiler
             .saved_function_call_paths(deadline, source)
             .inspect_err(|error| {
-                tracing::debug!(%error, "Call Path analysis failed; the source is checked untyped");
+                tracing::debug!(
+                    error.type = safe::kind(error.code()),
+                    "Call Path analysis failed; the source is checked untyped"
+                );
             })
             .ok()
     }
@@ -662,7 +666,10 @@ impl SavedFunctionModule {
                 self.function_declarations(actor, workspace_id, &function_paths)
                     .await
                     .inspect_err(|error| {
-                        tracing::warn!(%error, "Saved Function declarations are unavailable; they are checked untyped");
+                        tracing::warn!(
+                            error.type = safe::kind(error.code()),
+                            "Saved Function declarations are unavailable; they are checked untyped"
+                        );
                     })
                     .ok()
             };

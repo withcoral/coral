@@ -1,23 +1,24 @@
 //! Tracing and OpenTelemetry initialization for the local Coral process.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use coral_telemetry::OtlpSpanFilter;
-use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
+use coral_telemetry::safe;
+use coral_telemetry::{OtlpLogFilter, OtlpSpanFilter};
+use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{
     LogExporter, MetricExporter, SpanExporter as OtlpSpanExporter, WithExportConfig, WithHttpConfig,
 };
 use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::error::OTelSdkError;
 use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLoggerProvider};
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{
     BatchSpanProcessor, Sampler, SdkTracer, SdkTracerProvider, TracerProviderBuilder,
 };
-use tracing_opentelemetry::{OpenTelemetryLayer, OpenTelemetrySpanExt as _};
+use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::Layer as _;
 use tracing_subscriber::filter::{self, FilterExt as _, Filtered, Targets};
 use tracing_subscriber::layer::SubscriberExt;
@@ -102,14 +103,19 @@ fn configured_otlp_endpoint(config: &TelemetryConfig) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
-/// The process's resource: its service name, and as `service.instance.id`
-/// the id of the Coral Instance whose start initialized telemetry, so every
-/// exported span, log and metric names that Coral Instance.
-fn telemetry_resource(service_name: &str, instance_id: &str) -> Resource {
+/// The process's resource: its service name and version, and as
+/// `service.instance.id` the id of the Coral Instance whose start initialized
+/// telemetry, so every exported span, log and metric names that Coral
+/// Instance.
+fn telemetry_resource(service_name: &str, service_version: &str, instance_id: &str) -> Resource {
     Resource::builder()
         .with_attribute(opentelemetry::KeyValue::new(
             "service.name",
             service_name.to_string(),
+        ))
+        .with_attribute(opentelemetry::KeyValue::new(
+            "service.version",
+            service_version.to_string(),
         ))
         .with_attribute(opentelemetry::KeyValue::new(
             "service.instance.id",
@@ -148,7 +154,9 @@ fn build_otlp_logger_provider(
         .map_err(|e| AppError::InvalidInput(e.to_string()))?;
     Ok(SdkLoggerProvider::builder()
         .with_resource(resource.clone())
-        .with_log_processor(BatchLogProcessor::builder(exporter).build())
+        .with_log_processor(OtlpLogFilter::new(
+            BatchLogProcessor::builder(exporter).build(),
+        ))
         .build())
 }
 
@@ -182,11 +190,9 @@ pub struct RunContext {
 
 /// Error metadata recorded on the root Coral invocation span.
 pub trait RunErrorTelemetry {
-    /// Low-cardinality error class for `error.type`.
-    fn telemetry_error_type(&self) -> Cow<'_, str>;
-
-    /// Human-readable failure summary for span status and exception message.
-    fn telemetry_error_message(&self) -> Cow<'_, str>;
+    /// The error's stable kind for `error.type`: a bounded code that never
+    /// carries the error's text.
+    fn telemetry_error_code(&self) -> &'static str;
 
     /// The status the process exits with for this error, for
     /// `process.exit.code`.
@@ -227,12 +233,10 @@ pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
     let span = tracing::info_span!(
         "coral.runtime",
         error.type = tracing::field::Empty,
-        exception.message = tracing::field::Empty,
         otel.kind = "internal",
-        process.executable.name = process_executable_name(),
+        process.executable.name = safe::id(&process_executable_name()),
         process.exit.code = tracing::field::Empty,
-        process.pid = i64::from(std::process::id()),
-        status = tracing::field::Empty
+        process.pid = safe::number(i64::from(std::process::id())),
     );
     coral_telemetry::set_parent_from_trace_headers(&span, traceparent, None);
     span
@@ -240,22 +244,31 @@ pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
 
 fn record_run_success(span: &tracing::Span) {
     span.record("process.exit.code", 0_i64);
-    span.record("status", "ok");
-    span.set_status(OtelStatus::Ok);
+    coral_telemetry::record_success(span);
 }
 
 fn record_run_error(span: &tracing::Span, error: &impl RunErrorTelemetry) {
-    let error_type = error.telemetry_error_type();
-    let message = error.telemetry_error_message();
-    span.record("process.exit.code", i64::from(error.telemetry_exit_code()));
-    span.record("error.type", error_type.as_ref());
-    span.record("exception.message", message.as_ref());
-    span.record("status", "error");
-    span.set_status(OtelStatus::error(message.into_owned()));
+    span.record(
+        "process.exit.code",
+        safe::number(i64::from(error.telemetry_exit_code())),
+    );
+    coral_telemetry::record_failure(span, error.telemetry_error_code());
 }
 
-fn process_executable_name() -> String {
-    std::env::current_exe()
+/// The file name of the executable this process runs.
+struct ExecutableName(String);
+
+/// The operator installed the executable and chose its name.
+impl safe::Identifier for ExecutableName {}
+
+impl std::fmt::Display for ExecutableName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+fn process_executable_name() -> ExecutableName {
+    let name = std::env::current_exe()
         .ok()
         .and_then(|path| {
             path.file_name()
@@ -269,7 +282,8 @@ fn process_executable_name() -> String {
             })
         })
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "coral".to_string())
+        .unwrap_or_else(|| "coral".to_string());
+    ExecutableName(name)
 }
 
 type TraceLayerFilter<S> =
@@ -315,26 +329,39 @@ fn trace_pipeline(
         builder = add_otlp_trace_exporter(builder, endpoint, headers, trace_targets.clone())?;
     }
     let provider = builder.build();
+    // The span filter reads each span's level; busy and idle time are no
+    // semantic convention, so they are not tracked.
     let layer = tracing_opentelemetry::layer()
         .with_tracer(provider.tracer("coral"))
         .with_level(true)
+        .with_tracked_inactivity(false)
         .with_filter(trace_layer_filter_for(trace_targets));
     Ok((provider, layer, filter_error))
 }
 
-pub(crate) fn init_tracing(config: &TelemetryConfig, instance_id: &str) -> Result<(), AppError> {
-    INIT.get_or_init(|| try_init_tracing(config, instance_id).map_err(|e| e.to_string()))
-        .as_ref()
-        .map_err(|e| AppError::InvalidInput(e.clone()))?;
+pub(crate) fn init_tracing(
+    config: &TelemetryConfig,
+    instance_id: &str,
+    service_version: &str,
+) -> Result<(), AppError> {
+    INIT.get_or_init(|| {
+        try_init_tracing(config, instance_id, service_version).map_err(|e| e.to_string())
+    })
+    .as_ref()
+    .map_err(|e| AppError::InvalidInput(e.clone()))?;
     Ok(())
 }
 
-fn try_init_tracing(config: &TelemetryConfig, instance_id: &str) -> Result<(), AppError> {
+fn try_init_tracing(
+    config: &TelemetryConfig,
+    instance_id: &str,
+    service_version: &str,
+) -> Result<(), AppError> {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     let endpoint = configured_otlp_endpoint(config);
     let (log_filter, log_filter_error) = build_log_filter(config.otel.log_filter.as_deref());
 
-    let resource = telemetry_resource(&config.otel.service_name, instance_id);
+    let resource = telemetry_resource(&config.otel.service_name, service_version, instance_id);
     let (provider, otel_trace_layer, trace_filter_error) = trace_pipeline(config, &resource)?;
     if let Ok(mut guard) = PROVIDER.lock() {
         *guard = Some(provider);
@@ -359,35 +386,41 @@ fn try_init_tracing(config: &TelemetryConfig, instance_id: &str) -> Result<(), A
         })
     });
 
-    if let Err(error) = Registry::default()
+    if Registry::default()
         .with(otel_trace_layer)
         .with(otel_log_layer)
         .try_init()
+        .is_err()
     {
         tracing::warn!(
-            detail = %error,
+            error.type = "subscriber_already_installed",
             "skipping coral-app tracing subscriber: host process has already installed one"
         );
         return Ok(());
     }
-    if let Some(error) = log_filter_error {
+    if log_filter_error.is_some() {
         tracing::warn!(
-            provided_filter = %config.otel.log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
-            fallback_filter = DEFAULT_LOG_FILTER,
-            detail = %error,
+            error.type = "invalid_filter",
             "invalid log_filter; falling back to default filter"
         );
     }
-    if let Some(error) = trace_filter_error {
+    if trace_filter_error.is_some() {
         tracing::warn!(
-            provided_filter = %config.otel.trace_filter,
-            fallback_filter = DEFAULT_TRACE_FILTER,
-            detail = %error,
+            error.type = "invalid_filter",
             "invalid trace_filter; falling back to default filter"
         );
     }
 
     Ok(())
+}
+
+/// The kind of an OpenTelemetry SDK failure, for an event's `error.type`.
+const fn sdk_error_code(error: &OTelSdkError) -> &'static str {
+    match error {
+        OTelSdkError::AlreadyShutdown => "already_shutdown",
+        OTelSdkError::Timeout(_) => "timeout",
+        OTelSdkError::InternalFailure(_) => "internal_failure",
+    }
 }
 
 /// Flush any pending tracing, log, and metric exports before process exit.
@@ -396,19 +429,28 @@ pub fn shutdown_tracing() {
         && let Some(provider) = guard.take()
         && let Err(error) = provider.shutdown()
     {
-        tracing::warn!("OTEL meter provider shutdown error: {error}");
+        tracing::warn!(
+            error.type = safe::kind(sdk_error_code(&error)),
+            "OTEL meter provider shutdown failed"
+        );
     }
     if let Ok(mut guard) = PROVIDER.lock()
         && let Some(provider) = guard.take()
         && let Err(error) = provider.shutdown()
     {
-        tracing::warn!("OTEL trace provider shutdown error: {error}");
+        tracing::warn!(
+            error.type = safe::kind(sdk_error_code(&error)),
+            "OTEL trace provider shutdown failed"
+        );
     }
     if let Ok(mut guard) = LOGGER_PROVIDER.lock()
         && let Some(provider) = guard.take()
         && let Err(error) = provider.shutdown()
     {
-        tracing::warn!("OTEL logger provider shutdown error: {error}");
+        tracing::warn!(
+            error.type = safe::kind(sdk_error_code(&error)),
+            "OTEL logger provider shutdown failed"
+        );
     }
 }
 
@@ -439,7 +481,7 @@ mod tests {
             ),
         ] {
             let config = TelemetryConfig::from_toml(raw).expect("telemetry config");
-            let resource = telemetry_resource("coral-test", "instance");
+            let resource = telemetry_resource("coral-test", "1.2.3+abc1234", "instance");
             let (provider, layer, filter_error) =
                 trace_pipeline(&config, &resource).expect("trace pipeline");
             assert_eq!(filter_error, None, "{case}");
@@ -500,7 +542,7 @@ mod tests {
     #[test]
     fn requests_are_recorded_whatever_the_caller_sampled() {
         let config = TelemetryConfig::from_toml("").expect("telemetry config");
-        let resource = telemetry_resource("coral-test", "instance");
+        let resource = telemetry_resource("coral-test", "1.2.3+abc1234", "instance");
         let (provider, layer, _filter_error) =
             trace_pipeline(&config, &resource).expect("trace pipeline");
         let subscriber = tracing_subscriber::Registry::default().with(layer);
@@ -530,14 +572,19 @@ mod tests {
     }
 
     /// Operators filter exported telemetry by `service.instance.id` to find
-    /// the Coral Instance that produced it.
+    /// the Coral Instance that produced it, and by `service.version` to find
+    /// the build.
     #[test]
-    fn the_resource_names_the_service_and_the_coral_instance() {
-        let resource = telemetry_resource("coral-test", "6f1c2b0e-instance");
+    fn the_resource_names_the_service_its_version_and_the_coral_instance() {
+        let resource = telemetry_resource("coral-test", "1.2.3+abc1234", "6f1c2b0e-instance");
 
         assert_eq!(
             resource.get(&Key::new("service.name")),
             Some(Value::from("coral-test"))
+        );
+        assert_eq!(
+            resource.get(&Key::new("service.version")),
+            Some(Value::from("1.2.3+abc1234"))
         );
         assert_eq!(
             resource.get(&Key::new("service.instance.id")),

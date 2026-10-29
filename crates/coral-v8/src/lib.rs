@@ -731,6 +731,37 @@ pub enum Error {
     InvalidProgramValue(String),
 }
 
+impl Error {
+    /// The error's stable kind, for an event's `error.type`: a bounded
+    /// code that never carries the error's text.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Initialization { .. } => "initialization",
+            Self::CompilerThread { .. } => "compiler_thread",
+            Self::CompilerUnavailable { .. } => "compiler_unavailable",
+            Self::CompilerBusy { .. } => "compiler_busy",
+            Self::CompilationTimedOut { .. } => "compilation_timed_out",
+            Self::Compilation { .. } => "compilation",
+            Self::InvalidProgramBody { .. } => "invalid_program_body",
+            Self::InvalidSavedFunction { .. } => "invalid_saved_function",
+            Self::ForbiddenCapability { .. } => "forbidden_capability",
+            Self::InvalidSavedFunctionReference { .. } => "invalid_saved_function_reference",
+            Self::CompilerProtocol { .. } => "compiler_protocol",
+            Self::InvalidSourceMap { .. } => "invalid_source_map",
+            Self::Engine { .. } => "engine",
+            Self::ProgramRejected { .. } => "program_rejected",
+            Self::ProgramOutputRejected { .. } => "program_output_rejected",
+            Self::ResourceLimitExceeded { .. } => "resource_limit_exceeded",
+            Self::MemoryLimitExceeded { .. } => "memory_limit_exceeded",
+            Self::InvalidIsolateLimits { .. } => "invalid_isolate_limits",
+            Self::PendingProgram { .. } => "pending_program",
+            Self::ProgramHostTerminated { .. } => "program_host_terminated",
+            Self::InvalidProgramValue { .. } => "invalid_program_value",
+        }
+    }
+}
+
 /// Formats safe compiler diagnostics with their authored line and column.
 #[must_use]
 pub fn format_compiler_error(error: Error) -> String {

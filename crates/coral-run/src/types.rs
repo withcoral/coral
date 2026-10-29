@@ -79,6 +79,33 @@ impl fmt::Display for RunId {
     }
 }
 
+/// The ID of a Run Coral holds a row for: one it inserted at acceptance, or
+/// read from the row. A [`RunId`] a request names is caller text until Coral
+/// finds its Run, so only a Run's record makes one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HeldRunId(RunId);
+
+impl HeldRunId {
+    pub(crate) const fn run_id(&self) -> &RunId {
+        &self.0
+    }
+
+    /// A Run ID as if Coral held its row.
+    #[cfg(test)]
+    pub(crate) const fn fixture(run_id: RunId) -> Self {
+        Self(run_id)
+    }
+}
+
+impl fmt::Display for HeldRunId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Only a Run's record makes one, so Coral holds the Run it names.
+impl coral_telemetry::safe::Identifier for HeldRunId {}
+
 /// Stable Coral-generated Tool Invocation identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct InvocationId(Uuid);
@@ -110,6 +137,10 @@ impl fmt::Display for InvocationId {
         write!(formatter, "{}", self.0.hyphenated())
     }
 }
+
+/// A UUID Coral generated, or one parsed in its canonical form: it holds
+/// no text.
+impl coral_telemetry::safe::Identifier for InvocationId {}
 
 /// Exact submitted TypeScript async-function body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -340,6 +371,21 @@ pub enum RunFailureCode {
     RunAuthorityLost,
 }
 
+impl RunFailureCode {
+    /// Stable, transport-neutral code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::ProgramRejected => "program_rejected",
+            Self::InvalidProgramValue => "invalid_program_value",
+            Self::ResourceLimitExceeded => "resource_limit_exceeded",
+            Self::MemoryLimitExceeded => "memory_limit_exceeded",
+            Self::ProgramExecutionFailed => "program_execution_failed",
+            Self::RunAuthorityLost => "run_authority_lost",
+        }
+    }
+}
+
 /// Safe terminal Program failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunFailure {
@@ -409,6 +455,19 @@ impl RunTerminalOutcome {
             Self::Canceled => RunState::Canceled,
             Self::TimedOut => RunState::TimedOut,
             Self::Interrupted => RunState::Interrupted,
+        }
+    }
+
+    /// The failure code of an outcome that is an error, for a span's
+    /// `error.type`: the Run's failure code, `timed_out` or `interrupted`.
+    /// `None` for a success or a cancellation.
+    #[must_use]
+    pub const fn failure_code(&self) -> Option<&'static str> {
+        match self {
+            Self::Succeeded { .. } | Self::Canceled => None,
+            Self::Failed(failure) => Some(failure.code().code()),
+            Self::TimedOut => Some("timed_out"),
+            Self::Interrupted => Some("interrupted"),
         }
     }
 }
@@ -988,6 +1047,20 @@ pub(crate) struct AcceptedRun {
     /// The Run Trace every span of the Run joins; `None` when acceptance
     /// stored none.
     pub(crate) trace: Option<coral_telemetry::RunTrace>,
+}
+
+impl AcceptedRun {
+    /// The Run's ID as a span field.
+    pub(crate) fn held_id(&self) -> HeldRunId {
+        HeldRunId(self.id.clone())
+    }
+}
+
+impl crate::lifecycle::RunRecord {
+    /// The Run's ID as a span field.
+    pub(crate) fn held_id(&self) -> HeldRunId {
+        HeldRunId(self.id.clone())
+    }
 }
 
 /// The cap on Program output the Run Owner has applied but not yet recorded.

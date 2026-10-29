@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 coral-db.workspace = true
+coral-telemetry.workspace = true
 coral-functions.workspace = true
 coral-identifier.workspace = true
 coral-run.workspace = true
@@ -22,6 +23,7 @@ coral-workspace.workspace = true
 sea-query.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

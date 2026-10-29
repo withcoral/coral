@@ -141,7 +141,27 @@ pub struct Task {
     ended_at_unix_nanos: Option<i64>,
 }
 
+/// The ID of a Task Coral found, as a span field.
+#[derive(Debug, Clone, Copy)]
+pub struct FoundTaskId<'a>(&'a TaskId);
+
+impl fmt::Display for FoundTaskId<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Only a Task Coral read makes one. A [`TaskId`] a request names is
+/// caller text until Coral finds its Task: its words need not be Coral's.
+impl coral_telemetry::safe::Identifier for FoundTaskId<'_> {}
+
 impl Task {
+    /// The Task's ID as a span field.
+    #[must_use]
+    pub const fn telemetry_id(&self) -> FoundTaskId<'_> {
+        FoundTaskId(&self.id)
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "constructs one complete durable Task snapshot"

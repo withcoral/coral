@@ -22,6 +22,7 @@ use crate::state::DatabaseConfig;
 use crate::state::{AppStateLayout, InitializedState, StateLock, initialize_state};
 use crate::telemetry::TelemetryConfig;
 use coral_db::{Database, DatabaseOptions};
+use coral_telemetry::safe;
 
 /// HTTP/2 `SETTINGS_MAX_HEADER_LIST_SIZE` for the private listener.
 const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 128 * 1024;
@@ -183,6 +184,14 @@ impl ServerBuilder {
     #[must_use]
     pub fn with_outbound_defaults(mut self, defaults: coral_outbound::DestinationPolicy) -> Self {
         self.outbound_defaults = defaults;
+        self
+    }
+
+    /// Names the launching binary's version in exported telemetry, as
+    /// `service.version`. Without one, Coral's package version names it.
+    #[must_use]
+    pub fn with_service_version(mut self, version: &'static str) -> Self {
+        self.launcher.service_version = Some(version);
         self
     }
 
@@ -379,8 +388,12 @@ impl PreparedServerBuilder {
         // This start's Coral Instance, recorded on the Runs it claims. The
         // first start in a process also names it in exported telemetry.
         let instance = coral_run::CoralInstanceId::generate();
-        init_server_telemetry(deployment_config.raw(), &instance.to_string())?;
-        tracing::info!(coral_instance_id = %instance, "Coral Instance starting");
+        init_server_telemetry(
+            deployment_config.raw(),
+            &instance.to_string(),
+            builder.launcher.service_version,
+        )?;
+        tracing::info!("Coral Instance starting");
         let mut server = start_server(
             Arc::clone(&coral_db),
             mode,
@@ -421,9 +434,14 @@ fn build_authorization_server(
     ))
 }
 
-fn init_server_telemetry(raw: &str, instance_id: &str) -> Result<(), AppError> {
+fn init_server_telemetry(
+    raw: &str,
+    instance_id: &str,
+    service_version: Option<&'static str>,
+) -> Result<(), AppError> {
     let config = TelemetryConfig::from_toml(raw)?;
-    crate::telemetry::init_tracing(&config, instance_id)
+    let service_version = service_version.unwrap_or(env!("CARGO_PKG_VERSION"));
+    crate::telemetry::init_tracing(&config, instance_id, service_version)
 }
 
 /// Opens the host credential vault from the source the deployment selects:
@@ -598,7 +616,10 @@ impl RunningServer {
             && let Err(error) = accounts.stop_device_authorizations().await
         {
             // Workers are already stopped; unreleased leases expire on their own.
-            tracing::warn!(%error, "device authorization lease release failed");
+            tracing::warn!(
+                error.type = safe::kind(error.code()),
+                "device authorization lease release failed"
+            );
         }
         if let Some(shutdown_tx) = self
             .shutdown_tx
@@ -866,7 +887,10 @@ pub(crate) async fn start_server(
                     && let Ok(now) = i64::try_from(elapsed.as_nanos())
                     && let Err(error) = accounts.recover_device_authorizations(now).await
                 {
-                    tracing::warn!(%error, "device authorization recovery failed");
+                    tracing::warn!(
+                        error.type = safe::kind(error.code()),
+                        "device authorization recovery failed"
+                    );
                 }
             }
         })
@@ -901,8 +925,14 @@ pub(crate) async fn start_server(
 async fn sweep_expired_leases(runs: &coral_run::RunModule) {
     match runs.sweep_expired_leases().await {
         Ok(0) => {}
-        Ok(recovered) => tracing::info!(recovered, "expired-lease sweep recovered Runs"),
-        Err(error) => tracing::warn!(%error, "expired-lease sweep failed; the next pass retries"),
+        Ok(recovered) => tracing::info!(
+            coral.run.recovered = safe::number(recovered),
+            "expired-lease sweep recovered Runs"
+        ),
+        Err(error) => tracing::warn!(
+            error.type = safe::kind(error.code()),
+            "expired-lease sweep failed; the next pass retries"
+        ),
     }
 }
 

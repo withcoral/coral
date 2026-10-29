@@ -47,6 +47,10 @@ macro_rules! uuid_id {
                 write!(formatter, "{}", self.0.hyphenated())
             }
         }
+
+        /// A UUID Coral generated, or one parsed in its canonical form: it holds
+        /// no text.
+        impl coral_telemetry::safe::Identifier for $name {}
     };
 }
 
@@ -603,6 +607,41 @@ pub enum InvocationToolVerification {
     AuthorityLost,
 }
 
+/// The Call Path of a resolved Tool: its Provider's Call Root and the
+/// Tool's relative path.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedCallPath<'a> {
+    call_root: &'a ProviderCallRoot,
+    relative_path: &'a str,
+}
+
+impl<'a> ResolvedCallPath<'a> {
+    /// The Call Path `relative_path` under `call_root`, as if a Tool had
+    /// been found there.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub const fn fixture(call_root: &'a ProviderCallRoot, relative_path: &'a str) -> Self {
+        Self {
+            call_root,
+            relative_path,
+        }
+    }
+}
+
+impl fmt::Display for ResolvedCallPath<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}.{}",
+            self.call_root.as_str(),
+            self.relative_path
+        )
+    }
+}
+
+/// Only a resolved Tool makes one, so it names a Tool Coral serves.
+impl coral_telemetry::safe::Identifier for ResolvedCallPath<'_> {}
+
 /// Exact secret-free Tool evidence retained by Invocation admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedInvocationTool {
@@ -643,6 +682,15 @@ impl ResolvedInvocationTool {
     #[must_use]
     pub const fn tool(&self) -> &MaterializedTool {
         &self.tool
+    }
+
+    /// Returns the Call Path Coral found this Tool at.
+    #[must_use]
+    pub fn call_path(&self) -> ResolvedCallPath<'_> {
+        ResolvedCallPath {
+            call_root: self.provider_access.call_root(),
+            relative_path: self.tool.relative_path(),
+        }
     }
 
     /// Returns the authoritative schema graph selected with the Tool.

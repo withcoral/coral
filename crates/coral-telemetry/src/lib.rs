@@ -1,16 +1,20 @@
 //! Cross-crate telemetry helpers.
 //!
 //! This crate owns transport-neutral W3C propagation, safe telemetry utilities
-//! shared by application, domain, and adapter crates, and the filter that
-//! decides what spans may leave the host.
+//! shared by application, domain, and adapter crates, the safe fields, and
+//! the filters that decide what spans and log records may leave the host.
 
 mod export;
+mod field;
 mod request;
 mod run;
+pub mod safe;
+#[cfg(test)]
+mod source_scan;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
-pub use export::OtlpSpanFilter;
+pub use export::{OtlpLogFilter, OtlpSpanFilter};
 pub use request::{REQUEST_TARGET, request_span, trace_grpc_routes, trace_http_routes};
 pub use run::RunTrace;
 
@@ -70,16 +74,19 @@ const TRACESTATE_HEADER: &str = "tracestate";
 
 /// Prefix for host-only span attributes that must not be exported over OTLP.
 pub const LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX: &str = "coral.local.";
-/// Records a categorical failure without accepting caller-controlled message text.
-pub fn record_failure(
-    span: &tracing::Span,
-    error_type: impl AsRef<str>,
-    stable_message: &'static str,
-) {
-    span.record("status", "error");
-    span.record("error.type", error_type.as_ref());
-    span.record("exception.message", stable_message);
-    span.set_status(OtelStatus::error(stable_message));
+
+/// Marks `span` failed with the code `error_type` and no message text, so no
+/// caller-controlled text reaches its status. A span that succeeds leaves its
+/// status unset, as the OpenTelemetry conventions ask.
+pub fn record_failure(span: &tracing::Span, error_type: &'static str) {
+    span.record("error.type", safe::kind(error_type));
+    span.set_status(OtelStatus::error(""));
+}
+
+/// Marks `span`, a span whose success callers rely on, such as a process's,
+/// successful.
+pub fn record_success(span: &tracing::Span) {
+    span.set_status(OtelStatus::Ok);
 }
 
 /// Links `span`, a span not yet entered, to the current span, when there is
@@ -175,8 +182,8 @@ fn set_parent_from_context(span: &tracing::Span, context: Option<Context>) {
     let Some(context) = context else {
         return;
     };
-    if let Err(error) = span.set_parent(context) {
-        tracing::debug!(%error, "failed to set parent trace context");
+    if span.set_parent(context).is_err() {
+        tracing::debug!(error.type = "set_parent", "failed to set parent trace context");
     }
 }
 
@@ -261,10 +268,8 @@ mod tests {
             let span = tracing::info_span!(
                 "failure",
                 error.type = tracing::field::Empty,
-                exception.message = tracing::field::Empty,
-                status = tracing::field::Empty,
             );
-            record_failure(&span, "INVALID_ARGUMENT", "request failed");
+            record_failure(&span, "INVALID_ARGUMENT");
             span.in_scope(|| {});
         });
         let spans = capture.finished();
@@ -273,16 +278,11 @@ mod tests {
             .find(|span| span.name == "failure")
             .expect("failure span");
         let string_attribute = |name: &str| attribute(failure, name);
-        assert_eq!(string_attribute("status").as_deref(), Some("error"));
         assert_eq!(
             string_attribute("error.type").as_deref(),
             Some("INVALID_ARGUMENT")
         );
-        assert_eq!(
-            string_attribute("exception.message").as_deref(),
-            Some("request failed")
-        );
-        assert_eq!(failure.status, OtelStatus::error("request failed"));
+        assert_eq!(failure.status, OtelStatus::error(""));
     }
 
     #[test]

@@ -19,6 +19,7 @@ use coral_provider::{
     WorkspaceProviderPublicationRequest, WorkspaceProviderPublisher,
 };
 use coral_search::SearchIndex;
+use coral_telemetry::safe;
 use coral_workspace::{ChangeContext, WorkspaceId};
 
 /// Publishes, removes, and renames Providers, one transaction each.
@@ -147,8 +148,8 @@ impl ProviderWorkflow {
                 .await
             {
                 tracing::warn!(
-                    workspace_id = %workspace_id,
-                    error = %error,
+                    coral.workspace.id = safe::id(&workspace_id),
+                    error.type = safe::kind(error.code()),
                     "failed to install a Built-in Provider"
                 );
             }
@@ -194,9 +195,9 @@ impl ProviderWorkflow {
                 .await
             {
                 tracing::warn!(
-                    workspace_id = %outdated.workspace_id(),
-                    provider_id = %outdated.provider_id(),
-                    error = %error,
+                    coral.workspace.id = safe::id(&outdated.workspace_id()),
+                    coral.provider.id = safe::id(&outdated.provider_id()),
+                    error.type = safe::kind(error.code()),
                     "failed to update a Built-in Provider's catalog"
                 );
             }
