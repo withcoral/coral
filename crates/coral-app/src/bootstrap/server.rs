@@ -680,6 +680,9 @@ impl Drop for RunningServer {
             worker.abort();
         }
         self.search_reconcile.abort();
+        if let Some(check) = &self.release_check {
+            check.abort();
+        }
         if let Some(accounts) = &self.accounts {
             accounts.abort_device_authorizations();
         }
