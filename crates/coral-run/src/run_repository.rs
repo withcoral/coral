@@ -53,6 +53,7 @@ enum ProgramRunRecords {
     WorkerClaimId,
     WorkerClaimExpiresAtUnixNanos,
     HolderInstanceId,
+    TraceParent,
     ExecutionClaimId,
     ExecutionStartedAtUnixNanos,
     TerminationKind,
@@ -191,7 +192,7 @@ fn exact_run_statement(workspace_id: &WorkspaceId, run_id: &RunId) -> sea_query:
 }
 
 /// The columns `RunRow` decodes, shared by Run reads and retention's hold.
-const RUN_COLUMNS: [ProgramRunRecords; 27] = [
+const RUN_COLUMNS: [ProgramRunRecords; 28] = [
     ProgramRunRecords::Id,
     ProgramRunRecords::WorkspaceId,
     ProgramRunRecords::PrincipalId,
@@ -202,6 +203,7 @@ const RUN_COLUMNS: [ProgramRunRecords; 27] = [
     ProgramRunRecords::WorkerClaimId,
     ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
     ProgramRunRecords::HolderInstanceId,
+    ProgramRunRecords::TraceParent,
     ProgramRunRecords::ExecutionClaimId,
     ProgramRunRecords::ExecutionStartedAtUnixNanos,
     ProgramRunRecords::TerminationKind,

@@ -339,6 +339,7 @@ impl ApprovalModule {
             }
             let request = view(&mut tx, &self.workspaces, actor, workspace, &run, row, now).await?;
             tx.commit().await?;
+            crate::trace::link_request(run.trace.as_ref());
             (request, run)
         };
         if request.state != ApprovalState::Pending || run.state.is_terminal() {

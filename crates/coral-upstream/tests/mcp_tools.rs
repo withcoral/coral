@@ -985,3 +985,99 @@ async fn mcp_tools_send_confirmed_service_headers_without_credentials() {
         assert!(!request.headers.contains_key("authorization"));
     }
 }
+
+/// An MCP dispatch is one client span of the Invocation that sends it, and
+/// every request of its session carries that span's `traceparent` and no
+/// other trace context. A tool result with `isError: true` marks only the
+/// client span as an error.
+#[tokio::test]
+async fn an_mcp_dispatch_carries_only_its_client_span_trace_context() {
+    use coral_telemetry::testing::attribute;
+    use opentelemetry::trace::{SpanKind, Status};
+    use tracing::Instrument as _;
+
+    let capture = capture();
+    let server = server(json!({"content": [], "isError": true})).await;
+    let invocation = tracing::info_span!("coral.invocation");
+    let trace = {
+        use opentelemetry::trace::TraceContextExt as _;
+        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+        invocation.context().span().span_context().trace_id()
+    };
+    call_once(&server, 16 * 1024 * 1024)
+        .instrument(invocation.clone())
+        .await
+        .expect("a complete isError outcome");
+    drop(invocation);
+
+    // The SDK's session task ends, and drops its spans, after the call returns.
+    let mut spans = capture.finished();
+    for _ in 0..200 {
+        if spans
+            .iter()
+            .any(|span| span.span_context.trace_id() == trace)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        spans = capture.finished();
+    }
+    let parent = spans
+        .iter()
+        .find(|span| span.span_context.trace_id() == trace && span.name == "coral.invocation")
+        .expect("Invocation span");
+    let client = spans
+        .iter()
+        .find(|span| span.span_context.trace_id() == trace && span.span_kind == SpanKind::Client)
+        .expect("MCP client span");
+    assert_eq!(client.name, "tools/call mixed");
+    assert_eq!(client.parent_span_id, parent.span_context.span_id());
+    for (key, value) in [
+        ("mcp.method.name", "tools/call"),
+        ("gen_ai.tool.name", "mixed"),
+        ("server.address", "127.0.0.1"),
+        ("error.type", "tool_error"),
+    ] {
+        assert_eq!(attribute(client, key).as_deref(), Some(value), "{key}");
+    }
+    assert!(attribute(client, "server.port").is_some());
+    assert!(matches!(client.status, Status::Error { .. }));
+
+    let expected = format!(
+        "00-{}-{}-01",
+        client.span_context.trace_id(),
+        client.span_context.span_id()
+    );
+    let posts = server.received_requests().await.expect("requests");
+    let posts = posts
+        .iter()
+        .filter(|request| request.method == "POST")
+        .collect::<Vec<_>>();
+    assert_eq!(posts.len(), 3);
+    for request in posts {
+        assert_eq!(
+            request
+                .headers
+                .get_all("traceparent")
+                .iter()
+                .map(|value| value.to_str().expect("ASCII"))
+                .collect::<Vec<_>>(),
+            vec![expected.as_str()]
+        );
+        assert!(request.headers.get("tracestate").is_none());
+        assert!(request.headers.get("baggage").is_none());
+    }
+}
+
+/// The process-wide span capture: a subscriber set for one test thread
+/// misses callsites another test's thread registered first.
+fn capture() -> &'static coral_telemetry::testing::SpanCapture {
+    static CAPTURE: std::sync::OnceLock<coral_telemetry::testing::SpanCapture> =
+        std::sync::OnceLock::new();
+    CAPTURE.get_or_init(|| {
+        let capture = coral_telemetry::testing::SpanCapture::default();
+        tracing::subscriber::set_global_default(capture.subscriber())
+            .expect("install the span capture");
+        capture
+    })
+}

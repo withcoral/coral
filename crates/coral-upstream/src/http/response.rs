@@ -2,6 +2,7 @@
 
 use coral_catalog::{HttpExecutionBinding, HttpRedirectPolicy, SchemaGraph, SuccessSelection};
 use serde_json::Value;
+use tracing::Instrument as _;
 use url::Url;
 
 use super::response_headers::{CredentialNames, safe_response_headers};
@@ -265,8 +266,29 @@ impl HttpUpstream {
             if let Some(body) = &body {
                 request = request.body(body.clone());
             }
-            let mut response = request.send().await.map_err(Error::send)?;
+            // Only the first request follows the route template; a redirect
+            // target has none.
+            let span = client_span(
+                &method,
+                &url,
+                redirects.is_empty().then(|| binding.path_template()),
+                body.as_ref().map(Vec::len),
+            );
+            let request = crate::traced(request, &span)?;
+            let mut response = request
+                .send()
+                .instrument(span.clone())
+                .await
+                .map_err(Error::send)?;
             let status = response.status().as_u16();
+            span.record("http.response.status_code", status);
+            if status >= 400 {
+                coral_telemetry::record_failure(
+                    &span,
+                    status.to_string(),
+                    "HTTP response status is an error",
+                );
+            }
             if binding.redirect_policy() == HttpRedirectPolicy::Follow
                 && redirects.len() < MAX_REDIRECTS
                 && let Some(next_method) = redirect_method(status, &method)
@@ -328,6 +350,7 @@ impl HttpUpstream {
                 content_length_describes_body,
             )
             .await?;
+            span.record("http.response.body.size", response_body.len());
             let content_type =
                 selected_decode_facts(&binding, status, !response_body.is_empty(), content_type);
             let (data, decode_diagnostics) = decode_response_body(
@@ -628,4 +651,35 @@ fn push_diagnostic(
     if !diagnostics.iter().any(|diagnostic| diagnostic.code == code) {
         diagnostics.push(HttpDecodeDiagnostic::new(code, message));
     }
+}
+
+/// The OpenTelemetry HTTP client span of one request: method, scheme,
+/// server address and port, the route `template` when the request follows
+/// one, and sizes. Never the full URL, a filled path, a query or a header.
+fn client_span(
+    method: &reqwest::Method,
+    url: &url::Url,
+    template: Option<&str>,
+    request_body_size: Option<usize>,
+) -> tracing::Span {
+    let name = template.map_or_else(
+        || method.as_str().to_string(),
+        |template| format!("{method} {template}"),
+    );
+    tracing::info_span!(
+        "http.client",
+        otel.name = name,
+        otel.kind = "client",
+        http.request.method = method.as_str(),
+        url.scheme = url.scheme(),
+        server.address = url.host_str().unwrap_or_default(),
+        server.port = url.port_or_known_default(),
+        url.template = template,
+        http.request.body.size = request_body_size,
+        http.response.status_code = tracing::field::Empty,
+        http.response.body.size = tracing::field::Empty,
+        status = tracing::field::Empty,
+        error.type = tracing::field::Empty,
+        exception.message = tracing::field::Empty,
+    )
 }

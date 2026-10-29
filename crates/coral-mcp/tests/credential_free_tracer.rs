@@ -774,6 +774,7 @@ async fn check_raw_oversized_items(endpoint: &str, task: &str, version: &Protoco
     reason = "one table of failure projections: Program, Tool, aggregate, and Saved Function errors"
 )]
 async fn program_failures_are_run_updates_with_existing_error_facts() {
+    capture();
     let tracer = Tracer::start().await;
     let client_a = tracer.sdk().await;
     let task_id = start_task(&client_a, "Explain Program failures").await;
@@ -791,6 +792,11 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
     )
     .await;
     assert_eq!(failed.is_error, Some(false));
+    let run_trace = structured(&failed)["trace_id"]
+        .as_str()
+        .expect("a failed Run names its Run Trace")
+        .to_string();
+    assert!(TraceId::parse(&run_trace).is_ok(), "{run_trace}");
     let failure = &structured(&failed)["failure"];
     assert_eq!(failure["code"], "program_rejected");
     assert_eq!(

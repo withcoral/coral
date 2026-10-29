@@ -27,6 +27,7 @@ mod run_inbox;
 mod scoping;
 mod summary;
 mod support;
+mod trace;
 mod updates;
 mod upgrade;
 

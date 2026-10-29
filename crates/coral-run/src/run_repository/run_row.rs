@@ -22,6 +22,7 @@ pub(super) struct RunRow {
     worker_claim_id: Option<String>,
     worker_claim_expires_at_unix_nanos: Option<i64>,
     holder_instance_id: Option<String>,
+    trace_parent: Option<String>,
     execution_claim_id: Option<String>,
     execution_started_at_unix_nanos: Option<i64>,
     termination_kind: Option<String>,
@@ -95,6 +96,10 @@ impl RunTerminationKind {
 }
 
 impl RunRow {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one decode checks every lifecycle column of the Run row together"
+    )]
     pub(super) fn decode(self) -> Result<RunRecord, Error> {
         let id = RunId::parse(&self.id)
             .map_err(|_error| Error::CorruptData("Run has invalid identity".to_string()))?;
@@ -199,8 +204,18 @@ impl RunRow {
             terminal_outcome,
             terminal_at_unix_nanos: self.terminal_at_unix_nanos,
             value_limits,
+            trace: decode_trace(self.trace_parent.as_deref()),
         })
     }
+}
+
+/// A stored Run Trace that does not parse is lost telemetry, never a corrupt
+/// Run: the Run's phases then start a new trace.
+fn decode_trace(stored: Option<&str>) -> Option<coral_telemetry::RunTrace> {
+    let stored = stored?;
+    coral_telemetry::RunTrace::parse(stored)
+        .inspect_err(|error| tracing::warn!(%error, "Run row has an invalid Run Trace"))
+        .ok()
 }
 
 fn decode_termination(row: &RunRow, state: RunState) -> Result<Option<RunTermination>, Error> {

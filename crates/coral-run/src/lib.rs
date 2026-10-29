@@ -173,6 +173,7 @@ mod source_location_repository;
 mod summary;
 mod summary_repository;
 mod termination;
+mod trace;
 mod types;
 mod worker;
 
@@ -200,8 +201,8 @@ pub use required_actions::{
     RequiredActionRequest, RequiredActions, RequiredActor,
 };
 pub use summary::{
-    ActivitySummary, ActorContext, ApprovalDecisions, CallOutcomes, MAX_SUMMARY_DAYS, StoppedTool,
-    ToolCalls,
+    ActivitySummary, ActorContext, ApprovalDecisions, CallOutcomes, CallerCalls, MAX_SUMMARY_DAYS,
+    StoppedTool, ToolCalls,
 };
 pub use types::{
     AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, COMBINED_TYPESCRIPT_MAX_BYTES,

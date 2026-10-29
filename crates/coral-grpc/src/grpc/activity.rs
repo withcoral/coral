@@ -322,7 +322,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             .activity_summary(&self.runs, &actor, &workspace, input.days)
             .await
             .map_err(error)?;
-        Ok(Response::new(execution::summary(summary)))
+        Ok(Response::new(execution::summary(&workspace, summary)))
     }
 
     async fn browse_required_actions(

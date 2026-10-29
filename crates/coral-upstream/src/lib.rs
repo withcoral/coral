@@ -18,6 +18,12 @@ pub use mcp::{
 };
 
 #[cfg(test)]
+use opentelemetry as _;
+#[cfg(test)]
+use opentelemetry_sdk as _;
+#[cfg(test)]
+use tracing_opentelemetry as _;
+#[cfg(test)]
 use wiremock as _;
 
 fn media_type_essence(value: &str) -> String {
@@ -35,6 +41,18 @@ fn is_json_media_type(essence: &str) -> bool {
 
 fn http_client(policy: coral_outbound::DestinationPolicy) -> Result<coral_outbound::Client, Error> {
     coral_outbound::Client::new(policy, std::time::Duration::from_secs(30)).map_err(Error::Client)
+}
+
+/// `request` with only the trace context of `span`, the client span it is
+/// sent in (`coral_telemetry::set_outbound_trace_context`).
+fn traced(
+    request: reqwest::RequestBuilder,
+    span: &tracing::Span,
+) -> Result<reqwest::RequestBuilder, Error> {
+    let (client, request) = request.build_split();
+    let mut request = request.map_err(Error::send)?;
+    coral_telemetry::set_outbound_trace_context(span, request.headers_mut());
+    Ok(reqwest::RequestBuilder::from_parts(client, request))
 }
 
 async fn read_bounded_body(

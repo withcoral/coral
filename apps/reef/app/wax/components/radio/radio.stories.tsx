@@ -149,9 +149,7 @@ export const ManyOptions: Story = {
     await expect(viewport).toBeDefined()
     await expect(viewport?.scrollWidth).toBeGreaterThan(viewport?.clientWidth ?? 0)
     await expect(getComputedStyle(viewport!).overflowY).toBe('hidden')
-    await expect(getComputedStyle(viewport!, '::after').backgroundImage).toContain(
-      'linear-gradient',
-    )
+    await expect(getComputedStyle(viewport!).maskImage).toContain('linear-gradient')
 
     const none = canvas.getByRole('radio', { name: 'None' })
     const sigV4 = canvas.getByRole('radio', { name: 'AWS SigV4' })

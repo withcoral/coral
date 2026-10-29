@@ -11,6 +11,7 @@
 //! claim and the head the row showed.
 
 use coral_workspace::AuthenticatedPrincipal;
+use tracing::Instrument as _;
 
 use crate::engine::ExecutionCompletion;
 use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
@@ -63,6 +64,18 @@ impl RunModule {
     /// chunk, as the owner's self-interrupt would. Nothing still in flight
     /// under the old claim can land afterwards.
     async fn recover_from_owner_failure(&self, run: &AcceptedRun, ended: &tokio::task::JoinError) {
+        let span =
+            crate::trace::phase_span(run.trace.as_ref(), &run.id, crate::trace::Phase::Complete);
+        self.interrupt_after_owner_failure(run, ended)
+            .instrument(span)
+            .await;
+    }
+
+    async fn interrupt_after_owner_failure(
+        &self,
+        run: &AcceptedRun,
+        ended: &tokio::task::JoinError,
+    ) {
         let takeover_claim_id = uuid::Uuid::new_v4().hyphenated().to_string();
         tracing::error!(
             run_id = %run.id,
@@ -194,6 +207,7 @@ impl RunModule {
             )
             .await?;
             transaction.commit().await?;
+            crate::trace::record_run_end(RunState::Failed);
             return Ok(None);
         }
 
@@ -254,6 +268,7 @@ impl RunModule {
         self.finish_termination_in_transaction(&mut transaction, &run, now_unix_nanos)
             .await?;
         transaction.commit().await?;
+        crate::trace::record_run_end(RunState::TimedOut);
         Ok(None)
     }
 
@@ -351,6 +366,7 @@ impl RunModule {
             self.finish_termination_in_transaction(&mut transaction, &run, completed_at)
                 .await?;
             transaction.commit().await?;
+            crate::trace::record_run_end(kind.outcome().state());
             return Ok(None);
         }
         let outcome = match completion {
@@ -380,6 +396,7 @@ impl RunModule {
         run_repository::finish_run(&mut transaction, &run, claim_id, &outcome, completed_at)
             .await?;
         transaction.commit().await?;
+        crate::trace::record_run_end(outcome.state());
         Ok(None)
     }
 }

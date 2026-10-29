@@ -5871,6 +5871,10 @@ pub struct InspectRunResponse {
     /// can still see it; otherwise empty. Read its detail through the Accounts service.
     #[prost(string, tag = "13")]
     pub account_connection: ::prost::alloc::string::String,
+    /// W3C trace ID of a Run that failed, timed out or was interrupted, or empty.
+    /// Give it to the operator to find the Run in Coral's telemetry.
+    #[prost(string, tag = "14")]
+    pub trace_id: ::prost::alloc::string::String,
     /// How the Run ended. Absent while running, or for an outcome unknown to this client.
     #[prost(oneof = "inspect_run_response::Terminal", tags = "7, 8, 9, 10, 11")]
     pub terminal: ::core::option::Option<inspect_run_response::Terminal>,
@@ -6027,6 +6031,10 @@ pub struct SummarizeActivityResponse {
     /// context_impact_bytes.
     #[prost(message, repeated, tag = "7")]
     pub actors: ::prost::alloc::vec::Vec<ActivityContextShare>,
+    /// Calls that ended in the window per invoking actor, busiest first. They add up
+    /// to the calls outcomes.
+    #[prost(message, repeated, tag = "8")]
+    pub callers: ::prost::alloc::vec::Vec<ActivityCallerCalls>,
 }
 /// Ended Tool calls, by who acts next. The six counts add up to every ended call.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6069,13 +6077,32 @@ pub struct ActivityStoppedTool {
     pub needs_setup: i64,
 }
 /// One Tool's ended calls.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ActivityToolCalls {
     /// Retained Program Call Path.
     #[prost(string, tag = "1")]
     pub call_path: ::prost::alloc::string::String,
     /// Calls that ended in the window.
     #[prost(int64, tag = "2")]
+    pub calls: i64,
+    /// The same calls per invoking actor, busiest first. They add up to calls.
+    #[prost(message, repeated, tag = "3")]
+    pub callers: ::prost::alloc::vec::Vec<ActivityCallerCalls>,
+}
+/// Ended calls for one actor.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityCallerCalls {
+    /// Stable actor ID.
+    #[prost(string, tag = "1")]
+    pub key: ::prost::alloc::string::String,
+    /// "You", the Agent's name, or an unavailable label.
+    #[prost(string, tag = "2")]
+    pub label: ::prost::alloc::string::String,
+    /// workspaces/{workspace}/agents/{agent}, or empty for User work.
+    #[prost(string, tag = "3")]
+    pub agent: ::prost::alloc::string::String,
+    /// Calls that ended in the window.
+    #[prost(int64, tag = "4")]
     pub calls: i64,
 }
 /// Approval decisions in a window.

@@ -508,7 +508,16 @@ fn tool_callback(
                 ("tool_input_too_large", "Tool input exceeds its limit")
             }
         };
-        reject_tool_error(scope, resolver, code, message, None, None, &call_stack);
+        let trace_id = host.trace_id();
+        reject_tool_error(
+            scope,
+            resolver,
+            code,
+            message,
+            trace_id.as_deref(),
+            None,
+            &call_stack,
+        );
         return;
     }
     let tool = host.invoke(path, arguments_json, location);
@@ -929,7 +938,18 @@ fn reject_tool_promise(
         return;
     };
     let call_stack = tool_call_stack(&capture_program_frames(scope));
-    reject_tool_error(scope, resolver, code, message, None, None, &call_stack);
+    let trace_id = scope
+        .get_slot::<ProgramHostSlot>()
+        .and_then(|slot| slot.host.trace_id());
+    reject_tool_error(
+        scope,
+        resolver,
+        code,
+        message,
+        trace_id.as_deref(),
+        None,
+        &call_stack,
+    );
     return_value.set(resolver.get_promise(scope).into());
 }
 

@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::bootstrap::AppError;
 
-pub(super) const DEFAULT_TRACE_FILTER: &str = "coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_search=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off";
+pub(super) const DEFAULT_TRACE_FILTER: &str = "coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_run=trace,coral_search=trace,coral_search::index::reconcile=info,coral_upstream=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off";
 /// Spans that always get trace context, whatever `trace_filter` exports:
 /// every Coral span at info or above. A request's safe errors and records
 /// take their trace identifier from whichever of them is current, so a span
@@ -75,6 +75,17 @@ mod tests {
     fn the_default_trace_filter_exports_request_spans() {
         let targets: Targets = DEFAULT_TRACE_FILTER.parse().expect("valid default filter");
         assert!(targets.would_enable(coral_telemetry::REQUEST_TARGET, &tracing::Level::INFO));
+    }
+
+    /// Search index reconcile passes run every interval and almost never
+    /// find work; their debug spans stay out of the default export.
+    #[test]
+    fn the_default_trace_filter_leaves_out_reconcile_passes() {
+        let targets: Targets = DEFAULT_TRACE_FILTER.parse().expect("valid default filter");
+        let reconcile = "coral_search::index::reconcile";
+        assert!(!targets.would_enable(reconcile, &tracing::Level::DEBUG));
+        assert!(targets.would_enable(reconcile, &tracing::Level::INFO));
+        assert!(targets.would_enable("coral_search::index", &tracing::Level::DEBUG));
     }
 
     #[test]
