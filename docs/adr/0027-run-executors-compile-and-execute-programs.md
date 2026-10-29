@@ -73,8 +73,8 @@ own container also isolates access: it has no egress, no volume and no secret. A
   one moves the call on, and when every one is busy the call fails as a full compiler queue fails. A lost Run Executor
   fails the call it holds.
   - With no local child running, a compile starts one and waits for it within the caller's compile time.
-  - A compile fails at once, as no Program Compiler is available, only while local child starts back off, or when a
-    configured address has no link. Runs that Coral has already accepted wait in their queue.
+  - A compile fails at once, as no Program Compiler is available, only while Coral backs off from starting local
+    children, or when a configured address has no link. Runs that Coral has already accepted wait in their queue.
 - **Resources.** The V8 heap limit per Run stays the graceful end: only that Run fails, with the memory-limit failure.
   An OS memory limit ends the whole Run Executor, and its Runs record Interrupted. The **Run CPU Budget** counts CPU
   time on the Run's own thread. It defaults to the Run's time limit, from its start to its deadline, so it ends a Run
@@ -158,8 +158,8 @@ what Coral exports and amends this ADR.
   working.
 - **A lost Run Executor ends every Run it holds.** Its room bounds how many.
 - **A local child shares Coral's OS user and, in one container, its memory limit.** The guides run Run Executors in
-  their own container on Docker Compose and Kubernetes. Stopping a busy Run Executor, as `docker compose down` or a
-  node drain does, waits for its last Run to end.
+  their own container on Docker Compose and Kubernetes. The guides give a Run Executor a stop timeout as long as its
+  longest Run plus the grace period, so `docker compose down` or a node drain can wait that long.
 - **The same Program can pass on one Run Executor and fail on another** whose limits are lower.
 - **On Windows, an operator cannot lower the Run CPU Budget.**
 
