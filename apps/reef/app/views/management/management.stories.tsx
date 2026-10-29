@@ -352,9 +352,7 @@ const pluginDataRule =
 /** The whole prompt, with the steps that connect to the MCP server. */
 const onboardingCopy = (connect: string[], data = dataRule) =>
   [
-    'I am excited to start using Coral! Help me set up my Coral workspace "Operations team".',
-    '',
-    'Be enthusiastic about Coral as you help me. Keep your own voice and tone. Do not take on a persona.',
+    'Help me connect to my Coral workspace "Operations team" and add a provider.',
     '',
     'When you ask me a question, use your tool for structured questions or choices if you have one. If you do not, ask me a short question in this chat. Wait for my answer.',
     '',
@@ -398,6 +396,8 @@ export const Onboarding: Story = {
     await expect(prompt.scrollHeight).toBeGreaterThan(prompt.clientHeight)
     const copied = await copyPrompt()
     await expect(copied).toBe(signInCopy)
+    // Catches: a prompt that steers the client's mood or voice instead of only its task.
+    await expect(copied).not.toMatch(/excited|enthusias|\bcool\b|persona|voice and tone/i)
     await expect(dialog).toBeVisible()
   },
 }
@@ -528,7 +528,9 @@ export const AskYourAgentNarrow: Story = {
       )
     }
     await expect(await copyPrompt(panel)).toBe(fromDialog)
-    await expect(fromDialog).toContain(`Help me set up my Coral workspace "${longName}".`)
+    await expect(fromDialog).toContain(
+      `Help me connect to my Coral workspace "${longName}" and add a provider.`,
+    )
   },
 }
 // Catches: the tab and the onboarding dialog giving different prompts, the tab
