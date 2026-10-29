@@ -36,7 +36,10 @@ export function FindControls({
           value={query}
           onChange={onQueryChange}
           onKeyDown={(event) => {
-            if (event.key !== 'Enter') return
+            // The Enter that commits IME input is the input's own. Some browsers report it
+            // only as key 229.
+            if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.keyCode === 229)
+              return
             event.preventDefault()
             onStep(event.shiftKey ? -1 : 1)
           }}
