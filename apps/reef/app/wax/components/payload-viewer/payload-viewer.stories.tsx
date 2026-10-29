@@ -485,6 +485,16 @@ export const ModerateRawMountsWhole: Story = {
 }
 
 /**
+ * Presses `key`, then waits until the scroll it starts in `element` ends. A smooth scroll on
+ * a busy CPU can run past waitFor's default second.
+ */
+const pressUntilScrollEnds = async (element: HTMLElement, key: string) => {
+  let ended = false
+  element.addEventListener('scrollend', () => (ended = true), { once: true })
+  await press(key)
+  await waitFor(() => expect(ended, `${key} scrolls the element`).toBe(true), { timeout: 5000 })
+}
+/**
  * Catches: an expanded body that Tab never reaches, or that shows no focus. Its toggles are
  * focusable, so the browser does not make the body focusable for you. Tab reaches the named
  * body, it shows its focus, and ArrowDown and PageDown scroll it, pressed as a person would.
@@ -501,11 +511,13 @@ export const ExpandedBodyScrollsByKey: Story = {
     for (let tabs = 0; tabs < 40 && focused() !== body; tabs++) await press('{Tab}')
     await expect(body).toHaveFocus()
     await expect(getComputedStyle(body).outlineStyle).toBe('solid')
-    await press('{ArrowDown}')
-    await waitFor(() => expect(body.scrollTop).toBeGreaterThan(0))
+    // Each key's smooth scroll ends before the next key: on a busy CPU, Chromium drops a
+    // PageDown pressed while the ArrowDown scroll still runs.
+    await pressUntilScrollEnds(body, '{ArrowDown}')
     const after = body.scrollTop
-    await press('{PageDown}')
-    await waitFor(() => expect(body.scrollTop).toBeGreaterThan(after + body.clientHeight / 2))
+    await expect(after).toBeGreaterThan(0)
+    await pressUntilScrollEnds(body, '{PageDown}')
+    await expect(body.scrollTop).toBeGreaterThan(after + body.clientHeight / 2)
     await expect(body).toHaveFocus()
   },
 }
