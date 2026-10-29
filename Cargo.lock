@@ -934,6 +934,7 @@ name = "coral-release"
 version = "1.4.0"
 dependencies = [
  "coral-outbound",
+ "coral-telemetry",
  "reqwest",
  "semver",
  "serde",

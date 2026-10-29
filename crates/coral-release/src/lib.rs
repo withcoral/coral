@@ -21,6 +21,7 @@
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use coral_telemetry::safe;
 use semver::Version;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -78,6 +79,19 @@ pub enum CheckError {
     /// The latest release is not a stable `vX.Y.Z` tag.
     #[error("the release feed's latest tag is not a stable version")]
     NotStable,
+}
+
+impl CheckError {
+    /// The failure's stable code.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::DestinationRejected => "destination_rejected",
+            Self::Http(_) => "http",
+            Self::Unreadable => "unreadable",
+            Self::NotStable => "not_stable",
+        }
+    }
 }
 
 /// The newest published release, read from the feed and kept in memory.
@@ -164,7 +178,10 @@ impl ReleaseCheck {
             loop {
                 starts.tick().await;
                 if let Err(error) = check.refresh().await {
-                    tracing::info!(%error, "release check found no version; the next check retries");
+                    tracing::info!(
+                        error.type = safe::kind(error.code()),
+                        "release check found no version; the next check retries"
+                    );
                 }
             }
         })
