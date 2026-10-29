@@ -28,6 +28,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tracing::Instrument as _;
 
+use coral_telemetry::metric::{ClaimKind, ClaimOutcome, RecoveryOutcome};
 use coral_telemetry::safe;
 use coral_workspace::AuthenticatedPrincipal;
 
@@ -38,7 +39,7 @@ use crate::owner::ChunkWork as _;
 use crate::program_output::ProgramOutputWriter;
 use crate::recovery::RecoveryWrite;
 use crate::run_repository::{self, Chunk, OwnedEvent};
-use crate::trace::{Phase, phase_span};
+use crate::trace::{Phase, Timed as _, TimedSpan, phase_span};
 use crate::types::AcceptedRun;
 use crate::{Error, RunModule, engine, nanos_duration};
 
@@ -85,7 +86,7 @@ pub(crate) async fn host(
     // set by the first settle attempt, read by every later one.
     let mut settle_deadline: Option<Instant> = None;
     // One `coral.run.terminate` span covers every settle attempt.
-    let mut terminate: Option<tracing::Span> = None;
+    let mut terminate: Option<TimedSpan> = None;
     loop {
         let mut retired = false;
         for effect in effects.drain(..) {
@@ -121,6 +122,7 @@ pub(crate) async fn host(
                                 Phase::Terminate,
                             )
                         })
+                        .span()
                         .clone();
                     spawn_settle(&module, &accepted, &handle, shutdown, again, deadline, span);
                 }
@@ -392,6 +394,8 @@ fn run_effect(
             let actor = actor.clone();
             let handle = handle.clone();
             let span = phase_span(accepted.trace.as_ref(), &accepted.held_id(), Phase::Start);
+            // The Run waits for its start mark.
+            let queued = coral_telemetry::metric::run_queued();
             tokio::spawn(
                 async move {
                     #[cfg(test)]
@@ -406,9 +410,10 @@ fn run_effect(
                         || module.start_execution(&accepted, &actor),
                     )
                     .await;
+                    drop(queued);
                     handle.send(Message::Started(started));
                 }
-                .instrument(span),
+                .timed(span),
             );
         }
         Effect::StartProgram(package) => {
@@ -439,7 +444,7 @@ fn run_effect(
                     .await;
                     handle.send(Message::Completed(completed));
                 }
-                .instrument(span),
+                .timed(span),
             );
         }
         Effect::Commit { .. }
@@ -505,7 +510,7 @@ fn start_program(
             .await;
             handle.send(Message::ProgramEnded(completion));
         }
-        .instrument(span),
+        .timed(span),
     );
 }
 
@@ -591,7 +596,7 @@ fn spawn_interruption(module: &RunModule, accepted: &AcceptedRun, handle: &Owner
             }
             handle.send(Message::Interrupted(recorded));
         }
-        .instrument(span),
+        .timed(span),
     );
 }
 
@@ -632,6 +637,16 @@ fn spawn_recovery(
             || module.record_recovery(&write),
         )
         .await;
+        let (recovery, claim) = match &recorded {
+            Ok(()) => (RecoveryOutcome::Ended, Some(ClaimOutcome::Won)),
+            Err(Error::RunEnded) => (RecoveryOutcome::AlreadyEnded, None),
+            Err(Error::ClaimMismatch) => (RecoveryOutcome::Lost, Some(ClaimOutcome::Lost)),
+            Err(_) => (RecoveryOutcome::Failed, None),
+        };
+        coral_telemetry::metric::run_recovered(recovery);
+        if let Some(claim) = claim {
+            coral_telemetry::metric::worker_claimed(ClaimKind::Recover, claim);
+        }
         match &recorded {
             Ok(()) => tracing::info!(
                 coral.run.id = safe::id(&accepted.held_id()),
@@ -650,7 +665,7 @@ fn spawn_recovery(
         handle.send(Message::Interrupted(
             recorded.map_err(CommitRejection::from),
         ));
-    }.instrument(span));
+    }.timed(span));
 }
 
 fn spawn_commit(

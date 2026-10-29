@@ -15,6 +15,7 @@ mod ledger;
 mod locations;
 mod mcp;
 mod memory;
+mod metrics;
 mod observation;
 mod output;
 mod owner;

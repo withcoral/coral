@@ -2315,3 +2315,85 @@ fn capture() -> &'static coral_telemetry::testing::SpanCapture {
         capture
     })
 }
+
+/// An HTTP dispatch records one exchange by how it ended: a complete
+/// response, whatever its status, with its request and response body
+/// sizes, or a failure without a response.
+#[tokio::test]
+async fn an_http_dispatch_records_its_exchange() {
+    // Installed before the scoped capture, so no thread keeps none.
+    capture();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind")
+        .local_addr()
+        .expect("address");
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({"ok": false})))
+        .mount(&server)
+        .await;
+    for (uri, outcome, response_bytes) in [
+        (server.uri(), "response", Some(12.0)),
+        (format!("http://{closed}"), "failed", None),
+    ] {
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let _metrics = tracing::subscriber::set_default(metrics.subscriber());
+        let prepared = ready(&format!(
+            r#"
+openapi: 3.1.0
+info: {{title: Exchange, version: "1"}}
+servers: [{{url: {uri}}}]
+paths:
+  /items:
+    post:
+      operationId: create
+      requestBody:
+        required: true
+        content: {{application/json: {{schema: {{type: object}}}}}}
+      responses:
+        "200": {{description: done}}
+"#
+        ));
+        let dispatch = plan(
+            &prepared,
+            &serde_json::json!({"body": {"mediaType": "application/json", "data": {"name": "x"}}}),
+        );
+        let sent = send(dispatch).await;
+        assert_eq!(sent.is_ok(), outcome == "response", "{uri}");
+        let durations = metrics.named("coral.upstream.duration");
+        let [duration] = durations.as_slice() else {
+            panic!("{uri}: one exchange: {durations:?}");
+        };
+        assert_eq!(
+            duration.attributes.get("outcome").map(String::as_str),
+            Some(outcome),
+            "{uri}"
+        );
+        assert_eq!(
+            duration.attributes.get("provider.protocol").map(String::as_str),
+            Some("http")
+        );
+        let sizes = |name: &str| {
+            metrics
+                .named(name)
+                .into_iter()
+                .map(|point| point.value)
+                .collect::<Vec<_>>()
+        };
+        // The body the server received; the failed dispatch planned the same.
+        let received = server.received_requests().await.expect("requests");
+        let [request] = received.as_slice() else {
+            panic!("one request reached the server");
+        };
+        assert_eq!(
+            sizes("coral.upstream.request.size"),
+            [f64::from(u32::try_from(request.body.len()).expect("small"))],
+            "{uri}"
+        );
+        assert_eq!(
+            sizes("coral.upstream.response.size"),
+            response_bytes.into_iter().collect::<Vec<_>>(),
+            "{uri}"
+        );
+    }
+}

@@ -342,12 +342,14 @@ pub fn program_compiled(outcome: CompileOutcome, elapsed: Duration) {
 }
 
 /// Records what one Program execution used: the CPU time of the thread that
-/// ran it, and the most heap it held.
-pub fn program_executed(cpu: Duration, heap_peak_bytes: u64) {
+/// ran it, where the platform measures it, and the most heap it held.
+pub fn program_executed(cpu: Option<Duration>, heap_peak_bytes: u64) {
     with(|catalog| {
-        catalog
-            .program_execution_cpu_duration
-            .record(cpu.as_secs_f64(), &[]);
+        if let Some(cpu) = cpu {
+            catalog
+                .program_execution_cpu_duration
+                .record(cpu.as_secs_f64(), &[]);
+        }
         catalog
             .program_execution_heap_peak
             .record(heap_peak_bytes, &[]);
@@ -451,6 +453,13 @@ pub fn invocation_started(protocol: ProviderProtocol, effect: ToolEffect) -> Inv
     }
 }
 
+/// Times one Tool Invocation's pass through `gate`, including its wait,
+/// until the returned timer drops.
+#[must_use = "the gate is timed until the timer drops"]
+pub fn invocation_gate(gate: GateKind) -> Timer {
+    Timer::start(Timed::Gate(gate))
+}
+
 /// One admitted Tool Invocation, measured until it ends.
 #[derive(Debug)]
 pub struct Invocation {
@@ -460,16 +469,6 @@ pub struct Invocation {
 }
 
 impl Invocation {
-    /// Times the Invocation's wait at `gate` until the returned timer drops.
-    #[must_use = "the gate is timed until the timer drops"]
-    pub fn gate(&self, gate: GateKind) -> Timer {
-        Timer {
-            metrics: self.metrics.clone(),
-            timed: Timed::Gate(gate),
-            started: Instant::now(),
-        }
-    }
-
     /// Records how the Invocation ended, with its public failure code.
     pub fn end(mut self, end: InvocationEnd, code: Option<&'static str>) {
         self.finish(end, code);

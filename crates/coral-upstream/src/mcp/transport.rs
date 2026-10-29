@@ -89,6 +89,24 @@ pub(super) struct McpHttpClient {
     /// The dispatch's client span, whose trace context every request of its
     /// session carries.
     pub(super) span: tracing::Span,
+    /// The body bytes the session's requests and responses carried.
+    pub(super) exchanged: Arc<Exchanged>,
+}
+
+/// The body bytes one MCP dispatch's session sent and received.
+#[derive(Debug, Default)]
+pub(super) struct Exchanged {
+    pub(super) sent: std::sync::atomic::AtomicU64,
+    pub(super) received: std::sync::atomic::AtomicU64,
+}
+
+impl Exchanged {
+    fn add(counter: &std::sync::atomic::AtomicU64, bytes: usize) {
+        counter.fetch_add(
+            u64::try_from(bytes).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
 }
 
 impl StreamableHttpClient for McpHttpClient {
@@ -103,7 +121,8 @@ impl StreamableHttpClient for McpHttpClient {
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<StreamableHttpPostResponse, TransportError> {
         let request_json = serde_json::to_value(&message)?;
-        if serde_json::to_vec(&request_json)?.len() > self.limit {
+        let request_bytes = serde_json::to_vec(&request_json)?.len();
+        if request_bytes > self.limit {
             *self
                 .result
                 .lock()
@@ -112,6 +131,7 @@ impl StreamableHttpClient for McpHttpClient {
             return Err(TransportError::Client(Error::InputTooLarge));
         }
         let capture_request = result_request(&request_json);
+        Exchanged::add(&self.exchanged.sent, request_bytes);
         let mut request = self
             .client
             .post(uri.as_ref())
@@ -174,6 +194,7 @@ impl StreamableHttpClient for McpHttpClient {
                         }
                         TransportError::Client(error)
                     })?;
+                Exchanged::add(&self.exchanged.received, body.len());
                 let mut value = serde_json::from_slice(&body)?;
                 capture(&self.result, capture_request.as_ref(), &mut value)
                     .map_err(TransportError::Client)?;
@@ -270,8 +291,8 @@ impl McpHttpClient {
     ) -> BoxedSseResponse {
         // Bound bytes before parsing, including peers that never finish an event.
         let bytes = stream::try_unfold(
-            (response, self.limit, self.result.clone()),
-            |(mut response, remaining, result)| async move {
+            (response, self.limit, self.result.clone(), self.exchanged.clone()),
+            |(mut response, remaining, result, exchanged)| async move {
                 let Some(chunk) = response.chunk().await.map_err(Error::Body)? else {
                     return Ok::<_, Error>(None);
                 };
@@ -281,7 +302,8 @@ impl McpHttpClient {
                     }
                     Error::ResultTooLarge
                 })?;
-                Ok(Some((chunk, (response, remaining, result))))
+                Exchanged::add(&exchanged.received, chunk.len());
+                Ok(Some((chunk, (response, remaining, result, exchanged))))
             },
         );
         let result = self.result.clone();

@@ -10,14 +10,15 @@
 //! ending it, once its lease lapses), and every write is predicated on the
 //! claim and the head the row showed.
 
+use coral_telemetry::metric::{self, ClaimKind, ClaimOutcome, OutputKind};
 use coral_telemetry::safe;
 use coral_workspace::AuthenticatedPrincipal;
-use tracing::Instrument as _;
 
 use crate::engine::ExecutionCompletion;
 use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
 use crate::owner::{self, OwnerHandle, OwnerStart, StartedExecution};
 use crate::termination::ShutdownAction;
+use crate::trace::Timed as _;
 use crate::types::AcceptedRun;
 use crate::{
     Error, FinalValue, RunFailure, RunFailureCode, RunModule, RunState, RunTerminalOutcome,
@@ -71,7 +72,7 @@ impl RunModule {
             crate::trace::Phase::Complete,
         );
         self.interrupt_after_owner_failure(run, ended)
-            .instrument(span)
+            .timed(span)
             .await;
     }
 
@@ -97,8 +98,9 @@ impl RunModule {
             )
             .await
         {
-            Ok(()) => {}
+            Ok(()) => metric::worker_claimed(ClaimKind::Takeover, ClaimOutcome::Won),
             Err(Error::ClaimMismatch | Error::RunEnded) => {
+                metric::worker_claimed(ClaimKind::Takeover, ClaimOutcome::Lost);
                 tracing::warn!(
                     coral.run.id = safe::id(&run.held_id()),
                     "Run of a failed Run Owner was already ended"
@@ -150,6 +152,9 @@ impl RunModule {
             || run.worker_claim_id.as_deref() != Some(claim_id)
         {
             transaction.commit().await?;
+            if run.state == RunState::Running && run.worker_claim_id.as_deref() != Some(claim_id) {
+                metric::worker_claimed(ClaimKind::Start, ClaimOutcome::Lost);
+            }
             return Ok(None);
         }
 
@@ -184,6 +189,7 @@ impl RunModule {
             .is_none_or(|expires_at| started_at >= expires_at)
         {
             transaction.commit().await?;
+            metric::worker_claimed(ClaimKind::Start, ClaimOutcome::Lost);
             return Ok(None);
         }
         if started_at >= run.deadline_at_unix_nanos {
@@ -207,7 +213,7 @@ impl RunModule {
             run_repository::finish_unstarted_run(&mut transaction, &run, &outcome, started_at)
                 .await?;
             transaction.commit().await?;
-            crate::trace::record_run_end(&outcome);
+            crate::trace::record_run_end(&outcome, run.accepted_at_unix_nanos, started_at);
             return Ok(None);
         }
 
@@ -215,6 +221,7 @@ impl RunModule {
         run_repository::start_execution(&mut transaction, &run, claim_id, started_at, lease_until)
             .await?;
         transaction.commit().await?;
+        metric::worker_claimed(ClaimKind::Start, ClaimOutcome::Won);
         Ok(Some(StartedExecution {
             package,
             head: run.chunk_sequence + 1,
@@ -268,7 +275,11 @@ impl RunModule {
         self.finish_termination_in_transaction(&mut transaction, &run, now_unix_nanos)
             .await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(&RunTerminalOutcome::TimedOut);
+        crate::trace::record_run_end(
+            &RunTerminalOutcome::TimedOut,
+            run.accepted_at_unix_nanos,
+            now_unix_nanos,
+        );
         Ok(None)
     }
 
@@ -366,7 +377,7 @@ impl RunModule {
             self.finish_termination_in_transaction(&mut transaction, &run, completed_at)
                 .await?;
             transaction.commit().await?;
-            crate::trace::record_run_end(&kind.outcome());
+            crate::trace::record_run_end(&kind.outcome(), run.accepted_at_unix_nanos, completed_at);
             return Ok(None);
         }
         let outcome = match completion {
@@ -381,11 +392,10 @@ impl RunModule {
         };
         // The Final Value is decided against the recorded total, which the
         // owner's last chunk wrote from its exact in-memory total.
-        let outcome = if let RunTerminalOutcome::Succeeded {
+        let final_value_over_budget = matches!(&outcome, RunTerminalOutcome::Succeeded {
             final_value: FinalValue::Present(value),
-        } = &outcome
-            && !run.output_fits(value.encoded_json().len())
-        {
+        } if !run.output_fits(value.encoded_json().len()));
+        let outcome = if final_value_over_budget {
             RunTerminalOutcome::Failed(RunFailure::new(
                 RunFailureCode::ResourceLimitExceeded,
                 "Run output exceeds its limit".to_string(),
@@ -396,8 +406,25 @@ impl RunModule {
         run_repository::finish_run(&mut transaction, &run, claim_id, &outcome, completed_at)
             .await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(&outcome);
+        record_final_value(&outcome, final_value_over_budget);
+        crate::trace::record_run_end(&outcome, run.accepted_at_unix_nanos, completed_at);
         Ok(None)
+    }
+}
+
+/// Records the size of the Final Value a Run kept, or its rejection when it
+/// was over the Run's output budget.
+fn record_final_value(outcome: &RunTerminalOutcome, over_budget: bool) {
+    if let RunTerminalOutcome::Succeeded {
+        final_value: FinalValue::Present(value),
+    } = outcome
+    {
+        metric::output_kept(
+            OutputKind::FinalValue,
+            u64::try_from(value.encoded_json().len()).unwrap_or(u64::MAX),
+        );
+    } else if over_budget {
+        metric::output_rejected(OutputKind::FinalValue);
     }
 }
 

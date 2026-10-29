@@ -23,6 +23,10 @@ mod runtime;
 mod source_map;
 mod v8_support;
 
+// The usage tests record under a tracing subscriber.
+#[cfg(test)]
+use tracing as _;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 

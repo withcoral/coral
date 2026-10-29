@@ -86,7 +86,9 @@ When the check is on, Coral reads the latest release from `api.github.com` at st
 
 Controls telemetry export to an OpenTelemetry endpoint.
 
-Every request has a trace, even when you do not set `endpoint`. A failed MCP tool call returns its `trace_id`. `trace_filter` controls which spans Coral exports, not which requests are traced. Coral records a request even when its caller's `traceparent` marks it unsampled. Request spans use the target `coral.request`.
+Every request has a trace, even when you do not set `endpoint`. A failed MCP tool call returns its `trace_id`. `trace_filter` controls which spans Coral exports, not which requests are traced. Request spans use the target `coral.request`.
+
+`trace_sample_ratio` controls which traces Coral exports. It applies to each trace Coral starts: a request without a valid caller `traceparent`, and each Program Run, which starts its own trace. A request with a valid caller `traceparent` follows the caller's sampled flag. An unsampled trace keeps its trace ID, so logs and tool failures still name it. Metrics are never sampled.
 
 | Key            | Description                                                                        | Required | Default                                                                                                                                 |
 | -------------- | ---------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
@@ -95,6 +97,43 @@ Every request has a trace, even when you do not set `endpoint`. A failed MCP too
 | `log_filter`   | Filters to apply to logs before otel export                                        | No       | `coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info`                                             |
 | `trace_filter` | Filters to apply to traces before otel export                                      | No       | `coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_search=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off` |
 | `service_name` | Name of the service when exporting OTEL data                                       | No       | `coral`                                                                                                                                 |
+| `trace_sample_ratio` | Share of the traces Coral starts that it exports, from `0.0` to `1.0`        | No       | `1.0`                                                                                                                                   |
+
+#### Metrics
+
+With `endpoint` set, Coral exports the `coral.*` metrics below. Their names, units and attributes are stable within a major version. No attribute holds an identifier, a provider name, a tool call path, a client or an endpoint. Durations are in seconds and sizes in bytes.
+
+| Metric                                   | Kind      | Attributes                                                              |
+| ---------------------------------------- | --------- | ----------------------------------------------------------------------- |
+| `coral.request.duration`                 | Histogram | `interface`, `operation`, `outcome`                                     |
+| `coral.program.compile.duration`         | Histogram | `outcome`                                                               |
+| `coral.program.execution.cpu.duration`   | Histogram | None. Not recorded on Windows.                                          |
+| `coral.program.execution.heap.peak`      | Histogram | None                                                                    |
+| `coral.program.termination`              | Counter   | `outcome`                                                               |
+| `coral.run.accepted`                     | Counter   | `principal.kind`                                                        |
+| `coral.run.ended`                        | Counter   | `run.status`, `failure.code`                                            |
+| `coral.run.duration`                     | Histogram | `run.status`                                                            |
+| `coral.run.phase.duration`               | Histogram | `run.phase`                                                             |
+| `coral.run.active`                       | Gauge     | None                                                                    |
+| `coral.run.queue.depth`                  | Gauge     | None                                                                    |
+| `coral.run.recovery`                     | Counter   | `outcome`                                                               |
+| `coral.invocation.started`               | Counter   | `provider.protocol`, `tool.effect`                                      |
+| `coral.invocation.ended`                 | Counter   | `provider.protocol`, `tool.effect`, `invocation.result_kind`, `failure.code` |
+| `coral.invocation.duration`              | Histogram | `provider.protocol`, `tool.effect`, `invocation.result_kind`            |
+| `coral.invocation.gate.duration`         | Histogram | `gate.kind`                                                             |
+| `coral.invocation.active`                | Gauge     | None                                                                    |
+| `coral.upstream.duration`                | Histogram | `provider.protocol`, `outcome`                                          |
+| `coral.upstream.request.size`            | Histogram | `provider.protocol`                                                     |
+| `coral.upstream.response.size`           | Histogram | `provider.protocol`                                                     |
+| `coral.persistence.transaction.duration` | Histogram | `db.system`, `outcome`                                                  |
+| `coral.persistence.transaction.failures` | Counter   | `db.system`, `failure.code`                                             |
+| `coral.persistence.pool.in_use`          | Gauge     | `db.system`                                                             |
+| `coral.output.size`                      | Histogram | `output.kind`                                                           |
+| `coral.output.rejections`                | Counter   | `output.kind`                                                           |
+| `coral.worker.claims`                    | Counter   | `operation`, `outcome`                                                  |
+| `coral.telemetry.dropped`                | Counter   | `signal.kind`, `drop.reason`                                            |
+
+Coral queues at most 2048 spans and 2048 log records for export. When a queue is full, Coral drops the next span or log record at once and counts it in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans, log records or metric points with `export_failed`. Neither delays a request or a Program Run.
 
 ## Auth
 

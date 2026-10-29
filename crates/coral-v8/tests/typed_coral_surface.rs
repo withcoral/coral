@@ -1,16 +1,20 @@
 //! Typing `coral.providers`, `coral.workspace` and `coral.functions` from
 //! supplied declarations.
 
+use coral_telemetry as _;
 use coral_v8::{
     CallableDeclaration, CompilerDiagnostic, CoralDeclarations, IsolateLimits, ProgramCompiler,
     SavedFunctionCompilation,
 };
 use coral_value as _;
 use deno_core_icudata as _;
+#[cfg(unix)]
+use rustix as _;
 use serde as _;
 use serde_json as _;
 use sourcemap as _;
 use thiserror as _;
+use tracing as _;
 use v8 as _;
 
 const DECLARATION_MAX_BYTES: usize = 256 * 1024;

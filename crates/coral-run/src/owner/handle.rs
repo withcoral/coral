@@ -581,6 +581,7 @@ impl Owners {
             OwnerRegistration {
                 owners: self.clone(),
                 handle,
+                _active: coral_telemetry::metric::run_active(),
             },
             replaced,
         )
@@ -635,6 +636,8 @@ impl Owners {
 pub(crate) struct OwnerRegistration {
     owners: Owners,
     handle: OwnerHandle,
+    /// Counts the owner in `coral.run.active` while it is live.
+    _active: coral_telemetry::metric::Active,
 }
 
 impl Drop for OwnerRegistration {

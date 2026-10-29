@@ -192,10 +192,15 @@ impl ProgramEngine for V8ProgramEngine {
                 None => ExecutionCompletion::Succeeded(FinalValue::Absent),
                 Some(value) => match ProgramValue::with_limits(value, limits) {
                     Ok(value) => ExecutionCompletion::Succeeded(FinalValue::Present(value)),
-                    Err(error) => ExecutionCompletion::Failed(RunFailure::new(
-                        RunFailureCode::InvalidProgramValue,
-                        error.to_string(),
-                    )),
+                    Err(error) => {
+                        coral_telemetry::metric::output_rejected(
+                            coral_telemetry::metric::OutputKind::FinalValue,
+                        );
+                        ExecutionCompletion::Failed(RunFailure::new(
+                            RunFailureCode::InvalidProgramValue,
+                            error.to_string(),
+                        ))
+                    }
                 },
             },
             Err(coral_v8::Error::MemoryLimitExceeded) => ExecutionCompletion::MemoryLimitExceeded,

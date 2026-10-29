@@ -1081,3 +1081,55 @@ fn capture() -> &'static coral_telemetry::testing::SpanCapture {
         capture
     })
 }
+
+/// An MCP dispatch records one exchange: its whole session's request and
+/// response body bytes, and a complete outcome, even one with `isError`.
+#[tokio::test]
+async fn an_mcp_dispatch_records_its_exchange() {
+    // Installed before the scoped capture, so no thread keeps none.
+    capture();
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _metrics = tracing::subscriber::set_default(metrics.subscriber());
+    let server = server(json!({"content": [], "isError": true})).await;
+    call_once(&server, 16 * 1024 * 1024)
+        .await
+        .expect("a complete isError outcome");
+
+    let sent = server
+        .received_requests()
+        .await
+        .expect("requests")
+        .iter()
+        .filter(|request| request.method == "POST")
+        .map(|request| request.body.len())
+        .sum::<usize>();
+    let points = |name: &str| {
+        metrics
+            .named(name)
+            .into_iter()
+            .map(|point| (point.attributes, point.count, point.value))
+            .collect::<Vec<_>>()
+    };
+    let protocol = |extra: &[(&str, &str)]| {
+        [("provider.protocol", "mcp")]
+            .iter()
+            .chain(extra)
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let durations = points("coral.upstream.duration");
+    let [(attributes, 1, _)] = durations.as_slice() else {
+        panic!("one exchange");
+    };
+    assert_eq!(*attributes, protocol(&[("outcome", "response")]));
+    assert_eq!(
+        points("coral.upstream.request.size"),
+        [(protocol(&[]), 1, f64::from(u32::try_from(sent).expect("small")))]
+    );
+    let responses = points("coral.upstream.response.size");
+    let [(attributes, 1, received)] = responses.as_slice() else {
+        panic!("one response size");
+    };
+    assert_eq!(*attributes, protocol(&[]));
+    assert!(*received > 0.0);
+}

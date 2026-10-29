@@ -260,20 +260,53 @@ impl RunModule {
             admitted,
         } = staged;
         drop(accept);
+        coral_telemetry::metric::run_accepted(match actor.principal().kind() {
+            coral_workspace::PrincipalKind::User => coral_telemetry::metric::PrincipalKind::User,
+            coral_workspace::PrincipalKind::Agent => coral_telemetry::metric::PrincipalKind::Agent,
+        });
+        // The claim written with the Run is uncontested.
+        coral_telemetry::metric::worker_claimed(
+            coral_telemetry::metric::ClaimKind::Accept,
+            coral_telemetry::metric::ClaimOutcome::Won,
+        );
         self.schedule_execution(run, actor);
         // The owner is registered: shutdown counts it from here.
         drop(admitted);
         Ok(update)
     }
 
+    /// [`Self::compile_package`], timed as `coral.program.compile.duration`
+    /// by how it ended.
     async fn compile_submission(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         submitted_source: &ProgramSource,
     ) -> Result<(ProgramPackage, Vec<SavedFunctionSelection>), Error> {
-        let source = submitted_source.as_str().to_string();
+        use coral_telemetry::metric::{self, CompileOutcome};
         let compilation_started = Instant::now();
+        let compiled = self
+            .compile_package(actor, workspace_id, submitted_source, compilation_started)
+            .await;
+        let outcome = match &compiled {
+            Ok(_) => CompileOutcome::Ok,
+            Err(Error::CompilationTimedOut) => CompileOutcome::TimedOut,
+            Err(Error::ProgramWorkerStopped) => CompileOutcome::Unavailable,
+            Err(error) if error.database_error().is_some() => CompileOutcome::Unavailable,
+            Err(_) => CompileOutcome::Rejected,
+        };
+        metric::program_compiled(outcome, compilation_started.elapsed());
+        compiled
+    }
+
+    async fn compile_package(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        submitted_source: &ProgramSource,
+        compilation_started: Instant,
+    ) -> Result<(ProgramPackage, Vec<SavedFunctionSelection>), Error> {
+        let source = submitted_source.as_str().to_string();
         let roots = self
             .analyze_saved_function_paths(
                 source.clone(),

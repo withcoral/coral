@@ -44,6 +44,30 @@ fn http_client(policy: coral_outbound::DestinationPolicy) -> Result<coral_outbou
     coral_outbound::Client::new(policy, std::time::Duration::from_secs(30)).map_err(Error::Client)
 }
 
+/// Records one dispatch to an Upstream Service over `protocol` that began
+/// at `started` and ended `sent`, with the body sizes it carried.
+fn record_exchange(
+    protocol: coral_telemetry::metric::ProviderProtocol,
+    sent: Result<(), &Error>,
+    started: std::time::Instant,
+    request_bytes: Option<u64>,
+    response_bytes: Option<u64>,
+) {
+    use coral_telemetry::metric::UpstreamOutcome;
+    let outcome = match sent {
+        Ok(()) => UpstreamOutcome::Response,
+        Err(Error::ResultTooLarge) => UpstreamOutcome::TooLarge,
+        Err(_) => UpstreamOutcome::Failed,
+    };
+    coral_telemetry::metric::upstream_exchanged(
+        protocol,
+        outcome,
+        started.elapsed(),
+        request_bytes,
+        response_bytes,
+    );
+}
+
 /// `request` with only the trace context of `span`, the client span it is
 /// sent in (`coral_telemetry::set_outbound_trace_context`).
 fn traced(

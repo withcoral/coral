@@ -1,5 +1,6 @@
 //! Interface tests for isolated Program compilation and execution.
 
+use coral_telemetry as _;
 use coral_value as _;
 
 use std::sync::{Arc, Mutex};
@@ -10,10 +11,13 @@ use coral_v8::{
     ProgramHost, ProgramOutputHostError, SavedFunctionReference, TYPESCRIPT_PROFILE, ToolHostError,
 };
 use deno_core_icudata as _;
+#[cfg(unix)]
+use rustix as _;
 use serde as _;
 use serde_json as _;
 use sourcemap as _;
 use thiserror as _;
+use tracing as _;
 use v8 as _;
 
 fn compilation_deadline() -> std::time::Instant {

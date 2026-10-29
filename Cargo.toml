@@ -73,6 +73,7 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 ring = "0.17.14"
 rmcp = { version = "3.5.1", features = ["client", "reqwest", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
+rustix = { version = "1.1", features = ["time"] }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

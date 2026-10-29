@@ -513,14 +513,20 @@ fn resolved_decision(
     )
 }
 
-/// A Tool runs without approval when it declares it changes nothing or
-/// its HTTP method is safe. An undeclared hint is not evidence, so any other
-/// Tool takes the cautious default.
+/// Whether a Tool only reads provider state: it declares it changes
+/// nothing, or its HTTP method is safe. An undeclared hint is not evidence.
+#[must_use]
+pub fn reads_only(hints: ToolHints, http_method: Option<HttpMethod>) -> bool {
+    hints.declares_read_only() || http_method.is_some_and(HttpMethod::is_safe)
+}
+
+/// A Tool runs without approval when it only reads. Any other Tool takes
+/// the cautious default.
 pub(crate) fn default_access_state(
     hints: ToolHints,
     http_method: Option<HttpMethod>,
 ) -> ToolAccessState {
-    if hints.declares_read_only() || http_method.is_some_and(HttpMethod::is_safe) {
+    if reads_only(hints, http_method) {
         ToolAccessState::Enabled
     } else {
         ToolAccessState::ApprovalRequired

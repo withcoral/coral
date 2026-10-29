@@ -276,7 +276,7 @@ impl RunModule {
             )
             .await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(&ended);
+        crate::trace::record_run_end(&ended, run.accepted_at_unix_nanos, now);
         Ok(())
     }
 }

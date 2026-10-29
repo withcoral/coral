@@ -11,7 +11,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 /// The process-wide span capture. A subscriber set for one test's thread
 /// misses a callsite that another test's thread registered first, so every
 /// test here reads this one and selects its own spans.
-fn capture() -> &'static SpanCapture {
+pub(super) fn capture() -> &'static SpanCapture {
     static CAPTURE: std::sync::OnceLock<SpanCapture> = std::sync::OnceLock::new();
     CAPTURE.get_or_init(|| {
         let capture = SpanCapture::beside(FailingExporter);
@@ -293,7 +293,8 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
             let run_id =
                 crate::types::HeldRunId::fixture(crate::RunId::generate().expect("Run identifier"));
             crate::trace::phase_span(None, &run_id, crate::trace::Phase::Complete)
-                .in_scope(|| crate::trace::record_run_end(outcome));
+                .span()
+                .in_scope(|| crate::trace::record_run_end(outcome, 0, 0));
             run_id
         })
         .collect::<Vec<_>>();
@@ -310,7 +311,11 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
                     .expect("Provider ID"),
             );
             let (kind, code) = crate::invocation::invocation_end(&ended, sent);
-            crate::trace::record_invocation_end(&span, kind, code);
+            let measured = coral_telemetry::metric::invocation_started(
+                coral_telemetry::metric::ProviderProtocol::Http,
+                coral_telemetry::metric::ToolEffect::Read,
+            );
+            crate::trace::record_invocation_end(&span, measured, kind, code);
             id.to_string()
         })
         .collect::<Vec<_>>();

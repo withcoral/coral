@@ -21,10 +21,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
+use coral_catalog::ExecutionBinding;
 use coral_db::Transaction;
 use coral_policy::ToolAccessState;
 use coral_provider::{InvocationCaller, ResolvedInvocationTool};
-use coral_telemetry::safe;
+use coral_telemetry::{metric, safe};
 use coral_upstream::{McpRejection, McpResources, ReadyDispatch, UpstreamOutcome};
 use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
@@ -41,7 +42,7 @@ use crate::invocation_lifecycle::{FinishOutcome, InvocationState, UnfinishedInvo
 use crate::lifecycle::RunRecord;
 use crate::owner::{Check, ChunkWork, OwnerHandle, ParkedWait};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
-use crate::trace::{Gate, Step, gate_span, step_span};
+use crate::trace::{Gate, Step, Timed as _, gate_span, step_span};
 use crate::types::AcceptedRun;
 use crate::{
     CoralFailure, Error, InvocationId, InvocationResultKind, Rejection, RunId,
@@ -289,6 +290,12 @@ impl ToolInvoker {
         let id = InvocationId::generate();
         let span =
             crate::trace::invocation_span(&id, target.call_path(), target.provider_access().id());
+        let protocol = match target.tool().execution_binding() {
+            ExecutionBinding::Http(_) => metric::ProviderProtocol::Http,
+            ExecutionBinding::Mcp(_) => metric::ProviderProtocol::Mcp,
+            ExecutionBinding::Builtin(_) => metric::ProviderProtocol::Builtin,
+        };
+        let measured = crate::trace::invocation_started(target.tool(), protocol);
         let admitted = Arc::new(AdmittedInvocation {
             id,
             workspace_id: self.workspace_id.clone(),
@@ -306,7 +313,7 @@ impl ToolInvoker {
             .instrument(span.clone())
             .await;
         let (kind, failure_code) = invocation_end(&ended, sent.load(Ordering::Acquire));
-        crate::trace::record_invocation_end(&span, kind, failure_code);
+        crate::trace::record_invocation_end(&span, measured, kind, failure_code);
         ended
     }
 
@@ -764,10 +771,10 @@ impl ToolInvoker {
         progress: &mut InvocationProgress,
     ) -> Result<(), Error> {
         self.account_gate(admitted, progress)
-            .instrument(gate_span(&admitted.span, Gate::Account))
+            .timed(gate_span(&admitted.span, Gate::Account))
             .await?;
         self.approval_gate(admitted, progress)
-            .instrument(gate_span(&admitted.span, Gate::Approval))
+            .timed(gate_span(&admitted.span, Gate::Approval))
             .await?;
         self.prepare_credentials(admitted, progress)
             .instrument(step_span(&admitted.span, Step::Credentials))
@@ -1090,9 +1097,7 @@ impl ToolInvoker {
         target: FenceTarget<'_>,
     ) -> Result<Option<(Checked, i64)>, Error> {
         let span = gate_span(&target.admitted.span, Gate::Authority);
-        self.held_checked_facts(tx, run, target)
-            .instrument(span)
-            .await
+        self.held_checked_facts(tx, run, target).timed(span).await
     }
 
     async fn held_checked_facts(
@@ -1199,6 +1204,11 @@ impl ToolInvoker {
             // Run takes no more work): the row is still dispatching and the
             // slot stays with this task until the row's end is recorded.
             slot.keep();
+        } else {
+            metric::output_kept(
+                metric::OutputKind::Result,
+                u64::try_from(result_json.len()).unwrap_or(u64::MAX),
+            );
         }
         applied
     }
@@ -1212,6 +1222,12 @@ impl ToolInvoker {
         failure: impl Into<Rejection>,
     ) -> Result<InvocationHostError, Error> {
         let failure: Rejection = failure.into();
+        if matches!(
+            failure.failure(),
+            CoralFailure::ResultTooLarge | CoralFailure::RunOutputTooLarge
+        ) {
+            metric::output_rejected(metric::OutputKind::Result);
+        }
         let completion = InvocationCompletion::Failure(failure.clone());
         #[cfg(test)]
         self.observer.before_failure_commit().await?;

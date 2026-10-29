@@ -47,6 +47,10 @@
 //! uses a pool for remote multi-worker topology and requires `verify-full` TLS
 //! for remote TCP connections.
 
+// The metric tests record under a tracing subscriber.
+#[cfg(test)]
+use tracing as _;
+
 mod backend;
 mod changes;
 mod database;

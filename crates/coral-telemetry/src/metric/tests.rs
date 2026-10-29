@@ -145,7 +145,7 @@ fn record_each(metrics: &Metrics) {
         Duration::from_millis(5),
     );
     program_compiled(CompileOutcome::Ok, Duration::from_millis(30));
-    program_executed(Duration::from_millis(12), 4096);
+    program_executed(Some(Duration::from_millis(12)), 4096);
     program_terminated(TerminationReason::Canceled);
     run_accepted(PrincipalKind::Agent);
     run_ended(
@@ -159,7 +159,7 @@ fn record_each(metrics: &Metrics) {
     run_recovered(RecoveryOutcome::Ended);
     worker_claimed(ClaimKind::Recover, ClaimOutcome::Won);
     let invocation = invocation_started(ProviderProtocol::Http, ToolEffect::Read);
-    drop(invocation.gate(GateKind::Approval));
+    drop(invocation_gate(GateKind::Approval));
     invocation.end(InvocationEnd::CoralFailure, Some("account_required"));
     let _in_progress = invocation_started(ProviderProtocol::Mcp, ToolEffect::Write);
     upstream_exchanged(

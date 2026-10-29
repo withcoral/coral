@@ -214,11 +214,32 @@ impl HttpUpstream {
     ///
     /// Returns only when no complete response was received or the complete
     /// response crossed its finite size bound.
+    pub async fn send(&self, dispatch: ReadyHttpDispatch) -> Result<HttpOutcome, Error> {
+        let started = std::time::Instant::now();
+        let request_bytes = dispatch.body.as_ref().map(Vec::len);
+        let mut response_bytes = None;
+        let sent = self.exchange(dispatch, &mut response_bytes).await;
+        crate::record_exchange(
+            coral_telemetry::metric::ProviderProtocol::Http,
+            sent.as_ref().map(|_outcome| ()),
+            started,
+            request_bytes.and_then(|bytes| u64::try_from(bytes).ok()),
+            response_bytes.and_then(|bytes| u64::try_from(bytes).ok()),
+        );
+        sent
+    }
+
+    /// [`Self::send`], noting the body size of the response it reads in
+    /// `response_bytes`.
     #[expect(
         clippy::too_many_lines,
         reason = "one bounded protocol-continuation loop owns credential stripping and complete response capture"
     )]
-    pub async fn send(&self, dispatch: ReadyHttpDispatch) -> Result<HttpOutcome, Error> {
+    async fn exchange(
+        &self,
+        dispatch: ReadyHttpDispatch,
+        response_bytes: &mut Option<usize>,
+    ) -> Result<HttpOutcome, Error> {
         let ReadyHttpDispatch {
             mut credentials,
             mut query_credentials,
@@ -351,6 +372,7 @@ impl HttpUpstream {
             )
             .await?;
             span.record("http.response.body.size", safe::number(response_body.len()));
+            *response_bytes = Some(response_body.len());
             let content_type =
                 selected_decode_facts(&binding, status, !response_body.is_empty(), content_type);
             let (data, decode_diagnostics) = decode_response_body(

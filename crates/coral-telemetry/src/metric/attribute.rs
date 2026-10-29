@@ -185,7 +185,6 @@ attribute! {
         Response => "response",
         /// The response was larger than Coral keeps.
         TooLarge => "too_large",
-        Canceled => "canceled",
         /// No complete response.
         Failed => "failed",
     }

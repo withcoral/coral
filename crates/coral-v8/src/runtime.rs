@@ -100,9 +100,24 @@ impl ProgramExecutor {
                 .allow_atomics_wait(false)
                 .heap_limits(0, self.limits.execution_heap_bytes()),
         );
-        crate::memory::with_heap_limit(&mut isolate, |isolate| {
+        let cpu_started = thread_cpu_time();
+        HEAP_PEAK.set(0);
+        let result = crate::memory::with_heap_limit(&mut isolate, |isolate| {
             Self::execute_in_isolate(isolate, program, host, control)
-        })
+        });
+        sample_heap(&mut isolate);
+        let mut heap_peak = HEAP_PEAK.get();
+        if matches!(result, Err(Error::MemoryLimitExceeded)) {
+            heap_peak = heap_peak.max(self.limits.execution_heap_bytes());
+        }
+        let cpu = cpu_started
+            .zip(thread_cpu_time())
+            .map(|(started, ended)| ended.saturating_sub(started));
+        coral_telemetry::metric::program_executed(
+            cpu,
+            u64::try_from(heap_peak).unwrap_or(u64::MAX),
+        );
+        result
     }
 
     fn execute_in_isolate(
@@ -315,6 +330,7 @@ fn drain_program_work(
             }
         }
         if !completed && !program_execution_terminated(scope, control) {
+            sample_heap(scope);
             // Both Future wakeups and cross-thread termination unpark this thread.
             std::thread::park();
         }
@@ -1012,4 +1028,33 @@ fn serialize_final_value(
 
 fn invalid_final_value() -> Error {
     Error::InvalidProgramValue(INVALID_FINAL_VALUE_MESSAGE.to_string())
+}
+
+thread_local! {
+    /// The most heap the isolate executing on this thread held when sampled.
+    static HEAP_PEAK: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Samples the heap the isolate holds: whenever the Program waits, and when
+/// it ends. A Program that reaches its heap limit held at least the limit.
+fn sample_heap(isolate: &mut v8::Isolate) {
+    let held = isolate.get_heap_statistics().total_heap_size();
+    HEAP_PEAK.set(HEAP_PEAK.get().max(held));
+}
+
+/// The CPU time the current thread has used. The Program's thread parks
+/// while it waits for its Tools, so this is the time it spent running.
+#[cfg(unix)]
+fn thread_cpu_time() -> Option<std::time::Duration> {
+    let time = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+    Some(std::time::Duration::new(
+        u64::try_from(time.tv_sec).ok()?,
+        u32::try_from(time.tv_nsec).ok()?,
+    ))
+}
+
+/// No thread CPU clock is read on this platform.
+#[cfg(not(unix))]
+const fn thread_cpu_time() -> Option<std::time::Duration> {
+    None
 }

@@ -748,6 +748,7 @@ dependencies = [
 name = "coral-db"
 version = "1.4.0"
 dependencies = [
+ "coral-telemetry",
  "coral-test-support",
  "sea-query",
  "sea-query-sqlx",
@@ -755,6 +756,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
  "url",
 ]
 
@@ -1118,12 +1120,15 @@ dependencies = [
 name = "coral-v8"
 version = "1.4.0"
 dependencies = [
+ "coral-telemetry",
  "coral-value",
  "deno_core_icudata",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
  "sourcemap",
  "thiserror",
+ "tracing",
  "v8",
 ]
 
