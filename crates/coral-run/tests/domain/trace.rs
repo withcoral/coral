@@ -311,11 +311,7 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
                     .expect("Provider ID"),
             );
             let (kind, code) = crate::invocation::invocation_end(&ended, sent);
-            let measured = coral_telemetry::metric::invocation_started(
-                coral_telemetry::metric::ProviderProtocol::Http,
-                coral_telemetry::metric::ToolEffect::Read,
-            );
-            crate::trace::record_invocation_end(&span, measured, kind, code);
+            crate::trace::record_invocation_end(&span, None, kind, code);
             id.to_string()
         })
         .collect::<Vec<_>>();

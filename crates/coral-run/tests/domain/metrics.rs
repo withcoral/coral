@@ -89,7 +89,7 @@ async fn a_run_records_its_acceptance_claims_phases_and_end() {
         owned(&[("outcome=ok", 1)])
     );
     assert_eq!(
-        counts(&metrics, "coral.worker.claims"),
+        counts(&metrics, "coral.run.claims"),
         owned(&[
             ("operation=accept,outcome=won", 1),
             ("operation=start,outcome=won", 1)
@@ -214,7 +214,7 @@ async fn a_recovered_run_records_its_takeover_and_end() {
         owned(&[("outcome=ended", 1)])
     );
     assert!(
-        counts(&metrics, "coral.worker.claims")
+        counts(&metrics, "coral.run.claims")
             .contains(&("operation=recover,outcome=won".to_string(), 1))
     );
     assert!(

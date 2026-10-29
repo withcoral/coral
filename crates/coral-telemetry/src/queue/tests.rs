@@ -20,6 +20,7 @@ use crate::testing::MetricCapture;
 struct Held {
     open: Arc<(Mutex<bool>, Condvar)>,
     fail: bool,
+    temporality: Temporality,
 }
 
 impl Held {
@@ -78,7 +79,7 @@ impl PushMetricExporter for Held {
     }
 
     fn temporality(&self) -> Temporality {
-        Temporality::Cumulative
+        self.temporality
     }
 }
 
@@ -192,25 +193,35 @@ fn log_records_beyond_a_full_queue_or_a_failed_export_are_counted() {
     );
 }
 
-/// A failed metric export drops every point it carried.
+/// A failed metric export drops the delta points it carried. A cumulative
+/// point loses nothing: the next export carries its total.
 #[test]
-fn metric_points_of_a_failed_export_are_counted() {
-    let capture = MetricCapture::default();
-    let provider = SdkMeterProvider::builder()
-        .with_reader(
-            PeriodicReader::builder(counted_metric_exporter(
-                Held::failing(),
-                Arc::new(capture.metrics().into()),
-            ))
-            .build(),
-        )
-        .build();
-    let counter = provider.meter("test").u64_counter("test.counter").build();
-    counter.add(1, &[opentelemetry::KeyValue::new("outcome", "ok")]);
-    counter.add(1, &[opentelemetry::KeyValue::new("outcome", "error")]);
-    assert!(provider.force_flush().is_err(), "the export failed");
-    assert_eq!(
-        dropped(&capture),
-        [("metric".into(), "export_failed".into(), 2.0)]
-    );
+fn delta_metric_points_of_a_failed_export_are_counted() {
+    let cases = [
+        (
+            Temporality::Delta,
+            vec![("metric".into(), "export_failed".into(), 2.0)],
+        ),
+        (Temporality::Cumulative, vec![]),
+    ];
+    for (temporality, expected) in cases {
+        let capture = MetricCapture::default();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(
+                PeriodicReader::builder(counted_metric_exporter(
+                    Held {
+                        temporality,
+                        ..Held::failing()
+                    },
+                    Arc::new(capture.metrics().into()),
+                ))
+                .build(),
+            )
+            .build();
+        let counter = provider.meter("test").u64_counter("test.counter").build();
+        counter.add(1, &[opentelemetry::KeyValue::new("outcome", "ok")]);
+        counter.add(1, &[opentelemetry::KeyValue::new("outcome", "error")]);
+        assert!(provider.force_flush().is_err(), "the export failed");
+        assert_eq!(dropped(&capture), expected, "{temporality:?}");
+    }
 }

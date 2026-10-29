@@ -66,16 +66,6 @@ impl TimedSpan {
     }
 }
 
-/// Runs a future in a [`TimedSpan`].
-pub(crate) trait Timed: Future + Sized {
-    /// Runs `self` in `span` and times it.
-    fn timed(self, span: TimedSpan) -> impl Future<Output = Self::Output> {
-        span.instrument(self)
-    }
-}
-
-impl<F: Future> Timed for F {}
-
 /// The `coral.run.accept` span, not yet entered. Its context becomes the
 /// Run Trace (`RunTrace::begin`).
 pub(crate) fn accept_span() -> tracing::Span {
@@ -252,7 +242,7 @@ pub(crate) fn gate_span(invocation: &tracing::Span, gate: Gate) -> TimedSpan {
 pub(crate) fn invocation_started(
     tool: &coral_catalog::MaterializedTool,
     protocol: metric::ProviderProtocol,
-) -> metric::Invocation {
+) -> metric::InvocationMeasure {
     let effect = if coral_policy::reads_only(tool.hints(), tool.http_method()) {
         metric::ToolEffect::Read
     } else {
@@ -264,24 +254,29 @@ pub(crate) fn invocation_started(
 /// Records how a Tool Invocation ended: `kind`, or a host defect for
 /// `None`. A complete Upstream Outcome is never an error, whatever its
 /// status; a Coral Failure, `indeterminate` and a host defect are.
-/// `run_terminated` is not. Its end is counted on `measured`.
+/// `run_terminated` is not. Its end is counted on `measure`, which an
+/// Invocation its Run Owner never admitted does not have.
 pub(crate) fn record_invocation_end(
     span: &tracing::Span,
-    measured: metric::Invocation,
+    measure: Option<metric::InvocationMeasure>,
     kind: Option<crate::InvocationResultKind>,
     failure_code: Option<&'static str>,
 ) {
     use crate::InvocationResultKind;
-    measured.end(
-        match kind {
-            Some(InvocationResultKind::UpstreamOutcome) => metric::InvocationEnd::UpstreamOutcome,
-            Some(InvocationResultKind::CoralFailure) => metric::InvocationEnd::CoralFailure,
-            Some(InvocationResultKind::RunTerminated) => metric::InvocationEnd::RunTerminated,
-            Some(InvocationResultKind::Indeterminate) => metric::InvocationEnd::Indeterminate,
-            None => metric::InvocationEnd::HostDefect,
-        },
-        failure_code,
-    );
+    if let Some(measure) = measure {
+        measure.end(
+            match kind {
+                Some(InvocationResultKind::UpstreamOutcome) => {
+                    metric::InvocationEnd::UpstreamOutcome
+                }
+                Some(InvocationResultKind::CoralFailure) => metric::InvocationEnd::CoralFailure,
+                Some(InvocationResultKind::RunTerminated) => metric::InvocationEnd::RunTerminated,
+                Some(InvocationResultKind::Indeterminate) => metric::InvocationEnd::Indeterminate,
+                None => metric::InvocationEnd::HostDefect,
+            },
+            failure_code,
+        );
+    }
     if let Some(kind) = kind {
         span.record(
             "coral.invocation.result_kind",

@@ -96,16 +96,13 @@ pub(super) struct McpHttpClient {
 /// The body bytes one MCP dispatch's session sent and received.
 #[derive(Debug, Default)]
 pub(super) struct Exchanged {
-    pub(super) sent: std::sync::atomic::AtomicU64,
-    pub(super) received: std::sync::atomic::AtomicU64,
+    pub(super) sent: std::sync::atomic::AtomicUsize,
+    pub(super) received: std::sync::atomic::AtomicUsize,
 }
 
 impl Exchanged {
-    fn add(counter: &std::sync::atomic::AtomicU64, bytes: usize) {
-        counter.fetch_add(
-            u64::try_from(bytes).unwrap_or(u64::MAX),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+    fn add(counter: &std::sync::atomic::AtomicUsize, bytes: usize) {
+        counter.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

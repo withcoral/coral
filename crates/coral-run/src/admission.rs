@@ -265,7 +265,7 @@ impl RunModule {
             coral_workspace::PrincipalKind::Agent => coral_telemetry::metric::PrincipalKind::Agent,
         });
         // The claim written with the Run is uncontested.
-        coral_telemetry::metric::worker_claimed(
+        coral_telemetry::metric::run_claimed(
             coral_telemetry::metric::ClaimKind::Accept,
             coral_telemetry::metric::ClaimOutcome::Won,
         );

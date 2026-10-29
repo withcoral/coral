@@ -113,10 +113,7 @@ impl ProgramExecutor {
         let cpu = cpu_started
             .zip(thread_cpu_time())
             .map(|(started, ended)| ended.saturating_sub(started));
-        coral_telemetry::metric::program_executed(
-            cpu,
-            u64::try_from(heap_peak).unwrap_or(u64::MAX),
-        );
+        coral_telemetry::metric::program_executed(cpu, heap_peak);
         result
     }
 

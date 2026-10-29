@@ -42,7 +42,7 @@ use crate::invocation_lifecycle::{FinishOutcome, InvocationState, UnfinishedInvo
 use crate::lifecycle::RunRecord;
 use crate::owner::{Check, ChunkWork, OwnerHandle, ParkedWait};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
-use crate::trace::{Gate, Step, Timed as _, gate_span, step_span};
+use crate::trace::{Gate, Step, gate_span, step_span};
 use crate::types::AcceptedRun;
 use crate::{
     CoralFailure, Error, InvocationId, InvocationResultKind, Rejection, RunId,
@@ -295,7 +295,6 @@ impl ToolInvoker {
             ExecutionBinding::Mcp(_) => metric::ProviderProtocol::Mcp,
             ExecutionBinding::Builtin(_) => metric::ProviderProtocol::Builtin,
         };
-        let measured = crate::trace::invocation_started(target.tool(), protocol);
         let admitted = Arc::new(AdmittedInvocation {
             id,
             workspace_id: self.workspace_id.clone(),
@@ -308,17 +307,31 @@ impl ToolInvoker {
             span: span.clone(),
         });
         let sent = AtomicBool::new(false);
-        let ended = self
-            .invoke_admitted(&admitted, &arguments, policy, builtin, &sent)
-            .instrument(span.clone())
-            .await;
+        // Measured from its admission: one the Run Owner refuses never
+        // started.
+        let mut measure = None;
+        let ended = async {
+            self.owner
+                .admit(Box::new(AdmissionWork {
+                    admitted: admitted.clone(),
+                }))
+                .await?;
+            measure = Some(crate::trace::invocation_started(
+                admitted.target.tool(),
+                protocol,
+            ));
+            self.invoke_admitted(&admitted, &arguments, policy, builtin, &sent)
+                .await
+        }
+        .instrument(span.clone())
+        .await;
         let (kind, failure_code) = invocation_end(&ended, sent.load(Ordering::Acquire));
-        crate::trace::record_invocation_end(&span, measured, kind, failure_code);
+        crate::trace::record_invocation_end(&span, measure, kind, failure_code);
         ended
     }
 
-    /// The Invocation from its admission to its end. `sent` is set once its
-    /// upstream send begins.
+    /// The admitted Invocation to its end. `sent` is set once its upstream
+    /// send begins.
     async fn invoke_admitted(
         &self,
         admitted: &Arc<AdmittedInvocation>,
@@ -328,11 +341,6 @@ impl ToolInvoker {
         sent: &AtomicBool,
     ) -> Result<String, InvocationHostError> {
         let admitted = admitted.clone();
-        self.owner
-            .admit(Box::new(AdmissionWork {
-                admitted: admitted.clone(),
-            }))
-            .await?;
         let mut progress = InvocationProgress::default();
         if policy == ToolAccessState::Disabled {
             return Err(self
@@ -770,11 +778,11 @@ impl ToolInvoker {
         admitted: &Arc<AdmittedInvocation>,
         progress: &mut InvocationProgress,
     ) -> Result<(), Error> {
-        self.account_gate(admitted, progress)
-            .timed(gate_span(&admitted.span, Gate::Account))
+        gate_span(&admitted.span, Gate::Account)
+            .instrument(self.account_gate(admitted, progress))
             .await?;
-        self.approval_gate(admitted, progress)
-            .timed(gate_span(&admitted.span, Gate::Approval))
+        gate_span(&admitted.span, Gate::Approval)
+            .instrument(self.approval_gate(admitted, progress))
             .await?;
         self.prepare_credentials(admitted, progress)
             .instrument(step_span(&admitted.span, Step::Credentials))
@@ -1096,8 +1104,9 @@ impl ToolInvoker {
         run: &RunRecord,
         target: FenceTarget<'_>,
     ) -> Result<Option<(Checked, i64)>, Error> {
-        let span = gate_span(&target.admitted.span, Gate::Authority);
-        self.held_checked_facts(tx, run, target).timed(span).await
+        gate_span(&target.admitted.span, Gate::Authority)
+            .instrument(self.held_checked_facts(tx, run, target))
+            .await
     }
 
     async fn held_checked_facts(
@@ -1205,10 +1214,7 @@ impl ToolInvoker {
             // slot stays with this task until the row's end is recorded.
             slot.keep();
         } else {
-            metric::output_kept(
-                metric::OutputKind::Result,
-                u64::try_from(result_json.len()).unwrap_or(u64::MAX),
-            );
+            metric::output_kept(metric::OutputKind::Result, result_json.len());
         }
         applied
     }

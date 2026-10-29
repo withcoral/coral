@@ -83,7 +83,7 @@ struct Catalog {
     _persistence_pool_in_use: ObservableGauge<u64>,
     output_size: Histogram<u64>,
     output_rejections: Counter<u64>,
-    worker_claims: Counter<u64>,
+    run_claims: Counter<u64>,
     telemetry_dropped: Counter<u64>,
 }
 
@@ -318,8 +318,8 @@ impl Metrics {
                 "{output}",
                 "Outputs a Program Run could not keep, because they were too large or invalid.",
             ),
-            worker_claims: counter(
-                "coral.worker.claims",
+            run_claims: counter(
+                "coral.run.claims",
                 "{claim}",
                 "Claims a Coral Instance made to own a Program Run.",
             ),
@@ -404,7 +404,7 @@ pub fn program_compiled(outcome: CompileOutcome, elapsed: Duration) {
 
 /// Records what one Program execution used: the CPU time of the thread that
 /// ran it, where the platform measures it, and the most heap it held.
-pub fn program_executed(cpu: Option<Duration>, heap_peak_bytes: u64) {
+pub fn program_executed(cpu: Option<Duration>, heap_peak_bytes: usize) {
     with(|catalog| {
         if let Some(cpu) = cpu {
             catalog
@@ -413,7 +413,7 @@ pub fn program_executed(cpu: Option<Duration>, heap_peak_bytes: u64) {
         }
         catalog
             .program_execution_heap_peak
-            .record(heap_peak_bytes, &[]);
+            .record(byte_size(heap_peak_bytes), &[]);
     });
 }
 
@@ -459,15 +459,15 @@ pub fn run_phase(phase: RunPhase) -> Timer {
 /// Counts one Run Owner live on this Coral Instance until the returned level
 /// drops.
 #[must_use = "the Run counts as active until the level drops"]
-pub fn run_active() -> Active {
-    Active::start(Live::Run)
+pub fn run_active() -> LevelGuard {
+    LevelGuard::start(Live::Run)
 }
 
 /// Counts one accepted Program Run waiting for its start on this Coral
 /// Instance until the returned level drops.
 #[must_use = "the Run counts as queued until the level drops"]
-pub fn run_queued() -> Active {
-    Active::start(Live::Queued)
+pub fn run_queued() -> LevelGuard {
+    LevelGuard::start(Live::Queued)
 }
 
 /// Counts one Program Run a recovered Run Owner took over, by how its one
@@ -481,9 +481,9 @@ pub fn run_recovered(outcome: RecoveryOutcome) {
 }
 
 /// Counts one claim of `claim` kind to own a Program Run, by its outcome.
-pub fn worker_claimed(claim: ClaimKind, outcome: ClaimOutcome) {
+pub fn run_claimed(claim: ClaimKind, outcome: ClaimOutcome) {
     with(|catalog| {
-        catalog.worker_claims.add(
+        catalog.run_claims.add(
             1,
             &[
                 KeyValue::new("operation", claim.as_str()),
@@ -494,10 +494,10 @@ pub fn worker_claimed(claim: ClaimKind, outcome: ClaimOutcome) {
 }
 
 /// Counts a Tool Invocation admitted for a Tool of `protocol` and `effect`,
-/// and measures it until [`Invocation::end`], or until it drops, which
+/// and measures it until [`InvocationMeasure::end`], or until it drops, which
 /// records a host defect.
 #[must_use = "the Invocation is measured until it ends"]
-pub fn invocation_started(protocol: ProviderProtocol, effect: ToolEffect) -> Invocation {
+pub fn invocation_started(protocol: ProviderProtocol, effect: ToolEffect) -> InvocationMeasure {
     let metrics = current();
     let attributes = [
         KeyValue::new("provider.protocol", protocol.as_str()),
@@ -507,7 +507,7 @@ pub fn invocation_started(protocol: ProviderProtocol, effect: ToolEffect) -> Inv
         metrics.0.invocation_started.add(1, &attributes);
         metrics.0.invocation_active.add(1);
     }
-    Invocation {
+    InvocationMeasure {
         metrics,
         attributes,
         started: Instant::now(),
@@ -523,13 +523,13 @@ pub fn invocation_gate(gate: GateKind) -> Timer {
 
 /// One admitted Tool Invocation, measured until it ends.
 #[derive(Debug)]
-pub struct Invocation {
+pub struct InvocationMeasure {
     metrics: Option<Metrics>,
     attributes: [KeyValue; 2],
     started: Instant,
 }
 
-impl Invocation {
+impl InvocationMeasure {
     /// Records how the Invocation ended, with its public failure code.
     pub fn end(mut self, end: InvocationEnd, code: Option<&'static str>) {
         self.finish(end, code);
@@ -554,7 +554,7 @@ impl Invocation {
     }
 }
 
-impl Drop for Invocation {
+impl Drop for InvocationMeasure {
     fn drop(&mut self) {
         self.finish(InvocationEnd::HostDefect, None);
     }
@@ -566,8 +566,8 @@ pub fn upstream_exchanged(
     protocol: ProviderProtocol,
     outcome: UpstreamOutcome,
     elapsed: Duration,
-    request_bytes: Option<u64>,
-    response_bytes: Option<u64>,
+    request_bytes: Option<usize>,
+    response_bytes: Option<usize>,
 ) {
     with(|catalog| {
         let protocol = || KeyValue::new("provider.protocol", protocol.as_str());
@@ -575,11 +575,15 @@ pub fn upstream_exchanged(
             elapsed.as_secs_f64(),
             &[protocol(), KeyValue::new("outcome", outcome.as_str())],
         );
-        if let Some(bytes) = request_bytes {
-            catalog.upstream_request_size.record(bytes, &[protocol()]);
+        if let Some(size) = request_bytes {
+            catalog
+                .upstream_request_size
+                .record(byte_size(size), &[protocol()]);
         }
-        if let Some(bytes) = response_bytes {
-            catalog.upstream_response_size.record(bytes, &[protocol()]);
+        if let Some(size) = response_bytes {
+            catalog
+                .upstream_response_size
+                .record(byte_size(size), &[protocol()]);
         }
     });
 }
@@ -634,11 +638,12 @@ pub fn observe_pool_in_use(
 }
 
 /// Records the size of one output of `kind` a Program Run kept.
-pub fn output_kept(kind: OutputKind, bytes: u64) {
+pub fn output_kept(kind: OutputKind, size: usize) {
     with(|catalog| {
-        catalog
-            .output_size
-            .record(bytes, &[KeyValue::new("output.kind", kind.as_str())]);
+        catalog.output_size.record(
+            byte_size(size),
+            &[KeyValue::new("output.kind", kind.as_str())],
+        );
     });
 }
 
@@ -649,6 +654,11 @@ pub fn output_rejected(kind: OutputKind) {
             .output_rejections
             .add(1, &[KeyValue::new("output.kind", kind.as_str())]);
     });
+}
+
+/// `size` as a histogram records bytes.
+fn byte_size(size: usize) -> u64 {
+    u64::try_from(size).unwrap_or(u64::MAX)
 }
 
 /// What a [`Timer`] times.
@@ -695,7 +705,7 @@ impl Drop for Timer {
     }
 }
 
-/// What an [`Active`] counts.
+/// What a [`LevelGuard`] counts.
 #[derive(Debug, Clone, Copy)]
 enum Live {
     Run,
@@ -704,12 +714,12 @@ enum Live {
 
 /// Counts one live thing on its gauge until it drops.
 #[derive(Debug)]
-pub struct Active {
+pub struct LevelGuard {
     metrics: Option<Metrics>,
     live: Live,
 }
 
-impl Active {
+impl LevelGuard {
     fn start(live: Live) -> Self {
         let metrics = current();
         if let Some(metrics) = &metrics {
@@ -728,7 +738,7 @@ impl Metrics {
     }
 }
 
-impl Drop for Active {
+impl Drop for LevelGuard {
     fn drop(&mut self) {
         if let Some(metrics) = &self.metrics {
             metrics.level(self.live).add(-1);

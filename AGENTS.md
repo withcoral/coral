@@ -27,9 +27,8 @@
   [ADR 0008](docs/adr/0008-outbound-network-permissions.md) for composition defaults.
 - Keep cross-crate W3C propagation, safe telemetry fields, the `coral.*`
   metric catalog, and export filtering in `coral-telemetry`. Domain modules own
-  signal timing and record metrics through `coral_telemetry::metric`, which
-  finds the catalog through the current tracing dispatcher. Application
-  bootstrap owns exporter configuration.
+  signal timing and record metrics through `coral_telemetry::metric`.
+  Application bootstrap owns exporter configuration.
 - Keep generated files marked `linguist-generated` in `.gitattributes`.
 
 ### Persistence

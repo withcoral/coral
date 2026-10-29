@@ -26,10 +26,10 @@ impl ProgramOutputWriter {
         let value = match ProgramValue::with_limits(encoded_json.to_string(), self.limits) {
             Ok(value) => value,
             Err(Error::ProgramValueTooLarge) => Err(ProgramOutputWriteError::LimitExceeded)
-                .map_err(measured(OutputKind::Emission))?,
+                .map_err(count_rejection(OutputKind::Emission))?,
             Err(Error::ProgramValueJson(_) | Error::InvalidProgramValue) => {
                 Err(ProgramOutputWriteError::InvalidValue)
-                    .map_err(measured(OutputKind::Emission))?
+                    .map_err(count_rejection(OutputKind::Emission))?
             }
             Err(error) => return Err(ProgramOutputWriteError::Fatal(error)),
         };
@@ -37,8 +37,8 @@ impl ProgramOutputWriter {
             .emit(value, location)
             .await
             .map_err(output_error)
-            .map_err(measured(OutputKind::Emission))?;
-        metric::output_kept(OutputKind::Emission, byte_count(encoded_json));
+            .map_err(count_rejection(OutputKind::Emission))?;
+        metric::output_kept(OutputKind::Emission, encoded_json.len());
         Ok(())
     }
 
@@ -49,31 +49,30 @@ impl ProgramOutputWriter {
         location: Option<SourceLocation>,
     ) -> Result<(), ProgramOutputWriteError> {
         if message.len() > PROGRAM_LOG_MESSAGE_MAX_BYTES {
-            return Err(ProgramOutputWriteError::LimitExceeded).map_err(measured(OutputKind::Log));
+            return Err(ProgramOutputWriteError::LimitExceeded)
+                .map_err(count_rejection(OutputKind::Log));
         }
         self.owner
             .log(level, message.to_string(), location)
             .await
             .map_err(output_error)
-            .map_err(measured(OutputKind::Log))?;
-        metric::output_kept(OutputKind::Log, byte_count(message));
+            .map_err(count_rejection(OutputKind::Log))?;
+        metric::output_kept(OutputKind::Log, message.len());
         Ok(())
     }
 }
 
 /// Counts an output of `kind` the Run could not keep: one too large or
 /// invalid. A fatal error keeps nothing, but rejects nothing either.
-fn measured(kind: OutputKind) -> impl FnOnce(ProgramOutputWriteError) -> ProgramOutputWriteError {
+fn count_rejection(
+    kind: OutputKind,
+) -> impl FnOnce(ProgramOutputWriteError) -> ProgramOutputWriteError {
     move |error| {
         if !matches!(error, ProgramOutputWriteError::Fatal(_)) {
             metric::output_rejected(kind);
         }
         error
     }
-}
-
-fn byte_count(text: &str) -> u64 {
-    u64::try_from(text.len()).unwrap_or(u64::MAX)
 }
 
 fn output_error(error: Error) -> ProgramOutputWriteError {

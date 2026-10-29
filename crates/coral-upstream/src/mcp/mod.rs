@@ -301,7 +301,7 @@ impl McpUpstream {
             .send_session(dispatch, span.clone(), exchanged.clone())
             .instrument(span.clone())
             .await;
-        let bytes = |counter: &std::sync::atomic::AtomicU64| {
+        let bytes = |counter: &std::sync::atomic::AtomicUsize| {
             Some(counter.load(std::sync::atomic::Ordering::Relaxed)).filter(|bytes| *bytes > 0)
         };
         crate::record_exchange(

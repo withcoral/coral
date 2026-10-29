@@ -50,8 +50,8 @@ fn record_exchange(
     protocol: coral_telemetry::metric::ProviderProtocol,
     sent: Result<(), &Error>,
     started: std::time::Instant,
-    request_bytes: Option<u64>,
-    response_bytes: Option<u64>,
+    request_bytes: Option<usize>,
+    response_bytes: Option<usize>,
 ) {
     use coral_telemetry::metric::UpstreamOutcome;
     let outcome = match sent {

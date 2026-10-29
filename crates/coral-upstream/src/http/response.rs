@@ -223,8 +223,8 @@ impl HttpUpstream {
             coral_telemetry::metric::ProviderProtocol::Http,
             sent.as_ref().map(|_outcome| ()),
             started,
-            request_bytes.and_then(|bytes| u64::try_from(bytes).ok()),
-            response_bytes.and_then(|bytes| u64::try_from(bytes).ok()),
+            request_bytes,
+            response_bytes,
         );
         sent
     }

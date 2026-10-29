@@ -18,7 +18,6 @@ use crate::engine::ExecutionCompletion;
 use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
 use crate::owner::{self, OwnerHandle, OwnerStart, StartedExecution};
 use crate::termination::ShutdownAction;
-use crate::trace::Timed as _;
 use crate::types::AcceptedRun;
 use crate::{
     Error, FinalValue, RunFailure, RunFailureCode, RunModule, RunState, RunTerminalOutcome,
@@ -71,8 +70,7 @@ impl RunModule {
             &run.held_id(),
             crate::trace::Phase::Complete,
         );
-        self.interrupt_after_owner_failure(run, ended)
-            .timed(span)
+        span.instrument(self.interrupt_after_owner_failure(run, ended))
             .await;
     }
 
@@ -98,9 +96,9 @@ impl RunModule {
             )
             .await
         {
-            Ok(()) => metric::worker_claimed(ClaimKind::Takeover, ClaimOutcome::Won),
+            Ok(()) => metric::run_claimed(ClaimKind::Takeover, ClaimOutcome::Won),
             Err(Error::ClaimMismatch | Error::RunEnded) => {
-                metric::worker_claimed(ClaimKind::Takeover, ClaimOutcome::Lost);
+                metric::run_claimed(ClaimKind::Takeover, ClaimOutcome::Lost);
                 tracing::warn!(
                     coral.run.id = safe::id(&run.held_id()),
                     "Run of a failed Run Owner was already ended"
@@ -153,7 +151,7 @@ impl RunModule {
         {
             transaction.commit().await?;
             if run.state == RunState::Running && run.worker_claim_id.as_deref() != Some(claim_id) {
-                metric::worker_claimed(ClaimKind::Start, ClaimOutcome::Lost);
+                metric::run_claimed(ClaimKind::Start, ClaimOutcome::Lost);
             }
             return Ok(None);
         }
@@ -189,7 +187,7 @@ impl RunModule {
             .is_none_or(|expires_at| started_at >= expires_at)
         {
             transaction.commit().await?;
-            metric::worker_claimed(ClaimKind::Start, ClaimOutcome::Lost);
+            metric::run_claimed(ClaimKind::Start, ClaimOutcome::Lost);
             return Ok(None);
         }
         if started_at >= run.deadline_at_unix_nanos {
@@ -221,7 +219,7 @@ impl RunModule {
         run_repository::start_execution(&mut transaction, &run, claim_id, started_at, lease_until)
             .await?;
         transaction.commit().await?;
-        metric::worker_claimed(ClaimKind::Start, ClaimOutcome::Won);
+        metric::run_claimed(ClaimKind::Start, ClaimOutcome::Won);
         Ok(Some(StartedExecution {
             package,
             head: run.chunk_sequence + 1,
@@ -419,10 +417,7 @@ fn record_final_value(outcome: &RunTerminalOutcome, over_budget: bool) {
         final_value: FinalValue::Present(value),
     } = outcome
     {
-        metric::output_kept(
-            OutputKind::FinalValue,
-            u64::try_from(value.encoded_json().len()).unwrap_or(u64::MAX),
-        );
+        metric::output_kept(OutputKind::FinalValue, value.encoded_json().len());
     } else if over_budget {
         metric::output_rejected(OutputKind::FinalValue);
     }

@@ -2328,12 +2328,14 @@ async fn an_http_dispatch_records_its_exchange() {
         .local_addr()
         .expect("address");
     let server = MockServer::start().await;
+    let response = br#"{"ok": false}"#;
     Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({"ok": false})))
+        .respond_with(ResponseTemplate::new(500).set_body_raw(response, "application/json"))
         .mount(&server)
         .await;
+    let response_size = f64::from(u32::try_from(response.len()).expect("small"));
     for (uri, outcome, response_bytes) in [
-        (server.uri(), "response", Some(12.0)),
+        (server.uri(), "response", Some(response_size)),
         (format!("http://{closed}"), "failed", None),
     ] {
         let metrics = coral_telemetry::testing::MetricCapture::default();

@@ -104,14 +104,15 @@ Every request has a trace, even when you do not set `endpoint`. A failed MCP too
 With `endpoint` set, you receive the `coral.*` metrics below. Their names, units and attributes are stable within a major version. No attribute holds an identifier, a provider name, a tool call path, a client or an endpoint. Durations are in seconds and sizes in bytes. Gauges show the value when Coral collects metrics, every 5 seconds.
 
 - On `coral.request.duration`, `operation` is the route template or the gRPC method. An MCP tool call is `tools/call` followed by the tool's name, such as `tools/call exec`.
-- On `coral.worker.claims`, `operation` is the claim: `accept`, `start`, `recover` or `takeover`.
-- `coral.run.queue.depth` counts the program runs on this Coral instance that are accepted but not started yet.
+- On `coral.run.claims`, `operation` is the claim: `accept`, `start`, `recover` or `takeover`.
+- `coral.run.queue.depth` counts the program runs on this Coral instance that are accepted but not started yet. A run starts right after it is accepted, so this is usually 0. A run that waits for recovery by another Coral instance is not counted.
+- `coral.program.execution.heap.peak` is sampled each time a program waits and when it ends. A program that frees memory before it waits or ends shows less than its true peak.
 
 | Metric                                   | Kind      | Attributes                                                              |
 | ---------------------------------------- | --------- | ----------------------------------------------------------------------- |
 | `coral.request.duration`                 | Histogram | `interface`, `operation`, `outcome`                                     |
 | `coral.program.compile.duration`         | Histogram | `outcome`                                                               |
-| `coral.program.execution.cpu.duration`   | Histogram | None. Not recorded on Windows.                                          |
+| `coral.program.execution.cpu.duration`   | Histogram | None. Recorded only on Linux and macOS.                                 |
 | `coral.program.execution.heap.peak`      | Histogram | None                                                                    |
 | `coral.program.termination`              | Counter   | `outcome`                                                               |
 | `coral.run.accepted`                     | Counter   | `principal.kind`                                                        |
@@ -121,6 +122,7 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 | `coral.run.active`                       | Gauge     | None                                                                    |
 | `coral.run.queue.depth`                  | Gauge     | None                                                                    |
 | `coral.run.recovery`                     | Counter   | `outcome`                                                               |
+| `coral.run.claims`                       | Counter   | `operation`, `outcome`                                                  |
 | `coral.invocation.started`               | Counter   | `provider.protocol`, `tool.effect`                                      |
 | `coral.invocation.ended`                 | Counter   | `provider.protocol`, `tool.effect`, `invocation.result_kind`, `failure.code` |
 | `coral.invocation.duration`              | Histogram | `provider.protocol`, `tool.effect`, `invocation.result_kind`            |
@@ -134,10 +136,9 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 | `coral.persistence.pool.in_use`          | Gauge     | `db.system`                                                             |
 | `coral.output.size`                      | Histogram | `output.kind`                                                           |
 | `coral.output.rejections`                | Counter   | `output.kind`                                                           |
-| `coral.worker.claims`                    | Counter   | `operation`, `outcome`                                                  |
 | `coral.telemetry.dropped`                | Counter   | `signal.kind`, `drop.reason`                                            |
 
-At most 2048 spans and 2048 log records wait for export. When a queue is full, the next span or log record is dropped and counted in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans, log records or metric points with `export_failed`. Neither delays a request or a program run. If you see drops, check that your collector is reachable and keeps up.
+At most 2048 spans and 2048 log records wait for export. When a queue is full, the next span or log record is dropped and counted in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans and log records with `export_failed`. Neither delays a request or a program run. Metrics are cumulative by default, so a failed export loses no metric points: the next export carries their totals. If you select delta temporality, the metric points of a failed export are counted too. If you see drops, check that your collector is reachable and keeps up.
 
 ## Auth
 

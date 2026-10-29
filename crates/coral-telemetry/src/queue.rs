@@ -282,7 +282,8 @@ impl<E: LogExporter> LogExporter for Counted<E> {
     }
 }
 
-/// A metric exporter that counts the points of each export it fails.
+/// A metric exporter that counts the delta points of each export it fails.
+/// A cumulative point loses nothing: the next export carries its total.
 #[derive(Debug)]
 pub struct CountedMetrics<E> {
     inner: E,
@@ -294,11 +295,12 @@ impl<E: PushMetricExporter> PushMetricExporter for CountedMetrics<E> {
         let result = self.inner.export(metrics).await;
         if result.is_err()
             && let Some(catalog) = self.metrics.get()
+            && let lost @ 1.. = delta_points(metrics)
         {
             catalog.telemetry_dropped(
                 SignalKind::Metric,
                 DropReason::ExportFailed,
-                u64::try_from(points(metrics)).unwrap_or(u64::MAX),
+                u64::try_from(lost).unwrap_or(u64::MAX),
             );
         }
         result
@@ -317,14 +319,25 @@ impl<E: PushMetricExporter> PushMetricExporter for CountedMetrics<E> {
     }
 }
 
-/// How many data points `metrics` holds.
-fn points(metrics: &ResourceMetrics) -> usize {
+/// How many delta data points `metrics` holds. A gauge is never delta.
+fn delta_points(metrics: &ResourceMetrics) -> usize {
     fn count<T>(data: &MetricData<T>) -> usize {
+        let delta = |temporality, points: usize| {
+            if temporality == Temporality::Delta {
+                points
+            } else {
+                0
+            }
+        };
         match data {
-            MetricData::Gauge(gauge) => gauge.data_points().count(),
-            MetricData::Sum(sum) => sum.data_points().count(),
-            MetricData::Histogram(histogram) => histogram.data_points().count(),
-            MetricData::ExponentialHistogram(histogram) => histogram.data_points().count(),
+            MetricData::Gauge(_) => 0,
+            MetricData::Sum(sum) => delta(sum.temporality(), sum.data_points().count()),
+            MetricData::Histogram(histogram) => {
+                delta(histogram.temporality(), histogram.data_points().count())
+            }
+            MetricData::ExponentialHistogram(histogram) => {
+                delta(histogram.temporality(), histogram.data_points().count())
+            }
         }
     }
     metrics

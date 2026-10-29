@@ -126,7 +126,7 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         &["output.kind"],
     ),
     (
-        "coral.worker.claims",
+        "coral.run.claims",
         "counter",
         "{claim}",
         &["operation", "outcome"],
@@ -161,7 +161,7 @@ fn record_each(metrics: &Metrics) -> Option<PoolObservation> {
     let active = run_active();
     let queued = run_queued();
     run_recovered(RecoveryOutcome::Ended);
-    worker_claimed(ClaimKind::Recover, ClaimOutcome::Won);
+    run_claimed(ClaimKind::Recover, ClaimOutcome::Won);
     let invocation = invocation_started(ProviderProtocol::Http, ToolEffect::Read);
     drop(invocation_gate(GateKind::Approval));
     invocation.end(InvocationEnd::CoralFailure, Some("account_required"));
