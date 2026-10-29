@@ -74,8 +74,21 @@ test.each([
   ],
   ['ow', 'row row', [[[1, 3]], [[5, 7]]]],
   ['^r', 'row row', [[[0, 1]]]],
-  ['*', 'row', []],
+  // Wildcards alone, anchored or not, take each text whole, once.
+  ['*', 'row', [[[0, 3]]]],
+  ['**', 'row', [[[0, 3]]]],
+  ['^*', 'row', [[[0, 3]]]],
+  ['*$', 'row', [[[0, 3]]]],
+  ['^*$', 'row', [[[0, 3]]]],
+  ['*', '', []],
+  // Anchors alone have no text to find.
+  ['^', 'row', []],
+  ['$', 'row', []],
+  ['^$', '', []],
   ['', 'row', []],
 ])('%j finds each match of %j as one hit', (input, text, hits) => {
-  expect(payloadQuery(input).hits(text)).toEqual(hits)
+  const query = payloadQuery(input)
+  expect(query.hits(text)).toEqual(hits)
+  // Catches: a query that says it matches what Find can neither count nor show.
+  if (input) expect(query.matches(text)).toBe(hits.length > 0)
 })

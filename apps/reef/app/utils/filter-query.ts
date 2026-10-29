@@ -61,6 +61,18 @@ export function payloadQuery(input: string): FilterQuery {
   const end = pattern.endsWith('$')
   if (end) pattern = pattern.slice(0, -1)
   const literals = pieces(pattern)
+  // Wildcards alone, anchored or not, take each text whole, once; anchors alone find
+  // nothing. Either way, no match is empty, so Find can count and show each one.
+  if (literals.every((piece) => !piece)) {
+    const wildcard = literals.length > 1
+    const hits = (marked: string): Range[][] => (wildcard && marked ? [[[0, marked.length]]] : [])
+    return {
+      text,
+      matches: (...texts) => texts.some((candidate) => candidate != null && hits(candidate).length),
+      ranges: (marked) => hits(marked).flat(),
+      hits,
+    }
+  }
   // Each piece is literal text, so finding it cannot backtrack. Finding each
   // at its leftmost place after the one before is enough: a `*` between two
   // pieces takes whatever lies between them.
@@ -82,7 +94,7 @@ export function payloadQuery(input: string): FilterQuery {
     }
     return found
   }
-  /** Each match, without the empty ranges a `*` leaves. */
+  /** Each match, without the empty ranges a `*` leaves; a literal piece marks each one. */
   const hits = (marked: string) => {
     const found: Range[][] = []
     let from = 0
