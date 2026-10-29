@@ -26,3 +26,5 @@ export const Root = BaseDialog.Root
 export { pinned as pinnedClassName } from './dialog.css'
 /** Pins content to the popup's bottom edge. */
 export { pinnedBottom as pinnedBottomClassName } from './dialog.css'
+/** Reaches through the popup's side padding to its edges. */
+export { flushInline as flushInlineClassName } from './dialog.css'

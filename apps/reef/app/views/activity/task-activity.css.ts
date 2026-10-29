@@ -1,9 +1,8 @@
 import { style } from '@vanilla-extract/css'
 
-/** The list, and the detail rail docked beside it on a wide screen. */
+/** The list, and the detail rail docked beside it on a wide screen, which keeps its own gap. */
 export const root = style({
   display: 'flex',
-  gap: 16,
   height: '100%',
   minHeight: 0,
   minWidth: 0,

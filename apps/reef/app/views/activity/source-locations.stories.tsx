@@ -358,6 +358,20 @@ export const SameRunNavigation: Story = {
 
     const separator = drawer.getByRole('separator', { name: 'Resize detail and source panes' })
     await expect(separator).toHaveAttribute('aria-valuenow', '50')
+    // The divider spans the drawer from border to border, through its padding, while the
+    // panes keep theirs.
+    const inner = dialog.getBoundingClientRect()
+    await expect(separator.getBoundingClientRect().left).toBeCloseTo(
+      inner.left + dialog.clientLeft,
+      0,
+    )
+    await expect(separator.getBoundingClientRect().right).toBeCloseTo(
+      inner.right - dialog.clientLeft,
+      0,
+    )
+    await expect(detail.getBoundingClientRect().left).toBeGreaterThan(
+      separator.getBoundingClientRect().left,
+    )
     separator.focus()
     const before = height(detail)
     await userEvent.keyboard('{ArrowUp}')
