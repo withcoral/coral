@@ -420,6 +420,67 @@ const expandedHeader: Story['play'] = async ({ canvasElement, userEvent, globals
 export const ExpandedHeader: Story = { args: { value: largeJson }, play: expandedHeader }
 export const ExpandedHeaderNarrow: Story = { ...ExpandedHeader, ...narrow }
 
+// Moderate payloads, in Chromium: every row mounts, so the page's own find, a screen reader's
+// reading and a selection by hand reach all of it.
+const moderateJson = JSON.stringify(
+  Object.fromEntries(
+    Array.from({ length: 30 }, (_, index) => [
+      `k${String(index).padStart(2, '0')}`,
+      { a: index, b: `value ${index}` },
+    ]),
+  ),
+)
+const moderateText = Array.from({ length: 200 }, (_, index) => `log line ${index + 1}`).join('\n')
+const moderateRaw = JSON.stringify({ ...JSON.parse(moderateJson), note: 'n'.repeat(800) }, null, 2)
+/** What a selection of all of `element` by hand holds. */
+const selected = (element: Element) => {
+  const selection = element.ownerDocument.getSelection()!
+  selection.selectAllChildren(element)
+  const text = selection.toString()
+  selection.removeAllRanges()
+  return text
+}
+
+/** Catches: a moderate structure that mounts only its rows near the view. */
+export const ModerateJsonMountsWhole: Story = {
+  args: { value: moderateJson },
+  play: async ({ canvasElement }) => {
+    const tree = structureOf(canvasElement)
+    await expect(
+      within(tree).getAllByRole('button', { name: /^k\d\d: 2 properties$/ }),
+    ).toHaveLength(30)
+    const text = selected(tree)
+    await expect(text).toContain('"k00": {')
+    await expect(text).toContain('"b": "value 29"')
+  },
+}
+
+/** Catches: a moderate log that mounts only its lines near the view. */
+export const ModerateTextMountsWhole: Story = {
+  args: { label: 'Log message', format: 'text', value: moderateText },
+  play: async ({ canvasElement }) => {
+    const lines = within(canvasElement).getByRole('group', { name: 'Lines' })
+    const text = selected(lines)
+    await expect(text.match(/log line \d+/g)).toHaveLength(200)
+    await expect(text).toContain('log line 200')
+  },
+}
+
+/**
+ * Catches: moderate Raw that mounts only its lines near the view, or splits a long line. All
+ * of it mounts exactly, and a selection by hand holds it as retained.
+ */
+export const ModerateRawMountsWhole: Story = {
+  args: { value: moderateRaw },
+  play: async (context) => {
+    const viewer = await openExpanded(context)
+    await context.userEvent.click(within(viewer).getByRole('radio', { name: 'Raw' }))
+    const raw = within(viewer).getByRole('group', { name: 'Raw' })
+    await expect(raw.textContent).toBe(moderateRaw)
+    await expect(selected(raw)).toBe(moderateRaw)
+  },
+}
+
 // Huge payloads, in Chromium: what a scrolling body mounts, and what you reach in it.
 const hugeArray = JSON.stringify(
   Array.from({ length: 10_000 }, (_, index) => `item-${String(index).padStart(5, '0')}`),
@@ -554,6 +615,37 @@ export const HugeSingleLineScrollsInRaw: Story = {
       expect(raw).toHaveTextContent('"item-09999"]')
     })
     await expect(mounted(raw, /item-\d{5}/)).toBeLessThan(2_000)
+  },
+}
+
+/**
+ * Catches: a payload of few lines but many characters that mounts whole. Past the character
+ * bound, only the part near the view mounts.
+ */
+export const ManyCharactersInFewLinesStayBounded: Story = {
+  args: {
+    label: 'Log message',
+    format: 'text',
+    value: Array.from({ length: 100 }, (_, index) => `${index} ${'x'.repeat(2_000)}`).join('\n'),
+  },
+  play: async ({ canvasElement, args }) => {
+    const lines = within(canvasElement).getByRole('group', { name: 'Lines' })
+    await expect(lines.textContent!.length).toBeLessThan(args.value.length / 4)
+  },
+}
+
+/**
+ * Catches: a bound judged by the rows a large payload first shows. Its list of many items,
+ * within the character bound, starts folded, and opened, only the items near the view mount.
+ */
+export const UnfoldingALongListStaysBounded: Story = {
+  args: { value: JSON.stringify({ list: JSON.parse(hugeArray).slice(0, 3_000) }) },
+  play: async ({ canvasElement, userEvent, args }) => {
+    await expect(args.value.length).toBeLessThan(100_000)
+    const tree = structureOf(canvasElement)
+    await userEvent.click(within(tree).getByRole('button', { name: 'list: 3000 items' }))
+    await waitFor(() => expect(mounted(tree, /item-\d{5}/)).toBeGreaterThan(0))
+    await expect(mounted(tree, /item-\d{5}/)).toBeLessThan(400)
   },
 }
 

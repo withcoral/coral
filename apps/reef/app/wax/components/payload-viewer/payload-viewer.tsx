@@ -46,6 +46,14 @@ const INDENT = 18
 /** A wrapped line longer than this shows as consecutive rows of this many characters, so a
  * huge line, such as minified JSON, mounts only near the view too. */
 const SEGMENT_LENGTH = 500
+/** A payload within both bounds mounts whole, so the page's own find, a screen reader and a
+ * selection by hand reach all of it; past either, only its rows near the view mount. Rows
+ * count every line and every row of the structure unfolded, so no unfolding passes them.
+ * Measured in Chromium, the expanded viewer opens a payload of 100,000 characters in 2,000
+ * rows in 110 to 240ms, and a fold there takes about 50ms; with only the rows near the
+ * view, it opens in 40 to 100ms. */
+const WHOLE_LENGTH = 100_000
+const WHOLE_ROWS = 2_000
 
 type Format = 'json' | 'text'
 type Mode = 'structured' | 'raw'
@@ -86,8 +94,8 @@ export interface PayloadViewerProps {
  * maximum height; Copy, Download and Expand sit above the card, at its right. Expand opens
  * the viewer with every inspection tool: type and retained size, Structured or Raw, Find and
  * Wrap. JSON shows as a foldable structure built from its own tokens, or exactly as retained
- * in Raw; text keeps its lines, numbered. Only the rows near the view mount, so a huge
- * payload scrolls whole.
+ * in Raw; text keeps its lines, numbered. A huge payload mounts only its rows near the view,
+ * so it scrolls whole; any other payload mounts whole.
  */
 export function PayloadViewer(props: PayloadViewerProps) {
   return <Viewer {...props} expanded={false} />
@@ -154,9 +162,16 @@ function Viewer({
     () => (structured && structure ? structureRows(structure, folded) : null),
     [structured, structure, folded],
   )
+  const whole = useMemo(
+    () =>
+      value.length <= WHOLE_LENGTH &&
+      Math.max(lines.length, structure ? unfoldedRows(structure) : 0) <= WHOLE_ROWS,
+    [value, lines, structure],
+  )
+  // A whole payload keeps each line in one row, so a selection by hand holds it as retained.
   const segments = useMemo(
-    () => lineSegments(lines, wrap ? SEGMENT_LENGTH : Infinity),
-    [lines, wrap],
+    () => lineSegments(lines, wrap && !whole ? SEGMENT_LENGTH : Infinity),
+    [lines, wrap, whole],
   )
   /** By unit offset, the structure row that shows it. */
   const rowOf = useMemo(() => {
@@ -189,9 +204,11 @@ function Viewer({
     },
     [focusedRow],
   )
+  const count = rows ? rows.length : segments.length
   // oxlint-disable-next-line react/incompatible-library -- TanStack Virtual owns scroll measurements; only its rows and sizes cross into render.
   const virtualizer = useVirtualizer({
-    count: rows ? rows.length : segments.length,
+    enabled: !whole,
+    count,
     getScrollElement: () => body.current,
     // Before the body lays out, as on the server, the first rows render, so they show at once.
     initialRect: { width: 800, height: 720 },
@@ -209,7 +226,7 @@ function Viewer({
       const match = matches[current]
       const row = match && rowAt(units[match.units[0]!]!.start, match.ranges[0]![0])
       reveal.current = row === undefined ? null : 'mark'
-      if (row !== undefined) virtualizer.scrollToIndex(row, { align: 'center' })
+      if (row !== undefined && !whole) virtualizer.scrollToIndex(row, { align: 'center' })
     }
     // A mark already mounted shows at once; one that mounts later shows when it renders.
     if (reveal.current !== 'mark') return
@@ -416,7 +433,7 @@ function Viewer({
       {actions}
     </div>
   )
-  /** The rows near the view, each at its place in the whole; only they mount. */
+  /** Every row of a whole payload; otherwise the rows near the view, each at its place. */
   const virtual = (
     name: string,
     className: string | false,
@@ -425,8 +442,8 @@ function Viewer({
     <div
       role="group"
       aria-label={name}
-      className={classNames(styles.rows, className)}
-      style={{ blockSize: virtualizer.getTotalSize() }}
+      className={classNames(whole ? styles.wholeRows : styles.rows, className)}
+      style={whole ? undefined : { blockSize: virtualizer.getTotalSize() }}
       onFocus={(event) => {
         const row = event.target.closest<HTMLElement>('[data-index]')
         setFocusedRow(row ? Number(row.dataset.index) : null)
@@ -435,17 +452,26 @@ function Viewer({
         if (!event.currentTarget.contains(event.relatedTarget)) setFocusedRow(null)
       }}
     >
-      {virtualizer.getVirtualItems().map((item) => (
-        <div
-          key={item.key}
-          data-index={item.index}
-          ref={virtualizer.measureElement}
-          className={classNames(styles.row, !structured && !wrap && styles.unwrappedRow)}
-          style={{ transform: `translateY(${item.start}px)` }}
-        >
-          {render(item.index)}
-        </div>
-      ))}
+      {whole
+        ? Array.from({ length: count }, (_, index) => (
+            <div
+              key={getItemKey(index)}
+              className={classNames(!structured && !wrap && styles.unwrappedRow)}
+            >
+              {render(index)}
+            </div>
+          ))
+        : virtualizer.getVirtualItems().map((item) => (
+            <div
+              key={item.key}
+              data-index={item.index}
+              ref={virtualizer.measureElement}
+              className={classNames(styles.row, !structured && !wrap && styles.unwrappedRow)}
+              style={{ transform: `translateY(${item.start}px)` }}
+            >
+              {render(item.index)}
+            </div>
+          ))}
     </div>
   )
   const content = rows
@@ -688,6 +714,17 @@ function StructureRow({
       </span>
     </div>
   )
+}
+
+/** How many rows `node` shows with nothing folded: each value, and each open container's close. */
+function unfoldedRows(node: JsonNode): number {
+  const children =
+    node.kind === 'object'
+      ? node.entries.map((entry) => entry.value)
+      : node.kind === 'array'
+        ? node.items
+        : []
+  return children.reduce((sum, child) => sum + unfoldedRows(child), children.length ? 2 : 1)
 }
 
 /** Containers below the top level and long strings, in a large payload; nothing otherwise. */

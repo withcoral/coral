@@ -72,6 +72,8 @@ export const expandedBody = style({ flex: 1, minHeight: 0, overflow: 'auto' })
 export const wrapped = style({ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' })
 export const unwrapped = style({ whiteSpace: 'pre' })
 
+/** A whole payload's rows, in flow, with the body's padding above and below. */
+export const wholeRows = style({ paddingBlock: 12, minWidth: 0 })
 /** The rows near the view, each placed at its offset in the whole list. */
 export const rows = style({ position: 'relative', minWidth: 0 })
 export const row = style({
