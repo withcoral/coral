@@ -20,6 +20,7 @@ import type {
   InteractionRow,
   InvocationDetail,
   InvocationRow,
+  ProgramError,
   RequestDetail,
   RunDetail,
   RunEvent,
@@ -397,6 +398,54 @@ it.each([
       expect(card.textContent).toContain(exact)
   },
 )
+
+/** A Program error named `name`, with upstream response data that says so. */
+const failure = (name: string, more: Partial<ProgramError> = {}): ProgramError => ({
+  name,
+  message: '',
+  frames: [],
+  toolCode: '',
+  toolTraceId: '',
+  toolStatus: 502,
+  toolBody: `{"from":"${name}"}`,
+  toolBodyTruncated: false,
+  cause: null,
+  errors: [],
+  truncated: false,
+  causeOmitted: false,
+  omittedErrors: 0,
+  circular: false,
+  ...more,
+})
+
+// Catches: upstream response data that every error in a chain names alike, so a screen
+// reader hears the same region, Expand, Copy and Download for each. Each is named by its
+// error and that error's place, even when names repeat.
+it('names each upstream response by its error and where that error sits', () => {
+  const container = show({
+    ...runPanel({ state: 'failed', endedAt: '2026-09-22T09:05:00Z' }),
+    terminal: {
+      kind: 'failed',
+      code: 'program_rejected',
+      message: '',
+      error: failure('ToolError', {
+        cause: failure('ToolError', { cause: failure('ToolError') }),
+        errors: [failure('ToolError'), failure('RangeError')],
+      }),
+    },
+  } as RunDetail)
+  const names = [
+    'Upstream response data for ToolError',
+    'Upstream response data for ToolError, cause of ToolError',
+    'Upstream response data for ToolError, cause of ToolError, cause of ToolError',
+    'Upstream response data for ToolError, grouped error 1 of ToolError',
+    'Upstream response data for RangeError, grouped error 2 of ToolError',
+  ]
+  for (const name of names) {
+    expect(within(container).getAllByRole('region', { name })).toHaveLength(1)
+    expect(within(container).getAllByRole('button', { name: `Expand ${name}` })).toHaveLength(1)
+  }
+})
 
 it('heads a Run that failed for a reason this Reef does not know, without a code line', () => {
   const container = show({

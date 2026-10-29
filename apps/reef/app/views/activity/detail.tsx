@@ -775,7 +775,12 @@ const runFailureHeadings = {
   run_authority_lost: 'The run lost the access it needed',
   unknown: 'The run failed',
 } satisfies Record<RunFailureCode, string>
-function ErrorDetail({ error }: { error: ProgramError }) {
+/**
+ * One Program error, its cause and its grouped errors. `place` says where it sits, such as
+ * "cause of ToolError", so the upstream data of each error in a chain has its own name.
+ */
+function ErrorDetail({ error, place }: { error: ProgramError; place?: string }) {
+  const named = [error.name, place].filter(Boolean).join(', ')
   return (
     <div className={styles.stack}>
       <Typography.BodySmallStrong>Program error: {error.name}</Typography.BodySmallStrong>
@@ -799,7 +804,7 @@ function ErrorDetail({ error }: { error: ProgramError }) {
           <Payload
             value={error.toolBody}
             format="json"
-            label="Upstream response data"
+            label={named ? `Upstream response data for ${named}` : 'Upstream response data'}
             truncated={error.toolBodyTruncated}
           />
         </>
@@ -814,12 +819,12 @@ function ErrorDetail({ error }: { error: ProgramError }) {
       )}
       {error.cause && (
         <Disclosure title="Cause" open>
-          <ErrorDetail error={error.cause} />
+          <ErrorDetail error={error.cause} place={`cause of ${named}`} />
         </Disclosure>
       )}
       {error.errors.map((member, index) => (
         <Disclosure key={index} title={`Grouped error ${index + 1}`}>
-          <ErrorDetail error={member} />
+          <ErrorDetail error={member} place={`grouped error ${index + 1} of ${named}`} />
         </Disclosure>
       ))}
     </div>

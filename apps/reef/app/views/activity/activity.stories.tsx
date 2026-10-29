@@ -1026,7 +1026,7 @@ export const UpstreamToolError: Story = {
   play: async ({ canvasElement }) => {
     const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
     await expect(drawer.getByText('Upstream HTTP status: 404')).toBeVisible()
-    const data = drawer.getByRole('region', { name: 'Upstream response data' })
+    const data = drawer.getByRole('region', { name: 'Upstream response data for ToolError' })
     await expect(within(data).getByRole('group', { name: 'Raw' })).toHaveTextContent(
       '{"message":"No invoices for this account"',
     )
