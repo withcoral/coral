@@ -1,7 +1,7 @@
 /**
  * JSON as its retained tokens. Each scalar and key keeps its exact source text, so
  * large integers, number spelling, escapes and duplicate keys survive. Nothing is
- * reserialized; JSON.parse only checks that the source is JSON.
+ * reserialized.
  */
 export type JsonNode =
   | { kind: 'object'; start: number; end: number; entries: JsonEntry[] }
@@ -14,80 +14,123 @@ export type JsonEntry = { key: string; keyStart: number; value: JsonNode }
 /** Past this depth, JSON shows only as retained: walking it could exhaust the stack. */
 export const MAX_STRUCTURE_DEPTH = 200
 
-/** The structure of `source`; 'invalid' when it is not JSON, 'deep' past the depth bound. */
+type Container = Extract<JsonNode, { kind: 'object' | 'array' }>
+type Key = { key: string; keyStart: number }
+/** A container still open, and the key its next value takes. */
+type OpenContainer = { node: Container; key: Key | null }
+
+// Each matches at `lastIndex` only: a run of plain string characters, a number, a literal,
+// and JSON's own whitespace.
+// oxlint-disable-next-line no-control-regex -- JSON strings may not hold control characters.
+const STRING_RUN = /[^"\\\u0000-\u001f]*/y
+const ESCAPE = /\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})/y
+const NUMBER = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y
+const LITERAL = /true|false|null/y
+const SPACE = /[ \t\n\r]*/y
+
+/**
+ * The structure of `source`, read in one pass that checks it against JSON's grammar;
+ * 'invalid' when it is not JSON, 'deep' when it is but nests past MAX_STRUCTURE_DEPTH.
+ * Open containers sit on a list, not the call stack, so any depth reads safely.
+ */
 export function jsonStructure(source: string): JsonNode | 'invalid' | 'deep' {
-  try {
-    JSON.parse(source)
-  } catch {
-    return 'invalid'
-  }
-  // A cheap bound before the walk: no more nested containers than open brackets.
-  let depth = 0
-  let deepest = 0
-  for (let at = 0; at < source.length; at++) {
-    const char = source[at]
-    if (char === '"') {
-      at++
-      while (source[at] !== '"') at += source[at] === '\\' ? 2 : 1
-    } else if (char === '{' || char === '[') deepest = Math.max(deepest, ++depth)
-    else if (char === '}' || char === ']') depth--
-  }
-  if (deepest > MAX_STRUCTURE_DEPTH) return 'deep'
   let at = 0
+  /** Whether `pattern` matches at `at`, which then moves past it. */
+  const skip = (pattern: RegExp) => {
+    pattern.lastIndex = at
+    if (!pattern.test(source)) return false
+    at = pattern.lastIndex
+    return true
+  }
   const space = () => {
-    while (at < source.length && ' \t\n\r'.includes(source[at]!)) at++
+    // Most values have no space before them.
+    const char = source.charCodeAt(at)
+    if (char === 32 || char === 9 || char === 10 || char === 13) skip(SPACE)
   }
+  /** A string at `at`, quotes included, or null. */
   const string = () => {
-    const start = at
+    const from = at
+    if (source[at] !== '"') return null
     at++
-    while (source[at] !== '"') at += source[at] === '\\' ? 2 : 1
-    at++
-    return source.slice(start, at)
+    for (;;) {
+      skip(STRING_RUN)
+      if (source[at] === '"') return source.slice(from, ++at)
+      if (!skip(ESCAPE)) return null
+    }
   }
-  const value = (): JsonNode => {
+  /** A key and its colon, at `at`, or null. */
+  const key = (): Key | null => {
+    const keyStart = at
+    const text = string()
+    space()
+    if (text === null || source[at] !== ':') return null
+    at++
+    return { key: text, keyStart }
+  }
+  const open: OpenContainer[] = []
+  let deepest = 0
+  for (;;) {
+    // A value: a container opens, or a scalar is read whole.
     space()
     const start = at
     const char = source[at]
-    if (char === '{') {
+    let value: JsonNode
+    if (char === '{' || char === '[') {
       at++
-      const entries: JsonEntry[] = []
+      const node: Container =
+        char === '{'
+          ? { kind: 'object', start, end: start, entries: [] }
+          : { kind: 'array', start, end: start, items: [] }
+      const container: OpenContainer = { node, key: null }
+      open.push(container)
+      deepest = Math.max(deepest, open.length)
       space()
-      while (source[at] !== '}') {
-        space()
-        const keyStart = at
-        const key = string()
-        space()
-        at++ // :
-        entries.push({ key, keyStart, value: value() })
-        space()
-        if (source[at] === ',') at++
-        space()
+      if (source[at] !== (char === '{' ? '}' : ']')) {
+        if (char === '{') {
+          container.key = key()
+          if (!container.key) return 'invalid'
+        }
+        continue
       }
       at++
-      return { kind: 'object', start, end: at, entries }
+      open.pop()
+      node.end = at
+      value = node
+    } else {
+      const kind =
+        char === '"'
+          ? string() !== null && 'string'
+          : (skip(NUMBER) && 'number') || (skip(LITERAL) && 'literal')
+      if (!kind) return 'invalid'
+      value = { kind, start, end: at, raw: source.slice(start, at) }
     }
-    if (char === '[') {
-      at++
-      const items: JsonNode[] = []
-      space()
-      while (source[at] !== ']') {
-        items.push(value())
+    // Then the value takes its place, and each container it ends closes in turn.
+    for (;;) {
+      const parent = open.at(-1)
+      if (!parent) {
         space()
-        if (source[at] === ',') at++
-        space()
+        if (at < source.length) return 'invalid'
+        return deepest > MAX_STRUCTURE_DEPTH ? 'deep' : value
       }
+      if (parent.node.kind === 'object') parent.node.entries.push({ ...parent.key!, value })
+      else parent.node.items.push(value)
+      space()
+      if (source[at] === ',') {
+        at++
+        space()
+        if (parent.node.kind === 'object') {
+          parent.key = key()
+          if (!parent.key) return 'invalid'
+        }
+        break
+      }
+      if (source[at] !== (parent.node.kind === 'object' ? '}' : ']')) return 'invalid'
       at++
-      return { kind: 'array', start, end: at, items }
+      open.pop()
+      parent.node.end = at
+      value = parent.node
     }
-    if (char === '"') {
-      const raw = string()
-      return { kind: 'string', start, end: at, raw }
-    }
-    while (at < source.length && !' \t\n\r,]}'.includes(source[at]!)) at++
-    const raw = source.slice(start, at)
-    return { kind: /^[-\d]/.test(raw) ? 'number' : 'literal', start, end: at, raw }
   }
-  return value()
 }
 
 /** How many values `node` holds, itself included. */
