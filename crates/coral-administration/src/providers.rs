@@ -148,7 +148,7 @@ impl ProviderWorkflow {
             {
                 tracing::warn!(
                     coral.workspace.id = %workspace_id,
-                    error.type = coral_telemetry::error_type(&error),
+                    error.type = error.code(),
                     "failed to install a Built-in Provider"
                 );
             }
@@ -196,7 +196,7 @@ impl ProviderWorkflow {
                 tracing::warn!(
                     coral.workspace.id = %outdated.workspace_id(),
                     coral.provider.id = %outdated.provider_id(),
-                    error.type = coral_telemetry::error_type(&error),
+                    error.type = error.code(),
                     "failed to update a Built-in Provider's catalog"
                 );
             }

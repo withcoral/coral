@@ -159,7 +159,7 @@ impl RunModule {
             if let Err(ended) = owner_task.await {
                 tracing::error!(
                     coral.run.id = %run_id,
-                    error.type = if ended.is_panic() { "panic" } else { "cancelled" },
+                    error.type = crate::worker::owner_task_end_code(&ended),
                     "recovered Run Owner ended without retiring; the next sweep recovers its Run"
                 );
             }
@@ -275,7 +275,7 @@ impl RunModule {
             )
             .await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(ended);
+        crate::trace::record_run_end(&ended);
         Ok(())
     }
 }

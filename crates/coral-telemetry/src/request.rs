@@ -112,7 +112,6 @@ async fn trace_http_request(mut request: Request, next: Next) -> Response {
         http.route = route,
         http.response.status_code = tracing::field::Empty,
         error.type = tracing::field::Empty,
-        coral.status = tracing::field::Empty,
     );
     set_parent_from_http_headers(&span, request.headers());
     request.extensions_mut().insert(RequestSpan(span.clone()));
@@ -121,8 +120,6 @@ async fn trace_http_request(mut request: Request, next: Next) -> Response {
     span.record("http.response.status_code", i64::from(status.as_u16()));
     if status.is_server_error() {
         record_failure(&span, status.as_str());
-    } else {
-        span.record("coral.status", "ok");
     }
     response.map(|body| {
         Body::new(TracedBody {
@@ -168,7 +165,6 @@ async fn trace_grpc_request(mut request: Request, next: Next) -> Response {
         rpc.method = tracing::field::Empty,
         rpc.response.status_code = tracing::field::Empty,
         error.type = tracing::field::Empty,
-        coral.status = tracing::field::Empty,
     );
     // The parent must be set before the handler enters the span and so starts it.
     set_parent_from_http_headers(&span, request.headers());
@@ -234,8 +230,6 @@ fn record_grpc_status(span: &tracing::Span, path: Option<&str>, code: i32) {
     span.record("rpc.response.status_code", status);
     if GRPC_SERVER_ERRORS.contains(&code) {
         record_failure(span, status);
-    } else {
-        span.record("coral.status", "ok");
     }
 }
 

@@ -340,6 +340,21 @@ pub enum RunFailureCode {
     RunAuthorityLost,
 }
 
+impl RunFailureCode {
+    /// Stable, transport-neutral code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::ProgramRejected => "program_rejected",
+            Self::InvalidProgramValue => "invalid_program_value",
+            Self::ResourceLimitExceeded => "resource_limit_exceeded",
+            Self::MemoryLimitExceeded => "memory_limit_exceeded",
+            Self::ProgramExecutionFailed => "program_execution_failed",
+            Self::RunAuthorityLost => "run_authority_lost",
+        }
+    }
+}
+
 /// Safe terminal Program failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunFailure {
@@ -409,6 +424,19 @@ impl RunTerminalOutcome {
             Self::Canceled => RunState::Canceled,
             Self::TimedOut => RunState::TimedOut,
             Self::Interrupted => RunState::Interrupted,
+        }
+    }
+
+    /// The failure code of an outcome that is an error, for a span's
+    /// `error.type`: the Run's failure code, `timed_out` or `interrupted`.
+    /// `None` for a success or a cancellation.
+    #[must_use]
+    pub const fn failure_code(&self) -> Option<&'static str> {
+        match self {
+            Self::Succeeded { .. } | Self::Canceled => None,
+            Self::Failed(failure) => Some(failure.code().code()),
+            Self::TimedOut => Some("timed_out"),
+            Self::Interrupted => Some("interrupted"),
         }
     }
 }

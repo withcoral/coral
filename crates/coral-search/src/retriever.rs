@@ -126,6 +126,17 @@ pub(crate) enum RetrievalError {
     Corrupt(&'static str),
 }
 
+impl RetrievalError {
+    /// The error's stable kind, for an event's `error.type`: a bounded
+    /// code that never carries the error's text.
+    pub(crate) const fn code(&self) -> &'static str {
+        match self {
+            Self::Database { .. } => "database",
+            Self::Corrupt { .. } => "corrupt",
+        }
+    }
+}
+
 impl QueryError {
     /// A failed read of the search-owned tables: this retriever's error.
     pub(crate) fn retrieval(error: impl Into<RetrievalError>) -> Self {

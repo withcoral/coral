@@ -102,16 +102,14 @@ pub(super) async fn oauth_token(
         Ok(issued) => issued,
         Err(error) => return token_error(error),
     };
-    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs(),
-        Err(error) => {
-            tracing::warn!(
-                error.type = coral_telemetry::error_type(&error),
-                "token endpoint could not read the system clock"
-            );
-            return token_error(TokenError::ServerError);
-        }
+    let Ok(since_epoch) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        tracing::warn!(
+            error.type = "clock",
+            "token endpoint could not read the system clock"
+        );
+        return token_error(TokenError::ServerError);
     };
+    let now = since_epoch.as_secs();
     let Some(expires_in) = issued.expires_at.checked_sub(now).filter(|ttl| *ttl > 0) else {
         tracing::warn!("token endpoint issued an access token that had already expired");
         return token_error(TokenError::ServerError);
@@ -145,7 +143,7 @@ async fn redeem(
         Ok(None) => Err(TokenError::InvalidGrant),
         Err(error) => {
             tracing::warn!(
-                error.type = coral_telemetry::error_type(&error),
+                error.type = error.code(),
                 "token endpoint could not redeem the authorization code"
             );
             Err(TokenError::ServerError)
@@ -227,9 +225,10 @@ impl TokenTarget {
                 )
             }
         };
-        token.map_err(|error| {
+        // The issuer's error is text, so only its kind is logged.
+        token.map_err(|_text| {
             tracing::warn!(
-                error.type = coral_telemetry::error_type(&error),
+                error.type = "access_token_issuance",
                 "token endpoint could not issue an access token"
             );
             TokenError::ServerError

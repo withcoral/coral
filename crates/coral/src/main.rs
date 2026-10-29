@@ -17,7 +17,6 @@
     )
 )]
 
-use std::borrow::Cow;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -25,11 +24,11 @@ use std::process::ExitCode;
 use clap::Parser;
 use coral_app::bootstrap::is_loopback_ip;
 
+/// This binary's version and the commit it was built from.
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("CORAL_GIT_SHA"));
+
 #[derive(Debug, Parser)]
-#[command(
-    name = "coral",
-    version = concat!(env!("CARGO_PKG_VERSION"), "+", env!("CORAL_GIT_SHA"))
-)]
+#[command(name = "coral", version = VERSION)]
 /// Starts the Coral runtime process.
 struct ProcessArgs {}
 
@@ -61,12 +60,12 @@ impl ProcessError {
 }
 
 impl coral_app::RunErrorTelemetry for ProcessError {
-    fn telemetry_error_type(&self) -> Cow<'_, str> {
-        Cow::Borrowed(if self.state_locked() {
-            "STATE_LOCKED"
+    fn telemetry_error_code(&self) -> &'static str {
+        if self.state_locked() {
+            "state_locked"
         } else {
-            "INTERNAL"
-        })
+            "internal"
+        }
     }
 
     fn telemetry_exit_code(&self) -> u8 {
@@ -91,8 +90,11 @@ async fn main() -> ExitCode {
 }
 
 async fn run_runtime() -> Result<(), ProcessError> {
-    let launch = coral_app::Launch::from_env()
-        .map_err(|error| anyhow::anyhow!("invalid launch environment: {error}"))?;
+    let launch = coral_app::Launch {
+        service_version: Some(VERSION),
+        ..coral_app::Launch::from_env()
+            .map_err(|error| anyhow::anyhow!("invalid launch environment: {error}"))?
+    };
     let stop_on_stdin_close = launch.stop_on_stdin_close;
     let server = coral_app::start_runtime(launch)
         .await
@@ -226,21 +228,21 @@ mod tests {
     fn telemetry_reports_the_status_the_process_exits_with() {
         use coral_app::RunErrorTelemetry as _;
 
-        for (error, exit_code, error_type) in [
+        for (error, exit_code, error_code) in [
             (
                 coral_app::AppError::StateLocked {
                     path: "state".into(),
                 },
                 STATE_LOCKED_EXIT_CODE,
-                "STATE_LOCKED",
+                "state_locked",
             ),
-            (coral_app::AppError::MissingConfigDir, 1, "INTERNAL"),
+            (coral_app::AppError::MissingConfigDir, 1, "internal"),
         ] {
             let error =
                 ProcessError::from(anyhow::Error::from(coral_app::RuntimeError::from(error)));
             assert_eq!(error.exit_status(), exit_code);
             assert_eq!(error.telemetry_exit_code(), exit_code);
-            assert_eq!(error.telemetry_error_type(), error_type);
+            assert_eq!(error.telemetry_error_code(), error_code);
         }
     }
 

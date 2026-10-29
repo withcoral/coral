@@ -674,7 +674,6 @@ fn client_span(
         http.request.body.size = request_body_size,
         http.response.status_code = tracing::field::Empty,
         http.response.body.size = tracing::field::Empty,
-        coral.status = tracing::field::Empty,
         error.type = tracing::field::Empty,
     )
 }

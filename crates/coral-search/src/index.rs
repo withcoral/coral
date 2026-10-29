@@ -236,7 +236,6 @@ impl SearchIndex {
             "coral.search.remove_generation",
             coral.search.generation.id = %generation_id,
             coral.search.write.trigger = Empty,
-            coral.status = Empty,
             error.type = Empty,
         );
         let index = self.clone();
@@ -265,7 +264,6 @@ impl SearchIndex {
             coral.workspace.id = %workspace_id,
             coral.provider.id = %provider_id,
             coral.search.write.trigger = Empty,
-            coral.status = Empty,
             error.type = Empty,
         );
         let index = self.clone();
@@ -621,7 +619,6 @@ fn generation_span(
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,
         coral.search.write.trigger = Empty,
-        coral.status = Empty,
         error.type = Empty,
     )
 }
@@ -638,7 +635,6 @@ fn function_span(entry: &SavedFunctionEntry) -> tracing::Span {
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,
         coral.search.write.trigger = Empty,
-        coral.status = Empty,
         error.type = Empty,
     )
 }
@@ -694,7 +690,7 @@ fn in_write_span<T>(
 async fn rollback(transaction: Transaction<'_>) {
     if let Err(error) = transaction.rollback().await {
         tracing::error!(
-            error.type = coral_telemetry::error_type(&error),
+            error.type = error.code(),
             "failed to roll back a search index write"
         );
     }

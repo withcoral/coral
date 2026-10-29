@@ -442,7 +442,6 @@ fn client_span(dispatch: &ReadyMcpDispatch) -> tracing::Span {
         url.scheme = server.as_ref().map(url::Url::scheme),
         server.address = server.as_ref().and_then(url::Url::host_str),
         server.port = server.as_ref().and_then(url::Url::port_or_known_default),
-        coral.status = tracing::field::Empty,
         error.type = tracing::field::Empty,
     )
 }

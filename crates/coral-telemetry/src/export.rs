@@ -94,7 +94,9 @@ where
 ///
 /// An event of a body target never reaches `inner`. Every other record
 /// reaches it with its level, target and trace, and with only the keys
-/// the field catalog lists. A Coral record keeps its text; a library's
+/// the field catalog lists. Tracing's default event name, `event
+/// <file>:<line>`, leaves as `code.file.path` and `code.line.number`; an
+/// event's own name leaves as its event name. A Coral record keeps its text; a library's
 /// record, which an operator's log filter can admit, leaves without it.
 #[derive(Debug)]
 pub struct OtlpLogFilter<P> {
@@ -117,8 +119,13 @@ impl<P> OtlpLogFilter<P> {
 
     fn exported(&self, record: &SdkLogRecord) -> SdkLogRecord {
         let mut exported = self.template.clone();
-        if let Some(name) = record.event_name() {
-            exported.set_event_name(name);
+        match record.event_name().map(callsite_location) {
+            Some(Some((file, line))) => {
+                exported.add_attribute("code.file.path", file);
+                exported.add_attribute("code.line.number", line);
+            }
+            Some(None) => exported.set_event_name(record.event_name().unwrap_or_default()),
+            None => {}
         }
         if let Some(target) = record.target() {
             exported.set_target(target.clone());
@@ -200,6 +207,14 @@ fn span_matches_targets(span: &SpanData, targets: &Targets) -> bool {
 
 fn span_has_denied_target(span: &SpanData) -> bool {
     span_string_attribute(span, "target").is_some_and(|target| is_body_target(&target))
+}
+
+/// The file and line of tracing's default name for an event, `event
+/// <file>:<line>`. That name is a code location, not an event class, so a
+/// record leaves with it as `code.*` keys. `None` for an event's own name.
+fn callsite_location(name: &'static str) -> Option<(&'static str, i64)> {
+    let (file, line) = name.strip_prefix("event ")?.rsplit_once(':')?;
+    Some((file, line.parse().ok()?))
 }
 
 fn is_body_target(target: &str) -> bool {
@@ -343,6 +358,9 @@ mod tests {
         let kept = spans.first().expect("kept span");
 
         assert!(keys(&kept.attributes).contains(&"coral.run.id"));
+        for bridged in ["target", "level", "busy_ns", "idle_ns"] {
+            assert!(!keys(&kept.attributes).contains(&bridged), "{bridged}");
+        }
         assert_eq!(kept.status, Status::error(""));
         let [event, library] = kept.events.events.as_slice() else {
             panic!("only the events of admitted targets: {:?}", kept.events);
@@ -394,6 +412,7 @@ mod tests {
                 tracing::warn!(target: "coral.http.body", body = "secret", "http body");
                 tracing::warn!(target: "coral.mcp.body", body = "secret", "mcp body");
                 tracing::warn!(target: "sqlx::query", "secret");
+                tracing::warn!(name: "coral.test.named", target: "coral_app", "named");
             });
             span.context().span().span_context().trace_id()
         });
@@ -410,13 +429,16 @@ mod tests {
 
     /// A log record leaves with its text, level and trace but only cataloged
     /// keys, and an event of a body target never leaves. A library's record
-    /// leaves without its text, which Coral's checks never read.
+    /// leaves without its text, which Coral's checks never read. Tracing's
+    /// callsite name leaves as the code location; an event's own name stays.
     #[test]
     fn log_records_leave_only_with_cataloged_keys() {
         let (records, trace) = exported_logs();
-        let [kept, library] = records.as_slice() else {
-            panic!("two exported log records: {records:?}");
+        let [kept, library, named] = records.as_slice() else {
+            panic!("three exported log records: {records:?}");
         };
+        assert_eq!(named.event_name(), Some("coral.test.named"));
+        assert_eq!(kept.event_name(), None, "a callsite name is no event class");
         assert_eq!(library.target().map(AsRef::as_ref), Some("sqlx::query"));
         assert_eq!(library.body(), None);
         assert_eq!(kept.body(), Some(&AnyValue::from("kept")));
@@ -426,10 +448,32 @@ mod tests {
             kept.trace_context().map(|context| context.trace_id),
             Some(trace)
         );
-        let keys = kept
+        let mut attributes = kept
             .attributes_iter()
-            .map(|(key, _)| key.as_str())
+            .map(|(key, value)| (key.as_str(), value.clone()))
             .collect::<Vec<_>>();
-        assert_eq!(keys, ["coral.run.id"]);
+        attributes.sort_by_key(|(key, _)| *key);
+        let line = attributes
+            .iter()
+            .find(|(key, _)| *key == "code.line.number")
+            .map(|(_, value)| value.clone());
+        assert!(
+            matches!(line, Some(AnyValue::Int(line)) if line > 0),
+            "{attributes:?}"
+        );
+        assert_eq!(
+            attributes
+                .iter()
+                .filter(|(key, _)| *key != "code.line.number")
+                .cloned()
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "code.file.path",
+                    AnyValue::from("crates/coral-telemetry/src/export.rs")
+                ),
+                ("coral.run.id", AnyValue::from("run-1")),
+            ]
+        );
     }
 }

@@ -70,7 +70,7 @@ impl<'a> Backoff<'a> {
             coral.run.id = %self.run_id,
             coral.run.write = self.write,
             coral.run.write.attempt = self.attempts,
-            error.type = coral_telemetry::error_type(&error),
+            error.type = error.code(),
             "Run Owner write did not land; retrying after a backoff"
         );
         tokio::time::sleep(retry_backoff(self.attempts)).await;

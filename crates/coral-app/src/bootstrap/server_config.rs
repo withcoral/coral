@@ -44,6 +44,8 @@ pub(crate) struct Launcher {
     pub(crate) desktop: bool,
     /// A local launcher's web origin for human handoff, used only without `[auth]`.
     pub(crate) local_web_url: Option<coral_mcp::HumanInterfaceUrl>,
+    /// The launching binary's version, for telemetry's `service.version`.
+    pub(crate) service_version: Option<&'static str>,
 }
 
 /// Local auth support's default port under Desktop, which registers it as a

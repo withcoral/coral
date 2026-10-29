@@ -79,7 +79,7 @@ impl SavedFunctionCompiler for V8SavedFunctionCompiler {
             .saved_function_call_paths(deadline, source)
             .inspect_err(|error| {
                 tracing::debug!(
-                    error.type = coral_telemetry::error_type(&error),
+                    error.type = error.code(),
                     "Call Path analysis failed; the source is checked untyped"
                 );
             })
@@ -666,7 +666,7 @@ impl SavedFunctionModule {
                     .await
                     .inspect_err(|error| {
                         tracing::warn!(
-                            error.type = coral_telemetry::error_type(&error),
+                            error.type = error.code(),
                             "Saved Function declarations are unavailable; they are checked untyped"
                         );
                     })

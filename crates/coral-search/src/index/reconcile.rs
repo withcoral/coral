@@ -23,7 +23,6 @@ macro_rules! step_span {
         tracing::debug_span!(
             $name,
             $($($field)*)?
-            coral.status = Empty,
             error.type = Empty,
         )
     };
@@ -109,7 +108,6 @@ impl SearchIndex {
             coral.search.reconcile.workspaces_checked = Empty,
             coral.search.reconcile.workspaces_recounted = Empty,
             coral.search.reconcile.rows_written = Empty,
-            coral.status = Empty,
             error.type = Empty,
         );
         let work = self.run_pass().instrument(pass.clone()).await;
@@ -366,7 +364,6 @@ impl SearchIndex {
                 coral.workspace.id = %workspace_id,
                 coral.search.rows_written = Empty,
                 coral.search.write.trigger = Empty,
-                coral.status = Empty,
                 error.type = Empty,
             );
             let refreshed = in_write_span(

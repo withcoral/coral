@@ -186,6 +186,14 @@ impl ServerBuilder {
         self
     }
 
+    /// Names the launching binary's version in exported telemetry, as
+    /// `service.version`. Without one, Coral's package version names it.
+    #[must_use]
+    pub fn with_service_version(mut self, version: &'static str) -> Self {
+        self.launcher.service_version = Some(version);
+        self
+    }
+
     /// Marks a Desktop launch: local auth support then defaults to Desktop's
     /// fixed Provider OAuth callback port. An explicit `listeners.auth.bind` wins.
     #[must_use]
@@ -367,7 +375,11 @@ impl PreparedServerBuilder {
         // This start's Coral Instance, recorded on the Runs it claims. The
         // first start in a process also names it in exported telemetry.
         let instance = coral_run::CoralInstanceId::generate();
-        init_server_telemetry(deployment_config.raw(), &instance.to_string())?;
+        init_server_telemetry(
+            deployment_config.raw(),
+            &instance.to_string(),
+            builder.launcher.service_version,
+        )?;
         tracing::info!("Coral Instance starting");
         let mut server = start_server(
             Arc::clone(&coral_db),
@@ -408,9 +420,14 @@ fn build_authorization_server(
     ))
 }
 
-fn init_server_telemetry(raw: &str, instance_id: &str) -> Result<(), AppError> {
+fn init_server_telemetry(
+    raw: &str,
+    instance_id: &str,
+    service_version: Option<&'static str>,
+) -> Result<(), AppError> {
     let config = TelemetryConfig::from_toml(raw)?;
-    crate::telemetry::init_tracing(&config, instance_id)
+    let service_version = service_version.unwrap_or(env!("CARGO_PKG_VERSION"));
+    crate::telemetry::init_tracing(&config, instance_id, service_version)
 }
 
 /// Opens the host credential vault from the source the deployment selects:
@@ -582,7 +599,7 @@ impl RunningServer {
         {
             // Workers are already stopped; unreleased leases expire on their own.
             tracing::warn!(
-                error.type = coral_telemetry::error_type(&error),
+                error.type = error.code(),
                 "device authorization lease release failed"
             );
         }
@@ -848,7 +865,7 @@ pub(crate) async fn start_server(
                     && let Err(error) = accounts.recover_device_authorizations(now).await
                 {
                     tracing::warn!(
-                        error.type = coral_telemetry::error_type(&error),
+                        error.type = error.code(),
                         "device authorization recovery failed"
                     );
                 }
@@ -888,7 +905,7 @@ async fn sweep_expired_leases(runs: &coral_run::RunModule) {
             "expired-lease sweep recovered Runs"
         ),
         Err(error) => tracing::warn!(
-            error.type = coral_telemetry::error_type(&error),
+            error.type = error.code(),
             "expired-lease sweep failed; the next pass retries"
         ),
     }

@@ -264,7 +264,7 @@ fn spawn_precheck(
         if let Err(error) = &found {
             tracing::debug!(
                 coral.run.id = %handle.run_id(),
-                error.type = coral_telemetry::error_type(&error),
+                error.type = error.code(),
                 "Run Owner's check of its parked waits found nothing: the next one reads again"
             );
         }
@@ -630,7 +630,7 @@ fn spawn_recovery(
             ),
             Err(error) => tracing::warn!(
                 coral.run.id = %accepted.id,
-                error.type = coral_telemetry::error_type(&error),
+                error.type = error.code(),
                 "recovered Run Owner wrote nothing: the Run is not its own, or the next sweep tries again"
             ),
         }

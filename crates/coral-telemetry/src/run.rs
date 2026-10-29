@@ -61,10 +61,11 @@ impl RunTrace {
     /// Every Run phase span joins the Run Trace this way, on any Coral
     /// Instance; no span of an earlier phase is reopened.
     pub fn adopt(&self, span: &tracing::Span) {
-        if let Err(error) =
-            span.set_parent(Context::new().with_remote_span_context(self.accept.clone()))
+        if span
+            .set_parent(Context::new().with_remote_span_context(self.accept.clone()))
+            .is_err()
         {
-            tracing::debug!(error.type = crate::error_type(&error), "failed to join the Run Trace");
+            tracing::debug!(error.type = "set_parent", "failed to join the Run Trace");
         }
     }
 

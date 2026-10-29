@@ -6,7 +6,7 @@
 use coral_telemetry::RunTrace;
 use tracing::field::Empty;
 
-use crate::{RunId, RunState};
+use crate::{RunId, RunTerminalOutcome};
 
 /// One phase of a Run under its Run Owner.
 #[derive(Debug, Clone, Copy)]
@@ -39,7 +39,6 @@ pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &RunId, phase: Phase)
             "coral.run.start",
             coral.run.id = %run_id,
             coral.run.status = Empty,
-            coral.status = Empty,
             error.type = Empty,
         ),
         Phase::Execute => {
@@ -50,7 +49,6 @@ pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &RunId, phase: Phase)
             "coral.run.complete",
             coral.run.id = %run_id,
             coral.run.status = Empty,
-            coral.status = Empty,
             error.type = Empty,
         ),
         Phase::Terminate => tracing::info_span!(
@@ -58,7 +56,6 @@ pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &RunId, phase: Phase)
             "coral.run.terminate",
             coral.run.id = %run_id,
             coral.run.status = Empty,
-            coral.status = Empty,
             error.type = Empty,
         ),
         Phase::Recover => tracing::info_span!(
@@ -66,7 +63,6 @@ pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &RunId, phase: Phase)
             "coral.run.recover",
             coral.run.id = %run_id,
             coral.run.status = Empty,
-            coral.status = Empty,
             error.type = Empty,
         ),
     };
@@ -76,19 +72,15 @@ pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &RunId, phase: Phase)
     span
 }
 
-/// Records the terminal state the current phase wrote. `failed`,
-/// `timed_out` and `interrupted` mark it as an error; `succeeded` and
-/// `canceled` do not.
-pub(crate) fn record_run_end(state: RunState) {
+/// Records the terminal outcome the current phase wrote: its state, and for
+/// a failure, a timeout or an interruption, its failure code as the error.
+/// A success or a cancellation is not an error.
+pub(crate) fn record_run_end(outcome: &RunTerminalOutcome) {
     let span = tracing::Span::current();
-    span.record("coral.run.status", state.as_storage_str());
-    if matches!(
-        state,
-        RunState::Running | RunState::Succeeded | RunState::Canceled
-    ) {
-        return;
+    span.record("coral.run.status", outcome.state().as_storage_str());
+    if let Some(code) = outcome.failure_code() {
+        coral_telemetry::record_failure(&span, code);
     }
-    coral_telemetry::record_failure(&span, state.as_storage_str());
 }
 
 /// The `coral.invocation` span of one admitted Tool Invocation, a child of
@@ -107,7 +99,6 @@ pub(crate) fn invocation_span(
         coral.invocation.dispatch_started = Empty,
         coral.invocation.result_kind = Empty,
         coral.invocation.failure.code = Empty,
-        coral.status = Empty,
         error.type = Empty,
     )
 }

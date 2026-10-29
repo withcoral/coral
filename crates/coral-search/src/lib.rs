@@ -338,7 +338,7 @@ impl UniversalSearchModule {
                     tracing::error!(
                         coral.search.retriever = retriever.kind().as_str(),
                         coral.workspace.id = %context.workspace_id,
-                        error.type = coral_telemetry::error_type(&error),
+                        error.type = error.code(),
                         "a Universal Search retriever could not rank"
                     );
                     RetrieverStatus::new(

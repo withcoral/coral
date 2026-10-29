@@ -14,8 +14,8 @@ use crate::observation::validate_cursor;
 use crate::run_inbox::{InboxRequest, OutsideRequest};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::{
-    Error, RunId, RunModule, RunObservation, RunState, RunUpdate, invocation_lifecycle,
-    invocation_repository, run_repository,
+    Error, RunId, RunModule, RunObservation, RunState, RunTerminalOutcome, RunUpdate,
+    invocation_lifecycle, invocation_repository, run_repository,
 };
 
 /// How much longer than its shutdown grace a cancellation, or the end of the
@@ -173,7 +173,7 @@ impl RunModule {
             }
             transaction.commit().await?;
             if let Some(termination) = run.termination {
-                crate::trace::record_run_end(termination.kind.outcome().state());
+                crate::trace::record_run_end(&termination.kind.outcome());
             }
             return Ok(true);
         }
@@ -290,7 +290,7 @@ impl RunModule {
         )
         .await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(ended);
+        crate::trace::record_run_end(&ended);
         Ok(())
     }
 
@@ -338,7 +338,7 @@ pub(crate) async fn end_in_one_chunk(
     mut events: Vec<OwnedEvent>,
     takeover: Option<run_repository::Takeover<'_>>,
     now_unix_nanos: i64,
-) -> Result<RunState, Error> {
+) -> Result<RunTerminalOutcome, Error> {
     let termination = match (run.termination, cancellation) {
         (Some(recorded), _) => RequestedTermination::recorded(recorded),
         (None, Some(cancellation)) => {
@@ -369,7 +369,7 @@ pub(crate) async fn end_in_one_chunk(
         ended_at_unix_nanos,
     )
     .await?;
-    Ok(termination.termination.kind.outcome().state())
+    Ok(termination.termination.kind.outcome())
 }
 
 /// A recorded termination to settle: which Run, and until when its

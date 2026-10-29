@@ -46,7 +46,6 @@ impl ToolCall {
             coral.mcp.failure.code = tracing::field::Empty,
             rpc.response.status_code = tracing::field::Empty,
             error.type = tracing::field::Empty,
-            coral.status = tracing::field::Empty,
         );
         Self { span }
     }
@@ -61,10 +60,7 @@ impl ToolCall {
     ) -> Result<CallToolResponse, ErrorData> {
         let span = &self.span;
         match dispatched.instrument(span.clone()).await {
-            Ok(response) => {
-                span.record("coral.status", "ok");
-                Ok(response)
-            }
+            Ok(response) => Ok(response),
             Err(DispatchError::Tool(error)) => {
                 span.record("coral.mcp.failure.code", error.code());
                 coral_telemetry::record_failure(span, "tool_error");
@@ -74,9 +70,7 @@ impl ToolCall {
             Err(DispatchError::Protocol(error)) => {
                 let code = error.code.0;
                 span.record("rpc.response.status_code", tracing::field::display(code));
-                if CALLER_ERROR_CODES.contains(&code) {
-                    span.record("coral.status", "ok");
-                } else {
+                if !CALLER_ERROR_CODES.contains(&code) {
                     coral_telemetry::record_failure(span, code.to_string());
                 }
                 Err(error)

@@ -344,7 +344,7 @@ impl Inbox for TableInbox {
                 Ok(deliveries) => return deliveries,
                 Err(error) => {
                     tracing::warn!(
-                        error.type = coral_telemetry::error_type(&error),
+                        error.type = error.code(),
                         "Run Inbox read failed; the next read tries again"
                     );
                 }

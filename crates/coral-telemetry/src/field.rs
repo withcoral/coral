@@ -10,8 +10,6 @@
 
 /// Coral's own fields.
 const CORAL: &[&str] = &[
-    // `ok` or `error`, beside the span status.
-    "coral.status",
     // The Workspace the work belongs to.
     "coral.workspace.id",
     // The authenticated Principal: only after authentication, and never as
@@ -109,18 +107,15 @@ const STANDARD: &[&str] = &[
     "process.pid",
 ];
 
-/// The keys the tracing bridge adds to every span and event: its target and
-/// level, the code location, the thread, and the span's busy and idle time.
+/// The semantic-convention keys the tracing bridge adds: the code location
+/// and the thread. The bridge's `target` and `level` attributes are not
+/// conventions; the span filter reads them and they stay on the host.
 const BRIDGE: &[&str] = &[
-    "target",
-    "level",
     "code.file.path",
     "code.module.name",
     "code.line.number",
     "thread.id",
     "thread.name",
-    "busy_ns",
-    "idle_ns",
 ];
 
 /// Whether `key` may leave the host. A `coral.local.*` key never does.

@@ -11,8 +11,9 @@
 //! a span event named by its message, and the filters cannot tell a message
 //! written in the source from one formatted from a value. So an event's
 //! message must be fixed text, and no field may take an error's value. A
-//! failure is named by `error.type`, from the error's stable `code()` or from
-//! `coral_telemetry::error_type(&error)`.
+//! failure is named by `error.type`, and its value is a bounded code: a
+//! string literal, the error's `code()`, or a `*_code(..)` helper that maps a
+//! library's error to one.
 
 use std::path::{Path, PathBuf};
 
@@ -77,8 +78,9 @@ fn the_checks_find_what_they_check() {
     let source = r#"
         tracing::warn!(coral.run.id = %id, coral.local.path = %path, "fixed text");
         tracing::warn!("fixed {{braces}}");
-        warn!(error.type = coral_telemetry::error_type(&error), "fixed text");
+        warn!(error.type = "clock", "fixed text");
         warn!(error.type = error.code(), "fixed text");
+        warn!(error.type = sdk_error_code(&error), "fixed text");
         tracing::event!(target: "coral_error", tracing::Level::ERROR, "fixed text");
         tracing::info_span!("coral.run.start", otel.kind = "internal", coral.run.status = Empty);
         span.record("coral.run.status", "ok");
@@ -94,6 +96,8 @@ fn the_checks_find_what_they_check() {
         tracing::warn!({ RUN_ID } = %id, "fixed text");
         tracing::info_span!("coral.run.start", detail = Empty);
         span.record("detail", 1);
+        warn!(error.type = std::any::type_name_of_val(&error), "fixed text");
+        warn!(error.type = kind, "fixed text");
         #[cfg(test)]
         mod tests {
             fn ignored() { tracing::warn!(misclassified = 1, "test {error}"); }
@@ -103,7 +107,7 @@ fn the_checks_find_what_they_check() {
         .into_iter()
         .map(|(line, _)| line)
         .collect::<Vec<_>>();
-    assert_eq!(lines, (10..=20).collect::<Vec<_>>());
+    assert_eq!(lines, (11..=23).collect::<Vec<_>>());
 }
 
 fn rust_files(directory: &Path, files: &mut Vec<PathBuf>) {
@@ -361,9 +365,27 @@ fn field_problem(argument: &str) -> Option<String> {
     if !is_allowed_key(key) {
         return Some(format!("key is not cataloged: {argument}"));
     }
+    let sigil = value.starts_with(['%', '?']);
     let value = value.trim_start_matches(['%', '?']).trim();
-    let names_a_kind = value.contains("error_type(") || value.ends_with(".code()");
-    (!names_a_kind && names_an_error(value)).then(|| format!("field takes an error: {argument}"))
+    if key == "error.type" {
+        return (sigil || !is_code(value)).then(|| format!("error.type is not a code: {argument}"));
+    }
+    (!is_code(value) && names_an_error(value)).then(|| format!("field takes an error: {argument}"))
+}
+
+/// Whether `value` is a bounded code: a string literal, a `code()` call, or
+/// a `*_code(..)` helper. A span field declared `Empty` is recorded later,
+/// through `record_failure`.
+fn is_code(value: &str) -> bool {
+    if value.ends_with("Empty") {
+        return true;
+    }
+    let literal = value.starts_with('"') && value.ends_with('"') && value.len() > 1;
+    let helper = value
+        .strip_suffix(')')
+        .and_then(|call| call.split_once('('))
+        .is_some_and(|(function, _)| function.ends_with("code"));
+    literal || value.ends_with(".code()") || helper
 }
 
 /// Whether a span or event may carry `key`: one the catalog lists, an

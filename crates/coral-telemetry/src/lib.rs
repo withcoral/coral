@@ -74,21 +74,10 @@ const TRACESTATE_HEADER: &str = "tracestate";
 /// Prefix for host-only span attributes that must not be exported over OTLP.
 pub const LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX: &str = "coral.local.";
 
-/// The type of `error`, for an event's `error.type` when the error has no
-/// code of its own: its Rust type name, never its text or its sources. The
-/// name is for an operator to read, not a stable contract: it can change with
-/// the compiler, and a boxed error names only the box. The event's code
-/// location says where it failed: a log record's event name, or a span
-/// event's `code.*` keys.
-#[must_use]
-pub fn error_type<E: ?Sized>(error: &E) -> &'static str {
-    std::any::type_name_of_val(error).trim_start_matches('&')
-}
-
 /// Marks `span` failed with the categorical `error_type` and no message
-/// text, so no caller-controlled text reaches its status.
+/// text, so no caller-controlled text reaches its status. A span that
+/// succeeds leaves its status unset, as the OpenTelemetry conventions ask.
 pub fn record_failure(span: &tracing::Span, error_type: impl AsRef<str>) {
-    span.record("coral.status", "error");
     span.record("error.type", error_type.as_ref());
     span.set_status(OtelStatus::error(""));
 }
@@ -186,8 +175,8 @@ fn set_parent_from_context(span: &tracing::Span, context: Option<Context>) {
     let Some(context) = context else {
         return;
     };
-    if let Err(error) = span.set_parent(context) {
-        tracing::debug!(error.type = error_type(&error), "failed to set parent trace context");
+    if span.set_parent(context).is_err() {
+        tracing::debug!(error.type = "set_parent", "failed to set parent trace context");
     }
 }
 
@@ -272,7 +261,6 @@ mod tests {
             let span = tracing::info_span!(
                 "failure",
                 error.type = tracing::field::Empty,
-                coral.status = tracing::field::Empty,
             );
             record_failure(&span, "INVALID_ARGUMENT");
             span.in_scope(|| {});
@@ -283,7 +271,6 @@ mod tests {
             .find(|span| span.name == "failure")
             .expect("failure span");
         let string_attribute = |name: &str| attribute(failure, name);
-        assert_eq!(string_attribute("coral.status").as_deref(), Some("error"));
         assert_eq!(
             string_attribute("error.type").as_deref(),
             Some("INVALID_ARGUMENT")

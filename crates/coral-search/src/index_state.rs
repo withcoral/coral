@@ -38,7 +38,7 @@ impl UniversalSearchModule {
             Err(StateReadError::Read(error)) => {
                 tracing::warn!(
                     coral.workspace.id = %workspace,
-                    error.type = coral_telemetry::error_type(&error),
+                    error.type = error.code(),
                     "failed to read the Providers' search index states"
                 );
                 Ok(BTreeMap::new())

@@ -81,7 +81,7 @@ impl RunModule {
             coral.run.id = %run.id,
             coral.run.claim.id = %run.claim_id,
             coral.run.takeover_claim.id = %takeover_claim_id,
-            error.type = if ended.is_panic() { "panic" } else { "cancelled" },
+            error.type = owner_task_end_code(ended),
             "Run Owner task ended without retiring; interrupting its Run"
         );
         match self
@@ -103,7 +103,7 @@ impl RunModule {
             Err(error) => {
                 tracing::error!(
                     coral.run.id = %run.id,
-                    error.type = coral_telemetry::error_type(&error),
+                    error.type = error.code(),
                     "Run of a failed Run Owner could not be interrupted"
                 );
             }
@@ -196,18 +196,14 @@ impl RunModule {
             if error.database_error().is_some() {
                 return Err(error);
             }
-            run_repository::finish_unstarted_run(
-                &mut transaction,
-                &run,
-                &RunTerminalOutcome::Failed(RunFailure::new(
-                    RunFailureCode::RunAuthorityLost,
-                    "Run authority was lost before Program execution started".to_string(),
-                )),
-                started_at,
-            )
-            .await?;
+            let outcome = RunTerminalOutcome::Failed(RunFailure::new(
+                RunFailureCode::RunAuthorityLost,
+                "Run authority was lost before Program execution started".to_string(),
+            ));
+            run_repository::finish_unstarted_run(&mut transaction, &run, &outcome, started_at)
+                .await?;
             transaction.commit().await?;
-            crate::trace::record_run_end(RunState::Failed);
+            crate::trace::record_run_end(&outcome);
             return Ok(None);
         }
 
@@ -268,7 +264,7 @@ impl RunModule {
         self.finish_termination_in_transaction(&mut transaction, &run, now_unix_nanos)
             .await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(RunState::TimedOut);
+        crate::trace::record_run_end(&RunTerminalOutcome::TimedOut);
         Ok(None)
     }
 
@@ -366,7 +362,7 @@ impl RunModule {
             self.finish_termination_in_transaction(&mut transaction, &run, completed_at)
                 .await?;
             transaction.commit().await?;
-            crate::trace::record_run_end(kind.outcome().state());
+            crate::trace::record_run_end(&kind.outcome());
             return Ok(None);
         }
         let outcome = match completion {
@@ -396,7 +392,7 @@ impl RunModule {
         run_repository::finish_run(&mut transaction, &run, claim_id, &outcome, completed_at)
             .await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(outcome.state());
+        crate::trace::record_run_end(&outcome);
         Ok(None)
     }
 }
@@ -423,5 +419,15 @@ fn termination_for_completion(
         Some(RunTerminationKind::MemoryLimitExceeded)
     } else {
         None
+    }
+}
+
+/// How a Run Owner task ended without retiring, for an event's `error.type`:
+/// it panicked, or its runtime cancelled it.
+pub(crate) fn owner_task_end_code(ended: &tokio::task::JoinError) -> &'static str {
+    if ended.is_panic() {
+        "panic"
+    } else {
+        "cancelled"
     }
 }

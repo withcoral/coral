@@ -48,6 +48,27 @@ pub enum Error {
 }
 
 impl Error {
+    /// The error's stable kind, for an event's `error.type`: a bounded
+    /// code that never carries the error's text.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidInput { .. } => "invalid_input",
+            Self::SavedFunctionNotFound { .. } => "saved_function_not_found",
+            Self::SavedFunctionAdmission { .. } => "saved_function_admission",
+            Self::SavedFunctionCompilationTimedOut { .. } => "saved_function_compilation_timed_out",
+            Self::PermissionDenied { .. } => "permission_denied",
+            Self::PackageTooLarge { .. } => "package_too_large",
+            Self::CompilerUnavailable { .. } => "compiler_unavailable",
+            Self::CompilerWorkerStopped { .. } => "compiler_worker_stopped",
+            Self::Clock { .. } => "clock",
+            Self::Json { .. } => "json",
+            Self::Workspace { .. } => "workspace",
+            Self::CorruptData { .. } => "corrupt_data",
+            Self::Database { .. } => "database",
+        }
+    }
+
     /// Returns a definite safe rejection; operational uncertainty has no invented outcome.
     #[must_use]
     pub fn safe_rejection(&self) -> Option<(&'static str, String)> {
