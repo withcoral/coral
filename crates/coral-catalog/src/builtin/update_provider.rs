@@ -19,12 +19,12 @@ use super::provider_input::{
     ServerInput,
 };
 use super::{
-    ArgumentProblem, BuiltinCredentialRoute, BuiltinOperation, Definition, NAMESPACE_REASON,
-    ProviderFacts, derived_schema, operation_result, present,
+    ArgumentProblem, BuiltinCredentialRoute, BuiltinTool, Definition, NAMESPACE_REASON,
+    ProviderFacts, derived_schema, present, tool_result,
 };
 use crate::{
-    AuthenticationConfiguration, CredentialField, OperationHints, OperationPresentation,
-    ProviderConfiguration, ServerSelection,
+    AuthenticationConfiguration, CredentialField, ProviderConfiguration, ServerSelection,
+    ToolHints, ToolPresentation,
 };
 
 #[cfg(test)]
@@ -36,9 +36,9 @@ pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Configure;
 
 pub(super) fn definition() -> Definition {
     Definition {
-        key: BuiltinOperation::UpdateProvider.key(),
+        key: BuiltinTool::UpdateProvider.key(),
         summary: "Change a Provider's configuration or source",
-        presentation: OperationPresentation::new(
+        presentation: ToolPresentation::new(
             Some("Update provider".to_string()),
             "Change the configuration or the source of one Provider in this Workspace. Coral \
              publishes the change when nobody needs to act. Otherwise it returns a Coral UI \
@@ -63,14 +63,14 @@ pub(super) fn definition() -> Definition {
                  When Coral cannot fetch the source, the call fails with \
                  upstream_incomplete. When status is published, the change is live. When \
                  status is needs_sign_in, show the person the returned url: a sign-in, a new \
-                 credential route, a new way to sign in, or a source that drops Operations \
+                 credential route, a new way to sign in, or a source that drops Tools \
                  needs a person. To check later whether the person published it, call \
                  coral.workspace.getProvider."
                     .to_string(),
             ),
         ),
-        // No read-only hint: the default Operation Access State is approval_required.
-        hints: OperationHints::default(),
+        // No read-only hint: the default Tool Access State is approval_required.
+        hints: ToolHints::default(),
         input: derived_schema::<Arguments>(Contract::Deserialize),
         output: derived_schema::<UpdateProviderResult>(Contract::Serialize),
     }
@@ -440,9 +440,9 @@ pub enum UpdateProviderResult {
 }
 
 impl UpdateProviderResult {
-    /// The Operation Result.
+    /// The Tool Result.
     #[must_use]
-    pub fn into_operation_result(self) -> Value {
-        operation_result(&self)
+    pub fn into_tool_result(self) -> Value {
+        tool_result(&self)
     }
 }

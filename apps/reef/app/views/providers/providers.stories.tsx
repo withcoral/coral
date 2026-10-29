@@ -7,7 +7,7 @@ import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import githubIcon from '../../../recipes/github/github.svg'
 import stripeIcon from '../../../recipes/stripe/stripe.svg'
 import { StepperPage } from './stepper-page'
-import type { ProviderView, OperationView, ReviewOperationView, SetupView } from './types'
+import type { ProviderView, ToolView, ReviewToolView, SetupView } from './types'
 import { UpdatePage } from './update-page'
 import { EditConfigurationPage } from './edit-configuration-page'
 import { WorkspaceProvidersPage } from './workspace-providers-page'
@@ -39,12 +39,12 @@ function op(
   relativePath: string,
   summary: string,
   group: string,
-  extra: Partial<OperationView> = {},
-): OperationView {
+  extra: Partial<ToolView> = {},
+): ToolView {
   const readOnly = extra.hints?.readOnly === true
   return {
     // The management resource name is keyed by the provider id, not its namespace.
-    name: `providers/${provider}/operations/${relativePath}`,
+    name: `providers/${provider}/tools/${relativePath}`,
     relativePath,
     callPath: base ? `coral.providers.${base}.${relativePath}` : relativePath,
     summary,
@@ -56,7 +56,7 @@ function op(
     available: true,
     reasons: [],
     group,
-    path: `/workspaces/demo/providers/${provider}/ops/${relativePath}`,
+    path: `/workspaces/demo/providers/${provider}/tools/${relativePath}`,
     ...extra,
   }
 }
@@ -94,7 +94,7 @@ const github: ProviderView = {
   etag: 'prov-etag',
   path: '/workspaces/demo/providers/prov-github',
   enabled: true,
-  operations: githubOps('prov-github', 'github'),
+  tools: githubOps('prov-github', 'github'),
 }
 const weather: ProviderView = {
   id: 'prov-weather',
@@ -110,9 +110,9 @@ const weather: ProviderView = {
   etag: 'prov-etag-2',
   path: '/workspaces/demo/providers/prov-weather',
   enabled: true,
-  operations: [
+  tools: [
     {
-      name: 'providers/prov-weather/operations/getForecast',
+      name: 'providers/prov-weather/tools/getForecast',
       relativePath: 'getForecast',
       callPath: 'coral.providers.weather.getForecast',
       summary: '',
@@ -122,7 +122,7 @@ const weather: ProviderView = {
       available: true,
       reasons: [],
       group: '',
-      path: '/workspaces/demo/providers/prov-weather/ops/getForecast',
+      path: '/workspaces/demo/providers/prov-weather/tools/getForecast',
     },
   ],
 }
@@ -135,21 +135,21 @@ const blocked: ProviderView = {
   enabled: false,
   blockers: ['Provider disabled'],
   path: '/workspaces/demo/providers/prov-hr',
-  operations: githubOps('prov-hr', 'hr'),
+  tools: githubOps('prov-hr', 'hr'),
 }
 // Coral's Built-in Provider, which leads the rail under Coral's mark.
-const coralOperations = [
+const coralTools = [
   'addProvider',
   'listProviders',
   'getProvider',
   'getPolicy',
   'updateProvider',
 ].map((key) => ({
-  ...weather.operations[0]!,
-  name: `providers/prov-coral/operations/${key}`,
+  ...weather.tools[0]!,
+  name: `providers/prov-coral/tools/${key}`,
   relativePath: key,
   callPath: `coral.workspace.${key}`,
-  path: `/workspaces/demo/providers/prov-coral/ops/${key}`,
+  path: `/workspaces/demo/providers/prov-coral/tools/${key}`,
   // Read-only, so they start enabled.
   ...(['listProviders', 'getProvider', 'getPolicy'].includes(key) && {
     hints: { readOnly: true, idempotent: true },
@@ -163,9 +163,9 @@ const coral: ProviderView = {
   namespace: '',
   builtin: true,
   path: '/workspaces/demo/providers/prov-coral',
-  readyCount: coralOperations.length,
-  totalCount: coralOperations.length,
-  operations: coralOperations,
+  readyCount: coralTools.length,
+  totalCount: coralTools.length,
+  tools: coralTools,
 }
 const meta = {
   title: 'Management/Providers',
@@ -231,7 +231,7 @@ const treeProps = {
   recipes: catalogRecipes,
   providers: [github, weather, blocked],
   selectedProvider: null,
-  selectedOperation: null,
+  selectedTool: null,
   form,
 }
 
@@ -351,7 +351,7 @@ export const TreeExpandAllFromDownTheTable: Story = {
   play: async ({ canvas }) => {
     // Expanding all from down the table returns it to its top.
     await userEvent.click(canvas.getByRole('button', { name: 'Collapse all' }))
-    const table = canvas.getByRole('table', { name: 'Operations' })
+    const table = canvas.getByRole('table', { name: 'Tools' })
     table.scrollTo({ top: table.scrollHeight })
     await waitFor(() => expect(table.scrollTop).toBeGreaterThan(0))
     await userEvent.click(canvas.getByRole('button', { name: 'Expand all' }))
@@ -364,12 +364,12 @@ export const TreeWithBuiltinProvider: Story = {
 export const TreeProviderSelected: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} selectedProvider="prov-weather" />,
 }
-// A catalog large enough that the table virtualizes: only the operations near
+// A catalog large enough that the table virtualizes: only the tools near
 // the scroll position mount, while every provider and group heading does.
 const largeProviders: ProviderView[] = Array.from({ length: 6 }, (_, providerIndex) => {
   const id = `prov-large-${providerIndex + 1}`
   const groups = ['issues', 'pulls', 'repos', 'users']
-  const operations = Array.from({ length: 200 }, (__, index) =>
+  const tools = Array.from({ length: 200 }, (__, index) =>
     op(
       id,
       `api${providerIndex + 1}`,
@@ -387,9 +387,9 @@ const largeProviders: ProviderView[] = Array.from({ length: 6 }, (_, providerInd
     displayName: `API ${providerIndex + 1}`,
     namespace: `api${providerIndex + 1}`,
     path: `/workspaces/demo/providers/${id}`,
-    readyCount: operations.length,
-    totalCount: operations.length,
-    operations,
+    readyCount: tools.length,
+    totalCount: tools.length,
+    tools,
   }
 })
 export const TreeLargeCatalog: Story = {
@@ -400,12 +400,12 @@ export const TreeAuthenticatedProviderSelected: Story = {
 }
 // Labels show only hints the provider declared. A row shows those declared
 // true; the drawer also shows those declared false. Undeclared shows nothing.
-export const TreeOperationSelected: Story = {
+export const TreeToolSelected: Story = {
   render: () => (
     <WorkspaceProvidersPage
       {...treeProps}
       selectedProvider="prov-github"
-      selectedOperation="issues.create"
+      selectedTool="issues.create"
     />
   ),
   play: async ({ canvasElement }) => {
@@ -435,12 +435,12 @@ export const TreeOperationSelected: Story = {
   },
 }
 // Weather declares no hints, so its row shows no labels.
-export const TreeOperationWithoutDescription: Story = {
+export const TreeToolWithoutDescription: Story = {
   render: () => (
     <WorkspaceProvidersPage
       {...treeProps}
       selectedProvider="prov-weather"
-      selectedOperation="getForecast"
+      selectedTool="getForecast"
     />
   ),
   play: async ({ canvasElement }) => {
@@ -454,32 +454,32 @@ export const TreeOperationWithoutDescription: Story = {
       await expect(row.queryByText(label, { exact: true })).toBeNull()
   },
 }
-export const TreeOperationWithSummaryAsDescription: Story = {
+export const TreeToolWithSummaryAsDescription: Story = {
   render: () => (
     <WorkspaceProvidersPage
       {...treeProps}
       providers={[
         {
           ...github,
-          operations: github.operations.map((o) => ({ ...o, description: o.summary })),
+          tools: github.tools.map((o) => ({ ...o, description: o.summary })),
         },
       ]}
       selectedProvider="prov-github"
-      selectedOperation="issues.create"
+      selectedTool="issues.create"
     />
   ),
 }
-export const TreeUnavailableOperationSelected: Story = {
+export const TreeUnavailableToolSelected: Story = {
   render: () => (
     <WorkspaceProvidersPage
       {...treeProps}
       selectedProvider="prov-github"
-      selectedOperation="issues.close"
+      selectedTool="issues.close"
     />
   ),
 }
 // Search failed to index GitHub's active Generation. Its heading and its
-// operations say so; Weather, which search indexed, says nothing.
+// tools say so; Weather, which search indexed, says nothing.
 export const TreeSearchIndexFailed: Story = {
   render: () => (
     <WorkspaceProvidersPage
@@ -489,7 +489,7 @@ export const TreeSearchIndexFailed: Story = {
         weather,
       ]}
       selectedProvider="prov-github"
-      selectedOperation="issues.create"
+      selectedTool="issues.create"
     />
   ),
   play: async ({ canvasElement }) => {
@@ -500,7 +500,7 @@ export const TreeSearchIndexFailed: Story = {
         name: 'issues.create',
       }),
     )
-    await expect(drawer.getByText(/Search cannot find this operation\./)).toBeVisible()
+    await expect(drawer.getByText(/Search cannot find this tool\./)).toBeVisible()
   },
 }
 // The pill's tooltip names the error the failed attempt recorded.
@@ -526,7 +526,7 @@ export const TreeSearchIndexPending: Story = {
       {...treeProps}
       providers={[{ ...github, searchIndex: { state: 'pending' } }, weather]}
       selectedProvider="prov-github"
-      selectedOperation="issues.create"
+      selectedTool="issues.create"
     />
   ),
   play: async ({ canvasElement }) => {
@@ -538,7 +538,7 @@ export const TreeSearchIndexPending: Story = {
         name: 'issues.create',
       }),
     )
-    await expect(drawer.getByText(/Search cannot find this operation yet\./)).toBeVisible()
+    await expect(drawer.getByText(/Search cannot find this tool yet\./)).toBeVisible()
   },
 }
 export const TreeAsMember: Story = {
@@ -555,7 +555,7 @@ export const TreeAtPhoneWidthSelected: Story = {
     <WorkspaceProvidersPage
       {...treeProps}
       selectedProvider="prov-github"
-      selectedOperation="issues.create"
+      selectedTool="issues.create"
     />
   ),
   globals: { viewport: { value: 'mobile1', isRotated: false } },
@@ -895,7 +895,7 @@ export const ConfigurationResolvedDestinations: Story = {
             users: 'https://api.eu.example.test/v1',
             logs: 'https://logs.us.logs.test/',
           },
-          unavailableOperations: [
+          unavailableTools: [
             { key: 'events', reasons: ['review the selected server and its declared variables'] },
             {
               key: 'stream',
@@ -916,7 +916,7 @@ export const TreeAfterAdded: Story = {
       result={{
         error: null,
         credential: null,
-        message: 'Added. Check the operations before you use them.',
+        message: 'Added. Check the tools before you use them.',
       }}
     />
   ),
@@ -939,7 +939,7 @@ async function showEmptyCatalogFilter(canvasElement: HTMLElement, label: string)
   const canvas = within(canvasElement)
   await userEvent.type(canvas.getByRole('searchbox', { name: label }), 'no match')
   // Each provider section says it has no match.
-  for (const status of canvas.getAllByText('No operations match “no match”.')) {
+  for (const status of canvas.getAllByText('No tools match “no match”.')) {
     await expect(status).toBeVisible()
   }
 }
@@ -965,7 +965,7 @@ export const TreeBulkPending: Story = {
   parameters: { dialogPending: true },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByRole('checkbox', { name: 'Select GitHub operations' }))
+    await userEvent.click(canvas.getByRole('checkbox', { name: 'Select GitHub tools' }))
     // The "Bulk policy" form names the group; the trigger reads as its value.
     const bulk = canvas.getByRole('form', { name: 'Bulk policy' })
     await userEvent.click(within(bulk).getByRole('button', { name: 'Needs approval' }))
@@ -973,11 +973,11 @@ export const TreeBulkPending: Story = {
     const body = within(canvasElement.ownerDocument.body)
     await userEvent.click(await body.findByRole('menuitemradio', { name: 'Disabled' }))
     await userEvent.click(within(bulk).getByRole('button', { name: 'Apply' }))
-    await expect(canvas.getByRole('checkbox', { name: 'Select GitHub operations' })).toBeDisabled()
+    await expect(canvas.getByRole('checkbox', { name: 'Select GitHub tools' })).toBeDisabled()
   },
 }
 
-// A provider with no operations yet keeps its heading and its settings.
+// A provider with no tools yet keeps its heading and its settings.
 export const TreeEmptyProvider: Story = {
   render: () => (
     <WorkspaceProvidersPage
@@ -990,7 +990,7 @@ export const TreeEmptyProvider: Story = {
           displayName: 'Empty',
           namespace: 'empty',
           path: '/workspaces/demo/providers/prov-empty',
-          operations: [],
+          tools: [],
           readyCount: 0,
           totalCount: 0,
         },
@@ -1003,16 +1003,16 @@ export const TreeEmptyProvider: Story = {
 export const TreeEmptyFilter: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} />,
   parameters: catalogViewports,
-  play: ({ canvasElement }) => showEmptyCatalogFilter(canvasElement, 'Filter operations'),
+  play: ({ canvasElement }) => showEmptyCatalogFilter(canvasElement, 'Filter tools'),
 }
 export const TreeFilteredGroups: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} />,
   parameters: catalogViewports,
-  // The filtered table, with each match in an operation's name in bold.
+  // The filtered table, with each match in a tool's name in bold.
   // workspace-providers-page.dom.test.tsx owns what the filter matches.
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter operations' }), 'ISSUES')
+    await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter tools' }), 'ISSUES')
     await expect(canvas.getAllByRole('row', { name: /issues\.close/ }).length).toBeGreaterThan(0)
   },
 }
@@ -1049,9 +1049,9 @@ const setupReady: SetupView = {
     documentDisplayName: 'Example API',
     servers: [],
     destinations: {},
-    operationCount: null,
-    operations: [],
-    unavailableOperations: [],
+    toolCount: null,
+    tools: [],
+    unavailableTools: [],
     diagnostic: '',
     readable: true,
     errors: {},
@@ -1120,7 +1120,7 @@ const configurationSetup: SetupView = {
     servers: [
       {
         declaration: '#/servers',
-        operations: ['users', 'events'],
+        tools: ['users', 'events'],
         options: [
           {
             url: 'https://api.{site}/v1',
@@ -1137,7 +1137,7 @@ const configurationSetup: SetupView = {
       },
       {
         declaration: '#/paths/~1logs/servers',
-        operations: ['logs'],
+        tools: ['logs'],
         options: [
           {
             url: 'https://logs.{site}',
@@ -1149,14 +1149,14 @@ const configurationSetup: SetupView = {
       },
     ],
     destinations: {},
-    operations: [],
-    unavailableOperations: [],
+    tools: [],
+    unavailableTools: [],
     diagnostic: '',
     readable: true,
     errors: {},
   },
 }
-const largeOperationKeys = Array.from(
+const largeToolKeys = Array.from(
   { length: 2000 },
   (_, index) =>
     `actions/add-custom-labels-to-self-hosted-runner-for-org-${String(index + 1).padStart(4, '0')}`,
@@ -1179,7 +1179,7 @@ const largeCatalogReview: SetupView = {
     servers: [
       {
         declaration: '#/servers',
-        operations: largeOperationKeys,
+        tools: largeToolKeys,
         options: [{ url: 'https://api.example.test/v1', variables: [] }],
       },
     ],
@@ -1260,7 +1260,7 @@ const stepperWorkspace = {
     kind: 'workspace',
     setupId: 'setup-1',
     configure: false,
-    operationsAccepted: true,
+    toolsAccepted: true,
     account: null,
     namespace: 'example',
   } as CreationAttempt,
@@ -1358,7 +1358,7 @@ export const StepWhereIsItInvalid: Story = {
   ),
   parameters: workspaceEntry,
 }
-// Sign in provisionally to read protected operations before the operations step.
+// Sign in provisionally to read protected tools before the tools step.
 export const StepDiscoverySignIn: Story = {
   render: () => <StepperPage {...stepperWorkspace} setup={setupAwaiting} />,
   parameters: workspaceEntry,
@@ -1406,13 +1406,13 @@ export const StepDiscoveryFailed: Story = {
   parameters: workspaceEntry,
 }
 // Step 2: what can it do?
-/** One previewed Operation, as Coral projects it before anything is published. */
-const previewedOperation = (
+/** One previewed Tool, as Coral projects it before anything is published. */
+const previewedTool = (
   key: string,
   group: string,
   summary: string,
   reasons: string[] = [],
-): ReviewOperationView => ({
+): ReviewToolView => ({
   key,
   relativePath: key.replace('/', '.'),
   summary,
@@ -1421,7 +1421,7 @@ const previewedOperation = (
   reasons,
   path: '',
 })
-/** A confirmed source whose operations Coral has read, split across two hosts. */
+/** A confirmed source whose tools Coral has read, split across two hosts. */
 const discovered: SetupView = {
   ...setupReady,
   configuration: {
@@ -1431,34 +1431,34 @@ const discovered: SetupView = {
       'users/create': 'https://api.example.test/v1',
       'logs/submit': 'https://logs.example.test/',
     },
-    unavailableOperations: [
+    unavailableTools: [
       { key: 'events/stream', reasons: ['review the selected server and its declared variables'] },
     ],
-    operations: [
-      previewedOperation('users/list', 'users', 'List the people in the account.'),
-      previewedOperation('users/create', 'users', 'Invite one person to the account.'),
-      previewedOperation('logs/submit', 'logs', 'Send one log line.'),
-      previewedOperation('events/stream', 'events', 'Read the event stream.', [
+    tools: [
+      previewedTool('users/list', 'users', 'List the people in the account.'),
+      previewedTool('users/create', 'users', 'Invite one person to the account.'),
+      previewedTool('logs/submit', 'logs', 'Send one log line.'),
+      previewedTool('events/stream', 'events', 'Read the event stream.', [
         'review the selected server and its declared variables',
       ]),
     ],
   },
 }
-const beforeOperations = { ...stepperWorkspace.attempt, operationsAccepted: false }
+const beforeTools = { ...stepperWorkspace.attempt, toolsAccepted: false }
 // Catches: a step's actions moving back to the page's top bar, or its title or
 // count going missing.
-export const StepOperations: Story = {
-  render: () => <StepperPage {...stepperWorkspace} setup={discovered} attempt={beforeOperations} />,
+export const StepTools: Story = {
+  render: () => <StepperPage {...stepperWorkspace} setup={discovered} attempt={beforeTools} />,
   parameters: workspaceEntry,
   play: async ({ canvas, canvasElement }) => {
-    await expect(canvas.getByRole('heading', { level: 2, name: 'Operations' })).toBeVisible()
-    await expect(canvas.getByText('4 operations in 3 groups · 2 destinations')).toBeVisible()
+    await expect(canvas.getByRole('heading', { level: 2, name: 'Tools' })).toBeVisible()
+    await expect(canvas.getByText('4 tools in 3 groups · 2 destinations')).toBeVisible()
     await expect(canvas.getByRole('link', { name: 'Next' })).toBeVisible()
     const topBar = canvasElement.querySelector('header')!
     expect(within(topBar).queryByRole('link', { name: 'Next' })).toBeNull()
   },
 }
-export const StepOperationsEmpty: Story = {
+export const StepToolsEmpty: Story = {
   render: () => (
     <StepperPage
       {...stepperWorkspace}
@@ -1468,22 +1468,22 @@ export const StepOperationsEmpty: Story = {
         sourceLabel: 'https://mcp.example.test',
         configuration: {
           ...setupReady.configuration!,
-          operationCount: 0,
-          operations: [],
+          toolCount: 0,
+          tools: [],
           diagnostic: 'empty_mcp_catalog',
         },
       }}
-      attempt={beforeOperations}
+      attempt={beforeTools}
     />
   ),
   parameters: workspaceEntry,
 }
 
-export const OperationsLargeCatalog: Story = {
+export const ToolsLargeCatalog: Story = {
   render: () => (
     <StepperPage
       {...stepperWorkspace}
-      attempt={beforeOperations}
+      attempt={beforeTools}
       setup={{
         ...largeCatalogReview,
         state: 'ready',
@@ -1492,26 +1492,23 @@ export const OperationsLargeCatalog: Story = {
           confirmed: true,
           values: { ...largeCatalogReview.configuration!.values, authentication: 'none' },
           destinations: Object.fromEntries(
-            largeOperationKeys.map((key, index) => [
+            largeToolKeys.map((key, index) => [
               key,
               index < 1900 ? 'https://api.example.test/v1' : 'https://api.example.test/v2',
             ]),
           ),
-          unavailableOperations: Array.from({ length: 120 }, (_, index) => ({
+          unavailableTools: Array.from({ length: 120 }, (_, index) => ({
             key: `events/unavailable-${index + 1}`,
             reasons: ['Review the selected server and its declared variables.'],
           })),
-          operations: [
-            ...largeOperationKeys.map((key) =>
-              previewedOperation(key, 'actions', 'Add custom labels to a self-hosted runner.'),
+          tools: [
+            ...largeToolKeys.map((key) =>
+              previewedTool(key, 'actions', 'Add custom labels to a self-hosted runner.'),
             ),
             ...Array.from({ length: 120 }, (_, index) =>
-              previewedOperation(
-                `events/unavailable-${index + 1}`,
-                'events',
-                'Read the event stream.',
-                ['Review the selected server and its declared variables.'],
-              ),
+              previewedTool(`events/unavailable-${index + 1}`, 'events', 'Read the event stream.', [
+                'Review the selected server and its declared variables.',
+              ]),
             ),
           ],
         },
@@ -1519,28 +1516,22 @@ export const OperationsLargeCatalog: Story = {
     />
   ),
 }
-export const OperationsLargeCatalogNoMatches: Story = {
-  ...OperationsLargeCatalog,
+export const ToolsLargeCatalogNoMatches: Story = {
+  ...ToolsLargeCatalog,
   play: async ({ canvas }) => {
-    await userEvent.type(
-      canvas.getByRole('searchbox', { name: 'Find an operation' }),
-      'not-an-operation',
-    )
-    await expect(canvas.getByText('No operations match your search.')).toBeVisible()
+    await userEvent.type(canvas.getByRole('searchbox', { name: 'Find a tool' }), 'not-an-tool')
+    await expect(canvas.getByText('No tools match your search.')).toBeVisible()
   },
 }
-export const OperationsUnavailableSearch: Story = {
-  ...OperationsLargeCatalog,
+export const ToolsUnavailableSearch: Story = {
+  ...ToolsLargeCatalog,
   play: async ({ canvas }) => {
-    // Every operation the source offers, including the 120 that cannot run.
-    await expect(canvas.getByText('2,120 operations in 2 groups · 2 destinations')).toBeVisible()
+    // Every tool the source offers, including the 120 that cannot run.
+    await expect(canvas.getByText('2,120 tools in 2 groups · 2 destinations')).toBeVisible()
     // What cannot run is a group of its own rather than a disclosure below.
     await expect(canvas.getByText('Cannot run', { exact: true })).toBeVisible()
     // A search reaches into the collapsed groups rather than past them.
-    await userEvent.type(
-      canvas.getByRole('searchbox', { name: 'Find an operation' }),
-      'unavailable-120',
-    )
+    await userEvent.type(canvas.getByRole('searchbox', { name: 'Find a tool' }), 'unavailable-120')
     await expect(canvas.getByText('events.unavailable-120', { exact: true })).toBeVisible()
     expect(canvas.queryByText('actions', { exact: true })).toBeNull()
   },
@@ -1796,7 +1787,7 @@ export const UpdatePublicationFailedAfterReplay: Story = {
         allowIncompatibleConfiguration: true,
       }}
       result={{
-        failed: 'The document declares duplicate operations.',
+        failed: 'The document declares duplicate tools.',
         error: null,
         credential: null,
       }}
@@ -1864,7 +1855,7 @@ export const RefreshUploadedDocument: Story = {
         state: 'draft',
         setupId: null,
         configure: false,
-        operationsAccepted: true,
+        toolsAccepted: true,
         etag: 'prov-etag',
         allowIncompatibleConfiguration: false,
       }}
@@ -1886,7 +1877,7 @@ export const UpdateReady: Story = {
         state: 'draft',
         setupId: setupReady.id,
         configure: false,
-        operationsAccepted: true,
+        toolsAccepted: true,
         etag: 'prov-etag',
         allowIncompatibleConfiguration: false,
       }}
@@ -1908,7 +1899,7 @@ export const UpdateFailed: Story = {
         state: 'draft',
         setupId: setupReady.id,
         configure: false,
-        operationsAccepted: true,
+        toolsAccepted: true,
         etag: 'prov-etag',
         allowIncompatibleConfiguration: false,
       }}
@@ -1959,7 +1950,7 @@ const mcpReview: SetupView = {
         },
       ],
     },
-    servers: [{ declaration: '#/servers', operations: [], options: [] }],
+    servers: [{ declaration: '#/servers', tools: [], options: [] }],
   },
 }
 export const ConfigurationMcpOAuthBeforeSignIn: Story = {
@@ -2032,7 +2023,7 @@ export const ConfigurationMcpAnonymous: Story = {
           discoveryAuthorizationRequired: false,
           confirmed: false,
           destinations: {},
-          unavailableOperations: [],
+          unavailableTools: [],
           values: { ...mcpReview.configuration!.values, authentication: 'none' },
         },
       }}
@@ -2040,7 +2031,7 @@ export const ConfigurationMcpAnonymous: Story = {
   ),
   play: async ({ canvas }) => {
     // An MCP catalog not counted yet is not an empty one.
-    await expect(canvas.queryByText('No operations found')).not.toBeInTheDocument()
+    await expect(canvas.queryByText('No tools found')).not.toBeInTheDocument()
   },
 }
 
@@ -2052,7 +2043,7 @@ export const ConfigurationEditAfterSignIn: Story = {
         ...stepperWorkspace.attempt,
         state: 'draft',
         configure: true,
-        operationsAccepted: false,
+        toolsAccepted: false,
         account: 'caller',
       }}
       setup={{
@@ -2093,7 +2084,7 @@ const updateStory = {
     state: 'draft',
     setupId: 'setup-1',
     configure: false,
-    operationsAccepted: true,
+    toolsAccepted: true,
     etag: 'etag',
     allowIncompatibleConfiguration: false,
   } as UpdateAttempt,
@@ -2129,7 +2120,7 @@ export const UpdateUnreadableSource: Story = {
         configuration: {
           ...updateReview.configuration!,
           differences: [],
-          diagnostic: 'duplicate_operation_key',
+          diagnostic: 'duplicate_tool_key',
           readable: false,
         },
       }}
@@ -2268,7 +2259,7 @@ export const RefreshSavedSource: Story = {
     />
   ),
   play: async ({ canvas }) => {
-    await expect(canvas.getByRole('button', { name: 'Read operations' })).toBeEnabled()
+    await expect(canvas.getByRole('button', { name: 'Read tools' })).toBeEnabled()
     await expect(canvas.queryByRole('heading', { name: 'Changes' })).not.toBeInTheDocument()
     await expect(canvas.queryByRole('heading', { name: 'Review' })).not.toBeInTheDocument()
     await expect(canvas.queryByRole('button', { name: 'Change source' })).not.toBeInTheDocument()
@@ -2285,7 +2276,7 @@ export const ReadingSavedSource: Story = {
     />
   ),
   play: async ({ canvas }) => {
-    await expect(canvas.getByRole('status')).toHaveTextContent('Reading operations…')
+    await expect(canvas.getByRole('status')).toHaveTextContent('Reading tools…')
     await expect(canvas.getByRole('button', { name: 'Save' })).toBeDisabled()
   },
 }
@@ -2423,8 +2414,8 @@ export const ChangeAccountSettingRoutes: Story = {
   ),
   parameters: { initialEntry: '/workspaces/demo/providers/records/update' },
 }
-/** After a refresh reads the source, the operations the live provider lacks group at the top. */
-export const RefreshNewOperations: Story = {
+/** After a refresh reads the source, the tools the live provider lacks group at the top. */
+export const RefreshNewTools: Story = {
   render: () => (
     <EditConfigurationPage
       {...updateStory}
@@ -2436,7 +2427,7 @@ export const RefreshNewOperations: Story = {
         credentialMethod: 'none',
         configuration: { ...discovered.configuration!, interruptsAccess: false },
       }}
-      currentOperations={[
+      currentTools={[
         { relativePath: 'users.list', summary: 'List the people in the account.' },
         { relativePath: 'events.stream', summary: 'Read the event stream.' },
         { relativePath: 'users.delete', summary: 'Remove one person from the account.' },

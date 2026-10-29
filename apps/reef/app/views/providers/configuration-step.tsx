@@ -44,7 +44,7 @@ import {
   authenticationLabels,
   authenticationOptions,
   awaitingDiscovery,
-  operationCount,
+  toolCount,
   serverLabel,
 } from './configuration-details'
 import { ScopesField } from './scopes-field'
@@ -275,7 +275,7 @@ export function ConfigurationStep({
   const oauth =
     (value.authentication === 'oauth' || device) &&
     review.authenticationMethods.includes(value.authentication as 'oauth' | 'device')
-  const operations = operationCount(setup)
+  const tools = toolCount(setup)
   const serverGroups = mcp ? [] : review.servers
   const recipeServer = (group: ServerGroup) =>
     applied?.values.servers?.find((server) => server.declaration === group.declaration)
@@ -729,8 +729,8 @@ export function ConfigurationStep({
             </Banner>
           ))}
         {review.diagnostic && <Banner variant="warning">{review.diagnostic}</Banner>}
-        {!awaitingDiscovery(setup) && operations === 0 && (
-          <Banner title="No operations found">Check the {source}, or change the source.</Banner>
+        {!awaitingDiscovery(setup) && tools === 0 && (
+          <Banner title="No tools found">Check the {source}, or change the source.</Banner>
         )}
       </Form>
     </StepFrame>

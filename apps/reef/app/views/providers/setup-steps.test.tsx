@@ -59,7 +59,7 @@ describe('where typed-in credentials go', () => {
   // leaves the destination out.
   const destinations = [
     [
-      'every host the operations call, once each',
+      'every host the tools call, once each',
       {
         configuration: {
           destinations: {
@@ -94,7 +94,7 @@ describe('where typed-in credentials go', () => {
   })
 })
 
-describe('signing in to read the operations', () => {
+describe('signing in to read the tools', () => {
   // Catches: the sign-in dialog opening over a required client secret, so its
   // button fails validation on a field you cannot reach.
   it('asks for the client secret before the dialog covers it', async () => {

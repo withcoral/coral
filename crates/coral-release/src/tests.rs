@@ -87,6 +87,12 @@ async fn a_feed_answer_without_a_stable_version_keeps_the_last_answer() {
             ResponseTemplate::new(200).set_body_string("<html>"),
             "not JSON",
         ),
+        (
+            ResponseTemplate::new(200).set_body_json(
+                json!({ "tag_name": "v1.5.0", "body": "x".repeat(super::BODY_LIMIT) }),
+            ),
+            "too large",
+        ),
         (ResponseTemplate::new(403), "rate limited"),
         (ResponseTemplate::new(500), "server error"),
     ];
@@ -99,7 +105,7 @@ async fn a_feed_answer_without_a_stable_version_keeps_the_last_answer() {
                 (
                     "prerelease tag" | "tag without v" | "not a version",
                     CheckError::NotStable
-                ) | ("not JSON", CheckError::Unreadable)
+                ) | ("not JSON" | "too large", CheckError::Unreadable)
                     | ("rate limited" | "server error", CheckError::Http(_))
             ),
             "{case}: {error:?}"

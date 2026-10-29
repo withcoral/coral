@@ -4,7 +4,7 @@ import { openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
   addProviderFromFile,
   createWorkspace,
-  openOperation,
+  openTool,
   setProviderEnabled,
   waitForProviderStatus,
 } from '../../../support/providers.ts'
@@ -28,18 +28,18 @@ test('Add and manage a Workspace Provider from an uploaded document', async (con
         'weather',
       )
     })
-    await step('The table shows its Operations under coral.providers.weather', async () => {
-      let drawer = await openOperation(page, 'getForecast')
+    await step('The table shows its Tools under coral.providers.weather', async () => {
+      let drawer = await openTool(page, 'getForecast')
       await drawer.getByText('coral.providers.weather.getForecast', { exact: true }).waitFor()
       expect(await drawer.getByText('Unavailable', { exact: true }).count()).toBe(0)
       await page.keyboard.press('Escape')
       await drawer.waitFor({ state: 'hidden' })
-      drawer = await openOperation(page, 'listStations')
+      drawer = await openTool(page, 'listStations')
       await drawer.getByText('coral.providers.weather.listStations', { exact: true }).waitFor()
       // The open drawer hides the table; close it before reading the heading.
       await page.keyboard.press('Escape')
       await drawer.waitFor({ state: 'hidden' })
-      // The provider's heading counts its operations; none is Unavailable.
+      // The provider's heading counts its tools; none is Unavailable.
       await waitForProviderStatus(page, 'Weather', 'Ready', { available: 2, total: 2 })
     })
     await step('A disabled provider shows as disabled, and enabling restores it', async () => {

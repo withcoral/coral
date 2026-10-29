@@ -6,12 +6,12 @@ import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
   addProviderFromFile,
   createWorkspace,
-  enableOperation,
+  enableTool,
   programRunner,
 } from '../../../support/providers.ts'
 import { withOwner } from '../../../support/topology.ts'
 
-// A real Run that holds on its operation calls while the drawer follows it. Live mode
+// A real Run that holds on its tool calls while the drawer follows it. Live mode
 // moves the selection to each newest record Coral streams, and the drawer's split
 // highlights the line Coral stored for it. The step rules stay in Reef's
 // `navigation.test.ts` and `live.stories.tsx`; this proves them against real Coral.
@@ -68,7 +68,7 @@ export async function followLatest(context: TestContext) {
       'followFixture',
     )
     await page.goto(provider)
-    await enableOperation(page, 'lookup')
+    await enableTool(page, 'lookup')
     // exec returns at once; the Run goes on without it.
     const execute = programRunner(page, target, workspace, {
       waitMs: 1,
@@ -78,8 +78,8 @@ export async function followLatest(context: TestContext) {
     expect(accepted.isError).not.toBe(true)
     const run = `workspaces/${workspace}/runs/${accepted.structuredContent.run_id}`
     const task = `workspaces/${workspace}/tasks/${execute.taskId()}`
-    /** The Run's operation calls Coral has recorded, in order. */
-    const operations = async () =>
+    /** The Run's tool calls Coral has recorded, in order. */
+    const tools = async () =>
       (await api.activity.browseRunEntries({ name: run, pageSize: 100 })).entries.flatMap(
         ({ record }) => (record.case === 'invocation' ? [record.value] : []),
       )
@@ -120,17 +120,17 @@ export async function followLatest(context: TestContext) {
       await expect.poll(() => highlighted(page)).toEqual(noCall)
     })
 
-    await step('Turn on live mode and select the held operation call', async () => {
-      const [first] = await operations()
+    await step('Turn on live mode and select the held tool call', async () => {
+      const [first] = await tools()
       expect(first?.sourceLocation).toMatchObject(inProgram(1, 'lookup'))
       await toggle.click()
       await follows(first!.name, { lines: [1], unavailable: false })
     })
 
-    await step('Follow the next operation call Coral streams, at its own line', async () => {
+    await step('Follow the next tool call Coral streams, at its own line', async () => {
       release()
       await expect.poll(() => held.length, { timeout: 15_000 }).toBe(1)
-      const [, second] = await operations()
+      const [, second] = await tools()
       expect(second?.sourceLocation).toMatchObject(inProgram(3, 'lookup'))
       await follows(second!.name, { lines: [3], unavailable: false })
     })

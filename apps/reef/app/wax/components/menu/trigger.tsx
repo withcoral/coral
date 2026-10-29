@@ -2,6 +2,7 @@ import { Menu as BaseMenu } from '@base-ui/react/menu'
 import classNames from 'classnames'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
+import { SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
 
 import * as styles from './menu.css'
 
@@ -18,7 +19,8 @@ export function Trigger({ children, className, disabled, id, render }: TriggerPr
   const nativeButton =
     !render ||
     render.type === 'button' ||
-    (render.type === ButtonContainer && (!render.props.as || render.props.as === 'button'))
+    ((render.type === ButtonContainer || render.type === SidebarButton) &&
+      (!render.props.as || render.props.as === 'button'))
   return (
     <BaseMenu.Trigger
       disabled={disabled}

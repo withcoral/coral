@@ -1,7 +1,7 @@
-//! Advisory typing of the Operations and Saved Functions a source names.
+//! Advisory typing of the Tools and Saved Functions a source names.
 //!
-//! The composing caller supplies an [`OperationDeclarationReader`] bound to
-//! its own discovery authority, so this crate never decides which Operations
+//! The composing caller supplies an [`ToolDeclarationReader`] bound to
+//! its own discovery authority, so this crate never decides which Tools
 //! a caller can see. Typing is advisory: whatever it cannot finish leaves the
 //! source untyped rather than fail the save.
 
@@ -12,12 +12,12 @@ use coral_v8::CallableDeclaration;
 
 /// The most candidate Call Paths one source may name and still be typed.
 /// Each prefix of a literal chain is a candidate, so a four-segment call
-/// names three. Above it, Operations stay untyped.
-const OPERATION_DECLARATION_MAX_COUNT: usize = 128;
+/// names three. Above it, Tools stay untyped.
+const TOOL_DECLARATION_MAX_COUNT: usize = 128;
 
 /// The most UTF-8 bytes the declarations of one source may total and still
 /// be typed, so a typed compile fits the reserve an untyped one would need.
-const OPERATION_DECLARATIONS_MAX_BYTES: usize = 1024 * 1024;
+const TOOL_DECLARATIONS_MAX_BYTES: usize = 1024 * 1024;
 
 /// The longest typing may take: finding the Call Paths a source names and
 /// reading their declarations, together.
@@ -27,11 +27,11 @@ const TYPING_BUDGET: Duration = Duration::from_millis(500);
 /// compile time out that would have finished untyped.
 const TYPING_COMPILATION_RESERVE: Duration = Duration::from_secs(1);
 
-/// Reads Operation declarations with one caller's discovery authority.
+/// Reads Tool declarations with one caller's discovery authority.
 #[async_trait]
-pub trait OperationDeclarationReader: Send + Sync {
+pub trait ToolDeclarationReader: Send + Sync {
     /// Returns the declaration of each candidate Call Path, such as
-    /// `coral.providers.github.repos.get`, that names an Operation the
+    /// `coral.providers.github.repos.get`, that names a Tool the
     /// caller can discover.
     ///
     /// Every other path is omitted, so absence never says why.
@@ -42,18 +42,18 @@ pub trait OperationDeclarationReader: Send + Sync {
     async fn read(
         &self,
         call_paths: &[String],
-    ) -> Result<Vec<OperationDeclaration>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Vec<ToolDeclaration>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
-/// One Operation's complete self-contained declaration, by its Call Path.
+/// One Tool's complete self-contained declaration, by its Call Path.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OperationDeclaration {
+pub struct ToolDeclaration {
     call_path: String,
     declaration: String,
 }
 
-impl OperationDeclaration {
-    /// Pairs an Operation Call Path with its declaration.
+impl ToolDeclaration {
+    /// Pairs a Tool Call Path with its declaration.
     #[must_use]
     pub const fn new(call_path: String, declaration: String) -> Self {
         Self {
@@ -78,38 +78,38 @@ pub(crate) fn typing_deadline(compilation_deadline: Instant) -> Option<Instant> 
 /// The declarations that type `coral.providers` and `coral.workspace`, or
 /// `None` to leave them untyped: without literal paths (the source reaches
 /// them only through aliases, if at all), above
-/// [`OPERATION_DECLARATION_MAX_COUNT`] paths or
-/// [`OPERATION_DECLARATIONS_MAX_BYTES`], or when the read fails.
-pub(crate) async fn operation_declarations(
-    reader: &dyn OperationDeclarationReader,
+/// [`TOOL_DECLARATION_MAX_COUNT`] paths or
+/// [`TOOL_DECLARATIONS_MAX_BYTES`], or when the read fails.
+pub(crate) async fn tool_declarations(
+    reader: &dyn ToolDeclarationReader,
     call_paths: &[String],
 ) -> Option<Vec<CallableDeclaration>> {
-    if call_paths.is_empty() || call_paths.len() > OPERATION_DECLARATION_MAX_COUNT {
+    if call_paths.is_empty() || call_paths.len() > TOOL_DECLARATION_MAX_COUNT {
         return None;
     }
     let declarations = reader
         .read(call_paths)
         .await
         .inspect_err(|error| {
-            tracing::warn!(%error, "Operation declarations are unavailable; the source is checked untyped");
+            tracing::warn!(%error, "Tool declarations are unavailable; the source is checked untyped");
         })
         .ok()?;
     let bytes = declarations
         .iter()
-        .map(|operation| operation.declaration.len())
+        .map(|tool| tool.declaration.len())
         .sum::<usize>();
-    if bytes > OPERATION_DECLARATIONS_MAX_BYTES {
+    if bytes > TOOL_DECLARATIONS_MAX_BYTES {
         return None;
     }
-    // Operation Call Paths are typed relative to `coral`.
+    // Tool Call Paths are typed relative to `coral`.
     Some(
         declarations
             .into_iter()
-            .filter_map(|operation| {
-                let segments = operation.call_path.strip_prefix("coral.")?.split('.');
+            .filter_map(|tool| {
+                let segments = tool.call_path.strip_prefix("coral.")?.split('.');
                 Some(CallableDeclaration::new(
                     segments.map(str::to_owned).collect(),
-                    operation.declaration,
+                    tool.declaration,
                 ))
             })
             .collect(),
@@ -123,11 +123,11 @@ mod tests {
     struct Failing;
 
     #[async_trait]
-    impl OperationDeclarationReader for Failing {
+    impl ToolDeclarationReader for Failing {
         async fn read(
             &self,
             _call_paths: &[String],
-        ) -> Result<Vec<OperationDeclaration>, Box<dyn std::error::Error + Send + Sync>> {
+        ) -> Result<Vec<ToolDeclaration>, Box<dyn std::error::Error + Send + Sync>> {
             Err("catalog is unreadable".into())
         }
     }
@@ -136,26 +136,26 @@ mod tests {
     struct DeclaresEverything(usize);
 
     #[async_trait]
-    impl OperationDeclarationReader for DeclaresEverything {
+    impl ToolDeclarationReader for DeclaresEverything {
         async fn read(
             &self,
             call_paths: &[String],
-        ) -> Result<Vec<OperationDeclaration>, Box<dyn std::error::Error + Send + Sync>> {
+        ) -> Result<Vec<ToolDeclaration>, Box<dyn std::error::Error + Send + Sync>> {
             Ok(call_paths
                 .iter()
-                .map(|path| OperationDeclaration::new(path.clone(), " ".repeat(self.0)))
+                .map(|path| ToolDeclaration::new(path.clone(), " ".repeat(self.0)))
                 .collect())
         }
     }
 
     #[tokio::test]
-    async fn operations_fall_back_to_untyped_rather_than_fail() {
+    async fn tools_fall_back_to_untyped_rather_than_fail() {
         let path = "coral.providers.github.repos.get".to_owned();
-        let too_many = vec![path.clone(); OPERATION_DECLARATION_MAX_COUNT + 1];
+        let too_many = vec![path.clone(); TOOL_DECLARATION_MAX_COUNT + 1];
         let one = std::slice::from_ref(&path);
         let two = [path.clone(), path.clone()];
-        let half = OPERATION_DECLARATIONS_MAX_BYTES / 2;
-        let cases: [(&str, &dyn OperationDeclarationReader, &[String], bool); 6] = [
+        let half = TOOL_DECLARATIONS_MAX_BYTES / 2;
+        let cases: [(&str, &dyn ToolDeclarationReader, &[String], bool); 6] = [
             ("a read", &DeclaresEverything(0), one, true),
             ("no literal paths", &DeclaresEverything(0), &[], false),
             ("a failed read", &Failing, one, false),
@@ -180,7 +180,7 @@ mod tests {
         ];
         for (name, reader, call_paths, typed) in cases {
             assert_eq!(
-                operation_declarations(reader, call_paths).await.is_some(),
+                tool_declarations(reader, call_paths).await.is_some(),
                 typed,
                 "{name}"
             );

@@ -162,7 +162,7 @@ describe('setupView service name for sign-in copy', () => {
     expect(view.sourceHost).toBe('')
   })
 
-  it('names no host when Operations reach more than one', async () => {
+  it('names no host when Tools reach more than one', async () => {
     const view = await viewOf({
       inputUrl: 'https://api.example.test/openapi.json',
       configuration: {

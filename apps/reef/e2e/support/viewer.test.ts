@@ -140,7 +140,7 @@ test('scenario results follow source folders without merging repeated names or h
         id: 'provider',
         source: 'e2e/scenarios/main/providers/lifecycle.test.ts',
         scenario:
-          'Provider lifecycle preserves configuration, accounts, operation policy, and retained history',
+          'Provider lifecycle preserves configuration, accounts, tool policy, and retained history',
       },
       {
         id: 'setup-passed',

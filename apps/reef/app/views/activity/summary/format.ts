@@ -1,4 +1,4 @@
-import type { CallOutcome } from '@/lib/activity-summary'
+import type { CallOutcome, CallerCalls } from '@/lib/activity-summary'
 import type { IconName } from '@/wax/components/icon'
 
 /** `spoken` follows a count; `spokenOne` replaces it after a count of one. */
@@ -44,6 +44,20 @@ export function duration(seconds: number) {
   const h = Number((seconds / 3600).toPrecision(2))
   if (h < 24) return `${h} h`
   return `${Number((seconds / 86_400).toPrecision(2))} d`
+}
+
+/** Your own calls carry no agent page. */
+export const isYou = (caller: CallerCalls) => !caller.agentPath
+
+/** "You, Nightly sync +2 more": you first, then the busiest agents. */
+export function callerNames(callers: readonly CallerCalls[], shown = 2) {
+  const ordered = callers.toSorted((a, b) => Number(isYou(b)) - Number(isYou(a)))
+  const names = ordered
+    .slice(0, shown)
+    .map((caller) => caller.label)
+    .join(', ')
+  const rest = ordered.length - shown
+  return rest > 0 ? `${names} +${number(rest)} more` : names
 }
 
 /** The parts that are not empty, joined into one line. */

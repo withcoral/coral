@@ -144,7 +144,7 @@ export function runRow(
   }
 }
 
-/** An ended operation call that Run `owner` made, labelled by its call path. */
+/** An ended tool call that Run `owner` made, labelled by its call path. */
 export function invocationRow(
   owner: string,
   id: string,
@@ -164,7 +164,7 @@ export function invocationRow(
     durationNanos: '1',
     requiresAction: false,
     provider: `${workspace}/providers/mail`,
-    operation: 'send',
+    tool: 'send',
     callPath: 'mail.send',
     outcome: 'upstream_outcome',
     dispatchedAt: at,

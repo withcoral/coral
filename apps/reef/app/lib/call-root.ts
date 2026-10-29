@@ -3,16 +3,16 @@
  * sends only the short namespace of a provider an owner adds.
  */
 
-/** The complete Call Path of one operation of a provider. */
-export function operationCallPath(callRoot: string, relativePath: string) {
+/** The complete Call Path of one tool of a provider. */
+export function toolCallPath(callRoot: string, relativePath: string) {
   return `${callRoot}.${relativePath}`
 }
 
 /**
- * The provider whose Call Root owns this Call Path, and the operation path
+ * The provider whose Call Root owns this Call Path, and the tool path
  * inside it. Call Roots never nest, so at most one provider owns a path.
  */
-export function operationOwner<P extends { callRoot: string }>(
+export function toolOwner<P extends { callRoot: string }>(
   callPath: string,
   providers: readonly P[],
 ) {

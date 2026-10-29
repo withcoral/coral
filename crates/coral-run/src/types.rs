@@ -79,7 +79,7 @@ impl fmt::Display for RunId {
     }
 }
 
-/// Stable Coral-generated Operation Invocation identity.
+/// Stable Coral-generated Tool Invocation identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct InvocationId(Uuid);
 
@@ -413,7 +413,7 @@ impl RunTerminalOutcome {
     }
 }
 
-/// Durable terminal category of one Operation Invocation.
+/// Durable terminal category of one Tool Invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvocationResultKind {
     /// One complete upstream response was persisted.
@@ -461,7 +461,7 @@ pub enum SourceDocument {
     },
 }
 
-/// Where the Run's accepted source made one Operation call, Emission, or Log.
+/// Where the Run's accepted source made one Tool call, Emission, or Log.
 ///
 /// Coral records the innermost authored frame when the call happens. Line and
 /// column start at 1; the column counts UTF-16 code units, as V8 and
@@ -540,7 +540,7 @@ impl RunEvent {
 pub enum RunEventKind {
     /// The complete package and Run were durably accepted.
     Started,
-    /// One resolved Operation call became a durable Invocation.
+    /// One resolved Tool call became a durable Invocation.
     InvocationStarted {
         /// Stable child Invocation identity.
         invocation_id: InvocationId,

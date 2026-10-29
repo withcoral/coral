@@ -5,8 +5,8 @@ use std::rc::Rc;
 use serde_json::Value;
 
 use crate::{
-    CatalogDiagnostic, DeclarationPath, ExecutionBinding, MaterializedOperation, SchemaGraph,
-    SchemaId, SearchableOperation,
+    CatalogDiagnostic, DeclarationPath, ExecutionBinding, MaterializedTool, SchemaGraph, SchemaId,
+    SearchableTool,
 };
 
 const MAX_SEARCH_FIELDS: usize = 8_192;
@@ -41,12 +41,12 @@ impl DeclarationIndexEntry {
 }
 
 /// A stored Generation's schema graph, ready to rebuild the declaration
-/// fields of any of its Operations by the current rules: the TypeScript
+/// fields of any of its Tools by the current rules: the TypeScript
 /// projection materialization uses, then the breadth-first walk. Only Universal
 /// Search runs the walk, after the Generation is stored (ADR 0017).
 ///
-/// Loading and naming a large graph costs far more than one Operation's walk,
-/// so a caller that needs several Operations of one Generation keeps one of
+/// Loading and naming a large graph costs far more than one Tool's walk,
+/// so a caller that needs several Tools of one Generation keeps one of
 /// these. The names are built on first use.
 pub struct StoredDeclarationFields {
     graph: SchemaGraph,
@@ -65,32 +65,29 @@ impl StoredDeclarationFields {
         }
     }
 
-    /// Rebuilds one structurally available Operation's declaration fields and
+    /// Rebuilds one structurally available Tool's declaration fields and
     /// the warnings its walk left.
     ///
     /// # Errors
     ///
-    /// Returns [`crate::Error::CorruptData`] when the stored Operation's input
+    /// Returns [`crate::Error::CorruptData`] when the stored Tool's input
     /// declaration can no longer be read.
-    pub fn operation(
-        &self,
-        operation: &MaterializedOperation,
-    ) -> Result<PreparedDeclarationFields, crate::Error> {
-        self.fields(operation.execution_binding(), operation.input_schema())
+    pub fn tool(&self, tool: &MaterializedTool) -> Result<PreparedDeclarationFields, crate::Error> {
+        self.fields(tool.execution_binding(), tool.input_schema())
     }
 
-    /// Rebuilds the declaration fields of an Operation as the search index
-    /// reads it, as [`Self::operation`] does for a full one.
+    /// Rebuilds the declaration fields of a Tool as the search index
+    /// reads it, as [`Self::tool`] does for a full one.
     ///
     /// # Errors
     ///
-    /// Returns [`crate::Error::CorruptData`] when the stored Operation's input
+    /// Returns [`crate::Error::CorruptData`] when the stored Tool's input
     /// declaration can no longer be read.
-    pub fn searchable_operation(
+    pub fn searchable_tool(
         &self,
-        operation: &SearchableOperation,
+        tool: &SearchableTool,
     ) -> Result<PreparedDeclarationFields, crate::Error> {
-        self.fields(operation.execution_binding(), operation.input_schema())
+        self.fields(tool.execution_binding(), tool.input_schema())
     }
 
     fn fields(
@@ -114,16 +111,16 @@ impl StoredDeclarationFields {
                 self.mcp_names
                     .get_or_init(|| crate::mcp::typescript_names(graph)),
             ),
-            // Every built-in Operation takes one `input` object.
+            // Every built-in Tool takes one `input` object.
             ExecutionBinding::Builtin(_) => Ok(true),
         };
         input_declared
             .map(|input_declared| {
-                prepare_operation_declaration_fields(binding, input_schema, input_declared, graph)
+                prepare_tool_declaration_fields(binding, input_schema, input_declared, graph)
             })
             .map_err(|_diagnostic| {
                 crate::Error::CorruptData(
-                    "a stored Operation's input declaration cannot be read".to_string(),
+                    "a stored Tool's input declaration cannot be read".to_string(),
                 )
             })
     }
@@ -135,9 +132,9 @@ struct EvidenceProjection {
     honor_property_access: bool,
 }
 
-/// Declaration fields for one Operation, and the warnings the walk left:
+/// Declaration fields for one Tool, and the warnings the walk left:
 /// at most one for a schema it could not read and one for the field bound.
-/// The warnings concern search only; they never reach the Operation (ADR 0017).
+/// The warnings concern search only; they never reach the Tool (ADR 0017).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedDeclarationFields {
     pub(crate) entries: Vec<DeclarationIndexEntry>,
@@ -164,14 +161,14 @@ impl PreparedDeclarationFields {
     }
 }
 
-/// Indexes an Operation's input and output declarations breadth-first.
+/// Indexes a Tool's input and output declarations breadth-first.
 ///
-/// The walk never fails the Operation (ADR 0017). When the field bound is
+/// The walk never fails the Tool (ADR 0017). When the field bound is
 /// reached it stops and keeps the shallower fields. When the schema graph
 /// cannot be read it stops and keeps the fields indexed so far. Each case
-/// leaves its own warning, both when both apply, and the Operation stays
+/// leaves its own warning, both when both apply, and the Tool stays
 /// available.
-pub(crate) fn prepare_operation_declaration_fields(
+pub(crate) fn prepare_tool_declaration_fields(
     binding: &ExecutionBinding,
     input_schema: &SchemaId,
     input_declared: bool,
@@ -196,7 +193,7 @@ pub(crate) fn prepare_operation_declaration_fields(
     PreparedDeclarationFields { entries, warnings }
 }
 
-/// Walks every root of the Operation. `Err` carries the warning for a schema
+/// Walks every root of the Tool. `Err` carries the warning for a schema
 /// graph the walk cannot read, never an Error diagnostic; the fields indexed
 /// before it stay in `walk`.
 fn walk_declarations(
@@ -253,8 +250,8 @@ fn walk_declarations(
 /// The field bound stopped the walk; the shallower fields are indexed.
 fn truncation_warning() -> CatalogDiagnostic {
     CatalogDiagnostic::warning(
-        "operation_search_material_truncated",
-        "an Operation exceeds the Universal Search bound; only its shallower fields are indexed",
+        "tool_search_material_truncated",
+        "a Tool exceeds the Universal Search bound; only its shallower fields are indexed",
     )
 }
 
@@ -293,7 +290,7 @@ struct PendingChildren<'g> {
     ancestry: Ancestry,
 }
 
-/// Breadth-first declaration walk shared by every root of one Operation.
+/// Breadth-first declaration walk shared by every root of one Tool.
 ///
 /// Work at one path (references and composition branches) runs inline;
 /// child paths join the queue, so all roots advance one level at a time.
@@ -635,11 +632,11 @@ fn append_json_descriptor(
 }
 
 /// The walk met a schema it cannot read. A warning, never an error: the
-/// Operation stays available with the fields indexed before it (ADR 0017).
+/// Tool stays available with the fields indexed before it (ADR 0017).
 fn invalid_index() -> CatalogDiagnostic {
     CatalogDiagnostic::warning(
-        "invalid_operation_search_material",
-        "part of an Operation cannot be represented in Universal Search material; only its readable fields are indexed",
+        "invalid_tool_search_material",
+        "part of a Tool cannot be represented in Universal Search material; only its readable fields are indexed",
     )
 }
 
@@ -719,7 +716,7 @@ mod tests {
             }),
         )]);
 
-        let prepared = prepare_operation_declaration_fields(
+        let prepared = prepare_tool_declaration_fields(
             &mcp_binding("input", None),
             &SchemaId::for_source("input"),
             true,
@@ -732,7 +729,7 @@ mod tests {
         assert!(paths.contains("input.shallow"));
         assert_eq!(prepared.warnings.len(), 1);
         let warning = prepared.warnings.first().expect("one warning");
-        assert_eq!(warning.code(), "operation_search_material_truncated");
+        assert_eq!(warning.code(), "tool_search_material_truncated");
         assert_eq!(
             warning.severity(),
             crate::CatalogDiagnosticSeverity::Warning
@@ -758,7 +755,7 @@ mod tests {
             ),
         ]);
 
-        let prepared = prepare_operation_declaration_fields(
+        let prepared = prepare_tool_declaration_fields(
             &mcp_binding("input", Some("output")),
             &SchemaId::for_source("input"),
             true,
@@ -813,7 +810,7 @@ mod tests {
     fn declaration_within_the_bound_is_complete_and_silent() {
         let graph = graph(&[("input", wide_object(10))]);
 
-        let prepared = prepare_operation_declaration_fields(
+        let prepared = prepare_tool_declaration_fields(
             &mcp_binding("input", None),
             &SchemaId::for_source("input"),
             true,
@@ -826,8 +823,8 @@ mod tests {
     }
 
     #[test]
-    fn oversized_field_text_is_indexed_whole_and_keeps_the_operation() {
-        // Before ADR 0017 one field over 256 KiB made the whole Operation
+    fn oversized_field_text_is_indexed_whole_and_keeps_the_tool() {
+        // Before ADR 0017 one field over 256 KiB made the whole Tool
         // unavailable. There is no byte bound: the text is indexed as it is.
         let description = "x".repeat(300 * 1024);
         let graph = graph(&[(
@@ -835,7 +832,7 @@ mod tests {
             serde_json::json!({"type": "string", "description": description}),
         )]);
 
-        let prepared = prepare_operation_declaration_fields(
+        let prepared = prepare_tool_declaration_fields(
             &mcp_binding("input", None),
             &SchemaId::for_source("input"),
             true,

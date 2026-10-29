@@ -333,7 +333,7 @@ impl RunModule {
         if has_nonterminal_invocation {
             transaction.rollback().await?;
             return Err(Error::InvocationPersistence(
-                "Program Run has a nonterminal Operation Invocation".to_string(),
+                "Program Run has a nonterminal Tool Invocation".to_string(),
             ));
         }
         let completed_at = self.now()?.max(run.accepted_at_unix_nanos);

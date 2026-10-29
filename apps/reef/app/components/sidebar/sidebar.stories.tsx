@@ -87,11 +87,15 @@ export const CollapsedActionCount: Story = {
   args: { ...ActionCount.args, initialIsMinimized: true },
 }
 export const Collapsed: Story = { args: { initialIsMinimized: true } }
-// Collapsed, Slack and GitHub fold into one help menu above the account.
+export const HelpMenu: Story = {
+  play: async ({ canvas }) => {
+    await userEvent.click(canvas.getByRole('button', { name: 'Help and feedback' }))
+  },
+}
 export const CollapsedHelpMenu: Story = {
   ...Collapsed,
   play: async ({ canvas }) => {
-    await userEvent.click(canvas.getByRole('button', { name: 'Get help' }))
+    await userEvent.click(canvas.getByRole('button', { name: 'Help and feedback' }))
   },
 }
 export const CollapsedManyWorkspaces: Story = {

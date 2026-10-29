@@ -15,7 +15,7 @@ function render({ pageTitle = false }: { pageTitle?: boolean } = {}) {
   const { router } = renderRoute(
     () => (
       <NameHeading
-        name="Operations"
+        name="Tools"
         noun="workspace"
         canRename
         form={{ csrf: 'test-csrf', requestId: 'test-request' }}
@@ -50,7 +50,7 @@ function render({ pageTitle = false }: { pageTitle?: boolean } = {}) {
 }
 
 const input = () => screen.queryByRole('textbox', { name: 'Workspace name' })
-const title = () => screen.getByRole('heading', { level: 1, name: 'Operations' })
+const title = () => screen.getByRole('heading', { level: 1, name: 'Tools' })
 
 // Catches: a rename silently overwriting a change made while the editor was open.
 test('a rename posts to the workspace route with the etag from when the editor opened', async () => {

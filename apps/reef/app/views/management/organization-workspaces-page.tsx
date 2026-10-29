@@ -180,7 +180,7 @@ function WorkspaceActions({
     archive: {
       title: 'Archive workspace',
       intent: 'archiveWorkspace',
-      description: `Archiving ${w.displayName} blocks new runs, unsent operation calls and settings changes. Coral keeps the history. You can restore the workspace.`,
+      description: `Archiving ${w.displayName} blocks new runs, unsent tool calls and settings changes. Coral keeps the history. You can restore the workspace.`,
     },
     restore: {
       title: 'Restore workspace',

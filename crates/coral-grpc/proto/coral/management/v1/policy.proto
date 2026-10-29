@@ -1,60 +1,60 @@
 syntax = "proto3";
 package coral.management.v1;
 
-// Reef-only exact Operation policy. No Principal, pattern, glob, or route dimension.
-service OperationPolicyService {
-  // Reads 1–100 exact Operation decisions through one Provider.
-  rpc GetOperationPolicies(GetOperationPoliciesRequest) returns (GetOperationPoliciesResponse);
+// Reef-only exact Tool policy. No Principal, pattern, glob, or route dimension.
+service ToolPolicyService {
+  // Reads 1–100 exact Tool decisions through one Provider.
+  rpc GetToolPolicies(GetToolPoliciesRequest) returns (GetToolPoliciesResponse);
   // Applies 1–100 distinct exact decisions atomically, including lifecycle evidence.
-  rpc UpdateOperationPolicies(UpdateOperationPoliciesRequest) returns (UpdateOperationPoliciesResponse);
+  rpc UpdateToolPolicies(UpdateToolPoliciesRequest) returns (UpdateToolPoliciesResponse);
 }
 
 // Workspace decision, independent of structural availability or credential readiness.
-enum OperationAccessState {
+enum ToolAccessState {
   // Not a valid write.
-  OPERATION_ACCESS_STATE_UNSPECIFIED = 0;
+  TOOL_ACCESS_STATE_UNSPECIFIED = 0;
   // May continue without Invocation Approval.
-  OPERATION_ACCESS_STATE_ENABLED = 1;
+  TOOL_ACCESS_STATE_ENABLED = 1;
   // Requires exact Invocation Approval.
-  OPERATION_ACCESS_STATE_APPROVAL_REQUIRED = 2;
+  TOOL_ACCESS_STATE_APPROVAL_REQUIRED = 2;
   // Cannot dispatch.
-  OPERATION_ACCESS_STATE_DISABLED = 3;
+  TOOL_ACCESS_STATE_DISABLED = 3;
 }
 
-// Exact Provider-plus-Operation-Key address and Workspace decision.
-message OperationPolicy {
-  // Canonical Provider Operation resource name, never a Call Path.
-  string operation = 1;
+// Exact Provider-plus-Tool-Key address and Workspace decision.
+message ToolPolicy {
+  // Canonical Provider Tool resource name, never a Call Path.
+  string tool = 1;
   // Exact decision for the requested Provider.
-  OperationAccessState access_state = 2;
+  ToolAccessState access_state = 2;
   // True when an exact stored rule, false when effect-based default.
   bool explicit = 3;
 }
 
-// Reads a bounded selection, including structurally unavailable Operations.
-message GetOperationPoliciesRequest {
+// Reads a bounded selection, including structurally unavailable Tools.
+message GetToolPoliciesRequest {
   // Exact Provider resource name.
   string parent = 1;
-  // 1–100 distinct canonical Operation names for its Provider.
-  repeated string operations = 2;
+  // 1–100 distinct canonical Tool names for its Provider.
+  repeated string tools = 2;
 }
 
 // Effective decisions in request order.
-message GetOperationPoliciesResponse {
+message GetToolPoliciesResponse {
   // Exact decisions.
-  repeated OperationPolicy policies = 1;
+  repeated ToolPolicy policies = 1;
 }
 
 // Atomic bounded update; any rejected target leaves all decisions unchanged.
-message UpdateOperationPoliciesRequest {
+message UpdateToolPoliciesRequest {
   // Exact Provider resource name.
   string parent = 1;
-  // 1–100 distinct canonical Operation targets; explicit is output-only.
-  repeated OperationPolicy policies = 2;
+  // 1–100 distinct canonical Tool targets; explicit is output-only.
+  repeated ToolPolicy policies = 2;
 }
 
 // Committed exact decisions.
-message UpdateOperationPoliciesResponse {
+message UpdateToolPoliciesResponse {
   // All accepted decisions in request order.
-  repeated OperationPolicy policies = 1;
+  repeated ToolPolicy policies = 1;
 }

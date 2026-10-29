@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use coral_catalog::{ExecutionBinding, MaterializedOperation, SchemaGraph};
+use coral_catalog::{ExecutionBinding, MaterializedTool, SchemaGraph};
 use serde_json::Value;
 
 use crate::{Error, HttpOutcome, McpOutcome, McpResources, ReadyHttpDispatch, ReadyMcpDispatch};
@@ -23,25 +23,23 @@ impl ReadyDispatch {
     /// # Errors
     /// Returns a protocol planning or invalid-input error before any send.
     pub fn plan(
-        operation: &MaterializedOperation,
+        tool: &MaterializedTool,
         schemas: &SchemaGraph,
         arguments: &Value,
         provider: &str,
         resources: Arc<McpResources>,
         limits: coral_value::ValueLimits,
     ) -> Result<Self, Error> {
-        match operation.execution_binding() {
-            ExecutionBinding::Http(_) => {
-                ReadyHttpDispatch::plan(operation, schemas, arguments, limits)
-                    .map(|ready| Self::Http(Box::new(ready)))
-            }
+        match tool.execution_binding() {
+            ExecutionBinding::Http(_) => ReadyHttpDispatch::plan(tool, schemas, arguments, limits)
+                .map(|ready| Self::Http(Box::new(ready))),
             ExecutionBinding::Mcp(_) => {
-                ReadyMcpDispatch::plan(operation, arguments, provider, resources, limits)
+                ReadyMcpDispatch::plan(tool, arguments, provider, resources, limits)
                     .map(|ready| Self::Mcp(Box::new(ready)))
             }
-            // The Run domain performs built-in Operations itself and never plans
+            // The Run domain performs built-in Tools itself and never plans
             // one. Planning one anyway settles as a safe Coral Failure.
-            ExecutionBinding::Builtin(_) => Err(Error::OperationUnavailable),
+            ExecutionBinding::Builtin(_) => Err(Error::ToolUnavailable),
         }
     }
 }
@@ -52,13 +50,13 @@ impl ReadyDispatch {
 /// rejects the call with the complete outcome attached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeClass {
-    /// A response the Operation declares as a success. Its body can still
+    /// A response the Tool declares as a success. Its body can still
     /// miss its schema, or arrive for a success that declares no content.
     Success,
     /// The upstream reported failure: a non-2xx HTTP status, or an MCP tool
     /// result with `isError: true`.
     ErrorResponse,
-    /// A 2xx status or media type that the Operation does not declare as a success.
+    /// A 2xx status or media type that the Tool does not declare as a success.
     UndeclaredResponse,
     /// A body Coral could not decode: a malformed `Content-Type`, an
     /// unsupported charset, or a malformed body.
@@ -94,10 +92,10 @@ impl UpstreamOutcome {
 
     /// Returns the mandatory, protocol-specific `{data, metadata}` projection.
     #[must_use]
-    pub fn operation_result(&self) -> Value {
+    pub fn tool_result(&self) -> Value {
         match self {
-            Self::Http(outcome) => outcome.operation_result(),
-            Self::Mcp(outcome) => outcome.operation_result().clone(),
+            Self::Http(outcome) => outcome.tool_result(),
+            Self::Mcp(outcome) => outcome.tool_result().clone(),
         }
     }
 }

@@ -102,7 +102,7 @@ const meta = {
     await waitFor(() => expect(opened).toBeVisible())
     for (const text of [parameters.evidence ?? []].flat())
       await expect(opened).toHaveTextContent(text)
-    // An operation, log or emission shows beside its Run's accepted program, highlighted at
+    // A tool, log or emission shows beside its Run's accepted program, highlighted at
     // the line Coral stored for it, where that program makes its call. Every one has one here.
     const row = args.page.selectedRow
     const detail = args.page.detail
@@ -262,9 +262,9 @@ const tasks = {
       'Task · goal failed, with context cost and completion feedback',
       taskPage(
         task({ outcome: 'failure', endedAt: later, contextImpactBytes: '14500' }),
-        'I could not find an operation to export invoices.\nSearch returned no matching operations.',
+        'I could not find a tool to export invoices.\nSearch returned no matching tools.',
       ),
-      { evidence: 'I could not find an operation to export invoices.' },
+      { evidence: 'I could not find a tool to export invoices.' },
     ),
     { label: '+14.5 kB', meaning: '14.5 kB added', tone: 'added' },
   ),
@@ -403,7 +403,7 @@ export const SearchLaterPageEmpty = panel(
   { evidence: ['a later page, up to 5 results', 'Results (0)', 'This page has no results.'] },
 )
 export const SearchMixedResults = panel(
-  'Search · operations and saved functions',
+  'Search · tools and saved functions',
   toolPage(searchCall, discovery({ ...searched, query: 'github issues by label' }, stored.mixed)),
   { evidence: ['github issues by label', 'Results (6+)'] },
 )
@@ -441,7 +441,7 @@ export const SearchEarlierShape = panel(
   toolPage(searchCall, discovery(searched, stored.earlierShape)),
   { evidence: 'typescript_declaration' },
 )
-const describedOperation: Extract<DiscoveryContext, { kind: 'describe' }> = {
+const describedTool: Extract<DiscoveryContext, { kind: 'describe' }> = {
   kind: 'describe',
   callPath: 'coral.providers.github.issues.create',
   types: [],
@@ -523,13 +523,10 @@ function describeStory(
     },
   }
 }
-export const DescribeOperation = describeStory(
+export const DescribeTool = describeStory(
   panel(
-    'Describe · operation',
-    toolPage(
-      describeCall('issues.create'),
-      discovery(describedOperation, stored.describeOperation),
-    ),
+    'Describe · tool',
+    toolPage(describeCall('issues.create'), discovery(describedTool, stored.describeTool)),
     { evidence: ['Create an issue', 'GitHub', 'Result'] },
   ),
   ['Declaration', 'API method documentation'],
@@ -551,10 +548,7 @@ export const DescribeSavedFunction = describeStory(
 export const DescribeNarrow = describeStory(
   panel(
     'Describe · long documentation, narrow screen',
-    toolPage(
-      describeCall('issues.create'),
-      discovery(describedOperation, stored.describeOperation),
-    ),
+    toolPage(describeCall('issues.create'), discovery(describedTool, stored.describeTool)),
     { evidence: 'coral.providers.github.issues.create', narrow: true },
   ),
   ['Declaration'],
@@ -1663,10 +1657,10 @@ export const RunTimedOut = runStates.timed_out
 export const RunInterrupted = runStates.interrupted
 export const RunStateUnknown = runStates.unknown
 
-// Operation Invocations --------------------------------------------------------
+// Tool Invocations --------------------------------------------------------
 
 export const InvocationPendingOnApproval = panel(
-  'Operation call · pending, waits on an approval (review not opened)',
+  'Tool call · pending, waits on an approval (review not opened)',
   invocationPage(
     invocationDetail(invocation({ requiresAction: true }), {
       requests: [{ kind: 'approval', name: approvalAction.name }],
@@ -1675,14 +1669,14 @@ export const InvocationPendingOnApproval = panel(
   { evidence: ['coral.providers.mail.send', 'owner@example.com'] },
 )
 export const InvocationPendingOnConnection = panel(
-  'Operation call · pending, waits on an account connection',
+  'Tool call · pending, waits on an account connection',
   invocationPage(
     invocationDetail(
       invocation({
         requiresAction: true,
         provider: `${workspace}/providers/linear`,
         callPath: 'coral.providers.linear.listIssues',
-        operation: 'listIssues',
+        tool: 'listIssues',
       }),
       {
         arguments: '{"assignee":"me","limit":50}',
@@ -1693,11 +1687,11 @@ export const InvocationPendingOnConnection = panel(
   ),
   { evidence: 'coral.providers.linear.listIssues' },
 )
-/** An operation in a running Run ends with View in history and Cancel run. On a narrow screen
+/** A tool in a running Run ends with View in history and Cancel run. On a narrow screen
  * they keep a gap between them, and wrap rather than overflow. */
 export const InvocationInRunningRunNarrow: Story = {
   ...panel(
-    'Operation call · in a running Run, narrow screen',
+    'Tool call · in a running Run, narrow screen',
     invocationPage(invocationDetail(invocation(), { context: runDetail(run()) })),
     { evidence: 'coral.providers.mail.send', narrow: true },
   ),
@@ -1718,14 +1712,14 @@ export const InvocationInRunningRunNarrow: Story = {
   },
 }
 export const InvocationPendingQueued = panel(
-  'Operation call · pending, not waiting on you',
+  'Tool call · pending, not waiting on you',
   invocationPage(
     invocationDetail(invocation({ waitingNanos: '4000000000', durationNanos: '4000000000' })),
   ),
   { evidence: 'coral.providers.mail.send' },
 )
 /**
- * An operation that got a complete response names it in plain words: "failed" only when an HTTP
+ * A tool that got a complete response names it in plain words: "failed" only when an HTTP
  * status outside 2xx proves it, otherwise "completed". Never Coral's internal outcome name, and
  * never the provider's resource name: the call path names the provider.
  */
@@ -1746,7 +1740,7 @@ function answeredStory(story: Story, label: 'completed' | 'failed'): Story {
 const invocationStates = {
   pending: InvocationPendingOnApproval,
   dispatching: panel(
-    'Operation call · dispatching',
+    'Tool call · dispatching',
     invocationPage(
       invocationDetail(
         invocation({
@@ -1760,7 +1754,7 @@ const invocationStates = {
   ),
   ended: answeredStory(
     panel(
-      'Operation call · ended, response received',
+      'Tool call · ended, response received',
       invocationPage(
         invocationDetail(endedInvocation('upstream_outcome'), {
           result: invocationResults.upstream_outcome,
@@ -1771,7 +1765,7 @@ const invocationStates = {
     'completed',
   ),
   unknown: panel(
-    'Operation call · state unknown',
+    'Tool call · state unknown',
     invocationPage(invocationDetail(invocation({ state: 'unknown' }))),
     { evidence: 'coral.providers.mail.send' },
   ),
@@ -1792,7 +1786,7 @@ const invocationOutcomes = {
     lean(
       ended(
         'coral_failure',
-        'Operation call · ended, Coral failure',
+        'Tool call · ended, Coral failure',
         invocationResults.coral_failure.message,
       ),
       { error: [invocationResults.coral_failure.message] },
@@ -1800,15 +1794,15 @@ const invocationOutcomes = {
     'failed',
   ),
   run_terminated: headerSays(
-    lean(ended('run_terminated', 'Operation call · ended, run terminated it before dispatch')),
+    lean(ended('run_terminated', 'Tool call · ended, run terminated it before dispatch')),
     'run ended',
   ),
   indeterminate: headerSays(
-    lean(ended('indeterminate', 'Operation call · ended, result indeterminate')),
+    lean(ended('indeterminate', 'Tool call · ended, result indeterminate')),
     'result unknown',
   ),
   unknown: headerSays(
-    lean(ended('unknown', 'Operation call · ended, outcome unknown')),
+    lean(ended('unknown', 'Tool call · ended, outcome unknown')),
     'result unknown',
   ),
 } satisfies Record<InvocationOutcome, Story>
@@ -1827,13 +1821,13 @@ const httpNotFound = invocationPage(
 )
 /** An HTTP status outside 2xx is the provider's own error, so the call reads as failed. */
 export const InvocationUpstreamHttpError = answeredStory(
-  panel('Operation call · provider answered HTTP 404', httpNotFound, {
+  panel('Tool call · provider answered HTTP 404', httpNotFound, {
     evidence: 'Recipient not found',
   }),
   'failed',
 )
 export const InvocationUpstreamHttpErrorNarrow = answeredStory(
-  panel('Operation call · provider answered HTTP 404, narrow screen', httpNotFound, {
+  panel('Tool call · provider answered HTTP 404, narrow screen', httpNotFound, {
     evidence: 'Recipient not found',
     narrow: true,
   }),
@@ -1843,13 +1837,13 @@ export const InvocationUpstreamHttpErrorNarrow = answeredStory(
  * reads only as completed; the result shows exactly as retained. */
 export const InvocationUpstreamMcpError = answeredStory(
   panel(
-    'Operation call · MCP result with isError',
+    'Tool call · MCP result with isError',
     invocationPage(
       invocationDetail(
         endedInvocation('upstream_outcome', {
           provider: `${workspace}/providers/linear`,
           callPath: 'coral.providers.linear.createIssue',
-          operation: 'createIssue',
+          tool: 'createIssue',
         }),
         {
           arguments: '{"title":"Follow up on INV-4171","teamId":"FIN"}',
@@ -1866,14 +1860,14 @@ export const InvocationUpstreamMcpError = answeredStory(
   'completed',
 )
 export const InvocationConnectionDeclined = panel(
-  'Operation call · failed after its account connection was declined',
+  'Tool call · failed after its account connection was declined',
   invocationPage(
     invocationDetail(
       endedInvocation('coral_failure', {
         dispatchedAt: null,
         provider: `${workspace}/providers/linear`,
         callPath: 'coral.providers.linear.listIssues',
-        operation: 'listIssues',
+        tool: 'listIssues',
       }),
       {
         arguments: '{"assignee":"me","limit":50}',
@@ -1890,7 +1884,7 @@ export const InvocationConnectionDeclined = panel(
   { evidence: 'account_connection_declined' },
 )
 export const InvocationRequestUnavailable = panel(
-  'Operation call · selected request unavailable',
+  'Tool call · selected request unavailable',
   invocationPage(
     invocationDetail(invocation({ requiresAction: true }), {
       requests: [{ kind: 'approval', name: approvalAction.name }],
@@ -1900,7 +1894,7 @@ export const InvocationRequestUnavailable = panel(
   { evidence: 'coral.providers.mail.send' },
 )
 export const InvocationUnknownRequestReference = panel(
-  'Operation call · request reference unavailable',
+  'Tool call · request reference unavailable',
   invocationPage(
     invocationDetail(endedInvocation('upstream_outcome'), {
       result: invocationResults.upstream_outcome,
@@ -1910,7 +1904,7 @@ export const InvocationUnknownRequestReference = panel(
   { evidence: 'msg_01J8' },
 )
 export const InvocationExactLargeInteger = panel(
-  'Operation call · exact integers beyond JavaScript precision',
+  'Tool call · exact integers beyond JavaScript precision',
   invocationPage(
     invocationDetail(endedInvocation('upstream_outcome'), {
       arguments: '{"invoice":9007199254740993,"ledger":-9223372036854775808}',
@@ -2520,7 +2514,7 @@ export const LoggedLongNarrow = panel(
   { narrow: true, evidence: 'owner-30' },
 )
 LoggedLongNarrow.play = payloadCard(LoggedLongNarrow, 'Log message', 'console.warn #8').play
-/** How an operation call's end reads in its run event title. */
+/** How a tool call's end reads in its run event title. */
 const endedWords = {
   upstream_outcome: 'completed',
   coral_failure: 'failed',
@@ -2536,7 +2530,7 @@ const invocationEnded = (outcome: InvocationOutcome) =>
         event(5, { kind: 'invocation.ended', invocation: invocation().name, outcome }),
         'run event',
       ),
-      { evidence: `Operation call ended: ${endedWords[outcome]}` },
+      { evidence: `Tool call ended: ${endedWords[outcome]}` },
     ),
     null,
   )

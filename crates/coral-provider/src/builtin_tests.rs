@@ -1,12 +1,12 @@
 //! The Built-in Provider: one per Workspace at `coral.workspace`. Each of its
-//! Operations is discoverable and callable by the Principals whose authority
+//! Tools is discoverable and callable by the Principals whose authority
 //! permits the Workspace action it declares.
 use coral_workspace::{
     AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceAction,
     WorkspaceDisplayName, WorkspaceRole,
 };
 
-use coral_catalog::{AuthenticationKind, BuiltinCatalog, OperationHints};
+use coral_catalog::{AuthenticationKind, BuiltinCatalog, ToolHints};
 use coral_credentials::Secret;
 
 use super::tests::{
@@ -21,10 +21,10 @@ use crate::{
 };
 
 // Catches: discovery and Invocation disagreeing on who reaches a Built-in
-// Operation, one Operation's rule applying to the whole Call Root, or an
-// Operation another Coral version defines reaching anyone but an Owner.
+// Tool, one Tool's rule applying to the whole Call Root, or an
+// Tool another Coral version defines reaching anyone but an Owner.
 #[tokio::test]
-async fn each_builtin_operation_reaches_the_principals_its_workspace_action_permits() {
+async fn each_builtin_tool_reaches_the_principals_its_workspace_action_permits() {
     let arranged = BuiltinWorkspace::new().await;
     let database = arranged.fixture.database();
     let workspace = arranged.workspace.id();
@@ -64,7 +64,7 @@ async fn each_builtin_operation_reaches_the_principals_its_workspace_action_perm
             .unwrap(),
             "discover as {principal:?}"
         );
-        let unreached = crate::unreached_operations_in_transaction(
+        let unreached = crate::unreached_tools_in_transaction(
             &mut transaction,
             &builtin,
             authority.effective_user_role(),
@@ -81,7 +81,7 @@ async fn each_builtin_operation_reaches_the_principals_its_workspace_action_perm
                 "discover {key} as {principal:?}"
             );
             let mut transaction = database.begin().await.unwrap();
-            let resolved = crate::resolve_invocation_operation_in_transaction(
+            let resolved = crate::resolve_invocation_tool_in_transaction(
                 &mut transaction,
                 workspace,
                 crate::InvocationCaller::new(&arranged.workspaces, &principal, 13),
@@ -197,7 +197,7 @@ enum BuiltinChange {
 }
 
 /// An Owner can only disable or restore the Built-in Provider and set its
-/// Operations' policy. Every other change is rejected and changes nothing.
+/// Tools' policy. Every other change is rejected and changes nothing.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -401,17 +401,17 @@ async fn only_a_provider_an_owner_adds_has_a_source_to_inspect() {
     );
 }
 
-/// Catalog B: this Coral version's Operations plus a read-only one it does
+/// Catalog B: this Coral version's Tools plus a read-only one it does
 /// not perform, as a later Coral version could define.
 fn catalog_b() -> BuiltinCatalog {
-    BuiltinCatalog::with_unknown_operations([(
+    BuiltinCatalog::with_unknown_tools([(
         "listThings",
-        OperationHints::new(Some(true), None, None, None),
+        ToolHints::new(Some(true), None, None, None),
     )])
     .unwrap()
 }
 
-/// `keys` plus catalog B's `listThings`, in Operation Key order.
+/// `keys` plus catalog B's `listThings`, in Tool Key order.
 fn with_list_things(keys: &[String]) -> Vec<String> {
     let mut keys = keys.to_vec();
     keys.push("listThings".to_string());
@@ -498,7 +498,7 @@ impl BuiltinWorkspace {
         updated
     }
 
-    /// The Operation Keys the Built-in Provider serves.
+    /// The Tool Keys the Built-in Provider serves.
     async fn keys(&self) -> Vec<String> {
         self.providers
             .inspect_catalog_page(
@@ -511,7 +511,7 @@ impl BuiltinWorkspace {
             .await
             .unwrap()
             .into_iter()
-            .map(|operation| operation.key.as_str().to_string())
+            .map(|tool| tool.key.as_str().to_string())
             .collect()
     }
 
@@ -695,7 +695,7 @@ async fn two_processes_that_boot_together_activate_one_generation() {
 }
 
 // Catches: a disabled Provider left out of the list though it still holds its
-// namespace, one that still offers Operations to call, or a list whose order
+// namespace, one that still offers Tools to call, or a list whose order
 // or account facts a Program cannot rely on.
 #[tokio::test]
 async fn published_providers_lists_every_provider_in_creation_order() {
@@ -746,7 +746,7 @@ async fn published_providers_lists_every_provider_in_creation_order() {
                 published.provider.call_root().as_str(),
                 published.provider.state(),
                 published.authentication,
-                published.operations.len(),
+                published.tools.len(),
                 published.account_required,
             ))
             .collect::<Vec<_>>(),
@@ -758,7 +758,7 @@ async fn published_providers_lists_every_provider_in_creation_order() {
                 arranged.keys().await.len(),
                 false,
             ),
-            // A disabled Provider offers no Operation to call.
+            // A disabled Provider offers no Tool to call.
             (
                 "coral.providers.weather",
                 ProviderState::Disabled,
@@ -779,10 +779,10 @@ async fn published_providers_lists_every_provider_in_creation_order() {
 }
 
 // Catches: a management read that disagrees with discovery on what a
-// Principal reaches: in the list, by its ID, or through its Operations; or
+// Principal reaches: in the list, by its ID, or through its Tools; or
 // listProviders refusing an Agent.
 #[tokio::test]
-async fn management_reads_show_each_principal_the_builtin_operations_it_reaches() {
+async fn management_reads_show_each_principal_the_builtin_tools_it_reaches() {
     let arranged = BuiltinWorkspace::new().await;
     let workspace = arranged.workspace.id();
     publish_provider(
@@ -839,9 +839,9 @@ async fn management_reads_show_each_principal_the_builtin_operations_it_reaches(
         let builtin_keys = published
             .first()
             .expect("the Built-in Provider comes first")
-            .operations
+            .tools
             .iter()
-            .map(|operation| operation.key().as_str())
+            .map(|tool| tool.key().as_str())
             .collect::<Vec<_>>();
         assert_eq!(builtin_keys, reached, "{principal:?}");
         // Only a User inspects the Workspace's Providers in Reef.
@@ -872,16 +872,16 @@ async fn management_reads_show_each_principal_the_builtin_operations_it_reaches(
         let builtin = arranged.builtin.id();
         let one = providers.inspect_provider(actor, workspace, builtin).await;
         assert_eq!(one.unwrap().id(), builtin, "{actor:?}");
-        // One Operation a page: an Operation left out must not cost the
+        // One Tool a page: a Tool left out must not cost the
         // page its lookahead row, nor add one.
         for page_size in [1, 100] {
-            let operations = providers
+            let tools = providers
                 .inspect_catalog_page(actor, workspace, builtin, None, page_size)
                 .await
                 .unwrap();
-            let keys = operations
+            let keys = tools
                 .iter()
-                .map(|operation| operation.key.as_str())
+                .map(|tool| tool.key.as_str())
                 .collect::<Vec<_>>();
             let lookahead = usize::try_from(page_size).unwrap() + 1;
             let expected = reached.iter().copied().take(lookahead).collect::<Vec<_>>();

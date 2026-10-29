@@ -9,13 +9,13 @@ import {
   confirmConfiguration,
   createWorkspace,
   destinationField,
-  openOperation,
+  openTool,
   signInPicker,
   waitForProviderStatus,
   committedPublication,
 } from '../../../../support/providers.ts'
 
-test('Update clears only an invalid operation-specific server selection', async (context) => {
+test('Update clears only an invalid tool-specific server selection', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
     const document = JSON.parse(
       openApiDocument(
@@ -91,10 +91,10 @@ test('Update clears only an invalid operation-specific server selection', async 
         'https://api.example.test/v1',
       )
       await confirmConfiguration(page)
-      // The read operations show that only logs cannot run.
+      // The read tools show that only logs cannot run.
       await page
         .getByText(
-          '1 operation cannot run with this configuration. Open the Cannot run group to see why.',
+          '1 tool cannot run with this configuration. Open the Cannot run group to see why.',
           {
             exact: true,
           },
@@ -110,11 +110,11 @@ test('Update clears only an invalid operation-specific server selection', async 
       await page.getByRole('button', { name: 'Save', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
       await page.goto(providerPath)
-      let drawer = await openOperation(page, 'logs')
+      let drawer = await openTool(page, 'logs')
       await drawer.getByText('Unavailable', { exact: true }).waitFor()
       await page.keyboard.press('Escape')
       await drawer.waitFor({ state: 'hidden' })
-      drawer = await openOperation(page, 'metrics')
+      drawer = await openTool(page, 'metrics')
       expect(await drawer.getByText('Unavailable', { exact: true }).count()).toBe(0)
       await page.keyboard.press('Escape')
       await drawer.waitFor({ state: 'hidden' })

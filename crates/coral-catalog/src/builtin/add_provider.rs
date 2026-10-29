@@ -15,10 +15,10 @@ use super::provider_input::{
     ProviderSourceInput, ServerInput,
 };
 use super::{
-    ArgumentProblem, BuiltinCredentialRoute, BuiltinOperation, Definition, NAMESPACE_REASON,
-    ProviderFacts, derived_schema, operation_result, present,
+    ArgumentProblem, BuiltinCredentialRoute, BuiltinTool, Definition, NAMESPACE_REASON,
+    ProviderFacts, derived_schema, present, tool_result,
 };
-use crate::{OperationHints, OperationPresentation};
+use crate::{ToolHints, ToolPresentation};
 
 #[cfg(test)]
 pub(super) mod tests;
@@ -29,9 +29,9 @@ pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Configure;
 
 pub(super) fn definition() -> Definition {
     Definition {
-        key: BuiltinOperation::AddProvider.key(),
+        key: BuiltinTool::AddProvider.key(),
         summary: "Add a Provider from an OpenAPI document or URL, or an MCP server URL",
-        presentation: OperationPresentation::new(
+        presentation: ToolPresentation::new(
             Some("Add provider".to_string()),
             "Add a Provider to this Workspace from an OpenAPI document, an OpenAPI \
              document URL, or an MCP server URL. Coral publishes it when nobody needs to \
@@ -54,15 +54,15 @@ pub(super) fn definition() -> Definition {
                  the URL is reachable, then call again. When credentialRoute is none and \
                  Coral cannot publish the Provider, the call fails with \
                  provider_publication_failed and adds nothing: call again. When status is \
-                 published, call the Provider's Operations under \
+                 published, call the Provider's Tools under \
                  coral.providers.<namespace>. When status is needs_sign_in, show the \
                  person the returned url. To check later whether the person published it, \
                  call coral.workspace.listProviders."
                     .to_string(),
             ),
         ),
-        // No read-only hint: the default Operation Access State is approval_required.
-        hints: OperationHints::default(),
+        // No read-only hint: the default Tool Access State is approval_required.
+        hints: ToolHints::default(),
         input: derived_schema::<Arguments>(Contract::Deserialize),
         output: derived_schema::<AddProviderResult>(Contract::Serialize),
     }
@@ -91,7 +91,7 @@ pub struct AddProviderArguments {
 struct Arguments {
     #[schemars(
         description = "Provider Namespace: a short JavaScript identifier, such as github. The \
-                       Provider's Operations are called under coral.providers.<namespace>."
+                       Provider's Tools are called under coral.providers.<namespace>."
     )]
     namespace: String,
     source: ProviderSourceInput,
@@ -227,9 +227,9 @@ pub enum AddProviderResult {
 }
 
 impl AddProviderResult {
-    /// The Operation Result.
+    /// The Tool Result.
     #[must_use]
-    pub fn into_operation_result(self) -> Value {
-        operation_result(&self)
+    pub fn into_tool_result(self) -> Value {
+        tool_result(&self)
     }
 }

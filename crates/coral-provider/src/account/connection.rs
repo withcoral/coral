@@ -365,7 +365,7 @@ async fn pending_completion(
 /// Returns a persistence, decoding, or identity failure.
 pub async fn connection_pending_until_in_snapshot(
     tx: &mut Transaction<'_>,
-    target: &crate::ResolvedInvocationOperation,
+    target: &crate::ResolvedInvocationTool,
     principal: &Principal,
     request: ConnectionRequestId,
     now: i64,
@@ -516,7 +516,7 @@ pub enum ConnectionResolution {
 /// Returns coded gate failures without selecting fallback accounts or replaying work.
 pub async fn resolve_connection_in_transaction(
     tx: &mut Transaction<'_>,
-    target: &crate::ResolvedInvocationOperation,
+    target: &crate::ResolvedInvocationTool,
     principal: &Principal,
     request: Option<ConnectionRequestId>,
     now: i64,

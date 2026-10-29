@@ -5,7 +5,7 @@ import { withBrowserSession } from '../../../../support/browser-session.ts'
 import { managementClients } from '../../../../support/management.ts'
 import { oauthApiServer } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   chooseAccount,
   chooseFile,
   confirmConfiguration,
@@ -36,7 +36,7 @@ test('Concurrent personal sign-ins preserve each creation choice in the same bro
           await page.getByRole('button', { name: 'Read', exact: true }).click()
           await page.getByLabel('Namespace', { exact: true }).fill(`personal${index}`)
           await confirmConfiguration(page)
-          await acceptOperations(page)
+          await acceptTools(page)
           const setup = `workspaces/${workspace}/providerSetups/${new URL(page.url()).searchParams.get('setup')}`
           await chooseAccount(page, 'own-connect')
           await page.getByRole('button', { name: /^Sign in/ }).click()

@@ -3,7 +3,7 @@ import { expect, test } from 'vitest'
 import { withOwnerSession } from '../../../../support/actors.ts'
 import { listen, openApiDocument } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   addProviderFromFile,
   chooseFile,
   confirmConfiguration,
@@ -83,7 +83,7 @@ test('Large OpenAPI documents work by upload and URL; oversized documents explai
       // The uploaded provider already has the document's title.
       await page.getByLabel('Display name', { exact: true }).fill('Downloaded document')
       await confirmConfiguration(page)
-      await acceptOperations(page)
+      await acceptTools(page)
       await setNamespace(page, 'downloaded')
       await page.getByRole('button', { name: 'Add provider', exact: true }).click()
       await waitForPublication(page)

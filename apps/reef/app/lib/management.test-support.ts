@@ -12,7 +12,7 @@ import { AgentRegistrationService, AgentService } from '@/generated/coral/manage
 import { WorkspaceMembershipService } from '@/generated/coral/management/v1/membership_pb'
 import { OrganizationMembershipService } from '@/generated/coral/management/v1/organization_membership_pb'
 import { OrganizationWorkspaceService } from '@/generated/coral/management/v1/organization_workspace_pb'
-import { OperationPolicyService } from '@/generated/coral/management/v1/policy_pb'
+import { ToolPolicyService } from '@/generated/coral/management/v1/policy_pb'
 import { ProviderService, ProviderSetupService } from '@/generated/coral/management/v1/provider_pb'
 import { ReleaseService } from '@/generated/coral/management/v1/release_pb'
 import { SavedFunctionService } from '@/generated/coral/management/v1/saved_function_pb'
@@ -32,7 +32,7 @@ const services = {
   providers: ProviderService,
   setups: ProviderSetupService,
   accounts: ProviderAccountService,
-  policies: OperationPolicyService,
+  policies: ToolPolicyService,
   savedFunctions: SavedFunctionService,
   releases: ReleaseService,
 } satisfies Record<keyof ManagementApi, DescService>

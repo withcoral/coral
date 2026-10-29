@@ -34,8 +34,8 @@ export default [
       route('workspaces/:workspace/providers', 'routes/providers.tsx', { id: 'providers' }, [
         index('routes/providers-selection.tsx', { id: 'providers-index' }),
         route(':provider', 'routes/providers-selection.tsx', { id: 'providers-provider' }),
-        route(':provider/ops/:operation', 'routes/providers-selection.tsx', {
-          id: 'providers-operation',
+        route(':provider/tools/:tool', 'routes/providers-selection.tsx', {
+          id: 'providers-tool',
         }),
       ]),
       route('workspaces/:workspace/providers/new', 'routes/provider-new.tsx', {
@@ -57,9 +57,11 @@ export default [
       ),
       route('workspaces/:workspace/accounts', 'routes/accounts.tsx'),
       route('workspaces/:workspace/accounts/:provider', 'routes/user-account.tsx'),
-      // A function opens in a drawer over the list. Its URL stays shareable.
+      // A function opens in a drawer over the list, and a namespace picks the
+      // list's tab. Both URLs stay shareable.
       route('workspaces/:workspace/functions', 'routes/functions.tsx', [
         route(':path', 'routes/function.tsx'),
+        route('namespaces/:namespace', 'routes/functions-namespace.tsx'),
       ]),
       route('workspaces/:workspace/members', 'routes/workspace-members.tsx'),
     ]),

@@ -161,7 +161,10 @@ impl CoralAuthorizationServer {
         }
         start_listener(
             bind,
-            health_routes(provider_callback::router(accounts), Some(readiness)),
+            health_routes(
+                coral_telemetry::trace_http_routes(provider_callback::router(accounts)),
+                Some(readiness),
+            ),
         )
         .await
     }
@@ -222,7 +225,14 @@ impl CoralAuthorizationServer {
             self.outbound_policy,
             self.providers,
         )?;
-        start_listener(bind_addr, health_routes(auth_router(state), self.readiness)).await
+        start_listener(
+            bind_addr,
+            health_routes(
+                coral_telemetry::trace_http_routes(auth_router(state)),
+                self.readiness,
+            ),
+        )
+        .await
     }
 }
 
@@ -1005,6 +1015,52 @@ mod tests {
             );
         }
         restarted.shutdown().await.unwrap();
+    }
+
+    /// An auth-support request opens a request span in the caller's trace.
+    /// Probes open none.
+    #[tokio::test]
+    async fn requests_open_a_span_in_the_callers_trace() {
+        const TRACE: &str = "0af7651916cd43dd8448eb211c80319c";
+
+        let capture = coral_telemetry::testing::SpanCapture::default();
+        let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+        let dir = authorization_server("");
+        let fixture = database().await;
+        let server = server(&dir, fixture.database())
+            .start()
+            .await
+            .expect("start");
+        let endpoint = server.endpoint_uri().to_string();
+        let client = reqwest::Client::new();
+        let metadata = client
+            .get(format!("{endpoint}/.well-known/oauth-authorization-server"))
+            .header("traceparent", format!("00-{TRACE}-b7ad6b7169203331-01"))
+            .send()
+            .await
+            .expect("metadata");
+        assert!(metadata.status().is_success());
+        let probe = client
+            .get(format!("{endpoint}/healthz"))
+            .send()
+            .await
+            .expect("probe");
+        assert!(probe.status().is_success());
+        server.shutdown().await.expect("shutdown");
+
+        let spans = capture.finished();
+        assert!(
+            spans
+                .iter()
+                .all(|span| span.span_context.trace_id().to_string() == TRACE),
+            "the probe opens no span: {spans:?}"
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.name == "GET /.well-known/oauth-authorization-server"),
+            "{spans:?}"
+        );
     }
 
     #[tokio::test]

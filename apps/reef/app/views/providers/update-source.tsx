@@ -13,7 +13,7 @@ import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import { Fields } from '@/views/management/forms'
 import { SourceUrl, sourceKinds } from './source-facts'
 import { redactSourceUrl } from './source-url'
-import { OperationsBrowser } from './operations-section'
+import { ToolsBrowser } from './tools-section'
 import { SourceStep } from './source-step'
 import { StepFrame } from './step-frame'
 import type { UpdatePageProps } from './types'
@@ -21,7 +21,7 @@ import * as styles from './providers.css'
 
 /**
  * Refresh confirms the saved source. Replacing it is a separate, explicit entry.
- * As in Add provider, the operations panel is there from the start: it asks
+ * As in Add provider, the tools panel is there from the start: it asks
  * you to read the source, then holds the list.
  */
 export function UpdateSource({
@@ -68,8 +68,8 @@ export function UpdateSource({
       </StepFrame>
     )
   const empty = pending ? (
-    <div className={styles.operationsSkeleton} role="status">
-      <span className={visuallyHidden}>Reading operations…</span>
+    <div className={styles.toolsSkeleton} role="status">
+      <span className={visuallyHidden}>Reading tools…</span>
       {SKELETON_ROWS.map((width, index) => (
         <Skeleton key={index} height="16px" width={width} />
       ))}
@@ -77,7 +77,7 @@ export function UpdateSource({
   ) : source?.url ? (
     <EmptyPage
       iconName="RefreshCw"
-      title="Read the latest operations"
+      title="Read the latest tools"
       description="See what changed before you save."
       action={
         <Form id={formId} method="post" className={styles.emptyActions}>
@@ -91,7 +91,7 @@ export function UpdateSource({
             </Typography.Body>
           )}
           <Button.TextButton type="submit" size="36">
-            Read operations
+            Read tools
           </Button.TextButton>
         </Form>
       }
@@ -100,7 +100,7 @@ export function UpdateSource({
     <EmptyPage
       iconName="FileText"
       title="Replace the document"
-      description="Upload a new document to read the latest operations."
+      description="Upload a new document to read the latest tools."
       action={
         <Button.InternalLink to={`${basePath}?replaceSource=1`} variant="primary">
           Replace document
@@ -121,7 +121,7 @@ export function UpdateSource({
     >
       {children}
       <RefreshLayout source={source}>
-        <OperationsBrowser empty={empty} />
+        <ToolsBrowser empty={empty} />
       </RefreshLayout>
     </StepFrame>
   )
@@ -130,7 +130,7 @@ export function UpdateSource({
 const SKELETON_ROWS = ['40%', '65%', '55%', '70%', '45%', '60%', '50%']
 
 /**
- * The operations beside the source they come from, as the provider's settings
+ * The tools beside the source they come from, as the provider's settings
  * show it. The same before and after the read.
  */
 export function RefreshLayout({

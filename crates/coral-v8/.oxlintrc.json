@@ -19,7 +19,7 @@
           "__coralCompileLinkedProgram",
           "__coralConfigureCompiler",
           "__coralForbiddenAmbientGlobals",
-          "__coralOperationInvoke",
+          "__coralToolInvoke",
           "__coralPrepareSavedFunction",
           "__coralProgramEmit",
           "__coralProgramLog",

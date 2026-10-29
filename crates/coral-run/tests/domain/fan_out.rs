@@ -23,7 +23,7 @@ const WEATHER: &str = "coral.providers.weather.getForecast";
 const ALERTS: &str = "coral.providers.alerts.getItems";
 
 /// How a [`FanOutRun`] is arranged: the Fan-out Limit, the fence observer,
-/// whether the `weather` Operation waits for an approval, and whether its
+/// whether the `weather` Tool waits for an approval, and whether its
 /// Provider is an OAuth Provider.
 struct Setup {
     user: &'static str,
@@ -55,14 +55,14 @@ impl Setup {
 /// A Run under a Fan-out Limit whose calls the test starts one at a time,
 /// so readiness order is the test's own, and whose upstream sends it ends
 /// one at a time. `weather` is the fixture's `getForecast`; `alerts` is a
-/// second credential-free Operation of the same Workspace.
+/// second credential-free Tool of the same Workspace.
 struct FanOutRun {
     fixture: TestModules,
     runs: RunModule,
     upstream: Arc<SequencedUpstream>,
     latch: Arc<FenceLatch>,
     calls: ScriptedCalls,
-    operation: OperationFixture,
+    tool: ToolFixture,
     run_id: crate::RunId,
     /// The OAuth Account's server and credential store, kept for the Run's life.
     _oauth: Option<(MockServer, tempfile::TempDir)>,
@@ -84,20 +84,20 @@ impl FanOutRun {
             setup.latch.clone(),
         )
         .await;
-        let operation = match &setup.oauth {
+        let tool = match &setup.oauth {
             Some(oauth) => {
                 fixture
-                    .user_operation_at(setup.user, "Fan out", &oauth.server.uri())
+                    .user_tool_at(setup.user, "Fan out", &oauth.server.uri())
                     .await
             }
-            None => fixture.user_operation(setup.user, "Fan out").await,
+            None => fixture.user_tool(setup.user, "Fan out").await,
         };
-        assert_eq!(operation.call_path, WEATHER);
+        assert_eq!(tool.call_path, WEATHER);
         fixture
-            .publish_operation_under(&operation, "alerts", "getItems")
+            .publish_tool_under(&tool, "alerts", "getItems")
             .await;
         if setup.approval_required {
-            fixture.require_approval(&operation).await;
+            fixture.require_approval(&tool).await;
         }
         let mut runs = fixture
             .runs
@@ -106,14 +106,14 @@ impl FanOutRun {
         let mut kept = None;
         if let Some(oauth) = setup.oauth {
             let (directory, accounts) =
-                oauth_account(&fixture, &operation, &oauth.server, &oauth.token_url).await;
+                oauth_account(&fixture, &tool, &oauth.server, &oauth.token_url).await;
             runs = runs.with_accounts(accounts);
             kept = Some((oauth.server, directory));
         }
         let run_id = runs
             .start(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 submission("scripted calls"),
             )
             .await
@@ -126,7 +126,7 @@ impl FanOutRun {
             upstream,
             latch: setup.latch,
             calls,
-            operation,
+            tool,
             run_id,
             _oauth: kept,
         }
@@ -134,21 +134,21 @@ impl FanOutRun {
 
     async fn rows(&self) -> Vec<InvocationRow> {
         self.fixture
-            .invocation_rows(&self.operation.workspace_id, &self.run_id)
+            .invocation_rows(&self.tool.workspace_id, &self.run_id)
             .await
     }
 
     async fn events(&self) -> Vec<RunEvent> {
         self.fixture
-            .events_after(&self.operation.workspace_id, &self.run_id, 0)
+            .events_after(&self.tool.workspace_id, &self.run_id, 0)
             .await
     }
 
     async fn observe(&self) -> crate::RunUpdate {
         self.runs
             .observe(
-                &self.operation.principal,
-                &self.operation.workspace_id,
+                &self.tool.principal,
+                &self.tool.workspace_id,
                 &self.run_id,
                 &immediate(None, 100),
             )
@@ -200,8 +200,8 @@ impl FanOutRun {
         self.calls.finish();
         wait_for_terminal(
             &self.runs,
-            &self.operation.principal,
-            &self.operation.workspace_id,
+            &self.tool.principal,
+            &self.tool.workspace_id,
             &self.run_id,
         )
         .await
@@ -322,8 +322,8 @@ async fn a_call_parked_on_approval_holds_no_slot_and_its_request_stays_visible()
     run.admit(WEATHER, 0).await;
     let request = wait_for_approval(
         &approvals,
-        &run.operation.principal,
-        &run.operation.workspace_id,
+        &run.tool.principal,
+        &run.tool.workspace_id,
         &run.run_id,
     )
     .await;
@@ -335,11 +335,7 @@ async fn a_call_parked_on_approval_holds_no_slot_and_its_request_stays_visible()
     assert_eq!(paths(&in_state(&rows, "dispatching")), [ALERTS, ALERTS]);
     assert_waiting(&rows, WEATHER);
     let pending: Vec<_> = approvals
-        .list_for_run(
-            &run.operation.principal,
-            &run.operation.workspace_id,
-            &run.run_id,
-        )
+        .list_for_run(&run.tool.principal, &run.tool.workspace_id, &run.run_id)
         .await
         .expect("list the Run's Approval Requests")
         .into_iter()
@@ -357,8 +353,8 @@ async fn a_call_parked_on_approval_holds_no_slot_and_its_request_stays_visible()
     // Approved, the call is ready: it waits for a slot, with nothing to see.
     approvals
         .decide(
-            &run.operation.principal,
-            &run.operation.workspace_id,
+            &run.tool.principal,
+            &run.tool.workspace_id,
             &request.id,
             ApprovalDecision::Approve,
             None,
@@ -398,8 +394,8 @@ async fn a_run_terminated_while_a_call_waits_for_a_slot_ends_it_as_run_terminate
     let canceled = run
         .runs
         .cancel(
-            &run.operation.principal,
-            &run.operation.workspace_id,
+            &run.tool.principal,
+            &run.tool.workspace_id,
             &run.run_id,
             &immediate(None, 100),
         )
@@ -408,8 +404,8 @@ async fn a_run_terminated_while_a_call_waits_for_a_slot_ends_it_as_run_terminate
     assert_eq!(canceled.state(), RunState::Canceled);
     let terminal = wait_for_terminal(
         &run.runs,
-        &run.operation.principal,
-        &run.operation.workspace_id,
+        &run.tool.principal,
+        &run.tool.workspace_id,
         &run.run_id,
     )
     .await;

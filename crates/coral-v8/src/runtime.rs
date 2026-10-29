@@ -7,8 +7,7 @@ use crate::source_map::{authored_location, decode_authored};
 use crate::v8_support::{evaluate_script, run_script};
 use crate::{
     AuthoredLocation, CompiledProgram, ConsoleLevel, Error, ExecutionOutput, IsolateLimits,
-    OperationFuture, OperationHostError, ProgramExecutionControl, ProgramHost,
-    ProgramOutputHostError,
+    ProgramExecutionControl, ProgramHost, ProgramOutputHostError, ToolFuture, ToolHostError,
 };
 
 const FORBIDDEN_AMBIENT_GLOBALS: &str = include_str!("js/forbidden_ambient_globals.js");
@@ -52,9 +51,9 @@ impl ProgramExecutor {
         self.execute_inner(program, None, None)
     }
 
-    /// Executes with the Provider Operation and Program output host installed.
+    /// Executes with the Provider Tool and Program output host installed.
     ///
-    /// Operation callbacks return pending Promises and progress independently;
+    /// Tool callbacks return pending Promises and progress independently;
     /// no Promise settles before its Invocation evidence is durable. Emission
     /// and Console callbacks block until their output is durable.
     ///
@@ -124,10 +123,10 @@ impl ProgramExecutor {
                 terminated: Cell::new(false),
                 unhandled_invalid_outputs: Cell::new(0),
                 unhandled_output_limits: Cell::new(0),
-                unhandled_operation_errors: Cell::new(0),
-                unhandled_operation_reasons: RefCell::new(HashMap::new()),
-                pending_operations: Vec::new(),
-                operation_error_factory: None,
+                unhandled_tool_errors: Cell::new(0),
+                unhandled_tool_reasons: RefCell::new(HashMap::new()),
+                pending_tools: Vec::new(),
+                tool_error_factory: None,
             });
         }
         v8::scope!(let scope, isolate);
@@ -191,17 +190,17 @@ impl ProgramExecutor {
         } else if result.is_ok()
             && scope
                 .get_slot::<ProgramHostSlot>()
-                .is_some_and(|slot| slot.unhandled_operation_errors.get() > 0)
+                .is_some_and(|slot| slot.unhandled_tool_errors.get() > 0)
         {
             let reason = scope.get_slot::<ProgramHostSlot>().and_then(|slot| {
-                slot.unhandled_operation_reasons
+                slot.unhandled_tool_reasons
                     .borrow()
                     .values()
                     .next()
                     .cloned()
             });
             let mut error = reason.map_or_else(
-                || crate::ProgramError::unavailable("Unhandled OperationError"),
+                || crate::ProgramError::unavailable("Unhandled ToolError"),
                 |reason| {
                     let reason = v8::Local::new(scope, reason);
                     crate::program_error::from_exception(scope, reason, &source_map)
@@ -209,7 +208,7 @@ impl ProgramExecutor {
             );
             error.truncated |= scope
                 .get_slot::<ProgramHostSlot>()
-                .is_some_and(|slot| slot.unhandled_operation_errors.get() > 1);
+                .is_some_and(|slot| slot.unhandled_tool_errors.get() > 1);
             Err(Error::ProgramRejected(Box::new(error)))
         } else {
             result
@@ -223,17 +222,17 @@ struct ProgramHostSlot {
     terminated: Cell<bool>,
     unhandled_invalid_outputs: Cell<usize>,
     unhandled_output_limits: Cell<usize>,
-    unhandled_operation_errors: Cell<usize>,
-    unhandled_operation_reasons: RefCell<HashMap<v8::Global<v8::Object>, v8::Global<v8::Value>>>,
-    pending_operations: Vec<(v8::Global<v8::PromiseResolver>, OperationFuture, String)>,
-    operation_error_factory: Option<v8::Global<v8::Function>>,
+    unhandled_tool_errors: Cell<usize>,
+    unhandled_tool_reasons: RefCell<HashMap<v8::Global<v8::Object>, v8::Global<v8::Value>>>,
+    pending_tools: Vec<(v8::Global<v8::PromiseResolver>, ToolFuture, String)>,
+    tool_error_factory: Option<v8::Global<v8::Function>>,
 }
 
 #[derive(Clone, Copy)]
 enum HostErrorKind {
     InvalidOutput = 1,
     OutputLimit = 2,
-    Operation = 3,
+    Tool = 3,
 }
 
 struct ExecutionWake(std::thread::Thread);
@@ -258,31 +257,31 @@ fn drain_program_work(
         let Some(slot) = scope.get_slot_mut::<ProgramHostSlot>() else {
             return Ok(());
         };
-        if slot.pending_operations.is_empty() {
+        if slot.pending_tools.is_empty() {
             return Ok(());
         }
         // ponytail: scan outstanding futures on wake; use FuturesUnordered if
         // measured large-fanout workloads make this scan material.
-        let pending = std::mem::take(&mut slot.pending_operations);
+        let pending = std::mem::take(&mut slot.pending_tools);
         let mut completed = false;
-        for (resolver, mut operation, call_stack) in pending {
-            match operation.as_mut().poll(&mut context) {
+        for (resolver, mut tool, call_stack) in pending {
+            match tool.as_mut().poll(&mut context) {
                 Poll::Pending => scope
                     .get_slot_mut::<ProgramHostSlot>()
                     .expect("host installed")
-                    .pending_operations
-                    .push((resolver, operation, call_stack)),
+                    .pending_tools
+                    .push((resolver, tool, call_stack)),
                 Poll::Ready(result) => {
                     completed = true;
                     let resolver = v8::Local::new(scope, resolver);
                     match result {
-                        Ok(json) => resolve_operation_promise(scope, resolver, &json),
-                        Err(OperationHostError::Rejected {
+                        Ok(json) => resolve_tool_promise(scope, resolver, &json),
+                        Err(ToolHostError::Rejected {
                             code,
                             message,
                             trace_id,
                         }) => {
-                            reject_operation_error(
+                            reject_tool_error(
                                 scope,
                                 resolver,
                                 code,
@@ -292,12 +291,12 @@ fn drain_program_work(
                                 &call_stack,
                             );
                         }
-                        Err(OperationHostError::Upstream {
+                        Err(ToolHostError::Upstream {
                             code,
                             message,
                             outcome_json,
                         }) => {
-                            reject_operation_error(
+                            reject_tool_error(
                                 scope,
                                 resolver,
                                 code,
@@ -307,7 +306,7 @@ fn drain_program_work(
                                 &call_stack,
                             );
                         }
-                        Err(OperationHostError::Fatal) => terminate_program_host(scope),
+                        Err(ToolHostError::Fatal) => terminate_program_host(scope),
                     }
                     if program_execution_terminated(scope, control) {
                         return Err(Error::ProgramHostTerminated);
@@ -381,13 +380,13 @@ extern "C" fn track_host_promise_rejection(message: v8::PromiseRejectMessage) {
         }
         _ => return,
     };
-    if matches!(kind, HostErrorKind::Operation) {
+    if matches!(kind, HostErrorKind::Tool) {
         if added {
             if let Some(reason) = message.get_value() {
                 let promise = v8::Global::new(scope, promise);
                 let reason = v8::Global::new(scope, reason);
                 if let Some(slot) = scope.get_slot::<ProgramHostSlot>() {
-                    slot.unhandled_operation_reasons
+                    slot.unhandled_tool_reasons
                         .borrow_mut()
                         .insert(promise, reason);
                 }
@@ -395,16 +394,14 @@ extern "C" fn track_host_promise_rejection(message: v8::PromiseRejectMessage) {
         } else {
             let promise = v8::Global::new(scope, promise);
             if let Some(slot) = scope.get_slot::<ProgramHostSlot>() {
-                slot.unhandled_operation_reasons
-                    .borrow_mut()
-                    .remove(&promise);
+                slot.unhandled_tool_reasons.borrow_mut().remove(&promise);
             }
         }
     }
     if let Some(counter) = scope.get_slot::<ProgramHostSlot>().map(|slot| match kind {
         HostErrorKind::InvalidOutput => &slot.unhandled_invalid_outputs,
         HostErrorKind::OutputLimit => &slot.unhandled_output_limits,
-        HostErrorKind::Operation => &slot.unhandled_operation_errors,
+        HostErrorKind::Tool => &slot.unhandled_tool_errors,
     }) {
         counter.set(if added {
             counter.get() + 1
@@ -419,10 +416,7 @@ fn install_program_host(
     context: v8::Local<'_, v8::Context>,
 ) -> Result<(), Error> {
     for (name, function) in [
-        (
-            "__coralOperationInvoke",
-            v8::Function::new(scope, operation_callback),
-        ),
+        ("__coralToolInvoke", v8::Function::new(scope, tool_callback)),
         (
             "__coralProgramEmit",
             v8::Function::new(scope, program_emission_callback),
@@ -452,12 +446,12 @@ fn install_program_host(
         "coral_program_host_bootstrap.js",
     )?;
     let factory = v8::Local::<v8::Function>::try_from(factory)
-        .map_err(|_error| Error::Engine("OperationError factory is invalid".to_string()))?;
+        .map_err(|_error| Error::Engine("ToolError factory is invalid".to_string()))?;
     let factory = v8::Global::new(scope, factory);
     scope
         .get_slot_mut::<ProgramHostSlot>()
         .expect("host installed")
-        .operation_error_factory = Some(factory);
+        .tool_error_factory = Some(factory);
     Ok(())
 }
 
@@ -465,27 +459,27 @@ fn install_program_host(
     clippy::needless_pass_by_value,
     reason = "V8's native Function callback Interface requires arguments by value"
 )]
-fn operation_callback(
+fn tool_callback(
     scope: &mut v8::PinScope<'_, '_>,
     arguments: v8::FunctionCallbackArguments<'_>,
     mut return_value: v8::ReturnValue,
 ) {
     let Some(path) = arguments.get(0).to_string(scope) else {
-        reject_operation_promise(
+        reject_tool_promise(
             scope,
             &mut return_value,
-            "operation_not_found",
-            "Operation Call Path was not found",
+            "tool_not_found",
+            "Tool Call Path was not found",
         );
         return;
     };
     let path = path.to_rust_string_lossy(scope);
     let Ok(arguments_json) = v8::Local::<v8::String>::try_from(arguments.get(1)) else {
-        reject_operation_promise(
+        reject_tool_promise(
             scope,
             &mut return_value,
             "invalid_input",
-            "Operation arguments are invalid",
+            "Tool arguments are invalid",
         );
         return;
     };
@@ -504,28 +498,25 @@ fn operation_callback(
     return_value.set(resolver.get_promise(scope).into());
     let resolver = v8::Global::new(scope, resolver);
     let frames = capture_program_frames(scope);
-    let call_stack = operation_call_stack(&frames);
+    let call_stack = tool_call_stack(&frames);
     let location = authored_location_of(scope, &frames);
     if let Err(error) = host.value_limits().validate_json(&arguments_json) {
         let resolver = v8::Local::new(scope, resolver);
         let (code, message) = match error {
-            coral_value::ValueError::Invalid => {
-                ("invalid_input", "Operation arguments are invalid")
+            coral_value::ValueError::Invalid => ("invalid_input", "Tool arguments are invalid"),
+            coral_value::ValueError::TooLarge => {
+                ("tool_input_too_large", "Tool input exceeds its limit")
             }
-            coral_value::ValueError::TooLarge => (
-                "operation_input_too_large",
-                "Operation input exceeds its limit",
-            ),
         };
-        reject_operation_error(scope, resolver, code, message, None, None, &call_stack);
+        reject_tool_error(scope, resolver, code, message, None, None, &call_stack);
         return;
     }
-    let operation = host.invoke(path, arguments_json, location);
+    let tool = host.invoke(path, arguments_json, location);
     scope
         .get_slot_mut::<ProgramHostSlot>()
         .expect("host installed")
-        .pending_operations
-        .push((resolver, operation, call_stack));
+        .pending_tools
+        .push((resolver, tool, call_stack));
 }
 
 /// Captures the private emitted script's frames, innermost first, while the
@@ -569,7 +560,7 @@ fn capture_authored_location(scope: &v8::PinScope<'_, '_>) -> Option<AuthoredLoc
 }
 
 // Bounded emitted locations; existing source-map projection handles them.
-fn operation_call_stack(frames: &[(usize, usize)]) -> String {
+fn tool_call_stack(frames: &[(usize, usize)]) -> String {
     use std::fmt::Write as _;
     frames
         .iter()
@@ -756,7 +747,7 @@ fn classify_output_object(
     match host_error_kind(scope, object)? {
         HostErrorKind::InvalidOutput => Some(ProgramOutputHostError::InvalidValue),
         HostErrorKind::OutputLimit => Some(ProgramOutputHostError::LimitExceeded),
-        HostErrorKind::Operation => None,
+        HostErrorKind::Tool => None,
     }
 }
 
@@ -780,22 +771,19 @@ fn host_error_kind(
     match object.get_private(scope, key)?.int32_value(scope)? {
         1 => Some(HostErrorKind::InvalidOutput),
         2 => Some(HostErrorKind::OutputLimit),
-        3 => Some(HostErrorKind::Operation),
+        3 => Some(HostErrorKind::Tool),
         _ => None,
     }
 }
 
-pub(crate) fn operation_error_fields(
+pub(crate) fn tool_error_fields(
     scope: &mut v8::PinScope<'_, '_>,
     object: v8::Local<'_, v8::Object>,
-) -> Option<crate::ProgramOperationError> {
-    if !matches!(
-        host_error_kind(scope, object),
-        Some(HostErrorKind::Operation)
-    ) {
+) -> Option<crate::ProgramToolError> {
+    if !matches!(host_error_kind(scope, object), Some(HostErrorKind::Tool)) {
         return None;
     }
-    let key = operation_fields_key(scope)?;
+    let key = tool_fields_key(scope)?;
     let fields = object.get_private(scope, key)?;
     let fields = v8::Local::<v8::Array>::try_from(fields).ok()?;
     let code = fields.get_index(scope, 0)?;
@@ -803,7 +791,7 @@ pub(crate) fn operation_error_fields(
     let status = fields.get_index(scope, 2)?;
     let body = fields.get_index(scope, 3)?;
     let body_truncated = fields.get_index(scope, 4)?;
-    Some(crate::ProgramOperationError {
+    Some(crate::ProgramToolError {
         code: code.to_rust_string_lossy(scope),
         trace_id: (!trace.is_undefined()).then(|| trace.to_rust_string_lossy(scope)),
         status: status
@@ -815,8 +803,8 @@ pub(crate) fn operation_error_fields(
     })
 }
 
-fn operation_fields_key<'s>(scope: &v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Private>> {
-    let name = v8::String::new(scope, "withcoral.ProgramHost#operationFields")?;
+fn tool_fields_key<'s>(scope: &v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Private>> {
+    let name = v8::String::new(scope, "withcoral.ProgramHost#toolFields")?;
     Some(v8::Private::for_api(scope, Some(name)))
 }
 
@@ -834,20 +822,20 @@ fn terminate_program_host(scope: &mut v8::PinScope<'_, '_>) {
     let _terminated = scope.terminate_execution();
 }
 
-fn resolve_operation_promise(
+fn resolve_tool_promise(
     scope: &mut v8::PinScope<'_, '_>,
     resolver: v8::Local<'_, v8::PromiseResolver>,
     result_json: &str,
 ) {
-    let Some(value) = parse_operation_result(scope, result_json) else {
+    let Some(value) = parse_tool_result(scope, result_json) else {
         terminate_program_host(scope);
         return;
     };
     let _settled = resolver.resolve(scope, value);
 }
 
-/// Parses an encoded Operation Result within the Run's value limits.
-fn parse_operation_result<'s>(
+/// Parses an encoded Tool Result within the Run's value limits.
+fn parse_tool_result<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     result_json: &str,
 ) -> Option<v8::Local<'s, v8::Value>> {
@@ -861,7 +849,7 @@ fn parse_operation_result<'s>(
     v8::json::parse(scope, encoded)
 }
 
-fn reject_operation_error(
+fn reject_tool_error(
     scope: &mut v8::PinScope<'_, '_>,
     resolver: v8::Local<'_, v8::PromiseResolver>,
     code: &str,
@@ -873,7 +861,7 @@ fn reject_operation_error(
     let exception = (|| {
         let factory = scope
             .get_slot::<ProgramHostSlot>()?
-            .operation_error_factory
+            .tool_error_factory
             .clone()?;
         let factory = v8::Local::new(scope, factory);
         let code = v8::String::new(scope, code)?;
@@ -882,9 +870,9 @@ fn reject_operation_error(
             Some(trace_id) => v8::String::new(scope, trace_id)?.into(),
             None => v8::undefined(scope).into(),
         };
-        let stack = v8::String::new(scope, &format!("OperationError: {message}\n{call_stack}"))?;
+        let stack = v8::String::new(scope, &format!("ToolError: {message}\n{call_stack}"))?;
         let outcome: v8::Local<v8::Value> = match outcome_json {
-            Some(outcome_json) => parse_operation_result(scope, outcome_json)?,
+            Some(outcome_json) => parse_tool_result(scope, outcome_json)?,
             None => v8::undefined(scope).into(),
         };
         let receiver = v8::undefined(scope).into();
@@ -900,10 +888,10 @@ fn reject_operation_error(
             ],
         )?;
         let object = v8::Local::<v8::Object>::try_from(exception).ok()?;
-        let key = operation_fields_key(scope)?;
+        let key = tool_fields_key(scope)?;
         let (status, body, body_truncated) = outcome_json.map_or(
             (None, None, false),
-            crate::program_error::operation_outcome_excerpt,
+            crate::program_error::tool_outcome_excerpt,
         );
         let status: v8::Local<v8::Value> = match status {
             Some(status) => v8::Integer::new_from_unsigned(scope, u32::from(status)).into(),
@@ -921,7 +909,7 @@ fn reject_operation_error(
         if object.set_private(scope, key, fields.into()) != Some(true) {
             return None;
         }
-        mark_host_error(scope, object, HostErrorKind::Operation).then_some(exception)
+        mark_host_error(scope, object, HostErrorKind::Tool).then_some(exception)
     })();
     if let Some(exception) = exception {
         let _settled = resolver.reject(scope, exception);
@@ -930,7 +918,7 @@ fn reject_operation_error(
     }
 }
 
-fn reject_operation_promise(
+fn reject_tool_promise(
     scope: &mut v8::PinScope<'_, '_>,
     return_value: &mut v8::ReturnValue,
     code: &str,
@@ -940,8 +928,8 @@ fn reject_operation_promise(
         terminate_program_host(scope);
         return;
     };
-    let call_stack = operation_call_stack(&capture_program_frames(scope));
-    reject_operation_error(scope, resolver, code, message, None, None, &call_stack);
+    let call_stack = tool_call_stack(&capture_program_frames(scope));
+    reject_tool_error(scope, resolver, code, message, None, None, &call_stack);
     return_value.set(resolver.get_promise(scope).into());
 }
 

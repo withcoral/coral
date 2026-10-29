@@ -14,8 +14,8 @@ mod urls;
 #[cfg(test)]
 use {
     coral_catalog as _, coral_policy as _, coral_provider as _, coral_test_support as _,
-    jsonschema as _, opentelemetry as _, opentelemetry_sdk as _, reqwest as _, tracing as _,
-    tracing_opentelemetry as _, tracing_subscriber as _,
+    jsonschema as _, opentelemetry as _, opentelemetry_sdk as _, reqwest as _,
+    tracing_subscriber as _,
 };
 
 use std::num::NonZeroUsize;

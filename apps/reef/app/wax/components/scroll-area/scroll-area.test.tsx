@@ -18,7 +18,7 @@ it('keeps the outer ref distinct from the reading viewport without leaking readi
       readingFollowStart
       revealRecord="approval"
     >
-      <article data-record-key="approval">Review this operation</article>
+      <article data-record-key="approval">Review this tool</article>
     </Container>,
   )
   expect(outer.current).not.toBe(port.current)
@@ -41,7 +41,7 @@ it('reports viewport start changes only for active reading, not concealed or ord
       readingPaused={readingPaused}
       onReadingStartChange={onStartChange}
     >
-      <article data-record-key="approval">Review this operation</article>
+      <article data-record-key="approval">Review this tool</article>
     </Container>
   )
   const { rerender } = render(view('inbox'))

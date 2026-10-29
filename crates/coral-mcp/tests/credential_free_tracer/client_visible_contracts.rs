@@ -5,18 +5,29 @@
     reason = "assert known tool result JSON members"
 )]
 
-use coral_catalog::OperationKey;
-use coral_policy::{OperationAccessState, OperationPolicyTarget};
+use coral_catalog::ToolKey;
+use coral_policy::{ToolAccessState, ToolPolicyTarget};
 use coral_run::{ProgramSource, RunObservation, RunState, RunSubmission, RunTimeout};
 use coral_workspace::{AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceRole};
 use serde_json::{Value, json};
 
-use super::{RawSession, Tracer, change};
+use super::{RawSession, Tracer, change, untraced};
 use coral_mcp::SUPPORTED_PROTOCOL_VERSIONS;
 use rmcp::model::ProtocolVersion;
 
 const PARKED: &str = "return await coral.providers.weather.getForecast({});";
 const ABSENT_RUN: &str = "00000000-0000-4000-8000-000000000000";
+
+/// A raw failed tool result without its per-call `trace_id`, to compare two
+/// calls. Its `content[0]` text is checked on receipt to be the JSON of
+/// `structuredContent`, so the structured result stands for both.
+fn untraced_result(result: &Value) -> Value {
+    json!({
+        "isError": result["isError"],
+        "content": result["content"].as_array().map(Vec::len),
+        "structuredContent": untraced(&result["structuredContent"]),
+    })
+}
 
 /// The only part of a tool result that a content-only client reads.
 fn text_json(result: &Value) -> Value {
@@ -36,15 +47,15 @@ async fn content_only_clients_read_results_and_actionable_rejections() {
         .policies
         .set_access_state(
             &change(tracer.local_user.clone(), 60, 'b'),
-            OperationPolicyTarget::new(
+            ToolPolicyTarget::new(
                 tracer.workspace_a.clone(),
                 tracer.provider_id.clone(),
-                OperationKey::parse("lostWorker").expect("Operation Key"),
+                ToolKey::parse("lostWorker").expect("Tool Key"),
             ),
-            OperationAccessState::Disabled,
+            ToolAccessState::Disabled,
         )
         .await
-        .expect("disable an installed Operation");
+        .expect("disable an installed Tool");
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = RawSession::open(&tracer.endpoint(), version).await;
         let started = session
@@ -216,8 +227,8 @@ async fn agents_observe_and_cancel_only_their_own_runs() {
                     "{version} {tool}"
                 );
                 assert_eq!(
-                    run_tool(session, tool, run).await,
-                    absent,
+                    untraced_result(&run_tool(session, tool, run).await),
+                    untraced_result(&absent),
                     "{version} {tool}: {case} looks absent"
                 );
             }
@@ -287,7 +298,7 @@ async fn run_tool(session: &RawSession, tool: &str, run: &Value) -> Value {
     session.tool(tool, arguments).await
 }
 
-/// A disabled Operation and a path that never existed give one result.
+/// A disabled Tool and a path that never existed give one result.
 async fn check_concealed_descriptions(
     session: &RawSession,
     task: &Value,
@@ -308,7 +319,8 @@ async fn check_concealed_descriptions(
         "{version}"
     );
     assert_eq!(
-        concealed, absent,
-        "{version}: a disabled Operation looks absent"
+        untraced_result(&concealed),
+        untraced_result(&absent),
+        "{version}: a disabled Tool looks absent"
     );
 }

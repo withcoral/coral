@@ -117,7 +117,7 @@ pub(crate) async fn waits(database: &Database, request: &InboxRequest) -> Result
     Ok(waiting.is_some())
 }
 
-/// One Run Inbox row as `held_by` reads it.
+/// One Run Inbox row as `held_by` and `waiting_for` read it.
 #[derive(FromRow)]
 struct StoredRequest {
     id: String,
@@ -137,26 +137,45 @@ pub(crate) async fn held_by(
     database: &Database,
     instance: &CoralInstanceId,
 ) -> Result<Vec<Delivery>, Error> {
-    let rows: Vec<StoredRequest> = database
+    let rows: Vec<StoredRequest> = database.fetch_all(waiting_requests(Some(instance))).await?;
+    rows.into_iter().map(delivery).collect()
+}
+
+/// The requests waiting for one running Run, in insert order, read in
+/// `transaction`.
+pub(crate) async fn waiting_for(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    run_id: &RunId,
+) -> Result<Vec<Delivery>, Error> {
+    let rows: Vec<StoredRequest> = transaction
         .fetch_all(
-            waiting_rows(Some(instance))
-                .columns([
-                    ProgramRunInbox::WorkspaceId,
-                    ProgramRunInbox::RunId,
-                    ProgramRunInbox::ApprovalId,
-                    ProgramRunInbox::RequesterId,
-                    ProgramRunInbox::RequesterKind,
-                    ProgramRunInbox::Decision,
-                    ProgramRunInbox::Comment,
-                    ProgramRunInbox::TraceId,
-                    ProgramRunInbox::DeadlineAtUnixNanos,
-                ])
-                .order_by(ProgramRunInbox::InsertedAtUnixNanos, Order::Asc)
-                .order_by(ProgramRunInbox::Id, Order::Asc)
+            waiting_requests(None)
+                .and_where(Expr::col(ProgramRunInbox::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(ProgramRunInbox::RunId).eq(run_id.as_str()))
                 .to_owned(),
         )
         .await?;
     rows.into_iter().map(delivery).collect()
+}
+
+/// [`waiting_rows`] as [`StoredRequest`]s, in insert order.
+fn waiting_requests(holder: Option<&CoralInstanceId>) -> sea_query::SelectStatement {
+    waiting_rows(holder)
+        .columns([
+            ProgramRunInbox::WorkspaceId,
+            ProgramRunInbox::RunId,
+            ProgramRunInbox::ApprovalId,
+            ProgramRunInbox::RequesterId,
+            ProgramRunInbox::RequesterKind,
+            ProgramRunInbox::Decision,
+            ProgramRunInbox::Comment,
+            ProgramRunInbox::TraceId,
+            ProgramRunInbox::DeadlineAtUnixNanos,
+        ])
+        .order_by(ProgramRunInbox::InsertedAtUnixNanos, Order::Asc)
+        .order_by(ProgramRunInbox::Id, Order::Asc)
+        .to_owned()
 }
 
 fn delivery(

@@ -27,7 +27,7 @@ use crate::tests::{change_context, organization_user, publication_request};
 use crate::{Error, LifecycleAction, ProviderSetupSource};
 
 #[tokio::test]
-async fn configuration_preview_retains_each_operations_blocking_reasons() {
+async fn configuration_preview_retains_each_tools_blocking_reasons() {
     let h = harness().await;
     let (actor, workspace) = workspace_owner(&h, "user:preview-reasons").await;
     let context = change_context(actor, 10, '1');
@@ -59,19 +59,19 @@ async fn configuration_preview_retains_each_operations_blocking_reasons() {
         .await
         .unwrap();
     assert!(review.errors.is_empty());
-    assert_eq!(review.operations.len(), catalog.operations().len());
-    for (reviewed, operation) in review.operations.iter().zip(catalog.operations()) {
-        assert_eq!(reviewed.key, operation.key().as_str());
-        assert_eq!(reviewed.relative_path, operation.relative_path());
-        assert_eq!(reviewed.summary, operation.summary());
-        assert_eq!(reviewed.tags, operation.presentation().tags());
+    assert_eq!(review.tools.len(), catalog.tools().len());
+    for (reviewed, tool) in review.tools.iter().zip(catalog.tools()) {
+        assert_eq!(reviewed.key, tool.key().as_str());
+        assert_eq!(reviewed.relative_path, tool.relative_path());
+        assert_eq!(reviewed.summary, tool.summary());
+        assert_eq!(reviewed.tags, tool.presentation().tags());
     }
-    assert_eq!(review.unavailable_operations.len(), 2);
+    assert_eq!(review.unavailable_tools.len(), 2);
     assert_eq!(
         review
-            .unavailable_operations
+            .unavailable_tools
             .get("local")
-            .expect("local unavailable operation")
+            .expect("local unavailable tool")
             .first()
             .unwrap()
             .code(),
@@ -79,16 +79,16 @@ async fn configuration_preview_retains_each_operations_blocking_reasons() {
     );
     assert_eq!(
         review
-            .unavailable_operations
+            .unavailable_tools
             .get("callback")
-            .expect("callback unavailable operation")
+            .expect("callback unavailable tool")
             .first()
             .unwrap()
             .code(),
         "unsupported_openapi_callback"
     );
-    for operation in catalog.operations() {
-        let errors = operation
+    for tool in catalog.tools() {
+        let errors = tool
             .diagnostics()
             .iter()
             .filter(|diagnostic| {
@@ -98,8 +98,8 @@ async fn configuration_preview_retains_each_operations_blocking_reasons() {
             .collect::<Vec<_>>();
         assert_eq!(
             review
-                .unavailable_operations
-                .get(operation.key().as_str())
+                .unavailable_tools
+                .get(tool.key().as_str())
                 .cloned()
                 .unwrap_or_default(),
             errors
@@ -481,17 +481,17 @@ async fn reviewed_public_application_changes_cancel_consent_and_persist_for_call
         .await
         .unwrap();
     let provider = published.published_provider().unwrap();
-    let operation = h
+    let tool = h
         .providers
-        .inspect_operation(
+        .inspect_tool(
             &actor,
             workspace.id(),
             provider.id(),
-            &coral_catalog::OperationKey::parse("getData").unwrap(),
+            &coral_catalog::ToolKey::parse("getData").unwrap(),
         )
         .await
         .unwrap();
-    let coral_catalog::ExecutionBinding::Http(binding) = operation.execution_binding() else {
+    let coral_catalog::ExecutionBinding::Http(binding) = tool.execution_binding() else {
         panic!("HTTP");
     };
     assert_eq!(
@@ -544,17 +544,17 @@ async fn reviewed_public_application_changes_cancel_consent_and_persist_for_call
             .outcome(),
         ProviderPublicationOutcome::Succeeded
     );
-    let operation = h
+    let tool = h
         .providers
-        .inspect_operation(
+        .inspect_tool(
             &actor,
             workspace.id(),
             provider.id(),
-            &coral_catalog::OperationKey::parse("getData").unwrap(),
+            &coral_catalog::ToolKey::parse("getData").unwrap(),
         )
         .await
         .unwrap();
-    let coral_catalog::ExecutionBinding::Http(binding) = operation.execution_binding() else {
+    let coral_catalog::ExecutionBinding::Http(binding) = tool.execution_binding() else {
         panic!("HTTP");
     };
     assert_eq!(
@@ -1461,10 +1461,7 @@ async fn update_retains_saved_variables_and_exposes_changed_defaults_and_removed
         .review_setup_configuration(&actor, &owner, unreadable.id())
         .await
         .unwrap();
-    assert_eq!(
-        review.diagnostic.as_deref(),
-        Some("duplicate_operation_key")
-    );
+    assert_eq!(review.diagnostic.as_deref(), Some("duplicate_tool_key"));
     assert!(review.document.is_none());
     assert_eq!(review.differences, []);
 }
@@ -2422,7 +2419,7 @@ async fn modules_retain_independent_outbound_permissions_for_preview_and_publica
                 !current_permission,
             );
             assert_eq!(
-                inspected.configuration.operations.is_empty(),
+                inspected.configuration.tools.is_empty(),
                 !current_permission,
             );
             if !current_permission {
@@ -2459,4 +2456,85 @@ async fn modules_retain_independent_outbound_permissions_for_preview_and_publica
             assert!(publication.published_provider().is_none());
         }
     }
+}
+
+/// A database from before Operations were Provider Tools: the upgrade renames
+/// the tool lists and diagnostic codes a Setup in progress cached, so its
+/// review reads as it did before the rename.
+#[tokio::test]
+async fn upgrade_renames_the_tools_a_setup_cached() {
+    let before_tool_names = coral_test_support::migration_plan_before(46);
+    let db = coral_test_support::TestDatabase::new(&before_tool_names)
+        .await
+        .expect("create database from before tool names");
+    let database = db.database();
+    let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
+    let providers = ProviderModule::with_running_catalog(
+        DestinationPolicy::default(),
+        database.clone(),
+        workspaces.clone(),
+    );
+    let actor = organization_user(database.clone(), "user:upgrade", OrganizationRole::Member).await;
+    let context = change_context(actor.clone(), 10, '1');
+    let workspace = workspaces
+        .create(
+            &context,
+            coral_workspace::WorkspaceDisplayName::parse("Upgrade").unwrap(),
+        )
+        .await
+        .unwrap();
+    let document = OpenApiDocument::parse(&json!({
+        "openapi": "3.0.3", "info": { "title": "Upgrade", "version": "1" },
+        "security": [], "servers": [{ "url": "https://api.example.test" }],
+        "paths": {
+            "/ready": { "get": { "operationId": "ready", "responses": { "200": { "description": "OK" } } } },
+            "/malformed": { "get": { "operationId": "malformed", "responses": { "200": {
+                "description": "OK",
+                "content": { "application/json": { "schema": { "type": 5 } } }
+            } } } }
+        }
+    }).to_string()).unwrap();
+    let values = document.configuration_review().unwrap().suggested;
+    let setup = providers
+        .create_openapi_setup(&context, workspace.id(), document)
+        .await
+        .unwrap();
+    providers
+        .confirm_setup_configuration(&context, workspace.id(), setup.id(), 0, values)
+        .await
+        .unwrap();
+    let before = providers
+        .review_setup_configuration(&actor, workspace.id(), setup.id())
+        .await
+        .unwrap();
+    assert_eq!(
+        before
+            .unavailable_tools
+            .get("malformed")
+            .and_then(|diagnostics| diagnostics.first())
+            .map(coral_catalog::CatalogDiagnostic::code),
+        Some("invalid_tool_schema")
+    );
+    // What Coral cached before the rename.
+    db.execute_fixture_sql(
+        "UPDATE provider_setups \
+         SET source_analysis = REPLACE(source_analysis, '\",\"tools\":[', '\",\"operations\":['), \
+         configuration_preview = REPLACE(REPLACE(REPLACE(configuration_preview, \
+         '},\"tools\":[', '},\"operations\":['), \
+         '\"unavailable_tools\":{', '\"unavailable_operations\":{'), \
+         '\"invalid_tool_schema\"', '\"invalid_operation_schema\"')",
+    )
+    .await
+    .unwrap();
+
+    database
+        .migrate(coral_db::migration_plan())
+        .await
+        .expect("apply the upgrade");
+
+    let after = providers
+        .review_setup_configuration(&actor, workspace.id(), setup.id())
+        .await
+        .expect("the cached review decodes");
+    assert_eq!(after, before);
 }

@@ -5,13 +5,13 @@ import { SUMMARY_DAYS, type ActivitySummaryData, type SummaryDays } from '@/lib/
 import { describeContextImpact } from '../context-impact'
 import { CallsLens } from './calls-lens'
 import { ContextLens, callers } from './context-lens'
-import { joined, number, share } from './format'
+import { isYou, joined, number, share } from './format'
 import { NeedsYouLens } from './needs-you-lens'
-import type { SummaryProvider } from './operations'
+import type { SummaryProvider } from './tools'
 import { Note } from './parts'
 import * as styles from './summary.css'
 
-export type { SummaryProvider } from './operations'
+export type { SummaryProvider } from './tools'
 
 const periodName = (days: SummaryDays) => (days === 1 ? '24 hours' : `${days} days`)
 const dayOptions = SUMMARY_DAYS.map((days) => ({ value: String(days), label: periodName(days) }))
@@ -36,10 +36,26 @@ function useLens() {
   return [lens, setLens] as const
 }
 
+/** Calls your agents made. Only an owner's calls include agents'. */
+function agentCalls(summary: ActivitySummaryData, owner: boolean) {
+  if (!owner) return 0
+  return summary.callers
+    .filter((caller) => !isYou(caller))
+    .reduce((sum, caller) => sum + caller.calls, 0)
+}
+
 /** The three numbers that head the summary, one per lens. */
-function metrics(summary: ActivitySummaryData) {
+function metrics(summary: ActivitySummaryData, byAgents: number) {
   const { calls } = summary
   const total = Object.values(calls).reduce((sum, value) => sum + value, 0)
+  // Without agents' calls, your part would repeat the total.
+  const parts =
+    byAgents > 0
+      ? [
+          { metric: number(total - byAgents), details: ['You'] },
+          { metric: number(byAgents), details: ['Your agents'] },
+        ]
+      : undefined
   // A call a person declined was decided, so only the stops you fix count.
   const toFix = calls.blocked + calls.needsSetup
   const impact =
@@ -53,6 +69,7 @@ function metrics(summary: ActivitySummaryData) {
       label: 'Calls',
       metric: number(total),
       details: [total ? `${share(calls.answered, total)} answered` : 'No calls'],
+      parts,
     },
     {
       value: 'needs',
@@ -105,6 +122,7 @@ export function ActivitySummary({
   pending = false,
 }: ActivitySummaryProps) {
   const [lens, setLens] = useLens()
+  const byAgents = summary ? agentCalls(summary, owner) : 0
   return (
     <section
       className={pending ? `${styles.root} ${styles.pending}` : styles.root}
@@ -115,11 +133,6 @@ export function ActivitySummary({
         <Typography.BodySmallStrong as="h2" variant="primary">
           {owner ? 'Workspace activity' : 'Your activity'}
         </Typography.BodySmallStrong>
-        {pending && (
-          <Typography.BodySmall as="span" variant="tertiary" role="status">
-            Loading…
-          </Typography.BodySmall>
-        )}
         {onDaysChange ? (
           <SegmentedControl
             label="Period"
@@ -136,19 +149,23 @@ export function ActivitySummary({
         <Card.Container flush>
           <Tabs.Root value={lens} onValueChange={(value) => setLens(value as Lens)}>
             <Tabs.MetricList aria-label="Summary">
-              {metrics(summary).map((metric) => (
+              {metrics(summary, byAgents).map((metric) => (
                 <Tabs.MetricTab key={metric.value} {...metric} />
               ))}
             </Tabs.MetricList>
-            <Tabs.Panel value="calls" className={styles.panel}>
-              <CallsLens summary={summary} providers={providers} />
-            </Tabs.Panel>
-            <Tabs.Panel value="needs" className={styles.panel}>
-              <NeedsYouLens summary={summary} providers={providers} />
-            </Tabs.Panel>
-            <Tabs.Panel value="context" className={styles.panel}>
-              <ContextLens entries={summary.contextActors ?? []} />
-            </Tabs.Panel>
+            {/* Every lens stays mounted in one grid cell, so the card keeps the tallest lens's
+                height and switching lenses never shortens the page under you. */}
+            <div className={styles.panels}>
+              <Tabs.Panel value="calls" keepMounted className={styles.panel}>
+                <CallsLens summary={summary} providers={providers} showCallers={byAgents > 0} />
+              </Tabs.Panel>
+              <Tabs.Panel value="needs" keepMounted className={styles.panel}>
+                <NeedsYouLens summary={summary} providers={providers} />
+              </Tabs.Panel>
+              <Tabs.Panel value="context" keepMounted className={styles.panel}>
+                <ContextLens entries={summary.contextActors ?? []} />
+              </Tabs.Panel>
+            </div>
           </Tabs.Root>
         </Card.Container>
       ) : (

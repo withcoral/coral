@@ -5,7 +5,7 @@
  * Captured from a local Coral server on 2026-10-02, before Coral trimmed
  * Search Hits:
  * - `untrimmed`: the page for the query "github pulls", limit 5, no provider filter.
- * - `describeOperation`: the describe answer for `issues.create`.
+ * - `describeTool`: the describe answer for `issues.create`.
  * - `describeFunction`: the describe answer for a function saved for the
  *   purpose. Its diagnostic is real.
  *
@@ -18,7 +18,7 @@
  */
 const githubHits = [
   {
-    kind: 'operation',
+    kind: 'provider_tool',
     call_path: 'coral.providers.github.pulls.checkIfMerged',
     signature_line:
       'checkIfMerged(input: { owner: string; pull_number: number; repo: string }): Promise<{ data: null }>',
@@ -36,7 +36,7 @@ const githubHits = [
     matched_tags: ['pulls'],
   },
   {
-    kind: 'operation',
+    kind: 'provider_tool',
     call_path: 'coral.providers.github.pulls.deleteReviewComment',
     signature_line:
       'deleteReviewComment(input: { comment_id: number; owner: string; repo: string }): Promise<{ data: null }>',
@@ -53,7 +53,7 @@ const githubHits = [
     matched_tags: ['pulls'],
   },
   {
-    kind: 'operation',
+    kind: 'provider_tool',
     call_path: 'coral.providers.github.pulls.merge',
     signature_line:
       'merge(input: { body?: PutReposOwnerRepoPullsPull_numberMergeBodyInput; owner: string; pull_number: number; repo: string }): Promise<{ data: PullRequestMergeResult }>',
@@ -71,7 +71,7 @@ const githubHits = [
     matched_tags: ['pulls'],
   },
   {
-    kind: 'operation',
+    kind: 'provider_tool',
     call_path: 'coral.providers.github.pulls.getMergeAsyncResult',
     signature_line:
       'getMergeAsyncResult(input: { owner: string; pull_number: number; repo: string; uuid: string }): Promise<{ data: PullRequestMergeAsyncResult }>',
@@ -89,7 +89,7 @@ const githubHits = [
     matched_tags: ['pulls'],
   },
   {
-    kind: 'operation',
+    kind: 'provider_tool',
     call_path: 'coral.providers.github.pulls.updateBranch',
     signature_line:
       'updateBranch(input: { body?: PutReposOwnerRepoPullsPull_numberUpdateBranchBodyInput; owner: string; pull_number: number; repo: string }): Promise<{ data: {…} }>',
@@ -110,7 +110,7 @@ const githubHits = [
 
 /** Real hit from the query "github issue get sub-issues list"; paths cut to a third. */
 const subIssuesHit = {
-  kind: 'operation',
+  kind: 'provider_tool',
   call_path: 'coral.providers.github.issues.listSubIssues',
   signature_line:
     'listSubIssues(input: { issue_number: number; owner: string; page?: number; per_page?: number; repo: string }): Promise<{ data: Array<Issue> }>',
@@ -205,7 +205,7 @@ const untrimmed = {
       },
     },
     {
-      retriever: 'operation',
+      retriever: 'provider_tool',
       state: 'results_found',
       coverage: {
         eligible_units: 1,
@@ -256,7 +256,7 @@ const partial = {
   has_more: false,
   retriever_statuses: [
     {
-      retriever: 'operation',
+      retriever: 'provider_tool',
       state: 'partial',
       coverage: {
         eligible_units: 3,
@@ -274,7 +274,7 @@ const error = {
   has_more: false,
   retriever_statuses: [
     {
-      retriever: 'operation',
+      retriever: 'provider_tool',
       state: 'error',
       coverage: {
         eligible_units: 3,
@@ -290,8 +290,8 @@ const error = {
 const HTTP_METADATA =
   'metadata: { readonly kind: "http"; readonly status: number; readonly headers: readonly (readonly [string, string])[]; readonly mediaType: string | null; readonly charset: string | null; readonly finalUrl: string; readonly redirects: readonly { readonly status: number; readonly url: string; readonly crossOrigin: boolean }[]; readonly decodeDiagnostics: readonly { readonly code: string; readonly message: string }[] }'
 
-const describeOperation = {
-  kind: 'operation',
+const describeTool = {
+  kind: 'provider_tool',
   call_path: 'coral.providers.github.issues.create',
   description:
     'Any user with pull access to a repository can create an issue. If [issues are disabled in the repository](https://docs.github.com/articles/disabling-issues/), the API returns a `410 Gone` status.\n\nThis endpoint triggers [notifications](https://docs.github.com/github/managing-subscriptions-and-notifications-on-github/about-notifications). Creating content too quickly using this endpoint may result in secondary rate limiting. For more information, see "[Rate limits for the API](https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits)"\nand "[Best practices for using the REST API](https://docs.github.com/rest/guides/best-practices-for-using-the-rest-api)."\n\nThis endpoint supports the following custom media types. For more information, see "[Media types](https://docs.github.com/rest/using-the-rest-api/getting-started-with-the-rest-api#media-types)."\n\n- **`application/vnd.github.raw+json`**: Returns the raw markdown body. Response will include `body`. This is the default if you do not pass any specific media type.\n- **`application/vnd.github.text+json`**: Returns a text only representation of the markdown body. Response will include `body_text`.\n- **`application/vnd.github.html+json`**: Returns HTML rendered from the body\'s markdown. Response will include `body_html`.\n- **`application/vnd.github.full+json`**: Returns raw, text, and HTML representations. Response will include `body`, `body_text`, and `body_html`.',
@@ -330,7 +330,7 @@ export const stored = {
   sparse: JSON.stringify(sparse),
   partial: JSON.stringify(partial),
   error: JSON.stringify(error),
-  describeOperation: JSON.stringify(describeOperation),
+  describeTool: JSON.stringify(describeTool),
   describeFunction: JSON.stringify(describeFunction),
   earlierShape: JSON.stringify({
     items: [{ call_path: 'coral.providers.github.pulls.merge', typescript_declaration: '…' }],

@@ -8,6 +8,9 @@ const IDENTITY_HEIGHT_PX = 32
 // The masthead rises into the sidebar's padding, so the brand centres on the
 // page's top bar beside it.
 const MASTHEAD_OFFSET_PX = (TOP_BAR_HEIGHT_PX - IDENTITY_HEIGHT_PX) / 2 - SIDEBAR_PADDING_PX
+// Puts a 22px icon button's centre under the 30px collapse toggle's, so the
+// trailing controls share one column.
+const TRAILING_INSET_PX = 3
 export const sidebar = style({
   backgroundColor: theme.surface.main,
   display: 'flex',
@@ -55,21 +58,16 @@ export const header = style({
   marginBlockStart: MASTHEAD_OFFSET_PX,
   minWidth: 0,
 })
-// Same inset as the icon-and-text buttons below, so every icon shares one column.
+// The 22px mark centres on the 18px icons of the buttons below, so every icon
+// shares one column.
 export const identity = style({
   display: 'flex',
   alignItems: 'center',
   flex: 1,
   minHeight: IDENTITY_HEIGHT_PX,
-  paddingInline: 7,
+  paddingInline: 6,
   color: theme.content.primary,
   textDecoration: 'none',
-})
-export const accountTrigger = style({
-  justifyContent: 'flex-start',
-  width: '100%',
-  minWidth: 0,
-  overflow: 'hidden',
 })
 export const spacer = style({ flex: 1, minHeight: 0 })
 // The Workspace tree takes the spare height. Its label stays put and only the
@@ -98,7 +96,9 @@ export const groupLabel = style({
   display: 'flex',
   justifyContent: 'space-between',
   minHeight: 28,
-  paddingInline: 8,
+  // The create button centres on the collapse toggle above it.
+  paddingInlineStart: 8,
+  paddingInlineEnd: TRAILING_INSET_PX,
 })
 export const workspace = style({ display: 'flex', flexDirection: 'column', gap: 2 })
 // The header and its actions share one grid cell, so the actions sit inside
@@ -126,7 +126,7 @@ export const workspaceActions = style({
   gap: 2,
   gridArea: '1 / 1',
   justifySelf: 'end',
-  marginInlineEnd: 6,
+  marginInlineEnd: TRAILING_INSET_PX,
   '@media': {
     '(hover: hover)': {
       selectors: {
@@ -199,13 +199,10 @@ export const railTile = style({
 export const railTileCurrent = style({
   boxShadow: `inset 0 0 0 1px ${theme.stroke.control}`,
 })
-export const externalLinks = style({ display: 'flex', flexDirection: 'column', gap: 2 })
-// The account sits alone at the foot, so its name has the full width. Collapsed,
-// the help menu joins it in one centered column.
-export const footer = style({ alignItems: 'center', display: 'flex', gap: 4, minWidth: 0 })
-export const footerAccount = style({ flex: 1, width: 'auto' })
-// Collapsed, every control is the same centered square, so the brand, toggle,
-// destinations, and account share one axis.
+// Help and the account menu are rows like the destinations above them.
+export const footer = style({ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 })
+// Collapsed, the brand is the same centered square as the buttons, so they
+// share one axis.
 export const minimizedControl = style({
   justifyContent: 'center',
   minWidth: 0,

@@ -83,6 +83,20 @@ export const NativeFormConstraints: Story = {
     await expect(input).toHaveValue('Operations team')
     await expect(input).toBeRequired()
     await expect(input).toHaveAttribute('maxlength', '256')
+    await expect(input).not.toHaveAttribute('data-1p-ignore')
+    await expect(input).not.toHaveAttribute('data-lpignore')
+    await expect(input).not.toHaveAttribute('data-bwignore')
+  },
+}
+
+export const AutoCompleteOff: Story = {
+  args: { ariaLabel: 'Function path', autoComplete: 'off' },
+  play: async ({ canvas }) => {
+    const input = canvas.getByRole('textbox', { name: 'Function path' })
+    await expect(input).toHaveAttribute('autocomplete', 'off')
+    await expect(input).toHaveAttribute('data-1p-ignore')
+    await expect(input).toHaveAttribute('data-lpignore', 'true')
+    await expect(input).toHaveAttribute('data-bwignore')
   },
 }
 
@@ -115,17 +129,17 @@ export const Search: Story = {
     const [value, setValue] = useState('issues')
     return (
       <TextInput
-        ariaLabel="Find an operation"
+        ariaLabel="Find a tool"
         icon="Search"
         onChange={setValue}
-        placeholder="Find an operation"
+        placeholder="Find a tool"
         type="search"
         value={value}
       />
     )
   },
   play: async ({ canvas }) => {
-    const input = canvas.getByRole('searchbox', { name: 'Find an operation' })
+    const input = canvas.getByRole('searchbox', { name: 'Find a tool' })
     await userEvent.click(canvas.getByRole('button', { name: 'Clear search' }))
 
     await expect(input).toHaveValue('')

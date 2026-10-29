@@ -3,8 +3,8 @@
 use coral_catalog::AuthenticationConfiguration;
 use coral_catalog::{
     ExecutionBinding, HttpContentBinding, HttpEncodingBinding, HttpExecutionBinding, HttpMethod,
-    HttpParameterBinding, HttpParameterLocation, HttpParameterStyle, MaterializedOperation,
-    OperationAvailability, SchemaGraph,
+    HttpParameterBinding, HttpParameterLocation, HttpParameterStyle, MaterializedTool, SchemaGraph,
+    ToolAvailability,
 };
 use serde_json::{Map, Value};
 use url::Url;
@@ -25,14 +25,14 @@ pub struct ReadyHttpDispatch {
     pub(super) body: Option<Vec<u8>>,
     pub(super) request_media_type: Option<String>,
     pub(super) credential_slots: Vec<String>,
-    /// The Operation's binding, which selects among its declared responses.
+    /// The Tool's binding, which selects among its declared responses.
     pub(super) binding: HttpExecutionBinding,
     pub(super) schema_graph: SchemaGraph,
     pub(super) limits: coral_value::ValueLimits,
 }
 
 impl ReadyHttpDispatch {
-    /// Plans one HTTP Operation without resolving its host credential slots.
+    /// Plans one HTTP Tool without resolving its host credential slots.
     ///
     /// The returned request retains the selected media recipe and host-owned
     /// credential slot names without resolving credential material.
@@ -42,20 +42,20 @@ impl ReadyHttpDispatch {
     /// Returns an error when the arguments cannot be represented by the
     /// retained HTTP serialization recipe.
     pub fn plan(
-        operation: &MaterializedOperation,
+        tool: &MaterializedTool,
         schema_graph: &SchemaGraph,
         arguments: &Value,
         limits: coral_value::ValueLimits,
     ) -> Result<Self, Error> {
-        if operation.availability() != OperationAvailability::Available {
-            return Err(Error::OperationUnavailable);
+        if tool.availability() != ToolAvailability::Available {
+            return Err(Error::ToolUnavailable);
         }
         limits.validate(arguments).map_err(Error::invalid_value)?;
-        let ExecutionBinding::Http(binding) = operation.execution_binding() else {
+        let ExecutionBinding::Http(binding) = tool.execution_binding() else {
             return Err(Error::UnsupportedProtocol);
         };
         let arguments = arguments.as_object().ok_or_else(|| {
-            Error::InvalidArguments("Operation arguments must be an object".to_string())
+            Error::InvalidArguments("Tool arguments must be an object".to_string())
         })?;
         let server_url = binding.server_url().ok_or(Error::MissingServer)?;
         let mut url = Url::parse(server_url).map_err(Error::InvalidUrl)?;
@@ -65,18 +65,18 @@ impl ReadyHttpDispatch {
             mut headers,
         } = serialize_parameters(binding.path_template(), binding.parameters(), arguments)?;
         let base_path = url.path().trim_end_matches('/');
-        let operation_path = path.trim_start_matches('/');
+        let tool_path = path.trim_start_matches('/');
         // URL parsing removes dot segments, which would send the request, and
-        // its credentials, to a path the Operation does not declare.
-        if operation_path.split('/').any(is_dot_segment) {
+        // its credentials, to a path the Tool does not declare.
+        if tool_path.split('/').any(is_dot_segment) {
             return Err(Error::InvalidArguments(
                 "the request path cannot contain a `.` or `..` segment".to_string(),
             ));
         }
-        let combined_path = if operation_path.is_empty() {
+        let combined_path = if tool_path.is_empty() {
             format!("{base_path}/")
         } else {
-            format!("{base_path}/{operation_path}")
+            format!("{base_path}/{tool_path}")
         };
         url.set_path(&combined_path);
         // The server's query, then the path's fixed query, then the arguments.
@@ -384,7 +384,7 @@ fn serialize_parameters(
         let Some(value) = value else {
             if parameter.required() {
                 return Err(Error::InvalidArguments(format!(
-                    "required Operation argument `{}` is missing",
+                    "required Tool argument `{}` is missing",
                     parameter.logical_name()
                 )));
             }
@@ -398,7 +398,7 @@ fn serialize_parameters(
                     text.contains(['/', '\\']) && text.split(['/', '\\']).any(is_dot_segment)
                 }) {
                     return Err(Error::InvalidArguments(format!(
-                        "Operation argument `{}` cannot contain a `.` or `..` path segment",
+                        "Tool argument `{}` cannot contain a `.` or `..` path segment",
                         parameter.logical_name()
                     )));
                 }
@@ -430,7 +430,7 @@ fn serialize_parameters(
             .any(|parameter| parameter.logical_name() == name)
         {
             return Err(Error::InvalidArguments(format!(
-                "Operation argument `{name}` is not declared"
+                "Tool argument `{name}` is not declared"
             )));
         }
     }
@@ -523,7 +523,7 @@ fn serialize_query_parameter(
 ) -> Result<Vec<(String, String, bool)>, Error> {
     if value.as_str() == Some("") && !parameter.allow_empty_value() {
         return Err(Error::InvalidArguments(format!(
-            "Operation argument `{}` does not allow an empty query value",
+            "Tool argument `{}` does not allow an empty query value",
             parameter.logical_name()
         )));
     }
@@ -597,7 +597,7 @@ fn serialize_query_parameter(
             })
             .collect(),
         _ => Err(Error::InvalidArguments(format!(
-            "Operation argument `{}` does not match its query serialization",
+            "Tool argument `{}` does not match its query serialization",
             parameter.logical_name()
         ))),
     }
@@ -662,7 +662,7 @@ fn serialize_request_body(
     let Some(binding) = request_body else {
         if arguments.contains_key("body") {
             return Err(Error::InvalidArguments(
-                "Operation does not declare a request body".to_string(),
+                "Tool does not declare a request body".to_string(),
             ));
         }
         return Ok((None, None));
@@ -670,7 +670,7 @@ fn serialize_request_body(
     let Some(body) = arguments.get("body") else {
         if binding.required() {
             return Err(Error::InvalidArguments(
-                "required Operation argument `body` is missing".to_string(),
+                "required Tool argument `body` is missing".to_string(),
             ));
         }
         return Ok((None, None));

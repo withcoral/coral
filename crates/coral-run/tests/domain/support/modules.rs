@@ -1,4 +1,4 @@
-//! Test database, domain modules and Operation fixtures shared by Run tests.
+//! Test database, domain modules and Tool fixtures shared by Run tests.
 use crate::tests::*;
 use coral_provider::account::AccountModule;
 
@@ -92,7 +92,7 @@ pub(crate) struct TestModules {
     pub(crate) database: Arc<coral_db::Database>,
     pub(crate) workspaces: WorkspaceModule,
     pub(crate) providers: ProviderModule,
-    pub(crate) policies: OperationPolicyModule,
+    pub(crate) policies: ToolPolicyModule,
     pub(crate) runs: RunModule,
     pub(crate) upstream: Arc<dyn UpstreamSender>,
     pub(crate) clock: Arc<TestClock>,
@@ -125,7 +125,38 @@ impl TestModules {
         invocation_observer: Arc<dyn InvocationObserver>,
         execution_observer: Arc<dyn ExecutionObserver>,
     ) -> Self {
-        let fixture = TestDatabase::new(coral_db::migration_plan())
+        Self::on_plan(
+            coral_db::migration_plan(),
+            engine,
+            upstream,
+            invocation_observer,
+            execution_observer,
+        )
+        .await
+    }
+
+    /// Modules over a database that the migrations before `version` built, as
+    /// one from before that migration's upgrade.
+    pub(crate) async fn before_migration(version: i64, engine: Arc<dyn ProgramEngine>) -> Self {
+        let plan = coral_test_support::migration_plan_before(version);
+        Self::on_plan(
+            &plan,
+            engine,
+            Arc::new(RejectingUpstream),
+            Arc::new(NoopInvocationObserver),
+            Arc::new(NoopExecutionObserver),
+        )
+        .await
+    }
+
+    async fn on_plan(
+        plan: &coral_db::MigrationPlan,
+        engine: Arc<dyn ProgramEngine>,
+        upstream: Arc<dyn UpstreamSender>,
+        invocation_observer: Arc<dyn InvocationObserver>,
+        execution_observer: Arc<dyn ExecutionObserver>,
+    ) -> Self {
+        let fixture = TestDatabase::new(plan)
             .await
             .expect("create Program Run test database");
         let database = fixture.database();
@@ -135,7 +166,7 @@ impl TestModules {
             database.clone(),
             workspaces.clone(),
         );
-        let policies = OperationPolicyModule::new(database.clone(), workspaces.clone());
+        let policies = ToolPolicyModule::new(database.clone(), workspaces.clone());
         let clock = Arc::new(TestClock::new());
         let runs = RunModule::with_adapters(
             database.clone(),
@@ -254,16 +285,16 @@ impl TestModules {
         self.runs.approvals()
     }
 
-    /// Publishes a second credential-free Provider in the fixture Operation's
-    /// Workspace at `coral.providers.<namespace>` with one `GET` Operation
+    /// Publishes a second credential-free Provider in the fixture Tool's
+    /// Workspace at `coral.providers.<namespace>` with one `GET` Tool
     /// `operation_id`, enabled, and returns its policy target.
-    pub(crate) async fn publish_operation_under(
+    pub(crate) async fn publish_tool_under(
         &self,
-        operation: &OperationFixture,
+        tool: &ToolFixture,
         namespace: &str,
         operation_id: &str,
-    ) -> OperationPolicyTarget {
-        let context = change(operation.user.clone(), 41, '5');
+    ) -> ToolPolicyTarget {
+        let context = change(tool.user.clone(), 41, '5');
         let document = serde_json::json!({
             "openapi": "3.1.0", "info": {"title": namespace, "version": "1"},
             "servers": [{"url": "https://upstream.example"}], "security": [],
@@ -273,7 +304,7 @@ impl TestModules {
             .providers
             .prepare_openapi_fixture(
                 &context,
-                &operation.workspace_id,
+                &tool.workspace_id,
                 OpenApiDocument::parse(&document.to_string()).expect("OpenAPI input"),
             )
             .await
@@ -284,7 +315,7 @@ impl TestModules {
                 &context,
                 WorkspaceProviderPublicationRequest::new(
                     ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).expect("id"),
-                    operation.workspace_id.clone(),
+                    tool.workspace_id.clone(),
                     setup.id().clone(),
                     ProviderNamespace::parse(namespace).expect("namespace"),
                     CredentialRoute::None,
@@ -295,15 +326,15 @@ impl TestModules {
         let provider = publication
             .published_provider()
             .expect("the second Provider published");
-        let target = OperationPolicyTarget::new(
-            operation.workspace_id.clone(),
+        let target = ToolPolicyTarget::new(
+            tool.workspace_id.clone(),
             provider.id().clone(),
-            OperationKey::parse(operation_id).expect("Operation Key"),
+            ToolKey::parse(operation_id).expect("Tool Key"),
         );
         self.policies
-            .set_access_state(&context, target.clone(), OperationAccessState::Enabled)
+            .set_access_state(&context, target.clone(), ToolAccessState::Enabled)
             .await
-            .expect("enable the second Operation");
+            .expect("enable the second Tool");
         target
     }
 
@@ -336,7 +367,7 @@ impl TestModules {
                         Alias::new("result_kind"),
                         Alias::new("ended_at_unix_nanos"),
                     ])
-                    .from(Alias::new("operation_invocations"))
+                    .from(Alias::new("tool_invocations"))
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace_id.to_string()))
                     .and_where(Expr::col(Alias::new("run_id")).eq(run_id.to_string()))
                     .order_by(Alias::new("admitted_at_unix_nanos"), sea_query::Order::Asc)
@@ -373,16 +404,46 @@ impl TestModules {
             .collect()
     }
 
-    /// Makes the fixture Operation wait for a human approval decision.
-    pub(crate) async fn require_approval(&self, operation: &OperationFixture) {
+    /// Makes the fixture Tool wait for a human approval decision.
+    pub(crate) async fn require_approval(&self, tool: &ToolFixture) {
         self.policies
             .set_access_state(
-                &change(operation.user.clone(), 40, '4'),
-                operation.policy_target.clone(),
-                OperationAccessState::ApprovalRequired,
+                &change(tool.user.clone(), 40, '4'),
+                tool.policy_target.clone(),
+                ToolAccessState::ApprovalRequired,
             )
             .await
-            .expect("require approval for the fixture Operation");
+            .expect("require approval for the fixture Tool");
+    }
+
+    /// Puts `request` in the Run's Run Inbox, as the Coral Instance that
+    /// received it does, without waiting for an owner to record it. The Run
+    /// must take it: running, with no request for the same decided thing
+    /// waiting (and, for a cancellation, no termination recorded).
+    pub(crate) async fn submit_to_inbox(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+        request: crate::run_inbox::OutsideRequest,
+    ) {
+        let request = crate::run_inbox::InboxRequest {
+            workspace_id: workspace_id.clone(),
+            run_id: run_id.clone(),
+            request,
+        };
+        let waiting = self.inbox_rows(workspace_id, run_id).await;
+        let mut transaction = self.database.begin().await.expect("begin");
+        self.runs
+            .inbox
+            .submit(&mut transaction, &request, self.runs.now().expect("clock"))
+            .await
+            .expect("submit to the Run Inbox");
+        transaction.commit().await.expect("commit");
+        assert_eq!(
+            self.inbox_rows(workspace_id, run_id).await,
+            waiting + 1,
+            "the Run Inbox took the request"
+        );
     }
 
     /// The rows waiting in the Run's Run Inbox.
@@ -455,11 +516,11 @@ impl TestModules {
 
     /// A second designated Owner's change context, for administration that
     /// removes or demotes the Workspace's creator.
-    pub(crate) async fn workspace_admin(&self, operation: &OperationFixture) -> ChangeContext {
+    pub(crate) async fn workspace_admin(&self, tool: &ToolFixture) -> ChangeContext {
         change(
             self.workspace_user(
-                &operation.workspace_id,
-                &operation.user,
+                &tool.workspace_id,
+                &tool.user,
                 "test:workspace-admin",
                 WorkspaceRole::Owner,
             )
@@ -483,30 +544,30 @@ impl TestModules {
         }
     }
 
-    pub(crate) async fn user_operation(&self, user_id: &str, intent: &str) -> OperationFixture {
-        self.user_operation_at(user_id, intent, "https://upstream.example")
+    pub(crate) async fn user_tool(&self, user_id: &str, intent: &str) -> ToolFixture {
+        self.user_tool_at(user_id, intent, "https://upstream.example")
             .await
     }
 
-    pub(crate) async fn user_operation_at(
+    pub(crate) async fn user_tool_at(
         &self,
         user_id: &str,
         intent: &str,
         server_url: &str,
-    ) -> OperationFixture {
-        self.user_operation_under(user_id, intent, server_url, "weather")
+    ) -> ToolFixture {
+        self.user_tool_under(user_id, intent, server_url, "weather")
             .await
     }
 
     /// Publishes the forecast Provider at `coral.providers.<namespace>` and
-    /// enables its `getForecast` Operation.
-    pub(crate) async fn user_operation_under(
+    /// enables its `getForecast` Tool.
+    pub(crate) async fn user_tool_under(
         &self,
         user_id: &str,
         intent: &str,
         server_url: &str,
         namespace: &str,
-    ) -> OperationFixture {
+    ) -> ToolFixture {
         let (workspace_id, principal) = self.user_scope(user_id, intent).await;
         let user = principal
             .authenticated_user()
@@ -582,20 +643,20 @@ impl TestModules {
             .published_provider()
             .expect("successful Publication");
         let provider_id = published.id().clone();
-        let policy_target = OperationPolicyTarget::new(
+        let policy_target = ToolPolicyTarget::new(
             workspace_id.clone(),
             provider_id.clone(),
-            OperationKey::parse("getForecast").expect("Operation Key"),
+            ToolKey::parse("getForecast").expect("Tool Key"),
         );
         self.policies
             .set_access_state(
                 &change(user.clone(), 32, '9'),
                 policy_target.clone(),
-                OperationAccessState::Enabled,
+                ToolAccessState::Enabled,
             )
             .await
-            .expect("enable credential-free HTTP Operation");
-        OperationFixture {
+            .expect("enable credential-free HTTP Tool");
+        ToolFixture {
             workspace_id,
             principal,
             user,
@@ -785,7 +846,7 @@ impl TestModules {
 
 pub(crate) async fn configure_shared_account(
     fixture: &TestModules,
-    operation: &mut OperationFixture,
+    tool: &mut ToolFixture,
     server: &str,
     secret: &str,
 ) -> (tempfile::TempDir, coral_provider::account::AccountModule) {
@@ -798,11 +859,11 @@ pub(crate) async fn configure_shared_account(
     let values = coral_credentials::CredentialValues::token(
         coral_credentials::Secret::new(secret.into()).unwrap(),
     );
-    let (dir, accounts) = configure_shared_provider(fixture, operation, &document, values).await;
+    let (dir, accounts) = configure_shared_provider(fixture, tool, &document, values).await;
     let mut tx = fixture.database.begin().await.unwrap();
-    let target = coral_provider::resolve_owner_operation_in_transaction(
+    let target = coral_provider::resolve_owner_tool_in_transaction(
         &mut tx,
-        &operation.workspace_id,
+        &tool.workspace_id,
         "coral.providers.weather.getForecast",
     )
     .await
@@ -811,7 +872,7 @@ pub(crate) async fn configure_shared_account(
     let evidence = coral_provider::account::select_in_transaction(
         &mut tx,
         &target,
-        operation.principal.principal(),
+        tool.principal.principal(),
     )
     .await
     .unwrap()
@@ -819,12 +880,7 @@ pub(crate) async fn configure_shared_account(
     tx.commit().await.unwrap();
     assert_eq!(
         accounts
-            .credentials(
-                &operation.workspace_id,
-                &operation.provider_id,
-                &evidence,
-                40
-            )
+            .credentials(&tool.workspace_id, &tool.provider_id, &evidence, 40)
             .await
             .expect("published shared Account credentials")
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -840,31 +896,31 @@ pub(crate) async fn configure_shared_account(
 /// one the document declared.
 pub(crate) async fn configure_authored_provider(
     fixture: &TestModules,
-    operation: &mut OperationFixture,
+    tool: &mut ToolFixture,
     document: &serde_json::Value,
     authored: coral_catalog::AuthenticationConfiguration,
     fields: std::collections::BTreeMap<String, coral_catalog::CredentialField>,
     values: coral_credentials::CredentialValues,
 ) -> (tempfile::TempDir, coral_provider::account::AccountModule) {
-    let context = change(operation.user.clone(), 40, '4');
+    let context = change(tool.user.clone(), 40, '4');
     let (dir, accounts) = fixture.accounts();
     fixture
         .providers
-        .delete_provider(&context, &operation.workspace_id, &operation.provider_id)
+        .delete_provider(&context, &tool.workspace_id, &tool.provider_id)
         .await
         .unwrap();
     let setup = fixture
         .providers
         .prepare_openapi_fixture(
             &context,
-            &operation.workspace_id,
+            &tool.workspace_id,
             OpenApiDocument::parse(&document.to_string()).unwrap(),
         )
         .await
         .unwrap();
     let review = fixture
         .providers
-        .review_setup_configuration(context.actor(), &operation.workspace_id, setup.id())
+        .review_setup_configuration(context.actor(), &tool.workspace_id, setup.id())
         .await
         .unwrap();
     let mut configuration = review.confirmed.clone().unwrap();
@@ -874,7 +930,7 @@ pub(crate) async fn configure_authored_provider(
         .providers
         .confirm_setup_configuration(
             &context,
-            &operation.workspace_id,
+            &tool.workspace_id,
             setup.id(),
             review.revision,
             configuration,
@@ -889,7 +945,7 @@ pub(crate) async fn configure_authored_provider(
     let grant = accounts
         .authorize_setup(
             &context,
-            &operation.workspace_id,
+            &tool.workspace_id,
             setup.id(),
             confirmed.revision,
             values,
@@ -902,7 +958,7 @@ pub(crate) async fn configure_authored_provider(
             &context,
             coral_provider::WorkspaceProviderPublicationRequest::new(
                 ManagementRequestId::parse("71000000-0000-4000-8000-000000000031").unwrap(),
-                operation.workspace_id.clone(),
+                tool.workspace_id.clone(),
                 setup.id().clone(),
                 coral_provider::ProviderNamespace::parse("weather").unwrap(),
                 CredentialRoute::Fixed,
@@ -912,18 +968,18 @@ pub(crate) async fn configure_authored_provider(
         .await
         .unwrap();
     let provider = publication.published_provider().expect("published").clone();
-    operation.provider_id = provider.id().clone();
-    operation.policy_target = OperationPolicyTarget::new(
-        operation.workspace_id.clone(),
-        operation.provider_id.clone(),
-        OperationKey::parse("getForecast").unwrap(),
+    tool.provider_id = provider.id().clone();
+    tool.policy_target = ToolPolicyTarget::new(
+        tool.workspace_id.clone(),
+        tool.provider_id.clone(),
+        ToolKey::parse("getForecast").unwrap(),
     );
     fixture
         .policies
         .set_access_state(
             &context,
-            operation.policy_target.clone(),
-            OperationAccessState::Enabled,
+            tool.policy_target.clone(),
+            ToolAccessState::Enabled,
         )
         .await
         .unwrap();
@@ -932,22 +988,22 @@ pub(crate) async fn configure_authored_provider(
 
 pub(crate) async fn configure_shared_provider(
     fixture: &TestModules,
-    operation: &mut OperationFixture,
+    tool: &mut ToolFixture,
     document: &serde_json::Value,
     values: coral_credentials::CredentialValues,
 ) -> (tempfile::TempDir, coral_provider::account::AccountModule) {
-    let context = change(operation.user.clone(), 40, '4');
+    let context = change(tool.user.clone(), 40, '4');
     let (dir, accounts) = fixture.accounts();
     fixture
         .providers
-        .delete_provider(&context, &operation.workspace_id, &operation.provider_id)
+        .delete_provider(&context, &tool.workspace_id, &tool.provider_id)
         .await
         .unwrap();
     let provider = fixture
         .providers
         .publish_shared_fixture(
             &context,
-            &operation.workspace_id,
+            &tool.workspace_id,
             OpenApiDocument::parse(&document.to_string()).unwrap(),
             "weather",
             &accounts,
@@ -955,18 +1011,18 @@ pub(crate) async fn configure_shared_provider(
         )
         .await
         .unwrap();
-    operation.provider_id = provider.id().clone();
-    operation.policy_target = OperationPolicyTarget::new(
-        operation.workspace_id.clone(),
-        operation.provider_id.clone(),
-        OperationKey::parse("getForecast").unwrap(),
+    tool.provider_id = provider.id().clone();
+    tool.policy_target = ToolPolicyTarget::new(
+        tool.workspace_id.clone(),
+        tool.provider_id.clone(),
+        ToolKey::parse("getForecast").unwrap(),
     );
     fixture
         .policies
         .set_access_state(
             &context,
-            operation.policy_target.clone(),
-            OperationAccessState::Enabled,
+            tool.policy_target.clone(),
+            ToolAccessState::Enabled,
         )
         .await
         .unwrap();
@@ -975,10 +1031,10 @@ pub(crate) async fn configure_shared_provider(
 
 pub(crate) async fn configure_user_caller(
     fixture: &TestModules,
-    operation: &OperationFixture,
+    tool: &ToolFixture,
     server: &str,
 ) -> (tempfile::TempDir, coral_provider::account::AccountModule) {
-    let context = change(operation.user.clone(), 40, '4');
+    let context = change(tool.user.clone(), 40, '4');
     let document = serde_json::json!({
         "openapi":"3.1.0", "info":{"title":"Private weather","version":"1"},
         "servers":[{"url":server}], "security":[{"bearer":[]}],
@@ -989,8 +1045,8 @@ pub(crate) async fn configure_user_caller(
         .providers
         .prepare_update_fixture(
             &context,
-            &operation.workspace_id,
-            &operation.provider_id,
+            &tool.workspace_id,
+            &tool.provider_id,
             OpenApiDocument::parse(&document.to_string()).unwrap(),
         )
         .await
@@ -1001,8 +1057,8 @@ pub(crate) async fn configure_user_caller(
             &context,
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
-                operation.workspace_id.clone(),
-                operation.provider_id.clone(),
+                tool.workspace_id.clone(),
+                tool.provider_id.clone(),
                 setup.id().clone(),
                 2,
             )
@@ -1019,15 +1075,15 @@ pub(crate) async fn configure_user_caller(
 /// request of theirs.
 pub(crate) async fn connect_caller(
     accounts: &coral_provider::account::AccountModule,
-    operation: &OperationFixture,
+    tool: &ToolFixture,
     secret: &str,
 ) {
-    let context = change(operation.user.clone(), 40, '4');
+    let context = change(tool.user.clone(), 40, '4');
     let authorization = accounts
         .start_user_authorization(
             &context,
-            &operation.workspace_id,
-            &operation.provider_id,
+            &tool.workspace_id,
+            &tool.provider_id,
             ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
             None,
         )
@@ -1036,7 +1092,7 @@ pub(crate) async fn connect_caller(
     accounts
         .submit_secret(
             &context,
-            &operation.workspace_id,
+            &tool.workspace_id,
             authorization.id,
             coral_credentials::CredentialValues::token(
                 coral_credentials::Secret::new(secret.into()).unwrap(),
@@ -1100,15 +1156,12 @@ pub(crate) async fn assert_connection_completion_event(
 
 pub(crate) async fn wait_for_connection(
     accounts: &coral_provider::account::AccountModule,
-    operation: &OperationFixture,
+    tool: &ToolFixture,
 ) -> coral_provider::account::ConnectionRequest {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let requests = accounts
-                .list_connection_requests(
-                    &change(operation.user.clone(), 40, '4'),
-                    &operation.workspace_id,
-                )
+                .list_connection_requests(&change(tool.user.clone(), 40, '4'), &tool.workspace_id)
                 .await
                 .unwrap();
             if let Some(request) = requests.first() {
@@ -1133,13 +1186,13 @@ pub(crate) struct InvocationRow {
     pub(crate) ended_at_unix_nanos: Option<i64>,
 }
 
-pub(crate) struct OperationFixture {
+pub(crate) struct ToolFixture {
     pub(crate) workspace_id: coral_workspace::WorkspaceId,
     pub(crate) principal: AuthenticatedPrincipal,
     pub(crate) user: AuthenticatedUser,
     pub(crate) provider_id: ProviderId,
-    pub(crate) policy_target: OperationPolicyTarget,
-    /// The call path of the fixture's `getForecast` Operation.
+    pub(crate) policy_target: ToolPolicyTarget,
+    /// The call path of the fixture's `getForecast` Tool.
     pub(crate) call_path: String,
 }
 
@@ -1396,44 +1449,44 @@ pub(crate) fn test_reef() -> crate::HumanInterfaceUrl {
     crate::HumanInterfaceUrl::parse(TEST_REEF).expect("test Reef origin")
 }
 
-/// An admitted Invocation of the fixture Operation for `run_id`, resolved as
+/// An admitted Invocation of the fixture Tool for `run_id`, resolved as
 /// the Run's User would, with the shape admission retains.
 pub(crate) async fn admitted_invocation(
     fixture: &TestModules,
-    operation: &OperationFixture,
+    tool: &ToolFixture,
     run_id: &crate::RunId,
 ) -> Arc<crate::invocation::AdmittedInvocation> {
     let now = fixture.clock.now_unix_nanos().expect("clock");
     let mut transaction = fixture.database.begin().await.expect("begin resolution");
-    let target = coral_provider::resolve_invocation_operation_in_transaction(
+    let target = coral_provider::resolve_invocation_tool_in_transaction(
         &mut transaction,
-        &operation.workspace_id,
-        coral_provider::InvocationCaller::new(&fixture.workspaces, &operation.principal, now),
-        &operation.call_path,
+        &tool.workspace_id,
+        coral_provider::InvocationCaller::new(&fixture.workspaces, &tool.principal, now),
+        &tool.call_path,
     )
     .await
-    .expect("resolve the fixture Operation")
-    .expect("the fixture Operation resolves");
+    .expect("resolve the fixture Tool")
+    .expect("the fixture Tool resolves");
     transaction.rollback().await.expect("end resolution");
     Arc::new(crate::invocation::AdmittedInvocation {
         id: crate::InvocationId::generate(),
-        workspace_id: operation.workspace_id.clone(),
+        workspace_id: tool.workspace_id.clone(),
         run_id: run_id.clone(),
         target,
-        call_path: operation.call_path.clone(),
+        call_path: tool.call_path.clone(),
         arguments_json: "{}".to_string(),
         source_location: None,
         admitted_at_unix_nanos: now,
     })
 }
 
-/// An Operation invoker bound to `run` as its owner would build it, for
+/// A Tool invoker bound to `run` as its owner would build it, for
 /// tests that call the fence's pieces directly.
 pub(crate) fn test_invoker(
     fixture: &TestModules,
-    operation: &OperationFixture,
+    tool: &ToolFixture,
     run: &crate::lifecycle::RunRecord,
-) -> crate::invocation::OperationInvoker {
+) -> crate::invocation::ToolInvoker {
     let claim_id = run
         .execution_claim_id
         .clone()
@@ -1454,7 +1507,7 @@ pub(crate) fn test_invoker(
         linked_snapshots: std::collections::HashMap::new(),
     };
     let (owner, _mailbox) = crate::owner::OwnerHandle::new(run.id.clone(), claim_id);
-    crate::invocation::OperationInvoker::new(
+    crate::invocation::ToolInvoker::new(
         None,
         fixture.providers.clone(),
         fixture.policies.clone(),
@@ -1462,7 +1515,7 @@ pub(crate) fn test_invoker(
         Some(test_reef()),
         fixture.database.clone(),
         fixture.workspaces.clone(),
-        operation.principal.clone(),
+        tool.principal.clone(),
         &accepted,
         fixture.runs.execution_policy.approval_wait_nanos(),
         owner,

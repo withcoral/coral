@@ -8,9 +8,9 @@
 //! connection of its own.
 
 pub(crate) mod functions;
-pub(crate) mod operations;
 pub(crate) mod plan;
 mod repository;
+pub(crate) mod tools;
 
 pub(crate) use repository::{abandon_query, begin_query, end_query};
 
@@ -19,7 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_functions::SavedFunctionSearchMaterial;
-use coral_policy::ExactOperationRules;
+use coral_policy::ExactToolRules;
 use coral_provider::{ActiveProvider, LoadedGenerations};
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence, WorkspaceId};
 
@@ -45,19 +45,19 @@ pub(crate) struct RequestContext<'a> {
 /// of the retriever that produced it; the engine reads only the Call Path.
 #[derive(Clone)]
 pub(crate) enum EntityRef {
-    Operation(OperationRef),
+    Tool(ToolRef),
     SavedFunction(SavedFunctionRef),
 }
 
-/// An Operation of a Provider's active Generation, with what hydration needs:
-/// the Provider as the visibility step read it, the Operation Key, the
+/// A Tool of a Provider's active Generation, with what hydration needs:
+/// the Provider as the visibility step read it, the Tool Key, the
 /// Workspace's exact rules, loaded once per request, and the near-spellings
 /// its ranking matched.
 #[derive(Clone)]
-pub(crate) struct OperationRef {
+pub(crate) struct ToolRef {
     provider: Arc<ActiveProvider>,
-    operation_key: coral_catalog::OperationKey,
-    rules: Arc<ExactOperationRules>,
+    tool_key: coral_catalog::ToolKey,
+    rules: Arc<ExactToolRules>,
     call_path: CallPath,
     near_spellings: Arc<[String]>,
 }
@@ -74,14 +74,14 @@ pub(crate) struct SavedFunctionRef {
 impl EntityRef {
     pub(crate) const fn call_path(&self) -> &CallPath {
         match self {
-            Self::Operation(operation) => &operation.call_path,
+            Self::Tool(tool) => &tool.call_path,
             Self::SavedFunction(function) => &function.call_path,
         }
     }
 }
 
 /// Every Entity of one kind the Principal may see, and how many units they
-/// come from: Providers for Operations, Saved Functions for functions.
+/// come from: Providers for Tools, Saved Functions for functions.
 pub(crate) struct Listing {
     pub(crate) entities: Vec<EntityRef>,
     pub(crate) units: usize,

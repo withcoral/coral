@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use coral_catalog::{HttpMethod, OperationHints, OperationKey};
+use coral_catalog::{HttpMethod, ToolHints, ToolKey};
 use coral_outbound::DestinationPolicy;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::{
@@ -15,8 +15,7 @@ use coral_workspace::{
 };
 
 use crate::{
-    LifecycleAction, LifecycleOutcome, OperationAccessState, OperationPolicyModule,
-    OperationPolicyTarget,
+    LifecycleAction, LifecycleOutcome, ToolAccessState, ToolPolicyModule, ToolPolicyTarget,
 };
 
 const EFFECT_MCP: &str = r#"{
@@ -43,7 +42,7 @@ const EFFECT_MCP: &str = r#"{
   ]
 }"#;
 
-// POST, so both Operations default to approval.
+// POST, so both Tools default to approval.
 const WEATHER_OPENAPI: &str = r#"openapi: 3.1.0
 info:
   title: Weather
@@ -105,7 +104,7 @@ async fn declared_read_only_and_safe_http_methods_select_the_default_policy() {
         )
         .await
         .expect("create Workspace");
-    let http = publish_operation(
+    let http = publish_tool(
         &providers,
         &owner,
         workspace.id(),
@@ -145,34 +144,34 @@ async fn declared_read_only_and_safe_http_methods_select_the_default_policy() {
         .id()
         .clone();
     let target = |provider: &coral_provider::ProviderId, key: &str| {
-        OperationPolicyTarget::new(
+        ToolPolicyTarget::new(
             workspace.id().clone(),
             provider.clone(),
-            OperationKey::parse(key).expect("Operation Key"),
+            ToolKey::parse(key).expect("Tool Key"),
         )
     };
     // A declared read-only hint or an RFC 9110 safe method runs without
     // approval. Other declared hints are not read-only evidence.
     let defaults = [
-        (&mcp, "read_value", OperationAccessState::Enabled),
-        (&mcp, "write_value", OperationAccessState::ApprovalRequired),
-        (&mcp, "retry_value", OperationAccessState::ApprovalRequired),
-        (&http, "getValue", OperationAccessState::Enabled),
-        (&http, "headValue", OperationAccessState::Enabled),
-        (&http, "optionsValue", OperationAccessState::Enabled),
-        (&http, "traceValue", OperationAccessState::Enabled),
-        (&http, "postValue", OperationAccessState::ApprovalRequired),
-        (&http, "putValue", OperationAccessState::ApprovalRequired),
-        (&http, "patchValue", OperationAccessState::ApprovalRequired),
-        (&http, "deleteValue", OperationAccessState::ApprovalRequired),
+        (&mcp, "read_value", ToolAccessState::Enabled),
+        (&mcp, "write_value", ToolAccessState::ApprovalRequired),
+        (&mcp, "retry_value", ToolAccessState::ApprovalRequired),
+        (&http, "getValue", ToolAccessState::Enabled),
+        (&http, "headValue", ToolAccessState::Enabled),
+        (&http, "optionsValue", ToolAccessState::Enabled),
+        (&http, "traceValue", ToolAccessState::Enabled),
+        (&http, "postValue", ToolAccessState::ApprovalRequired),
+        (&http, "putValue", ToolAccessState::ApprovalRequired),
+        (&http, "patchValue", ToolAccessState::ApprovalRequired),
+        (&http, "deleteValue", ToolAccessState::ApprovalRequired),
     ];
-    for (provider, operation, expected) in defaults {
+    for (provider, tool, expected) in defaults {
         let decision = policies
-            .decision(&owner, &target(provider, operation))
+            .decision(&owner, &target(provider, tool))
             .await
             .expect("decision");
-        assert_eq!(decision.access_state(), expected, "{operation}");
-        assert!(!decision.is_explicit(), "{operation}");
+        assert_eq!(decision.access_state(), expected, "{tool}");
+        assert!(!decision.is_explicit(), "{tool}");
     }
 
     // Pending-approval queries select with the SQL mirror; it agrees with
@@ -181,23 +180,20 @@ async fn declared_read_only_and_safe_http_methods_select_the_default_policy() {
         .set_access_states(
             &change(owner.clone(), 50, '5'),
             vec![
-                (
-                    target(&http, "getValue"),
-                    OperationAccessState::ApprovalRequired,
-                ),
-                (target(&http, "postValue"), OperationAccessState::Enabled),
+                (target(&http, "getValue"), ToolAccessState::ApprovalRequired),
+                (target(&http, "postValue"), ToolAccessState::Enabled),
             ],
         )
         .await
         .expect("set exact rules");
     let mut by_module = Vec::new();
-    for (provider, operation, _) in defaults {
+    for (provider, tool, _) in defaults {
         let decision = policies
-            .decision(&owner, &target(provider, operation))
+            .decision(&owner, &target(provider, tool))
             .await
             .expect("decision");
-        if decision.access_state() == OperationAccessState::ApprovalRequired {
-            by_module.push(operation.to_string());
+        if decision.access_state() == ToolAccessState::ApprovalRequired {
+            by_module.push(tool.to_string());
         }
     }
     by_module.sort();
@@ -217,7 +213,7 @@ async fn declared_read_only_and_safe_http_methods_select_the_default_policy() {
     assert_eq!(by_sql, by_module);
 }
 
-/// Operation Keys of one Workspace's current Providers that the SQL mirror
+/// Tool Keys of one Workspace's current Providers that the SQL mirror
 /// selects as approval-required, read the way pending-approval queries read.
 async fn approval_required_by_sql(
     fixture: &TestDatabase,
@@ -227,7 +223,7 @@ async fn approval_required_by_sql(
 
     #[derive(sqlx::FromRow)]
     struct Row {
-        operation_key: String,
+        tool_key: String,
     }
     let column = |table: &str, name: &str| (Alias::new(table), Alias::new(name)).into_column_ref();
     let database = fixture.database();
@@ -235,13 +231,13 @@ async fn approval_required_by_sql(
     let rows: Vec<Row> = transaction
         .fetch_all(
             Query::select()
-                .column(column("operation", "operation_key"))
+                .column(column("tool", "tool_key"))
                 .from_as(Alias::new("provider_records"), Alias::new("provider"))
                 .join_as(
                     JoinType::InnerJoin,
-                    Alias::new("materialized_operations"),
-                    Alias::new("operation"),
-                    Expr::col(column("operation", "provider_generation_id"))
+                    Alias::new("materialized_tools"),
+                    Alias::new("tool"),
+                    Expr::col(column("tool", "provider_generation_id"))
                         .equals(column("provider", "active_generation_id")),
                 )
                 .and_where(
@@ -250,16 +246,16 @@ async fn approval_required_by_sql(
                 .and_where(crate::history_repository::approval_required(
                     column("provider", "workspace_id"),
                     column("provider", "id"),
-                    column("operation", "provider_generation_id"),
-                    column("operation", "operation_key"),
+                    column("tool", "provider_generation_id"),
+                    column("tool", "tool_key"),
                 ))
-                .order_by(column("operation", "operation_key"), Order::Asc)
+                .order_by(column("tool", "tool_key"), Order::Asc)
                 .to_owned(),
         )
         .await
-        .expect("select approval-required Operations");
+        .expect("select approval-required Tools");
     transaction.rollback().await.expect("finish read");
-    rows.into_iter().map(|row| row.operation_key).collect()
+    rows.into_iter().map(|row| row.tool_key).collect()
 }
 
 #[tokio::test]
@@ -284,21 +280,18 @@ async fn openapi_forecast_defaults_to_approval_and_owner_can_enable_it() {
         .decision(&owner, &target)
         .await
         .expect("decide default policy");
-    assert_eq!(
-        default.access_state(),
-        OperationAccessState::ApprovalRequired
-    );
+    assert_eq!(default.access_state(), ToolAccessState::ApprovalRequired);
     assert!(!default.is_explicit());
 
     let enabled = policies
         .set_access_state(
             &change(owner.clone(), 40, '4'),
             target.clone(),
-            OperationAccessState::Enabled,
+            ToolAccessState::Enabled,
         )
         .await
-        .expect("enable forecast Operation");
-    assert_eq!(enabled.access_state(), OperationAccessState::Enabled);
+        .expect("enable forecast Tool");
+    assert_eq!(enabled.access_state(), ToolAccessState::Enabled);
     assert!(enabled.is_explicit());
     assert_eq!(
         policies
@@ -339,22 +332,22 @@ async fn bounded_policy_batch_is_atomic_and_rejects_duplicates() {
         .await
         .unwrap();
     let forecast = publish_weather_forecast(&providers, &owner, workspace.id(), 20).await;
-    let alerts = OperationPolicyTarget::new(
+    let alerts = ToolPolicyTarget::new(
         workspace.id().clone(),
         forecast.provider_id().clone(),
-        OperationKey::parse("getAlerts").unwrap(),
+        ToolKey::parse("getAlerts").unwrap(),
     );
-    let absent = OperationPolicyTarget::new(
+    let absent = ToolPolicyTarget::new(
         workspace.id().clone(),
         forecast.provider_id().clone(),
-        OperationKey::parse("absent").unwrap(),
+        ToolKey::parse("absent").unwrap(),
     );
-    let update = |target| (target, OperationAccessState::Disabled);
+    let update = |target| (target, ToolAccessState::Disabled);
     assert!(matches!(
         policies
             .set_access_states(&context, vec![update(forecast.clone()), update(absent)])
             .await,
-        Err(crate::Error::OperationNotFound)
+        Err(crate::Error::ToolNotFound)
     ));
     assert!(
         !policies
@@ -372,10 +365,10 @@ async fn bounded_policy_batch_is_atomic_and_rejects_duplicates() {
     );
     let oversized = (0..101)
         .map(|index| {
-            update(OperationPolicyTarget::new(
+            update(ToolPolicyTarget::new(
                 workspace.id().clone(),
                 forecast.provider_id().clone(),
-                OperationKey::parse(&format!("operation{index}")).unwrap(),
+                ToolKey::parse(&format!("tool{index}")).unwrap(),
             ))
         })
         .collect();
@@ -398,7 +391,7 @@ async fn bounded_policy_batch_is_atomic_and_rejects_duplicates() {
                 .await
                 .unwrap()
                 .access_state(),
-            OperationAccessState::Disabled
+            ToolAccessState::Disabled
         );
     }
     policies.set_access_states(&context, updates).await.unwrap();
@@ -445,10 +438,10 @@ async fn policy_reads_batch_current_hints_without_loading_definitions() {
         .unwrap();
     let forecast = publish_weather_forecast(&providers, &owner, workspace.id(), 20).await;
     let target = |key: &str| {
-        OperationPolicyTarget::new(
+        ToolPolicyTarget::new(
             workspace.id().clone(),
             forecast.provider_id().clone(),
-            OperationKey::parse(key).unwrap(),
+            ToolKey::parse(key).unwrap(),
         )
     };
     let alerts = target("getAlerts");
@@ -456,7 +449,7 @@ async fn policy_reads_batch_current_hints_without_loading_definitions() {
         .set_access_state(
             &change(owner.clone(), 30, '3'),
             alerts.clone(),
-            OperationAccessState::Disabled,
+            ToolAccessState::Disabled,
         )
         .await
         .unwrap();
@@ -466,7 +459,7 @@ async fn policy_reads_batch_current_hints_without_loading_definitions() {
         .unwrap();
     fixture
         .execute_fixture_sql(
-            "UPDATE materialized_operations SET definition_json = 'invalid execution definition'",
+            "UPDATE materialized_tools SET definition_json = 'invalid execution definition'",
         )
         .await
         .unwrap();
@@ -476,14 +469,14 @@ async fn policy_reads_batch_current_hints_without_loading_definitions() {
     assert_eq!(read.last().unwrap().target(), &forecast);
     assert_eq!(
         read.last().unwrap().access_state(),
-        OperationAccessState::ApprovalRequired
+        ToolAccessState::ApprovalRequired
     );
     assert!(!read.last().unwrap().is_explicit());
     assert!(matches!(
         policies
             .decisions(&owner, &[forecast.clone(), target("absent")])
             .await,
-        Err(crate::Error::OperationNotFound)
+        Err(crate::Error::ToolNotFound)
     ));
     let denied = policies.decisions(&stranger, &requested).await;
     assert!(
@@ -507,14 +500,14 @@ async fn policy_reads_batch_current_hints_without_loading_definitions() {
         policies
             .decisions(
                 &owner,
-                &[OperationPolicyTarget::new(
+                &[ToolPolicyTarget::new(
                     other.id().clone(),
                     forecast.provider_id().clone(),
-                    forecast.operation_key().clone()
+                    forecast.tool_key().clone()
                 )]
             )
             .await,
-        Err(crate::Error::OperationNotFound)
+        Err(crate::Error::ToolNotFound)
     ));
     assert_eq!(policies.decisions(&owner, &requested).await.unwrap(), read);
     assert_eq!(
@@ -540,10 +533,10 @@ async fn policy_reads_reject_invalid_selections_before_resolving_targets() {
     let provider =
         coral_provider::ProviderId::parse("11111111-1111-4111-8111-111111111111").unwrap();
     let target = |key: &str| {
-        OperationPolicyTarget::new(
+        ToolPolicyTarget::new(
             workspace.clone(),
             provider.clone(),
-            OperationKey::parse(key).unwrap(),
+            ToolKey::parse(key).unwrap(),
         )
     };
     let forecast = target("getForecast");
@@ -555,22 +548,22 @@ async fn policy_reads_reject_invalid_selections_before_resolving_targets() {
         vec![],
         vec![forecast.clone(); 2],
         (0..101)
-            .map(|index| target(&format!("operation{index}")))
+            .map(|index| target(&format!("tool{index}")))
             .collect(),
         vec![
             forecast.clone(),
-            OperationPolicyTarget::new(
+            ToolPolicyTarget::new(
                 other_workspace,
                 forecast.provider_id().clone(),
-                forecast.operation_key().clone(),
+                forecast.tool_key().clone(),
             ),
         ],
         vec![
             forecast.clone(),
-            OperationPolicyTarget::new(
+            ToolPolicyTarget::new(
                 workspace.clone(),
                 other_provider,
-                forecast.operation_key().clone(),
+                forecast.tool_key().clone(),
             ),
         ],
     ] {
@@ -616,16 +609,16 @@ async fn disabled_provider_remains_an_administrative_policy_target() {
         .set_access_state(
             &change(owner, 54, '7'),
             target.clone(),
-            OperationAccessState::Enabled,
+            ToolAccessState::Enabled,
         )
         .await
         .expect("configure policy while Provider is disabled");
     assert_eq!(decision.target(), &target);
-    assert_eq!(decision.access_state(), OperationAccessState::Enabled);
+    assert_eq!(decision.access_state(), ToolAccessState::Enabled);
 }
 
 #[tokio::test]
-async fn exact_target_supports_all_three_states_without_cross_operation_or_provider_rules() {
+async fn exact_target_supports_all_three_states_without_cross_tool_or_provider_rules() {
     let (_fixture, workspaces, providers, policies) = test_modules().await;
     let owner = organization_user(
         policies.database.clone(),
@@ -655,7 +648,7 @@ async fn exact_target_supports_all_three_states_without_cross_operation_or_provi
         )
         .await
         .expect("add Workspace Member");
-    let forecast = publish_operation(
+    let forecast = publish_tool(
         &providers,
         &owner,
         workspace.id(),
@@ -665,12 +658,12 @@ async fn exact_target_supports_all_three_states_without_cross_operation_or_provi
         110,
     )
     .await;
-    let alerts = OperationPolicyTarget::new(
+    let alerts = ToolPolicyTarget::new(
         workspace.id().clone(),
         forecast.provider_id().clone(),
-        OperationKey::parse("getAlerts").expect("Operation Key"),
+        ToolKey::parse("getAlerts").expect("Tool Key"),
     );
-    let other_provider = publish_operation(
+    let other_provider = publish_tool(
         &providers,
         &owner,
         workspace.id(),
@@ -682,9 +675,9 @@ async fn exact_target_supports_all_three_states_without_cross_operation_or_provi
     .await;
 
     for (occurred_at_unix_nanos, state) in [
-        (130, OperationAccessState::ApprovalRequired),
-        (140, OperationAccessState::Disabled),
-        (150, OperationAccessState::Enabled),
+        (130, ToolAccessState::ApprovalRequired),
+        (140, ToolAccessState::Disabled),
+        (150, ToolAccessState::Enabled),
     ] {
         let decision = policies
             .set_access_state(
@@ -712,10 +705,7 @@ async fn exact_target_supports_all_three_states_without_cross_operation_or_provi
             .decision(&member, unaffected)
             .await
             .expect("decide unaffected exact target");
-        assert_eq!(
-            decision.access_state(),
-            OperationAccessState::ApprovalRequired
-        );
+        assert_eq!(decision.access_state(), ToolAccessState::ApprovalRequired);
         assert!(!decision.is_explicit());
     }
     assert_eq!(
@@ -755,7 +745,7 @@ async fn exact_rules_read_returns_one_workspaces_disabled_rules_and_resolves_def
         )
         .await
         .expect("create other Workspace");
-    let forecast = publish_operation(
+    let forecast = publish_tool(
         &providers,
         &owner,
         workspace.id(),
@@ -765,12 +755,12 @@ async fn exact_rules_read_returns_one_workspaces_disabled_rules_and_resolves_def
         210,
     )
     .await;
-    let alerts = OperationPolicyTarget::new(
+    let alerts = ToolPolicyTarget::new(
         workspace.id().clone(),
         forecast.provider_id().clone(),
-        OperationKey::parse("getAlerts").expect("Operation Key"),
+        ToolKey::parse("getAlerts").expect("Tool Key"),
     );
-    let secondary = publish_operation(
+    let secondary = publish_tool(
         &providers,
         &owner,
         workspace.id(),
@@ -780,7 +770,7 @@ async fn exact_rules_read_returns_one_workspaces_disabled_rules_and_resolves_def
         220,
     )
     .await;
-    let elsewhere = publish_operation(
+    let elsewhere = publish_tool(
         &providers,
         &owner,
         other_workspace.id(),
@@ -802,9 +792,9 @@ async fn exact_rules_read_returns_one_workspaces_disabled_rules_and_resolves_def
         .set_access_states(
             &change(owner.clone(), 240, '2'),
             vec![
-                (forecast.clone(), OperationAccessState::Disabled),
-                (alerts.clone(), OperationAccessState::Enabled),
-                (secondary.clone(), OperationAccessState::ApprovalRequired),
+                (forecast.clone(), ToolAccessState::Disabled),
+                (alerts.clone(), ToolAccessState::Enabled),
+                (secondary.clone(), ToolAccessState::ApprovalRequired),
             ],
         )
         .await
@@ -813,10 +803,10 @@ async fn exact_rules_read_returns_one_workspaces_disabled_rules_and_resolves_def
         .set_access_state(
             &change(owner.clone(), 250, '3'),
             elsewhere,
-            OperationAccessState::Disabled,
+            ToolAccessState::Disabled,
         )
         .await
-        .expect("disable an Operation in another Workspace");
+        .expect("disable a Tool in another Workspace");
 
     let rules = exact_rules(&fixture, workspace.id()).await;
     assert_eq!(
@@ -827,65 +817,53 @@ async fn exact_rules_read_returns_one_workspaces_disabled_rules_and_resolves_def
         [(forecast.provider_id().clone(), "getForecast".to_string())],
         "only this Workspace's disabled rule"
     );
-    let read_only = OperationHints::new(Some(true), None, None, None);
+    let read_only = ToolHints::new(Some(true), None, None, None);
     for (target, hints, expected) in [
-        (&forecast, read_only, OperationAccessState::Disabled),
-        (
-            &alerts,
-            OperationHints::default(),
-            OperationAccessState::Enabled,
-        ),
-        (
-            &secondary,
-            read_only,
-            OperationAccessState::ApprovalRequired,
-        ),
+        (&forecast, read_only, ToolAccessState::Disabled),
+        (&alerts, ToolHints::default(), ToolAccessState::Enabled),
+        (&secondary, read_only, ToolAccessState::ApprovalRequired),
     ] {
         assert_eq!(
-            rules.access_state(target.provider_id(), target.operation_key(), hints, None),
+            rules.access_state(target.provider_id(), target.tool_key(), hints, None),
             expected,
             "an exact rule wins over the hint default"
         );
     }
-    let unruled = OperationKey::parse("getAlerts").expect("Operation Key");
+    let unruled = ToolKey::parse("getAlerts").expect("Tool Key");
     let (get, post) = (Some(HttpMethod::Get), Some(HttpMethod::Post));
     for (hints, http_method, expected) in [
-        (read_only, None, OperationAccessState::Enabled),
+        (read_only, None, ToolAccessState::Enabled),
         (
-            OperationHints::new(Some(true), Some(true), None, None),
+            ToolHints::new(Some(true), Some(true), None, None),
             None,
-            OperationAccessState::Enabled,
+            ToolAccessState::Enabled,
         ),
         (
-            OperationHints::new(Some(false), None, None, None),
+            ToolHints::new(Some(false), None, None, None),
             None,
-            OperationAccessState::ApprovalRequired,
+            ToolAccessState::ApprovalRequired,
         ),
         (
-            OperationHints::new(None, Some(false), Some(true), Some(false)),
+            ToolHints::new(None, Some(false), Some(true), Some(false)),
             None,
-            OperationAccessState::ApprovalRequired,
+            ToolAccessState::ApprovalRequired,
         ),
         (
-            OperationHints::default(),
+            ToolHints::default(),
             None,
-            OperationAccessState::ApprovalRequired,
+            ToolAccessState::ApprovalRequired,
         ),
+        (ToolHints::default(), get, ToolAccessState::Enabled),
         (
-            OperationHints::default(),
-            get,
-            OperationAccessState::Enabled,
-        ),
-        (
-            OperationHints::default(),
+            ToolHints::default(),
             post,
-            OperationAccessState::ApprovalRequired,
+            ToolAccessState::ApprovalRequired,
         ),
     ] {
         assert_eq!(
             rules.access_state(secondary.provider_id(), &unruled, hints, http_method),
             expected,
-            "an Operation without a rule takes its default: {hints:?} {http_method:?}"
+            "a Tool without a rule takes its default: {hints:?} {http_method:?}"
         );
     }
 }
@@ -932,27 +910,27 @@ async fn rejected_and_repeated_updates_do_not_create_policy_or_lifecycle_evidenc
             .set_access_state(
                 &change(member.clone(), 210, 'a'),
                 target.clone(),
-                OperationAccessState::Disabled,
+                ToolAccessState::Disabled,
             )
             .await,
         Err(crate::Error::Workspace(
             coral_workspace::Error::PermissionDenied(_)
         ))
     ));
-    let absent_operation = OperationPolicyTarget::new(
+    let absent_tool = ToolPolicyTarget::new(
         workspace.id().clone(),
         target.provider_id().clone(),
-        OperationKey::parse("notAnOperation").expect("Operation Key"),
+        ToolKey::parse("notATool").expect("Tool Key"),
     );
     assert!(matches!(
         policies
             .set_access_state(
                 &change(owner.clone(), 220, 'b'),
-                absent_operation,
-                OperationAccessState::Enabled,
+                absent_tool,
+                ToolAccessState::Enabled,
             )
             .await,
-        Err(crate::Error::OperationNotFound)
+        Err(crate::Error::ToolNotFound)
     ));
     assert_eq!(
         policies
@@ -960,7 +938,7 @@ async fn rejected_and_repeated_updates_do_not_create_policy_or_lifecycle_evidenc
             .await
             .expect("rejections leave default decision")
             .access_state(),
-        OperationAccessState::ApprovalRequired
+        ToolAccessState::ApprovalRequired
     );
     assert!(
         policies
@@ -974,7 +952,7 @@ async fn rejected_and_repeated_updates_do_not_create_policy_or_lifecycle_evidenc
         .set_access_state(
             &change(owner.clone(), 230, 'c'),
             target.clone(),
-            OperationAccessState::Enabled,
+            ToolAccessState::Enabled,
         )
         .await
         .expect("accept first exact rule");
@@ -982,7 +960,7 @@ async fn rejected_and_repeated_updates_do_not_create_policy_or_lifecycle_evidenc
         .set_access_state(
             &change(owner.clone(), 240, 'd'),
             target,
-            OperationAccessState::Enabled,
+            ToolAccessState::Enabled,
         )
         .await
         .expect("repeat exact rule");
@@ -1026,7 +1004,7 @@ async fn provider_removal_discards_current_policy_but_retains_its_event() {
         .set_access_state(
             &change(owner.clone(), 252, 'e'),
             target.clone(),
-            OperationAccessState::Enabled,
+            ToolAccessState::Enabled,
         )
         .await
         .expect("create exact policy");
@@ -1041,7 +1019,7 @@ async fn provider_removal_discards_current_policy_but_retains_its_event() {
 
     assert!(matches!(
         policies.decision(&owner, &target).await,
-        Err(crate::Error::OperationNotFound)
+        Err(crate::Error::ToolNotFound)
     ));
     let events = policies
         .list_lifecycle_events(&owner, workspace.id())
@@ -1085,7 +1063,7 @@ async fn organization_owner_needs_a_workspace_membership_to_change_policy() {
             .set_access_state(
                 &change(organization_owner.clone(), 305, 'f'),
                 target.clone(),
-                OperationAccessState::Disabled,
+                ToolAccessState::Disabled,
             )
             .await,
         Err(crate::Error::Workspace(
@@ -1121,7 +1099,7 @@ async fn organization_owner_needs_a_workspace_membership_to_change_policy() {
         .set_access_state(
             &change(organization_owner.clone(), 310, 'f'),
             target,
-            OperationAccessState::Disabled,
+            ToolAccessState::Disabled,
         )
         .await
         .expect("designated Owner changes policy");
@@ -1157,7 +1135,7 @@ async fn organization_owner_needs_a_workspace_membership_to_change_policy() {
             .set_access_state(
                 &change(removed_organization_owner, 320, '1'),
                 events.first().expect("policy Event").target().clone(),
-                OperationAccessState::Enabled,
+                ToolAccessState::Enabled,
             )
             .await,
         Err(crate::Error::Workspace(
@@ -1194,10 +1172,10 @@ async fn policy_rejects_targets_from_another_workspace_and_writes_nothing() {
     }
     let [in_first, in_second] = <[_; 2]>::try_from(targets).unwrap();
     policies
-        .set_access_state(&context, in_second.clone(), OperationAccessState::Disabled)
+        .set_access_state(&context, in_second.clone(), ToolAccessState::Disabled)
         .await
         .unwrap();
-    let events = |target: &OperationPolicyTarget| {
+    let events = |target: &ToolPolicyTarget| {
         let (policies, owner, workspace) = (&policies, &owner, target.workspace_id().clone());
         async move {
             policies
@@ -1214,34 +1192,34 @@ async fn policy_rejects_targets_from_another_workspace_and_writes_nothing() {
             .set_access_states(
                 &context,
                 vec![
-                    (in_first.clone(), OperationAccessState::Enabled),
-                    (in_second.clone(), OperationAccessState::Enabled),
+                    (in_first.clone(), ToolAccessState::Enabled),
+                    (in_second.clone(), ToolAccessState::Enabled),
                 ],
             )
             .await,
         Err(crate::Error::InvalidBatch)
     ));
-    // The first Workspace has no Operation under the second Workspace's Provider ID.
-    let forged = OperationPolicyTarget::new(
+    // The first Workspace has no Tool under the second Workspace's Provider ID.
+    let forged = ToolPolicyTarget::new(
         in_first.workspace_id().clone(),
         in_second.provider_id().clone(),
-        in_second.operation_key().clone(),
+        in_second.tool_key().clone(),
     );
     assert!(matches!(
         policies.decision(&owner, &forged).await,
-        Err(crate::Error::OperationNotFound)
+        Err(crate::Error::ToolNotFound)
     ));
     assert!(matches!(
         policies
             .set_access_states(
                 &context,
                 vec![
-                    (in_first.clone(), OperationAccessState::Enabled),
-                    (forged, OperationAccessState::Enabled),
+                    (in_first.clone(), ToolAccessState::Enabled),
+                    (forged, ToolAccessState::Enabled),
                 ],
             )
             .await,
-        Err(crate::Error::OperationNotFound)
+        Err(crate::Error::ToolNotFound)
     ));
 
     assert!(
@@ -1258,12 +1236,12 @@ async fn policy_rejects_targets_from_another_workspace_and_writes_nothing() {
             .await
             .unwrap()
             .access_state(),
-        OperationAccessState::Disabled
+        ToolAccessState::Disabled
     );
     assert_eq!(events(&in_second).await, second_events);
 }
 
-// Operation Keys whose Call Paths differ from them, such as `repos.get`.
+// Tool Keys whose Call Paths differ from them, such as `repos.get`.
 const REPOSITORY_OPENAPI: &str = r#"openapi: 3.1.0
 info:
   title: Repositories
@@ -1289,8 +1267,8 @@ enum ThenProvider {
     Disabled,
 }
 
-// Catches: a rule read by Operation Key rather than Call Path, a rule whose
-// Operation left the catalog, a default read as a rule, a disabled Provider
+// Catches: a rule read by Tool Key rather than Call Path, a rule whose
+// Tool left the catalog, a default read as a rule, a disabled Provider
 // hidden, a Principal other than an Owner refused, or an absent Provider,
 // the Built-in one included, read as one without rules.
 #[tokio::test]
@@ -1298,8 +1276,8 @@ enum ThenProvider {
     clippy::too_many_lines,
     reason = "one table covers every rule a Provider can hold and each Principal that reads it"
 )]
-async fn provider_rules_hold_the_exact_rules_of_current_operations_by_call_path() {
-    use OperationAccessState::{ApprovalRequired, Disabled, Enabled};
+async fn provider_rules_hold_the_exact_rules_of_current_tools_by_call_path() {
+    use ToolAccessState::{ApprovalRequired, Disabled, Enabled};
     let (_fixture, workspaces, providers, policies) = test_modules().await;
     let owner = organization_user(
         policies.database.clone(),
@@ -1394,10 +1372,10 @@ async fn provider_rules_hold_the_exact_rules_of_current_operations_by_call_path(
                         .iter()
                         .map(|(key, state)| {
                             (
-                                OperationPolicyTarget::new(
+                                ToolPolicyTarget::new(
                                     workspace.id().clone(),
                                     provider.id().clone(),
-                                    OperationKey::parse(key).expect("Operation Key"),
+                                    ToolKey::parse(key).expect("Tool Key"),
                                 ),
                                 *state,
                             )
@@ -1498,8 +1476,8 @@ async fn provider_rules_hold_the_exact_rules_of_current_operations_by_call_path(
     }
 }
 
-// Catches: a sent path that takes another state or another Operation's rule,
-// an Operation the call does not name that loses its state, a repeated state
+// Catches: a sent path that takes another state or another Tool's rule,
+// a Tool the call does not name that loses its state, a repeated state
 // written again, an actor other than the invoking Owner, or a disabled
 // Provider refused.
 #[tokio::test]
@@ -1508,7 +1486,7 @@ async fn provider_rules_hold_the_exact_rules_of_current_operations_by_call_path(
     reason = "one table covers each state a path can take"
 )]
 async fn provider_access_states_set_each_sent_path_and_keep_the_rest() {
-    use OperationAccessState::{ApprovalRequired, Disabled, Enabled};
+    use ToolAccessState::{ApprovalRequired, Disabled, Enabled};
     let (_fixture, workspaces, providers, policies) = test_modules().await;
     let owner = organization_user(
         policies.database.clone(),
@@ -1553,10 +1531,10 @@ async fn provider_access_states_set_each_sent_path_and_keep_the_rest() {
             .await
             .expect("publish Provider");
         let target = |key: &str| {
-            OperationPolicyTarget::new(
+            ToolPolicyTarget::new(
                 workspace.id().clone(),
                 provider.id().clone(),
-                OperationKey::parse(key).expect("Operation Key"),
+                ToolKey::parse(key).expect("Tool Key"),
             )
         };
         policies
@@ -1628,7 +1606,7 @@ async fn provider_access_states_set_each_sent_path_and_keep_the_rest() {
             .filter(|event| !before.contains(event))
             .map(|event| {
                 (
-                    event.target().operation_key().as_str().to_owned(),
+                    event.target().tool_key().as_str().to_owned(),
                     event.actor_user_id().clone(),
                     event.occurred_at_unix_nanos(),
                 )
@@ -1659,7 +1637,7 @@ impl Rejected {
     fn of(error: &crate::Error) -> Option<Self> {
         match error {
             crate::Error::InvalidBatch => Some(Self::InvalidBatch),
-            crate::Error::OperationPathsNotFound(paths) => Some(Self::Paths(paths.clone())),
+            crate::Error::ToolPathsNotFound(paths) => Some(Self::Paths(paths.clone())),
             crate::Error::Provider(coral_provider::Error::ProviderNotFound) => {
                 Some(Self::ProviderNotFound)
             }
@@ -1673,14 +1651,14 @@ impl Rejected {
 
 // Catches: an empty or oversized change applied, a known path applied beside
 // an unknown one, an unknown path left unnamed, an absent Provider read as one
-// without Operations, or a Member who changes policy.
+// without Tools, or a Member who changes policy.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "one table covers each way a change is rejected"
 )]
 async fn provider_access_states_change_nothing_when_rejected() {
-    use OperationAccessState::{Disabled, Enabled};
+    use ToolAccessState::{Disabled, Enabled};
     let (fixture, workspaces, providers, policies) = test_modules().await;
     let owner = organization_user(
         policies.database.clone(),
@@ -1721,7 +1699,7 @@ async fn provider_access_states_change_nothing_when_rejected() {
         .await
         .expect("publish Provider");
 
-    let paths = |entries: &[(&str, OperationAccessState)]| -> BTreeMap<_, _> {
+    let paths = |entries: &[(&str, ToolAccessState)]| -> BTreeMap<_, _> {
         entries
             .iter()
             .map(|(path, state)| ((*path).to_owned(), *state))
@@ -1795,8 +1773,8 @@ async fn publish_weather_forecast(
     owner: &AuthenticatedUser,
     workspace_id: &coral_workspace::WorkspaceId,
     occurred_at_unix_nanos: i64,
-) -> OperationPolicyTarget {
-    publish_operation(
+) -> ToolPolicyTarget {
+    publish_tool(
         providers,
         owner,
         workspace_id,
@@ -1808,15 +1786,15 @@ async fn publish_weather_forecast(
     .await
 }
 
-async fn publish_operation(
+async fn publish_tool(
     providers: &ProviderModule,
     owner: &AuthenticatedUser,
     workspace_id: &coral_workspace::WorkspaceId,
     document: &str,
     namespace: &str,
-    operation_key: &str,
+    tool_key: &str,
     occurred_at_unix_nanos: i64,
-) -> OperationPolicyTarget {
+) -> ToolPolicyTarget {
     let provider = providers
         .publish_openapi_fixture(
             &change(owner.clone(), occurred_at_unix_nanos, '2'),
@@ -1827,22 +1805,22 @@ async fn publish_operation(
         )
         .await
         .expect("publish Provider");
-    OperationPolicyTarget::new(
+    ToolPolicyTarget::new(
         workspace_id.clone(),
         provider.access().id().clone(),
-        OperationKey::parse(operation_key).expect("Operation Key"),
+        ToolKey::parse(tool_key).expect("Tool Key"),
     )
 }
 
 async fn exact_rules(
     fixture: &TestDatabase,
     workspace_id: &coral_workspace::WorkspaceId,
-) -> crate::ExactOperationRules {
+) -> crate::ExactToolRules {
     let database = fixture.database();
     let mut transaction = database.begin().await.expect("begin rules read");
-    let rules = crate::exact_operation_rules_in_transaction(&mut transaction, workspace_id)
+    let rules = crate::exact_tool_rules_in_transaction(&mut transaction, workspace_id)
         .await
-        .expect("read exact Operation rules");
+        .expect("read exact Tool rules");
     transaction.rollback().await.expect("finish rules read");
     rules
 }
@@ -1851,7 +1829,7 @@ async fn test_modules() -> (
     TestDatabase,
     WorkspaceModule,
     ProviderModule,
-    OperationPolicyModule,
+    ToolPolicyModule,
 ) {
     let fixture = TestDatabase::new(coral_db::migration_plan())
         .await
@@ -1863,7 +1841,7 @@ async fn test_modules() -> (
         database.clone(),
         workspaces.clone(),
     );
-    let policies = OperationPolicyModule::new(database, workspaces.clone());
+    let policies = ToolPolicyModule::new(database, workspaces.clone());
     (fixture, workspaces, providers, policies)
 }
 

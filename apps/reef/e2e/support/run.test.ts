@@ -51,9 +51,7 @@ test('product discovery includes new and renamed scenarios on both databases wit
     )
     assert.ok(sqlite.every(({ projectName }) => projectName === 'main-sqlite'))
     assert.ok(sqlite.some(({ file }) => file.endsWith('/accounts/authority.test.ts')))
-    assert.ok(
-      sqlite.some(({ file }) => file.endsWith('/providers/catalog/operation-count.test.ts')),
-    )
+    assert.ok(sqlite.some(({ file }) => file.endsWith('/providers/catalog/tool-count.test.ts')))
     const postgres = await discover('postgres')
     assert.deepEqual(
       postgres.map(({ file }) => file).toSorted(),
@@ -209,7 +207,7 @@ test('failed product setup records a failed target, never a passing scenario', a
           'run',
           '--config',
           'e2e/vitest.config.ts',
-          'providers/catalog/operation-count',
+          'providers/catalog/tool-count',
         ],
         {
           cwd: reefRoot,

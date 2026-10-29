@@ -46,23 +46,23 @@ async fn publish_github(fixture: &Fixture) {
     let provider = fixture.publish_openapi("github", &document).await;
     let database = fixture.test_database.database();
     let workspaces = WorkspaceModule::new(database.clone());
-    coral_policy::OperationPolicyModule::new(database, workspaces)
+    coral_policy::ToolPolicyModule::new(database, workspaces)
         .set_access_state(
             &ChangeContext::new(fixture.user.clone(), 16, coral_test_support::trace('3')),
-            coral_policy::OperationPolicyTarget::new(
+            coral_policy::ToolPolicyTarget::new(
                 fixture.workspace.clone(),
                 provider.access().id().clone(),
-                coral_catalog::OperationKey::parse("repos/delete").unwrap(),
+                coral_catalog::ToolKey::parse("repos/delete").unwrap(),
             ),
-            coral_policy::OperationAccessState::Disabled,
+            coral_policy::ToolAccessState::Disabled,
         )
         .await
         .unwrap();
 }
 
-/// The diagnostic code for a called path that names no Operation the caller
+/// The diagnostic code for a called path that names no Tool the caller
 /// can call.
-const UNKNOWN_OPERATION: u64 = 100_001;
+const UNKNOWN_TOOL: u64 = 100_001;
 
 /// `(code, line, column)` of each diagnostic.
 type Located = Vec<(u64, Option<u64>, Option<u64>)>;
@@ -104,7 +104,7 @@ async fn save_diagnostics(
 }
 
 /// Each body is indented two spaces inside a function, so its calls start at
-/// line 2, column 3. A disabled Operation reads as an absent one, so typing
+/// line 2, column 3. A disabled Tool reads as an absent one, so typing
 /// reveals nothing that `describe` conceals.
 #[tokio::test]
 async fn save_types_calls_from_what_the_caller_can_discover() {
@@ -118,7 +118,7 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
     .await;
     let cases: &[(&str, &str, Located)] = &[
         (
-            "an Operation the caller can discover",
+            "a Tool the caller can discover",
             "  return (await coral.providers.github.repos.get({ owner: \"a\", repo: \"b\" })).data.fullname;",
             vec![(2551, Some(2), Some(83))],
         ),
@@ -128,9 +128,9 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
             vec![(2345, Some(2), Some(41))],
         ),
         (
-            "an Operation the caller cannot discover",
+            "a Tool the caller cannot discover",
             "  return coral.providers.github.repos.delete({ owner: 1, nope: true });",
-            vec![(UNKNOWN_OPERATION, Some(2), Some(10))],
+            vec![(UNKNOWN_TOOL, Some(2), Some(10))],
         ),
     ];
     for (name, body, expected) in cases {
@@ -151,6 +151,6 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
     assert_eq!(
         saved.declaration().as_str(),
         "export default function repoName(owner: string, repo: string): Promise<string>;\n",
-        "the declaration carries the Operation's result type"
+        "the declaration carries the Tool's result type"
     );
 }

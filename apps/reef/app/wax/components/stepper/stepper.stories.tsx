@@ -26,7 +26,7 @@ type Story = StoryObj<typeof meta>
 const nameStep = (
   <>
     <Typography.Body as="p">
-      Use coral.providers.github to call this provider's operations.
+      Use coral.providers.github to call this provider's tools.
     </Typography.Body>
     <Inputs.TextInput ariaLabel="Program name" defaultValue="github" />
     <div>

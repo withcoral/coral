@@ -9,7 +9,7 @@ import { ActionReviewSession } from '../actions/review'
 import { stored } from './discovery/fixtures'
 import { discoveryView, functionTarget } from './discovery/response'
 import { programAt } from './side-panel-fixtures'
-import { operationOwner } from '@/lib/call-root'
+import { toolOwner } from '@/lib/call-root'
 import { freezeStoryClock, minutesAfterStoryNow } from './story-clock'
 import type {
   ActivityPage,
@@ -93,9 +93,9 @@ async function expectPinnedFooter(pane: HTMLElement, names: string[]) {
   await expect(scroller.scrollWidth).toBeLessThanOrEqual(scroller.clientWidth)
 }
 
-/** The height of the fade that marks evidence below the visible part of `scroller`. */
+/** How far evidence runs below the visible part of `scroller`; the bottom fade shows while it is above 0. */
 const fadeBelow = (scroller: HTMLElement) =>
-  parseFloat(getComputedStyle(scroller, '::after').height) || 0
+  parseFloat(getComputedStyle(scroller).getPropertyValue('--scroll-area-overflow-y-end')) || 0
 
 /** A short phone screen: Chromatic reads `viewports`; the Vitest run reads the `viewport` global. */
 const shortScreen = { viewport: { value: 'mobile1', isRotated: false } }
@@ -157,7 +157,7 @@ const execution: ActivityRow & { kind: 'run' } = {
     agent: '',
   },
 }
-/** The program the Run accepted; its operation call and its emission sit at their own lines. */
+/** The program the Run accepted; its tool call and its emission sit at their own lines. */
 const program = [
   "const invoices = await coral.providers.billing.listInvoices({ status: 'overdue' })",
   'const owner = await coral.providers.crm.getOwner({ invoice: invoices.data[0].id })',
@@ -174,7 +174,7 @@ const call: ActivityRow & { kind: 'invocation' } = {
   task,
   run,
   provider: `${workspace}/providers/mail`,
-  operation: 'send',
+  tool: 'send',
   callPath: 'mail.send',
   state: 'pending',
   outcome: 'unknown',
@@ -211,7 +211,7 @@ const tool = (
   name: string,
   toolName: string,
   outcome: string,
-  intent = 'Find the billing operation',
+  intent = 'Find the billing tool',
 ): ActivityRow => ({
   kind: 'tool',
   name: `${task}/interactions/${name}`,
@@ -258,7 +258,7 @@ const page: ActivityPage = {
   branches: {
     [task]: {
       rows: [
-        tool('search', 'search', 'succeeded', 'Find billing operations'),
+        tool('search', 'search', 'succeeded', 'Find billing tools'),
         tool('describe', 'describe', 'succeeded', 'Inspect invoice inputs and response'),
         tool('rejected', 'exec', 'rejected', 'Prepare the reminder program'),
         execution,
@@ -360,8 +360,7 @@ export const CompletionFeedback: Story = {
       detail: {
         kind: 'task',
         task: { ...goal, outcome: 'failure', endedAt: at },
-        feedback:
-          'I could not find an operation to export invoices.\nSearch returned no matching operations.',
+        feedback: 'I could not find a tool to export invoices.\nSearch returned no matching tools.',
       },
     },
   },
@@ -491,7 +490,7 @@ export const SingleLineRows: Story = {
     await expect(within(table).queryByRole('img', { name: /^workspace:/ })).not.toBeInTheDocument()
     await expect(within(table).queryByText('Finance')).not.toBeInTheDocument()
     await expect(within(table).getByRole('img', { name: 'search' })).toBeVisible()
-    await expect(within(table).getByRole('link', { name: 'Find billing operations' })).toBeVisible()
+    await expect(within(table).getByRole('link', { name: 'Find billing tools' })).toBeVisible()
     await expect(within(table).getByRole('link', { name: 'Send invoice reminders' })).toBeVisible()
   },
 }
@@ -682,8 +681,8 @@ export const HeadingAlignment: Story = {
   },
 }
 // Enough history to scroll well past 5000px collapsed. Tasks hold 0, 1 or 3
-// executions, and executions hold 0, 1 or 30 operations, in rotation.
-const largeCounts = { executions: [0, 1, 3], operations: [0, 1, 30] } as const
+// executions, and executions hold 0, 1 or 30 tools, in rotation.
+const largeCounts = { executions: [0, 1, 3], tools: [0, 1, 30] } as const
 // One Task every 45 minutes back from now, across several UTC days.
 const largeStart = (i: number, minutes = 0) =>
   new Date(Math.floor(Date.now() / 60_000) * 60_000 - (i * 45 + minutes) * 60_000).toISOString()
@@ -699,7 +698,7 @@ const largeRun = (
   name: string,
   taskName: string,
   i: number,
-  operations: number,
+  tools: number,
   startedAt: string,
 ): ActivityRow & { kind: 'run' } => ({
   ...execution,
@@ -711,7 +710,7 @@ const largeRun = (
   submission: taskName
     ? {
         ...execution.submission!,
-        intent: `Send reminder batch ${i + 1} (${operations} operation${operations === 1 ? '' : 's'})`,
+        intent: `Send reminder batch ${i + 1} (${tools} tool${tools === 1 ? '' : 's'})`,
         acceptedRun: name,
       }
     : undefined,
@@ -720,10 +719,10 @@ const largeBranchOf = (rows: ActivityRow[]) => ({ rows, next: '', unavailable: f
 // The whole fixture, built once: every record and every branch it can expand.
 const largeRows = new Map<string, ActivityRow>()
 const largeBranches: ActivityPage['branches'] = {}
-function addLargeRun(row: ActivityRow & { kind: 'run' }, operations: number) {
+function addLargeRun(row: ActivityRow & { kind: 'run' }, tools: number) {
   largeRows.set(row.name, row)
   largeBranches[row.name] = largeBranchOf(
-    Array.from({ length: operations }, (_, k) => ({
+    Array.from({ length: tools }, (_, k) => ({
       ...call,
       name: `${row.name}/invocations/${k}`,
       run: row.name,
@@ -751,13 +750,13 @@ const largeRoots: ActivityRow[] = largeTasks.flatMap((parent, i) => {
   // Two lookups before each execution, and two after the last.
   const children: ActivityRow[] = [
     ...Array.from({ length: largeCounts.executions[i % 3]! }, (_, j) => {
-      const operations = largeCounts.operations[(i + j) % 3]!
+      const tools = largeCounts.tools[(i + j) % 3]!
       return [
         lookup(j * 2),
         lookup(j * 2 + 1),
         addLargeRun(
-          largeRun(`${workspace}/runs/${id}-r${j}`, parent.name, j, operations, parent.startedAt),
-          operations,
+          largeRun(`${workspace}/runs/${id}-r${j}`, parent.name, j, tools, parent.startedAt),
+          tools,
         ),
       ]
     }).flat(),
@@ -767,9 +766,9 @@ const largeRoots: ActivityRow[] = largeTasks.flatMap((parent, i) => {
   for (const child of children) largeRows.set(child.name, child)
   largeBranches[parent.name] = largeBranchOf(children)
   if (i % 3) return [parent]
-  const operations = largeCounts.operations[(i / 3) % 3]!
-  const solo = largeRun(`${workspace}/runs/s${i}`, '', i, operations, largeStart(i, 20))
-  return [parent, addLargeRun(solo, operations)]
+  const tools = largeCounts.tools[(i / 3) % 3]!
+  const solo = largeRun(`${workspace}/runs/s${i}`, '', i, tools, largeStart(i, 20))
+  return [parent, addLargeRun(solo, tools)]
 })
 /** A long history. Expand and collapse records, and scroll to watch their headings pin. */
 export const LargeHistory: Story = {
@@ -984,7 +983,7 @@ export const StandaloneExecution: Story = {
   },
 }
 /** An uncaught upstream error shows the response's status and the start of its body. */
-export const UpstreamOperationError: Story = {
+export const UpstreamToolError: Story = {
   args: {
     page: {
       ...page,
@@ -998,16 +997,16 @@ export const UpstreamOperationError: Story = {
         terminal: {
           kind: 'failed',
           code: 'program_rejected',
-          message: 'OperationError: The upstream service returned an error',
+          message: 'ToolError: The upstream service returned an error',
           error: {
-            name: 'OperationError',
+            name: 'ToolError',
             message: 'The upstream service returned an error',
             frames: [{ source: 'Program', line: 1, column: 14 }],
-            operationCode: 'error_response',
-            operationTraceId: '',
-            operationStatus: 404,
-            operationBody: '{"message":"No invoices for this account"',
-            operationBodyTruncated: true,
+            toolCode: 'error_response',
+            toolTraceId: '',
+            toolStatus: 404,
+            toolBody: '{"message":"No invoices for this account"',
+            toolBodyTruncated: true,
             cause: null,
             errors: [],
             truncated: false,
@@ -1174,8 +1173,8 @@ export const CoralFailure: Story = {
         ...detail,
         result: {
           kind: 'coral_failure',
-          code: 'operation_disabled',
-          message: 'The operation is disabled.',
+          code: 'tool_disabled',
+          message: 'The tool is disabled.',
         },
       },
     },
@@ -1248,17 +1247,15 @@ function discovery(context: DiscoveryContext, response: string): Story['args'] {
   const targets =
     view.kind === 'search' ? view.page.hits : view.kind === 'describe' ? [view.description] : []
   for (const target of targets) {
-    const operation = operationOwner(target.callPath, [
-      { id: 'github', callRoot: 'coral.providers.github' },
-    ])
+    const owner = toolOwner(target.callPath, [{ id: 'github', callRoot: 'coral.providers.github' }])
     const path = functionTarget(target.callPath)
-    if (operation && target.title === target.callPath) target.title = operation.relativePath
-    target.currentHref = operation
-      ? `/${workspace}/providers/${operation.provider.id}/ops/${operation.relativePath}`
+    if (owner && target.title === target.callPath) target.title = owner.relativePath
+    target.currentHref = owner
+      ? `/${workspace}/providers/${owner.provider.id}/tools/${owner.relativePath}`
       : `/${workspace}/functions/${path}`
   }
   const name = context.kind === 'describe' ? 'describe' : 'search'
-  const row = tool(name, name, 'succeeded', 'Find the operation that merges a pull request')
+  const row = tool(name, name, 'succeeded', 'Find the tool that merges a pull request')
   return {
     page: {
       ...page,
@@ -1271,7 +1268,7 @@ function discovery(context: DiscoveryContext, response: string): Story['args'] {
           name: row.name,
           agent: '',
           tool: name,
-          intent: 'Find the operation that merges a pull request',
+          intent: 'Find the tool that merges a pull request',
           outcome: 'succeeded',
           startedAt: at,
           completedAt: at,
@@ -1294,7 +1291,7 @@ export const HistoricalSearch: Story = {
     await expect(
       opened.getByRole('heading', {
         level: 2,
-        name: 'Find the operation that merges a pull request',
+        name: 'Find the tool that merges a pull request',
       }),
     ).toBeVisible()
     await expect(opened.queryByText('Intent', { selector: 'dt' })).toBeNull()
@@ -1431,10 +1428,10 @@ export const HistoricalSearchEarlierShape: Story = {
   },
 }
 /** The declaration is longer than the cap, so it scrolls inside its block once Details opens. */
-export const HistoricalDescribeOperation: Story = {
+export const HistoricalDescribeTool: Story = {
   args: discovery(
     { kind: 'describe', callPath: 'coral.providers.github.issues.create', types: [] },
-    stored.describeOperation,
+    stored.describeTool,
   ),
   play: async ({ canvasElement, userEvent }) => {
     const opened = await openDetail(canvasElement)

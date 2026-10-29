@@ -6,9 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use coral_v8::{
     AuthoredLocation, AuthoredSource, CompiledProgram, ConsoleLevel, Error, IsolateLimits,
-    LinkedSavedFunctionSource, OperationHostError, ProgramCompiler, ProgramExecutionControl,
-    ProgramExecutor, ProgramHost, ProgramOutputHostError, SavedFunctionReference,
-    TYPESCRIPT_PROFILE,
+    LinkedSavedFunctionSource, ProgramCompiler, ProgramExecutionControl, ProgramExecutor,
+    ProgramHost, ProgramOutputHostError, SavedFunctionReference, TYPESCRIPT_PROFILE, ToolHostError,
 };
 use deno_core_icudata as _;
 use serde as _;
@@ -79,7 +78,7 @@ fn execution_control_terminates_noncooperative_javascript() {
     let execution = std::thread::spawn(move || {
         ProgramExecutor::new(IsolateLimits::default()).execute_with_host_control(
             &program,
-            Arc::new(RejectingOperationHost),
+            Arc::new(RejectingToolHost),
             &execution_control,
         )
     });
@@ -768,7 +767,7 @@ fn saved_function_authoring_types_the_coral_host_root() {
                 return title;
             } catch (error) {
                 console.warn('report failed', error);
-                if (error instanceof coral.OperationError) {
+                if (error instanceof coral.ToolError) {
                     if (error.status === 404) return 'missing';
                     const body: unknown = error.data;
                     const metadata: unknown = error.metadata;
@@ -793,13 +792,13 @@ fn saved_function_authoring_types_the_coral_host_root() {
     let misused = compiler
         .prepare_saved_function(
             compilation_deadline(),
-            "export default function misuse(): number { console.table([]); console.log = () => {}; new coral.OperationError(); return coral.missing; }",
+            "export default function misuse(): number { console.table([]); console.log = () => {}; new coral.ToolError(); return coral.missing; }",
         )
         .expect("host root misuse is advisory");
     for (code, name) in [
         (2339, "'table'"),
         (2540, "'log'"),
-        (2673, "OperationError"),
+        (2673, "ToolError"),
         (2339, "'missing'"),
     ] {
         assert!(
@@ -815,7 +814,7 @@ fn saved_function_authoring_types_the_coral_host_root() {
     let error = compiler
         .prepare_saved_function(
             compilation_deadline(),
-            "export default function leak(error: coral.OperationError): string { return error.code; }",
+            "export default function leak(error: coral.ToolError): string { return error.code; }",
         )
         .expect_err("the public declaration must stay self-contained");
     assert!(
@@ -893,12 +892,12 @@ fn declaration_projection_uses_resolved_public_instance_types() {
 }
 
 #[test]
-fn operation_paths_are_not_thenables() {
+fn tool_paths_are_not_thenables() {
     let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
     let program = compiler.compile(compilation_deadline(),
-        "const operation = await Promise.resolve(coral.providers.widgets.create); return await operation({ id: 1 });",
+        "const tool = await Promise.resolve(coral.providers.widgets.create); return await tool({ id: 1 });",
     ).expect("compile path value");
-    let host = Arc::new(CapturingOperationHost::default());
+    let host = Arc::new(CapturingToolHost::default());
     ProgramExecutor::new(IsolateLimits::default())
         .execute_with_host(&program, host.clone())
         .expect("resolve and invoke path");
@@ -911,7 +910,7 @@ fn operation_paths_are_not_thenables() {
     );
 }
 
-// Catches: a misspelled member such as `coral.emitt` becoming an Operation
+// Catches: a misspelled member such as `coral.emitt` becoming a Tool
 // call that fails only when the Run ends, instead of throwing where it is used.
 #[test]
 fn programs_call_every_call_root_under_coral_by_its_complete_path() {
@@ -921,11 +920,11 @@ fn programs_call_every_call_root_under_coral_by_its_complete_path() {
             compilation_deadline(),
             "await coral.providers.workspace.create({ id: 1 }); await coral.workspace.addProvider(); \
              let typo = 'no error'; try { coral.emitt(1); } catch (error) { typo = error.name; } \
-             return [typeof coral.emit, coral.OperationError.name, Object.keys(coral).sort(), \
+             return [typeof coral.emit, coral.ToolError.name, Object.keys(coral).sort(), \
                      coral.then, typeof coral.billing, typo];",
         )
         .expect("compile Call Root calls");
-    let host = Arc::new(CapturingOperationHost::default());
+    let host = Arc::new(CapturingToolHost::default());
     let outcome = ProgramExecutor::new(IsolateLimits::default())
         .execute_with_host(&program, host.clone())
         .expect("invoke both Call Roots");
@@ -942,7 +941,7 @@ fn programs_call_every_call_root_under_coral_by_its_complete_path() {
     assert_eq!(
         outcome.final_value_json(),
         Some(
-            "[\"function\",\"OperationError\",[\"OperationError\",\"emit\",\"providers\",\"workspace\"],\
+            "[\"function\",\"ToolError\",[\"ToolError\",\"emit\",\"providers\",\"workspace\"],\
              null,\"undefined\",\"TypeError\"]"
         )
     );
@@ -1142,17 +1141,17 @@ fn program_cannot_replace_the_host_observed_entry_promise() {
 }
 
 #[derive(Default)]
-struct CapturingOperationHost {
+struct CapturingToolHost {
     calls: Mutex<Vec<(String, String)>>,
 }
 
-impl ProgramHost for CapturingOperationHost {
+impl ProgramHost for CapturingToolHost {
     fn invoke(
         self: Arc<Self>,
         call_path: String,
         arguments_json: String,
         _location: Option<AuthoredLocation>,
-    ) -> coral_v8::OperationFuture {
+    ) -> coral_v8::ToolFuture {
         self.calls
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1179,7 +1178,7 @@ impl ProgramHost for CapturingOperationHost {
 }
 
 #[test]
-fn operation_call_passes_one_logical_argument_object_to_the_host() {
+fn tool_call_passes_one_logical_argument_object_to_the_host() {
     let program = ProgramCompiler::new(IsolateLimits::default())
         .expect("start compiler")
         .compile(
@@ -1192,15 +1191,15 @@ fn operation_call_passes_one_logical_argument_object_to_the_host() {
                 });
             "#,
         )
-        .expect("compile Operation argument probe");
-    let host = Arc::new(CapturingOperationHost::default());
+        .expect("compile Tool argument probe");
+    let host = Arc::new(CapturingToolHost::default());
 
     ProgramExecutor::new(IsolateLimits::default())
         .execute_with_host(&program, host.clone())
-        .expect("execute Operation argument probe");
+        .expect("execute Tool argument probe");
 
     assert_eq!(
-        *host.calls.lock().expect("captured Operation calls"),
+        *host.calls.lock().expect("captured Tool calls"),
         vec![(
             "coral.providers.widgets.create".to_string(),
             r#"{"id":"widget/1","page":2,"body":{"label":"example"}}"#.to_string()
@@ -1208,19 +1207,19 @@ fn operation_call_passes_one_logical_argument_object_to_the_host() {
     );
 }
 
-struct RejectingOperationHost;
+struct RejectingToolHost;
 
-impl ProgramHost for RejectingOperationHost {
+impl ProgramHost for RejectingToolHost {
     fn invoke(
         self: Arc<Self>,
         call_path: String,
         _arguments_json: String,
         _location: Option<AuthoredLocation>,
-    ) -> coral_v8::OperationFuture {
+    ) -> coral_v8::ToolFuture {
         Box::pin(async move {
-            Err(OperationHostError::Rejected {
+            Err(ToolHostError::Rejected {
                 code: "upstream_incomplete",
-                message: "durable Operation failure".into(),
+                message: "durable Tool failure".into(),
                 trace_id: call_path
                     .ends_with(".traced")
                     .then(|| "0123456789abcdef0123456789abcdef".to_string()),
@@ -1265,9 +1264,9 @@ impl ProgramHost for UpstreamRejectingHost {
         _call_path: String,
         _arguments_json: String,
         _location: Option<AuthoredLocation>,
-    ) -> coral_v8::OperationFuture {
+    ) -> coral_v8::ToolFuture {
         Box::pin(async move {
-            Err(OperationHostError::Upstream {
+            Err(ToolHostError::Upstream {
                 code: "error_response",
                 message: "The upstream service returned an error",
                 outcome_json: self.outcome_json.clone(),
@@ -1294,7 +1293,7 @@ impl ProgramHost for UpstreamRejectingHost {
 }
 
 #[test]
-fn an_upstream_operation_error_carries_its_outcome_read_only() {
+fn an_upstream_tool_error_carries_its_outcome_read_only() {
     let program = ProgramCompiler::new(IsolateLimits::default())
         .expect("compiler")
         .compile(
@@ -1309,7 +1308,7 @@ fn an_upstream_operation_error_carries_its_outcome_read_only() {
                     return field !== undefined && (field.writable || field.configurable);
                 });
                 return {
-                    isOperationError: error instanceof coral.OperationError,
+                    isToolError: error instanceof coral.ToolError,
                     code: error.code,
                     status: error.status ?? null,
                     data: error.data,
@@ -1335,7 +1334,7 @@ fn an_upstream_operation_error_carries_its_outcome_read_only() {
         serde_json::from_str::<serde_json::Value>(output.final_value_json().expect("value"))
             .expect("JSON"),
         serde_json::json!({
-            "isOperationError": true,
+            "isToolError": true,
             "code": "error_response",
             "status": 404,
             "data": {"message": "missing"},
@@ -1382,16 +1381,16 @@ fn an_uncaught_error_response_retains_its_status_and_a_bounded_body() {
         let Error::ProgramRejected(error) = error else {
             panic!("{error}");
         };
-        error.operation.expect("trusted Operation fields")
+        error.tool.expect("trusted Tool fields")
     };
 
-    let operation = rejected(
+    let tool = rejected(
         serde_json::json!({"field": "city"}),
         "return await coral.providers.weather.getForecast();",
     );
     assert_eq!(
-        operation,
-        coral_v8::ProgramOperationError {
+        tool,
+        coral_v8::ProgramToolError {
             code: "error_response".to_string(),
             trace_id: None,
             status: Some(422),
@@ -1402,7 +1401,7 @@ fn an_uncaught_error_response_retains_its_status_and_a_bounded_body() {
 
     // A caught and rethrown error still reaches the uncaught path with the
     // outcome the host retained.
-    let operation = rejected(
+    let tool = rejected(
         serde_json::json!({"field": "city"}),
         r#"try { await coral.providers.weather.getForecast(); }
            catch (error) {
@@ -1410,28 +1409,28 @@ fn an_uncaught_error_response_retains_its_status_and_a_bounded_body() {
              throw error;
            }"#,
     );
-    assert_eq!(operation.body.as_deref(), Some(r#"{"field":"city"}"#));
+    assert_eq!(tool.body.as_deref(), Some(r#"{"field":"city"}"#));
 
-    let operation = rejected(
+    let tool = rejected(
         serde_json::json!("é".repeat(4096)),
         "return await coral.providers.weather.getForecast();",
     );
-    let body = operation.body.expect("body excerpt");
-    assert!(operation.body_truncated);
+    let body = tool.body.expect("body excerpt");
+    assert!(tool.body_truncated);
     assert!(body.len() <= 1024, "{}", body.len());
     assert!(body.starts_with("\"é"));
 }
 
-struct FatalOperationHost;
+struct FatalToolHost;
 
-impl ProgramHost for FatalOperationHost {
+impl ProgramHost for FatalToolHost {
     fn invoke(
         self: Arc<Self>,
         _call_path: String,
         _arguments_json: String,
         _location: Option<AuthoredLocation>,
-    ) -> coral_v8::OperationFuture {
-        Box::pin(async { Err(OperationHostError::Fatal) })
+    ) -> coral_v8::ToolFuture {
+        Box::pin(async { Err(ToolHostError::Fatal) })
     }
 
     fn emit(
@@ -1509,7 +1508,7 @@ fn failure_stacks_name_only_authored_locations() {
                 "at Program:1:",
             ],
         ),
-        // Operation rejections settle asynchronously but keep their call sites.
+        // Tool rejections settle asynchronously but keep their call sites.
         (
             "\nawait coral.providers.weather.getForecast();",
             vec![],
@@ -1571,7 +1570,7 @@ fn failure_stacks_name_only_authored_locations() {
             .compile_with_saved_functions(compilation_deadline(), source, &functions)
             .expect(source);
         let error = ProgramExecutor::new(IsolateLimits::default())
-            .execute_with_host(&program, Arc::new(RejectingOperationHost))
+            .execute_with_host(&program, Arc::new(RejectingToolHost))
             .expect_err(source);
         let (Error::ProgramRejected(diagnostic) | Error::ProgramOutputRejected(diagnostic)) = error
         else {
@@ -1589,7 +1588,7 @@ fn failure_stacks_name_only_authored_locations() {
 }
 
 #[test]
-fn rejected_operation_host_failure_is_catchable() {
+fn rejected_tool_host_failure_is_catchable() {
     let program = ProgramCompiler::new(IsolateLimits::default())
         .expect("start compiler")
         .compile(
@@ -1600,10 +1599,10 @@ fn rejected_operation_host_failure_is_catchable() {
                     return "unexpected resolution";
                 } catch (error) {
                     let constructible = false;
-                    try { new coral.OperationError(); constructible = true; } catch {}
+                    try { new coral.ToolError(); constructible = true; } catch {}
                     return {
                         isError: error instanceof Error,
-                        isOperationError: error instanceof coral.OperationError,
+                        isToolError: error instanceof coral.ToolError,
                         name: error.name,
                         code: error.code,
                         message: error.message,
@@ -1615,10 +1614,10 @@ fn rejected_operation_host_failure_is_catchable() {
                 }
             "#,
         )
-        .expect("compile durable Operation rejection probe");
+        .expect("compile durable Tool rejection probe");
 
     let output = ProgramExecutor::new(IsolateLimits::default())
-        .execute_with_host(&program, Arc::new(RejectingOperationHost))
+        .execute_with_host(&program, Arc::new(RejectingToolHost))
         .expect("durable host rejection remains catchable");
 
     assert_eq!(
@@ -1626,10 +1625,10 @@ fn rejected_operation_host_failure_is_catchable() {
             .expect("JSON"),
         serde_json::json!({
             "isError": true,
-            "isOperationError": true,
-            "name": "OperationError",
+            "isToolError": true,
+            "name": "ToolError",
             "code": "upstream_incomplete",
-            "message": "durable Operation failure",
+            "message": "durable Tool failure",
             "serialized": "{}",
             "fields": ["code", "message", "stack"],
             "constructible": false,
@@ -1638,18 +1637,18 @@ fn rejected_operation_host_failure_is_catchable() {
 }
 
 #[test]
-fn operation_error_preserves_optional_trace_and_resists_program_replacement() {
+fn tool_error_preserves_optional_trace_and_resists_program_replacement() {
     let program = ProgramCompiler::new(IsolateLimits::default())
         .expect("compiler")
         .compile(
             compilation_deadline(),
             r#"
-        const OperationError = coral.OperationError;
+        const ToolError = coral.ToolError;
         for (const replace of [
-            () => { coral.OperationError = Error; },
-            () => { OperationError.prototype.name = "forged"; },
-            () => { OperationError.prototype.toJSON = () => "forged"; },
-            () => { Object.setPrototypeOf(OperationError, null); },
+            () => { coral.ToolError = Error; },
+            () => { ToolError.prototype.name = "forged"; },
+            () => { ToolError.prototype.toJSON = () => "forged"; },
+            () => { Object.setPrototypeOf(ToolError, null); },
         ]) { try { replace(); } catch {} }
         globalThis.Error = function() { throw "replaced"; };
         Object.setPrototypeOf = () => { throw "replaced"; };
@@ -1657,27 +1656,27 @@ fn operation_error_preserves_optional_trace_and_resists_program_replacement() {
         Object.prototype.get = function () {};
         try { await coral.providers.weather.traced(); }
         catch (error) {
-            return {name: error.name, isOperationError: error instanceof OperationError,
+            return {name: error.name, isToolError: error instanceof ToolError,
                 code: error.code, traceId: error.traceId, serialized: JSON.stringify(error)};
         }
     "#,
         )
         .expect("compile");
     let output = ProgramExecutor::new(IsolateLimits::default())
-        .execute_with_host(&program, Arc::new(RejectingOperationHost))
+        .execute_with_host(&program, Arc::new(RejectingToolHost))
         .expect("handled");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(output.final_value_json().expect("value"))
             .expect("JSON"),
         serde_json::json!({
-            "name": "OperationError", "isOperationError": true, "code": "upstream_incomplete",
+            "name": "ToolError", "isToolError": true, "code": "upstream_incomplete",
             "traceId": "0123456789abcdef0123456789abcdef", "serialized": "{}"
         })
     );
 }
 
 #[test]
-fn unhandled_operation_errors_fail_execution_even_without_await() {
+fn unhandled_tool_errors_fail_execution_even_without_await() {
     let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
     for source in [
         "coral.providers.weather.getForecast(); return 42;",
@@ -1689,7 +1688,7 @@ fn unhandled_operation_errors_fail_execution_even_without_await() {
         assert!(
             matches!(
                 ProgramExecutor::new(IsolateLimits::default())
-                    .execute_with_host(&program, Arc::new(RejectingOperationHost)),
+                    .execute_with_host(&program, Arc::new(RejectingToolHost)),
                 Err(Error::ProgramRejected(_))
             ),
             "{source}"
@@ -1698,7 +1697,7 @@ fn unhandled_operation_errors_fail_execution_even_without_await() {
 }
 
 #[test]
-fn invalid_operation_host_values_reject_without_invoking_the_host() {
+fn invalid_tool_host_values_reject_without_invoking_the_host() {
     let program = ProgramCompiler::new(IsolateLimits::default()).expect("compiler").compile(compilation_deadline(), r#"
         const cycle = {}; cycle.self = cycle;
         const calls = [() => coral.providers.widgets.create(undefined),
@@ -1708,12 +1707,12 @@ fn invalid_operation_host_values_reject_without_invoking_the_host() {
         for (const call of calls) {
             try { await call(); throw Error("unexpected resolution"); }
             catch (error) {
-                if (!(error instanceof coral.OperationError) || error.code !== "invalid_input") throw error;
+                if (!(error instanceof coral.ToolError) || error.code !== "invalid_input") throw error;
             }
         }
         return "handled";
     "#).expect("compile invalid values");
-    let host = Arc::new(CapturingOperationHost::default());
+    let host = Arc::new(CapturingToolHost::default());
     let result = ProgramExecutor::new(IsolateLimits::default())
         .execute_with_host(&program, host.clone())
         .expect("catch invalid input");
@@ -1722,7 +1721,7 @@ fn invalid_operation_host_values_reject_without_invoking_the_host() {
 }
 
 #[test]
-fn fatal_operation_host_failure_during_final_value_serialization_stays_fatal() {
+fn fatal_tool_host_failure_during_final_value_serialization_stays_fatal() {
     let program = ProgramCompiler::new(IsolateLimits::default())
         .expect("start compiler")
         .compile(
@@ -1743,14 +1742,14 @@ fn fatal_operation_host_failure_during_final_value_serialization_stays_fatal() {
         .expect("compile final serialization host failure probe");
 
     let error = ProgramExecutor::new(IsolateLimits::default())
-        .execute_with_host(&program, Arc::new(FatalOperationHost))
+        .execute_with_host(&program, Arc::new(FatalToolHost))
         .expect_err("fatal host failure during serialization must terminate execution");
 
     assert!(matches!(error, Error::ProgramHostTerminated));
 }
 
 #[test]
-fn fatal_operation_host_failure_cannot_be_caught_by_the_program() {
+fn fatal_tool_host_failure_cannot_be_caught_by_the_program() {
     let program = ProgramCompiler::new(IsolateLimits::default())
         .expect("start compiler")
         .compile(
@@ -1764,10 +1763,10 @@ fn fatal_operation_host_failure_cannot_be_caught_by_the_program() {
                 }
             "#,
         )
-        .expect("compile Operation host failure probe");
+        .expect("compile Tool host failure probe");
 
     let error = ProgramExecutor::new(IsolateLimits::default())
-        .execute_with_host(&program, Arc::new(FatalOperationHost))
+        .execute_with_host(&program, Arc::new(FatalToolHost))
         .expect_err("fatal host failure must terminate Program execution");
 
     assert!(matches!(error, Error::ProgramHostTerminated));
@@ -1846,11 +1845,11 @@ fn a_single_microtask_checkpoint_drains_deep_continuations() {
 }
 
 #[derive(Default)]
-struct OperationGate {
+struct ToolGate {
     state: Mutex<(bool, Option<std::task::Waker>)>,
 }
 
-impl OperationGate {
+impl ToolGate {
     fn finish(&self) {
         let mut state = self.state.lock().expect("gate");
         state.0 = true;
@@ -1860,21 +1859,21 @@ impl OperationGate {
     }
 }
 
-struct GatedOperationHost {
-    started: std::sync::mpsc::Sender<Arc<OperationGate>>,
+struct GatedToolHost {
+    started: std::sync::mpsc::Sender<Arc<ToolGate>>,
 }
 
-impl ProgramHost for GatedOperationHost {
+impl ProgramHost for GatedToolHost {
     fn invoke(
         self: Arc<Self>,
         _path: String,
         _arguments: String,
         _location: Option<AuthoredLocation>,
-    ) -> coral_v8::OperationFuture {
-        let gate = Arc::new(OperationGate::default());
+    ) -> coral_v8::ToolFuture {
+        let gate = Arc::new(ToolGate::default());
         self.started
             .send(gate.clone())
-            .expect("report started Operation");
+            .expect("report started Tool");
         Box::pin(std::future::poll_fn(move |context| {
             let mut state = gate.state.lock().expect("gate");
             if state.0 {
@@ -1904,7 +1903,7 @@ impl ProgramHost for GatedOperationHost {
 }
 
 #[test]
-fn operations_progress_concurrently_and_unawaited_work_is_drained() {
+fn tools_progress_concurrently_and_unawaited_work_is_drained() {
     let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
     for source in [
         "const results = await Promise.all([coral.providers.test.first(), coral.providers.test.second()]); return results[0].data + results[1].data;",
@@ -1921,7 +1920,7 @@ fn operations_progress_concurrently_and_unawaited_work_is_drained() {
         let worker = std::thread::spawn(move || {
             let result = ProgramExecutor::new(IsolateLimits::default()).execute_with_host_control(
                 &program,
-                Arc::new(GatedOperationHost { started }),
+                Arc::new(GatedToolHost { started }),
                 &worker_control,
             );
             completed.send(result).expect("send completion");
@@ -1931,8 +1930,8 @@ fn operations_progress_concurrently_and_unawaited_work_is_drained() {
         if first.is_err() || second.is_err() {
             let _installed = control.terminate();
         }
-        let first = first.expect("first Operation starts");
-        let second = second.expect("second Operation starts before the first completes");
+        let first = first.expect("first Tool starts");
+        let second = second.expect("second Tool starts before the first completes");
         second.finish();
         assert!(
             completion.try_recv().is_err(),
@@ -1949,7 +1948,7 @@ fn operations_progress_concurrently_and_unawaited_work_is_drained() {
 }
 
 #[test]
-fn cancellation_wakes_execution_waiting_for_an_operation() {
+fn cancellation_wakes_execution_waiting_for_a_tool() {
     let program = ProgramCompiler::new(IsolateLimits::default())
         .expect("compiler")
         .compile(compilation_deadline(), "await coral.providers.test.wait();")
@@ -1963,7 +1962,7 @@ fn cancellation_wakes_execution_waiting_for_an_operation() {
             .send(
                 ProgramExecutor::new(IsolateLimits::default()).execute_with_host_control(
                     &program,
-                    Arc::new(GatedOperationHost { started }),
+                    Arc::new(GatedToolHost { started }),
                     &worker_control,
                 ),
             )
@@ -1971,7 +1970,7 @@ fn cancellation_wakes_execution_waiting_for_an_operation() {
     });
     let _pending = calls
         .recv_timeout(std::time::Duration::from_secs(2))
-        .expect("Operation started");
+        .expect("Tool started");
     let _installed = control.terminate();
     let result = completion
         .recv_timeout(std::time::Duration::from_secs(2))
@@ -1999,7 +1998,7 @@ fn a_program_awaiting_an_absent_event_source_is_pending_rather_than_hanging() {
     assert!(matches!(&error, Error::PendingProgram), "{error}");
 }
 
-/// Records Program output and Operation calls under the given value limits.
+/// Records Program output and Tool calls under the given value limits.
 struct RecordingHost {
     limits: coral_value::ValueLimits,
     emitted: Mutex<Vec<String>>,
@@ -2041,7 +2040,7 @@ impl ProgramHost for RecordingHost {
         _call_path: String,
         arguments_json: String,
         location: Option<AuthoredLocation>,
-    ) -> coral_v8::OperationFuture {
+    ) -> coral_v8::ToolFuture {
         self.record("invoke", location);
         self.calls
             .lock()
@@ -2510,7 +2509,7 @@ fn program_emissions_and_console_lines_reach_the_host_in_order() {
 
 #[test]
 fn oversized_or_invalid_host_values_reject_without_reaching_the_host() {
-    // A JSON string encodes with two quotes; an Operation input also carries `{"body":}`.
+    // A JSON string encodes with two quotes; a Tool input also carries `{"body":}`.
     let fits = HOST_BYTES - 2;
     let body_fits = HOST_BYTES - r#"{"body":""}"#.len();
     let (outcomes, host) = run_with_recording_host(&format!(
@@ -2534,7 +2533,7 @@ fn oversized_or_invalid_host_values_reject_without_reaching_the_host() {
     ));
     assert_eq!(
         outcomes.as_deref(),
-        Some(r#"["accepted","RangeError","TypeError","accepted","operation_input_too_large"]"#)
+        Some(r#"["accepted","RangeError","TypeError","accepted","tool_input_too_large"]"#)
     );
     assert_eq!(host.emitted.lock().expect("emissions").len(), 1);
     assert_eq!(host.calls.lock().expect("calls").len(), 1);

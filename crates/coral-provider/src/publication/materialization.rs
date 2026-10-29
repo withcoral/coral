@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use coral_catalog::{OperationPathAssignment, ProviderSetupInput};
+use coral_catalog::{ProviderSetupInput, ToolPathAssignment};
 
 use crate::configuration::preparation::SourceAnalysis;
 
@@ -27,7 +27,7 @@ pub(crate) trait Materializer: Send + Sync {
     async fn materialize(
         &self,
         setup_input: &ProviderSetupInput,
-        previous_paths: &[OperationPathAssignment],
+        previous_paths: &[ToolPathAssignment],
     ) -> Result<MaterializationOutcome, OperationalMaterializationError>;
 
     /// Analyzes an OpenAPI Setup source off the async runtime.
@@ -191,7 +191,7 @@ impl Materializer for TestMaterializer {
     async fn materialize(
         &self,
         setup_input: &ProviderSetupInput,
-        previous_paths: &[OperationPathAssignment],
+        previous_paths: &[ToolPathAssignment],
     ) -> Result<MaterializationOutcome, OperationalMaterializationError> {
         let first = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
         if let Some(barrier) = &self.barrier {
@@ -232,7 +232,7 @@ impl Materializer for CatalogMaterializer {
     async fn materialize(
         &self,
         setup_input: &ProviderSetupInput,
-        previous_paths: &[OperationPathAssignment],
+        previous_paths: &[ToolPathAssignment],
     ) -> Result<MaterializationOutcome, OperationalMaterializationError> {
         let policy = self.0;
         let input = setup_input.clone();

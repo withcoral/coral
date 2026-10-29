@@ -34,9 +34,9 @@ const MIN_PANE_HEIGHT = 120
  *
  * A highlight comes from retained Coral evidence only: a failed Run's error
  * frame when the Run itself is selected (`sourceLocationFor`), or the location
- * Coral stored for the selected operation, emission or log
+ * Coral stored for the selected tool, emission or log
  * (`recordedLocationFor`). Each newly selected record's line is revealed. Only
- * an operation, emission or log says its location is unavailable when it has
+ * a tool, emission or log says its location is unavailable when it has
  * none: the Run itself and its other events have no call of their own.
  */
 export function ExecutionSourceSplit({
@@ -49,7 +49,7 @@ export function ExecutionSourceSplit({
 }: {
   context: RunDetail
   /**
-   * Whether the reader selected the Run itself, not a child operation or
+   * Whether the reader selected the Run itself, not a child tool or
    * output under it. A failed Run's retained error frame names where the
    * Program threw, not where any one child call happened; attributing it to
    * a child's selection would be a fabricated location, so this must be
@@ -59,7 +59,7 @@ export function ExecutionSourceSplit({
   /** The selected record, whose stored location applies when the Run itself is not selected. */
   selectedRow: ActivityRow | null
   /**
-   * The selected Operation Invocation or Program Run Event's position among the Run's records,
+   * The selected Tool Invocation or Program Run Event's position among the Run's records,
    * when known. Between two known positions, the detail slides in that order.
    */
   position?: number
@@ -119,12 +119,13 @@ export function ExecutionSourceSplit({
             {/* A labelled Panel, such as a review, names this one region around both its
                 evidence and its decision; without a label it is no region of its own. */}
             <section aria-label={panelLabel} className={styles.detailRegion}>
-              {/* The record's header, with its close control, wraps to the pane's width. */}
+              {/* The record's header, with its close control, wraps to the pane's width. The
+                  sticky header marks the top edge; a top fade would mask the header itself. */}
               <ScrollArea
                 className={styles.detailScroll}
                 viewportRef={detailRef}
-                surface="floating"
                 constrainWidth
+                fade="bottom"
                 scrollDirection="vertical"
               >
                 <div key={record} className={styles.detailContent}>

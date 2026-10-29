@@ -41,7 +41,7 @@ pub enum Error {
     /// Provider authoring material could not be resolved.
     #[error(transparent)]
     Provider(#[from] coral_provider::Error),
-    /// Exact Operation policy could not be resolved.
+    /// Exact Tool policy could not be resolved.
     #[error(transparent)]
     Policy(#[from] coral_policy::Error),
     /// Saved Function authoring material could not be resolved.

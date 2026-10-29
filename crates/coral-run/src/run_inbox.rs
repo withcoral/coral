@@ -5,10 +5,11 @@
 //! [`RunInbox`] holds the implementation bootstrap chose behind the `Inbox`
 //! trait. Its two halves are the requester's (submit a request and wait for
 //! its answer, read from the record) and the owning Coral Instance's (the
-//! stream of requests addressed to the Runs it holds). Every implementation
-//! promises that requests are addressed by Run, that there is one per
-//! decided thing and the first wins, that each is delivered at least once,
-//! and that one is removed only by the chunk commit that records it.
+//! stream of requests addressed to the Runs it holds, and the expired-lease
+//! sweep's read of one Run's requests for the owner it recreates). Every
+//! implementation promises that requests are addressed by Run, that there is
+//! one per decided thing and the first wins, that each is delivered at least
+//! once, and that one is removed only by the chunk commit that records it.
 //!
 //! One reader per Coral Instance hands each delivered request to the Run
 //! Owner registered here for its Run. A request for a Run this instance
@@ -65,6 +66,17 @@ pub(crate) struct Delivery {
     pub(crate) request: InboxRequest,
 }
 
+impl Delivery {
+    /// The message that hands the request to its Run Owner.
+    pub(crate) fn into_message(self) -> Message {
+        let Self { row, request } = self;
+        match request.request {
+            OutsideRequest::Cancel(requester) => Message::Cancel { requester, row },
+            OutsideRequest::Decide(request) => Message::Decide { request, row },
+        }
+    }
+}
+
 #[async_trait]
 trait Inbox: Send + Sync {
     /// Puts `request` in its Run's Run Inbox at `submitted_at_unix_nanos`,
@@ -86,6 +98,16 @@ trait Inbox: Send + Sync {
     /// The next requests addressed to the Runs `instance` holds, in insert
     /// order, once there may be new ones.
     async fn receive(&self, instance: &CoralInstanceId) -> Vec<Delivery>;
+
+    /// The requests waiting for the running Run `run_id`, in insert order,
+    /// read in `transaction`: the expired-lease sweep's, for the owner it
+    /// recreates.
+    async fn waiting(
+        &self,
+        transaction: &mut Transaction<'_>,
+        workspace_id: &WorkspaceId,
+        run_id: &RunId,
+    ) -> Result<Vec<Delivery>, Error>;
 
     /// Wakes the stream at once: the owner of a request just submitted is
     /// local, and gets it without waiting for the change signal.
@@ -141,6 +163,17 @@ impl RunInbox {
         until: Instant,
     ) -> Result<bool, Error> {
         self.inbox.recorded(request, until).await
+    }
+
+    /// The requests waiting for the running Run `run_id`, in insert order,
+    /// read in `transaction`.
+    pub(crate) async fn waiting(
+        &self,
+        transaction: &mut Transaction<'_>,
+        workspace_id: &WorkspaceId,
+        run_id: &RunId,
+    ) -> Result<Vec<Delivery>, Error> {
+        self.inbox.waiting(transaction, workspace_id, run_id).await
     }
 
     /// Wakes this Coral Instance's reader when the owner of `run_id` is
@@ -220,15 +253,12 @@ impl Reader {
                 // registers meanwhile wakes the next read.
                 held.store(true, Ordering::SeqCst);
                 let mut holds = false;
-                for Delivery { row, request } in deliveries {
-                    let Some(owner) = owners.get(&request.run_id) else {
+                for delivery in deliveries {
+                    let Some(owner) = owners.get(&delivery.request.run_id) else {
                         holds = true;
                         continue;
                     };
-                    owner.send(match request.request {
-                        OutsideRequest::Cancel(requester) => Message::Cancel { requester, row },
-                        OutsideRequest::Decide(request) => Message::Decide { request, row },
-                    });
+                    owner.send(delivery.into_message());
                     #[cfg(test)]
                     observer.inbox_delivered();
                 }
@@ -317,6 +347,15 @@ impl Inbox for TableInbox {
                 }
             }
         }
+    }
+
+    async fn waiting(
+        &self,
+        transaction: &mut Transaction<'_>,
+        workspace_id: &WorkspaceId,
+        run_id: &RunId,
+    ) -> Result<Vec<Delivery>, Error> {
+        run_repository::inbox_requests_waiting_for(transaction, workspace_id, run_id).await
     }
 
     fn wake(&self) {

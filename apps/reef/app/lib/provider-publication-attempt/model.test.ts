@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { ConfigurationReviewView } from '@/views/providers/types'
 
 import {
-  acceptOperations,
+  acceptTools,
   accountStep,
   attemptParams,
   attemptProgress,
@@ -44,7 +44,7 @@ describe('recipe in an attempt URL', () => {
   })
 })
 
-/** A protected MCP server's Setup, awaiting a sign-in to read its operations. */
+/** A protected MCP server's Setup, awaiting a sign-in to read its tools. */
 const mcpSetup: import('@/views/providers/types').SetupView = {
   id: '11111111-1111-4111-8111-111111111111',
   kind: 'mcp',
@@ -67,15 +67,15 @@ const mcpSetup: import('@/views/providers/types').SetupView = {
 describe('attemptProgress', () => {
   const setup = mcpSetup
 
-  it('discovers protected operations before asking workspace account use', () => {
+  it('discovers protected tools before asking workspace account use', () => {
     const attempt = parseAttempt('workspace', new URLSearchParams({ setup: setup.id }))
     const ready = { ...setup, state: 'ready' as const, authorized: true }
     expect(attemptProgress(attempt, setup).stage).toBe('discovery')
     expect(
       attemptProgress(attempt, { ...setup, state: 'awaiting_discovery', authorized: true }).stage,
     ).toBe('discovery')
-    expect(attemptProgress(attempt, ready).stage).toBe('operations')
-    expect(attemptProgress(acceptOperations(attempt), ready).stage).toBe('account')
+    expect(attemptProgress(attempt, ready).stage).toBe('tools')
+    expect(attemptProgress(acceptTools(attempt), ready).stage).toBe('account')
   })
 
   it.each(['fixed', 'caller'])('publishes only after the explicit %s account choice', (account) => {
@@ -85,7 +85,7 @@ describe('attemptProgress', () => {
         setup: setup.id,
         account,
         accountGrant: '33333333-3333-4333-8333-333333333333',
-        operationsAccepted: '1',
+        toolsAccepted: '1',
       }),
     )
     expect(attemptProgress(attempt, { ...setup, state: 'ready', authorized: true }).stage).toBe(
@@ -96,7 +96,7 @@ describe('attemptProgress', () => {
   it('requires authorization for a shared account but lets callers connect later', () => {
     const attempt = parseAttempt(
       'workspace',
-      new URLSearchParams({ setup: setup.id, account: 'fixed', operationsAccepted: '1' }),
+      new URLSearchParams({ setup: setup.id, account: 'fixed', toolsAccepted: '1' }),
     )
     expect(attemptProgress(attempt, { ...setup, state: 'ready' }).stage).toBe('account')
     expect(
@@ -104,29 +104,29 @@ describe('attemptProgress', () => {
     ).toBe('publish')
   })
 
-  it('does not promote a discovery grant by accepting operations', () => {
+  it('does not promote a discovery grant by accepting tools', () => {
     const attempt = parseAttempt(
       'workspace',
       new URLSearchParams({ setup: setup.id, account: 'fixed' }),
     )
     const ready = { ...setup, state: 'ready' as const, authorized: true }
-    expect(attemptProgress(attempt, ready).stage).toBe('operations')
-    expect(attemptProgress(acceptOperations(attempt), ready).stage).toBe('account')
+    expect(attemptProgress(attempt, ready).stage).toBe('tools')
+    expect(attemptProgress(acceptTools(attempt), ready).stage).toBe('account')
   })
 
-  it('keeps personal grant review after accepting operations and returning from sign-in', () => {
+  it('keeps personal grant review after accepting tools and returning from sign-in', () => {
     const attempt = parseAttempt(
       'workspace',
       new URLSearchParams({ setup: setup.id, account: 'caller', returnFromConnect: '1' }),
     )
-    const accepted = acceptOperations(attempt)
+    const accepted = acceptTools(attempt)
     const returned = parseAttempt('workspace', attemptParams(accepted))
     expect(attemptProgress(returned, { ...setup, state: 'ready', authorized: true }).stage).toBe(
       'account',
     )
   })
 
-  // Catches: the agent's setup link skipping the operations, landing on
+  // Catches: the agent's setup link skipping the tools, landing on
   // configuration, or losing the namespace and route it asked for.
   it.each([
     ['an OAuth MCP source, shared', 'fixed', {}, 'discovery', 'discovery'],
@@ -135,17 +135,17 @@ describe('attemptProgress', () => {
       'an OAuth MCP source after sign-in',
       'caller',
       { state: 'ready' as const, authorized: true },
-      'operations',
+      'tools',
       'account',
     ],
     [
       'a shared credential',
       'fixed',
       { kind: 'openapi' as const, state: 'ready' as const, credentialMethod: 'bearer' as const },
-      'operations',
+      'tools',
       'account',
     ],
-  ])("opens the agent's link for %s at the operations", (_, route, over, stage, next) => {
+  ])("opens the agent's link for %s at the tools", (_, route, over, stage, next) => {
     // The link Coral returns when an addProvider call needs sign-in names
     // only the Setup, which holds the namespace and route the Program asked for.
     const requested = {
@@ -159,7 +159,7 @@ describe('attemptProgress', () => {
     )
     expect(attempt).toMatchObject({ namespace: 'weather', account: null })
     expect(attemptProgress(attempt, requested).stage).toBe(stage)
-    expect(attemptProgress(acceptOperations(attempt), requested).stage).toBe(next)
+    expect(attemptProgress(acceptTools(attempt), requested).stage).toBe(next)
   })
 
   it("keeps a namespace the person chose over the Program's", () => {
@@ -187,7 +187,7 @@ describe('attemptProgress', () => {
       'an API sign-in Coral can start',
       { kind: 'openapi' as const, state: 'ready' as const },
       true,
-      'operations',
+      'tools',
     ],
   ])("opens the agent's link for %s", (_, over, connectAvailable, stage) => {
     const attempt = parseAttempt('workspace', new URLSearchParams({ setup: setup.id }))
@@ -239,7 +239,7 @@ describe('attemptProgress', () => {
   )
 })
 
-describe('accepting the listed operations', () => {
+describe('accepting the listed tools', () => {
   const setupId = '11111111-1111-4111-8111-111111111111'
   const ready: import('@/views/providers/types').SetupView = {
     id: setupId,
@@ -262,33 +262,33 @@ describe('accepting the listed operations', () => {
   const draft = () => parseAttempt('workspace', new URLSearchParams({ setup: setupId }))
 
   it('keeps the acceptance through a URL round trip', () => {
-    const accepted = acceptOperations(draft())
-    expect(accepted.operationsAccepted).toBe(true)
-    expect(attemptParams(accepted).get('operationsAccepted')).toBe('1')
+    const accepted = acceptTools(draft())
+    expect(accepted.toolsAccepted).toBe(true)
+    expect(attemptParams(accepted).get('toolsAccepted')).toBe('1')
     const returned = parseAttempt('workspace', attemptParams(accepted))
-    expect(returned.state === 'draft' && returned.operationsAccepted).toBe(true)
+    expect(returned.state === 'draft' && returned.toolsAccepted).toBe(true)
     expect(attemptProgress(returned, ready).stage).toBe('account')
   })
 
   it('leaves the parameter out of an attempt that has not accepted the list', () => {
-    expect(attemptParams(draft()).has('operationsAccepted')).toBe(false)
+    expect(attemptParams(draft()).has('toolsAccepted')).toBe(false)
   })
 
   it('rejects any value other than the accepted marker', () => {
     expect(() =>
-      parseAttempt('workspace', new URLSearchParams({ setup: setupId, operationsAccepted: 'yes' })),
+      parseAttempt('workspace', new URLSearchParams({ setup: setupId, toolsAccepted: 'yes' })),
     ).toThrow(InvalidAttempt)
   })
 
-  it('relists the operations when configuration reopens, and keeps them otherwise', () => {
-    const accepted = acceptOperations(draft())
-    expect(reviseAttempt(accepted, 'configuration').operationsAccepted).toBe(false)
-    expect(reviseAttempt(accepted, 'account').operationsAccepted).toBe(true)
-    expect(reviseAttempt(accepted).operationsAccepted).toBe(true)
+  it('relists the tools when configuration reopens, and keeps them otherwise', () => {
+    const accepted = acceptTools(draft())
+    expect(reviseAttempt(accepted, 'configuration').toolsAccepted).toBe(false)
+    expect(reviseAttempt(accepted, 'account').toolsAccepted).toBe(true)
+    expect(reviseAttempt(accepted).toolsAccepted).toBe(true)
   })
 
   // A frozen attempt reached Review, which only an accepted draft can reach.
-  // Reconciling a stale revision used to send it back to the operations step.
+  // Reconciling a stale revision used to send it back to the tools step.
   it('keeps the acceptance when a frozen attempt is revised', () => {
     const frozen = parseAttempt(
       'workspace',
@@ -300,13 +300,13 @@ describe('accepting the listed operations', () => {
       }),
     )
     const revised = reviseAttempt(frozen)
-    expect(revised.operationsAccepted).toBe(true)
+    expect(revised.toolsAccepted).toBe(true)
     expect(attemptProgress(revised, ready).stage).toBe('publish')
   })
 
   it('never asks an update to accept a list it cannot act on', () => {
     const attempt = parseAttempt('update', new URLSearchParams({ setup: setupId }), 'etag')
-    expect(attempt.state === 'draft' && attempt.operationsAccepted).toBe(false)
+    expect(attempt.state === 'draft' && attempt.toolsAccepted).toBe(false)
     expect(attemptProgress(attempt, ready).stage).toBe('publish')
   })
 })
@@ -382,7 +382,7 @@ describe("Coral's route and Connect decisions", () => {
   const confirmed = { revision: '1', confirmed: true } as ConfigurationReviewView
   const ready = { ...mcpSetup, state: 'ready' as const, configuration: confirmed }
   const accepted = (query: string) =>
-    acceptOperations(parseAttempt('workspace', new URLSearchParams(`setup=${ready.id}&${query}`)))
+    acceptTools(parseAttempt('workspace', new URLSearchParams(`setup=${ready.id}&${query}`)))
 
   it('takes no account only when Coral allows no other route', () => {
     const free = { ...ready, credentialMethod: 'none' as const, allowedRoutes: ['none' as const] }

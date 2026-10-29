@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 use tracing::instrument::WithSubscriber as _;
 
 use crate::indexer::functions::{self, SavedFunctionIndexer};
-use crate::indexer::operations::{self, AttemptedGeneration, OperationIndexer, OperationRemoval};
+use crate::indexer::tools::{self, AttemptedGeneration, ToolIndexer, ToolRemoval};
 use crate::indexer::{self, EntityIndexer, IndexError};
 
 mod reconcile;
@@ -221,8 +221,8 @@ impl SearchIndex {
         let index = self.clone();
         self.spawn(async move {
             let _write = index.writes.lock().await;
-            let removal = OperationRemoval::Generation(generation_id.clone());
-            if let Err(error) = index.erase(&OperationIndexer, &removal).await {
+            let removal = ToolRemoval::Generation(generation_id.clone());
+            if let Err(error) = index.erase(&ToolIndexer, &removal).await {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
                     generation_id = %generation_id,
@@ -239,11 +239,11 @@ impl SearchIndex {
         let index = self.clone();
         self.spawn(async move {
             let _write = index.writes.lock().await;
-            let removal = OperationRemoval::Provider {
+            let removal = ToolRemoval::Provider {
                 workspace_id: workspace_id.clone(),
                 provider_id: provider_id.clone(),
             };
-            if let Err(error) = index.erase(&OperationIndexer, &removal).await {
+            if let Err(error) = index.erase(&ToolIndexer, &removal).await {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
                     workspace_id = %workspace_id,
@@ -346,19 +346,19 @@ impl SearchIndex {
     /// preparation left. A failure is logged and recorded. The caller holds
     /// the mutex.
     pub(crate) async fn write_generation(&self, entries: &GenerationEntries) {
-        let rows = match self.write(&OperationIndexer, entries).await {
+        let rows = match self.write(&ToolIndexer, entries).await {
             Ok(rows) => rows,
             Err(error) => {
                 self.fail_generation(entries.into(), &error).await;
                 return;
             }
         };
-        for (operation_key, warning) in rows.warnings() {
+        for (tool_key, warning) in rows.warnings() {
             tracing::warn!(
                 workspace_id = %entries.workspace_id(),
                 provider_id = %entries.provider_id(),
                 generation_id = %entries.generation_id(),
-                operation_key = %operation_key.as_str(),
+                tool_key = %tool_key.as_str(),
                 code = %warning.code(),
                 "{}",
                 warning.message()
@@ -520,7 +520,7 @@ impl SearchIndex {
     ) -> Result<(), IndexError> {
         self.within_limit(async {
             let mut transaction = self.begin_when_writer_free().await?;
-            operations::record_failed_attempt(
+            tools::record_failed_attempt(
                 &mut transaction,
                 generation,
                 error,

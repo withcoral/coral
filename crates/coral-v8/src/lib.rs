@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 pub use compiler::{COMPILATION_TIMEOUT, ProgramCompiler};
 pub use memory::IsolateLimits;
 pub use profile::{TYPESCRIPT_PROFILE, TYPESCRIPT_PROFILE_ID, TypeScriptProfile};
-pub use program_error::{ProgramError, ProgramErrorFrame, ProgramOperationError};
+pub use program_error::{ProgramError, ProgramErrorFrame, ProgramToolError};
 pub use runtime::ProgramExecutor;
 
 /// Validates one retained authored source map against the pinned profile rules.
@@ -117,13 +117,13 @@ impl ProgramExecutionControl {
     }
 }
 
-/// One independently progressing Operation, settled only after durable evidence.
-pub type OperationFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, OperationHostError>> + Send>>;
+/// One independently progressing Tool, settled only after durable evidence.
+pub type ToolFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, ToolHostError>> + Send>>;
 
 /// Host seam used by one fresh execution isolate.
 ///
-/// Operations start without blocking JavaScript and their Promises settle only
+/// Tools start without blocking JavaScript and their Promises settle only
 /// after durable Invocation completion. Emissions and Logs block until durable.
 /// A fatal host failure terminates the isolate without a catchable result.
 /// Domain authority and persistence stay behind this seam.
@@ -133,7 +133,7 @@ pub trait ProgramHost: Send + Sync {
         coral_value::ValueLimits::default()
     }
 
-    /// Invokes one Operation by complete Call Path and native-JSON arguments.
+    /// Invokes one Tool by complete Call Path and native-JSON arguments.
     ///
     /// `location` is the authored call site captured before the call returns
     /// to JavaScript, or `None` when no authored frame made the call.
@@ -142,13 +142,13 @@ pub trait ProgramHost: Send + Sync {
     ///
     /// Returns a catchable rejection only after any required terminal evidence
     /// is durable. A fatal host failure terminates Program execution without
-    /// settling the Operation Promise.
+    /// settling the Tool Promise.
     fn invoke(
         self: Arc<Self>,
         call_path: String,
         arguments_json: String,
         location: Option<AuthoredLocation>,
-    ) -> OperationFuture;
+    ) -> ToolFuture;
 
     /// Durably appends one native-JSON Program Emission made at `location`.
     ///
@@ -205,9 +205,9 @@ pub struct AuthoredLocation {
     pub column: u32,
 }
 
-/// Failure returned by the private Program Operation host.
+/// Failure returned by the private Program Tool host.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OperationHostError {
+pub enum ToolHostError {
     /// Reject with a known, safe Coral Failure after durable completion.
     Rejected {
         /// Domain-owned stable `snake_case` code, not an upstream error code.
@@ -219,16 +219,16 @@ pub enum OperationHostError {
     },
     /// Reject with a complete upstream outcome that is not a declared success,
     /// after it is durable. The Program reads its `status`, `data` and
-    /// `metadata` from the `OperationError`.
+    /// `metadata` from the `ToolError`.
     Upstream {
         /// Domain-owned stable `snake_case` code, never a Coral Failure code.
         code: &'static str,
         /// Safe domain message, never an upstream diagnostic.
         message: &'static str,
-        /// The encoded Operation Result the Program does not receive.
+        /// The encoded Tool Result the Program does not receive.
         outcome_json: String,
     },
-    /// Terminate Program execution without settling the Operation Promise.
+    /// Terminate Program execution without settling the Tool Promise.
     Fatal,
 }
 
@@ -465,7 +465,7 @@ impl LinkedSavedFunctionSource {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SavedFunctionCallPaths {
     functions: Vec<SavedFunctionReference>,
-    operations: OperationReferences,
+    tools: ToolReferences,
 }
 
 impl SavedFunctionCallPaths {
@@ -477,8 +477,8 @@ impl SavedFunctionCallPaths {
 
     /// Returns the literal `coral.providers` and `coral.workspace` chains.
     #[must_use]
-    pub const fn operations(&self) -> &OperationReferences {
-        &self.operations
+    pub const fn tools(&self) -> &ToolReferences {
+        &self.tools
     }
 }
 
@@ -486,13 +486,13 @@ impl SavedFunctionCallPaths {
 /// names. Aliased roots are not followed.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct OperationReferences {
+pub struct ToolReferences {
     call_paths: Vec<String>,
-    chains: Vec<OperationChain>,
+    chains: Vec<ToolChain>,
 }
 
-impl OperationReferences {
-    /// Returns every chain prefix that could be an Operation Call Path, such
+impl ToolReferences {
+    /// Returns every chain prefix that could be a Tool Call Path, such
     /// as `coral.providers.github.repos.get`, so `get.call(...)` still names
     /// `get`.
     #[must_use]
@@ -504,7 +504,7 @@ impl OperationReferences {
 /// One literal chain, relative to `coral`, where it starts in the source, and
 /// whether it is called.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct OperationChain {
+struct ToolChain {
     segments: Vec<String>,
     start: u64,
     called: bool,
@@ -521,7 +521,7 @@ pub struct CallableDeclaration {
 
 impl CallableDeclaration {
     /// Builds one declaration for its path segments: relative to `coral` for
-    /// an Operation, such as `providers.github.repos.get`, and to
+    /// a Tool, such as `providers.github.repos.get`, and to
     /// `coral.functions` for a Saved Function.
     ///
     /// The declaration is self-contained TypeScript with one
@@ -544,13 +544,13 @@ impl CallableDeclaration {
 #[serde(rename_all = "camelCase")]
 pub struct CoralDeclarations {
     declaration_max_bytes: usize,
-    operations: Option<TypedOperations>,
+    tools: Option<TypedTools>,
     functions: Option<Vec<CallableDeclaration>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct TypedOperations {
-    chains: Vec<OperationChain>,
+struct TypedTools {
+    chains: Vec<ToolChain>,
     declarations: Vec<CallableDeclaration>,
 }
 
@@ -561,22 +561,22 @@ impl CoralDeclarations {
     pub const fn new(declaration_max_bytes: usize) -> Self {
         Self {
             declaration_max_bytes,
-            operations: None,
+            tools: None,
             functions: None,
         }
     }
 
-    /// Types `coral.providers` and `coral.workspace` from the Operations the
+    /// Types `coral.providers` and `coral.workspace` from the Tools the
     /// caller can call. `references` are what
     /// [`ProgramCompiler::saved_function_call_paths`] found in the same
     /// source.
     #[must_use]
-    pub fn with_operations(
+    pub fn with_tools(
         mut self,
-        references: &OperationReferences,
+        references: &ToolReferences,
         declarations: Vec<CallableDeclaration>,
     ) -> Self {
-        self.operations = Some(TypedOperations {
+        self.tools = Some(TypedTools {
             chains: references.chains.clone(),
             declarations,
         });

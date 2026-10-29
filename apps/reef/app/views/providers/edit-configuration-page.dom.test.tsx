@@ -40,9 +40,9 @@ const review: ConfigurationReviewView = {
   documentDisplayName: 'Records',
   servers: [],
   destinations: {},
-  operations: [],
-  unavailableOperations: [],
-  operationCount: 1,
+  tools: [],
+  unavailableTools: [],
+  toolCount: 1,
   diagnostic: '',
   readable: true,
   errors: {},
@@ -104,7 +104,7 @@ function renderPage({
             state: 'draft',
             setupId: page.id,
             configure: false,
-            operationsAccepted: false,
+            toolsAccepted: false,
             task,
             etag: 'v1',
             allowIncompatibleConfiguration: false,
@@ -362,13 +362,13 @@ it('offers only a new read when Coral cannot read the source', async () => {
       ...setup,
       sourceLabel: 'https://records.example.com/openapi.json',
       sourceHost: 'records.example.com',
-      configuration: { ...review, diagnostic: 'duplicate_operation_key', readable: false },
+      configuration: { ...review, diagnostic: 'duplicate_tool_key', readable: false },
     },
     task: 'refresh',
   })
   const error = screen.getByRole('alert')
   expect(within(error).getByText('Cannot read this document')).toBeVisible()
-  expect(error).toHaveTextContent('Error code: duplicate_operation_key')
+  expect(error).toHaveTextContent('Error code: duplicate_tool_key')
   expect(screen.queryByRole('textbox', { name: /^Display name/ })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument()
 

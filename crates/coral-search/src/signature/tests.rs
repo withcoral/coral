@@ -2,7 +2,7 @@ use super::{Callable, SIGNATURE_LINE_MAX_BYTES, signature_line};
 
 const HTTP_RESULT_ALIASES: &str = "type HttpResult<Data, Status, MediaType> = { status: Status; data: Data; metadata: { readonly kind: \"http\"; readonly mediaType: MediaType; readonly decodeDiagnostics: readonly { readonly code: string }[] } };\n";
 
-/// The aliases an HTTP Operation's result needs, and the result: one
+/// The aliases an HTTP Tool's result needs, and the result: one
 /// envelope per declared success.
 fn http_result(branches: &[(&str, &str)]) -> (&'static str, String) {
     let envelopes = branches
@@ -126,49 +126,49 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
     for (declaration, callable, expected) in [
         (
             list_issues.as_str(),
-            Callable::Operation { leaf: "list" },
+            Callable::Tool { leaf: "list" },
             r#"list(input: { owner: string; per_page?: number; state?: "open" | "closed" | "all" }): Promise<{ data: Array<Issue> }>"#,
         ),
         (
             create_issue.as_str(),
-            Callable::Operation {
+            Callable::Tool {
                 leaf: "createIssue",
             },
             "createIssue(input: { body: BodyInput; owner: string }): Promise<{ data: Issue | IssueDraft }>",
         ),
         (
             nested_mcp,
-            Callable::Operation { leaf: "forecast" },
+            Callable::Tool { leaf: "forecast" },
             "forecast(input: { city: string; options?: {…}; days?: Array<number> }): Promise<{ data: {…} }>",
         ),
         (
             status_range.as_str(),
-            Callable::Operation { leaf: "names" },
+            Callable::Tool { leaf: "names" },
             "names(): Promise<{ data: Array<Name> }>",
         ),
         (
             named_with_inline.as_str(),
-            Callable::Operation { leaf: "update" },
+            Callable::Tool { leaf: "update" },
             "update(): Promise<{ data: Issue & {…} }>",
         ),
         (
             inline_only.as_str(),
-            Callable::Operation { leaf: "merged" },
+            Callable::Tool { leaf: "merged" },
             "merged(): Promise<{ data: {…} }>",
         ),
         (
             typed_and_untyped.as_str(),
-            Callable::Operation { leaf: "accept" },
+            Callable::Tool { leaf: "accept" },
             "accept(): Promise<{ data: Thing | unknown }>",
         ),
         (
             shadowed_record.as_str(),
-            Callable::Operation { leaf: "pair" },
+            Callable::Tool { leaf: "pair" },
             "pair(): Promise<{ data: Thing & Record<string, unknown> }>",
         ),
         (
             aliased_open_record.as_str(),
-            Callable::Operation { leaf: "extra" },
+            Callable::Tool { leaf: "extra" },
             "extra(): Promise<{ data: Thing }>",
         ),
         (
@@ -178,17 +178,17 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         ),
         (
             default_only.as_str(),
-            Callable::Operation { leaf: "thing" },
+            Callable::Tool { leaf: "thing" },
             "thing(): Promise<{ data: Thing }>",
         ),
         (
             argumentless.as_str(),
-            Callable::Operation { leaf: "delete" },
+            Callable::Tool { leaf: "delete" },
             "delete(): Promise<{ data: string }>",
         ),
         (
             fallback,
-            Callable::Operation { leaf: "raw" },
+            Callable::Tool { leaf: "raw" },
             "raw(input: unknown): Promise<{ data: unknown }>",
         ),
         (
@@ -307,7 +307,7 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         ),
         (
             escaped_literal,
-            Callable::Operation { leaf: "quoted" },
+            Callable::Tool { leaf: "quoted" },
             r#"quoted(): Promise<{ data: "x\"|y" | "z" }>"#,
         ),
         (
@@ -333,7 +333,7 @@ fn a_long_signature_line_is_cut_at_a_word_boundary_with_a_marker() {
     let declaration =
         format!("function wide(input: {{ {members} }}): Promise<{{ data: unknown }}>;");
 
-    let line = signature_line(&declaration, Callable::Operation { leaf: "wide" });
+    let line = signature_line(&declaration, Callable::Tool { leaf: "wide" });
 
     assert!(line.len() <= SIGNATURE_LINE_MAX_BYTES, "{}", line.len());
     assert!(line.ends_with('…'), "{line}");

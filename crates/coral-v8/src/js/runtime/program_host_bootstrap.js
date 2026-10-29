@@ -1,9 +1,9 @@
 'use strict';
 (() => {
-  const invoke = globalThis.__coralOperationInvoke;
+  const invoke = globalThis.__coralToolInvoke;
   const appendEmission = globalThis.__coralProgramEmit;
   const appendLog = globalThis.__coralProgramLog;
-  Reflect.deleteProperty(globalThis, '__coralOperationInvoke');
+  Reflect.deleteProperty(globalThis, '__coralToolInvoke');
   Reflect.deleteProperty(globalThis, '__coralProgramEmit');
   Reflect.deleteProperty(globalThis, '__coralProgramLog');
 
@@ -14,18 +14,18 @@
   const defineProperties = Object.defineProperties;
   const setPrototypeOf = Object.setPrototypeOf;
 
-  class OperationError extends NativeError {
-    // oxlint-disable-next-line constructor-super -- Programs must not construct an OperationError.
+  class ToolError extends NativeError {
+    // oxlint-disable-next-line constructor-super -- Programs must not construct a ToolError.
     constructor() {
-      throw new NativeTypeError('OperationError cannot be constructed');
+      throw new NativeTypeError('ToolError cannot be constructed');
     }
   }
-  Object.defineProperty(OperationError.prototype, 'name', { value: 'OperationError' });
-  Object.freeze(OperationError.prototype);
-  Object.freeze(OperationError);
+  Object.defineProperty(ToolError.prototype, 'name', { value: 'ToolError' });
+  Object.freeze(ToolError.prototype);
+  Object.freeze(ToolError);
 
   const callablePath = (path) =>
-    new Proxy(function coralOperationPath() {}, {
+    new Proxy(function coralToolPath() {}, {
       get(_target, property) {
         if (typeof property !== 'string' || property === 'then') {
           return undefined;
@@ -97,8 +97,8 @@
   // is undefined, so a misspelled one throws where the Program uses it.
   const coral = Object.create(null);
   Object.defineProperties(coral, {
-    OperationError: {
-      value: OperationError,
+    ToolError: {
+      value: ToolError,
       enumerable: true,
       writable: false,
       configurable: false,
@@ -130,11 +130,11 @@
     configurable: false,
   });
 
-  // Returned only to the host; Programs cannot mint an OperationError. An
+  // Returned only to the host; Programs cannot mint a ToolError. An
   // upstream rejection carries the complete outcome the Program did not receive.
   return (code, message, traceId, stack, outcome) => {
     const error = new NativeError(message);
-    setPrototypeOf(error, OperationError.prototype);
+    setPrototypeOf(error, ToolError.prototype);
     defineProperties(error, {
       code: { __proto__: null, value: code },
       stack: { __proto__: null, value: stack, writable: true, configurable: true },

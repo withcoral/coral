@@ -208,10 +208,7 @@ impl Fixture {
                     database.clone(),
                     workspaces.clone(),
                 ),
-                policies: coral_policy::OperationPolicyModule::new(
-                    database.clone(),
-                    workspaces.clone(),
-                ),
+                policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
                 access_lifecycle: coral_administration::AccessLifecycleModule::new(
                     database.clone(),
                     workspaces.clone(),
@@ -379,12 +376,8 @@ impl Fixture {
         )
     }
 
-    fn policies(
-        &self,
-    ) -> management::operation_policy_service_client::OperationPolicyServiceClient<Channel> {
-        management::operation_policy_service_client::OperationPolicyServiceClient::new(
-            self.channel.clone(),
-        )
+    fn policies(&self) -> management::tool_policy_service_client::ToolPolicyServiceClient<Channel> {
+        management::tool_policy_service_client::ToolPolicyServiceClient::new(self.channel.clone())
     }
 
     fn releases(&self) -> management::release_service_client::ReleaseServiceClient<Channel> {

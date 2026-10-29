@@ -1,4 +1,4 @@
-//! The flow each Built-in Operation that prepares a Provider Setup for a
+//! The flow each Built-in Tool that prepares a Provider Setup for a
 //! Program follows: `addProvider` for a new Provider, `updateProvider` for
 //! a new Generation of one. Coral prepares and configures the Setup as the
 //! invoking User, then publishes it when nobody needs to act, or returns the
@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use coral_catalog::{ConfigurationChoices, ProviderConfiguration, ProviderSourceArgument};
 use coral_db::Transaction;
-use coral_policy::ExactOperationRules;
+use coral_policy::ExactToolRules;
 use coral_provider::account::AccountModule;
 use coral_provider::{
     ManagementRequestId, ProviderId, ProviderSetup, ProviderSetupId, ProviderSetupSource,
@@ -32,10 +32,10 @@ pub(super) enum Publisher {
     Person,
 }
 
-/// One Built-in Operation that prepares a Provider Setup. Each step is the
-/// Operation's own; [`perform`] runs them in order.
+/// One Built-in Tool that prepares a Provider Setup. Each step is the
+/// Tool's own; [`perform`] runs them in order.
 #[async_trait]
-pub(super) trait SetupOperation: Sync {
+pub(super) trait SetupTool: Sync {
     /// What configuring the Setup leaves for its Publication, or for the
     /// page where a person finishes it.
     type Configured: Send;
@@ -82,7 +82,7 @@ pub(super) trait SetupOperation: Sync {
         publication_error(error)
     }
 
-    /// The Operation Result for an attempted Publication, or the failure it
+    /// The Tool Result for an attempted Publication, or the failure it
     /// ended in.
     async fn published(
         &self,
@@ -91,10 +91,10 @@ pub(super) trait SetupOperation: Sync {
     ) -> Result<serde_json::Value, Error>;
 }
 
-/// Prepares and configures `operation`'s Setup as the User `context` names,
+/// Prepares and configures `tool`'s Setup as the User `context` names,
 /// then publishes it or returns the Reef page where a person finishes it.
 pub(super) async fn perform(
-    operation: &impl SetupOperation,
+    tool: &impl SetupTool,
     host: &BuiltinHost<'_>,
     context: &ChangeContext,
 ) -> Result<serde_json::Value, Error> {
@@ -103,11 +103,11 @@ pub(super) async fn perform(
     let setup = tokio::select! {
         biased;
         () = host.run.stopped() => return Err(Error::ProgramHostTerminated),
-        setup = operation.prepare(host, context) => setup?,
+        setup = tool.prepare(host, context) => setup?,
     };
     #[cfg(test)]
     host.run.setup_prepared();
-    let (publisher, configured) = match operation.configure(host, context, &setup).await {
+    let (publisher, configured) = match tool.configure(host, context, &setup).await {
         Ok(configured) => configured,
         Err(error) => {
             // Nobody will finish a Setup whose configuration failed.
@@ -119,16 +119,16 @@ pub(super) async fn perform(
         Publisher::Person => {
             // A Run that ended could no longer hand anyone the link.
             require_current_run(host, setup.id()).await?;
-            Ok(operation.needs_sign_in(host, setup.id(), configured))
+            Ok(tool.needs_sign_in(host, setup.id(), configured))
         }
-        Publisher::Coral => publish(operation, host, context, setup.id(), configured).await,
+        Publisher::Coral => publish(tool, host, context, setup.id(), configured).await,
     }
 }
 
 /// Publishes the Setup as the invoking User and returns what the Program
 /// needs to call the Provider.
-async fn publish<O: SetupOperation>(
-    operation: &O,
+async fn publish<O: SetupTool>(
+    tool: &O,
     host: &BuiltinHost<'_>,
     context: &ChangeContext,
     setup: &ProviderSetupId,
@@ -137,22 +137,22 @@ async fn publish<O: SetupOperation>(
     let Some(publisher) = host.publisher else {
         end_setup(host, setup).await;
         return Err(Error::InvocationRejected(
-            CoralFailure::OperationUnavailable.into(),
+            CoralFailure::ToolUnavailable.into(),
         ));
     };
     // A Run that ended could no longer return the Provider: publish nothing.
     // The Run can still end between this check and the Publication; the
     // Provider then changes and search finds it, though the call ended.
     require_current_run(host, setup).await?;
-    match operation
+    match tool
         .publish(host, context, publisher, setup, configured)
         .await
     {
-        Ok(publication) => operation.published(host, publication).await,
+        Ok(publication) => tool.published(host, publication).await,
         Err(error) => {
             // The Publication left the Setup reusable, but nobody will reuse it.
             end_setup(host, setup).await;
-            Err(operation.publication_error(error))
+            Err(tool.publication_error(error))
         }
     }
 }
@@ -228,9 +228,9 @@ pub(super) fn request_id(invocation: &InvocationId) -> Result<ManagementRequestI
     Ok(ManagementRequestId::parse(&invocation.to_string())?)
 }
 
-/// The Operation Result for a Provider Coral published, from what its active
-/// Generation offers the Principal and the Workspace's Operation rules.
-pub(super) type PublishedResult = fn(&PublishedProvider, &ExactOperationRules) -> serde_json::Value;
+/// The Tool Result for a Provider Coral published, from what its active
+/// Generation offers the Principal and the Workspace's Tool rules.
+pub(super) type PublishedResult = fn(&PublishedProvider, &ExactToolRules) -> serde_json::Value;
 
 /// `result` for `provider`, which Coral published, read in one snapshot. It
 /// says what Coral resolved, so the Program need not guess whether its next
@@ -269,8 +269,7 @@ async fn published_result_in_transaction(
         principal,
     )
     .await?;
-    let rules =
-        coral_policy::exact_operation_rules_in_transaction(transaction, workspace_id).await?;
+    let rules = coral_policy::exact_tool_rules_in_transaction(transaction, workspace_id).await?;
     Ok(result(&published, &rules))
 }
 

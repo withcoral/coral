@@ -9,11 +9,11 @@ async fn internal_invocations_do_not_end_waits_and_initial_wait_batches_authored
         upstream.clone(),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:lean-wait", "Meaningful waits")
+    let tool = fixture
+        .user_tool("user:lean-wait", "Meaningful waits")
         .await;
-    let actor = &operation.principal;
-    let workspace = &operation.workspace_id;
+    let actor = &tool.principal;
+    let workspace = &tool.workspace_id;
     let accepted = fixture.runs.start(actor, workspace, submission(
         "for(let i=0;i<3;i++) { await coral.providers.weather.getForecast({}); if(i===1) { await coral.emit('ready'); console.log('ready'); } } return 7;"
     )).await.unwrap();
@@ -89,11 +89,11 @@ async fn cursorless_wait_replays_earlier_output_and_ends_only_on_later_output() 
         upstream.clone(),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:cursorless-wait", "Cursorless waits")
+    let tool = fixture
+        .user_tool("user:cursorless-wait", "Cursorless waits")
         .await;
-    let actor = &operation.principal;
-    let workspace = &operation.workspace_id;
+    let actor = &tool.principal;
+    let workspace = &tool.workspace_id;
     let accepted = fixture.runs.start(actor, workspace, submission(
         "console.log('first'); await coral.providers.weather.getForecast({}); console.log('second'); await coral.providers.weather.getForecast({}); return 7;"
     )).await.unwrap();
@@ -169,11 +169,11 @@ async fn authored_pages_skip_internal_records_without_losing_order_or_replay() {
         Arc::new(ScriptedUpstream::json(200, serde_json::json!({}))),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:lean-pages", "Authored output pages")
+    let tool = fixture
+        .user_tool("user:lean-pages", "Authored output pages")
         .await;
-    let actor = &operation.principal;
-    let workspace = &operation.workspace_id;
+    let actor = &tool.principal;
+    let workspace = &tool.workspace_id;
     let accepted = fixture.runs.start(actor, workspace, submission(
         "for(let i=0;i<3;i++) { await coral.providers.weather.getForecast({}); await coral.emit(i); console.log(i); } return null;"
     )).await.unwrap();

@@ -53,7 +53,6 @@ export function SourcePane({
         highlight={highlight}
         followHighlight
         revealKey={revealKey}
-        surface="floating"
       />
     </div>
   )

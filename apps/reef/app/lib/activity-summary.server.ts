@@ -1,8 +1,16 @@
-import type { ActivitySummaryData, SummaryDays } from './activity-summary'
+import type { ActivitySummaryData, CallerCalls, SummaryDays } from './activity-summary'
 import { Code, ConnectError } from '@connectrpc/connect'
-import type { ManagementApi } from './management.server'
+import type { ActivityCallerCalls } from '@/generated/coral/management/v1/activity_pb'
+import { resourcePath, type ManagementApi } from './management.server'
 
 const toCount = (value: bigint | undefined) => Number(value ?? 0n)
+
+const toCaller = ({ key, label, agent, calls }: ActivityCallerCalls): CallerCalls => ({
+  key,
+  label,
+  ...(agent && { agentPath: resourcePath(agent) }),
+  calls: toCount(calls),
+})
 
 /** The caller's summary of one Workspace for the last `days`. A failed read rejects; it is never zeros. */
 export async function loadActivitySummary(
@@ -22,13 +30,17 @@ export async function loadActivitySummary(
       failed: toCount(value.calls?.failed),
       canceled: toCount(value.calls?.canceled),
     },
-    stopped: value.stopped.map((op) => ({
-      callPath: op.callPath,
-      blocked: toCount(op.blocked),
-      notAllowed: toCount(op.notAllowed),
-      needsSetup: toCount(op.needsSetup),
+    stopped: value.stopped.map((tool) => ({
+      callPath: tool.callPath,
+      blocked: toCount(tool.blocked),
+      notAllowed: toCount(tool.notAllowed),
+      needsSetup: toCount(tool.needsSetup),
     })),
-    operations: value.operations.map((op) => ({ callPath: op.callPath, calls: toCount(op.calls) })),
+    tools: value.tools.map((tool) => ({
+      callPath: tool.callPath,
+      calls: toCount(tool.calls),
+      callers: tool.callers.map(toCaller),
+    })),
     approvals: {
       approved: toCount(value.approvals?.approved),
       declined: toCount(value.approvals?.declined),
@@ -41,6 +53,7 @@ export async function loadActivitySummary(
       label,
       bytes: bytes.toString(),
     })),
+    callers: value.callers.map(toCaller),
   }
 }
 

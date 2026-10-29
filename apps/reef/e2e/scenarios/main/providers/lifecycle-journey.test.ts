@@ -1,18 +1,18 @@
 import { createServer } from 'node:http'
 import { expect, test } from 'vitest'
-import { OperationAccessState } from '../../../generated/coral/management/v1/policy_pb.ts'
+import { ToolAccessState } from '../../../generated/coral/management/v1/policy_pb.ts'
 import { authenticatedTarget, loginActor, mcpToken } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
 import { inspectRunEvents, managementClients } from '../../../support/management.ts'
 import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   addedProviders,
   addProviderFromFile,
   chooseFile,
   confirmConfiguration,
   createWorkspace,
-  setOperationPolicy,
+  setToolPolicy,
   openProviderSettings,
   programRunner,
   type RunUpdate,
@@ -52,7 +52,7 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
       let run: ReturnType<typeof programRunner>
       const policy = async (path: string, state: 'Always allow' | 'Disabled') => {
         await page.goto(path)
-        await setOperationPolicy(page, 'getForecast', state)
+        await setToolPolicy(page, 'getForecast', state)
       }
       const execute = async (namespace: string) => {
         const result = await run.exec(
@@ -82,7 +82,7 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
         return update
       }
       await step(
-        'Add a credential-free provider through Reef and enable its exact operation',
+        'Add a credential-free provider through Reef and enable its exact tool',
         async () => {
           workspace = await createWorkspace(
             actor.accessToken,
@@ -125,7 +125,7 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
           await taken.waitFor({ state: 'detached' })
           await page.getByLabel('Namespace', { exact: true }).fill('otherWeather')
           await confirmConfiguration(page)
-          await acceptOperations(page)
+          await acceptTools(page)
           await page.getByRole('button', { name: 'Add provider', exact: true }).click()
           await waitForPublication(page)
           secondProvider = new URL(page.url()).pathname
@@ -202,16 +202,16 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
             'weather',
           )
           expect(recreated).not.toBe(providerPath)
-          const catalog = await api.providers.listOperations({
+          const catalog = await api.providers.listTools({
             parent: recreated.slice(1),
             pageSize: 100,
           })
-          const policies = await api.policies.getOperationPolicies({
+          const policies = await api.policies.getToolPolicies({
             parent: recreated.slice(1),
-            operations: catalog.operations.map((operation) => operation.name),
+            tools: catalog.tools.map((tool) => tool.name),
           })
           expect(policies.policies).toHaveLength(1)
-          expect(policies.policies[0].accessState).toBe(OperationAccessState.APPROVAL_REQUIRED)
+          expect(policies.policies[0].accessState).toBe(ToolAccessState.APPROVAL_REQUIRED)
           expect(policies.policies[0].explicit).toBe(false)
           expect(calls).toBe(4)
           expect(

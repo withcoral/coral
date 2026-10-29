@@ -1,5 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
+import { expect } from 'storybook/test'
+
 import { Brand } from './brand'
 
 const meta = {
@@ -15,4 +17,11 @@ export const Lockup: Story = {}
 
 export const Mark: Story = {
   args: { compact: true },
+}
+
+export const Labeled: Story = {
+  args: { label: 'console' },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('img', { name: 'Coral console' })).toHaveTextContent('console')
+  },
 }

@@ -2,16 +2,15 @@
 
 import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useEffect, useState } from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { renderRoute } from '@/test-support/route'
+import { renderLivePage, renderRoute } from '@/test-support/route'
 import { approvalContext, approvalRequest as approval } from '../activity/fixtures'
 import { ActivityArchivedContext } from '../activity/live'
 import { ActionReviewSession, ApprovalReview } from './review'
 
 type Approval = typeof approval
-type DecisionResponse = { error: string } | { state: string }
+type DecisionResponse = { error: string } | { state: string } | { recording: true }
 
 const approved: DecisionResponse = { state: 'approved' }
 // The instructions an invalid comment describes itself with.
@@ -22,13 +21,8 @@ function renderReview() {
     form: FormData
     respond: (response: DecisionResponse) => void
   }> = []
-  let updateRequest!: (request: Approval | null) => void
-  function ReviewPage() {
-    const [request, setRequest] = useState<Approval | null>(approval)
-    useEffect(() => {
-      updateRequest = setRequest
-    }, [])
-    return (
+  const { container, router, update } = renderLivePage<Approval | null>(
+    (request) => (
       <ActionReviewSession request={request}>
         {request ? (
           <ApprovalReview detail={request} context={approvalContext} />
@@ -36,23 +30,24 @@ function renderReview() {
           <p>Reconnecting to the exact review.</p>
         )}
       </ActionReviewSession>
-    )
-  }
-  const { container, router } = renderRoute(<ReviewPage />, {
-    entry: '/activity?record=one&request=one',
-    // The shell owns the CSRF token that review forms submit.
-    csrf: 'test-csrf',
-    routes: [
-      {
-        path: '/activity/resolve',
-        action: async ({ request }) => {
-          const form = await request.formData()
-          return new Promise<DecisionResponse>((respond) => submissions.push({ form, respond }))
+    ),
+    approval,
+    {
+      entry: '/activity?record=one&request=one',
+      // The shell owns the CSRF token that review forms submit.
+      csrf: 'test-csrf',
+      routes: [
+        {
+          path: '/activity/resolve',
+          action: async ({ request }) => {
+            const form = await request.formData()
+            return new Promise<DecisionResponse>((respond) => submissions.push({ form, respond }))
+          },
         },
-      },
-      { path: '/elsewhere', element: <p>Another page</p> },
-    ],
-  })
+        { path: '/elsewhere', element: <p>Another page</p> },
+      ],
+    },
+  )
   return {
     container,
     submissions,
@@ -62,9 +57,7 @@ function renderReview() {
         await router.navigate(to, options)
       })
     },
-    show: async (request: Approval | null) => {
-      await act(async () => updateRequest(request))
-    },
+    show: update,
   }
 }
 
@@ -129,7 +122,7 @@ describe('exact approval review', () => {
 
   it.each([
     [
-      'approval to its exact operation',
+      'approval to its exact tool',
       `/activity?record=${encodeURIComponent(approval.run)}&request=${encodeURIComponent(approval.name)}`,
       `/activity?record=${encodeURIComponent(approval.invocation)}&request=${encodeURIComponent(approval.name)}`,
       'record',
@@ -262,6 +255,28 @@ describe('exact approval review', () => {
     expect(statuses()).toEqual(['Approved'])
     expect(page.container).not.toHaveTextContent('Could not save your decision.')
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+
+  // Catches: a decision that Coral holds offered again, or its status outliving the live read.
+  // The request is decided, expires, or closes when its Run ends.
+  it.each([
+    ['approved', 'Approved'],
+    ['expired', 'Expired'],
+    ['closed', 'Closed'],
+  ])('says your decision is saving until the live read shows it %s', async (state, label) => {
+    const page = renderReview()
+    await enterComment('Reviewed the exact arguments.')
+    await click('Approve this call')
+    await act(async () => page.submissions[0].respond({ recording: true }))
+
+    expect(statuses()).toContain('Saving your decision…')
+    expect(button('Approve this call')).toBeDisabled()
+    expect(button('Deny this call')).toBeDisabled()
+    // The comment went with the decision, so it is no longer an unsent draft.
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+
+    await page.show({ ...approval, state, actionable: false })
+    expect(statuses()).toEqual([label])
   })
 
   it('shows the durable denial returned to a stale approval attempt and removes decision controls', async () => {

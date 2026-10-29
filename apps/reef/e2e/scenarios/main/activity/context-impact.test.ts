@@ -7,12 +7,12 @@ import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
   addProviderFromFile,
   createWorkspace,
-  enableOperation,
+  enableTool,
   observeRun,
   programRunner,
 } from '../../../support/providers.ts'
 
-test('Activity and the Overview summary reconcile discovery costs and saved operation results without loading payloads into the table', async (context) => {
+test('Activity and the Overview summary reconcile discovery costs and saved tool results without loading payloads into the table', async (context) => {
   const actor = await loginActor(context, authenticatedTarget().authentication.owner)
   const api = managementClients(actor.accessToken)
   const upstream = await listen(
@@ -41,7 +41,7 @@ test('Activity and the Overview summary reconcile discovery costs and saved oper
         'contextFixture',
       )
       await page.goto(provider)
-      await enableOperation(page, 'read')
+      await enableTool(page, 'read')
       const intent = `Save context ${crypto.randomUUID()}`
       const execute = programRunner(page, target, workspace, {
         accessToken: await mcpToken(page, workspace),
@@ -68,7 +68,7 @@ test('Activity and the Overview summary reconcile discovery costs and saved oper
       const task = `workspaces/${workspace}/tasks/${execute.taskId()}`
       const entries = await api.activity.browseRunEntries({ name: run, pageSize: 100 })
       const invocation = entries.entries.find(({ record }) => record.case === 'invocation')!.record
-      if (invocation.case !== 'invocation') throw new Error('Expected operation evidence')
+      if (invocation.case !== 'invocation') throw new Error('Expected tool evidence')
       const exact = await api.activity.inspectInvocation({ name: invocation.value.name })
       if (exact.outcome.case !== 'upstreamOutcomeJson') throw new Error('Expected native result')
       const rawBytes = BigInt(Buffer.byteLength(exact.outcome.value))

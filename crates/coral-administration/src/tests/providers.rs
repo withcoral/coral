@@ -10,7 +10,7 @@ use coral_provider::{
     ProviderModule, ProviderNamespace, ProviderPublicationOutcome, ProviderRegenerationRequest,
     ProviderSetupId, WorkspaceProviderPublicationRequest,
 };
-use coral_search::test_fixtures::{IndexedGeneration, indexed_generations, indexed_operations};
+use coral_search::test_fixtures::{IndexedGeneration, indexed_generations, indexed_tools};
 use coral_search::{SearchIndex, SearchQuery, SearchRequest, UniversalSearchModule};
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
@@ -43,7 +43,7 @@ impl Fixture {
     /// A fixture whose index writes may run for `write_limit`, or for the
     /// index's default when `None`.
     pub(super) async fn with_write_limit(write_limit: Option<std::time::Duration>) -> Self {
-        // Search applies Operation access rules, so the schema includes Policy.
+        // Search applies Tool access rules, so the schema includes Policy.
         let db = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let database = db.database();
         let workspaces = WorkspaceModule::new(database.clone());
@@ -130,17 +130,17 @@ impl Fixture {
             .unwrap()
     }
 
-    /// The indexed Operations as `(Call Path, Provider name)`.
-    pub(super) async fn operations(&self) -> Vec<(String, String)> {
-        indexed_operations(&self.db.database(), &self.workspace)
+    /// The indexed Tools as `(Call Path, Provider name)`.
+    pub(super) async fn tools(&self) -> Vec<(String, String)> {
+        indexed_tools(&self.db.database(), &self.workspace)
             .await
             .unwrap()
             .into_iter()
-            .map(|operation| (operation.call_path, operation.provider_name))
+            .map(|tool| (tool.call_path, tool.provider_name))
             .collect()
     }
 
-    /// The Operation hits a query finds, as `(Call Path, Provider display name)`.
+    /// The Tool hits a query finds, as `(Call Path, Provider display name)`.
     pub(super) async fn found(&self, text: &str) -> Vec<(String, String)> {
         self.search
             .search(
@@ -153,10 +153,10 @@ impl Fixture {
             .hits()
             .iter()
             .filter_map(|hit| {
-                hit.operation().map(|operation| {
+                hit.tool().map(|tool| {
                     (
                         hit.call_path().as_str().to_string(),
-                        operation.provider_display_name().to_string(),
+                        tool.provider_display_name().to_string(),
                     )
                 })
             })
@@ -169,7 +169,7 @@ fn hit(path: &str, display_name: &str) -> Vec<(String, String)> {
 }
 
 #[tokio::test]
-async fn publication_indexes_the_new_operations_and_regeneration_removes_the_superseded_rows() {
+async fn publication_indexes_the_new_tools_and_regeneration_removes_the_superseded_rows() {
     let f = Fixture::new().await;
 
     let provider = f.publish(FORECAST).await;
@@ -182,7 +182,7 @@ async fn publication_indexes_the_new_operations_and_regeneration_removes_the_sup
     assert_eq!(created.state, "complete");
     assert_eq!(created.provider_id, provider.to_string());
     assert_eq!(
-        f.operations().await,
+        f.tools().await,
         [(FORECAST_PATH.to_string(), "weather Weather".to_string())]
     );
     assert_eq!(f.found("forecast").await, hit(FORECAST_PATH, "Weather"));
@@ -207,7 +207,7 @@ async fn publication_indexes_the_new_operations_and_regeneration_removes_the_sup
     assert_ne!(regenerated.generation_id, created.generation_id);
     assert_eq!(regenerated.state, "complete");
     assert_eq!(
-        f.operations().await,
+        f.tools().await,
         [(CURRENT_PATH.to_string(), "weather Weather".to_string())]
     );
     assert_eq!(
@@ -263,7 +263,7 @@ async fn a_replay_a_reused_generation_or_a_failed_outcome_notifies_nothing() {
         "a replay, a reuse of the active Generation, and a namespace conflict"
     );
     assert_eq!(f.generations().await, []);
-    assert_eq!(f.operations().await, []);
+    assert_eq!(f.tools().await, []);
     assert_eq!(f.found("forecast").await, []);
 }
 
@@ -280,7 +280,7 @@ async fn removal_removes_the_providers_rows() {
     f.index.settled().await;
 
     assert_eq!(f.generations().await, []);
-    assert_eq!(f.operations().await, []);
+    assert_eq!(f.tools().await, []);
     assert_eq!(f.found("forecast").await, []);
 }
 
@@ -310,7 +310,7 @@ async fn rename_rewrites_the_rows_of_the_same_generation_under_the_new_name() {
         "a rename rewrites the same Generation"
     );
     assert_eq!(
-        f.operations().await,
+        f.tools().await,
         [(FORECAST_PATH.to_string(), "weather Forecasts".to_string())]
     );
     assert_eq!(f.found("forecast").await, hit(FORECAST_PATH, "Forecasts"));
@@ -323,13 +323,13 @@ async fn a_failed_index_write_leaves_the_publication_committed() {
     let sql = match f.db.database().system() {
         coral_db::DatabaseSystem::Sqlite => format!(
             "CREATE TRIGGER inject_index_fault BEFORE INSERT ON search_entities \
-             WHEN NEW.kind = 'operation' BEGIN SELECT RAISE(ABORT, '{fault}'); END;"
+             WHEN NEW.kind = 'provider_tool' BEGIN SELECT RAISE(ABORT, '{fault}'); END;"
         ),
         coral_db::DatabaseSystem::Postgres => format!(
             "CREATE FUNCTION inject_index_fault() RETURNS trigger LANGUAGE plpgsql \
              AS $$ BEGIN RAISE EXCEPTION '{fault}'; END $$; \
              CREATE TRIGGER inject_index_fault BEFORE INSERT ON search_entities \
-             FOR EACH ROW WHEN (NEW.kind = 'operation') \
+             FOR EACH ROW WHEN (NEW.kind = 'provider_tool') \
              EXECUTE FUNCTION inject_index_fault();"
         ),
     };
@@ -343,5 +343,5 @@ async fn a_failed_index_write_leaves_the_publication_committed() {
         .expect("the publication committed");
     let [state] = f.generations().await.try_into().expect("one state row");
     assert_eq!(state.state, "failed");
-    assert_eq!(f.operations().await, []);
+    assert_eq!(f.tools().await, []);
 }

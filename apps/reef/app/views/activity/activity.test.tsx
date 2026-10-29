@@ -1,9 +1,8 @@
 /** @vitest-environment happy-dom */
 import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useEffect, useState } from 'react'
 import { expect, it, onTestFinished, vi } from 'vitest'
-import { markupRoute, renderRoute } from '@/test-support/route'
+import { markupRoute, renderLivePage, renderRoute } from '@/test-support/route'
 import { Activity, duration } from './activity'
 import { ActivityArchivedContext } from './live'
 import { revealHref } from './navigation'
@@ -36,7 +35,7 @@ const run: ActivityRow & { kind: 'run' } = {
   durationNanos: '1000000000',
   requiresAction: false,
 }
-const operation: ActivityRow & { kind: 'invocation' } = {
+const invocation: ActivityRow & { kind: 'invocation' } = {
   ...run,
   kind: 'invocation',
   name: `${workspace}/invocations/one`,
@@ -46,7 +45,7 @@ const operation: ActivityRow & { kind: 'invocation' } = {
   dispatchedAt: startedAt,
   waitingNanos: '0',
   provider: `${workspace}/providers/linear`,
-  operation: 'listIssues',
+  tool: 'listIssues',
   callPath: 'coral.providers.linear.listIssues',
 }
 const tool: ActivityRow & { kind: 'tool' } = {
@@ -56,7 +55,7 @@ const tool: ActivityRow & { kind: 'tool' } = {
   agent: '',
   task: goal.name,
   tool: 'search',
-  intent: 'Find operations',
+  intent: 'Find tools',
   outcome: 'succeeded',
   startedAt,
   completedAt: startedAt,
@@ -82,21 +81,21 @@ it.each<[string, ActivityRow, string]>([
     'accepted · run unavailable',
   ],
   [
-    'operation that needs action',
+    'tool call that needs action',
     {
-      ...operation,
+      ...invocation,
       state: 'pending',
       outcome: 'unknown',
       requiresAction: true,
     },
     'pending',
   ],
-  ['a response received, not inferred success', operation, 'completed'],
-  ['uncertain dispatch', { ...operation, outcome: 'indeterminate' }, 'result unknown'],
-  ['a Coral failure', { ...operation, outcome: 'coral_failure' }, 'failed'],
+  ['a response received, not inferred success', invocation, 'completed'],
+  ['uncertain dispatch', { ...invocation, outcome: 'indeterminate' }, 'result unknown'],
+  ['a Coral failure', { ...invocation, outcome: 'coral_failure' }, 'failed'],
   [
     'Run termination, not an upstream error',
-    { ...operation, outcome: 'run_terminated' },
+    { ...invocation, outcome: 'run_terminated' },
     'run ended',
   ],
 ])('marks %s with its exact accessible state', (_name, row, label) => {
@@ -112,11 +111,11 @@ it.each(['program.logged', 'program.emitted', 'run.started'])(
   (eventKind) => {
     const markup = render({
       kind: 'output',
-      name: `${operation.run}/events/1`,
-      workspace: operation.workspace,
-      run: operation.run,
+      name: `${invocation.run}/events/1`,
+      workspace: invocation.workspace,
+      run: invocation.run,
       label: 'output #1',
-      startedAt: operation.startedAt,
+      startedAt: invocation.startedAt,
       eventKind,
       agent: '',
     })
@@ -125,9 +124,11 @@ it.each(['program.logged', 'program.emitted', 'run.started'])(
   },
 )
 
-it('marks only the operation as needing action, never its containing Run', () => {
+it('marks only the tool call as needing action, never its containing Run', () => {
   expect(render({ ...run, state: 'running', requiresAction: true })).not.toContain('needs action')
-  expect(render({ ...operation, state: 'pending', requiresAction: true })).toContain('needs action')
+  expect(render({ ...invocation, state: 'pending', requiresAction: true })).toContain(
+    'needs action',
+  )
 })
 
 it('retains the selected review and draft across pending reorder and removal, but conceals access loss', async () => {
@@ -151,42 +152,34 @@ it('retains the selected review and draft across pending reorder and removal, bu
       terminal: { kind: 'unavailable' },
     },
   })
-  let publish!: (value: ActivityPage) => void
-  function Surface() {
-    const [current, setCurrent] = useState(initial)
-    useEffect(() => {
-      publish = setCurrent
-    }, [])
-    return (
+  const { update: publish } = renderLivePage(
+    (page) => (
       <ActionReviewSession>
-        <Activity page={current} />
+        <Activity page={page} />
       </ActionReviewSession>
-    )
-  }
-  renderRoute(<Surface />, { entry: '/activity?record=one&request=one' })
+    ),
+    initial,
+    { entry: '/activity?record=one&request=one' },
+  )
   expect(document.body).toHaveTextContent('exact-recipient')
   const comment = screen.getByRole('textbox', { name: 'Comment (optional)' })
   await user.type(comment, 'Keep this draft')
 
-  await act(async () =>
-    publish({
-      ...initial,
-      pending: { actions: [], actionCount: '0', next: '', unavailable: false },
-    }),
-  )
+  await publish({
+    ...initial,
+    pending: { actions: [], actionCount: '0', next: '', unavailable: false },
+  })
   expect(document.body).toHaveTextContent('exact-recipient')
   expect(screen.getByRole('textbox', { name: 'Comment (optional)' })).toBe(comment)
   expect(comment).toHaveValue('Keep this draft')
 
-  await act(async () =>
-    publish({
-      ...initial,
-      detail: null,
-      selectedRow: null,
-      unavailable: true,
-      pending: { actions: [], actionCount: '0', next: '', unavailable: true },
-    }),
-  )
+  await publish({
+    ...initial,
+    detail: null,
+    selectedRow: null,
+    unavailable: true,
+    pending: { actions: [], actionCount: '0', next: '', unavailable: true },
+  })
   expect(document.body).not.toHaveTextContent('exact-recipient')
   expect(screen.queryByRole('button', { name: 'Approve this call' })).not.toBeInTheDocument()
 })
@@ -257,7 +250,7 @@ it.each<[string, ActivityViewProps['more'], boolean, string[]]>([
 // Catches: a glimpse growing past its few roots when one of them is expanded.
 it.each<[string, ActivityViewProps['more'], string[]]>([
   ['a glimpse', { to: '/w/activity', label: 'View all activity', roots: 5 }, ['Find invoices']],
-  ['the full list', undefined, ['Find invoices', 'Find operations']],
+  ['the full list', undefined, ['Find invoices', 'Find tools']],
 ])('%s lists child records only when it pages', (_, more, records) => {
   renderRoute(
     <Activity
@@ -327,16 +320,16 @@ it.each<[string, ActivityViewProps['more'], string]>([
 // An expanded record with no children says why, in terms of its own lifecycle.
 // A Run in a state Reef does not know may still be running, so its copy claims neither.
 it.each<[string, ActivityRow, string]>([
-  ['ended Run', run, 'This execution called no operations.'],
+  ['ended Run', run, 'This execution called no tools.'],
   [
     'running Run',
     { ...run, state: 'running', endedAt: null },
-    'This execution has not called an operation yet.',
+    'This execution has not called a tool yet.',
   ],
   [
     'Run in an unknown state',
     { ...run, state: 'unknown', endedAt: null },
-    'This execution has no recorded operations.',
+    'This execution has no recorded tools.',
   ],
   ['ended Task', goal, 'This task made no calls.'],
   ['open Task', { ...goal, outcome: 'open', endedAt: null }, 'This task has not made a call yet.'],
@@ -424,7 +417,7 @@ it('nests an expanded Run under its expanded Task, under the day', () => {
         expanded: [goal.name, run.name],
         branches: {
           [goal.name]: { rows: [run], next: '', unavailable: false },
-          [run.name]: { rows: [operation], next: '', unavailable: false },
+          [run.name]: { rows: [invocation], next: '', unavailable: false },
         },
       })}
     />,
@@ -433,7 +426,7 @@ it('nests an expanded Run under its expanded Task, under the day', () => {
   expect(headingLevel(goal.intent)).toBe('2')
   expect(headingLevel('you')).toBe('3')
   expect(screen.getByRole('rowgroup', { name: 'Fri 18 Sep 2026' })).toContainElement(
-    screen.getByRole('link', { name: operation.callPath }),
+    screen.getByRole('link', { name: invocation.callPath }),
   )
 })
 
@@ -486,13 +479,13 @@ it('keeps one accepted-source split while the selection moves within its Run', a
   ].join('\n')
   // Coral stored where each call ran; the later record ran the earlier line.
   const second = {
-    ...operation,
+    ...invocation,
     name: `${workspace}/invocations/two`,
     position: 1,
     sourceLocation: { document: { kind: 'program' as const }, line: 2, column: 38 },
   }
   const first = {
-    ...operation,
+    ...invocation,
     position: 0,
     sourceLocation: { document: { kind: 'program' as const }, line: 3, column: 22 },
   }
@@ -558,7 +551,7 @@ const splitContext = {
   requestUnavailable: false,
 }
 // Catches: a fixed Run header kept above the split, so a Run's header showed twice and an
-// operation showed its parent Run's header above its own, or the close control left the
+// tool call showed its parent Run's header above its own, or the close control left the
 // selected record's own header.
 it.each([
   [
@@ -569,11 +562,11 @@ it.each([
     'program run',
   ],
   [
-    'an operation',
-    operation,
+    'a tool',
+    invocation,
     {
       kind: 'invocation',
-      invocation: operation,
+      invocation,
       arguments: '{}',
       result: { kind: 'upstream_outcome', value: '{}' },
       requests: [],
@@ -582,7 +575,7 @@ it.each([
       context: splitContext,
     },
     'coral.providers.linear.listIssues',
-    'operation',
+    'tool',
   ],
 ] satisfies [string, ActivityRow, ActivityPage['detail'], string, string][])(
   'heads %s selection in the split with its own header alone',

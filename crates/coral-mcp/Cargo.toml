@@ -18,6 +18,7 @@ coral-functions.workspace = true
 coral-identifier.workspace = true
 coral-search.workspace = true
 coral-task.workspace = true
+coral-telemetry.workspace = true
 coral-workspace.workspace = true
 rmcp = { workspace = true, features = ["elicitation"] }
 schemars.workspace = true
@@ -26,9 +27,11 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tower.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-outbound.workspace = true
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-search = { workspace = true, features = ["test-fixtures"] }
@@ -37,8 +40,6 @@ coral-catalog.workspace = true
 jsonschema.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
-tracing.workspace = true
-tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 reqwest.workspace = true
 coral-policy.workspace = true

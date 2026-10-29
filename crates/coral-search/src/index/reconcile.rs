@@ -14,7 +14,7 @@ use tracing::instrument::WithSubscriber as _;
 
 use super::SearchIndex;
 use crate::indexer::functions::SavedFunctionIndexer;
-use crate::indexer::operations::OperationIndexer;
+use crate::indexer::tools::ToolIndexer;
 use crate::indexer::{self, EntityIndexer, IndexError};
 
 impl SearchIndex {
@@ -142,7 +142,7 @@ impl SearchIndex {
                 let mut transaction = self.database.begin().await?;
                 let active =
                     coral_provider::active_generations_in_transaction(&mut transaction).await?;
-                OperationIndexer
+                ToolIndexer
                     .remove_superseded(&mut transaction, &active)
                     .await?;
                 transaction.commit().await?;
@@ -167,7 +167,7 @@ impl SearchIndex {
                 let mut transaction = self.database.begin_read_snapshot().await?;
                 let expected =
                     coral_provider::active_generations_in_transaction(&mut transaction).await?;
-                let stale = OperationIndexer
+                let stale = ToolIndexer
                     .reconcile(&mut transaction, &expected, now_unix_nanos)
                     .await?
                     .into_iter()

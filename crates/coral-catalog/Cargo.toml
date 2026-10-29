@@ -10,7 +10,7 @@ publish = false
 workspace = true
 
 [features]
-# Test-only Built-in catalogs with Operations this Coral version does not
+# Test-only Built-in catalogs with Tools this Coral version does not
 # perform. Dev-dependencies enable this; production crates never do.
 test-fixtures = []
 

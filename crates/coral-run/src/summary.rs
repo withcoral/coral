@@ -14,10 +14,10 @@ pub struct ActivitySummary {
     /// Invocations that ended in the window, by outcome.
     pub calls: CallOutcomes,
     /// Call Paths with stopped Invocations, most stopped first. Only a resolved
-    /// Call Path is stored, so the list holds at most one row per Operation.
-    pub stopped: Vec<StoppedOperation>,
+    /// Call Path is stored, so the list holds at most one row per Tool.
+    pub stopped: Vec<StoppedTool>,
     /// Call Paths with ended Invocations, busiest first, bounded like `stopped`.
-    pub operations: Vec<OperationCalls>,
+    pub tools: Vec<ToolCalls>,
     /// Approval requests decided in the window.
     pub approvals: ApprovalDecisions,
     /// Net context bytes of the measured work that ended in the window, as Activity
@@ -28,6 +28,8 @@ pub struct ActivitySummary {
     pub context_impact_partial: bool,
     /// Net context bytes per invoking Principal, most saved first.
     pub actors: Vec<ActorContext>,
+    /// Ended Invocations per invoking Principal, busiest first. They add up to `calls`.
+    pub callers: Vec<CallerCalls>,
 }
 
 /// Ended Invocations by who acts next. The six counts add up to every ended Invocation.
@@ -51,7 +53,7 @@ pub struct CallOutcomes {
 
 /// One Call Path's stopped Invocations, by who must act.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StoppedOperation {
+pub struct StoppedTool {
     /// Retained Program Call Path.
     pub call_path: String,
     /// Invocations a rule stopped.
@@ -64,9 +66,22 @@ pub struct StoppedOperation {
 
 /// One Call Path's ended Invocations.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OperationCalls {
+pub struct ToolCalls {
     /// Retained Program Call Path.
     pub call_path: String,
+    /// Ended Invocations.
+    pub calls: i64,
+    /// The same Invocations per invoking Principal, busiest first.
+    pub callers: Vec<CallerCalls>,
+}
+
+/// One invoking Principal's ended Invocations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallerCalls {
+    /// Accountable invoking Principal.
+    pub principal: Principal,
+    /// Safe retained Agent label for Agent work; absent for User work or when no label is retained.
+    pub agent_label: Option<String>,
     /// Ended Invocations.
     pub calls: i64,
 }
@@ -87,7 +102,7 @@ pub struct ApprovalDecisions {
 pub struct ActorContext {
     /// Accountable invoking Principal.
     pub principal: Principal,
-    /// Safe retained Agent label, absent for User work or a removed Agent.
+    /// Safe retained Agent label for Agent work; absent for User work or when no label is retained.
     pub agent_label: Option<String>,
     /// Net bytes; negative means saved.
     pub bytes: i64,
@@ -112,7 +127,7 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
         (
             InvocationResultKind::CoralFailure,
             Some(
-                F::OperationDisabled
+                F::ToolDisabled
                 | F::ApprovalRequired
                 | F::AuthorityLost
                 | F::OutboundDestinationRejected,
@@ -134,13 +149,13 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
                 | F::ProviderUnavailable
                 | F::ProviderNamespaceConflict
                 | F::ProviderPublicationFailed
-                | F::OperationUnavailable,
+                | F::ToolUnavailable,
             ),
         ) => CallOutcome::NeedsSetup,
         (
             InvocationResultKind::CoralFailure,
             Some(
-                F::OperationNotFound
+                F::ToolNotFound
                 | F::ProviderNotFound
                 | F::InvalidInput
                 | F::InputTooLarge
@@ -157,6 +172,8 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
 
 /// Grouped ended Invocations, as the repository returns them.
 pub(crate) struct OutcomeEvidence {
+    pub principal: Principal,
+    pub agent_label: Option<String>,
     pub call_path: String,
     pub kind: InvocationResultKind,
     pub failure: Option<CoralFailure>,
@@ -176,7 +193,7 @@ impl CallOutcomes {
     }
 }
 
-impl StoppedOperation {
+impl StoppedTool {
     /// The count an outcome adds to, or `None` when the call was not stopped.
     fn total_mut(&mut self, outcome: CallOutcome) -> Option<&mut i64> {
         match outcome {
@@ -192,18 +209,43 @@ impl StoppedOperation {
     }
 }
 
-fn tally(
-    evidence: Vec<OutcomeEvidence>,
-) -> (CallOutcomes, Vec<StoppedOperation>, Vec<OperationCalls>) {
+/// Adds `calls` to `principal`'s entry.
+fn add_caller(callers: &mut Vec<CallerCalls>, group: &OutcomeEvidence) {
+    match callers.iter_mut().find(|c| c.principal == group.principal) {
+        Some(caller) => caller.calls += group.calls,
+        None => callers.push(CallerCalls {
+            principal: group.principal.clone(),
+            agent_label: group.agent_label.clone(),
+            calls: group.calls,
+        }),
+    }
+}
+
+/// Busiest first. Principal order breaks ties, so both backends return one order.
+fn busiest_first(callers: &mut [CallerCalls]) {
+    callers.sort_by(|a, b| {
+        (Reverse(a.calls), a.principal.id()).cmp(&(Reverse(b.calls), b.principal.id()))
+    });
+}
+
+struct Tally {
+    calls: CallOutcomes,
+    stopped: Vec<StoppedTool>,
+    tools: Vec<ToolCalls>,
+    callers: Vec<CallerCalls>,
+}
+
+fn tally(evidence: Vec<OutcomeEvidence>) -> Tally {
     let mut calls = CallOutcomes::default();
-    let mut stopped = BTreeMap::<String, StoppedOperation>::new();
-    let mut ended = BTreeMap::<String, i64>::new();
+    let mut stopped = BTreeMap::<String, StoppedTool>::new();
+    let mut ended = BTreeMap::<String, ToolCalls>::new();
+    let mut callers = Vec::new();
     for group in evidence {
         let outcome = outcome(group.kind, group.failure);
         *calls.total_mut(outcome) += group.calls;
         let op = stopped
             .entry(group.call_path.clone())
-            .or_insert_with(|| StoppedOperation {
+            .or_insert_with(|| StoppedTool {
                 call_path: group.call_path.clone(),
                 blocked: 0,
                 not_allowed: 0,
@@ -212,17 +254,32 @@ fn tally(
         if let Some(total) = op.total_mut(outcome) {
             *total += group.calls;
         }
-        *ended.entry(group.call_path).or_default() += group.calls;
+        let tool = ended
+            .entry(group.call_path.clone())
+            .or_insert_with(|| ToolCalls {
+                call_path: group.call_path.clone(),
+                calls: 0,
+                callers: Vec::new(),
+            });
+        tool.calls += group.calls;
+        add_caller(&mut tool.callers, &group);
+        add_caller(&mut callers, &group);
     }
     let mut stopped: Vec<_> = stopped.into_values().filter(|op| op.total() > 0).collect();
     // Stable sorts keep Call Path order among equal counts.
     stopped.sort_by_key(|op| Reverse(op.total()));
-    let mut operations: Vec<_> = ended
-        .into_iter()
-        .map(|(call_path, calls)| OperationCalls { call_path, calls })
-        .collect();
-    operations.sort_by_key(|op| Reverse(op.calls));
-    (calls, stopped, operations)
+    let mut tools: Vec<_> = ended.into_values().collect();
+    tools.sort_by_key(|op| Reverse(op.calls));
+    for tool in &mut tools {
+        busiest_first(&mut tool.callers);
+    }
+    busiest_first(&mut callers);
+    Tally {
+        calls,
+        stopped,
+        tools,
+        callers,
+    }
 }
 
 impl RunModule {
@@ -261,16 +318,22 @@ impl RunModule {
         }
         // Principal order breaks ties, so both backends return one order.
         actors.sort_by(|a, b| (a.bytes, a.principal.id()).cmp(&(b.bytes, b.principal.id())));
-        let (calls, stopped, operations) = tally(evidence);
+        let Tally {
+            calls,
+            stopped,
+            tools,
+            callers,
+        } = tally(evidence);
         Ok(ActivitySummary {
             calls,
             stopped,
-            operations,
+            tools,
             approvals,
             context_impact_bytes: (!actors.is_empty())
                 .then(|| actors.iter().map(|actor| actor.bytes).sum()),
             context_impact_partial,
             actors,
+            callers,
         })
     }
 }
@@ -287,7 +350,7 @@ mod tests {
         let failure = |code| (K::CoralFailure, Some(code));
         let table = [
             ((K::UpstreamOutcome, None), O::Answered),
-            (failure(F::OperationDisabled), O::Blocked),
+            (failure(F::ToolDisabled), O::Blocked),
             (failure(F::ApprovalRequired), O::Blocked),
             (failure(F::AuthorityLost), O::Blocked),
             (failure(F::OutboundDestinationRejected), O::Blocked),
@@ -303,8 +366,8 @@ mod tests {
             (failure(F::ProviderUnavailable), O::NeedsSetup),
             (failure(F::ProviderNamespaceConflict), O::NeedsSetup),
             (failure(F::ProviderPublicationFailed), O::NeedsSetup),
-            (failure(F::OperationUnavailable), O::NeedsSetup),
-            (failure(F::OperationNotFound), O::Failed),
+            (failure(F::ToolUnavailable), O::NeedsSetup),
+            (failure(F::ToolNotFound), O::Failed),
             (failure(F::ProviderNotFound), O::Failed),
             (failure(F::InvalidInput), O::Failed),
             (failure(F::InputTooLarge), O::Failed),

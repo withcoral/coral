@@ -19,8 +19,7 @@ use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 
 use coral_catalog::{
-    ExecutionBinding, MaterializedOperation, McpExecutionBinding, McpInvocationMethod,
-    OperationAvailability,
+    ExecutionBinding, MaterializedTool, McpExecutionBinding, McpInvocationMethod, ToolAvailability,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ClientConfig, ReadResourceRequestParams,
@@ -50,27 +49,25 @@ impl ReadyMcpDispatch {
     /// Plans a direct tool call without contacting the upstream server.
     ///
     /// # Errors
-    /// Returns an error for unavailable Operations, unsupported bindings, invalid
+    /// Returns an error for unavailable Tools, unsupported bindings, invalid
     /// logical arguments, or a non-positive result limit.
     pub fn plan(
-        operation: &MaterializedOperation,
+        tool: &MaterializedTool,
         arguments: &Value,
         provider: &str,
         resources: Arc<McpResources>,
         limits: coral_value::ValueLimits,
     ) -> Result<Self, Error> {
-        if operation.availability() != OperationAvailability::Available {
-            return Err(Error::OperationUnavailable);
+        if tool.availability() != ToolAvailability::Available {
+            return Err(Error::ToolUnavailable);
         }
         limits.validate(arguments).map_err(Error::invalid_value)?;
-        let ExecutionBinding::Mcp(binding) = operation.execution_binding() else {
+        let ExecutionBinding::Mcp(binding) = tool.execution_binding() else {
             return Err(Error::UnsupportedProtocol);
         };
         let arguments = arguments
             .as_object()
-            .ok_or_else(|| {
-                Error::InvalidArguments("Operation arguments must be an object".to_string())
-            })?
+            .ok_or_else(|| Error::InvalidArguments("Tool arguments must be an object".to_string()))?
             .clone();
         let resource_uri = if binding.invocation_method() == McpInvocationMethod::ReadResource {
             if arguments.len() != 1 {
@@ -213,7 +210,7 @@ impl McpOutcome {
 
     /// Returns distinct provider-native data and safe MCP metadata.
     #[must_use]
-    pub const fn operation_result(&self) -> &Value {
+    pub const fn tool_result(&self) -> &Value {
         &self.result
     }
 

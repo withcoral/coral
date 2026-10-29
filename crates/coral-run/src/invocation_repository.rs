@@ -9,7 +9,7 @@ use crate::invocation_lifecycle::{InvocationState, UnfinishedInvocation};
 use crate::{CoralFailure, Error, InvocationId, InvocationResultKind, RunId};
 
 #[derive(Iden)]
-enum OperationInvocations {
+enum ToolInvocations {
     Table,
     Id,
     WorkspaceId,
@@ -23,7 +23,7 @@ enum OperationInvocations {
     RetainedAccountConnectionRequestId,
     AccountWaitStartedAtUnixNanos,
     ProviderGenerationId,
-    OperationKey,
+    ToolKey,
     CallPath,
     ArgumentsJson,
     State,
@@ -69,21 +69,21 @@ pub(super) async fn insert_admission(
             .into_iter()
             .unzip();
     let statement = Query::insert()
-        .into_table(OperationInvocations::Table)
+        .into_table(ToolInvocations::Table)
         .columns(
             [
-                OperationInvocations::Id,
-                OperationInvocations::WorkspaceId,
-                OperationInvocations::RunId,
-                OperationInvocations::ProviderId,
-                OperationInvocations::ProviderAccountSettingVersion,
-                OperationInvocations::CredentialRoute,
-                OperationInvocations::ProviderGenerationId,
-                OperationInvocations::OperationKey,
-                OperationInvocations::CallPath,
-                OperationInvocations::ArgumentsJson,
-                OperationInvocations::State,
-                OperationInvocations::AdmittedAtUnixNanos,
+                ToolInvocations::Id,
+                ToolInvocations::WorkspaceId,
+                ToolInvocations::RunId,
+                ToolInvocations::ProviderId,
+                ToolInvocations::ProviderAccountSettingVersion,
+                ToolInvocations::CredentialRoute,
+                ToolInvocations::ProviderGenerationId,
+                ToolInvocations::ToolKey,
+                ToolInvocations::CallPath,
+                ToolInvocations::ArgumentsJson,
+                ToolInvocations::State,
+                ToolInvocations::AdmittedAtUnixNanos,
             ]
             .into_iter()
             .map(IntoIden::into_iden)
@@ -104,7 +104,7 @@ pub(super) async fn insert_admission(
                         .as_storage_str(),
                 ),
                 Expr::val(admitted.target.provider_generation_id().to_string()),
-                Expr::val(admitted.target.operation().key().as_str()),
+                Expr::val(admitted.target.tool().key().as_str()),
                 Expr::val(&admitted.call_path),
                 Expr::val(&admitted.arguments_json),
                 Expr::val(InvocationState::Pending.as_storage_str()),
@@ -126,20 +126,15 @@ pub(super) async fn connection_requests_for_run(
         .fetch_all(
             Query::select()
                 .distinct()
-                .column(OperationInvocations::AccountConnectionRequestId)
-                .from(OperationInvocations::Table)
+                .column(ToolInvocations::AccountConnectionRequestId)
+                .from(ToolInvocations::Table)
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(run.workspace_id.to_string()))
+                .and_where(Expr::col(ToolInvocations::RunId).eq(run.id.to_string()))
                 .and_where(
-                    Expr::col(OperationInvocations::WorkspaceId).eq(run.workspace_id.to_string()),
+                    Expr::col(ToolInvocations::State).eq(InvocationState::Pending.as_storage_str()),
                 )
-                .and_where(Expr::col(OperationInvocations::RunId).eq(run.id.to_string()))
-                .and_where(
-                    Expr::col(OperationInvocations::State)
-                        .eq(InvocationState::Pending.as_storage_str()),
-                )
-                .and_where(
-                    Expr::col(OperationInvocations::AccountConnectionRequestId).is_not_null(),
-                )
-                .order_by(OperationInvocations::AccountConnectionRequestId, Order::Asc)
+                .and_where(Expr::col(ToolInvocations::AccountConnectionRequestId).is_not_null())
+                .order_by(ToolInvocations::AccountConnectionRequestId, Order::Asc)
                 .to_owned(),
         )
         .await?;
@@ -160,7 +155,7 @@ pub(super) fn connection_activity(workspace: &WorkspaceId, run: &RunId) -> Selec
     );
     Query::select()
         .expr_as(Expr::expr(activity).max(), Alias::new("at"))
-        .from_as(OperationInvocations::Table, Alias::new("waiting"))
+        .from_as(ToolInvocations::Table, Alias::new("waiting"))
         .and_where(Expr::col(column("workspace_id")).eq(workspace.to_string()))
         .and_where(Expr::col(column("run_id")).eq(run.to_string()))
         .to_owned()
@@ -176,28 +171,27 @@ pub(super) async fn attach_connection(
     let changed = tx
         .execute_change(
             Query::update()
-                .table(OperationInvocations::Table)
+                .table(ToolInvocations::Table)
                 .values([
                     (
-                        OperationInvocations::AccountWaitStartedAtUnixNanos,
+                        ToolInvocations::AccountWaitStartedAtUnixNanos,
                         Expr::val(now),
                     ),
                     (
-                        OperationInvocations::AccountConnectionRequestId,
+                        ToolInvocations::AccountConnectionRequestId,
                         Expr::val(request.to_string()),
                     ),
                     (
-                        OperationInvocations::RetainedAccountConnectionRequestId,
+                        ToolInvocations::RetainedAccountConnectionRequestId,
                         Expr::val(request.to_string()),
                     ),
                 ])
-                .and_where(Expr::col(OperationInvocations::WorkspaceId).eq(workspace.to_string()))
-                .and_where(Expr::col(OperationInvocations::Id).eq(invocation.to_string()))
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace.to_string()))
+                .and_where(Expr::col(ToolInvocations::Id).eq(invocation.to_string()))
                 .and_where(
-                    Expr::col(OperationInvocations::State)
-                        .eq(InvocationState::Pending.as_storage_str()),
+                    Expr::col(ToolInvocations::State).eq(InvocationState::Pending.as_storage_str()),
                 )
-                .and_where(Expr::col(OperationInvocations::AccountConnectionRequestId).is_null())
+                .and_where(Expr::col(ToolInvocations::AccountConnectionRequestId).is_null())
                 .to_owned(),
         )
         .await?;
@@ -216,28 +210,27 @@ pub(super) async fn retain_credentials(
     let changed = tx
         .execute_change(
             Query::update()
-                .table(OperationInvocations::Table)
+                .table(ToolInvocations::Table)
                 .values([
                     (
-                        OperationInvocations::ProviderAccountId,
+                        ToolInvocations::ProviderAccountId,
                         Expr::val(evidence.account_id.to_string()),
                     ),
                     (
-                        OperationInvocations::AccountAuthorizationVersion,
+                        ToolInvocations::AccountAuthorizationVersion,
                         Expr::val(&evidence.authorization_version),
                     ),
                     (
-                        OperationInvocations::AccountConnectionRequestId,
+                        ToolInvocations::AccountConnectionRequestId,
                         Expr::val(Option::<String>::None),
                     ),
                 ])
-                .and_where(Expr::col(OperationInvocations::WorkspaceId).eq(workspace.to_string()))
-                .and_where(Expr::col(OperationInvocations::Id).eq(invocation.to_string()))
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace.to_string()))
+                .and_where(Expr::col(ToolInvocations::Id).eq(invocation.to_string()))
                 .and_where(
-                    Expr::col(OperationInvocations::State)
-                        .eq(InvocationState::Pending.as_storage_str()),
+                    Expr::col(ToolInvocations::State).eq(InvocationState::Pending.as_storage_str()),
                 )
-                .and_where(Expr::col(OperationInvocations::AccountAuthorizationVersion).is_null())
+                .and_where(Expr::col(ToolInvocations::AccountAuthorizationVersion).is_null())
                 .to_owned(),
         )
         .await?;
@@ -257,13 +250,11 @@ pub(super) async fn has_dispatch_start(
     let row: Option<(Option<i64>,)> = database
         .fetch_optional(
             Query::select()
-                .column(OperationInvocations::DispatchStartedAtUnixNanos)
-                .from(OperationInvocations::Table)
-                .and_where(
-                    Expr::col(OperationInvocations::WorkspaceId).eq(workspace_id.to_string()),
-                )
-                .and_where(Expr::col(OperationInvocations::RunId).eq(run_id.to_string()))
-                .and_where(Expr::col(OperationInvocations::Id).eq(invocation_id.to_string()))
+                .column(ToolInvocations::DispatchStartedAtUnixNanos)
+                .from(ToolInvocations::Table)
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(ToolInvocations::RunId).eq(run_id.to_string()))
+                .and_where(Expr::col(ToolInvocations::Id).eq(invocation_id.to_string()))
                 .to_owned(),
         )
         .await?;
@@ -289,26 +280,24 @@ pub(super) async fn mark_dispatch_started_batch(
         return Ok(Vec::new());
     }
     let ids: Vec<String> = invocation_ids.iter().map(ToString::to_string).collect();
-    let id_in = || Expr::col(OperationInvocations::Id).is_in(ids.iter().map(String::as_str));
+    let id_in = || Expr::col(ToolInvocations::Id).is_in(ids.iter().map(String::as_str));
     let statement = Query::update()
-        .table(OperationInvocations::Table)
+        .table(ToolInvocations::Table)
         .values([
             (
-                OperationInvocations::State,
+                ToolInvocations::State,
                 Expr::val(InvocationState::Dispatching.as_storage_str()),
             ),
             (
-                OperationInvocations::DispatchStartedAtUnixNanos,
+                ToolInvocations::DispatchStartedAtUnixNanos,
                 Expr::val(dispatch_started_at_unix_nanos),
             ),
         ])
-        .and_where(Expr::col(OperationInvocations::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(OperationInvocations::RunId).eq(run_id.to_string()))
+        .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(ToolInvocations::RunId).eq(run_id.to_string()))
         .and_where(id_in())
-        .and_where(
-            Expr::col(OperationInvocations::State).eq(InvocationState::Pending.as_storage_str()),
-        )
-        .and_where(Expr::col(OperationInvocations::DispatchStartedAtUnixNanos).is_null())
+        .and_where(Expr::col(ToolInvocations::State).eq(InvocationState::Pending.as_storage_str()))
+        .and_where(Expr::col(ToolInvocations::DispatchStartedAtUnixNanos).is_null())
         .to_owned();
     let changed = transaction.execute_change(statement).await?;
     if changed == invocation_ids.len() as u64 {
@@ -317,19 +306,17 @@ pub(super) async fn mark_dispatch_started_batch(
     let rows: Vec<(String,)> = transaction
         .fetch_all(
             Query::select()
-                .column(OperationInvocations::Id)
-                .from(OperationInvocations::Table)
-                .and_where(
-                    Expr::col(OperationInvocations::WorkspaceId).eq(workspace_id.to_string()),
-                )
-                .and_where(Expr::col(OperationInvocations::RunId).eq(run_id.to_string()))
+                .column(ToolInvocations::Id)
+                .from(ToolInvocations::Table)
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(ToolInvocations::RunId).eq(run_id.to_string()))
                 .and_where(id_in())
                 .and_where(
-                    Expr::col(OperationInvocations::State)
+                    Expr::col(ToolInvocations::State)
                         .eq(InvocationState::Dispatching.as_storage_str()),
                 )
                 .and_where(
-                    Expr::col(OperationInvocations::DispatchStartedAtUnixNanos)
+                    Expr::col(ToolInvocations::DispatchStartedAtUnixNanos)
                         .eq(dispatch_started_at_unix_nanos),
                 )
                 .to_owned(),
@@ -361,38 +348,33 @@ pub(super) async fn finish(
     let result_bytes = i64::try_from(result_json.map_or(0, str::len))
         .map_err(|_overflow| Error::CorruptData("Invocation byte count overflow".into()))?;
     let statement = Query::update()
-        .table(OperationInvocations::Table)
+        .table(ToolInvocations::Table)
         .values([
             (
-                OperationInvocations::State,
+                ToolInvocations::State,
                 Expr::val(InvocationState::Ended.as_storage_str()),
             ),
             (
-                OperationInvocations::AccountConnectionRequestId,
+                ToolInvocations::AccountConnectionRequestId,
                 Expr::val(Option::<String>::None),
             ),
             (
-                OperationInvocations::EndedAtUnixNanos,
+                ToolInvocations::EndedAtUnixNanos,
                 Expr::val(ended_at_unix_nanos),
             ),
             (
-                OperationInvocations::ResultKind,
+                ToolInvocations::ResultKind,
                 Expr::val(completion.result_kind().as_storage_str()),
             ),
-            (OperationInvocations::ResultJson, Expr::val(result_json)),
-            (OperationInvocations::ResultBytes, Expr::val(result_bytes)),
-            (OperationInvocations::FailureCode, Expr::val(failure_code)),
-            (
-                OperationInvocations::FailureMessage,
-                Expr::val(failure_message),
-            ),
+            (ToolInvocations::ResultJson, Expr::val(result_json)),
+            (ToolInvocations::ResultBytes, Expr::val(result_bytes)),
+            (ToolInvocations::FailureCode, Expr::val(failure_code)),
+            (ToolInvocations::FailureMessage, Expr::val(failure_message)),
         ])
-        .and_where(
-            Expr::col(OperationInvocations::WorkspaceId).eq(admitted.workspace_id.to_string()),
-        )
-        .and_where(Expr::col(OperationInvocations::Id).eq(admitted.id.to_string()))
-        .and_where(Expr::col(OperationInvocations::State).eq(required_state.as_storage_str()))
-        .and_where(Expr::col(OperationInvocations::RunId).eq(admitted.run_id.to_string()))
+        .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(admitted.workspace_id.to_string()))
+        .and_where(Expr::col(ToolInvocations::Id).eq(admitted.id.to_string()))
+        .and_where(Expr::col(ToolInvocations::State).eq(required_state.as_storage_str()))
+        .and_where(Expr::col(ToolInvocations::RunId).eq(admitted.run_id.to_string()))
         .to_owned();
     Ok(transaction.execute(statement).await? == 1)
 }
@@ -407,31 +389,28 @@ pub(super) async fn end_pending_with_failure(
     let changed = tx
         .execute(
             Query::update()
-                .table(OperationInvocations::Table)
+                .table(ToolInvocations::Table)
                 .values([
                     (
-                        OperationInvocations::State,
+                        ToolInvocations::State,
                         Expr::val(InvocationState::Ended.as_storage_str()),
                     ),
-                    (OperationInvocations::EndedAtUnixNanos, Expr::val(now)),
+                    (ToolInvocations::EndedAtUnixNanos, Expr::val(now)),
                     (
-                        OperationInvocations::ResultKind,
+                        ToolInvocations::ResultKind,
                         Expr::val(InvocationResultKind::CoralFailure.as_storage_str()),
                     ),
-                    (OperationInvocations::FailureCode, Expr::val(failure.code())),
+                    (ToolInvocations::FailureCode, Expr::val(failure.code())),
                     (
-                        OperationInvocations::FailureMessage,
+                        ToolInvocations::FailureMessage,
                         Expr::val(failure.message()),
                     ),
                 ])
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(run.workspace_id.to_string()))
+                .and_where(Expr::col(ToolInvocations::RunId).eq(run.id.to_string()))
+                .and_where(Expr::col(ToolInvocations::Id).eq(invocation.to_string()))
                 .and_where(
-                    Expr::col(OperationInvocations::WorkspaceId).eq(run.workspace_id.to_string()),
-                )
-                .and_where(Expr::col(OperationInvocations::RunId).eq(run.id.to_string()))
-                .and_where(Expr::col(OperationInvocations::Id).eq(invocation.to_string()))
-                .and_where(
-                    Expr::col(OperationInvocations::State)
-                        .eq(InvocationState::Pending.as_storage_str()),
+                    Expr::col(ToolInvocations::State).eq(InvocationState::Pending.as_storage_str()),
                 )
                 .to_owned(),
         )
@@ -441,7 +420,7 @@ pub(super) async fn end_pending_with_failure(
 
 pub(super) struct ApprovalTarget {
     pub generation: coral_catalog::ProviderGenerationId,
-    pub operation: coral_catalog::OperationKey,
+    pub tool: coral_catalog::ToolKey,
     pub provider_id: coral_provider::ProviderId,
     pub provider_account_setting_version: i64,
     pub credential_route: coral_provider::access::CredentialRoute,
@@ -459,7 +438,7 @@ pub(super) async fn approval_target(
     #[derive(FromRow)]
     struct Row {
         provider_generation_id: String,
-        operation_key: String,
+        tool_key: String,
         provider_id: String,
         provider_account_setting_version: i64,
         credential_route: String,
@@ -471,19 +450,19 @@ pub(super) async fn approval_target(
         .fetch_optional(
             Query::select()
                 .columns([
-                    OperationInvocations::ProviderGenerationId,
-                    OperationInvocations::OperationKey,
-                    OperationInvocations::ProviderId,
-                    OperationInvocations::ProviderAccountSettingVersion,
-                    OperationInvocations::CredentialRoute,
-                    OperationInvocations::ProviderAccountId,
-                    OperationInvocations::CallPath,
-                    OperationInvocations::ArgumentsJson,
+                    ToolInvocations::ProviderGenerationId,
+                    ToolInvocations::ToolKey,
+                    ToolInvocations::ProviderId,
+                    ToolInvocations::ProviderAccountSettingVersion,
+                    ToolInvocations::CredentialRoute,
+                    ToolInvocations::ProviderAccountId,
+                    ToolInvocations::CallPath,
+                    ToolInvocations::ArgumentsJson,
                 ])
-                .from(OperationInvocations::Table)
-                .and_where(Expr::col(OperationInvocations::WorkspaceId).eq(workspace.to_string()))
-                .and_where(Expr::col(OperationInvocations::RunId).eq(run.to_string()))
-                .and_where(Expr::col(OperationInvocations::Id).eq(invocation.to_string()))
+                .from(ToolInvocations::Table)
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace.to_string()))
+                .and_where(Expr::col(ToolInvocations::RunId).eq(run.to_string()))
+                .and_where(Expr::col(ToolInvocations::Id).eq(invocation.to_string()))
                 .to_owned(),
         )
         .await?
@@ -491,8 +470,7 @@ pub(super) async fn approval_target(
     Ok(ApprovalTarget {
         generation: coral_catalog::ProviderGenerationId::parse(&row.provider_generation_id)
             .map_err(coral_provider::Error::from)?,
-        operation: coral_catalog::OperationKey::parse(&row.operation_key)
-            .map_err(coral_provider::Error::from)?,
+        tool: coral_catalog::ToolKey::parse(&row.tool_key).map_err(coral_provider::Error::from)?,
         provider_id: coral_provider::ProviderId::parse(&row.provider_id)?,
         provider_account_setting_version: row.provider_account_setting_version,
         credential_route: coral_provider::access::CredentialRoute::from_storage_str(
@@ -517,16 +495,15 @@ pub(super) async fn completed_failure(
     let row: Option<(String,)> = transaction
         .fetch_optional(
             Query::select()
-                .column(OperationInvocations::FailureCode)
-                .from(OperationInvocations::Table)
-                .and_where(Expr::col(OperationInvocations::WorkspaceId).eq(workspace.to_string()))
-                .and_where(Expr::col(OperationInvocations::Id).eq(invocation.to_string()))
+                .column(ToolInvocations::FailureCode)
+                .from(ToolInvocations::Table)
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace.to_string()))
+                .and_where(Expr::col(ToolInvocations::Id).eq(invocation.to_string()))
                 .and_where(
-                    Expr::col(OperationInvocations::State)
-                        .eq(InvocationState::Ended.as_storage_str()),
+                    Expr::col(ToolInvocations::State).eq(InvocationState::Ended.as_storage_str()),
                 )
                 .and_where(
-                    Expr::col(OperationInvocations::ResultKind)
+                    Expr::col(ToolInvocations::ResultKind)
                         .eq(InvocationResultKind::CoralFailure.as_storage_str()),
                 )
                 .to_owned(),
@@ -549,11 +526,11 @@ pub(super) async fn arguments(
     let (arguments,): (String,) = transaction
         .fetch_optional(
             Query::select()
-                .column(OperationInvocations::ArgumentsJson)
-                .from(OperationInvocations::Table)
-                .and_where(Expr::col(OperationInvocations::WorkspaceId).eq(workspace.to_string()))
-                .and_where(Expr::col(OperationInvocations::RunId).eq(run.to_string()))
-                .and_where(Expr::col(OperationInvocations::Id).eq(invocation.to_string()))
+                .column(ToolInvocations::ArgumentsJson)
+                .from(ToolInvocations::Table)
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace.to_string()))
+                .and_where(Expr::col(ToolInvocations::RunId).eq(run.to_string()))
+                .and_where(Expr::col(ToolInvocations::Id).eq(invocation.to_string()))
                 .to_owned(),
         )
         .await?
@@ -571,22 +548,19 @@ pub(super) async fn nonterminal_for_run(
         .fetch_all(
             Query::select()
                 .columns([
-                    OperationInvocations::Id,
-                    OperationInvocations::State,
-                    OperationInvocations::ProviderGenerationId,
-                    OperationInvocations::OperationKey,
+                    ToolInvocations::Id,
+                    ToolInvocations::State,
+                    ToolInvocations::ProviderGenerationId,
+                    ToolInvocations::ToolKey,
                 ])
-                .from(OperationInvocations::Table)
+                .from(ToolInvocations::Table)
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(run.workspace_id.to_string()))
+                .and_where(Expr::col(ToolInvocations::RunId).eq(run.id.to_string()))
                 .and_where(
-                    Expr::col(OperationInvocations::WorkspaceId).eq(run.workspace_id.to_string()),
+                    Expr::col(ToolInvocations::State).ne(InvocationState::Ended.as_storage_str()),
                 )
-                .and_where(Expr::col(OperationInvocations::RunId).eq(run.id.to_string()))
-                .and_where(
-                    Expr::col(OperationInvocations::State)
-                        .ne(InvocationState::Ended.as_storage_str()),
-                )
-                .order_by(OperationInvocations::AdmittedAtUnixNanos, Order::Asc)
-                .order_by(OperationInvocations::Id, Order::Asc)
+                .order_by(ToolInvocations::AdmittedAtUnixNanos, Order::Asc)
+                .order_by(ToolInvocations::Id, Order::Asc)
                 .to_owned(),
         )
         .await?;
@@ -597,7 +571,7 @@ pub(super) async fn nonterminal_for_run(
                 state: InvocationState::from_storage_str(&row.state)?,
                 generation: coral_catalog::ProviderGenerationId::parse(&row.provider_generation_id)
                     .map_err(coral_provider::Error::from)?,
-                operation: coral_catalog::OperationKey::parse(&row.operation_key)
+                tool: coral_catalog::ToolKey::parse(&row.tool_key)
                     .map_err(coral_provider::Error::from)?,
             })
         })
@@ -615,30 +589,30 @@ pub(super) async fn end_for_termination(
     let result_bytes = i64::try_from(result_json.map_or(0, str::len))
         .map_err(|_overflow| Error::CorruptData("Invocation byte count overflow".into()))?;
     let statement = Query::update()
-        .table(OperationInvocations::Table)
+        .table(ToolInvocations::Table)
         .values([
             (
-                OperationInvocations::State,
+                ToolInvocations::State,
                 Expr::val(InvocationState::Ended.as_storage_str()),
             ),
             (
-                OperationInvocations::AccountConnectionRequestId,
+                ToolInvocations::AccountConnectionRequestId,
                 Expr::val(Option::<String>::None),
             ),
             (
-                OperationInvocations::EndedAtUnixNanos,
+                ToolInvocations::EndedAtUnixNanos,
                 Expr::val(ended_at_unix_nanos),
             ),
             (
-                OperationInvocations::ResultKind,
+                ToolInvocations::ResultKind,
                 Expr::val(result_kind.as_storage_str()),
             ),
-            (OperationInvocations::ResultJson, Expr::val(result_json)),
-            (OperationInvocations::ResultBytes, Expr::val(result_bytes)),
+            (ToolInvocations::ResultJson, Expr::val(result_json)),
+            (ToolInvocations::ResultBytes, Expr::val(result_bytes)),
         ])
-        .and_where(Expr::col(OperationInvocations::WorkspaceId).eq(run.workspace_id.to_string()))
-        .and_where(Expr::col(OperationInvocations::Id).eq(invocation.id.to_string()))
-        .and_where(Expr::col(OperationInvocations::State).eq(invocation.state.as_storage_str()))
+        .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(run.workspace_id.to_string()))
+        .and_where(Expr::col(ToolInvocations::Id).eq(invocation.id.to_string()))
+        .and_where(Expr::col(ToolInvocations::State).eq(invocation.state.as_storage_str()))
         .to_owned();
     Ok(transaction.execute(statement).await? == 1)
 }
@@ -648,7 +622,7 @@ struct NonterminalInvocationRow {
     id: String,
     state: String,
     provider_generation_id: String,
-    operation_key: String,
+    tool_key: String,
 }
 
 pub(super) async fn has_nonterminal_for_run(
@@ -660,7 +634,7 @@ pub(super) async fn has_nonterminal_for_run(
         transaction,
         workspace_id,
         run_id,
-        Expr::col(OperationInvocations::State).ne(InvocationState::Ended.as_storage_str()),
+        Expr::col(ToolInvocations::State).ne(InvocationState::Ended.as_storage_str()),
     )
     .await
 }
@@ -676,7 +650,7 @@ pub(super) async fn has_dispatching_for_run(
         transaction,
         workspace_id,
         run_id,
-        Expr::col(OperationInvocations::State).eq(InvocationState::Dispatching.as_storage_str()),
+        Expr::col(ToolInvocations::State).eq(InvocationState::Dispatching.as_storage_str()),
     )
     .await
 }
@@ -691,11 +665,9 @@ async fn has_for_run(
         .fetch_optional(
             Query::select()
                 .expr(Expr::val(1_i32))
-                .from(OperationInvocations::Table)
-                .and_where(
-                    Expr::col(OperationInvocations::WorkspaceId).eq(workspace_id.to_string()),
-                )
-                .and_where(Expr::col(OperationInvocations::RunId).eq(run_id.to_string()))
+                .from(ToolInvocations::Table)
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(ToolInvocations::RunId).eq(run_id.to_string()))
                 .and_where(state)
                 .limit(1)
                 .to_owned(),

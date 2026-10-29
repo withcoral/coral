@@ -1,7 +1,7 @@
-// Provider data for unit tests: providers and their operations in the Demo
+// Provider data for unit tests: providers and their tools in the Demo
 // workspace, which the test user owns.
 
-import type { OperationView, ProviderView, WorkspaceView } from './types'
+import type { ToolView, ProviderView, WorkspaceView } from './types'
 
 export const workspaceView: WorkspaceView = {
   name: 'workspaces/demo',
@@ -16,11 +16,11 @@ export const workspaceView: WorkspaceView = {
   path: '/workspaces/demo',
 }
 
-/** An available operation of `owner` that needs approval, in `group`. */
-export function operation(owner: ProviderView, relativePath: string, group = ''): OperationView {
+/** An available tool of `owner` that needs approval, in `group`. */
+export function tool(owner: ProviderView, relativePath: string, group = ''): ToolView {
   const callRoot = owner.builtin ? 'coral.workspace' : `coral.providers.${owner.namespace}`
   return {
-    name: `workspaces/demo/providers/${owner.id}/operations/${relativePath}`,
+    name: `workspaces/demo/providers/${owner.id}/tools/${relativePath}`,
     relativePath,
     callPath: `${callRoot}.${relativePath}`,
     summary: '',
@@ -30,19 +30,19 @@ export function operation(owner: ProviderView, relativePath: string, group = '')
     available: true,
     reasons: [],
     group,
-    path: `${owner.path}/ops/${relativePath}`,
+    path: `${owner.path}/tools/${relativePath}`,
   }
 }
 
 /**
- * An enabled provider with no account. Each operation is a relative path, or a
- * relative path and its group; every operation is ready.
+ * An enabled provider with no account. Each tool is a relative path, or a
+ * relative path and its group; every tool is ready.
  */
 export function provider(
   id: string,
   displayName: string,
   namespace: string,
-  operations: Array<string | [relativePath: string, group: string]> = [],
+  tools: Array<string | [relativePath: string, group: string]> = [],
 ): ProviderView {
   const view: ProviderView = {
     id,
@@ -54,32 +54,32 @@ export function provider(
     blockers: [],
     personalAccountAction: null,
     searchIndex: null,
-    readyCount: operations.length,
-    totalCount: operations.length,
+    readyCount: tools.length,
+    totalCount: tools.length,
     etag: 'etag',
     enabled: true,
-    operations: [],
+    tools: [],
   }
-  view.operations = operations.map((entry) =>
-    typeof entry === 'string' ? operation(view, entry) : operation(view, ...entry),
+  view.tools = tools.map((entry) =>
+    typeof entry === 'string' ? tool(view, entry) : tool(view, ...entry),
   )
   return view
 }
 
-/** Coral's Built-in Provider, with its operations under `coral.workspace`. */
+/** Coral's Built-in Provider, with its tools under `coral.workspace`. */
 export function builtinProvider(id: string): ProviderView {
   const view: ProviderView = { ...provider(id, 'Coral', ''), builtin: true }
-  view.operations = [
-    operation(view, 'addProvider'),
-    { ...operation(view, 'updatePolicy'), hints: { idempotent: true } },
+  view.tools = [
+    tool(view, 'addProvider'),
+    { ...tool(view, 'updatePolicy'), hints: { idempotent: true } },
     // Read-only, so they start enabled.
     ...['listProviders', 'getProvider', 'getPolicy'].map((key) => ({
-      ...operation(view, key),
+      ...tool(view, key),
       hints: { readOnly: true, idempotent: true },
       policy: 'enabled' as const,
     })),
-    operation(view, 'updateProvider'),
+    tool(view, 'updateProvider'),
   ]
-  view.readyCount = view.totalCount = view.operations.length
+  view.readyCount = view.totalCount = view.tools.length
   return view
 }

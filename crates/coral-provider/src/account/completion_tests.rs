@@ -357,7 +357,7 @@ async fn concurrent_initial_completions_have_one_winner_and_one_stable_account()
     );
 }
 
-/// An OpenAPI document whose one Operation needs HTTP Basic credentials.
+/// An OpenAPI document whose one Tool needs HTTP Basic credentials.
 const BASIC_OPENAPI: &str = r#"{
   "openapi": "3.1.0", "info": {"title": "Basic", "version": "1"},
   "servers": [{"url": "https://api.example.test"}],

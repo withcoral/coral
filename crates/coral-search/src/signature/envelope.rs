@@ -1,7 +1,7 @@
-//! An Operation's result: the envelopes, one per declared success, reduced to
-//! their `data` types. An HTTP Operation names each one
+//! A Tool's result: the envelopes, one per declared success, reduced to
+//! their `data` types. An HTTP Tool names each one
 //! `HttpResult<Data, Status, MediaType>` (see [`coral_catalog::HTTP_RESULT`]);
-//! an MCP Operation's envelope is a `{ data; metadata }` object.
+//! an MCP-backed Tool's envelope is a `{ data; metadata }` object.
 
 use std::collections::HashSet;
 
@@ -9,10 +9,10 @@ use super::render::Renderer;
 use super::tree::{Member, Type};
 
 impl Renderer<'_> {
-    /// An Operation's result: the envelope with the `data` types of its
+    /// A Tool's result: the envelope with the `data` types of its
     /// declared successes. An MCP envelope with `unknown` data contributes
     /// nothing.
-    pub(super) fn operation_result(&self, result: &Type) -> String {
+    pub(super) fn tool_result(&self, result: &Type) -> String {
         let Some(envelopes) = envelopes(result) else {
             return self.result(result, &mut HashSet::new());
         };
@@ -50,7 +50,7 @@ impl Renderer<'_> {
     }
 }
 
-/// The envelopes of an Operation's `Promise` result, one per response, or
+/// The envelopes of a Tool's `Promise` result, one per response, or
 /// `None` for another result.
 pub(super) fn envelopes(result: &Type) -> Option<Vec<&Type>> {
     let Type::Named { name, arguments } = result else {

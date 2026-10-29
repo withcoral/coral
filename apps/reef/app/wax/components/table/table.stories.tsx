@@ -44,8 +44,8 @@ const PEOPLE_COLUMNS: Column[] = [
 ]
 
 const PROVIDERS = ['Linear', 'GitHub', 'Slack', 'Google Drive']
-const OPERATION_GROUPS = ['Issues', 'Projects', 'Comments', 'Search']
-const OPERATIONS = ['list', 'get', 'search', 'create', 'update', 'archive', 'assign', 'watch']
+const TOOL_GROUPS = ['Issues', 'Projects', 'Comments', 'Search']
+const TOOLS = ['list', 'get', 'search', 'create', 'update', 'archive', 'assign', 'watch']
 
 function ExampleTable({ density }: { density: TableDensity }) {
   return (
@@ -73,13 +73,13 @@ export const Grouped: Story = {
       <Head />
       {PROVIDERS.map((provider, providerIndex) => (
         <Group key={provider} label={`${provider} provider`}>
-          {OPERATIONS.map((operation, operationIndex) => (
-            <Row key={operation}>
+          {TOOLS.map((tool, toolIndex) => (
+            <Row key={tool}>
               <Cell>
-                {provider.toLowerCase()}.{operation}
+                {provider.toLowerCase()}.{tool}
               </Cell>
-              <Cell>Operation</Cell>
-              <Cell mono>{providerIndex * 16 + operationIndex * 3}</Cell>
+              <Cell>Tool</Cell>
+              <Cell mono>{providerIndex * 16 + toolIndex * 3}</Cell>
             </Row>
           ))}
         </Group>
@@ -186,18 +186,18 @@ function InspectorTable({ groupHeadings }: { groupHeadings?: TableGroupHeadings 
         <Head />
         {PROVIDERS.map((provider, providerIndex) => (
           <Group key={provider} label={`${provider} provider`}>
-            {OPERATION_GROUPS.map((group, groupIndex) => (
+            {TOOL_GROUPS.map((group, groupIndex) => (
               <Group
                 key={group}
-                label={`${group} operation group`}
-                heading={<Cell fullWidth>{group} operation group</Cell>}
+                label={`${group} tool group`}
+                heading={<Cell fullWidth>{group} tool group</Cell>}
               >
-                {OPERATIONS.map((operation, operationIndex) => (
-                  <Row key={operation}>
+                {TOOLS.map((tool, toolIndex) => (
+                  <Row key={tool}>
                     <Cell>
-                      {provider.toLowerCase()}.{group.toLowerCase()}.{operation}
+                      {provider.toLowerCase()}.{group.toLowerCase()}.{tool}
                     </Cell>
-                    <Cell mono>{providerIndex * 100 + groupIndex * 10 + operationIndex}</Cell>
+                    <Cell mono>{providerIndex * 100 + groupIndex * 10 + toolIndex}</Cell>
                   </Row>
                 ))}
               </Group>
@@ -375,10 +375,10 @@ export const GroupHeadingCells: Story = {
           }
         >
           <Group
-            label="Issues operation group"
+            label="Issues tool group"
             heading={
               <>
-                <Cell>Issues operation group</Cell>
+                <Cell>Issues tool group</Cell>
                 <Cell mono>12</Cell>
               </>
             }
@@ -401,7 +401,7 @@ export const GroupHeadingCells: Story = {
     const provider = inset('Linear provider')
     await expect(provider).toBeGreaterThan(0)
     await expect(inset('24')).toBe(0)
-    await expect(inset('Issues operation group')).toBe(2 * provider)
+    await expect(inset('Issues tool group')).toBe(2 * provider)
     await expect(inset('12')).toBe(0)
   },
 }
@@ -468,14 +468,14 @@ export const PinnedGroupReadout: Story = {
           {PROVIDERS.map((provider, providerIndex) => (
             <Group id={`provider-${provider}`} key={provider} label={`${provider} provider`}>
               {providerIndex === 1 ? (
-                <Status scope="group">No matching operations.</Status>
+                <Status scope="group">No matching tools.</Status>
               ) : (
-                OPERATIONS.map((operation, operationIndex) => (
-                  <Row key={operation}>
+                TOOLS.map((tool, toolIndex) => (
+                  <Row key={tool}>
                     <Cell>
-                      {provider.toLowerCase()}.{operation}
+                      {provider.toLowerCase()}.{tool}
                     </Cell>
-                    <Cell mono>{providerIndex * 100 + operationIndex}</Cell>
+                    <Cell mono>{providerIndex * 100 + toolIndex}</Cell>
                   </Row>
                 ))
               )}
@@ -503,7 +503,7 @@ function NestedGroups({ depth }: { depth: number }) {
   if (depth <= 0) {
     return (
       <Row>
-        <Cell>final.operation</Cell>
+        <Cell>final.tool</Cell>
         <Cell mono>1</Cell>
       </Row>
     )
@@ -548,26 +548,26 @@ export const StickyHeadingOnAncestorScroll: Story = {
   ),
 }
 
-// Every provider and operation-group heading mounts, so the sticky groups pin
-// as usual; only the operation rows near the viewport mount.
+// Every provider and tool-group heading mounts, so the sticky groups pin
+// as usual; only the tool rows near the viewport mount.
 function VirtualCatalog() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const providers = PROVIDERS.map((provider, p) => ({
     provider,
-    groups: OPERATION_GROUPS.map((group, g) => ({
+    groups: TOOL_GROUPS.map((group, g) => ({
       group,
       rows: Array.from({ length: 60 }, (_row, i) => ({
-        index: p * (1 + OPERATION_GROUPS.length * 61) + 1 + g * 61 + 1 + i,
-        name: `${group.toLowerCase()}.${OPERATIONS[i % OPERATIONS.length]}${Math.floor(i / OPERATIONS.length) + 1}`,
+        index: p * (1 + TOOL_GROUPS.length * 61) + 1 + g * 61 + 1 + i,
+        name: `${group.toLowerCase()}.${TOOLS[i % TOOLS.length]}${Math.floor(i / TOOLS.length) + 1}`,
       })),
     })),
   }))
-  const count = PROVIDERS.length * (1 + OPERATION_GROUPS.length * 61)
+  const count = PROVIDERS.length * (1 + TOOL_GROUPS.length * 61)
   const headings = new Set<number>()
   for (const { groups } of providers) {
     for (const { rows } of groups) headings.add(rows[0]!.index - 1)
   }
-  for (let p = 0; p < PROVIDERS.length; p++) headings.add(p * (1 + OPERATION_GROUPS.length * 61))
+  for (let p = 0; p < PROVIDERS.length; p++) headings.add(p * (1 + TOOL_GROUPS.length * 61))
   const virtual = useVirtualRows({
     count,
     estimateSize: (index) =>

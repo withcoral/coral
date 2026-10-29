@@ -32,7 +32,7 @@ const provider: ProviderSettingsView = {
   path: '/workspaces/demo/providers/00000000-0000-4000-8000-000000000001',
   account: 'caller',
   enabled: true,
-  operationsReady: true,
+  toolsReady: true,
   connection: 'connected',
   canConnect: true,
   canReconnect: true,
@@ -137,7 +137,7 @@ const panel = () => document.querySelector('[aria-label="Source"]')!.textContent
 const nameInput = () => byLabel('Provider name') as HTMLInputElement | null
 
 // Catches: the page losing its way back to the provider list or to the
-// provider's operations.
+// provider's tools.
 test('the breadcrumb leads back to the provider list and the provider', async () => {
   await render()
   const trail = document.querySelector('nav[aria-label="breadcrumb"]')!
@@ -387,21 +387,21 @@ test('the built-in provider offers no change', async () => {
     expect(named('button', name)).toBeUndefined()
 })
 
-// Catches: a provider with no callable operation looking ready in settings.
-test('a provider without ready operations is tagged beside its name', async () => {
-  await render({ provider: { operationsReady: false } })
-  expect(document.querySelector('[data-provider-state="no-operations"]')?.textContent).toBe(
-    'No operations ready',
+// Catches: a provider with no callable tool looking ready in settings.
+test('a provider without ready tools is tagged beside its name', async () => {
+  await render({ provider: { toolsReady: false } })
+  expect(document.querySelector('[data-provider-state="no-tools"]')?.textContent).toBe(
+    'No tools ready',
   )
   act(() => roots.pop()!.unmount())
   await render()
-  expect(document.querySelector('[data-provider-state="no-operations"]')).toBeNull()
+  expect(document.querySelector('[data-provider-state="no-tools"]')).toBeNull()
 })
 
 // Catches: a second status block repeating what the tags and the account
 // card already say.
 test('settings have no separate status section', async () => {
-  await render({ provider: { connection: 'not_connected', operationsReady: false } })
+  await render({ provider: { connection: 'not_connected', toolsReady: false } })
   expect(byLabel('Status')).toBeNull()
 })
 
@@ -416,7 +416,7 @@ test('an unreadable account says so and still links to it', async () => {
   expect(named('link', 'Manage your account')?.getAttribute('href')).toBe(yourAccountPath)
 })
 
-// The card opens the provider's operations.
+// The card opens the provider's tools.
 // The breadcrumb links the provider too; the card is the link outside it.
 // Catches: configuration pushed above the account people come here to manage.
 test('the account comes before configuration, and removal comes last', async () => {

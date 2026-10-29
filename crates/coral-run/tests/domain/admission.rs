@@ -463,8 +463,8 @@ async fn saved_function_initialization_uses_the_run_surface_once_before_the_prog
         crate::IsolateLimits::default(),
     )
     .expect("start Saved Function compiler");
-    let operation = fixture
-        .user_operation_at(
+    let tool = fixture
+        .user_tool_at(
             "user:initialization-runner",
             "Initialize one Saved Function",
             &server.uri(),
@@ -472,8 +472,8 @@ async fn saved_function_initialization_uses_the_run_surface_once_before_the_prog
         .await;
     saved_functions
         .save(
-            &saved_function_change(operation.principal.clone(), 40, 'a'),
-            &operation.workspace_id,
+            &saved_function_change(tool.principal.clone(), 40, 'a'),
+            &tool.workspace_id,
             SavedFunctionSave::new(
                 SavedFunctionPath::parse("weather.initializedTemperature").expect("path"),
                 SavedFunctionDescription::parse("Read the initialized temperature")
@@ -495,8 +495,8 @@ async fn saved_function_initialization_uses_the_run_surface_once_before_the_prog
 
     let accepted = runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission(
                 r#"
                     const first = coral.functions.weather.initializedTemperature();
@@ -511,8 +511,8 @@ async fn saved_function_initialization_uses_the_run_surface_once_before_the_prog
         .expect("accept initializing package");
     let terminal = wait_for_terminal(
         &runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;

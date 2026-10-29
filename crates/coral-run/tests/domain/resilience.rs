@@ -448,14 +448,14 @@ async fn an_owner_past_three_leases_ends_v8_ends_dispatches_indeterminate_and_re
         probe.clone(),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:self-interrupt", "Give the Run up")
+    let tool = fixture
+        .user_tool("user:self-interrupt", "Give the Run up")
         .await;
     let accepted = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission("await coral.providers.weather.getForecast();"),
         )
         .await
@@ -465,7 +465,7 @@ async fn an_owner_past_three_leases_ends_v8_ends_dispatches_indeterminate_and_re
     // The idle tick's chunk is held: no commit succeeds from here on.
     let release_commit = probe.hold_next_commit();
     wait_until(|| probe.held()).await;
-    let before = fixture.run_record(&operation.workspace_id, &run_id).await;
+    let before = fixture.run_record(&tool.workspace_id, &run_id).await;
     // The Interrupted chunk's two Events share one instant: the database
     // refuses it until the fault goes.
     fixture
@@ -485,10 +485,7 @@ async fn an_owner_past_three_leases_ends_v8_ends_dispatches_indeterminate_and_re
     wait_until(|| upstream.exited.load(Ordering::SeqCst)).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(
-        fixture
-            .run_record(&operation.workspace_id, &run_id)
-            .await
-            .state,
+        fixture.run_record(&tool.workspace_id, &run_id).await.state,
         RunState::Running,
         "the Interrupted record is refused until the database answers"
     );
@@ -498,13 +495,13 @@ async fn an_owner_past_three_leases_ends_v8_ends_dispatches_indeterminate_and_re
         .await;
     wait_until_async_within(Duration::from_secs(10), async || {
         fixture
-            .run_record(&operation.workspace_id, &run_id)
+            .run_record(&tool.workspace_id, &run_id)
             .await
             .state
             .is_terminal()
     })
     .await;
-    let after = fixture.run_record(&operation.workspace_id, &run_id).await;
+    let after = fixture.run_record(&tool.workspace_id, &run_id).await;
     assert_eq!(after.state, RunState::Interrupted);
     assert_eq!(
         after.chunk_sequence - before.chunk_sequence,
@@ -512,7 +509,7 @@ async fn an_owner_past_three_leases_ends_v8_ends_dispatches_indeterminate_and_re
         "one Interrupted chunk"
     );
     let events = fixture
-        .events_after(&operation.workspace_id, &run_id, last_sequence(&before))
+        .events_after(&tool.workspace_id, &run_id, last_sequence(&before))
         .await;
     assert!(
         matches!(
@@ -535,10 +532,7 @@ async fn an_owner_past_three_leases_ends_v8_ends_dispatches_indeterminate_and_re
     // The chunk held all along answers late and changes nothing.
     release_commit.send(()).expect("release the held commit");
     wait_until(|| !fixture.runs.has_owner(&run_id)).await;
-    assert_eq!(
-        fixture.run_record(&operation.workspace_id, &run_id).await,
-        after
-    );
+    assert_eq!(fixture.run_record(&tool.workspace_id, &run_id).await, after);
 }
 
 /// The one chunk that ends a Run its owner can no longer run records the
@@ -600,6 +594,9 @@ async fn a_takeover_after_the_run_deadline_records_timed_out() {
     assert_eq!(update.state(), RunState::TimedOut);
 }
 
+/// The supervisor of an owner task that panicked interrupts the Run in one
+/// chunk under a new claim. It reads no Run Inbox: a cancellation waiting
+/// there is not applied, and stays.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_owner_task_that_panics_mid_run_has_the_supervisor_record_interrupted_once() {
     let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
@@ -617,6 +614,15 @@ async fn an_owner_task_that_panics_mid_run_has_the_supervisor_record_interrupted
              WHERE id = '{run_id}'"
         ))
         .await;
+    // Held by another Coral Instance, the cancellation is not this
+    // instance's to deliver: it waits.
+    fixture
+        .submit_to_inbox(
+            &workspace_id,
+            &run_id,
+            crate::run_inbox::OutsideRequest::Cancel(principal.principal().clone()),
+        )
+        .await;
 
     // Once the Program executes, the owner has consumed its start: the
     // Emission's message is the next one its task dequeues.
@@ -633,6 +639,11 @@ async fn an_owner_task_that_panics_mid_run_has_the_supervisor_record_interrupted
     .await;
     let after = fixture.run_record(&workspace_id, &run_id).await;
     assert_eq!(after.state, RunState::Interrupted);
+    assert_eq!(
+        fixture.inbox_rows(&workspace_id, &run_id).await,
+        1,
+        "the waiting cancellation was not applied"
+    );
     assert!(
         after
             .execution_claim_id

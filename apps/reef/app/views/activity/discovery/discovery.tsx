@@ -7,7 +7,7 @@ import * as DescriptionList from '@/wax/components/description-list'
 import { Disclosure } from '@/wax/components/disclosure'
 import { Markdown } from '@/wax/components/markdown'
 import { Pill } from '@/wax/components/pill'
-import type { OperationHintsView } from '@/views/providers/types'
+import type { ToolHintsView } from '@/views/providers/types'
 import { policyOptions } from '@/components/policy-toggle'
 import { Icon } from '@/wax/components/icon'
 import { Tooltip } from '@/wax/components/tooltip'
@@ -16,7 +16,7 @@ import type {
   DiscoveryContext,
   DiscoveryEntityKind,
   InteractionEvidence,
-  OperationFlags,
+  ToolFlags,
   SearchHit,
   SearchPage,
 } from '../types'
@@ -100,7 +100,7 @@ export function SearchParameters({
 }
 
 /** What a describe asked for, as a search states its query, then `children`: the call's own
- * times, in the same list. The Provider is the described Operation's, from the stored
+ * times, in the same list. The Provider is the described Tool's, from the stored
  * response. The panel's subtitle names the call, so the list has no heading. */
 export function DescribeParameters({
   context,
@@ -127,10 +127,8 @@ export function DescribeParameters({
           </span>
         </DescriptionList.Row>
       )}
-      {description?.operation && (
-        <DescriptionList.Row label="Provider">
-          {description.operation.providerLabel}
-        </DescriptionList.Row>
+      {description?.tool && (
+        <DescriptionList.Row label="Provider">{description.tool.providerLabel}</DescriptionList.Row>
       )}
       {intent && <DescriptionList.Row label="Intent">{intent}</DescriptionList.Row>}
       {children}
@@ -215,7 +213,7 @@ function Hit({ hit }: { hit: SearchHit }) {
       <div className={styles.row}>
         <List.Title>{hit.title}</List.Title>
         <KindPill kind={hit.kind} />
-        {hit.operation && <Flags operation={hit.operation} approval="icon" />}
+        {hit.tool && <Flags tool={hit.tool} approval="icon" />}
       </div>
       <div className={styles.row}>
         <CodeChip>{hit.callPath}</CodeChip>
@@ -256,9 +254,9 @@ function HitDetails({ hit }: { hit: SearchHit }) {
 }
 
 function KindPill({ kind }: { kind: DiscoveryEntityKind }) {
-  return kind === 'operation' ? (
+  return kind === 'provider_tool' ? (
     <Pill color="blue" size="small" variant="outline">
-      operation
+      tool
     </Pill>
   ) : (
     <Pill color="purple" size="small" variant="outline">
@@ -267,7 +265,7 @@ function KindPill({ kind }: { kind: DiscoveryEntityKind }) {
   )
 }
 
-const hintLabels: [keyof OperationHintsView, string][] = [
+const hintLabels: [keyof ToolHintsView, string][] = [
   ['readOnly', 'read-only'],
   ['destructive', 'destructive'],
   ['idempotent', 'idempotent'],
@@ -275,16 +273,16 @@ const hintLabels: [keyof OperationHintsView, string][] = [
 ]
 /** A hint shows only when the provider declared it; a declared false reads "not". */
 function Flags({
-  operation,
+  tool,
   approval = 'pill',
 }: {
-  operation: OperationFlags
+  tool: ToolFlags
   /** A compact search result shows approval as the policy hand the Providers page uses. */
   approval?: 'pill' | 'icon'
 }) {
   return (
     <>
-      {operation.approvalRequired &&
+      {tool.approvalRequired &&
         (approval === 'icon' ? (
           <NeedsApproval />
         ) : (
@@ -292,13 +290,13 @@ function Flags({
             approval required
           </Pill>
         ))}
-      {operation.deprecated && (
+      {tool.deprecated && (
         <Pill color="orange" size="small">
           deprecated
         </Pill>
       )}
       {hintLabels.map(([hint, label]) => {
-        const declared = operation.hints[hint]
+        const declared = tool.hints[hint]
         return declared === undefined ? null : (
           <Pill key={hint} color={declared ? 'gray' : 'graySubtle'} size="small" variant="outline">
             {declared ? label : `not ${label}`}
@@ -377,7 +375,7 @@ function CurrentIconLink({
   target: Pick<SearchHit, 'kind' | 'callPath' | 'currentHref'>
 }) {
   if (target.currentHref === null) return null
-  const subject = target.kind === 'operation' ? 'operation' : 'function'
+  const subject = target.kind === 'provider_tool' ? 'tool' : 'function'
   return (
     <Button.IconLink
       name="ExternalLink"
@@ -404,7 +402,7 @@ function DescriptionResult({
   record?: string | null
 }) {
   const id = useId()
-  const { operation, savedFunction } = description
+  const { tool, savedFunction } = description
   const problems = (['error', 'warning'] as const)
     .map((category) => ({
       category,
@@ -421,15 +419,15 @@ function DescriptionResult({
           <div className={styles.row}>
             <List.Title>{description.title}</List.Title>
             <KindPill kind={description.kind} />
-            {operation && <Flags operation={operation} approval="icon" />}
+            {tool && <Flags tool={tool} approval="icon" />}
           </div>
           <div className={styles.row}>
             <CodeChip>{description.callPath}</CodeChip>
             <CurrentIconLink target={description} />
           </div>
-          {(operation?.tags.length || problems.length > 0) && (
+          {(tool?.tags.length || problems.length > 0) && (
             <div className={styles.row}>
-              {operation?.tags.map((tag) => (
+              {tool?.tags.map((tag) => (
                 <Pill key={tag} color="graySubtle" size="small">
                   {tag}
                 </Pill>
@@ -461,9 +459,9 @@ function DescribeDetails({
   const savedFunction = description.savedFunction
   return (
     <Disclosure title="Details">
-      {description.operation?.guidance && (
+      {description.tool?.guidance && (
         <dl className={styles.facts}>
-          <Fact label="Guidance">{description.operation.guidance}</Fact>
+          <Fact label="Guidance">{description.tool.guidance}</Fact>
         </dl>
       )}
       <Markdown>{description.description}</Markdown>

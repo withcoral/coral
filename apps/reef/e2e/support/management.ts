@@ -12,7 +12,7 @@ import {
   type ActivityRunEvent,
 } from '../generated/coral/management/v1/activity_pb.ts'
 import { ProviderAccountService } from '../generated/coral/management/v1/account_pb.ts'
-import { OperationPolicyService } from '../generated/coral/management/v1/policy_pb.ts'
+import { ToolPolicyService } from '../generated/coral/management/v1/policy_pb.ts'
 import { WorkspaceService } from '../generated/coral/management/v1/workspace_pb.ts'
 import { OrganizationMembershipService } from '../generated/coral/management/v1/organization_membership_pb.ts'
 import { OrganizationWorkspaceService } from '../generated/coral/management/v1/organization_workspace_pb.ts'
@@ -35,7 +35,7 @@ export const managementServices = [
   ProviderService,
   ProviderSetupService,
   ProviderAccountService,
-  OperationPolicyService,
+  ToolPolicyService,
 ]
 
 /**
@@ -73,7 +73,7 @@ export function managementClients(accessToken?: string) {
     providers: createClient(ProviderService, transport),
     setups: createClient(ProviderSetupService, transport),
     accounts: createClient(ProviderAccountService, transport),
-    policies: createClient(OperationPolicyService, transport),
+    policies: createClient(ToolPolicyService, transport),
   }
 }
 /** Reads complete retained history through the authorized human interface, not MCP output. */

@@ -91,7 +91,7 @@ test('Each page has one title, and breadcrumbs lead back from nested pages', asy
       )
       await openProviderSettings(page)
       await expect.poll(trail).toEqual([name, 'Providers', 'Ledger', 'Settings'])
-      // The provider crumb returns to the provider's operations.
+      // The provider crumb returns to the provider's tools.
       await crumbs.getByRole('link', { name: 'Ledger', exact: true }).click()
       await page.waitForURL((url) => url.pathname === providerPath)
       await openProviderSettings(page)

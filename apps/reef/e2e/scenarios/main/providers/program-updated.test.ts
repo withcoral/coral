@@ -10,7 +10,7 @@ import {
   openApiDocument,
 } from '../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   addedProviders,
   checkRadio,
   configurationNext,
@@ -18,7 +18,7 @@ import {
   observeRun,
   openDialog,
   openReview,
-  operationGroup,
+  toolGroup,
   pausedForApproval,
   programRunner,
   programWorkspace,
@@ -36,24 +36,20 @@ import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_
 type Session = Parameters<Parameters<typeof withOwnerSession>[1]>[0]
 
 /**
- * A Weather document source with `operations` that declares it needs no credential. Calls go to
+ * A Weather document source with `tools` that declares it needs no credential. Calls go to
  * `server`, else to a host nobody calls.
  */
-function credentialFree(operations: Record<string, object>, server?: string) {
-  const document = JSON.parse(openApiDocument('Weather', operations, { server }).toString())
+function credentialFree(tools: Record<string, object>, server?: string) {
+  const document = JSON.parse(openApiDocument('Weather', tools, { server }).toString())
   document.security = []
   return { kind: 'openapi_document', document: JSON.stringify(document) }
 }
 
-/** Runs one Built-in Operation in a Program and returns its result. */
-async function builtinCall(
-  runner: ReturnType<typeof programRunner>,
-  operation: string,
-  call: unknown,
-) {
+/** Runs one Built-in Tool in a Program and returns its result. */
+async function builtinCall(runner: ReturnType<typeof programRunner>, tool: string, call: unknown) {
   const { update } = await observeRun(
     runner,
-    await runner.exec(`return await coral.workspace.${operation}(${JSON.stringify(call)});`),
+    await runner.exec(`return await coral.workspace.${tool}(${JSON.stringify(call)});`),
   )
   expect(update.required_actions).toEqual([])
   return (update.final_value as { value: { data: { status: string; url: string } } }).value.data
@@ -62,7 +58,7 @@ async function builtinCall(
 /**
  * A workspace with the credential-free `weather` provider that the owner's Program added from
  * `source` with the configuration `choices`, and a runner for their Programs. They call each
- * Built-in Operation in `unattended` without approval: by default, they update providers too.
+ * Built-in Tool in `unattended` without approval: by default, they update providers too.
  */
 async function weatherProvider(
   { page, target, actor, step }: Session,
@@ -133,7 +129,7 @@ async function recordsProvider(
       })
       expect(created.status).toBe('needs_sign_in')
       await page.goto(created.url)
-      await acceptOperations(page)
+      await acceptTools(page)
       await signInAndShareAccount(page)
       await page.getByRole('link', { name: 'Approve fixture access', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `/workspaces/${id}/providers/new`)
@@ -149,7 +145,7 @@ async function recordsProvider(
   return { api, workspace, program, provider }
 }
 
-test("A workspace owner's Program replaces a source that drops an operation, and you review the operations before you save", async (context) => {
+test("A workspace owner's Program replaces a source that drops a tool, and you review the tools before you save", async (context) => {
   await withOwnerSession(context, async (session) => {
     const { page, step } = session
     const { api, program, provider } = await weatherProvider(
@@ -167,14 +163,14 @@ test("A workspace owner's Program replaces a source that drops an operation, and
       // Nothing changes until you save.
       expect(await api.providers.getProvider({ name: provider.name })).toEqual(provider)
     })
-    await step('Review the operations the change adds and removes, and save', async () => {
+    await step('Review the tools the change adds and removes, and save', async () => {
       await page.goto(link)
-      await operationGroup(page, 'New').getByText('newReport', { exact: true }).waitFor()
-      await operationGroup(page, 'Removed').getByText('oldReport', { exact: true }).waitFor()
+      await toolGroup(page, 'New').getByText('newReport', { exact: true }).waitFor()
+      await toolGroup(page, 'Removed').getByText('oldReport', { exact: true }).waitFor()
       await page.getByRole('button', { name: 'Save', exact: true }).click()
       await page.waitForURL((url) => url.pathname.endsWith('/settings'))
-      const operations = (await api.providers.listOperations({ parent: provider.name })).operations
-      expect(operations.map((operation) => operation.relativePath).toSorted()).toEqual([
+      const tools = (await api.providers.listTools({ parent: provider.name })).tools
+      expect(tools.map((tool) => tool.relativePath).toSorted()).toEqual([
         'getForecast',
         'newReport',
       ])
@@ -315,15 +311,15 @@ test("A workspace owner's Program adds a scope to an OAuth provider, and you sig
 })
 
 /**
- * A Weather service that answers each of its `operations` with a sunny forecast, and serves their
+ * A Weather service that answers each of its `tools` with a sunny forecast, and serves their
  * credential-free document at /openapi.json. It keeps each call's path and headers.
  */
 async function weatherService(
   context: Parameters<typeof listen>[0],
-  operations: Record<string, object> = { getForecast: {} },
+  tools: Record<string, object> = { getForecast: {} },
 ) {
   const service = {
-    operations,
+    tools,
     reads: 0,
     calls: [] as { path: string; headers: IncomingHttpHeaders }[],
   }
@@ -335,10 +331,10 @@ async function weatherService(
         service.reads++
         response
           .writeHead(200, { 'content-type': 'application/json' })
-          .end(credentialFree(service.operations, fixture.origin).document)
+          .end(credentialFree(service.tools, fixture.origin).document)
         return
       }
-      if (!Object.hasOwn(service.operations, path.slice(1))) {
+      if (!Object.hasOwn(service.tools, path.slice(1))) {
         response.writeHead(404).end()
         return
       }
@@ -374,10 +370,10 @@ test("A workspace owner's Program moves a provider from an OpenAPI document to a
       expect(changed.status).toBe('needs_sign_in')
       link = changed.url
     })
-    await step('Review the tool the server adds and the operation it drops, and save', async () => {
+    await step('Review the tool the server adds and the tool it drops, and save', async () => {
       await page.goto(link)
-      await operationGroup(page, 'New').getByText('hello', { exact: true }).waitFor()
-      await operationGroup(page, 'Removed').getByText('getForecast', { exact: true }).waitFor()
+      await toolGroup(page, 'New').getByText('hello', { exact: true }).waitFor()
+      await toolGroup(page, 'Removed').getByText('getForecast', { exact: true }).waitFor()
       await page.getByRole('button', { name: 'Save', exact: true }).click()
       await page.waitForURL((url) => url.pathname.endsWith('/settings'))
       const source = await api.providers.getProviderSource({ name: provider.name })
@@ -388,8 +384,8 @@ test("A workspace owner's Program moves a provider from an OpenAPI document to a
         await finalValue(program, 'return await coral.providers.weather.hello({});'),
       ).toContain('Hello from the bearer fixture')
       expect(server.counts.calls).toBe(1)
-      const operations = (await api.providers.listOperations({ parent: provider.name })).operations
-      expect(operations.map((operation) => operation.relativePath)).toEqual(['hello'])
+      const tools = (await api.providers.listTools({ parent: provider.name })).tools
+      expect(tools.map((tool) => tool.relativePath)).toEqual(['hello'])
     })
   })
 })
@@ -416,26 +412,23 @@ test("A workspace owner's Program moves a provider from an MCP server to an Open
         link = changed.url
       },
     )
-    await step(
-      'Review the operation the document adds and the tool it drops, and save',
-      async () => {
-        await page.goto(link)
-        await operationGroup(page, 'New').getByText('getForecast', { exact: true }).waitFor()
-        await operationGroup(page, 'Removed').getByText('hello', { exact: true }).waitFor()
-        await page.getByRole('button', { name: 'Save', exact: true }).click()
-        await page.waitForURL((url) => url.pathname.endsWith('/settings'))
-        const source = await api.providers.getProviderSource({ name: provider.name })
-        // An uploaded document has no URL to read again.
-        expect([source.kind, source.url]).toEqual([ProviderSetupInputKind.OPENAPI, ''])
-      },
-    )
-    await step("A Program calls the document's operation under the same namespace", async () => {
+    await step('Review the tool the document adds and the tool it drops, and save', async () => {
+      await page.goto(link)
+      await toolGroup(page, 'New').getByText('getForecast', { exact: true }).waitFor()
+      await toolGroup(page, 'Removed').getByText('hello', { exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
+      await page.waitForURL((url) => url.pathname.endsWith('/settings'))
+      const source = await api.providers.getProviderSource({ name: provider.name })
+      // An uploaded document has no URL to read again.
+      expect([source.kind, source.url]).toEqual([ProviderSetupInputKind.OPENAPI, ''])
+    })
+    await step("A Program calls the document's tool under the same namespace", async () => {
       expect(
         await finalValue(program, 'return await coral.providers.weather.getForecast({});'),
       ).toContain('sunny')
       expect(service.calls).toHaveLength(1)
-      const operations = (await api.providers.listOperations({ parent: provider.name })).operations
-      expect(operations.map((operation) => operation.relativePath)).toEqual(['getForecast'])
+      const tools = (await api.providers.listTools({ parent: provider.name })).tools
+      expect(tools.map((tool) => tool.relativePath)).toEqual(['getForecast'])
     })
   })
 })
@@ -481,7 +474,7 @@ test("A workspace owner's Program renames a provider, moves it to another server
   })
 })
 
-test("A workspace owner's Program reads a provider's document URL again, and calls reach the operation it adds", async (context) => {
+test("A workspace owner's Program reads a provider's document URL again, and calls reach the tool it adds", async (context) => {
   const service = await weatherService(context)
   await withOwnerSession(context, async (session) => {
     const { step } = session
@@ -489,27 +482,24 @@ test("A workspace owner's Program reads a provider's document URL again, and cal
       kind: 'openapi_url',
       url: `${service.origin}/openapi.json`,
     })
-    await step(
-      'The service adds an operation, and the Program reads the document again',
-      async () => {
-        service.operations = { getForecast: {}, getAlerts: {} }
-        const reads = service.reads
-        const changed = await builtinCall(program, 'updateProvider', {
-          namespace: 'weather',
-          refresh: true,
-        })
-        // The new document keeps every operation, so nobody needs to act.
-        expect(changed.status).toBe('published')
-        expect(service.reads).toBe(reads + 1)
-      },
-    )
-    await step('A Program calls the new operation', async () => {
+    await step('The service adds a tool, and the Program reads the document again', async () => {
+      service.tools = { getForecast: {}, getAlerts: {} }
+      const reads = service.reads
+      const changed = await builtinCall(program, 'updateProvider', {
+        namespace: 'weather',
+        refresh: true,
+      })
+      // The new document keeps every tool, so nobody needs to act.
+      expect(changed.status).toBe('published')
+      expect(service.reads).toBe(reads + 1)
+    })
+    await step('A Program calls the new tool', async () => {
       expect(
         await finalValue(program, 'return await coral.providers.weather.getAlerts({});'),
       ).toContain('sunny')
       expect(service.calls.map((call) => call.path)).toEqual(['/getAlerts'])
-      const operations = (await api.providers.listOperations({ parent: provider.name })).operations
-      expect(operations.map((operation) => operation.relativePath).toSorted()).toEqual([
+      const tools = (await api.providers.listTools({ parent: provider.name })).tools
+      expect(tools.map((tool) => tool.relativePath).toSorted()).toEqual([
         'getAlerts',
         'getForecast',
       ])
@@ -617,12 +607,12 @@ test("Another owner finds nothing at an owner's update link, and the owner who g
   const api = managementClients(alice.accessToken)
   let workspace = ''
   let link = ''
-  const operations = async () => {
+  const tools = async () => {
     const [provider] = addedProviders(
       (await api.providers.listProviders({ parent: workspace })).providers,
     )
-    return (await api.providers.listOperations({ parent: provider.name })).operations
-      .map((operation) => operation.relativePath)
+    return (await api.providers.listTools({ parent: provider.name })).tools
+      .map((tool) => tool.relativePath)
       .toSorted()
   }
   await withBrowserSession(
@@ -667,7 +657,7 @@ test("Another owner finds nothing at an owner's update link, and the owner who g
         await page.goto(link)
         await page.getByText('This page does not exist.', { exact: true }).waitFor()
         expect(await page.getByRole('button', { name: 'Save', exact: true }).count()).toBe(0)
-        expect(await operations()).toEqual(['getForecast', 'oldReport'])
+        expect(await tools()).toEqual(['getForecast', 'oldReport'])
       })
     },
     { actor: bob.label, storageState: bob.storageState },
@@ -675,12 +665,12 @@ test("Another owner finds nothing at an owner's update link, and the owner who g
   await withBrowserSession(
     context,
     async ({ page, step }) => {
-      await step('Alice opens the same link, reviews the operations, and saves', async () => {
+      await step('Alice opens the same link, reviews the tools, and saves', async () => {
         await page.goto(link)
-        await operationGroup(page, 'Removed').getByText('oldReport', { exact: true }).waitFor()
+        await toolGroup(page, 'Removed').getByText('oldReport', { exact: true }).waitFor()
         await page.getByRole('button', { name: 'Save', exact: true }).click()
         await page.waitForURL((url) => url.pathname.endsWith('/settings'))
-        expect(await operations()).toEqual(['getForecast', 'newReport'])
+        expect(await tools()).toEqual(['getForecast', 'newReport'])
       })
     },
     { actor: alice.label, storageState: alice.storageState },

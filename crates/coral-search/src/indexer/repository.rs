@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use coral_catalog::{OperationKey, ProviderGenerationId};
+use coral_catalog::{ProviderGenerationId, ToolKey};
 use coral_db::{DatabaseSystem, Error, Transaction};
 use coral_functions::SavedFunctionId;
 use coral_provider::ProviderId;
@@ -20,7 +20,7 @@ use super::{INDEXER_REVISION, IndexError};
 use crate::{CallPath, SearchIndexFailure, SearchIndexState};
 
 /// The `search_entities` table and its columns, for sea-query. Each row is
-/// one Search Entity that indexed: an Operation or a Saved Function.
+/// one Search Entity that indexed: a Tool or a Saved Function.
 #[derive(Clone, Copy, Iden)]
 enum SearchEntities {
     Table,
@@ -29,7 +29,7 @@ enum SearchEntities {
     Kind,
     ProviderId,
     ProviderGenerationId,
-    OperationKey,
+    ToolKey,
     SavedFunctionId,
     PrincipalId,
     PrincipalKind,
@@ -122,7 +122,7 @@ enum SearchStats {
     CountedMaxIndexedAt,
 }
 
-const OPERATION: &str = "operation";
+const TOOL: &str = "provider_tool";
 const SAVED_FUNCTION: &str = "saved_function";
 const COMPLETE: &str = "complete";
 const FAILED: &str = "failed";
@@ -165,15 +165,15 @@ async fn lock_workspace_id(
     Ok(())
 }
 
-/// The columns an Operation row sets, in [`OperationRow::values`] order. The
+/// The columns a Tool row sets, in [`ToolRow::values`] order. The
 /// first two are the key.
-const OPERATION_COLUMNS: [SearchEntities; 15] = [
+const TOOL_COLUMNS: [SearchEntities; 15] = [
     SearchEntities::WorkspaceId,
     SearchEntities::DocId,
     SearchEntities::Kind,
     SearchEntities::ProviderId,
     SearchEntities::ProviderGenerationId,
-    SearchEntities::OperationKey,
+    SearchEntities::ToolKey,
     SearchEntities::CallPath,
     SearchEntities::QualifiedName,
     SearchEntities::Title,
@@ -185,14 +185,14 @@ const OPERATION_COLUMNS: [SearchEntities; 15] = [
     SearchEntities::IndexedAtUnixNanos,
 ];
 
-/// One Operation's row in `search_entities`. The document id and the
-/// fingerprint derive from the Generation and the Operation Key. The write
+/// One Tool's row in `search_entities`. The document id and the
+/// fingerprint derive from the Generation and the Tool Key. The write
 /// stamps the row when it upserts it.
-pub(crate) struct OperationRow<'a> {
+pub(crate) struct ToolRow<'a> {
     pub(super) workspace_id: &'a WorkspaceId,
     pub(super) provider_id: &'a ProviderId,
     pub(super) generation_id: &'a ProviderGenerationId,
-    pub(super) operation_key: &'a OperationKey,
+    pub(super) tool_key: &'a ToolKey,
     pub(super) call_path: CallPath,
     pub(super) qualified_name: &'a str,
     pub(super) title: String,
@@ -202,20 +202,20 @@ pub(crate) struct OperationRow<'a> {
     pub(super) deprecated: bool,
 }
 
-impl OperationRow<'_> {
+impl ToolRow<'_> {
     fn doc_id(&self) -> String {
-        format!("{}:{}", self.generation_id, self.operation_key.as_str())
+        format!("{}:{}", self.generation_id, self.tool_key.as_str())
     }
 
-    fn values(&self, indexed_at_unix_nanos: i64) -> [SimpleExpr; OPERATION_COLUMNS.len()] {
+    fn values(&self, indexed_at_unix_nanos: i64) -> [SimpleExpr; TOOL_COLUMNS.len()] {
         let generation_id = self.generation_id.to_string();
         [
             self.workspace_id.to_string().into(),
             self.doc_id().into(),
-            OPERATION.into(),
+            TOOL.into(),
             self.provider_id.to_string().into(),
             generation_id.clone().into(),
-            self.operation_key.as_str().into(),
+            self.tool_key.as_str().into(),
             self.call_path.as_str().into(),
             self.qualified_name.into(),
             self.title.clone().into(),
@@ -250,24 +250,24 @@ pub(super) struct GenerationState<'a> {
     pub(super) state: AttemptState,
 }
 
-/// Upserts Operation rows by Workspace and document id, stamped with
+/// Upserts Tool rows by Workspace and document id, stamped with
 /// `indexed_at_unix_nanos`, as [`changed_rows_only`] describes. An update,
 /// never `INSERT OR REPLACE`: on `SQLite` a replace skips the delete trigger
 /// and leaves a stale copy in the FTS5 table.
-pub(super) async fn upsert_operation_rows(
+pub(super) async fn upsert_tool_rows(
     transaction: &mut Transaction<'_>,
-    rows: &[OperationRow<'_>],
+    rows: &[ToolRow<'_>],
     indexed_at_unix_nanos: i64,
 ) -> Result<(), Error> {
     for chunk in rows.chunks(CHUNK_ROWS) {
         let mut statement = Query::insert();
         statement
             .into_table(SearchEntities::Table)
-            .columns(OPERATION_COLUMNS);
+            .columns(TOOL_COLUMNS);
         for row in chunk {
             statement.values_panic(row.values(indexed_at_unix_nanos));
         }
-        statement.on_conflict(changed_rows_only(transaction.system(), OPERATION_COLUMNS));
+        statement.on_conflict(changed_rows_only(transaction.system(), TOOL_COLUMNS));
         transaction.execute(statement).await?;
     }
     Ok(())
@@ -312,12 +312,9 @@ pub(super) async fn delete_rows_not_written(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     generation_id: &ProviderGenerationId,
-    rows: &[OperationRow<'_>],
+    rows: &[ToolRow<'_>],
 ) -> Result<(), Error> {
-    let written = rows
-        .iter()
-        .map(OperationRow::doc_id)
-        .collect::<HashSet<_>>();
+    let written = rows.iter().map(ToolRow::doc_id).collect::<HashSet<_>>();
     let indexed: Vec<(String,)> = transaction
         .fetch_all(
             Query::select()
@@ -347,7 +344,7 @@ pub(super) async fn delete_rows_not_written(
     Ok(())
 }
 
-/// Deletes every Operation row of the Generation, then refreshes the
+/// Deletes every Tool row of the Generation, then refreshes the
 /// Workspace's statistics.
 pub(super) async fn delete_generation_rows(
     transaction: &mut Transaction<'_>,
@@ -406,7 +403,7 @@ pub(super) async fn write_generation_state(
                     [
                         state.workspace_id.to_string().into(),
                         state.generation_id.to_string().into(),
-                        OPERATION.into(),
+                        TOOL.into(),
                         state.provider_id.to_string().into(),
                         state.generation_id.to_string().into(),
                         state.display_name.into(),
@@ -437,7 +434,7 @@ pub(super) async fn write_generation_state(
     Ok(())
 }
 
-/// Deletes one Generation's Operation rows and state row, then refreshes the
+/// Deletes one Generation's Tool rows and state row, then refreshes the
 /// statistics of the Workspace its state row named, under that Workspace's
 /// lock. Nothing is locked or refreshed when the index held no state for the
 /// Generation: the next reconcile pass sees the changed rows.
@@ -451,7 +448,7 @@ pub(super) async fn delete_generation(
             Query::select()
                 .column(SearchIndexStates::WorkspaceId)
                 .from(SearchIndexStates::Table)
-                .and_where(Expr::col(SearchIndexStates::Kind).eq(OPERATION))
+                .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
                 .and_where(Expr::col(SearchIndexStates::TargetId).eq(generation_id.as_str()))
                 .to_owned(),
         )
@@ -463,7 +460,7 @@ pub(super) async fn delete_generation(
         .execute(
             Query::delete()
                 .from_table(SearchEntities::Table)
-                .and_where(Expr::col(SearchEntities::Kind).eq(OPERATION))
+                .and_where(Expr::col(SearchEntities::Kind).eq(TOOL))
                 .and_where(
                     Expr::col(SearchEntities::ProviderGenerationId).eq(generation_id.as_str()),
                 )
@@ -474,7 +471,7 @@ pub(super) async fn delete_generation(
         .execute(
             Query::delete()
                 .from_table(SearchIndexStates::Table)
-                .and_where(Expr::col(SearchIndexStates::Kind).eq(OPERATION))
+                .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
                 .and_where(
                     Expr::col(SearchIndexStates::ProviderGenerationId).eq(generation_id.as_str()),
                 )
@@ -487,7 +484,7 @@ pub(super) async fn delete_generation(
     Ok(())
 }
 
-/// Deletes the Operation rows and state rows of every Generation of one
+/// Deletes the Tool rows and state rows of every Generation of one
 /// Provider, then refreshes the Workspace's statistics.
 pub(super) async fn delete_provider(
     transaction: &mut Transaction<'_>,
@@ -500,7 +497,7 @@ pub(super) async fn delete_provider(
         .execute(
             Query::delete()
                 .from_table(SearchEntities::Table)
-                .and_where(Expr::col(SearchEntities::Kind).eq(OPERATION))
+                .and_where(Expr::col(SearchEntities::Kind).eq(TOOL))
                 .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.as_str()))
                 .and_where(Expr::col(SearchEntities::ProviderId).eq(provider_id.as_str()))
                 .to_owned(),
@@ -510,7 +507,7 @@ pub(super) async fn delete_provider(
         .execute(
             Query::delete()
                 .from_table(SearchIndexStates::Table)
-                .and_where(Expr::col(SearchIndexStates::Kind).eq(OPERATION))
+                .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
                 .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.as_str()))
                 .and_where(Expr::col(SearchIndexStates::ProviderId).eq(provider_id.as_str()))
                 .to_owned(),
@@ -599,7 +596,7 @@ pub(super) struct FailedFunctionState<'a> {
 
 /// Upserts a Saved Function row by Workspace and document id, stamped with
 /// `indexed_at_unix_nanos`, as [`changed_rows_only`] describes. An update,
-/// never `INSERT OR REPLACE`, for the reason [`upsert_operation_rows`]
+/// never `INSERT OR REPLACE`, for the reason [`upsert_tool_rows`]
 /// gives.
 pub(super) async fn upsert_function_row(
     transaction: &mut Transaction<'_>,
@@ -756,13 +753,7 @@ pub(super) async fn failed_generation_retry_rule(
     workspace_id: &WorkspaceId,
     generation_id: &ProviderGenerationId,
 ) -> Result<Option<RetryRule>, Error> {
-    let row = failed_state(
-        transaction,
-        workspace_id,
-        OPERATION,
-        generation_id.to_string(),
-    )
-    .await?;
+    let row = failed_state(transaction, workspace_id, TOOL, generation_id.to_string()).await?;
     Ok(row.map(|row| row.retry.into()))
 }
 
@@ -871,7 +862,7 @@ pub(super) async fn recorded_generations(
                     SearchIndexStates::IndexerRevision,
                 ]))
                 .from(SearchIndexStates::Table)
-                .and_where(Expr::col(SearchIndexStates::Kind).eq(OPERATION))
+                .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
                 .to_owned(),
         )
         .await?;
@@ -912,7 +903,7 @@ pub(crate) async fn generation_outcomes_in_workspace(
         ])
         .from(SearchIndexStates::Table)
         .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(SearchIndexStates::Kind).eq(OPERATION))
+        .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
         .to_owned();
     if let Some(provider_id) = provider_filter {
         query.and_where(Expr::col(SearchIndexStates::ProviderId).eq(provider_id.to_string()));
@@ -971,11 +962,11 @@ fn parse_failure_kind(value: &str) -> Option<SearchIndexFailure> {
         .find(|failure| failure_kind(*failure) == value)
 }
 
-/// Reads a Workspace's Operation rows as `(provider id, Generation id, Call
+/// Reads a Workspace's Tool rows as `(provider id, Generation id, Call
 /// Path, Provider name)`, in Call Path order, for tests in crates that start
 /// Coral.
 #[cfg(any(test, feature = "test-fixtures"))]
-pub(crate) async fn operation_rows_in_workspace(
+pub(crate) async fn tool_rows_in_workspace(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
 ) -> Result<Vec<(String, String, String, String)>, Error> {
@@ -990,7 +981,7 @@ pub(crate) async fn operation_rows_in_workspace(
                 ])
                 .from(SearchEntities::Table)
                 .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(SearchEntities::Kind).eq(OPERATION))
+                .and_where(Expr::col(SearchEntities::Kind).eq(TOOL))
                 .order_by(SearchEntities::CallPath, sea_query::Order::Asc)
                 .to_owned(),
         )
@@ -1016,7 +1007,7 @@ pub(crate) async fn generation_states_in_workspace(
                 ])
                 .from(SearchIndexStates::Table)
                 .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(SearchIndexStates::Kind).eq(OPERATION))
+                .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
                 .order_by(
                     SearchIndexStates::ProviderGenerationId,
                     sea_query::Order::Asc,
@@ -1026,7 +1017,7 @@ pub(crate) async fn generation_states_in_workspace(
         .await
 }
 
-/// Reads every Generation that has Operation rows, each once.
+/// Reads every Generation that has Tool rows, each once.
 pub(super) async fn generations_with_rows(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<WorkspaceGeneration>, IndexError> {
@@ -1039,7 +1030,7 @@ pub(super) async fn generations_with_rows(
                     SearchEntities::ProviderGenerationId,
                 ])
                 .from(SearchEntities::Table)
-                .and_where(Expr::col(SearchEntities::Kind).eq(OPERATION))
+                .and_where(Expr::col(SearchEntities::Kind).eq(TOOL))
                 .to_owned(),
         )
         .await?;
@@ -1048,7 +1039,7 @@ pub(super) async fn generations_with_rows(
         .collect()
 }
 
-/// Deletes one Generation's Operation rows and state row within its
+/// Deletes one Generation's Tool rows and state row within its
 /// Workspace. The caller refreshes the Workspace's statistics.
 pub(super) async fn delete_generation_in_workspace(
     transaction: &mut Transaction<'_>,
@@ -1068,7 +1059,7 @@ pub(super) async fn delete_generation_in_workspace(
                     Expr::col(SearchIndexStates::WorkspaceId)
                         .eq(generation.workspace_id.to_string()),
                 )
-                .and_where(Expr::col(SearchIndexStates::Kind).eq(OPERATION))
+                .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
                 .and_where(
                     Expr::col(SearchIndexStates::ProviderGenerationId)
                         .eq(generation.generation_id.to_string()),

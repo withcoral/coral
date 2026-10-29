@@ -99,15 +99,15 @@ impl ActionQueue for RunModule {
     }
 }
 
-/// An approval-gated Operation whose Invocations stop at the approval wait.
-pub(crate) struct ApprovalGatedOperation {
+/// An approval-gated Tool whose Invocations stop at the approval wait.
+pub(crate) struct ApprovalGatedTool {
     pub(crate) fixture: TestModules,
-    pub(crate) operation: OperationFixture,
+    pub(crate) tool: ToolFixture,
     gate: Arc<FenceGate>,
     release: oneshot::Sender<()>,
 }
 
-impl ApprovalGatedOperation {
+impl ApprovalGatedTool {
     pub(crate) async fn new(user_id: &str) -> Self {
         let (gate, release) = FenceGate::blocking();
         let fixture = TestModules::with_invocation_adapters(
@@ -116,11 +116,11 @@ impl ApprovalGatedOperation {
             Arc::new(ApprovalWaitGate(gate.clone())),
         )
         .await;
-        let operation = fixture.user_operation(user_id, "Approval waits").await;
-        fixture.require_approval(&operation).await;
+        let tool = fixture.user_tool(user_id, "Approval waits").await;
+        fixture.require_approval(&tool).await;
         Self {
             fixture,
-            operation,
+            tool,
             gate,
             release,
         }
@@ -130,27 +130,27 @@ impl ApprovalGatedOperation {
     pub(crate) async fn hold(self, actor: AuthenticatedPrincipal) -> HeldApproval {
         let Self {
             fixture,
-            operation,
+            tool,
             gate,
             release,
         } = self;
         let approvals = fixture.approvals();
         let accepted = fixture
             .runs
-            .start(&actor, &operation.workspace_id, submission("invoke"))
+            .start(&actor, &tool.workspace_id, submission("invoke"))
             .await
             .unwrap();
         wait_until(|| gate.entered()).await;
         let run = accepted.run_id().clone();
         let waiting = fixture
             .runs
-            .observe(&actor, &operation.workspace_id, &run, &immediate(None, 100))
+            .observe(&actor, &tool.workspace_id, &run, &immediate(None, 100))
             .await
             .unwrap();
         assert_eq!(waiting.required_actions().len(), 1);
         HeldApproval {
             fixture,
-            operation,
+            tool,
             approvals,
             actor,
             run,
@@ -163,7 +163,7 @@ impl ApprovalGatedOperation {
 /// A Run held at its approval wait, so the worker commits nothing more on its own.
 pub(crate) struct HeldApproval {
     pub(crate) fixture: TestModules,
-    pub(crate) operation: OperationFixture,
+    pub(crate) tool: ToolFixture,
     pub(crate) approvals: ApprovalModule,
     /// The Principal that started the Run.
     pub(crate) actor: AuthenticatedPrincipal,
@@ -173,7 +173,7 @@ pub(crate) struct HeldApproval {
 }
 
 impl HeldApproval {
-    /// Holds a Run that the Operation's User started.
+    /// Holds a Run that the Tool's User started.
     pub(crate) async fn new(user_id: &str) -> Self {
         Self::under(user_id, crate::execution::ExecutionPolicy::testing()).await
     }
@@ -189,9 +189,9 @@ impl HeldApproval {
     }
 
     async fn under(user_id: &str, policy: crate::execution::ExecutionPolicy) -> Self {
-        let mut setup = ApprovalGatedOperation::new(user_id).await;
+        let mut setup = ApprovalGatedTool::new(user_id).await;
         setup.fixture.runs.execution_policy = policy;
-        let owner = setup.operation.principal.clone();
+        let owner = setup.tool.principal.clone();
         setup.hold(owner).await
     }
 
@@ -208,7 +208,7 @@ impl HeldApproval {
                 .runs
                 .observe(
                     &self.actor,
-                    &self.operation.workspace_id,
+                    &self.tool.workspace_id,
                     &self.run,
                     &observation,
                 )
@@ -220,15 +220,15 @@ impl HeldApproval {
         self.waiting.required_actions().first().unwrap()
     }
 
-    /// The Operation's User approves the held Invocation.
+    /// The Tool's User approves the held Invocation.
     pub(crate) async fn approve(&self) {
         let crate::RequiredActionRequest::InvocationApproval(id) = &self.action().request else {
             panic!("approval")
         };
         self.approvals
             .decide(
-                &self.operation.principal,
-                &self.operation.workspace_id,
+                &self.tool.principal,
+                &self.tool.workspace_id,
                 id,
                 ApprovalDecision::Approve,
                 None,

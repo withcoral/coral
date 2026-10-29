@@ -34,7 +34,7 @@ struct RetrieverStatus {
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum Retriever {
-    Operation,
+    ProviderTool,
     SavedFunction,
 }
 
@@ -66,10 +66,10 @@ struct RetrieverCoverage {
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SearchHit {
-    /// `coral.providers.<namespace>.…` for an Operation,
+    /// `coral.providers.<namespace>.…` for a provider tool,
     /// `coral.functions.…` for a Saved Function.
     call_path: String,
-    /// The callable's input members one level deep; an Operation's result
+    /// The callable's input members one level deep; a provider tool's result
     /// data types by name, an unnamed object as `{…}`; a Saved Function's
     /// result members one level deep. At most 512 UTF-8 bytes.
     signature_line: String,
@@ -93,7 +93,7 @@ struct SearchHit {
     /// Present, and true, only when a person must approve each call.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     approval_required: bool,
-    /// Present, and true, only when the Operation is deprecated.
+    /// Present, and true, only when the provider tool is deprecated.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     deprecated: bool,
 }
@@ -101,7 +101,7 @@ struct SearchHit {
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum Description<Detail> {
-    Operation {
+    ProviderTool {
         #[serde(flatten)]
         authoring: Authoring,
         provider_access: String,

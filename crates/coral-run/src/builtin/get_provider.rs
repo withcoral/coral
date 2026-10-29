@@ -44,7 +44,7 @@ impl GetProvider {
                 }
                 other => authority_error(other),
             })?;
-        Ok(self.result(inspected)?.into_operation_result())
+        Ok(self.result(inspected)?.into_tool_result())
     }
 
     fn result(&self, inspected: ProviderWithConfiguration) -> Result<GetProviderResult, Error> {
