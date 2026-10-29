@@ -46,7 +46,8 @@ export async function binaryOutput(context: TestContext) {
       await page.goto(`/${runName}`)
       const value = page.getByRole('region', { name: 'Final value', exact: true })
       await shownPayload(value, image.data).waitFor()
-      expect(JSON.parse(await retainedPayload(page, value, 'Final value'))).toEqual(image)
+      // Exactly as retained: the same text, not only the same value.
+      expect(await retainedPayload(page, value, 'Final value')).toBe(JSON.stringify(image))
     })
     await step('Reef keeps a Final Value too long to show whole, exactly', async () => {
       const result = await programRunner(page, target, workspace).exec(
@@ -57,7 +58,7 @@ export async function binaryOutput(context: TestContext) {
       await page.goto(`/workspaces/${workspace}/runs/${update.run_id}`)
       const value = page.getByRole('region', { name: 'Final value', exact: true })
       await shownPayload(value, huge[0]!).waitFor()
-      expect(JSON.parse(await retainedPayload(page, value, 'Final value'))).toEqual(huge)
+      expect(await retainedPayload(page, value, 'Final value')).toBe(JSON.stringify(huge))
     })
   })
 }
