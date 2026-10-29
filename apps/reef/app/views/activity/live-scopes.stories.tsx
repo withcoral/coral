@@ -1254,6 +1254,19 @@ async function inspect(
   if (find !== null) await userEvent.type(within(viewer).getByRole('searchbox'), find)
   return { expand, viewer }
 }
+/** Lets the record you inspect show for its minimum time, so only the hold keeps it. */
+const outstay = () => new Promise((resolve) => setTimeout(resolve, MIN_LIVE_RECORD_STAY_MS))
+/**
+ * Live mode steps within a few frames of what arrives. So the record `shown` gives stays on
+ * `record` for a second, at every frame, or live mode moved on.
+ */
+async function keeps(shown: () => string | null, record: string | null) {
+  const end = performance.now() + 1000
+  while (performance.now() < end) {
+    expect(shown()).toBe(record)
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+  }
+}
 /** Changes what Coral holds while the expanded viewer covers the route's buttons. */
 function arrive(kind: Parameters<typeof world.change>[0]) {
   world.change(kind)
@@ -1285,6 +1298,7 @@ const holdsWhileYouInspect = (
     await selects('call.r2-op-3', 'call.r2-op-3')
     const inspected = address().get('record')
     const { expand, viewer } = await inspect(context, find, label)
+    await outstay()
 
     // A new operation arrives and the Run ends. The list takes both; the record stays.
     arrive('call')
@@ -1294,7 +1308,7 @@ const holdsWhileYouInspect = (
     await waitFor(() =>
       expect(canvas.getByRole('link', { name: 'call.r2-op-4', hidden: true })).toBeInTheDocument(),
     )
-    await expect(address().get('record')).toBe(inspected)
+    await keeps(() => address().get('record'), inspected)
     await expect(address().get('live')).toBe('latest')
     // Behind the open viewer, the toggle stays pressed.
     await expect(canvas.getByRole('button', { name: 'Live', hidden: true })).toHaveAttribute(
@@ -1318,7 +1332,7 @@ export const HoldsWhileYouInspectAPayload = holdsWhileYouInspect('Provider respo
 export const HoldsWhileYouInspectTheSource = holdsWhileYouInspect('Accepted source', null, true)
 
 // Catches: a close that turns live mode back on after you turned it off meanwhile.
-export const StaysOffWhenLiveEndsWhileYouInspect: Story = {
+const staysOffWhenLiveEnds = (label: string, find: string | null): Story => ({
   beforeEach: () => world.reset([]),
   play: async (context) => {
     const { userEvent } = context
@@ -1330,7 +1344,8 @@ export const StaysOffWhenLiveEndsWhileYouInspect: Story = {
     await press('Add call')
     await selects('call.r2-op-3', 'call.r2-op-3')
     const inspected = address().get('record')
-    const { expand } = await inspect(context, 'a')
+    const { expand } = await inspect(context, find, label)
+    await outstay()
     // Live mode ends while you inspect: its address drops it, as its toggle does.
     const off = new URLSearchParams(address())
     off.delete('live')
@@ -1342,15 +1357,25 @@ export const StaysOffWhenLiveEndsWhileYouInspect: Story = {
     await waitFor(() => expect(expand).toHaveFocus())
     await idle()
     // Nothing moves on, and live mode stays off.
-    await expect(address().get('record')).toBe(inspected)
+    await keeps(() => address().get('record'), inspected)
     await expect(latest()).toHaveAttribute('aria-pressed', 'false')
-    await expect(page.queryByRole('dialog', { name: 'Provider response' })).toBeNull()
+    await expect(page.queryByRole('dialog', { name: label })).toBeNull()
   },
-}
+})
+export const StaysOffWhenLiveEndsWhileYouInspect = staysOffWhenLiveEnds('Provider response', 'a')
+export const StaysOffWhenLiveEndsWhileYouInspectTheSource = staysOffWhenLiveEnds(
+  'Accepted source',
+  null,
+)
 
 // Catches: a viewer that goes away open, as when you go back to another record, and leaves
 // live mode held for good.
-export const ResumesWhenTheOpenViewerGoesAway: Story = {
+const resumesWhenTheViewerGoesAway = (
+  label: string,
+  find: string | null,
+  /** Where you go meanwhile: somewhere the open viewer is gone. */
+  away: (address: URLSearchParams) => void,
+): Story => ({
   beforeEach: () => world.reset([]),
   play: async (context) => {
     const { userEvent } = context
@@ -1361,48 +1386,64 @@ export const ResumesWhenTheOpenViewerGoesAway: Story = {
     await press('Add run to newest task')
     await press('Add call')
     await selects('call.r2-op-3', 'call.r2-op-3')
-    await inspect(context, 'a')
-    // Another record opens in live mode, so the open viewer unmounts with its record.
-    const run = new URLSearchParams(address())
-    run.set('record', runRow('r2', '').name)
-    world.navigate(`?${run}`)
-    await waitFor(() =>
-      expect(page.queryByRole('dialog', { name: 'Provider response' })).toBeNull(),
-    )
+    await inspect(context, find, label)
+    const elsewhere = new URLSearchParams(address())
+    away(elsewhere)
+    world.navigate(`?${elsewhere}`)
+    await waitFor(() => expect(page.queryByRole('dialog', { name: label })).toBeNull())
     await idle()
     // Live mode holds no more: a new operation opens as it arrives.
     await press('Add call')
     await selects('call.r2-op-4', 'call.r2-op-4')
     await expect(address().get('live')).toBe('latest')
   },
-}
+})
+// Another record of the Run opens, so the payload's viewer unmounts with its record.
+export const ResumesWhenTheOpenViewerGoesAway = resumesWhenTheViewerGoesAway(
+  'Provider response',
+  'a',
+  (address) => address.set('record', runRow('r2', '').name),
+)
+// The source stays for its Run, so the rail closes: its viewer unmounts with the rail.
+export const ResumesWhenTheOpenSourceGoesAway = resumesWhenTheViewerGoesAway(
+  'Accepted source',
+  null,
+  (address) => address.delete('record'),
+)
 
-// Catches: an approval request that arrives while you inspect a payload expanded taking you
-// to its review, which swaps the record and closes the viewer.
-export const HoldsAnApprovalWhileYouInspect: Story = {
+// Catches: an approval request that arrives while you inspect a payload or the source
+// expanded taking you to its review, which swaps the record and closes the viewer.
+const holdsAnApproval = (label: string, find: string | null): Story => ({
   beforeEach: () => world.reset([]),
   play: async (context) => {
     const { userEvent } = context
     const { latest, address, press, selects, reviews, idle, canvas } = await surface(context)
     const page = within(context.canvasElement.ownerDocument.body)
-    await userEvent.click(latest())
+    // The activity arrives first. Turned on, live mode opens its newest record at once.
     await press('Add task')
+    await idle()
     await press('Add run to newest task')
+    await idle()
     await press('Add call')
+    await idle()
+    await userEvent.click(latest())
     await selects('call.r2-op-3', 'call.r2-op-3')
     const inspected = address().get('record')
-    const { viewer } = await inspect(context, 'x')
+    const { viewer } = await inspect(context, find, label)
+    await outstay()
     // An operation in the Run now waits for your approval. The list shows it; the record stays.
     arrive('ask')
     await idle()
     await waitFor(() =>
       expect(canvas.getByRole('link', { name: 'call.r2-op-4', hidden: true })).toBeInTheDocument(),
     )
-    await expect(address().get('record')).toBe(inspected)
+    await keeps(() => address().get('record'), inspected)
     await expect(address().has('request')).toBe(false)
-    await expect(page.getByRole('dialog', { name: 'Provider response' })).toBe(viewer)
+    await expect(page.getByRole('dialog', { name: label })).toBe(viewer)
     // Closed, live mode opens the review.
     await userEvent.keyboard('{Escape}')
     await reviews('call.r2-op-4')
   },
-}
+})
+export const HoldsAnApprovalWhileYouInspect = holdsAnApproval('Provider response', 'x')
+export const HoldsAnApprovalWhileYouInspectTheSource = holdsAnApproval('Accepted source', null)
