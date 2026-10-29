@@ -409,7 +409,7 @@ export const SameRunNavigation: Story = {
 }
 
 /** The drawer and its source pane, with the record `parameters.record` selected. */
-async function sourcePane(canvasElement: HTMLElement) {
+async function openDrawerSource(canvasElement: HTMLElement) {
   const page = within(canvasElement.ownerDocument.body)
   const dialog = await page.findByRole('dialog', { name: 'Activity details' })
   const pane = within(dialog).getByRole('region', { name: 'Accepted source' })
@@ -424,7 +424,7 @@ async function sourcePane(canvasElement: HTMLElement) {
 export const ExpandsTheSource: Story = {
   parameters: { record: laterSend.name },
   play: async ({ canvasElement, userEvent }) => {
-    const { page, dialog, pane } = await sourcePane(canvasElement)
+    const { page, dialog, pane } = await openDrawerSource(canvasElement)
     await waitFor(() => expect(highlighted(pane)).toEqual([66]))
     const code = pane.querySelector('pre')!
     const viewport = viewportOf(pane)
@@ -487,7 +487,7 @@ function copiesAndDownloads(record: string, title: string, code: string, fileNam
   return {
     parameters: { record },
     play: async ({ canvasElement, userEvent }) => {
-      const { page, pane } = await sourcePane(canvasElement)
+      const { page, pane } = await openDrawerSource(canvasElement)
       const copied = spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
       const blobs: Blob[] = []
       const created = spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
@@ -550,7 +550,7 @@ const currentLines = (scope: HTMLElement) => [
 export const FindsALateMatchInTheSource: Story = {
   parameters: { record: laterSend.name },
   play: async ({ canvasElement, userEvent }) => {
-    const { page, dialog, pane } = await sourcePane(canvasElement)
+    const { page, dialog, pane } = await openDrawerSource(canvasElement)
     await waitFor(() => expect(highlighted(pane)).toEqual([66]))
     const viewport = viewportOf(pane)
     viewport.scrollTop = 120

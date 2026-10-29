@@ -1267,19 +1267,21 @@ const holdsWhileYouInspect = (
   label: string,
   find: string | null,
   /** Whether Expand stays once live mode moves on: the source pane stays for its Run. */
-  stays: boolean,
+  expandStays: boolean,
 ): Story => ({
   beforeEach: () => world.reset([]),
   play: async (context) => {
     const { userEvent } = context
     const { latest, address, press, selects, idle, canvas } = await surface(context)
     const page = within(context.canvasElement.ownerDocument.body)
-    await userEvent.click(latest())
+    // The activity arrives first. Turned on, live mode opens its newest record at once.
     await press('Add task')
-    await selects('Task t1', 'Task t1')
+    await idle()
     await press('Add run to newest task')
-    await selects('Run r2', 'run r2')
+    await idle()
     await press('Add call')
+    await idle()
+    await userEvent.click(latest())
     await selects('call.r2-op-3', 'call.r2-op-3')
     const inspected = address().get('record')
     const { expand, viewer } = await inspect(context, find, label)
@@ -1303,11 +1305,12 @@ const holdsWhileYouInspect = (
     await expect(page.getByRole('dialog', { name: label })).toBe(viewer)
     if (find !== null) await expect(within(viewer).getByRole('searchbox')).toHaveValue(find)
 
-    // Closed, focus is back on Expand, then live mode moves on to the Run's newest record.
+    // Closed, focus is back on Expand, then live mode moves on to the Run's newest record,
+    // once the record you inspected has shown for its minimum time.
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(page.queryByRole('dialog', { name: label })).toBeNull())
-    await waitFor(() => expect(address().get('record')).not.toBe(inspected))
-    await expect(expand.isConnected).toBe(stays)
+    await waitFor(() => expect(address().get('record')).not.toBe(inspected), stays)
+    await expect(expand.isConnected).toBe(expandStays)
     await expect(address().get('live')).toBe('latest')
   },
 })
