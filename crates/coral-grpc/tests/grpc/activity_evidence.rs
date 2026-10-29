@@ -1437,11 +1437,17 @@ async fn activity_summary_wire_rejects_malformed_and_hidden_windows_and_labels_i
         panic!("one actor: {:?}", summary.actors)
     };
     assert_eq!(actor.label, "You");
-    assert_eq!(
-        actor.key,
-        AuthenticatedPrincipal::user(f.member.clone())
-            .principal()
-            .id()
-            .to_string()
-    );
+    let key = AuthenticatedPrincipal::user(f.member.clone())
+        .principal()
+        .id()
+        .to_string();
+    assert_eq!(actor.key, key);
+    let you = wire::ActivityCallerCalls {
+        key,
+        label: "You".into(),
+        agent: String::new(),
+        calls: 1,
+    };
+    assert_eq!(summary.callers, std::slice::from_ref(&you));
+    assert_eq!(tool.callers, [you]);
 }

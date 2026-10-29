@@ -657,6 +657,9 @@ message SummarizeActivityResponse {
   // Net context bytes per invoking actor, most saved first. They add up to
   // context_impact_bytes.
   repeated ActivityContextShare actors = 7;
+  // Calls that ended in the window per invoking actor, busiest first. They add up
+  // to the calls outcomes.
+  repeated ActivityCallerCalls callers = 8;
 }
 // Ended Tool calls, by who acts next. The six counts add up to every ended call.
 message ActivityCallOutcomes {
@@ -692,6 +695,19 @@ message ActivityToolCalls {
   string call_path = 1;
   // Calls that ended in the window.
   int64 calls = 2;
+  // The same calls per invoking actor, busiest first. They add up to calls.
+  repeated ActivityCallerCalls callers = 3;
+}
+// Ended calls for one actor.
+message ActivityCallerCalls {
+  // Stable actor ID.
+  string key = 1;
+  // "You", the Agent's name, or an unavailable label.
+  string label = 2;
+  // workspaces/{workspace}/agents/{agent}, or empty for User work.
+  string agent = 3;
+  // Calls that ended in the window.
+  int64 calls = 4;
 }
 // Approval decisions in a window.
 message ActivityApprovalDecisions {

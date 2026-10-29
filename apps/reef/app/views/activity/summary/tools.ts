@@ -1,5 +1,5 @@
 import type { RecipeIcons } from '@/lib/provider-recipes/choice'
-import type { ActivitySummaryData, StopReason } from '@/lib/activity-summary'
+import type { ActivitySummaryData, CallerCalls, StopReason } from '@/lib/activity-summary'
 import { toolOwner } from '@/lib/call-root'
 
 export const STOP_REASONS: readonly StopReason[] = ['blocked', 'notAllowed', 'needsSetup']
@@ -24,6 +24,8 @@ export interface ToolRow {
   /** The tool's pages, when its provider is in the workspace. */
   pages?: { tool: string; settings: string }
   calls: number
+  /** Who made the calls, busiest first. */
+  callers: readonly CallerCalls[]
   stops: Record<StopReason, number>
   stopped: number
 }
@@ -71,8 +73,8 @@ export function toolRows(
     ...summary.tools,
     ...summary.stopped
       .filter((tool) => !called.has(tool.callPath))
-      .map((tool) => ({ callPath: tool.callPath, calls: stoppedOf(tool) })),
-  ].map(({ callPath, calls }) => {
+      .map((tool) => ({ callPath: tool.callPath, calls: stoppedOf(tool), callers: [] })),
+  ].map(({ callPath, calls, callers }) => {
     const stoppedTool = stopped.get(callPath)
     const stops = {
       blocked: stoppedTool?.blocked ?? 0,
@@ -83,6 +85,7 @@ export function toolRows(
       callPath,
       ...named(callPath, providers),
       calls,
+      callers,
       stops,
       stopped: stoppedOf(stops),
     }
