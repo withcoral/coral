@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 
-import { filterQuery } from '@/utils/filter-query'
+import { payloadQuery as filterQuery } from '@/utils/filter-query'
 
 import { jsonStructure, type JsonNode } from './json-structure'
 import { findMatches, lineUnits, structureUnits } from './payload-search'

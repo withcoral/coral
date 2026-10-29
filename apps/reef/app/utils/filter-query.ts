@@ -37,6 +37,24 @@ const EVERYTHING: FilterQuery = { text: '', matches: () => true, ranges: () => [
 export function filterQuery(input: string): FilterQuery {
   const text = input.trim()
   if (!text) return EVERYTHING
+  // Keep ordinary filters literal, as on main. Payload Find alone reads patterns.
+  const literal = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const finds = new RegExp(literal, 'i')
+  const marks = new RegExp(literal, 'gi')
+  const ranges = (marked: string): Range[] =>
+    [...marked.matchAll(marks)].map((match) => [match.index, match.index + match[0].length])
+  return {
+    text,
+    matches: (...texts) => texts.some((candidate) => candidate != null && finds.test(candidate)),
+    ranges,
+    hits: (marked) => ranges(marked).map((range) => [range]),
+  }
+}
+
+/** Payload Find retains anchors and wildcards without changing ordinary filters. */
+export function payloadQuery(input: string): FilterQuery {
+  const text = input.trim()
+  if (!text) return EVERYTHING
   let pattern = text
   const start = pattern.startsWith('^')
   if (start) pattern = pattern.slice(1)

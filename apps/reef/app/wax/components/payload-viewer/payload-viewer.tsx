@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 
-import { filterQuery } from '@/utils/filter-query'
+import { payloadQuery as filterQuery } from '@/utils/filter-query'
 import * as Button from '@/wax/components/button'
 import { CopyButton } from '@/wax/components/button/copy-button'
 import { token } from '@/wax/components/code-block/code-block.css'

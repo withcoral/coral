@@ -407,7 +407,6 @@ it('heads a Run that failed for a reason this Reef does not know, without a code
   expect(card.textContent).toBe('The run failedexact-run-message')
 })
 
-
 it.each([
   { outcome: 'open', withFeedback: false },
   { outcome: 'success', withFeedback: true },
@@ -1663,7 +1662,6 @@ it.each<[string, Detail, string | null]>([
     succeeded('12345678901234567890'),
     '12345678901234567890',
   ],
-
 ])(
   'shows what %s returned in a Final value card, or nothing when it returned nothing',
   (_, detail, value) => {

@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 
-import { filterQuery } from './filter-query'
+import { filterQuery, payloadQuery } from './filter-query'
 
 const names = ['GitHub', 'GitHub Enterprise', 'Weather', 'api.v2 (beta)', 'a*b', '^start$']
 
@@ -77,5 +77,5 @@ test.each([
   ['*', 'row', []],
   ['', 'row', []],
 ])('%j finds each match of %j as one hit', (input, text, hits) => {
-  expect(filterQuery(input).hits(text)).toEqual(hits)
+  expect(payloadQuery(input).hits(text)).toEqual(hits)
 })
