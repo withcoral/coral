@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises'
+
 import type { Locator, Page } from 'playwright'
 
 /**
@@ -12,15 +14,14 @@ export function shownPayload(scope: Page | Locator, text: string): Locator {
 }
 
 /**
- * The JSON payload named `label` in `scope`, exactly as retained: the Raw view of its
- * expanded viewer. Closes the viewer again.
+ * The payload named `label` in `scope`, exactly as retained: the file its Download
+ * action saves. A long payload shows only its rows near the view, so its text on the
+ * page can be only part of it.
  */
 export async function retainedPayload(page: Page, scope: Locator, label: string) {
-  await scope.getByRole('button', { name: `Expand ${label}`, exact: true }).click()
-  const viewer = page.getByRole('dialog', { name: label, exact: true })
-  await viewer.getByRole('radio', { name: 'Raw', exact: true }).click()
-  const retained = await viewer.getByRole('group', { name: 'Raw', exact: true }).textContent()
-  await viewer.getByRole('button', { name: 'Close', exact: true }).click()
-  await viewer.waitFor({ state: 'detached' })
-  return retained ?? ''
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    scope.getByRole('button', { name: `Download ${label}`, exact: true }).click(),
+  ])
+  return readFile(await download.path(), 'utf8')
 }
