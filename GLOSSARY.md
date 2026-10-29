@@ -721,13 +721,13 @@ Coral Program can reach Upstream Services only through host-mediated Tools. _Avo
 arbitrary Node process, ambient authority
 
 **Program Compiler**: The component of a Run Executor that applies the Coral TypeScript Profile, links Saved Function
-source, emits JavaScript and source maps, and produces safe Program Diagnostics. Each Run Executor that runs locally or
-in its own container keeps an official `typescript.js` compiler warm in one compiler-only V8 isolate. That isolate
-receives only packaged compiler assets and the virtual source files that Coral sends. It exposes no Program host binding
-or ambient authority. It is recycled after memory growth and replaced after the compiler fails; diagnostics are not a
-failure. Program execution never shares a compiler isolate; every accepted Run uses a fresh execution isolate
-containing only emitted JavaScript and the Program Runtime Surface. The Coral process runs no compiler. _Avoid_:
-Runtime compiler, Node compiler process, compiler process, shared compiler and Program isolate
+source, emits JavaScript and source maps, and produces safe Program Diagnostics. Each Run Executor keeps an official
+`typescript.js` compiler warm in one compiler-only V8 isolate. That isolate receives only packaged compiler assets and
+the virtual source files that Coral sends. It exposes no Program host binding or ambient authority. It is recycled after
+memory growth and replaced after the compiler fails; diagnostics are not a failure. Program execution never shares a
+compiler isolate; every accepted Run uses a fresh execution isolate containing only emitted JavaScript and the Program
+Runtime Surface. The Coral process runs no compiler. _Avoid_: Runtime compiler, Node compiler process, compiler process,
+shared compiler and Program isolate
 
 **Program Runtime Surface**: The secret-free ECMAScript environment in which V8 executes an accepted Program package. It
 provides ordinary objects, arrays, classes, closures, generators, Promises, `async` and `await`, maps, sets, regular
@@ -790,11 +790,12 @@ the Run over. Any Coral Instance may receive an outside Run Request for the Run.
 process
 
 **Run Executor**: The runtime outside the Coral process that executes accepted Coral Program packages for their Run
-Owners, each in a fresh V8 isolate, and, when it runs locally or in its own container, compiles Programs with the
-Program Compiler. It is identified by a random id it generates each time it starts. It receives no secret and no
-database connection, and opens no connection except its link to Coral and any remote runtime it drives. It reaches Coral
-only over that link, where its only requests are Run Requests for the Runs Coral placed on it. Its isolates run in its
-own process, or on a remote runtime that it drives. _Avoid_: worker, runner, sandbox host, Execution Host
+Owners, each in a fresh V8 isolate, and compiles Programs with the Program Compiler. A Run starts when a Run Executor
+takes it, and its deadline runs from its start. It is identified by a random id it generates each time it starts. It
+receives no secret and no database connection. Its only connections are its link to Coral, which Coral opens, and any
+connection to a remote runtime that it drives. It reaches Coral only over its link, where its only requests are Run
+Requests for the Runs Coral placed on it. Its isolates run in its own process, or on a remote runtime that it drives.
+_Avoid_: worker, runner, sandbox host, Execution Host
 
 **Run Owner**: The single writer of one Coral Program Run while the Run is not terminal. It exists from Run acceptance
 until the Run ends, receives every Run Request, Invocation outcome, deadline and wake-up for that Run in one order, and
@@ -804,9 +805,9 @@ it. A requester outside the Run acts on an outcome only once its Run Request is 
 Applied one. A repeat of the same Run Request receives the recorded answer. Outside Run Requests reach it through the
 Run Inbox. Workspace- and Provider-scoped changes reach it only as wake-ups. When a Run's worker lease lapses and no Run
 Owner renews it, Coral recreates its Run Owner. The recreated owner records any deadline that passed, applies the
-requests in the Run's Run Inbox, records the interruption or the termination already decided, and retires. A Run that no
-Run Executor has accepted, with nothing to record, goes back in a queue instead of being interrupted. Coral never
-resumes a Run. _Avoid_: Run actor, claim holder, lock holder, sweeper, external writer
+requests in the Run's Run Inbox, records the interruption or the termination already decided, and retires. A Run that
+has not started on a Run Executor, with nothing to record, goes back in a queue instead of being interrupted. Coral
+never resumes a Run. _Avoid_: Run actor, claim holder, lock holder, sweeper, external writer
 
 **Run Ledger**: The durable record of one Coral Program Run that its Run Owner appends to in chunks: the Program Run
 Events, the Run-scoped records they describe, and the Run's head. Every chunk advances the head by one and commits only
