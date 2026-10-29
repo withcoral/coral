@@ -1,22 +1,15 @@
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual'
 import classNames from 'classnames'
-import {
-  useCallback,
-  useEffect,
-  useEffectEvent,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
+import { downloadText } from '@/utils/download'
 import { payloadQuery as filterQuery } from '@/utils/filter-query'
 import * as Button from '@/wax/components/button'
 import { CopyButton } from '@/wax/components/button/copy-button'
 import { token } from '@/wax/components/code-block/code-block.css'
 import * as Dialog from '@/wax/components/dialog'
+import { FindControls } from '@/wax/components/find-controls'
 import { HighlightedMatches, type Highlight } from '@/wax/components/highlighted-matches'
-import { TextInput } from '@/wax/components/inputs/text/text-input'
 import { SegmentedControl } from '@/wax/components/segmented-control'
 import { Typography } from '@/wax/components/typography'
 
@@ -115,16 +108,6 @@ function Viewer({
   /** The expanded viewer opens with the folds you had; nothing else changes inline. */
   initialFolded?: Set<number>
 }) {
-  const [open, setOpen] = useState(false)
-  // From the open until the close has ended, so focus is back on Expand before a page moves.
-  const [held, setHeld] = useState(false)
-  const reportExpanded = useEffectEvent((next: boolean) => onExpandedChange?.(next))
-  // The cleanup also runs when the viewer unmounts open, so no page stays held.
-  useEffect(() => {
-    if (!held) return
-    reportExpanded(true)
-    return () => reportExpanded(false)
-  }, [held])
   const parsed = useMemo(() => (format === 'json' ? jsonStructure(value) : null), [format, value])
   const structure = typeof parsed === 'object' ? parsed : null
   const large = useMemo(
@@ -284,16 +267,12 @@ function Viewer({
       return next
     })
   const kind = format === 'text' ? 'Text' : parsed === 'invalid' ? 'Not valid JSON' : 'JSON'
-  const download = () => {
-    const url = URL.createObjectURL(
-      new Blob([value], { type: format === 'json' ? 'application/json' : 'text/plain' }),
+  const download = () =>
+    downloadText(
+      value,
+      fileName ?? `${slug(label)}.${format === 'json' ? 'json' : 'txt'}`,
+      format === 'json' ? 'application/json' : 'text/plain',
     )
-    const link = document.createElement('a')
-    link.href = url
-    link.download = fileName ?? `${slug(label)}.${format === 'json' ? 'json' : 'txt'}`
-    link.click()
-    setTimeout(() => URL.revokeObjectURL(url))
-  }
   // What Structured cannot show, such as text across two items, Find counts as Raw's.
   const findStatus = !search.text
     ? ''
@@ -319,42 +298,17 @@ function Viewer({
         onClick={download}
       />
       {!expanded && (
-        <Dialog.Root
-          open={open}
-          onOpenChange={(next) => {
-            setOpen(next)
-            if (next) setHeld(true)
-          }}
-          onOpenChangeComplete={(next) => {
-            // A close that ends after you opened it again leaves the hold.
-            if (!next && !open) setHeld(false)
-          }}
-        >
-          <Dialog.Trigger
-            render={<Button.Container size="22" variant="bare" ariaLabel={`Expand ${label}`} />}
-          >
-            <Button.Icon name="Maximize2" />
-          </Dialog.Trigger>
-          <Dialog.Portal>
-            <Dialog.Backdrop />
-            <Dialog.Popup size="xxl" className={styles.expandedPopup}>
-              {/* Wax's standard header: the title, and its close control at the top right. */}
-              <Dialog.Header>
-                <Dialog.Title>{label}</Dialog.Title>
-                <Dialog.Close />
-              </Dialog.Header>
-              <Viewer
-                value={value}
-                format={format}
-                label={label}
-                truncated={truncated}
-                fileName={fileName}
-                expanded
-                initialFolded={folded}
-              />
-            </Dialog.Popup>
-          </Dialog.Portal>
-        </Dialog.Root>
+        <Dialog.Expand label={label} onExpandedChange={onExpandedChange}>
+          <Viewer
+            value={value}
+            format={format}
+            label={label}
+            truncated={truncated}
+            fileName={fileName}
+            expanded
+            initialFolded={folded}
+          />
+        </Dialog.Expand>
       )}
     </div>
   )
@@ -390,46 +344,18 @@ function Viewer({
           Wrap
         </Button.TextButton>
       )}
-      <div className={styles.find}>
-        <div className={styles.findInput}>
-          <TextInput
-            type="search"
-            icon="Search"
-            ariaLabel={`Find in ${label}`}
-            placeholder="Find"
-            value={query}
-            onChange={(next) => {
-              setQuery(next)
-              const view = viewOf(structured)
-              go(0, findMatches(view.units, filterQuery(next), view.within).matches, view.units)
-            }}
-            onKeyDown={(event) => {
-              if (event.key !== 'Enter') return
-              event.preventDefault()
-              step(event.shiftKey ? -1 : 1)
-            }}
-          />
-        </div>
-        <Typography.BodySmall variant="tertiary" role="status">
-          {findStatus}
-        </Typography.BodySmall>
-        <Button.IconButton
-          name="ChevronUp"
-          size="22"
-          variant="bare"
-          ariaLabel="Previous match"
-          disabled={!matches.length}
-          onClick={() => step(-1)}
-        />
-        <Button.IconButton
-          name="ChevronDown"
-          size="22"
-          variant="bare"
-          ariaLabel="Next match"
-          disabled={!matches.length}
-          onClick={() => step(1)}
-        />
-      </div>
+      <FindControls
+        label={label}
+        query={query}
+        onQueryChange={(next) => {
+          setQuery(next)
+          const view = viewOf(structured)
+          go(0, findMatches(view.units, filterQuery(next), view.within).matches, view.units)
+        }}
+        status={findStatus}
+        count={matches.length}
+        onStep={step}
+      />
       {actions}
     </div>
   )

@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub, useSearchParams } from 'react-router'
-import { expect, waitFor, within } from 'storybook/test'
+import { expect, spyOn, waitFor, within } from 'storybook/test'
 import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { ActionReviewSession } from '../actions/review'
@@ -259,6 +259,14 @@ const highlighted = (dialog: HTMLElement) =>
     .filter((line) => line.hasAttribute('data-highlighted'))
     .map((line) => Number(line.getAttribute('data-line')))
 
+/** The source's own scrolling viewport in `scope`, not a wrapper that never scrolls. */
+function viewportOf(scope: HTMLElement) {
+  let viewport = scope.querySelector('[data-line]')!.closest('pre')!.parentElement!
+  while (!/auto|scroll/.test(getComputedStyle(viewport).overflowY))
+    viewport = viewport.parentElement!
+  return viewport
+}
+
 /** The selected record's own header: the split's only header, with the drawer's close control. */
 async function expectOwnHeader(dialog: HTMLElement, title: string) {
   const selected = within(dialog).getByRole('region', { name: 'Selected record' })
@@ -349,10 +357,7 @@ export const SameRunNavigation: Story = {
     await expectOwnHeader(dialog, 'Tool call ended: completed')
     await expect(drawer.queryByText('Source location unavailable')).toBeNull()
     const code = dialog.querySelector('[data-line]')!.closest('pre')!
-    // The source pane's own scrolling viewport, not a wrapper that never scrolls.
-    let viewport = code.parentElement!
-    while (!/auto|scroll/.test(getComputedStyle(viewport).overflowY))
-      viewport = viewport.parentElement!
+    const viewport = viewportOf(dialog)
     await expect(dialog).toContainElement(viewport)
     await expect(viewport.scrollHeight).toBeGreaterThan(viewport.clientHeight)
 
@@ -400,5 +405,205 @@ export const SameRunNavigation: Story = {
       expect(line.top).toBeGreaterThanOrEqual(bounds.top)
       expect(line.bottom).toBeLessThanOrEqual(bounds.bottom)
     })
+  },
+}
+
+/** The drawer and its source pane, with the record `parameters.record` selected. */
+async function sourcePane(canvasElement: HTMLElement) {
+  const page = within(canvasElement.ownerDocument.body)
+  const dialog = await page.findByRole('dialog', { name: 'Activity details' })
+  const pane = within(dialog).getByRole('region', { name: 'Accepted source' })
+  return { page, dialog, pane }
+}
+
+/**
+ * Catches: an expanded source that loses the record's line, its language or where it is;
+ * a dialog without Wax's header; or a close that leaves focus, the inline source's DOM or
+ * scroll, the split or the detail's scroll anywhere but where you left them.
+ */
+export const ExpandsTheSource: Story = {
+  parameters: { record: laterSend.name },
+  play: async ({ canvasElement, userEvent }) => {
+    const { page, dialog, pane } = await sourcePane(canvasElement)
+    await waitFor(() => expect(highlighted(pane)).toEqual([66]))
+    const code = pane.querySelector('pre')!
+    const viewport = viewportOf(pane)
+    const separator = within(dialog).getByRole('separator', {
+      name: 'Resize detail and source panes',
+    })
+    separator.focus()
+    await userEvent.keyboard('{ArrowUp}')
+    const split = separator.getAttribute('aria-valuenow')
+    viewport.scrollTop = 200
+    await waitFor(() => expect(viewport.scrollTop).toBe(200))
+    const record = within(dialog).getByRole('region', { name: 'Selected record' })
+    const detail = [...record.querySelectorAll<HTMLElement>('*')].find((element) =>
+      /auto|scroll/.test(getComputedStyle(element).overflowY),
+    )!
+    const detailTop = detail.scrollTop
+
+    const expand = within(pane).getByRole('button', { name: 'Expand Accepted source' })
+    await userEvent.click(expand)
+    const expanded = await page.findByRole('dialog', { name: 'Accepted source' })
+    // Wax's header: the title at the left, its close control at the top right.
+    const title = within(expanded).getByRole('heading', { name: 'Accepted source' })
+    const close = within(expanded).getByRole('button', { name: 'Close' })
+    await expect(title.closest('header')).toContainElement(close)
+    await expect(title.getBoundingClientRect().left).toBeLessThan(
+      close.getBoundingClientRect().left,
+    )
+    await waitFor(() => expect(within(expanded).getByText('TypeScript')).toBeVisible())
+    await expect(
+      within(expanded)
+        .getAllByRole('status')
+        .map((status) => status.textContent),
+    ).toContain('Line 66')
+    await expect(highlighted(expanded)).toEqual([66])
+    // It opens on the record's line.
+    const inner = viewportOf(expanded)
+    await waitFor(() => {
+      const line = expanded.querySelector('[data-line="66"]')!.getBoundingClientRect()
+      const bounds = inner.getBoundingClientRect()
+      expect(line.top).toBeGreaterThanOrEqual(bounds.top)
+      expect(line.bottom).toBeLessThanOrEqual(bounds.bottom)
+    })
+
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(page.queryByRole('dialog', { name: 'Accepted source' })).toBeNull())
+    await waitFor(() => expect(expand).toHaveFocus())
+    await expect(pane.querySelector('pre')).toBe(code)
+    await expect(viewport.scrollTop).toBe(200)
+    await expect(separator).toHaveAttribute('aria-valuenow', split!)
+    await expect(detail.scrollTop).toBe(detailTop)
+    await expect(highlighted(pane)).toEqual([66])
+  },
+}
+
+/**
+ * Catches: a copy or download of anything but the exact source the pane shows, such as
+ * its rendered rows, inline or expanded, or a download with no sensible file name.
+ */
+function copiesAndDownloads(record: string, title: string, code: string, fileName: string): Story {
+  return {
+    parameters: { record },
+    play: async ({ canvasElement, userEvent }) => {
+      const { page, pane } = await sourcePane(canvasElement)
+      const copied = spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
+      const blobs: Blob[] = []
+      const created = spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
+        blobs.push(blob as Blob)
+        return 'blob:source'
+      })
+      const names: string[] = []
+      const clicked = spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+        this: HTMLAnchorElement,
+      ) {
+        names.push(this.download)
+      })
+      try {
+        const inline = within(pane)
+        await userEvent.click(inline.getByRole('button', { name: `Copy ${title}` }))
+        await userEvent.click(inline.getByRole('button', { name: `Download ${title}` }))
+        await userEvent.click(inline.getByRole('button', { name: `Expand ${title}` }))
+        const expanded = within(await page.findByRole('dialog', { name: title }))
+        await userEvent.click(expanded.getByRole('button', { name: `Copy ${title}` }))
+        await userEvent.click(expanded.getByRole('button', { name: `Download ${title}` }))
+        await waitFor(() => expect(copied.mock.calls).toEqual([[code], [code]]))
+        await expect(await Promise.all(blobs.map((blob) => blob.text()))).toEqual([code, code])
+        await expect(names).toEqual([fileName, fileName])
+      } finally {
+        copied.mockRestore()
+        created.mockRestore()
+        clicked.mockRestore()
+      }
+    },
+  }
+}
+export const CopiesAndDownloadsTheProgram = copiesAndDownloads(
+  laterSend.name,
+  'Accepted source',
+  source,
+  'program-reminder-batch.ts',
+)
+export const CopiesAndDownloadsASnapshot = copiesAndDownloads(
+  archived.name,
+  'Saved-function snapshot: billing.notify',
+  snapshot,
+  'billing.notify.ts',
+)
+
+/** The lines that hold the current match's parts in `scope`. */
+const currentLines = (scope: HTMLElement) => [
+  ...new Set(
+    within(scope)
+      .queryAllByRole('mark', { current: true })
+      .map((part) => Number(part.closest('[data-line]')!.getAttribute('data-line'))),
+  ),
+]
+
+/**
+ * Catches: a Find that misses a late line of the exact source, does not count or step
+ * through its matches, leaves an offscreen match out of view, or drops the syntax
+ * colouring or the record's highlighted line; or a close that leaves the inline source
+ * anywhere but where you left it.
+ */
+export const FindsALateMatchInTheSource: Story = {
+  parameters: { record: laterSend.name },
+  play: async ({ canvasElement, userEvent }) => {
+    const { page, dialog, pane } = await sourcePane(canvasElement)
+    await waitFor(() => expect(highlighted(pane)).toEqual([66]))
+    const viewport = viewportOf(pane)
+    viewport.scrollTop = 120
+    await waitFor(() => expect(viewport.scrollTop).toBe(120))
+    const separator = within(dialog).getByRole('separator', {
+      name: 'Resize detail and source panes',
+    })
+    const split = separator.getAttribute('aria-valuenow')
+    // Inline, the pane keeps only its compact actions.
+    await expect(within(pane).queryByRole('searchbox')).toBeNull()
+
+    const expand = within(pane).getByRole('button', { name: 'Expand Accepted source' })
+    await userEvent.click(expand)
+    const expanded = await page.findByRole('dialog', { name: 'Accepted source' })
+    const find = within(expanded).getByRole('searchbox', { name: 'Find in Accepted source' })
+    await userEvent.type(find, 'batch note 59')
+    const status = within(expanded).getByText(/of 2$/)
+    await expect(status).toHaveTextContent('1 of 2')
+    await waitFor(() => expect(currentLines(expanded)).toEqual([65]))
+
+    // The late match, far below the view, comes into view, its colouring kept.
+    await userEvent.click(within(expanded).getByRole('button', { name: 'Next match' }))
+    await expect(status).toHaveTextContent('2 of 2')
+    const inner = viewportOf(expanded)
+    await waitFor(() => {
+      expect(currentLines(expanded)).toEqual([128])
+      const mark = within(expanded).getAllByRole('mark', { current: true })[0]!
+      const [box, bounds] = [mark, inner].map((each) => each.getBoundingClientRect())
+      expect(box.top).toBeGreaterThanOrEqual(bounds.top)
+      expect(box.bottom).toBeLessThanOrEqual(bounds.bottom)
+    })
+    const late = within(expanded).getAllByRole('mark', { current: true })[0]!
+    const line = late.closest('[data-line]')!
+    await expect(line).toHaveTextContent('// Second batch note 59')
+    // The mark sits in the comment's own colour, not plain text's.
+    const plain = getComputedStyle(line.lastElementChild!).color
+    await expect(getComputedStyle(late.parentElement!).color).not.toBe(plain)
+    await expect(getComputedStyle(late).color).toBe(getComputedStyle(late.parentElement!).color)
+    // The record's own line stays highlighted, and named.
+    await expect(highlighted(expanded)).toEqual([66])
+    await expect(within(expanded).getByText('Line 66')).toBeVisible()
+    // Enter steps on from the field too, and wraps.
+    await userEvent.click(find)
+    await userEvent.keyboard('{Enter}')
+    await expect(status).toHaveTextContent('1 of 2')
+    await userEvent.click(within(expanded).getByRole('button', { name: 'Previous match' }))
+    await expect(status).toHaveTextContent('2 of 2')
+
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(page.queryByRole('dialog', { name: 'Accepted source' })).toBeNull())
+    await waitFor(() => expect(expand).toHaveFocus())
+    await expect(viewport.scrollTop).toBe(120)
+    await expect(separator).toHaveAttribute('aria-valuenow', split!)
+    await expect(within(pane).queryAllByRole('mark')).toHaveLength(0)
   },
 }

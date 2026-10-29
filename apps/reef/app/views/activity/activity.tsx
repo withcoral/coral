@@ -1003,7 +1003,8 @@ export function Activity({
     presentedScope.current = liveScope
   }, [liveScope, shownRecord])
   const connected = live?.connected ?? true
-  // How many payload viewers you have open expanded. Live mode holds the record meanwhile.
+  // How many payload or source viewers you have open expanded. Live mode holds the record
+  // meanwhile.
   const [inspecting, setInspecting] = useState(0)
   const inspect = useCallback(
     (expanded: boolean) => setInspecting((count) => count + (expanded ? 1 : -1)),

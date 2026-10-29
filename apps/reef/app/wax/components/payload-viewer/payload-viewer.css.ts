@@ -21,18 +21,6 @@ export const toolbar = style({
 
 export const facts = style({ flexGrow: 1, minWidth: 0 })
 
-export const find = style({
-  alignItems: 'center',
-  display: 'flex',
-  gap: 4,
-  minWidth: 0,
-  flexBasis: 220,
-  flexGrow: 1,
-  maxWidth: 360,
-})
-
-export const findInput = style({ flex: 1, minWidth: 0 })
-
 const frame = {
   background: theme.surface.onMainContentSubtle,
   border: `1px solid ${theme.stroke.secondary}`,
@@ -105,10 +93,3 @@ export const lineNumber = style({
 })
 
 export const moreButton = style({ marginInlineStart: 6 })
-
-export const expandedPopup = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 12,
-  height: 'min(90vh, 1200px)',
-})

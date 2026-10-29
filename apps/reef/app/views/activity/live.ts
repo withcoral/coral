@@ -9,9 +9,9 @@ export function useActivityConnected() {
   return useContext(ActivityConnectedContext)
 }
 
-/** Tells the reader that you opened (true) or closed (false) a payload's expanded viewer.
- * Live mode takes no step while one is open, so the record you inspect stays. Views outside
- * a reader have none.
+/** Tells the reader that you opened (true) or closed (false) the expanded viewer of a
+ * payload or of the source. Live mode takes no step while one is open, so the record you
+ * inspect stays. Views outside a reader have none.
  */
 export const ActivityInspectContext = createContext<((expanded: boolean) => void) | undefined>(
   undefined,

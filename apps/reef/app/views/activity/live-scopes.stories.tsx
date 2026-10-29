@@ -1239,14 +1239,19 @@ function endsThenANewRunStarts(press: string): Story {
 export const ASucceededRunGivesWayToANewRun = endsThenANewRunStarts('End oldest running run')
 export const AFailedRunGivesWayToANewRun = endsThenANewRunStarts('Fail oldest running run')
 
-/** Opens the selected operation's response in its expanded viewer, with `find` in Find. */
-async function inspect({ canvasElement, userEvent }: Play, find: string) {
+/** Opens the selected operation's `label`, its response by default, expanded, with `find`
+ * in Find when it has one. */
+async function inspect(
+  { canvasElement, userEvent }: Play,
+  find: string | null,
+  label = 'Provider response',
+) {
   const page = within(canvasElement.ownerDocument.body)
   const rail = page.getByRole('dialog', { name: 'Activity details' })
-  const expand = within(rail).getByRole('button', { name: 'Expand Provider response' })
+  const expand = within(rail).getByRole('button', { name: `Expand ${label}` })
   await userEvent.click(expand)
-  const viewer = await page.findByRole('dialog', { name: 'Provider response' })
-  await userEvent.type(within(viewer).getByRole('searchbox'), find)
+  const viewer = await page.findByRole('dialog', { name: label })
+  if (find !== null) await userEvent.type(within(viewer).getByRole('searchbox'), find)
   return { expand, viewer }
 }
 /** Changes what Coral holds while the expanded viewer covers the route's buttons. */
@@ -1255,10 +1260,15 @@ function arrive(kind: Parameters<typeof world.change>[0]) {
   world.revalidate()
 }
 
-// Catches: live mode moving on while you inspect a payload expanded, which swaps the
-// record and closes the viewer; the list no longer taking new activity meanwhile; or live
-// mode staying held, or turned off, once you close the viewer.
-export const HoldsWhileYouInspectAPayload: Story = {
+// Catches: live mode moving on while you inspect a payload or the source expanded, which
+// swaps the record and closes the viewer; the list no longer taking new activity meanwhile;
+// or live mode staying held, or turned off, once you close the viewer.
+const holdsWhileYouInspect = (
+  label: string,
+  find: string | null,
+  /** Whether Expand stays once live mode moves on: the source pane stays for its Run. */
+  stays: boolean,
+): Story => ({
   beforeEach: () => world.reset([]),
   play: async (context) => {
     const { userEvent } = context
@@ -1272,7 +1282,7 @@ export const HoldsWhileYouInspectAPayload: Story = {
     await press('Add call')
     await selects('call.r2-op-3', 'call.r2-op-3')
     const inspected = address().get('record')
-    const { expand, viewer } = await inspect(context, 'x')
+    const { expand, viewer } = await inspect(context, find, label)
 
     // A new operation arrives and the Run ends. The list takes both; the record stays.
     arrive('call')
@@ -1290,19 +1300,19 @@ export const HoldsWhileYouInspectAPayload: Story = {
       'true',
     )
     // The same viewer stays open, as you left it.
-    await expect(page.getByRole('dialog', { name: 'Provider response' })).toBe(viewer)
-    await expect(within(viewer).getByRole('searchbox')).toHaveValue('x')
+    await expect(page.getByRole('dialog', { name: label })).toBe(viewer)
+    if (find !== null) await expect(within(viewer).getByRole('searchbox')).toHaveValue(find)
 
     // Closed, focus is back on Expand, then live mode moves on to the Run's newest record.
     await userEvent.keyboard('{Escape}')
-    await waitFor(() =>
-      expect(page.queryByRole('dialog', { name: 'Provider response' })).toBeNull(),
-    )
+    await waitFor(() => expect(page.queryByRole('dialog', { name: label })).toBeNull())
     await waitFor(() => expect(address().get('record')).not.toBe(inspected))
-    await expect(expand.isConnected).toBe(false)
+    await expect(expand.isConnected).toBe(stays)
     await expect(address().get('live')).toBe('latest')
   },
-}
+})
+export const HoldsWhileYouInspectAPayload = holdsWhileYouInspect('Provider response', 'x', false)
+export const HoldsWhileYouInspectTheSource = holdsWhileYouInspect('Accepted source', null, true)
 
 // Catches: a close that turns live mode back on after you turned it off meanwhile.
 export const StaysOffWhenLiveEndsWhileYouInspect: Story = {
