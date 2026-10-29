@@ -234,7 +234,8 @@ export async function liveActions(context: TestContext) {
       )
     })
 
-    const latest = page.getByRole('button', { name: 'Follow latest activity', exact: true }).first()
+    // The page's own live toggle, above the list.
+    const latest = page.getByRole('button', { name: 'Live', exact: true })
     /** Reads deep into the long Run's records, away from the newest top-level records. */
     const readDeep = async () => {
       await table.evaluate((port) => {
