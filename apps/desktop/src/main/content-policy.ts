@@ -71,9 +71,9 @@ function releaseVersion(target: string): string | null {
 }
 
 /**
- * Whether the stable `release` is newer than `running`. A prerelease or a build
- * of `X.Y.Z` is older than `X.Y.Z`. A `running` that is not a version is never
- * older.
+ * Whether the stable `release` is newer than `running`. A prerelease of `X.Y.Z`
+ * is older than `X.Y.Z`; a build of `X.Y.Z` is equal to it. A `running` that is
+ * not a version is never older.
  */
 function isNewer(release: string, running: string): boolean {
   const match = /^(\d+)\.(\d+)\.(\d+)([-+].*)?$/.exec(running)

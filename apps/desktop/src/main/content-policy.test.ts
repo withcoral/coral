@@ -53,6 +53,7 @@ describe('windowOpenDecision', () => {
     // Versions compare by number, and a prerelease is older than its release.
     [`${notes}/v1.10.0`, '1.9.0', { offerUpdate: '1.10.0' }],
     [`${notes}/v1.4.0`, '1.4.0-rc.1', { offerUpdate: '1.4.0' }],
+    [`${notes}/v1.4.0`, '1.4.0+build.7', 'open-externally'],
     // The notes of the version that runs, or of an older one, have nothing to install.
     [`${notes}/v1.3.0`, '1.3.0', 'open-externally'],
     [`${notes}/v1.2.9`, '1.3.0', 'open-externally'],

@@ -15,20 +15,17 @@ describe('writeRuntimeConfig', () => {
   it.each([
     { checkUpdates: true, check: 'true' },
     { checkUpdates: false, check: 'false' },
-  ])(
-    'turns the release check $check for a package that can update itself: $checkUpdates',
-    async ({ checkUpdates, check }) => {
-      const stateDir = join(dir, 'runtime')
+  ])('writes [updates] check = $check from checkUpdates', async ({ checkUpdates, check }) => {
+    const stateDir = join(dir, 'runtime')
 
-      await writeRuntimeConfig(
-        stateDir,
-        { grpc: 1, mcp: 2, reef: 3 },
-        { backend: 'sqlite' },
-        checkUpdates,
-      )
+    await writeRuntimeConfig(
+      stateDir,
+      { grpc: 1, mcp: 2, reef: 3 },
+      { backend: 'sqlite' },
+      checkUpdates,
+    )
 
-      const config = await readFile(join(stateDir, 'config.toml'), 'utf8')
-      expect(config).toMatch(new RegExp(`^\\[updates\\]\\ncheck = ${check}$`, 'm'))
-    },
-  )
+    const config = await readFile(join(stateDir, 'config.toml'), 'utf8')
+    expect(config).toMatch(new RegExp(`^\\[updates\\]\\ncheck = ${check}$`, 'm'))
+  })
 })
