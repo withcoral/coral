@@ -373,6 +373,18 @@ impl PreparedServerBuilder {
             })
             .transpose()?;
         let reconcile_interval = deployment_config.search_reconcile_interval()?;
+        let releases = deployment_config
+            .update_check()?
+            .then(|| {
+                coral_outbound::Client::new(policy, coral_release::REQUEST_TIMEOUT)
+                    .map(coral_release::ReleaseCheck::coral)
+                    .map_err(|_error| {
+                        AppError::FailedPrecondition(
+                            "release check client initialization failed".into(),
+                        )
+                    })
+            })
+            .transpose()?;
         // This start's Coral Instance, recorded on the Runs it claims. The
         // first start in a process also names it in exported telemetry.
         let instance = coral_run::CoralInstanceId::generate();
@@ -392,6 +404,7 @@ impl PreparedServerBuilder {
             policy,
             runtime_limits,
             reconcile_interval,
+            releases,
             readiness,
             state_lock,
             instance,
@@ -504,6 +517,7 @@ pub struct RunningServer {
     device_recovery: Option<JoinHandle<()>>,
     search_index: coral_search::SearchIndex,
     search_reconcile: JoinHandle<()>,
+    release_check: Option<JoinHandle<()>>,
     mcp_origin: Arc<std::sync::OnceLock<String>>,
     endpoint_uri: String,
     local_addr: SocketAddr,
@@ -595,6 +609,9 @@ impl RunningServer {
             worker.abort();
         }
         self.search_reconcile.abort();
+        if let Some(check) = &self.release_check {
+            check.abort();
+        }
         if let Some(accounts) = &self.accounts
             && let Err(error) = accounts.stop_device_authorizations().await
         {
@@ -684,6 +701,9 @@ impl Drop for RunningServer {
             worker.abort();
         }
         self.search_reconcile.abort();
+        if let Some(check) = &self.release_check {
+            check.abort();
+        }
         if let Some(accounts) = &self.accounts {
             accounts.abort_device_authorizations();
         }
@@ -720,6 +740,7 @@ pub(crate) async fn start_server(
     policy: coral_outbound::DestinationPolicy,
     runtime_limits: coral_run::RuntimeLimits,
     reconcile_interval: std::time::Duration,
+    releases: Option<coral_release::ReleaseCheck>,
     readiness: EngineReadiness,
     state_lock: StateLock,
     instance: coral_run::CoralInstanceId,
@@ -817,6 +838,7 @@ pub(crate) async fn start_server(
             saved_functions,
             saved_function_deletion,
             runs: runs.clone(),
+            releases: releases.clone(),
         },
         coral_grpc::TransportContext {
             authentication,
@@ -874,6 +896,7 @@ pub(crate) async fn start_server(
         })
     });
     let search_reconcile = search_index.spawn_reconcile_task();
+    let release_check = releases.map(|releases| releases.spawn(coral_release::CHECK_INTERVAL));
     Ok(RunningServer {
         providers,
         readiness,
@@ -881,6 +904,7 @@ pub(crate) async fn start_server(
         device_recovery,
         search_index,
         search_reconcile,
+        release_check,
         accounts,
         runs,
         mcp_origin,

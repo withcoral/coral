@@ -61,6 +61,8 @@ export interface SupervisorOptions {
   runtime: Launcher
   reef: Launcher<ReefEnv>
   readinessTimeoutMs: number
+  /** Whether the runtime shows a newer release: only when this package can update itself. */
+  checkUpdates: boolean
   /** How long a process may take to stop before it is killed. Defaults to 10 seconds. */
   stopTimeoutMs?: number
   restart?: RestartPolicy
@@ -210,7 +212,7 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
   async function startRuntime(ports: Ports, signal: AbortSignal) {
     const stateDir = join(options.dataDir, 'runtime')
     const database = await readDatabase(join(options.dataDir, 'desktop.json'))
-    await writeRuntimeConfig(stateDir, ports, database)
+    await writeRuntimeConfig(stateDir, ports, database, options.checkUpdates)
     const deadline = Date.now() + options.readinessTimeoutMs
     for (;;) {
       const runtime = launch(

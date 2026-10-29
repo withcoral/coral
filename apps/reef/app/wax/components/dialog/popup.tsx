@@ -30,7 +30,7 @@ export function Popup({
   ...props
 }: PopupProps) {
   const rail = useContext(RailContext)
-  const besidePage = rail !== null && !rail.modal
+  const besidePage = rail !== null && rail.mode !== 'modal'
   const composedRef = useComposedRefs(ref, rail?.popup)
   return (
     <BaseDialog.Popup
@@ -41,11 +41,12 @@ export function Popup({
         placement === 'right' && styles.rightDrawer,
         fullWidthOnMobile && styles.fullWidthOnMobile,
         besidePage && styles.besidePage,
+        rail?.mode === 'docked' && styles.dockedPopup,
         className,
       )}
       ref={composedRef}
       // A modal rail always takes focus; beside the page, the caller may keep it where it is.
-      initialFocus={rail?.modal ? undefined : initialFocus}
+      initialFocus={rail?.mode === 'modal' ? undefined : initialFocus}
       {...props}
     >
       {/* The mode is this rail's own: a dialog opened from its content is a plain dialog. */}

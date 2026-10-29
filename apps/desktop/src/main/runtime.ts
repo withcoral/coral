@@ -27,6 +27,7 @@ export async function writeRuntimeConfig(
   stateDir: string,
   ports: Ports,
   database: Database,
+  checkUpdates: boolean,
 ): Promise<void> {
   const databaseSection =
     database.backend === 'postgres'
@@ -50,6 +51,11 @@ bind = "${LOOPBACK}:${ports.mcp}"
 # interrupted at once instead of draining.
 [runtime]
 shutdown_drain_seconds = 0
+
+# Shows a newer release in Reef's sidebar only when this package can update
+# itself. A click on the notice offers Restart to Update, Release Notes or Later.
+[updates]
+check = ${checkUpdates}
 ${databaseSection}`,
     // The runtime treats any file beside config.toml in a fresh state
     // directory as foreign state, so a crash must not leave one there.

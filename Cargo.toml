@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "1.3.0" # x-release-please-version
+version = "1.4.0" # x-release-please-version
 license = "Apache-2.0"
 rust-version = "1.97"
 
@@ -73,6 +73,7 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 ring = "0.17.14"
 rmcp = { version = "3.5.1", features = ["client", "reqwest", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_path_to_error = "0.1"
@@ -129,6 +130,7 @@ coral-mcp = { path = "crates/coral-mcp" }
 coral-outbound = { path = "crates/coral-outbound" }
 coral-policy = { path = "crates/coral-policy" }
 coral-provider = { path = "crates/coral-provider" }
+coral-release = { path = "crates/coral-release" }
 coral-run = { path = "crates/coral-run" }
 coral-search = { path = "crates/coral-search" }
 coral-task = { path = "crates/coral-task" }

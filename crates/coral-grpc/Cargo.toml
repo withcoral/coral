@@ -19,6 +19,7 @@ coral-credentials.workspace = true
 coral-functions.workspace = true
 coral-policy.workspace = true
 coral-provider.workspace = true
+coral-release.workspace = true
 coral-run.workspace = true
 coral-search.workspace = true
 coral-task.workspace = true
@@ -47,5 +48,6 @@ sqlx.workspace = true
 tempfile.workspace = true
 tokio-stream = { workspace = true, features = ["net"] }
 uuid.workspace = true
+semver.workspace = true
 url.workspace = true
 wiremock.workspace = true

@@ -15,6 +15,13 @@ const FORM_WINDOW_TIMEOUT_MS = 60_000
 /** Reef's surface color, so a window never flashes another color as it opens. */
 const surface = () => (nativeTheme.shouldUseDarkColors ? SURFACE.dark : SURFACE.light)
 
+/** Desktop's own version and update flow, when it can update itself. */
+export interface ReleaseUpdates {
+  runningVersion: string
+  /** Answers a click on Reef's notice of a newer release. */
+  offer: (version: string) => void
+}
+
 /**
  * Applies the content policy to every web contents Electron creates, including
  * any this app does not create itself. `reefOrigin` answers the current Reef
@@ -23,6 +30,7 @@ const surface = () => (nativeTheme.shouldUseDarkColors ? SURFACE.dark : SURFACE.
 export function installContentGuards(
   reefOrigin: () => string | null,
   log: (message: string) => void,
+  updates: ReleaseUpdates | undefined,
 ): void {
   const guard = (event: Electron.Event, url: string) => {
     const decision = navigationDecision(url, reefOrigin())
@@ -41,13 +49,19 @@ export function installContentGuards(
 
   app.on('web-contents-created', (_event, contents) => {
     contents.setWindowOpenHandler(({ url, postBody }) => {
-      const decision = windowOpenDecision(url, postBody !== undefined, reefOrigin())
+      const decision = windowOpenDecision(
+        url,
+        postBody !== undefined,
+        reefOrigin(),
+        updates?.runningVersion ?? null,
+      )
       if (decision === 'submit-hidden')
         return {
           action: 'allow',
           overrideBrowserWindowOptions: { show: false, title: 'Coral', backgroundColor: surface() },
         }
       if (decision === 'open-externally') void shell.openExternal(url)
+      else if (typeof decision === 'object') updates?.offer(decision.offerUpdate)
       return { action: 'deny' }
     })
     // Electron emits this as it creates the window, before Reef can answer.

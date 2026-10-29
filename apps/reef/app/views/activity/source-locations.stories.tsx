@@ -7,6 +7,7 @@ import { ActionReviewSession } from '../actions/review'
 import { Activity } from './activity'
 import { activityPage } from './fixtures'
 import type { ActivityPage, ActivityRow, RecordSourceLocation, RunDetail, RunEvent } from './types'
+import { resizeViewport } from '../../../.storybook/browser'
 
 const workspace = 'workspaces/finance'
 const runName = `${workspace}/runs/reminder-batch`
@@ -318,12 +319,33 @@ export const Emission = selection(`${runName}/events/8`, 'coral.emit #8', progra
 
 /** Moving to another record of the same Run swaps the selected record's own header and
  * keeps the split and the source pane, which reveals the new record's line. A Run event
- * with no call of its own says nothing of a location. */
+ * with no call of its own says nothing of a location. On a wide screen the rail docks
+ * beside the list, and the split fills its height. */
 export const SameRunNavigation: Story = {
   parameters: { record: `${runName}/events/2` },
   play: async ({ canvasElement, userEvent }) => {
+    // Storybook's own UI cannot resize its viewport; there the rail keeps the default width.
+    const wide = await resizeViewport(1440, 900)
     const dialog = await within(canvasElement.ownerDocument.body).findByRole('dialog')
     const drawer = within(dialog)
+    const sourcePane = drawer.getByRole('region', { name: 'Accepted source' })
+    const detail = drawer.getByRole('region', { name: 'Selected record' })
+    const height = (element: Element) => element.getBoundingClientRect().height
+    if (wide) {
+      const table = within(canvasElement).getByRole('table', { name: 'Activity records' })
+      await waitFor(() => {
+        // Docked, the rail starts after the table ends.
+        expect(table.getBoundingClientRect().right).toBeLessThanOrEqual(
+          dialog.getBoundingClientRect().left,
+        )
+        // The rail runs as low as the table, and its two panes share that height rather
+        // than shrinking to the split's 360px minimum.
+        expect(dialog.getBoundingClientRect().bottom).toBeGreaterThanOrEqual(
+          table.getBoundingClientRect().bottom - 1,
+        )
+        expect(height(detail) + height(sourcePane)).toBeGreaterThan(height(dialog) * 0.75)
+      })
+    }
     await expectOwnHeader(dialog, 'Tool call ended: completed')
     await expect(drawer.queryByText('Source location unavailable')).toBeNull()
     const code = dialog.querySelector('[data-line]')!.closest('pre')!
@@ -336,10 +358,27 @@ export const SameRunNavigation: Story = {
 
     const separator = drawer.getByRole('separator', { name: 'Resize detail and source panes' })
     await expect(separator).toHaveAttribute('aria-valuenow', '50')
+    // The divider spans the drawer from border to border, through its padding, while the
+    // panes keep theirs.
+    const inner = dialog.getBoundingClientRect()
+    await expect(separator.getBoundingClientRect().left).toBeCloseTo(
+      inner.left + dialog.clientLeft,
+      0,
+    )
+    await expect(separator.getBoundingClientRect().right).toBeCloseTo(
+      inner.right - dialog.clientLeft,
+      0,
+    )
+    await expect(detail.getBoundingClientRect().left).toBeGreaterThan(
+      separator.getBoundingClientRect().left,
+    )
     separator.focus()
+    const before = height(detail)
     await userEvent.keyboard('{ArrowUp}')
     const split = separator.getAttribute('aria-valuenow')!
     await expect(split).not.toBe('50')
+    // The detail pane gives its height to the source pane.
+    await waitFor(() => expect(height(detail)).toBeLessThan(before))
 
     viewport.scrollTop = 0
     const below = () =>

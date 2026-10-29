@@ -496,10 +496,10 @@ export const FollowsNewRecords: Story = {
     await idle()
     await selects('mail.send', 'mail.send')
 
-    // The final value is the Run's last record.
+    // Completion returns to the Run itself, not its final value.
     await press('End run')
-    await selects('Send reminders', 'final value')
-    await expect(address().get('record')).toBe(`${program.name}/final`)
+    await selects('Send reminders', 'Reminder run')
+    await expect(address().get('record')).toBe(program.name)
     await following(true)
     // An ended Run changes nothing more: no step repeats and no load starts.
     await idle()
@@ -511,7 +511,7 @@ export const FollowsNewRecords: Story = {
     await following(false)
     await expect(address().toString()).toBe(filtered)
     await press('History forward')
-    await selects('Send reminders', 'final value')
+    await selects('Send reminders', 'Reminder run')
     await following(true)
   },
 }
@@ -611,17 +611,23 @@ export const ReadsTheEndOfALongRun: Story = {
   beforeEach: () =>
     world.reset(
       [1, 2, 3, 4, 5].map((sequence) => output(program.name, sequence, 'program.logged')),
-      { window: 2, ended: true },
+      { window: 2 },
     ),
   play: async (context) => {
     const { userEvent } = context
-    const { toggle, address, selects, following, idle } = await surface(context)
-    // The table holds the first two of six children; live mode reads the end. The
-    // Run has ended, so its final value is its newest record.
+    const { toggle, address, press, selects, following, idle } = await surface(context)
+    // The table holds the first two children; live mode reads the end while it runs.
     await userEvent.click(toggle())
     await following(true)
-    await selects('Send reminders', 'final value')
+    await selects('console.info #5', 'log #5')
     await expect(address().get(`offset.${program.name}`)).not.toBe('0')
+    const offset = address().get(`offset.${program.name}`)
+    // Completion selects the Run without loading another child window.
+    await press('End run')
+    await selects('Send reminders', 'Reminder run')
+    await expect(address().get('record')).toBe(program.name)
+    await expect(address().get(`offset.${program.name}`)).toBe(offset)
+    await following(true)
     await idle()
     await settled()
   },
@@ -714,7 +720,7 @@ export const FollowsInTheSourceSplit: Story = {
 
 /**
  * Each new tool, log or emission that live mode selects slides in by Run order,
- * and the final value replaces it at once. Detail motion owns the rule.
+ * and the finished Run replaces it at once. Detail motion owns the rule.
  */
 export const SlidesToEachNewRecord: Story = {
   beforeEach: () => world.reset([tool(program.name, 1, 'mail.list')]),
@@ -743,7 +749,7 @@ export const SlidesToEachNewRecord: Story = {
       await selects('coral.emit #4', 'emission #4')
       await expect(await starts()).toEqual(fromBelow)
       await press('End run')
-      await selects('Send reminders', 'final value')
+      await selects('Send reminders', 'Reminder run')
       await expect(await starts()).toEqual([])
     } finally {
       recorder.stop()

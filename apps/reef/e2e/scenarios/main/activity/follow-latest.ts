@@ -135,17 +135,17 @@ export async function followLatest(context: TestContext) {
       await follows(second!.name, { lines: [3], unavailable: false })
     })
 
-    await step('Follow the final value once the Run ends', async () => {
+    await step('Return to the Run itself once it ends', async () => {
       release()
-      // The final value is not a call either: no highlight, and no banner.
-      await follows(`${run}/final`, noCall)
+      // Not its last record: the Run is not a call either, so no highlight and no banner.
+      await follows(run, noCall)
     })
 
     await step('Turn live mode off from the record header', async () => {
       await toggle.click()
       await expect.poll(() => address().has('live')).toBe(false)
       await expect.poll(() => toggle.getAttribute('aria-pressed')).toBe('false')
-      expect(address().get('record')).toBe(`${run}/final`)
+      expect(address().get('record')).toBe(run)
     })
   })
 }

@@ -26,6 +26,7 @@ struct ServerConfigFile {
     outbound: OutboundSettings,
     search: SearchSettings,
     credentials: CredentialSettings,
+    updates: UpdateSettings,
     #[serde(rename = "auth")]
     _auth: IgnoredAny,
     #[serde(rename = "database")]
@@ -100,6 +101,12 @@ impl LoadedServerConfig {
     /// How often the search index's reconcile task runs a pass.
     pub(crate) fn search_reconcile_interval(&self) -> Result<std::time::Duration, AppError> {
         self.parse()?.search.reconcile_interval()
+    }
+
+    /// Whether the runtime reads the release feed to tell Organization Owners
+    /// about a newer release.
+    pub(crate) fn update_check(&self) -> Result<bool, AppError> {
+        Ok(self.parse()?.updates.check)
     }
 
     /// The environment variable that holds the credential encryption key, when
@@ -421,6 +428,15 @@ impl RuntimeSettings {
             )),
         ))
     }
+}
+
+/// The release check. Off unless the operator turns it on: it reads a
+/// public feed on GitHub, which an air-gapped or private deployment may not
+/// want to reach.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct UpdateSettings {
+    check: bool,
 }
 
 /// Universal Search's settings.
@@ -1140,6 +1156,26 @@ client_secret = 'test-secret'
                 .search_reconcile_interval()
                 .unwrap(),
             std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn the_release_check_is_off_unless_the_operator_turns_it_on() {
+        for (raw, expected) in [
+            ("", false),
+            ("[updates]", false),
+            ("[updates]\ncheck = false", false),
+            ("[updates]\ncheck = true", true),
+        ] {
+            assert_eq!(load(raw).1.update_check().expect(raw), expected, "{raw:?}");
+        }
+        let error = load("[updates]\nfeed = \"x\"")
+            .1
+            .update_check()
+            .expect_err("unknown key");
+        assert!(
+            matches!(&error, AppError::FailedPrecondition(message) if message.contains("unknown field `feed`")),
+            "{error}"
         );
     }
 

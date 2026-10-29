@@ -36,6 +36,7 @@ const devRuntime = packaged ? undefined : process.env.CORAL_DESKTOP_DEV_RUNTIME
 const appImage = process.env.APPIMAGE
 // The login item starts Desktop with this argument, and with no window.
 const startedInBackground = process.argv.includes(BACKGROUND_ARG)
+const updatable = updatesSupported({ packaged, resourcesPath: process.resourcesPath, appImage })
 
 // The data folder follows the app id, never the display name, and a
 // development build keeps its own. Set it before anything reads it: the
@@ -63,6 +64,7 @@ function main() {
     runtime: runtimeLauncher(runtimeBinary(), { cwd: dataDir, baseEnv, output: output('coral') }),
     reef: reefLauncher(dataDir, output('reef')),
     readinessTimeoutMs: packaged ? PACKAGED_READINESS_TIMEOUT_MS : DEV_READINESS_TIMEOUT_MS,
+    checkUpdates: updatable,
   })
 
   let state: SupervisorState = { status: 'stopped' }
@@ -263,14 +265,23 @@ function main() {
 
   void app.whenReady().then(async () => {
     // Sessions exist only once the app is ready, and before any web contents.
-    installContentGuards(() => (state.status === 'running' ? state.endpoints.reef : null), log)
+    let updates: Updates | undefined
+    installContentGuards(
+      () => (state.status === 'running' ? state.endpoints.reef : null),
+      log,
+      updatable
+        ? {
+            runningVersion: app.getVersion(),
+            offer: (version) => void updates?.offerRelease(version),
+          }
+        : undefined,
+    )
     // powerMonitor works only once the app is ready.
     powerMonitor.on('shutdown', () => (sessionEnding = true))
     // macOS passes a login item no arguments, and reports the login launch.
     const hidden =
       startedInBackground ||
       (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin)
-    let updates: Updates | undefined
     background = createBackground({
       told: await readToldStillRunning(desktopFile),
       saveTold: () => writeToldStillRunning(desktopFile),
@@ -298,7 +309,7 @@ function main() {
         update: updates && version ? { version, item: updates.menuItem() } : undefined,
       })
     }
-    if (updatesSupported({ packaged, resourcesPath: process.resourcesPath, appImage }))
+    if (updatable)
       updates = startUpdates({
         appImage,
         log,

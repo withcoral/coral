@@ -72,20 +72,25 @@ export async function click(element: Element) {
   return true
 }
 
-/** One Web Animation the page started: its element, its transforms in order, and its timing. */
-export interface StartedAnimation {
+/**
+ * One Web Animation the page started: its element, its transforms in order, its timing,
+ * and what the recorder's `note` read from the element as it started.
+ */
+export interface StartedAnimation<Note = undefined> {
   target: Element
   transforms: string[]
   options: KeyframeAnimationOptions | number | undefined
   animation: Animation
+  note: Note
 }
 
 /**
  * Records every Web Animation the page starts with `Element.animate` until `stop`.
- * Each still plays as it would without the recording.
+ * Each still plays as it would without the recording. `note` reads the element as the
+ * animation starts, for what the page may change or remove before the play looks.
  */
-export function recordAnimations() {
-  const started: StartedAnimation[] = []
+export function recordAnimations<Note = undefined>(note?: (target: Element) => Note) {
+  const started: StartedAnimation<Note>[] = []
   const animate = Element.prototype.animate
   Element.prototype.animate = function (this: Element, keyframes, options) {
     const animation = animate.call(this, keyframes, options)
@@ -95,6 +100,7 @@ export function recordAnimations() {
       transforms: frames.map((frame) => String(frame.transform ?? '')),
       options,
       animation,
+      note: note?.(this) as Note,
     })
     return animation
   }

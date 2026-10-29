@@ -1,0 +1,26 @@
+syntax = "proto3";
+package coral.management.v1;
+
+// Published Coral releases, as this runtime last read them.
+service ReleaseService {
+  // Answers from memory and never waits for the release feed.
+  rpc GetNewerRelease(GetNewerReleaseRequest) returns (GetNewerReleaseResponse);
+}
+
+// Asks for a published release newer than this runtime.
+message GetNewerReleaseRequest {}
+
+// A newer release, or none.
+message GetNewerReleaseResponse {
+  // Unset when the operator turned the check off, the feed has not answered,
+  // or this runtime runs the newest release.
+  NewerRelease release = 1;
+}
+
+// A published stable release newer than this runtime.
+message NewerRelease {
+  // Semantic version without the `v` prefix, such as `1.4.0`.
+  string version = 1;
+  // The release notes page.
+  string notes_url = 2;
+}

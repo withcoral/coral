@@ -30,6 +30,8 @@ interface SidebarProps {
   /** Pending actions by Workspace path. Null or a null count shows no badge. */
   actionCounts?: ActionCounts | null
   organizationOwner?: boolean
+  /** A published Coral release newer than this one. The shell passes it only to organization owners. */
+  newerRelease?: NewerRelease
   auth?: BrowserAuth
   userName?: string
   initialIsMinimized: boolean
@@ -38,6 +40,11 @@ interface SidebarProps {
   archivedWorkspaces?: SidebarWorkspace[]
   workspace?: SidebarWorkspace
   form?: FormContext
+}
+
+export interface NewerRelease {
+  version: string
+  notesUrl: string
 }
 
 interface Destination {
@@ -145,6 +152,7 @@ export function Sidebar({ initialIsMinimized, ...props }: SidebarProps) {
 function SidebarNavigation({
   actionCounts,
   organizationOwner,
+  newerRelease,
   auth = { mode: 'disabled' },
   userName,
   workspaces = [],
@@ -237,6 +245,23 @@ function SidebarNavigation({
         {d.label}
       </SidebarButton>
     ))
+  // An owner's notice of a newer release leads the footer, above the help menu.
+  const release = newerRelease && (
+    <SidebarButton
+      as="a"
+      href={newerRelease.notesUrl}
+      target="_blank"
+      rel="noreferrer"
+      icon="CircleArrowUp"
+      variant="accent"
+      isMinimized={isMinimized}
+      aria-label={`Coral ${newerRelease.version} is available`}
+      title={`Coral ${newerRelease.version} is available`}
+    >
+      Coral {newerRelease.version} is available
+    </SidebarButton>
+  )
+
   return (
     <nav
       aria-label="Coral"
@@ -475,6 +500,7 @@ function SidebarNavigation({
         </ActionDialog>
       )}
       <div className={styles.footer}>
+        {release}
         <Menu.Container>
           <Menu.Trigger
             render={

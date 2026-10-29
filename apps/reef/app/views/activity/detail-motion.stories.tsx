@@ -228,27 +228,35 @@ async function surface({ canvasElement, userEvent }: Play) {
   const table = await canvas.findByRole('table', { name: 'Activity records', hidden: true })
   const rail = () => body.getByRole('dialog', { name: 'Activity details' })
   const selected = () => within(rail()).getByRole('region', { name: 'Selected record' })
-  const recorder = recordAnimations()
+  /**
+   * Each animated card as it starts to move: whether it is in the selected record's pane,
+   * whether it is the leaving copy, and the record it names. The leaving copy empties
+   * once its slide ends, so a play that looks later still sees what moved.
+   */
+  const recorder = recordAnimations((target) => {
+    const region = rail().querySelector('[aria-label="Selected record"]')
+    return {
+      inRegion: region?.contains(target) ?? false,
+      leaving: target.closest('[aria-hidden="true"]') !== null,
+      // The leaving copy is hidden from assistive technology, so look past that.
+      heading:
+        within(target as HTMLElement).queryByRole('heading', { level: 2, hidden: true })
+          ?.textContent ?? '',
+    }
+  })
   /** The layer that holds the leaving record's copy while it slides. */
   const leavingCopy = () => selected().querySelector(':scope > [aria-hidden="true"]')!
-  // The leaving copy is hidden from assistive technology, so look past that.
-  const headingOf = (target: Element) =>
-    within(target as HTMLElement).queryByRole('heading', { level: 2, hidden: true })?.textContent ??
-    ''
   /** The motion the last selection started. */
   const slide = (): Slide => {
-    const region = selected()
-    const inRegion = recorder.started.filter(({ target }) => region.contains(target))
-    const move = (hidden: boolean) => {
-      const found = inRegion.find(
-        ({ target }) => (target.closest('[aria-hidden="true"]') !== null) === hidden,
-      )
-      return found && { heading: headingOf(found.target), transforms: found.transforms }
+    const inRegion = recorder.started.filter(({ note }) => note.inRegion)
+    const move = (leaving: boolean) => {
+      const found = inRegion.find(({ note }) => note.leaving === leaving)
+      return found && { heading: found.note.heading, transforms: found.transforms }
     }
     return {
       entering: move(false),
       leaving: move(true),
-      elsewhere: recorder.started.filter(({ target }) => !region.contains(target)).length,
+      elsewhere: recorder.started.length - inRegion.length,
     }
   }
   /** Waits until the rail shows `heading`, then returns the slide that got it there. */

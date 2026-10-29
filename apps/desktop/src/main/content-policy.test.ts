@@ -42,7 +42,39 @@ describe('windowOpenDecision', () => {
     [`${reef}/workspaces/w/providers/new`, true, null, 'deny'],
     ['http://user:secret@127.0.0.1:41234/workspaces', true, reef, 'deny'],
   ] as const)('sends %s (form %s, Reef at %s) to %s', (target, form, origin, decision) => {
-    expect(windowOpenDecision(target, form, origin)).toBe(decision)
+    expect(windowOpenDecision(target, form, origin, null)).toBe(decision)
+  })
+
+  const notes = 'https://github.com/withcoral/coral/releases/tag'
+  it.each([
+    // The sidebar notice names a newer release, which Desktop can install.
+    [`${notes}/v1.4.0`, '1.3.0', { offerUpdate: '1.4.0' }],
+    [`${notes}/v1.4.0`, null, 'open-externally'],
+    // Versions compare by number, and a prerelease is older than its release.
+    [`${notes}/v1.10.0`, '1.9.0', { offerUpdate: '1.10.0' }],
+    [`${notes}/v1.4.0`, '1.4.0-rc.1', { offerUpdate: '1.4.0' }],
+    [`${notes}/v1.4.0`, '1.4.0+build.7', 'open-externally'],
+    // The notes of the version that runs, or of an older one, have nothing to install.
+    [`${notes}/v1.3.0`, '1.3.0', 'open-externally'],
+    [`${notes}/v1.2.9`, '1.3.0', 'open-externally'],
+    [`${notes}/v1.9.0`, '1.10.0', 'open-externally'],
+    [`${notes}/v1.4.0-rc.1`, '1.3.0', 'open-externally'],
+    [`${notes}/v1.4.0`, 'dev', 'open-externally'],
+    [`${notes}/v`, '1.3.0', 'open-externally'],
+    [`${notes}/v1.4.0/assets`, '1.3.0', 'open-externally'],
+    [`${notes}/v1%2F4`, '1.3.0', 'open-externally'],
+    [`${notes}/1.4.0`, '1.3.0', 'open-externally'],
+    [`${notes}/v1.4.0?x=1`, '1.3.0', 'open-externally'],
+    [`${notes}/v1.4.0#notes`, '1.3.0', 'open-externally'],
+    ['https://github.com/other/coral/releases/tag/v1.4.0', '1.3.0', 'open-externally'],
+    ['http://github.com/withcoral/coral/releases/tag/v1.4.0', '1.3.0', 'open-externally'],
+    ['https://user:secret@github.com/withcoral/coral/releases/tag/v1.4.0', '1.3.0', 'deny'],
+  ] as const)('sends %s (Desktop %s) to %j', (target, running, decision) => {
+    expect(windowOpenDecision(target, false, reef, running)).toEqual(decision)
+  })
+
+  it('sends a form for a release notes URL nowhere', () => {
+    expect(windowOpenDecision(`${notes}/v1.4.0`, true, reef, '1.3.0')).toBe('deny')
   })
 })
 
