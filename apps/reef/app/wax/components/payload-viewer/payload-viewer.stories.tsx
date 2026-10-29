@@ -199,7 +199,10 @@ export const ExpandedOpensOnYourView: Story = {
   },
 }
 
-/** Find's status counts what Raw alone shows, beside what it shows here or instead of it. */
+/**
+ * Catches: a status that reads as if Raw had more matches in all, when Raw finds other ones.
+ * Find's status counts each match only Raw shows, beside what it shows here or instead.
+ */
 const findStatus = (value: string, query: string, status: string): Story => ({
   args: { value },
   play: async (context) => {
@@ -207,12 +210,14 @@ const findStatus = (value: string, query: string, status: string): Story => ({
     await expect(within(viewer).getByRole('status').textContent).toBe(status)
   },
 })
-export const FindSaysWhatOnlyRawShows = findStatus('[1,2]', '1,2', 'No matches · 1 in Raw')
+export const FindSaysWhatOnlyRawShows = findStatus('[1,2]', '1,2', 'No matches · 1 only in Raw')
 export const FindSaysWhatRawAlsoShows = findStatus(
   '{"a":"1,2","b":[1,2]}',
   '1,2',
-  '1 of 1 · 1 more in Raw',
+  '1 of 1 · 1 only in Raw',
 )
+// Raw's one match is the whole line: not one of these two, and no match more in all.
+export const FindSaysRawShowsADifferentMatch = findStatus('{"a":1}', '*', '1 of 2 · 1 only in Raw')
 
 /** Catches: a view switch that keeps a match index but leaves the match folded away. */
 export const RevealsTheMatchAfterAViewSwitch: Story = {
@@ -598,7 +603,7 @@ export const WildcardFindsTheMatchInOneEntry: Story = {
   args: { value: '{"k0":1,"k":"v"}' },
   play: async (context) => {
     const viewer = await findExpanded(context, 'Provider response', 'k*v')
-    await expect(within(viewer).getByRole('status')).toHaveTextContent(/^1 of 1 · 1 more in Raw$/)
+    await expect(within(viewer).getByRole('status')).toHaveTextContent(/^1 of 1 · 1 only in Raw$/)
     const parts = within(viewer).getAllByRole('mark', { current: true })
     await expect(parts.map((part) => part.textContent)).toEqual(['k', 'v'])
   },

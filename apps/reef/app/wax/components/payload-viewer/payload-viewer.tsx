@@ -278,7 +278,7 @@ function Viewer({
     ? ''
     : (matches.length
         ? `${Math.min(current, matches.length - 1) + 1} of ${matches.length}`
-        : 'No matches') + (rawOnly ? ` · ${rawOnly} ${matches.length ? 'more ' : ''}in Raw` : '')
+        : 'No matches') + (rawOnly ? ` · ${rawOnly} only in Raw` : '')
   // Copy, Download and, inline, Expand: compact, above the card or in the viewer's toolbar.
   const actions = (
     <div className={styles.actions} role="group" aria-label="Payload actions">
