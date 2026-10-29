@@ -34,7 +34,9 @@ export async function workspaceOnboarding(context: TestContext) {
       'Copy prompt copies the live workspace into the prompt and keeps it open',
       async () => {
         const copied = await copiedBy(page, copy)
-        expect(copied).toContain(`Help me set up my Coral workspace ${JSON.stringify(name)}.`)
+        expect(copied).toContain(
+          `Help me connect to my Coral workspace ${JSON.stringify(name)} and add a provider.`,
+        )
         // The prompt's wording and clamp belong to the Onboarding story; this checks the live URL.
         expect(copied).toContain(`${target.mcpURL}/workspaces/${id}/mcp`)
         await dialog.getByRole('button', { name: 'Copy prompt: copied', exact: true }).waitFor()

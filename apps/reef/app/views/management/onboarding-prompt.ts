@@ -48,9 +48,7 @@ export function onboardingPrompt(
       ].join(' ')
     : `2. Add the MCP server at ${endpoint} with that name.`
   return [
-    `I am excited to start using Coral! Help me set up my Coral workspace ${JSON.stringify(displayName)}.`,
-    '',
-    'Be enthusiastic about Coral as you help me. Keep your own voice and tone. Do not take on a persona.',
+    `Help me connect to my Coral workspace ${JSON.stringify(displayName)} and add a provider.`,
     '',
     'When you ask me a question, use your tool for structured questions or choices if you have one. If you do not, ask me a short question in this chat. Wait for my answer.',
     '',
