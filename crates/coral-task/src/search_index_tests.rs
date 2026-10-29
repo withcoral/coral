@@ -371,11 +371,7 @@ async fn a_failed_index_write_keeps_the_save_and_leaves_only_a_failed_state_unti
             )
         );
         assert!(state.error.contains(INJECTED_FAULT), "{}", state.error);
-        let [times, event] = logs
-            .events()
-            .try_into()
-            .expect("the write's times, then its error");
-        assert_eq!(times.level, tracing::Level::INFO);
+        let [event] = logs.events().try_into().expect("the write's error");
         assert_eq!(event.level, tracing::Level::ERROR);
         for (field, value) in [
             ("workspace_id", fixture.workspace.to_string()),

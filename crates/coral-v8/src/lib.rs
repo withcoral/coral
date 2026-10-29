@@ -133,6 +133,12 @@ pub trait ProgramHost: Send + Sync {
         coral_value::ValueLimits::default()
     }
 
+    /// The trace a Tool rejection decided before [`Self::invoke`] names, as
+    /// the host's own rejections do.
+    fn trace_id(&self) -> Option<String> {
+        None
+    }
+
     /// Invokes one Tool by complete Call Path and native-JSON arguments.
     ///
     /// `location` is the authored call site captured before the call returns

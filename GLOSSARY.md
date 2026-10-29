@@ -824,6 +824,9 @@ terminal, only its Run Owner removes it, in the commit that records it. A reques
 decides, so the first one wins. A Run Owner recovered after its lease lapsed applies the requests in the Run's Run
 Inbox before it ends the Run. _Avoid_: mailbox, work queue, outbox, message queue
 
+**Run Trace**: The Coral-owned trace that every span of one Coral Program Run belongs to. It starts at Run acceptance
+and is separate from the request that started the Run, which it links to. _Avoid_: Run context, worker trace
+
 **Run Output Budget**: The limit on the bytes of Program Emissions, Program Logs, Tool Invocation results, and the
 Final Value that one Coral Program Run may produce. The Run Owner decides every request against the exact total when it
 applies the request, so a Run never exceeds its budget by a byte. A refused Emission or Log is not Run output and the

@@ -5871,6 +5871,10 @@ pub struct InspectRunResponse {
     /// can still see it; otherwise empty. Read its detail through the Accounts service.
     #[prost(string, tag = "13")]
     pub account_connection: ::prost::alloc::string::String,
+    /// W3C trace ID of a Run that failed, timed out or was interrupted, or empty.
+    /// Give it to the operator to find the Run in Coral's telemetry.
+    #[prost(string, tag = "14")]
+    pub trace_id: ::prost::alloc::string::String,
     /// How the Run ended. Absent while running, or for an outcome unknown to this client.
     #[prost(oneof = "inspect_run_response::Terminal", tags = "7, 8, 9, 10, 11")]
     pub terminal: ::core::option::Option<inspect_run_response::Terminal>,

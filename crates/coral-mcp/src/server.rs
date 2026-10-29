@@ -286,10 +286,18 @@ impl McpServer {
                 .map(Into::into)
                 .map_err(DispatchError::Tool);
         }
-        let observation =
-            RunObservation::initial(Duration::from_millis(wait_ms)).map_err(invalid_input)?;
-        self.observe_prompting(accepted.run_id(), &observation, &reread, prompting)
-            .await
+        // This request accepted the Run, so acceptance already linked it to
+        // the Run Trace.
+        let observation = RunObservation::initial(Duration::from_millis(wait_ms))
+            .map_err(invalid_input)?
+            .by_acceptor();
+        self.observe_prompting(
+            accepted.run_id(),
+            &observation,
+            &reread.by_acceptor(),
+            prompting,
+        )
+        .await
     }
 
     async fn wait(

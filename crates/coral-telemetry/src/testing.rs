@@ -8,10 +8,11 @@ use tracing_subscriber::registry::LookupSpan;
 
 /// Records every finished span in memory.
 ///
-/// Install [`SpanCapture::subscriber`] for one thread with
-/// `tracing::subscriber::set_default`, or for the process with
-/// `set_global_default` when spans finish on other threads. Add
-/// [`SpanCapture::layer`] to a subscriber that needs other layers too.
+/// In a test binary with other tests, install [`SpanCapture::subscriber`]
+/// once for the process with `set_global_default` and select the test's own
+/// spans, by trace or attribute: a subscriber set for one thread with
+/// `set_default` misses a callsite another test's thread registered first.
+/// Add [`SpanCapture::layer`] to a subscriber that needs other layers too.
 #[derive(Debug, Clone)]
 pub struct SpanCapture {
     provider: SdkTracerProvider,
@@ -29,6 +30,21 @@ impl Default for SpanCapture {
 }
 
 impl SpanCapture {
+    /// A capture whose spans also go to `other`, such as an exporter that
+    /// fails, so tests can show what export does not change.
+    #[must_use]
+    pub fn beside<E>(other: E) -> Self
+    where
+        E: opentelemetry_sdk::trace::SpanExporter + 'static,
+    {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .with_simple_exporter(other)
+            .build();
+        Self { provider, exporter }
+    }
+
     /// A subscriber that gives every span trace context and captures it.
     #[must_use]
     pub fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync + use<> {

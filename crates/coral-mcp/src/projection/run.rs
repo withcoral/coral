@@ -33,6 +33,12 @@ pub(crate) struct RunUpdateResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Failure<'a>")]
     failure: Option<Failure<'a>>,
+    /// The W3C trace identifier of a Run that failed, timed out or was
+    /// interrupted. Give it to the operator to find the Run in Coral's
+    /// telemetry. It grants no authority.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    trace_id: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -234,6 +240,10 @@ fn project_run_update(
         has_more: update.has_more(),
         final_value,
         failure,
+        trace_id: update
+            .trace_id()
+            .filter(|_| !update.has_more())
+            .map(|trace| trace.as_str().to_string()),
     })?;
     result.content.extend(rich);
     Ok(result)

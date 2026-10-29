@@ -2194,3 +2194,124 @@ async fn echoed_credentials_never_reach_the_result() {
         );
     }
 }
+
+/// An HTTP dispatch is one client span of the Invocation that sends it, and
+/// the upstream receives that span's `traceparent` and nothing else of the
+/// trace context: not one a Program argument names, nor `baggage` or
+/// `tracestate`. The span holds the route template, never the filled path,
+/// and an error status marks only the span.
+#[tokio::test]
+async fn an_http_dispatch_carries_only_its_client_span_trace_context() {
+    use coral_telemetry::testing::attribute;
+    use opentelemetry::trace::{SpanKind, Status};
+    use tracing::Instrument as _;
+
+    let capture = capture();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let prepared = ready(&format!(
+        r#"
+openapi: 3.1.0
+info: {{title: Trace context, version: "1"}}
+servers: [{{url: {}}}]
+paths:
+  /items/{{id}}:
+    get:
+      operationId: read
+      parameters:
+        - {{name: id, in: path, required: true, schema: {{type: string}}}}
+        - {{name: traceparent, in: header, schema: {{type: string}}}}
+        - {{name: baggage, in: header, schema: {{type: string}}}}
+      responses:
+        "200": {{description: done}}
+"#,
+        server.uri()
+    ));
+    let invocation = tracing::info_span!("coral.invocation");
+    let trace = {
+        use opentelemetry::trace::TraceContextExt as _;
+        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+        invocation.context().span().span_context().trace_id()
+    };
+    let outcome = send(plan(
+        &prepared,
+        &serde_json::json!({
+            "id": "private-42",
+            "traceparent": "00-ffffffffffffffffffffffffffffffff-ffffffffffffffff-01",
+            "baggage": "user=private",
+        }),
+    ))
+    .instrument(invocation.clone())
+    .await
+    .expect("a complete response");
+    assert_eq!(outcome.status(), 404);
+    drop(invocation);
+
+    let spans = capture.finished();
+    let parent = spans
+        .iter()
+        .find(|span| span.span_context.trace_id() == trace && span.name == "coral.invocation")
+        .expect("Invocation span");
+    let client = spans
+        .iter()
+        .find(|span| span.span_context.trace_id() == trace && span.span_kind == SpanKind::Client)
+        .expect("HTTP client span");
+    assert_eq!(client.name, "GET /items/{id}");
+    assert_eq!(client.parent_span_id, parent.span_context.span_id());
+    for (key, value) in [
+        ("http.request.method", "GET"),
+        ("url.scheme", "http"),
+        ("server.address", "127.0.0.1"),
+        ("url.template", "/items/{id}"),
+        ("http.response.status_code", "404"),
+        ("error.type", "404"),
+    ] {
+        assert_eq!(attribute(client, key).as_deref(), Some(value), "{key}");
+    }
+    assert!(attribute(client, "server.port").is_some());
+    assert!(
+        client
+            .attributes
+            .iter()
+            .all(|kv| !kv.value.to_string().contains("private")),
+        "no filled path or argument reaches the span"
+    );
+    assert!(matches!(client.status, Status::Error { .. }));
+
+    let requests = server.received_requests().await.expect("requests");
+    let [request] = requests.as_slice() else {
+        panic!("one request: {requests:?}");
+    };
+    let headers = &request.headers;
+    assert_eq!(
+        headers
+            .get_all("traceparent")
+            .iter()
+            .map(|value| value.to_str().expect("ASCII").to_string())
+            .collect::<Vec<_>>(),
+        vec![format!(
+            "00-{}-{}-01",
+            client.span_context.trace_id(),
+            client.span_context.span_id()
+        )]
+    );
+    assert!(headers.get("tracestate").is_none());
+    assert!(headers.get("baggage").is_none());
+}
+
+/// The process-wide span capture: a subscriber set for one test thread
+/// misses callsites another test's thread registered first.
+fn capture() -> &'static coral_telemetry::testing::SpanCapture {
+    static CAPTURE: std::sync::OnceLock<coral_telemetry::testing::SpanCapture> =
+        std::sync::OnceLock::new();
+    CAPTURE.get_or_init(|| {
+        let capture = coral_telemetry::testing::SpanCapture::default();
+        tracing::subscriber::set_global_default(capture.subscriber())
+            .expect("install the span capture");
+        capture
+    })
+}

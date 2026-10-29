@@ -42,6 +42,8 @@ pub struct PreparedRun {
 pub struct StagedRun {
     run: AcceptedRun,
     actor: AuthenticatedPrincipal,
+    /// The `coral.run.accept` span, which ends once the Run is launched.
+    accept: tracing::Span,
     /// Holds the admission until `launch` registers the Run's owner, or the
     /// staged Run is dropped: a shutdown waits for it.
     admitted: Admitted,
@@ -135,6 +137,8 @@ impl RunModule {
         prepared: PreparedRun,
     ) -> Result<StagedRun, Error> {
         let admitted = self.admission.admit()?;
+        let accept = crate::trace::accept_span();
+        let trace = coral_telemetry::RunTrace::begin(&accept);
         let PreparedRun {
             actor,
             workspace_id,
@@ -198,6 +202,7 @@ impl RunModule {
                         )
                     })
                     .collect(),
+                trace: trace.clone(),
             };
             if run_repository::insert_acceptance(
                 transaction,
@@ -218,9 +223,11 @@ impl RunModule {
                 )));
             }
         };
+        accept.record("coral.run.id", run.id.as_str());
         Ok(StagedRun {
             run,
             actor: actor.clone(),
+            accept,
             admitted,
         })
     }
@@ -242,11 +249,16 @@ impl RunModule {
         .ok_or(Error::RunNotFound)?;
         transaction.commit().await?;
         let update = accepted_update(&staged.run)?;
+        // The request that accepted the Run links to its trace, as the
+        // accept span links back to it.
+        crate::trace::link_request(staged.run.trace.as_ref());
         let StagedRun {
             run,
             actor,
+            accept,
             admitted,
         } = staged;
+        drop(accept);
         self.schedule_execution(run, actor);
         // The owner is registered: shutdown counts it from here.
         drop(admitted);

@@ -241,6 +241,8 @@ async fn discover(
             client: crate::http_client(policy)?,
             limit,
             result: captured.clone(),
+            // Discovery is not a Provider Tool dispatch: it sends no trace context.
+            span: tracing::Span::none(),
         },
         config,
     );

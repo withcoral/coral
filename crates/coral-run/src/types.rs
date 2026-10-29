@@ -732,6 +732,7 @@ pub struct RunObservation {
     event_limit: u16,
     wait: Duration,
     batch_output: bool,
+    by_acceptor: bool,
 }
 
 impl RunObservation {
@@ -752,7 +753,22 @@ impl RunObservation {
             event_limit,
             wait: Duration::ZERO,
             batch_output: false,
+            by_acceptor: false,
         })
+    }
+
+    /// Marks this observation as made by the request that accepted the Run.
+    /// Acceptance already linked that request to the Run Trace, so the
+    /// observation links nothing more.
+    #[must_use]
+    pub const fn by_acceptor(mut self) -> Self {
+        self.by_acceptor = true;
+        self
+    }
+
+    /// Whether the request making this observation accepted the Run.
+    pub(crate) const fn is_by_acceptor(&self) -> bool {
+        self.by_acceptor
     }
 
     /// Observes a newly accepted Run, batching authored output until terminal state,
@@ -826,6 +842,9 @@ pub struct RunUpdate {
     next_cursor: RunCursor,
     has_more: bool,
     terminal_outcome: Option<RunTerminalOutcome>,
+    pub(crate) trace_id: Option<coral_telemetry::TraceId>,
+    /// The Run's Run Trace, which a request about the Run links to.
+    pub(crate) run_trace: Option<coral_telemetry::RunTrace>,
 }
 
 impl RunUpdate {
@@ -856,7 +875,16 @@ impl RunUpdate {
             next_cursor,
             has_more,
             terminal_outcome,
+            trace_id: None,
+            run_trace: None,
         })
+    }
+
+    /// The Run Trace identifier of a Run that failed, timed out or was
+    /// interrupted, for operator correlation. It grants no authority.
+    #[must_use]
+    pub const fn trace_id(&self) -> Option<&coral_telemetry::TraceId> {
+        self.trace_id.as_ref()
     }
 
     /// Returns the effective limits retained at Run admission.
@@ -957,6 +985,9 @@ pub(crate) struct AcceptedRun {
     /// Linked Saved Function path to the identity of the snapshot that
     /// acceptance retained for it.
     pub(crate) linked_snapshots: HashMap<String, String>,
+    /// The Run Trace every span of the Run joins; `None` when acceptance
+    /// stored none.
+    pub(crate) trace: Option<coral_telemetry::RunTrace>,
 }
 
 /// The cap on Program output the Run Owner has applied but not yet recorded.
