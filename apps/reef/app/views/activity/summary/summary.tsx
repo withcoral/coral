@@ -133,11 +133,6 @@ export function ActivitySummary({
         <Typography.BodySmallStrong as="h2" variant="primary">
           {owner ? 'Workspace activity' : 'Your activity'}
         </Typography.BodySmallStrong>
-        {pending && (
-          <Typography.BodySmall as="span" variant="tertiary" role="status">
-            Loading…
-          </Typography.BodySmall>
-        )}
         {onDaysChange ? (
           <SegmentedControl
             label="Period"

@@ -218,9 +218,12 @@ export const PeriodPicker: Story = {
 // The numbers fade while the chosen period's numbers load.
 export const Pending: Story = {
   args: { onDaysChange: () => {}, pending: true },
-  // Catches: old numbers that only fade, with no status that says they are loading.
+  // Catches: old numbers that only fade, with nothing that tells assistive tech they are loading.
   play: async ({ canvas }) => {
-    await expect(canvas.getByRole('status')).toHaveTextContent('Loading…')
+    await expect(canvas.getByRole('region', { name: 'Activity summary' })).toHaveAttribute(
+      'aria-busy',
+      'true',
+    )
   },
 }
 
