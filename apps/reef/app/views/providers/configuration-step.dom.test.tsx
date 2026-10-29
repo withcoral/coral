@@ -48,14 +48,14 @@ const review: ConfigurationReviewView = {
   servers: [
     {
       declaration: '#/servers',
-      operations: ['listSites'],
+      tools: ['listSites'],
       options: [{ url: '/integration', variables: [] }],
     },
   ],
   destinations: {},
-  operationCount: null,
-  operations: [],
-  unavailableOperations: [],
+  toolCount: null,
+  tools: [],
+  unavailableTools: [],
   diagnostic: '',
   readable: true,
   errors: {},
@@ -190,7 +190,7 @@ it('drops the requirement when the person types their own server URL', async () 
 })
 
 // Catches: a large document leaving Next unchanged while Coral confirms its
-// configuration and prepares the operation list.
+// configuration and prepares the tool list.
 it('shows progress as soon as Next submits the configuration', async () => {
   const step = await renderStep(null, {
     ...review,
@@ -266,7 +266,7 @@ const stale: ConfigurationReviewView = {
   servers: [
     {
       declaration: '#/servers',
-      operations: ['listSites'],
+      tools: ['listSites'],
       options: [{ url: 'https://api.example.test', variables: [] }],
     },
   ],

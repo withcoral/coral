@@ -55,7 +55,7 @@ function stored(line: number, name: string, document: RecordSourceLocation['docu
 }
 const inProgram = (line: number, name: string) => stored(line, name, { kind: 'program' })
 
-function operation(
+function tool(
   slug: string,
   callPath: string,
   position: number,
@@ -70,7 +70,7 @@ function operation(
     task: '',
     run: runName,
     provider: `${workspace}/providers/${callPath.split('.')[0]}`,
-    operation: callPath.split('.').at(-1)!,
+    tool: callPath.split('.').at(-1)!,
     callPath,
     state: 'ended',
     outcome: 'upstream_outcome',
@@ -104,19 +104,19 @@ function output(
   }
 }
 
-const listInvoices = operation('list', 'billing.listInvoices', 0, inProgram(2, 'listInvoices'))
+const listInvoices = tool('list', 'billing.listInvoices', 0, inProgram(2, 'listInvoices'))
 // The two sends share a call path. The later record ran the earlier line: each keeps its own.
-const laterSend = operation('send-later', 'mail.send', 1, inProgram(66, 'send'))
-const earlierSend = operation('send-earlier', 'mail.send', 3, inProgram(3, 'send'))
+const laterSend = tool('send-later', 'mail.send', 1, inProgram(66, 'send'))
+const earlierSend = tool('send-earlier', 'mail.send', 3, inProgram(3, 'send'))
 // A record from before Coral stored locations: its call matches line 3, yet it has no location.
-const legacySend = operation('send-legacy', 'mail.send', 4)
-const archived = operation(
+const legacySend = tool('send-legacy', 'mail.send', 4)
+const archived = tool(
   'archive',
   'mail.archive',
   9,
   stored(2, 'archive', { kind: 'saved_function', savedFunction }),
 )
-// The record of the later send ending: it links to its operation inside the same Run.
+// The record of the later send ending: it links to its tool inside the same Run.
 const ended: RunEvent = {
   kind: 'invocation.ended',
   sequence: '2',
@@ -168,11 +168,11 @@ const context: RunDetail = {
       name: 'Error',
       message: 'failed',
       frames: [{ source: 'Program', line: 1, column: 1 }],
-      operationCode: '',
-      operationTraceId: '',
-      operationStatus: 0,
-      operationBody: '',
-      operationBodyTruncated: false,
+      toolCode: '',
+      toolTraceId: '',
+      toolStatus: 0,
+      toolBody: '',
+      toolBodyTruncated: false,
       cause: null,
       errors: [],
       truncated: false,
@@ -301,7 +301,7 @@ function selection(
 const program = null
 /** A failed Run's retained error frame, only for the Run's own selection. */
 export const FailedRunFrame = selection(runName, 'Send invoice reminders', program, [1])
-export const SingleOperation = selection(listInvoices.name, 'billing.listInvoices', program, [2])
+export const SingleTool = selection(listInvoices.name, 'billing.listInvoices', program, [2])
 /** Two records of one call path, loaded out of source order, each at its own stored line. */
 export const EarlierLineLaterRecord = selection(laterSend.name, 'mail.send', program, [66])
 export const LaterLineEarlierRecord = selection(earlierSend.name, 'mail.send', program, [3])
@@ -324,7 +324,7 @@ export const SameRunNavigation: Story = {
   play: async ({ canvasElement, userEvent }) => {
     const dialog = await within(canvasElement.ownerDocument.body).findByRole('dialog')
     const drawer = within(dialog)
-    await expectOwnHeader(dialog, 'Operation call ended: completed')
+    await expectOwnHeader(dialog, 'Tool call ended: completed')
     await expect(drawer.queryByText('Source location unavailable')).toBeNull()
     const code = dialog.querySelector('[data-line]')!.closest('pre')!
     // The source pane's own scrolling viewport, not a wrapper that never scrolls.
@@ -347,7 +347,7 @@ export const SameRunNavigation: Story = {
       viewport.getBoundingClientRect().bottom
     await waitFor(() => expect(below()).toBe(true))
 
-    await userEvent.click(drawer.getByRole('link', { name: 'Open operation call' }))
+    await userEvent.click(drawer.getByRole('link', { name: 'Open tool call' }))
     await drawer.findByRole('heading', { name: 'mail.send' })
     await expectOwnHeader(dialog, 'mail.send')
     await expect(drawer.queryByRole('heading', { name: 'Send invoice reminders' })).toBeNull()

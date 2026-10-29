@@ -29,7 +29,7 @@ pub use management::{ProviderSource, ProviderWithConfiguration};
 mod management_tests;
 mod publication;
 mod reach;
-pub use reach::{reaches, unreached_operations_in_transaction};
+pub use reach::{reaches, unreached_tools_in_transaction};
 mod runtime;
 pub use configuration::{ConfigurationDifference, SetupConfigurationReview};
 #[cfg(test)]
@@ -37,10 +37,10 @@ mod configuration_tests;
 mod repository;
 mod search;
 pub use search::{
-    ActiveGeneration, ActiveProvider, GenerationEntries, HydratedOperation, LoadedGenerations,
-    OperationEntry, active_generations_in_transaction, active_providers_in_transaction,
-    hydrate_operation_in_transaction, operation_material_by_relative_path_in_transaction,
-    prepare_active_generation_entries_in_transaction, workspace_active_generations_in_transaction,
+    ActiveGeneration, ActiveProvider, GenerationEntries, HydratedTool, LoadedGenerations,
+    ToolEntry, active_generations_in_transaction, active_providers_in_transaction,
+    hydrate_tool_in_transaction, prepare_active_generation_entries_in_transaction,
+    tool_material_by_relative_path_in_transaction, workspace_active_generations_in_transaction,
 };
 mod program_setup;
 #[cfg(test)]
@@ -89,15 +89,15 @@ pub use publication::{
     publication_for_request_in_transaction, regeneration_for_request_in_transaction,
 };
 pub use types::{
-    AdministrativeLifecycleEvent, InvocationOperationVerification, LifecycleAction, LifecycleActor,
-    LifecycleOutcome, ManagementRequestId, OperationAuthoringMaterial, Provider,
-    ProviderDisplayName, ProviderId, ProviderSearchCatalog, ProviderSetup, ProviderSetupId,
-    ProviderSetupState, ProviderState, ResolvedInvocationOperation, SetupRequest,
+    AdministrativeLifecycleEvent, InvocationToolVerification, LifecycleAction, LifecycleActor,
+    LifecycleOutcome, ManagementRequestId, Provider, ProviderDisplayName, ProviderId,
+    ProviderSearchCatalog, ProviderSetup, ProviderSetupId, ProviderSetupState, ProviderState,
+    ResolvedInvocationTool, SetupRequest, ToolAuthoringMaterial,
 };
 
 pub use access::{CredentialRoute, ProviderAccess, ProviderCallRoot, ProviderNamespace, RouteFit};
 use account::setup as setup_credentials;
-use coral_catalog::{MaterializedOperation, OperationKey, ProviderSetupInput};
+use coral_catalog::{MaterializedTool, ProviderSetupInput, ToolKey};
 use publication::materialization::{CatalogMaterializer, Materializer};
 #[cfg(test)]
 use publication::{NoopPublicationObserver, PublicationObserver, PublicationPoint};
@@ -370,24 +370,24 @@ impl ProviderModule {
             .map(|loaded| loaded.setup)
     }
 
-    /// Inspects one Operation in a Provider's current Materialized Catalog.
+    /// Inspects one Tool in a Provider's current Materialized Catalog.
     ///
     /// Administrative inspection remains available while a Provider is revoked
     /// or unavailable; those lifecycle facts gate discovery and execution only.
     /// The private Provider Generation remains inside the Module; callers name
-    /// the stable Provider-plus-Operation-Key address only.
+    /// the stable Provider-plus-Tool-Key address only.
     ///
     /// # Errors
     ///
     /// Requires current Workspace Owner authority. An absent Provider,
-    /// Generation, Catalog, or Operation returns [`Error::OperationNotFound`].
-    pub async fn inspect_operation(
+    /// Generation, Catalog, or Tool returns [`Error::ToolNotFound`].
+    pub async fn inspect_tool(
         &self,
         actor: &AuthenticatedUser,
         workspace_id: &WorkspaceId,
         provider_id: &ProviderId,
-        operation_key: &OperationKey,
-    ) -> Result<MaterializedOperation, Error> {
+        tool_key: &ToolKey,
+    ) -> Result<MaterializedTool, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let evidence = self
             .workspaces
@@ -405,16 +405,12 @@ impl ProviderModule {
             provider_id,
         )
         .await?
-        .ok_or(Error::OperationNotFound)?;
-        let operation = coral_catalog::operation_in_transaction(
-            &mut transaction,
-            &generation_id,
-            operation_key,
-        )
-        .await?
-        .ok_or(Error::OperationNotFound)?;
+        .ok_or(Error::ToolNotFound)?;
+        let tool = coral_catalog::tool_in_transaction(&mut transaction, &generation_id, tool_key)
+            .await?
+            .ok_or(Error::ToolNotFound)?;
         transaction.rollback().await?;
-        Ok(operation)
+        Ok(tool)
     }
 
     /// Disables one exact Workspace-owned Provider.
@@ -438,7 +434,7 @@ impl ProviderModule {
 
     /// Restores one exact disabled Workspace-owned Provider.
     ///
-    /// Restoration reuses the same Provider and makes otherwise-ready Operations usable again.
+    /// Restoration reuses the same Provider and makes otherwise-ready Tools usable again.
     ///
     /// # Errors
     ///
@@ -609,8 +605,8 @@ pub(crate) fn require_ready(setup: &ProviderSetup) -> Result<(), Error> {
 
 /// Resolves current active Workspace Provider catalogs before ranking.
 ///
-/// This narrow facet reads no complete Operation description. Provider lifecycle
-/// and structural Operation availability are current in the caller's read
+/// This narrow facet reads no complete Tool description. Provider lifecycle
+/// and structural Tool availability are current in the caller's read
 /// snapshot.
 ///
 /// # Errors
@@ -623,20 +619,20 @@ pub async fn provider_search_catalogs_in_transaction(
 ) -> Result<Vec<ProviderSearchCatalog>, Error> {
     let mut catalogs = Vec::new();
     for active in search::active_providers(transaction, workspace_id, provider_filter).await? {
-        let operations = coral_catalog::available_search_targets_in_transaction(
+        let tools = coral_catalog::available_search_targets_in_transaction(
             transaction,
             active.generation_id(),
         )
         .await?;
-        catalogs.push(ProviderSearchCatalog::new(active, operations));
+        catalogs.push(ProviderSearchCatalog::new(active, tools));
     }
     Ok(catalogs)
 }
 
 /// Resolves the declared effect hints and HTTP method for an exact current
-/// Provider Operation.
+/// Provider Tool.
 ///
-/// This narrow transaction-compatible facet lets the Operation Policy Module
+/// This narrow transaction-compatible facet lets the Tool Policy Module
 /// validate its target and derive its default without reading
 /// Provider or Catalog persistence itself. The caller owns commit or rollback.
 ///
@@ -644,27 +640,21 @@ pub async fn provider_search_catalogs_in_transaction(
 ///
 /// Returns a persistence or corrupt Provider-package failure. `Ok(None)` means
 /// either the Provider is outside the exact Workspace or its current
-/// catalog has no matching Operation Key.
-pub async fn operation_hints_and_method_in_transaction(
+/// catalog has no matching Tool Key.
+pub async fn tool_hints_and_method_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
-    operation_key: &OperationKey,
-) -> Result<
-    Option<(
-        coral_catalog::OperationHints,
-        Option<coral_catalog::HttpMethod>,
-    )>,
-    Error,
-> {
-    Ok(operation_hints_and_methods_batch_in_transaction(
+    tool_key: &ToolKey,
+) -> Result<Option<(coral_catalog::ToolHints, Option<coral_catalog::HttpMethod>)>, Error> {
+    Ok(tool_hints_and_methods_batch_in_transaction(
         transaction,
         workspace_id,
         provider_id,
-        std::slice::from_ref(operation_key),
+        std::slice::from_ref(tool_key),
     )
     .await?
-    .remove(operation_key))
+    .remove(tool_key))
 }
 
 /// Resolves hints and HTTP methods for a bounded selection in one Provider's current catalog.
@@ -672,18 +662,15 @@ pub async fn operation_hints_and_method_in_transaction(
 /// The caller owns authority and the coherent read transaction.
 /// # Errors
 /// Returns invalid-size, persistence or corrupt Provider-package failures.
-pub async fn operation_hints_and_methods_batch_in_transaction(
+pub async fn tool_hints_and_methods_batch_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
-    operation_keys: &[OperationKey],
+    tool_keys: &[ToolKey],
 ) -> Result<
     std::collections::BTreeMap<
-        OperationKey,
-        (
-            coral_catalog::OperationHints,
-            Option<coral_catalog::HttpMethod>,
-        ),
+        ToolKey,
+        (coral_catalog::ToolHints, Option<coral_catalog::HttpMethod>),
     >,
     Error,
 > {
@@ -699,16 +686,18 @@ pub async fn operation_hints_and_methods_batch_in_transaction(
     )
     .await?
     .ok_or_else(|| Error::CorruptData("Provider has no current Provider Generation".to_string()))?;
-    Ok(coral_catalog::operation_hints_and_methods_in_transaction(
-        transaction,
-        &generation_id,
-        operation_keys,
+    Ok(
+        coral_catalog::tool_hints_and_methods_in_transaction(
+            transaction,
+            &generation_id,
+            tool_keys,
+        )
+        .await?,
     )
-    .await?)
 }
 
 /// Resolves the Provider under `coral.providers.<namespace>`, in any state,
-/// and the Operation-relative path of each Operation in its current catalog.
+/// and the Tool-relative path of each Tool in its current catalog.
 /// Definitions and schemas stay lazy.
 ///
 /// The caller owns authority and the coherent read transaction. `Ok(None)`
@@ -717,11 +706,11 @@ pub async fn operation_hints_and_methods_batch_in_transaction(
 /// # Errors
 ///
 /// Returns a persistence or corrupt Provider-package failure.
-pub async fn provider_operation_paths_in_transaction(
+pub async fn provider_tool_paths_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
     namespace: &ProviderNamespace,
-) -> Result<Option<(ProviderId, Vec<coral_catalog::OperationPathAssignment>)>, Error> {
+) -> Result<Option<(ProviderId, Vec<coral_catalog::ToolPathAssignment>)>, Error> {
     let Some(active) = repository::provider_by_call_root_in_transaction(
         transaction,
         workspace_id,
@@ -733,11 +722,11 @@ pub async fn provider_operation_paths_in_transaction(
         return Ok(None);
     };
     let paths =
-        coral_catalog::operation_paths_in_transaction(transaction, &active.generation_id).await?;
+        coral_catalog::tool_paths_in_transaction(transaction, &active.generation_id).await?;
     Ok(Some((active.provider.id().clone(), paths)))
 }
 
-/// The Principal that asks Invocation admission to call an Operation.
+/// The Principal that asks Invocation admission to call a Tool.
 ///
 /// It carries what admission needs to load the Principal's Workspace authority
 /// when a Call Root's rule reads it.
@@ -800,25 +789,25 @@ impl<'a> InvocationCaller<'a> {
 /// The caller owns the transaction that creates the durable Invocation and its
 /// started Event. The Provider whose stored Call Root starts `call_path` owns
 /// it. `Ok(None)` means no current Provider Call Root or
-/// Operation-relative path matches, or `caller` cannot reach the Operation, so
+/// Tool-relative path matches, or `caller` cannot reach the Tool, so
 /// no Invocation should be created. Both look the same, so a caller cannot
-/// learn of an Operation it cannot discover.
+/// learn of a Tool it cannot discover.
 ///
 /// # Errors
 ///
 /// Returns a persistence or corrupt-package failure.
-pub async fn resolve_invocation_operation_in_transaction(
+pub async fn resolve_invocation_tool_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
     caller: InvocationCaller<'_>,
     call_path: &str,
-) -> Result<Option<ResolvedInvocationOperation>, Error> {
+) -> Result<Option<ResolvedInvocationTool>, Error> {
     let Some((call_root, relative_path)) = access::ProviderCallRoot::split_call_path(call_path)
     else {
         return Ok(None);
     };
     let role = match call_root {
-        // Every Principal reaches an Owner-added Provider's Operations, so
+        // Every Principal reaches an Owner-added Provider's Tools, so
         // admission reads no Workspace authority for it and takes no hold.
         ProviderCallRoot::Owner(_) => None,
         // Hold Workspace authority before the Provider, the order the dispatch fence uses.
@@ -828,15 +817,15 @@ pub async fn resolve_invocation_operation_in_transaction(
         },
     };
     Ok(
-        resolve_reached_operation(transaction, workspace_id, &call_root, relative_path)
+        resolve_reached_tool(transaction, workspace_id, &call_root, relative_path)
             .await?
-            .filter(|resolved| reaches(&call_root, resolved.operation().key(), role)),
+            .filter(|resolved| reaches(&call_root, resolved.tool().key(), role)),
     )
 }
 
 /// Resolves a Call Path under an Owner-added Provider's Call Root for test
 /// fixtures. Every Principal reaches such a root, so admission reads no caller
-/// for it. Use [`resolve_invocation_operation_in_transaction`] for the Built-in
+/// for it. Use [`resolve_invocation_tool_in_transaction`] for the Built-in
 /// Provider.
 ///
 /// # Errors
@@ -847,11 +836,11 @@ pub async fn resolve_invocation_operation_in_transaction(
 ///
 /// Panics when `call_path` is under the Built-in Call Root.
 #[cfg(any(test, feature = "test-fixtures"))]
-pub async fn resolve_owner_operation_in_transaction(
+pub async fn resolve_owner_tool_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
     call_path: &str,
-) -> Result<Option<ResolvedInvocationOperation>, Error> {
+) -> Result<Option<ResolvedInvocationTool>, Error> {
     let Some((call_root, relative_path)) = access::ProviderCallRoot::split_call_path(call_path)
     else {
         return Ok(None);
@@ -860,15 +849,15 @@ pub async fn resolve_owner_operation_in_transaction(
         matches!(call_root, ProviderCallRoot::Owner(_)),
         "{call_path} needs a caller"
     );
-    resolve_reached_operation(transaction, workspace_id, &call_root, relative_path).await
+    resolve_reached_tool(transaction, workspace_id, &call_root, relative_path).await
 }
 
-async fn resolve_reached_operation(
+async fn resolve_reached_tool(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
     call_root: &ProviderCallRoot,
     relative_path: &str,
-) -> Result<Option<ResolvedInvocationOperation>, Error> {
+) -> Result<Option<ResolvedInvocationTool>, Error> {
     // Admission reads the Provider shared, like the Dispatch Fence that
     // rechecks it: concurrent admissions read side by side, and a Provider
     // change waits for the admissions in flight.
@@ -884,7 +873,7 @@ async fn resolve_reached_operation(
     };
     let provider_access = stored.provider.access().clone();
     let generation_id = stored.generation_id;
-    let Some(operation) = coral_catalog::operation_by_relative_path_in_transaction(
+    let Some(tool) = coral_catalog::tool_by_relative_path_in_transaction(
         transaction,
         &generation_id,
         relative_path,
@@ -895,10 +884,10 @@ async fn resolve_reached_operation(
     };
     let schema_graph =
         coral_catalog::schema_graph_in_transaction(transaction, &generation_id).await?;
-    Ok(Some(ResolvedInvocationOperation::new(
+    Ok(Some(ResolvedInvocationTool::new(
         provider_access,
         generation_id,
-        operation,
+        tool,
         schema_graph,
     )))
 }
@@ -909,8 +898,8 @@ async fn resolve_reached_operation(
 /// snapshot that only decides whether a held check is needed.
 ///
 /// Provider active-Generation selection may change after admission; this
-/// facet verifies the retained Operation by its Generation id rather than
-/// requiring that Generation to remain active, and reads only the Operation
+/// facet verifies the retained Tool by its Generation id rather than
+/// requiring that Generation to remain active, and reads only the Tool
 /// row: the Generation's package is immutable, so nothing in it is reloaded.
 /// The Provider itself and the exact Provider version and route must still
 /// be current.
@@ -919,12 +908,12 @@ async fn resolve_reached_operation(
 ///
 /// Returns a persistence or corrupt-package failure. The verification result
 /// distinguishes an exact route-version change from other authority loss.
-pub async fn verify_invocation_operation_in_transaction(
+pub async fn verify_invocation_tool_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
-    retained: &ResolvedInvocationOperation,
+    retained: &ResolvedInvocationTool,
     lock: coral_db::RowLock,
-) -> Result<InvocationOperationVerification, Error> {
+) -> Result<InvocationToolVerification, Error> {
     let provider_access = retained.provider_access();
     let Some(stored) = crate::runtime::active_provider_for_workspace_in_transaction(
         transaction,
@@ -934,25 +923,25 @@ pub async fn verify_invocation_operation_in_transaction(
     )
     .await?
     else {
-        return Ok(InvocationOperationVerification::AuthorityLost);
+        return Ok(InvocationToolVerification::AuthorityLost);
     };
     match access::verify_retained(stored.provider.access(), provider_access)? {
         access::RetainedProviderVerification::Current => {}
         access::RetainedProviderVerification::RouteChanged => {
-            return Ok(InvocationOperationVerification::CredentialRouteChanged);
+            return Ok(InvocationToolVerification::CredentialRouteChanged);
         }
     }
     Ok(
-        if coral_catalog::operation_exists_in_transaction(
+        if coral_catalog::tool_exists_in_transaction(
             transaction,
             retained.provider_generation_id(),
-            retained.operation().key(),
+            retained.tool().key(),
         )
         .await?
         {
-            InvocationOperationVerification::Current
+            InvocationToolVerification::Current
         } else {
-            InvocationOperationVerification::AuthorityLost
+            InvocationToolVerification::AuthorityLost
         },
     )
 }
@@ -969,7 +958,7 @@ fn require_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
 }
 
 /// Whether inspection under `evidence` shows `stored`: as in discovery, only
-/// when the User reaches one of its Operations.
+/// when the User reaches one of its Tools.
 async fn inspects(
     transaction: &mut coral_db::Transaction<'_>,
     evidence: &WorkspaceEvidence,

@@ -6,7 +6,7 @@ import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
   addProviderFromFile,
   createWorkspace,
-  enableOperation,
+  enableTool,
   observeRun,
   programRunner,
 } from '../../../support/providers.ts'
@@ -44,7 +44,7 @@ test('Lean MCP updates preserve complete authorized Reef history', async (contex
       'lean',
     )
     await page.goto(provider)
-    await enableOperation(page, 'read')
+    await enableTool(page, 'read')
     const execute = programRunner(page, target, workspace, { waitMs: 30000 })
     const single = await observeRun(execute, await execute.exec(loop(1)))
     const source = loop(128)

@@ -44,14 +44,14 @@ async fn memory_termination_preserves_output_and_dispatched_uncertainty_without_
         Arc::new(PendingMemoryUpstream::default()),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:memory", "Stop outstanding work")
+    let tool = fixture
+        .user_tool("user:memory", "Stop outstanding work")
         .await;
     let accepted = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission(
                 r#"
             await coral.emit("before memory limit");
@@ -71,8 +71,8 @@ async fn memory_termination_preserves_output_and_dispatched_uncertainty_without_
         .expect("accepted");
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -91,8 +91,8 @@ async fn memory_termination_preserves_output_and_dispatched_uncertainty_without_
     assert!(
         retained_events(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id()
         )
         .await

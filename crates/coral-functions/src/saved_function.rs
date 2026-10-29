@@ -13,8 +13,8 @@ use coral_v8::{
     format_compiler_error,
 };
 
-use crate::operation_typing::{self, OperationDeclarationReader};
 use crate::repository;
+use crate::tool_typing::{self, ToolDeclarationReader};
 use crate::types::{
     AdministrativeLifecycleEvent, LifecycleAction, SAVED_FUNCTION_DECLARATION_MAX_BYTES,
     SAVED_FUNCTION_DIAGNOSTIC_MAX_COUNT, SavedFunction, SavedFunctionChangeContext,
@@ -198,7 +198,7 @@ impl SavedFunctionModule {
     /// transaction rechecks active Workspace authority and every directly named
     /// Saved Function dependency, then commits source, description, declaration,
     /// bounded diagnostics, and one lifecycle Event. Occurrence time is metadata
-    /// and never a stale-write guard. Operations stay untyped; use
+    /// and never a stale-write guard. Tools stay untyped; use
     /// [`Self::prepare_save`] with a reader to type them.
     ///
     /// This save does not notify Universal Search: coral-search depends on
@@ -226,8 +226,8 @@ impl SavedFunctionModule {
     /// Prepares non-executing authoring work outside the final write transaction.
     ///
     /// The source is typed against the current declarations of the Saved
-    /// Functions it names and, through `operations`, of the Operations it names
-    /// that the caller can discover. Without `operations`, `coral.providers`
+    /// Functions it names and, through `tools`, of the Tools it names
+    /// that the caller can discover. Without `tools`, `coral.providers`
     /// and `coral.workspace` stay untyped. A source that cannot be analyzed is
     /// prepared untyped, so preparation reports its own failure. Type
     /// diagnostics are advisory.
@@ -239,7 +239,7 @@ impl SavedFunctionModule {
         context: &SavedFunctionChangeContext,
         workspace_id: &WorkspaceId,
         save: SavedFunctionSave,
-        operations: Option<&dyn OperationDeclarationReader>,
+        tools: Option<&dyn ToolDeclarationReader>,
     ) -> Result<PreparedSave, Error> {
         self.authorize_active(context.actor(), workspace_id).await?;
         let prepared = self
@@ -248,7 +248,7 @@ impl SavedFunctionModule {
                 workspace_id,
                 save.path(),
                 save.source().as_str(),
-                operations,
+                tools,
             )
             .await?;
         Ok(PreparedSave {
@@ -597,13 +597,13 @@ impl SavedFunctionModule {
         workspace_id: &WorkspaceId,
         path: &SavedFunctionPath,
         source: &str,
-        operations: Option<&dyn OperationDeclarationReader>,
+        tools: Option<&dyn ToolDeclarationReader>,
     ) -> Result<PreparedSavedFunction, Error> {
         let source_name = format!("Saved Function coral.functions.{}", path.as_str());
         let deadline = Instant::now() + COMPILATION_TIMEOUT;
         let preparation = async {
             let declarations = self
-                .declarations(actor, workspace_id, source, operations, deadline)
+                .declarations(actor, workspace_id, source, tools, deadline)
                 .await?;
             let compiler = self.compiler.clone();
             let source = source.to_string();
@@ -620,7 +620,7 @@ impl SavedFunctionModule {
     }
 
     /// The declarations that type `source`: the current ones of the Saved
-    /// Functions it names and, through `operations`, of the Operations it
+    /// Functions it names and, through `tools`, of the Tools it
     /// names that the caller can discover. `None` leaves it untyped.
     ///
     /// Typing stops by its own deadline, so a compile due by `deadline`
@@ -630,10 +630,10 @@ impl SavedFunctionModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         source: &str,
-        operations: Option<&dyn OperationDeclarationReader>,
+        tools: Option<&dyn ToolDeclarationReader>,
         deadline: Instant,
     ) -> Result<Option<CoralDeclarations>, Error> {
-        let Some(typing_deadline) = operation_typing::typing_deadline(deadline) else {
+        let Some(typing_deadline) = tool_typing::typing_deadline(deadline) else {
             tracing::warn!("No time is left to type the source; it is checked untyped");
             return Ok(None);
         };
@@ -666,25 +666,21 @@ impl SavedFunctionModule {
                     })
                     .ok()
             };
-            let operations = match operations {
+            let tools = match tools {
                 Some(reader) => {
-                    operation_typing::operation_declarations(
-                        reader,
-                        named.operations().call_paths(),
-                    )
-                    .await
+                    tool_typing::tool_declarations(reader, named.tools().call_paths()).await
                 }
                 None => None,
             };
-            if functions.is_none() && operations.is_none() {
+            if functions.is_none() && tools.is_none() {
                 return Ok(None);
             }
             let mut declarations = CoralDeclarations::new(SAVED_FUNCTION_DECLARATION_MAX_BYTES);
             if let Some(functions) = functions {
                 declarations = declarations.with_functions(functions);
             }
-            if let Some(operations) = operations {
-                declarations = declarations.with_operations(named.operations(), operations);
+            if let Some(tools) = tools {
+                declarations = declarations.with_tools(named.tools(), tools);
             }
             Ok(Some(declarations))
         };

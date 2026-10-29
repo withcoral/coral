@@ -1,5 +1,5 @@
 //! What Provider hands to Universal Search: the entries it may index about a
-//! Generation, and Provider reads that load no Operation catalog.
+//! Generation, and Provider reads that load no Tool catalog.
 //!
 //! Provider decides what may be searched; Universal Search decides how it is
 //! stored and ranked. The entries are secret-free and carry no visibility:
@@ -9,22 +9,21 @@ use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
 use coral_catalog::{
-    CatalogDiagnostic, DeclarationIndexEntry, MaterializedOperation, OperationAvailability,
-    OperationKey, PreparedDeclarationFields, ProviderGenerationId, SearchableOperation,
-    StoredDeclarationFields,
+    CatalogDiagnostic, DeclarationIndexEntry, MaterializedTool, PreparedDeclarationFields,
+    ProviderGenerationId, SearchableTool, StoredDeclarationFields, ToolAvailability, ToolKey,
 };
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 
 use crate::access::ProviderCallRoot;
-use crate::{Error, OperationAuthoringMaterial, Provider, ProviderId, ProviderState, repository};
+use crate::{Error, Provider, ProviderId, ProviderState, ToolAuthoringMaterial, repository};
 
 /// Everything Universal Search may index about one Generation: the Provider's
-/// identity and one entry per structurally available Operation.
+/// identity and one entry per structurally available Tool.
 ///
 /// It holds the Generation's schema graph and prepares each entry's
-/// declaration fields as [`Self::operations`] reads it. A caller that turns
-/// each entry into what it keeps, and drops the entry, holds one Operation's
+/// declaration fields as [`Self::tools`] reads it. A caller that turns
+/// each entry into what it keeps, and drops the entry, holds one Tool's
 /// fields at a time: a large Provider's fields together run to gigabytes.
 pub struct GenerationEntries {
     workspace_id: WorkspaceId,
@@ -32,7 +31,7 @@ pub struct GenerationEntries {
     call_root: ProviderCallRoot,
     display_name: String,
     generation_id: ProviderGenerationId,
-    operations: Vec<SearchableOperation>,
+    tools: Vec<SearchableTool>,
     /// Behind a mutex because its type names are built on first use, and
     /// boxed so a future that holds the entries stays small.
     fields: Box<Mutex<StoredDeclarationFields>>,
@@ -69,87 +68,87 @@ impl GenerationEntries {
         &self.generation_id
     }
 
-    /// Prepares one entry per structurally available Operation, in
-    /// Operation-Key order, each when it is read.
+    /// Prepares one entry per structurally available Tool, in
+    /// Tool-Key order, each when it is read.
     ///
     /// # Errors
     ///
     /// An item is corrupt data when the stored package can no longer be
     /// prepared.
-    pub fn operations(&self) -> impl Iterator<Item = Result<OperationEntry<'_>, Error>> {
-        self.operations.iter().map(|operation| {
-            Ok(OperationEntry {
-                operation,
+    pub fn tools(&self) -> impl Iterator<Item = Result<ToolEntry<'_>, Error>> {
+        self.tools.iter().map(|tool| {
+            Ok(ToolEntry {
+                tool,
                 // A walk that panicked leaves at most a partly built type-name
                 // cache, which the next walk extends; the graph is unchanged.
                 declaration_fields: self
                     .fields
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .searchable_operation(operation)?,
+                    .searchable_tool(tool)?,
             })
         })
     }
 
-    /// Drops every Operation, as if the Generation held none.
+    /// Drops every Tool, as if the Generation held none.
     #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
-    pub fn without_operations(mut self) -> Self {
-        self.operations.clear();
+    pub fn without_tools(mut self) -> Self {
+        self.tools.clear();
         self
     }
 }
 
-/// What Universal Search may index about one structurally available Operation:
+/// What Universal Search may index about one structurally available Tool:
 /// typed fields, never JSON, and nothing secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationEntry<'a> {
-    operation: &'a SearchableOperation,
+pub struct ToolEntry<'a> {
+    tool: &'a SearchableTool,
     declaration_fields: PreparedDeclarationFields,
 }
 
-impl<'a> OperationEntry<'a> {
-    /// Returns the Operation Key inside its Generation.
+impl<'a> ToolEntry<'a> {
+    /// Returns the Tool Key inside its Generation.
     #[must_use]
-    pub const fn key(&self) -> &'a OperationKey {
-        self.operation.key()
+    pub const fn key(&self) -> &'a ToolKey {
+        self.tool.key()
     }
 
     /// Returns the Call Path below the Provider Call Root.
     #[must_use]
     pub fn relative_path(&self) -> &'a str {
-        self.operation.relative_path()
+        self.tool.relative_path()
     }
 
-    /// Returns whether the Provider marks the Operation deprecated. This is an
+    /// Returns whether the Provider marks the Tool deprecated. This is an
     /// attribute, not searchable text.
     #[must_use]
     pub const fn deprecated(&self) -> bool {
-        self.operation.presentation().deprecated()
+        self.tool.presentation().deprecated()
     }
 
     /// Returns the short title, when the Provider gives one.
     #[must_use]
     pub fn title(&self) -> Option<&'a str> {
-        self.operation.presentation().title()
+        self.tool.presentation().title()
     }
 
     /// Returns the description.
     #[must_use]
     pub fn description(&self) -> &'a str {
-        self.operation.presentation().description()
+        self.tool.presentation().description()
     }
 
     /// Returns the tags.
     #[must_use]
     pub fn tags(&self) -> &'a [String] {
-        self.operation.presentation().tags()
+        self.tool.presentation().tags()
     }
 
     /// Returns the guidance, when the Provider gives some.
     #[must_use]
     pub fn guidance(&self) -> Option<&'a str> {
-        self.operation.presentation().guidance()
+        self.tool.presentation().guidance()
     }
 
     /// Returns the readable declaration paths with the values the schema lists.
@@ -160,7 +159,7 @@ impl<'a> OperationEntry<'a> {
 
     /// Returns the warnings left while preparing the declaration fields: a
     /// bound that stopped the walk, or a schema it could not read. They
-    /// concern search only and never change the Operation's availability.
+    /// concern search only and never change the Tool's availability.
     #[must_use]
     pub fn search_warnings(&self) -> &[CatalogDiagnostic] {
         self.declaration_fields.warnings()
@@ -168,8 +167,8 @@ impl<'a> OperationEntry<'a> {
 }
 
 /// Reads the entries of the Provider's active Generation from what the
-/// catalog stores: its schema graph and what search reads of its Operation
-/// rows. The entries rebuild each Operation's declaration fields by the
+/// catalog stores: its schema graph and what search reads of its Tool
+/// rows. The entries rebuild each Tool's declaration fields by the
 /// current materialization rules as they are read. The search index runs this
 /// after the commit that activated the Generation, and its reconcile task runs
 /// it for a Generation that no notification indexed. `Ok(None)` means the
@@ -200,9 +199,8 @@ pub async fn prepare_active_generation_entries_in_transaction(
     };
     let graph =
         coral_catalog::schema_graph_in_transaction(transaction, &stored.generation_id).await?;
-    let operations =
-        coral_catalog::searchable_operations_in_transaction(transaction, &stored.generation_id)
-            .await?;
+    let tools =
+        coral_catalog::searchable_tools_in_transaction(transaction, &stored.generation_id).await?;
     let provider = &stored.provider;
     Ok(Some(GenerationEntries {
         workspace_id: provider.owner().clone(),
@@ -210,7 +208,7 @@ pub async fn prepare_active_generation_entries_in_transaction(
         call_root: provider.access().call_root().clone(),
         display_name: provider.display_name().to_string(),
         generation_id: stored.generation_id,
-        operations,
+        tools,
         fields: Box::new(Mutex::new(StoredDeclarationFields::new(graph))),
     }))
 }
@@ -292,7 +290,7 @@ impl ActiveGeneration {
 /// Workspace, for the search index's reconcile task.
 ///
 /// Disabled Providers are included: disabling changes what a caller sees at
-/// query time, not what the index holds. This facet reads no Operation catalog.
+/// query time, not what the index holds. This facet reads no Tool catalog.
 ///
 /// # Errors
 ///
@@ -307,7 +305,7 @@ pub async fn active_generations_in_transaction(
 /// one Provider the filter names, for the search index's state read.
 ///
 /// Disabled Providers are included, as in [`active_generations_in_transaction`].
-/// The caller checks Workspace authority. This facet reads no Operation catalog.
+/// The caller checks Workspace authority. This facet reads no Tool catalog.
 ///
 /// # Errors
 ///
@@ -335,7 +333,7 @@ pub async fn workspace_active_generations_in_transaction(
 
 /// Reads a Workspace's Active Providers with their active Generations.
 ///
-/// This facet reads no Operation catalog, so it stays cheap for a Workspace
+/// This facet reads no Tool catalog, so it stays cheap for a Workspace
 /// with large catalogs. Disabled Providers are left out.
 ///
 /// # Errors
@@ -366,18 +364,18 @@ pub(crate) async fn active_providers(
     )
 }
 
-/// One Operation of a Provider's active Generation as a search hit shows it:
+/// One Tool of a Provider's active Generation as a search hit shows it:
 /// its complete authoring material and its readable declaration fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HydratedOperation {
-    material: OperationAuthoringMaterial,
+pub struct HydratedTool {
+    material: ToolAuthoringMaterial,
     declaration_fields: Vec<DeclarationIndexEntry>,
 }
 
-impl HydratedOperation {
+impl HydratedTool {
     /// Returns the complete authoring material.
     #[must_use]
-    pub const fn material(&self) -> &OperationAuthoringMaterial {
+    pub const fn material(&self) -> &ToolAuthoringMaterial {
         &self.material
     }
 
@@ -392,7 +390,7 @@ impl HydratedOperation {
 /// The stored Generations one search request has loaded for its hits.
 ///
 /// Loading a Generation's schema graph and naming its types cost time in
-/// proportion to the whole Provider, while one hit needs a single Operation's
+/// proportion to the whole Provider, while one hit needs a single Tool's
 /// fields. A request keeps one of these so hits of the same Generation load
 /// it once. Generations are immutable, so what it holds never goes stale.
 #[derive(Default)]
@@ -406,10 +404,10 @@ impl LoadedGenerations {
             .contains_key(generation_id)
     }
 
-    fn operation_fields(
+    fn tool_fields(
         &self,
         generation_id: &ProviderGenerationId,
-        operation: &MaterializedOperation,
+        tool: &MaterializedTool,
     ) -> Option<Result<Vec<DeclarationIndexEntry>, coral_catalog::Error>> {
         self.0
             .lock()
@@ -417,7 +415,7 @@ impl LoadedGenerations {
             .get(generation_id)
             .map(|fields| {
                 fields
-                    .operation(operation)
+                    .tool(tool)
                     .map(PreparedDeclarationFields::into_entries)
             })
     }
@@ -430,93 +428,91 @@ impl LoadedGenerations {
     }
 }
 
-/// Hydrates one Operation of the Provider's active Generation for a search
+/// Hydrates one Tool of the Provider's active Generation for a search
 /// hit, after ranking: its authoring material and its declaration fields,
 /// rebuilt from the stored schema graph. The graph is read once per
 /// Generation for each `loaded`.
 ///
-/// `Ok(None)` when the Generation has no structurally available Operation
+/// `Ok(None)` when the Generation has no structurally available Tool
 /// under the key. The caller decides visibility.
 ///
 /// # Errors
 ///
 /// Returns a shared persistence failure, or corrupt data when the stored
 /// package can no longer be prepared.
-pub async fn hydrate_operation_in_transaction(
+pub async fn hydrate_tool_in_transaction(
     transaction: &mut Transaction<'_>,
     loaded: &LoadedGenerations,
     provider: &ActiveProvider,
-    operation_key: &OperationKey,
-) -> Result<Option<HydratedOperation>, Error> {
-    let Some(operation) = coral_catalog::operation_in_transaction(
-        transaction,
-        provider.generation_id(),
-        operation_key,
-    )
-    .await?
-    .filter(|operation| operation.availability() == OperationAvailability::Available) else {
+    tool_key: &ToolKey,
+) -> Result<Option<HydratedTool>, Error> {
+    let Some(tool) =
+        coral_catalog::tool_in_transaction(transaction, provider.generation_id(), tool_key)
+            .await?
+            .filter(|tool| tool.availability() == ToolAvailability::Available)
+    else {
         return Ok(None);
     };
     let generation_id = provider.generation_id();
     if !loaded.has(generation_id) {
         let graph = coral_catalog::schema_graph_in_transaction(transaction, generation_id).await?;
-        // Keep it before reading this Operation, so one corrupt Operation does
+        // Keep it before reading this Tool, so one corrupt Tool does
         // not make every later hit of the Generation load the graph again.
         loaded.keep(generation_id.clone(), StoredDeclarationFields::new(graph));
     }
     let declaration_fields =
         loaded
-            .operation_fields(generation_id, &operation)
+            .tool_fields(generation_id, &tool)
             .ok_or(Error::CorruptData(
                 "a loaded Generation is missing from the request".into(),
             ))??;
     let declaration =
-        coral_catalog::authoring_declaration_in_transaction(transaction, generation_id, &operation)
+        coral_catalog::authoring_declaration_in_transaction(transaction, generation_id, &tool)
             .await?;
-    Ok(Some(HydratedOperation {
-        material: OperationAuthoringMaterial::new(
+    Ok(Some(HydratedTool {
+        material: ToolAuthoringMaterial::new(
             provider.provider().access(),
             provider.provider(),
-            &operation,
+            &tool,
             declaration,
         ),
         declaration_fields,
     }))
 }
 
-/// Reads one Operation of the Provider's active Generation by its path below
-/// the Call Root, for an exact description. Reads no other Operation.
+/// Reads one Tool of the Provider's active Generation by its path below
+/// the Call Root, for an exact description. Reads no other Tool.
 ///
-/// `Ok(None)` when no structurally available Operation has the path. The
+/// `Ok(None)` when no structurally available Tool has the path. The
 /// caller decides visibility.
 ///
 /// # Errors
 ///
 /// Returns a shared persistence or corrupt-package failure.
-pub async fn operation_material_by_relative_path_in_transaction(
+pub async fn tool_material_by_relative_path_in_transaction(
     transaction: &mut Transaction<'_>,
     provider: &ActiveProvider,
     relative_path: &str,
-) -> Result<Option<OperationAuthoringMaterial>, Error> {
-    let Some(operation) = coral_catalog::operation_by_relative_path_in_transaction(
+) -> Result<Option<ToolAuthoringMaterial>, Error> {
+    let Some(tool) = coral_catalog::tool_by_relative_path_in_transaction(
         transaction,
         provider.generation_id(),
         relative_path,
     )
     .await?
-    .filter(|operation| operation.availability() == OperationAvailability::Available) else {
+    .filter(|tool| tool.availability() == ToolAvailability::Available) else {
         return Ok(None);
     };
     let declaration = coral_catalog::authoring_declaration_in_transaction(
         transaction,
         provider.generation_id(),
-        &operation,
+        &tool,
     )
     .await?;
-    Ok(Some(OperationAuthoringMaterial::new(
+    Ok(Some(ToolAuthoringMaterial::new(
         provider.provider().access(),
         provider.provider(),
-        &operation,
+        &tool,
         declaration,
     )))
 }

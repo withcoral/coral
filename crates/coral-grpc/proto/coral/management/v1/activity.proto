@@ -10,7 +10,7 @@ service ActivityService {
   rpc WatchActivity(WatchActivityRequest) returns (stream WatchActivityResponse);
   // Lists top-level activity (Tasks and standalone Runs), newest first.
   rpc BrowseActivityRoots(BrowseActivityRootsRequest) returns (BrowseActivityRootsResponse);
-  // Lists one Run's Operations, Events and Final Value in order, as summaries.
+  // Lists one Run's Tools, Events and Final Value in order, as summaries.
   rpc BrowseRunEntries(BrowseRunEntriesRequest) returns (BrowseRunEntriesResponse);
   // Gets one Event of a Run by its sequence number.
   rpc InspectRunEvent(InspectRunEventRequest) returns (InspectRunEventResponse);
@@ -18,7 +18,7 @@ service ActivityService {
   rpc InspectAgentHistory(InspectAgentHistoryRequest) returns (InspectAgentHistoryResponse);
   // Gets one Run with a page of its Events and its current pending actions.
   rpc InspectRun(InspectRunRequest) returns (InspectRunResponse);
-  // Gets one Operation call: its arguments, its outcome and any approval or connection requests.
+  // Gets one Tool call: its arguments, its outcome and any approval or connection requests.
   rpc InspectInvocation(InspectInvocationRequest) returns (InspectInvocationResponse);
   // Gets one approval request and whether it can still be decided. Use DecideApproval to decide it.
   rpc InspectApproval(InspectApprovalRequest) returns (InspectApprovalResponse);
@@ -29,14 +29,14 @@ service ActivityService {
   // Counts pending requests. A connection request shared by several Runs counts once.
   rpc CountRequiredActions(CountRequiredActionsRequest) returns (CountRequiredActionsResponse);
   // Sums the caller's recent work in one Workspace: call outcomes, stopped and
-  // busiest Operations, approval decisions, and context impact. Counts the caller's
+  // busiest Tools, approval decisions, and context impact. Counts the caller's
   // own work and, in a Workspace the caller owns, its Agents' work, like the
   // pending-request queue. Other Users' work is never counted.
   rpc SummarizeActivity(SummarizeActivityRequest) returns (SummarizeActivityResponse);
   // Approves or declines one request. The first decision wins; the response gives
   // the resulting state, which may not be the caller's decision.
   rpc DecideApproval(DecideApprovalRequest) returns (DecideApprovalResponse);
-  // Cancels a whole Run; single Operation calls cannot be cancelled. The Run may
+  // Cancels a whole Run; single Tool calls cannot be cancelled. The Run may
   // already have ended another way; the response gives its current state.
   rpc CancelActivityRun(CancelActivityRunRequest) returns (CancelActivityRunResponse);
   // Gets one Task and a page of its interactions in order.
@@ -194,7 +194,7 @@ message InspectTaskInteractionRequest {
 
 // Summary of one Run.
 message ActivityRun {
-  // Payload bytes returned to the caller, minus Operation Result bytes.
+  // Payload bytes returned to the caller, minus Tool Result bytes.
   // Absent until the Run ends, or if it could not be measured.
   optional int64 context_impact_bytes = 11;
   // workspaces/{workspace}/runs/{run}.
@@ -228,9 +228,9 @@ message ActivityRun {
   // Absent does not mean there are no actions.
   ActivityActionPage action_page = 15;
 }
-// Summary of one Operation call.
+// Summary of one Tool call.
 message ActivityInvocation {
-  // The Operation Result bytes kept for this call, as a negative number. Absent until
+  // The Tool Result bytes kept for this call, as a negative number. Absent until
   // the call ends, or if unknown.
   optional int64 context_impact_bytes = 17;
   // workspaces/{workspace}/invocations/{invocation}.
@@ -241,8 +241,8 @@ message ActivityInvocation {
   string run = 3;
   // workspaces/{workspace}/providers/{provider} at the time of the call.
   string provider = 4;
-  // Operation key at the time of the call.
-  string operation = 5;
+  // Tool key at the time of the call.
+  string tool = 5;
   // Path the Program called, such as providers.github.getIssue.
   string call_path = 6;
   // Lifecycle state.
@@ -294,7 +294,7 @@ message ActivitySourceSnapshot {
   // TypeScript source as accepted.
   string source = 3;
 }
-// Where the Run's accepted source made one record: an Operation call, an
+// Where the Run's accepted source made one record: a Tool call, an
 // emitted value or a log message. Absent when Coral did not record one,
 // including for every record made before Coral recorded them.
 message ActivitySourceLocation {
@@ -333,10 +333,10 @@ message ActivityProgramError {
   string message = 2;
   // Stack frames in the author's code.
   repeated ActivityErrorFrame frames = 3;
-  // Operation Error code set by Coral, or empty. Safe to classify on.
-  string operation_code = 4;
-  // W3C trace ID set by Coral for the failed Operation call, or empty.
-  string operation_trace_id = 5;
+  // Tool Error code set by Coral, or empty. Safe to classify on.
+  string tool_code = 4;
+  // W3C trace ID set by Coral for the failed Tool call, or empty.
+  string tool_trace_id = 5;
   // The error's cause, if any.
   ActivityProgramError cause = 6;
   // Members of an AggregateError. Separate from cause.
@@ -349,13 +349,13 @@ message ActivityProgramError {
   uint32 omitted_errors = 10;
   // This error refers back to one of its own causes.
   bool circular = 11;
-  // HTTP status of the upstream response that rejected the Operation call,
+  // HTTP status of the upstream response that rejected the Tool call,
   // or 0 when there was none.
-  uint32 operation_status = 12;
+  uint32 tool_status = 12;
   // Start of that response's JSON-encoded data, at most 1 KiB, or empty.
-  string operation_body = 13;
-  // operation_body leaves out the rest of the data.
-  bool operation_body_truncated = 14;
+  string tool_body = 13;
+  // tool_body leaves out the rest of the data.
+  bool tool_body_truncated = 14;
 }
 // Run lifecycle states.
 enum ActivityRunState {
@@ -374,7 +374,7 @@ enum ActivityRunState {
   // The Run stopped unexpectedly after it started, and was not retried.
   ACTIVITY_RUN_STATE_INTERRUPTED = 6;
 }
-// Operation call lifecycle states. They say nothing about upstream success.
+// Tool call lifecycle states. They say nothing about upstream success.
 enum ActivityInvocationState {
   // State unknown to this client.
   ACTIVITY_INVOCATION_STATE_UNSPECIFIED = 0;
@@ -385,7 +385,7 @@ enum ActivityInvocationState {
   // The call ended. See ActivityInvocationOutcome.
   ACTIVITY_INVOCATION_STATE_ENDED = 3;
 }
-// How an Operation call ended.
+// How a Tool call ended.
 enum ActivityInvocationOutcome {
   // Not ended, or an outcome unknown to this client.
   ACTIVITY_INVOCATION_OUTCOME_UNSPECIFIED = 0;
@@ -422,12 +422,12 @@ enum ActivityPrincipalKind {
 }
 // An event or outcome that carries no data.
 message ActivityEmpty {}
-// The Program made an Operation call.
+// The Program made a Tool call.
 message ActivityInvocationStarted {
   // workspaces/{workspace}/invocations/{invocation}.
   string invocation = 1;
 }
-// An Operation call ended.
+// A Tool call ended.
 message ActivityInvocationEnded {
   // workspaces/{workspace}/invocations/{invocation}.
   string invocation = 1;
@@ -468,9 +468,9 @@ message ActivityRunEvent {
   oneof payload {
     // The Run started.
     ActivityEmpty started = 3;
-    // The Program made an Operation call.
+    // The Program made a Tool call.
     ActivityInvocationStarted invocation_started = 4;
-    // An Operation call ended.
+    // A Tool call ended.
     ActivityInvocationEnded invocation_ended = 5;
     // The Program emitted a value.
     ActivityProgramEmitted program_emitted = 6;
@@ -639,12 +639,12 @@ message SummarizeActivityRequest {
 // One window's totals. A failed read is an error, never zero totals. Each total is
 // windowed by the end time of its own fact: a call's end, a Run's end, or a decision.
 message SummarizeActivityResponse {
-  // Operation calls that ended in the window, by outcome.
+  // Tool calls that ended in the window, by outcome.
   ActivityCallOutcomes calls = 1;
-  // Operations with calls stopped in the window, one entry per Call Path, most stopped first.
-  repeated ActivityStoppedOperation stopped = 2;
-  // Operations with calls that ended in the window, one entry per Call Path.
-  repeated ActivityOperationCalls operations = 3;
+  // Tools with calls stopped in the window, one entry per Call Path, most stopped first.
+  repeated ActivityStoppedTool stopped = 2;
+  // Tools with calls that ended in the window, one entry per Call Path.
+  repeated ActivityToolCalls tools = 3;
   // Approval requests decided in the window.
   ActivityApprovalDecisions approvals = 4;
   // Net context bytes of the work that ended in the window, as Activity counts
@@ -657,12 +657,15 @@ message SummarizeActivityResponse {
   // Net context bytes per invoking actor, most saved first. They add up to
   // context_impact_bytes.
   repeated ActivityContextShare actors = 7;
+  // Calls that ended in the window per invoking actor, busiest first. They add up
+  // to the calls outcomes.
+  repeated ActivityCallerCalls callers = 8;
 }
-// Ended Operation calls, by who acts next. The six counts add up to every ended call.
+// Ended Tool calls, by who acts next. The six counts add up to every ended call.
 message ActivityCallOutcomes {
   // The upstream returned a complete response. It may still be an error response.
   int64 answered = 1;
-  // A rule stopped the call: a disabled Operation, a required approval, lost access,
+  // A rule stopped the call: a disabled Tool, a required approval, lost access,
   // or a rejected destination.
   int64 blocked = 2;
   // A person declined the approval or the Account connection, or let the approval expire.
@@ -675,8 +678,8 @@ message ActivityCallOutcomes {
   // The Run ended before the call did.
   int64 canceled = 6;
 }
-// One Operation's stopped calls, split by who must act.
-message ActivityStoppedOperation {
+// One Tool's stopped calls, split by who must act.
+message ActivityStoppedTool {
   // Retained Program Call Path.
   string call_path = 1;
   // Calls a rule stopped.
@@ -686,12 +689,25 @@ message ActivityStoppedOperation {
   // Calls that need setup.
   int64 needs_setup = 4;
 }
-// One Operation's ended calls.
-message ActivityOperationCalls {
+// One Tool's ended calls.
+message ActivityToolCalls {
   // Retained Program Call Path.
   string call_path = 1;
   // Calls that ended in the window.
   int64 calls = 2;
+  // The same calls per invoking actor, busiest first. They add up to calls.
+  repeated ActivityCallerCalls callers = 3;
+}
+// Ended calls for one actor.
+message ActivityCallerCalls {
+  // Stable actor ID.
+  string key = 1;
+  // "You", the Agent's name, or an unavailable label.
+  string label = 2;
+  // workspaces/{workspace}/agents/{agent}, or empty for User work.
+  string agent = 3;
+  // Calls that ended in the window.
+  int64 calls = 4;
 }
 // Approval decisions in a window.
 message ActivityApprovalDecisions {
@@ -763,12 +779,12 @@ message CancelActivityRunResponse {
   // Current state.
   ActivityRunState state = 1;
 }
-// Selects one Operation call. List filters do not apply.
+// Selects one Tool call. List filters do not apply.
 message InspectInvocationRequest {
   // workspaces/{workspace}/invocations/{invocation}.
   string name = 1;
 }
-// One Operation call in full, with its arguments and outcome.
+// One Tool call in full, with its arguments and outcome.
 message InspectInvocationResponse {
   // Call summary.
   ActivityInvocation invocation = 1;
@@ -904,7 +920,7 @@ message BrowseRunEntriesRequest {
   uint32 page_size = 3;
   // Optional list scope the Run must belong to. Leave empty to select the Run on its own.
   ActivityScope scope = 4;
-  // Start the page at this Operation call, Event ({run}/events/{sequence}) or Final
+  // Start the page at this Tool call, Event ({run}/events/{sequence}) or Final
   // Value ({run}/final). Cannot be combined with after.
   string anchor = 5;
   // Return the rows around a scroll position. Cannot be combined with after or anchor.
@@ -926,9 +942,9 @@ message ActivityEventSummary {
 }
 // One child row of a Run, in order.
 message ActivityRunEntry {
-  // Exactly one is set. An Operation call appears once, not again at its end Event.
+  // Exactly one is set. A Tool call appears once, not again at its end Event.
   oneof record {
-    // An Operation call.
+    // A Tool call.
     ActivityInvocation invocation = 1;
     // An Event, without its payload.
     ActivityEventSummary event = 2;

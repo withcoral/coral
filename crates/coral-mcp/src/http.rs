@@ -208,7 +208,19 @@ async fn start_server(
         config: streamable_config,
     });
     let health_state = state.clone();
-    let router = Router::new()
+    let mcp_routes = Router::new()
+        .route(WORKSPACE_MCP_ROUTE, any(mcp))
+        .route(ORGANIZATION_MCP_ROUTE, any(mcp))
+        .route(
+            &format!("{METADATA_ROOT}{WORKSPACE_MCP_ROUTE}"),
+            axum::routing::get(metadata),
+        )
+        .route(
+            &format!("{METADATA_ROOT}{ORGANIZATION_MCP_ROUTE}"),
+            axum::routing::get(metadata),
+        );
+    // Health probes are added after tracing, so they open no span.
+    let router = coral_telemetry::trace_http_routes(mcp_routes)
         .route("/healthz", axum::routing::get(|| async { StatusCode::OK }))
         .route(
             "/readyz",
@@ -223,16 +235,6 @@ async fn start_server(
                     }
                 }
             }),
-        )
-        .route(WORKSPACE_MCP_ROUTE, any(mcp))
-        .route(ORGANIZATION_MCP_ROUTE, any(mcp))
-        .route(
-            &format!("{METADATA_ROOT}{WORKSPACE_MCP_ROUTE}"),
-            axum::routing::get(metadata),
-        )
-        .route(
-            &format!("{METADATA_ROOT}{ORGANIZATION_MCP_ROUTE}"),
-            axum::routing::get(metadata),
         )
         .with_state(state.clone());
     let (shutdown_tx, shutdown_rx) = oneshot::channel();

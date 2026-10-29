@@ -15,13 +15,13 @@ const PROGRAM_COMPILER_OPTIONS = Object.freeze({
 });
 
 // Authoring-only types for the host root. Callers supply the declarations of
-// the Operations and Saved Functions a source names; a root without them is
-// any. Operations type `coral.providers` and `coral.workspace` together.
+// the Tools and Saved Functions a source names; a root without them is
+// any. Tools type `coral.providers` and `coral.workspace` together.
 const CORAL_HOST_DECLARATION_FILE_NAME = 'coral.d.ts';
 // Coral's diagnostic codes are outside TypeScript's range.
 // A called `coral.providers` or `coral.workspace` path that names no
-// Operation the caller can call.
-const UNKNOWN_OPERATION_DIAGNOSTIC_CODE = 100001;
+// Tool the caller can call.
+const UNKNOWN_TOOL_DIAGNOSTIC_CODE = 100001;
 // A typed Saved Function declaration saved untyped because it would exceed
 // the declaration limit.
 const DECLARATION_TOO_LARGE_DIAGNOSTIC_CODE = 100002;
@@ -34,12 +34,12 @@ declare namespace coral {
   const functions: ${functionsType};
   function emit(value: unknown): Promise<void>;
   /**
-   * Rejects an Operation call that produced no declared success. When Coral
+   * Rejects a Tool call that produced no declared success. When Coral
    * rejects the upstream's response, \`data\` and \`metadata\` hold it, and
    * \`status\` its HTTP status. Without \`data\`, it carries only a Coral
    * failure code, and the call may or may not have taken effect.
    */
-  class OperationError extends Error {
+  class ToolError extends Error {
     private constructor();
     readonly code: string;
     readonly traceId?: string;
@@ -110,18 +110,18 @@ function typedRoot(sources, prefix, entries) {
 // call. Their open namespaces make them any, so one Coral diagnostic replaces
 // every cascading TypeScript one. A resolved sibling must not make a callable
 // namespace look absent. A chain that is not called may be a namespace whose
-// Operations an alias reaches, so it is not reported.
-function unknownOperations(operations) {
+// Tools an alias reaches, so it is not reported.
+function unknownTools(tools) {
   const resolved = new Set();
   const namespaces = new Set();
-  for (const { pathSegments } of operations.declarations) {
+  for (const { pathSegments } of tools.declarations) {
     resolved.add(pathSegments.join('.'));
     for (let length = 1; length < pathSegments.length; length += 1) {
       namespaces.add(pathSegments.slice(0, length).join('.'));
     }
   }
   const unknown = [];
-  for (const { segments, start, called } of operations.chains) {
+  for (const { segments, start, called } of tools.chains) {
     if (!called) continue;
     for (let length = 2; length <= segments.length; length += 1) {
       const key = segments.slice(0, length).join('.');
@@ -134,27 +134,27 @@ function unknownOperations(operations) {
   return unknown;
 }
 
-// The declaration files that type the `coral` namespace, and the Operation
+// The declaration files that type the `coral` namespace, and the Tool
 // chains that name nothing the caller can call. Without `declarations`, or
 // without one root's, that root is any.
 function coralSurface(declarations) {
   const sources = {};
-  // Operation paths are relative to `coral`, so one tree holds both
+  // Tool paths are relative to `coral`, so one tree holds both
   // `providers` and `workspace`.
-  const operations = typedRoot(sources, 'coral', declarations?.operations?.declarations);
+  const tools = typedRoot(sources, 'coral', declarations?.tools?.declarations);
   const functions = typedRoot(sources, 'coral.functions', declarations?.functions);
-  const operationRoot = (root) =>
-    operations === undefined
+  const toolRoot = (root) =>
+    tools === undefined
       ? 'any'
-      : renderCallableNode(operations.children.get(root) ?? callableNode(), true);
+      : renderCallableNode(tools.children.get(root) ?? callableNode(), true);
   sources[CORAL_HOST_DECLARATION_FILE_NAME] = coralHostDeclaration(
-    operationRoot('providers'),
-    operationRoot('workspace'),
+    toolRoot('providers'),
+    toolRoot('workspace'),
     functions === undefined ? 'any' : renderCallableNode(functions, false),
   );
   return {
     sources,
-    unknownOperations: operations === undefined ? [] : unknownOperations(declarations.operations),
+    unknownTools: tools === undefined ? [] : unknownTools(declarations.tools),
   };
 }
 
@@ -302,13 +302,13 @@ function typedVirtualProgram(fileName, source, compilerOptions, declarations) {
   );
   const { program, sourceFile } = typed;
   if (!sourceFile) throw new Error('typed virtual source is missing');
-  const unknownOperationDiagnostics = surface.unknownOperations.map(({ start, callPath }) =>
+  const unknownToolDiagnostics = surface.unknownTools.map(({ start, callPath }) =>
     diagnosticPayload({
       file: sourceFile,
       start,
       category: ts.DiagnosticCategory.Error,
-      code: UNKNOWN_OPERATION_DIAGNOSTIC_CODE,
-      messageText: `${callPath} names no Operation that you can call.`,
+      code: UNKNOWN_TOOL_DIAGNOSTIC_CODE,
+      messageText: `${callPath} names no Tool that you can call.`,
     }),
   );
   return {
@@ -318,7 +318,7 @@ function typedVirtualProgram(fileName, source, compilerOptions, declarations) {
         ...program
           .getSemanticDiagnostics(sourceFile)
           .map((diagnostic) => diagnosticPayload(diagnostic)),
-        ...unknownOperationDiagnostics,
+        ...unknownToolDiagnostics,
         ...extra,
       ]);
     },

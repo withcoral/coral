@@ -23,7 +23,7 @@ pub(crate) struct ActionEvidence {
 }
 
 impl ActionEvidence {
-    /// The waiting Operation path, empty when a shared connection spans several.
+    /// The waiting Tool path, empty when a shared connection spans several.
     pub(crate) fn shared_call_path(&self) -> &str {
         if self.first_call_path == self.last_call_path {
             &self.first_call_path
@@ -38,7 +38,7 @@ fn candidates(now: i64) -> SelectStatement {
         .from_as(Alias::new("program_run_records"), Alias::new("r"))
         .join_as(
             JoinType::InnerJoin,
-            Alias::new("operation_invocations"),
+            Alias::new("tool_invocations"),
             Alias::new("i"),
             col("i", "workspace_id")
                 .eq(col("r", "workspace_id"))

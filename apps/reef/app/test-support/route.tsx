@@ -2,8 +2,8 @@
 // Stories use `createRoutesStub` instead; that stub keeps its router private,
 // so a test could neither drive navigation nor dispose it.
 
-import { render } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { act, render } from '@testing-library/react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
   createMemoryRouter,
@@ -38,6 +38,29 @@ export function renderRoute(view: RouteView, options: RouteOptions = {}) {
   const router = memoryRouter(view, options)
   onTestFinished(() => router.dispose())
   return { ...render(<RouterProvider router={router} />), router }
+}
+
+/**
+ * Mounts `view` for `first`, as `renderRoute` does. `update` renders the next page in
+ * place, as a live read replaces the page a loader supplied.
+ */
+export function renderLivePage<Page>(
+  view: (page: Page) => ReactNode,
+  first: Page,
+  options: RouteOptions = {},
+) {
+  let show!: (next: Page) => void
+  function LivePage() {
+    const [page, setPage] = useState(first)
+    useEffect(() => {
+      show = setPage
+    }, [])
+    return view(page)
+  }
+  return {
+    ...renderRoute(<LivePage />, options),
+    update: (next: Page) => act(async () => show(next)),
+  }
 }
 
 /** Renders `view` as the route at `entry` to static HTML, as the server would. */

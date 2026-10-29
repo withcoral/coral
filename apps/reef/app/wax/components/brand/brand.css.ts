@@ -14,3 +14,14 @@ export const brand = style({
 export const mark = style({ display: 'block', flexShrink: 0, height: 22, width: 'auto' })
 
 export const wordmark = style({ display: 'block', flexShrink: 0, height: 15, width: 'auto' })
+
+export const wordmarkRow = style({ alignItems: 'baseline', display: 'flex', gap: 8 })
+
+// No line height, so the label adds no height to the row: the wordmark keeps
+// its place beside the mark, and the label hangs on its baseline.
+export const label = style({
+  ...theme.typography.body,
+  color: theme.content.tertiary,
+  lineHeight: 0,
+  whiteSpace: 'nowrap',
+})

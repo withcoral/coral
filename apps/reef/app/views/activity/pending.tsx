@@ -14,7 +14,7 @@ export function pendingQuestion({ action, run }: PendingAction) {
   if (action.kind === 'account_connection')
     return `Connect your ${action.providerLabel || 'provider'} account to continue.`
   const intent = run.intent?.replace(/[.!?]+$/, '')
-  return intent ? `${intent}?` : 'Approve this operation?'
+  return intent ? `${intent}?` : 'Approve this tool call?'
 }
 
 /** One row per pending request, most urgent first. Arguments stay in the review. */

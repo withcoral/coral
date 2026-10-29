@@ -28,7 +28,7 @@ pub struct ActionPrompt {
     /// When this Run stops waiting: the request's deadline or the Run's, whichever
     /// is first. Unix nanoseconds.
     pub deadline_at_unix_nanos: i64,
-    /// Retained Operation path; empty when a shared connection spans different Operations.
+    /// Retained Tool path; empty when a shared connection spans different Tools.
     pub call_path: String,
     /// Current Provider display label, absent after the Provider is removed.
     pub provider_label: Option<String>,

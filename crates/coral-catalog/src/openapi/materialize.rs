@@ -10,26 +10,25 @@ use crate::openapi::schema::{
     OpenApiSchemaGraphBuilder, ReferenceObjectKind, ResolvedObject, child_pointer as source_child,
     response_key_is_legal,
 };
-use crate::paths::assign_operation_paths;
+use crate::paths::assign_tool_paths;
 use crate::schema::canonicalize;
 use crate::{
     CatalogDiagnostic, HttpContentBinding, HttpEncodingBinding, HttpExecutionBinding,
     HttpHeaderBinding, HttpMethod, HttpParameterBinding, HttpParameterLocation, HttpParameterStyle,
     HttpRedirectPolicy, HttpRequestBodyBinding, HttpResponseBinding, HttpResponseStatus,
-    MaterializationOutcome, MaterializedOperation, OpenApiDocument, OperationKey,
-    OperationPathAssignment, OperationPresentation, PreparedProviderCatalog, SchemaId,
-    SchemaSemantics,
+    MaterializationOutcome, MaterializedTool, OpenApiDocument, PreparedProviderCatalog, SchemaId,
+    SchemaSemantics, ToolKey, ToolPathAssignment, ToolPresentation,
 };
 
 /// Stable version of the bounded OpenAPI profile materializer.
 pub(crate) const MATERIALIZER_VERSION: &str = "openapi-schema-faithful-search-profile-v5";
 
 /// Materializes one exact pinned OpenAPI input and carries forward paths owned
-/// by Operation Keys that remain active in the replacement catalog.
+/// by Tool Keys that remain active in the replacement catalog.
 #[must_use]
 pub(crate) fn materialize(
     document: &OpenApiDocument,
-    previous_paths: &[OperationPathAssignment],
+    previous_paths: &[ToolPathAssignment],
 ) -> MaterializationOutcome {
     match build_openapi(document, previous_paths) {
         Ok(package) => MaterializationOutcome::Ready(package),
@@ -39,7 +38,7 @@ pub(crate) fn materialize(
 
 fn build_openapi(
     input: &OpenApiDocument,
-    previous_paths: &[OperationPathAssignment],
+    previous_paths: &[ToolPathAssignment],
 ) -> Result<PreparedProviderCatalog, CatalogDiagnostic> {
     let document = parse_document(input)?;
     let root = document.as_object().ok_or_else(|| {
@@ -84,16 +83,15 @@ fn build_openapi(
                 .map(|name| (HttpParameterLocation::Header, name.clone())),
         );
     }
-    let assigned_paths =
-        assign_operation_paths(drafts.iter().map(|draft| &draft.key), previous_paths)?;
+    let assigned_paths = assign_tool_paths(drafts.iter().map(|draft| &draft.key), previous_paths)?;
 
     let mut builds = Vec::with_capacity(drafts.len());
     for draft in drafts {
         let relative_path = assigned_paths
             .get(&draft.key)
             .cloned()
-            .ok_or_else(invalid_operation_index)?;
-        let slots = credentials.for_operation(&draft.key);
+            .ok_or_else(invalid_tool_index)?;
+        let slots = credentials.for_tool(&draft.key);
         let mut build =
             materialize_operation(draft, relative_path, &mut schemas, &credential_parameters)?;
         build.binding.set_credential_slots(slots);
@@ -111,12 +109,12 @@ fn build_openapi(
             "the authoritative OpenAPI schema graph cannot be encoded",
         )
     })?;
-    let (operations, shared_types) = finish_operations(builds, &display_name, &schema_graph)?;
+    let (materialized, shared_types) = finish_tools(builds, &display_name, &schema_graph)?;
     let catalog = PreparedProviderCatalog::new(
         display_name,
         schema_graph,
         schema_graph_json,
-        operations,
+        materialized,
         shared_types,
     );
     let Some(configuration) = configuration else {
@@ -139,12 +137,12 @@ fn build_openapi(
         })
 }
 
-fn finish_operations(
+fn finish_tools(
     builds: Vec<OperationBuild>,
     display_name: &str,
     schema_graph: &crate::SchemaGraph,
-) -> Result<(Vec<MaterializedOperation>, crate::schema::SharedTypes), CatalogDiagnostic> {
-    let mut operations = Vec::with_capacity(builds.len());
+) -> Result<(Vec<MaterializedTool>, crate::schema::SharedTypes), CatalogDiagnostic> {
+    let mut materialized = Vec::with_capacity(builds.len());
     let type_names = typescript_names(schema_graph);
     let mut shared_types = crate::schema::SharedTypes::default();
     for mut build in builds {
@@ -164,7 +162,7 @@ fn finish_operations(
                 (fallback_typescript(), Vec::new())
             }
         };
-        if let Some(diagnostic) = crate::types::operation_description_too_large(
+        if let Some(diagnostic) = crate::types::tool_description_too_large(
             &build.relative_path,
             display_name,
             &declaration,
@@ -180,16 +178,16 @@ fn finish_operations(
         })?;
         let diagnostics_json = serde_json::to_string(&build.diagnostics).map_err(|_error| {
             diagnostic(
-                "invalid_operation_diagnostic",
-                "an Operation diagnostic cannot be encoded safely",
+                "invalid_tool_diagnostic",
+                "a Tool diagnostic cannot be encoded safely",
             )
         })?;
-        operations.push(MaterializedOperation::new(
+        materialized.push(MaterializedTool::new(
             build.key,
             build.relative_path,
             build.summary,
             build.presentation,
-            crate::OperationHints::default(),
+            crate::ToolHints::default(),
             crate::ExecutionBinding::Http(build.binding),
             binding_json,
             build.input_schema,
@@ -201,7 +199,7 @@ fn finish_operations(
             diagnostics_json,
         ));
     }
-    Ok((operations, shared_types))
+    Ok((materialized, shared_types))
 }
 
 pub(super) fn parse_document(document: &OpenApiDocument) -> Result<Value, CatalogDiagnostic> {
@@ -256,7 +254,7 @@ fn parse_failure_location(error: &serde_path_to_error::Error<serde_yaml::Error>)
 }
 
 struct OperationDraft {
-    key: OperationKey,
+    key: ToolKey,
     path: String,
     query: Option<String>,
     method: HttpMethod,
@@ -283,7 +281,7 @@ fn collect_operations(
                 let object = located
                     .servers
                     .get(&operation.server_declaration)
-                    .ok_or_else(invalid_operation_index)?;
+                    .ok_or_else(invalid_tool_index)?;
                 configuration.map_or_else(
                     || selected_server(object),
                     |configuration| {
@@ -324,10 +322,10 @@ fn collect_operations(
 }
 
 struct OperationBuild {
-    key: OperationKey,
+    key: ToolKey,
     relative_path: String,
     summary: String,
-    presentation: OperationPresentation,
+    presentation: ToolPresentation,
     binding: HttpExecutionBinding,
     input_schema: SchemaId,
     input_schema_json: String,
@@ -758,7 +756,7 @@ fn validate_path_parameters(
         .collect::<BTreeSet<_>>();
     if placeholders != declared {
         return Err(diagnostic(
-            "invalid_operation_path",
+            "invalid_tool_path",
             "OpenAPI path parameters do not exactly match the path template",
         ));
     }
@@ -768,7 +766,7 @@ fn validate_path_parameters(
 fn validate_path_query(query: Option<&str>) -> Result<(), CatalogDiagnostic> {
     if query.is_some_and(|query| query.contains(['#', '{', '}'])) {
         return Err(diagnostic(
-            "invalid_operation_path",
+            "invalid_tool_path",
             "an OpenAPI path query contains a parameter or a fragment",
         ));
     }
@@ -777,7 +775,7 @@ fn validate_path_query(query: Option<&str>) -> Result<(), CatalogDiagnostic> {
 
 fn unmatched_path_parameter_brace() -> CatalogDiagnostic {
     diagnostic(
-        "invalid_operation_path",
+        "invalid_tool_path",
         "an OpenAPI path template contains an unmatched or empty parameter brace",
     )
 }
@@ -1200,16 +1198,16 @@ fn build_input_schema(binding: &HttpExecutionBinding) -> Result<Value, CatalogDi
     ])))
 }
 
-/// The one credential contract every Operation shares. Each Operation keeps
+/// The one credential contract every Tool shares. Each Tool keeps
 /// the security-scheme name its document gave it, as provenance only.
 #[derive(Default)]
 pub(super) struct CredentialSelection {
     shared: Vec<crate::HttpCredentialSlot>,
-    by_operation: BTreeMap<OperationKey, Vec<crate::HttpCredentialSlot>>,
+    by_operation: BTreeMap<ToolKey, Vec<crate::HttpCredentialSlot>>,
 }
 
 impl CredentialSelection {
-    fn for_operation(&self, key: &OperationKey) -> Vec<crate::HttpCredentialSlot> {
+    fn for_tool(&self, key: &ToolKey) -> Vec<crate::HttpCredentialSlot> {
         self.by_operation.get(key).unwrap_or(&self.shared).clone()
     }
 }
@@ -1249,7 +1247,7 @@ pub(super) fn validate_credential_contract(
             Some(previous) => shared_contracts(&previous, &slots).map_err(|conflict| {
                 let (message, detail) = match conflict {
                     ContractConflict::Different => (
-                        "the Provider's Operations require different credential contracts",
+                        "the Provider's Tools require different credential contracts",
                         format!(
                             "{} differs from {}",
                             scheme_names(&slots),
@@ -1257,7 +1255,7 @@ pub(super) fn validate_credential_contract(
                         ),
                     ),
                     ContractConflict::ScopeLimit => (
-                        "the Provider's Operations together request more OAuth scopes than \
+                        "the Provider's Tools together request more OAuth scopes than \
                          one grant can hold",
                         format!(
                             "{} and {} together exceed the scope limit",
@@ -1273,8 +1271,8 @@ pub(super) fn validate_credential_contract(
         by_operation.insert(operation.key, slots);
     }
     let shared = selected.unwrap_or_default();
-    // Every Operation retains the shared contract under its own scheme name,
-    // so one account grant covers every scope the Operations ask for.
+    // Every Tool retains the shared contract under its own scheme name,
+    // so one account grant covers every scope the Tools ask for.
     for slots in by_operation.values_mut() {
         for (slot, shared) in slots.iter_mut().zip(&shared) {
             *slot = crate::HttpCredentialSlot::new(
@@ -1289,7 +1287,7 @@ pub(super) fn validate_credential_contract(
     })
 }
 
-/// Why an Operation cannot join the credential contract its predecessors share.
+/// Why a Tool cannot join the credential contract its predecessors share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContractConflict {
     /// The contracts differ in more than their OAuth scopes.
@@ -1298,7 +1296,7 @@ enum ContractConflict {
     ScopeLimit,
 }
 
-/// The one contract the Operations so far and the next one can share: their
+/// The one contract the Tools so far and the next one can share: their
 /// common contract, or one OAuth contract requesting every scope when they
 /// differ only in scopes.
 fn shared_contracts(
@@ -1945,7 +1943,7 @@ fn safe_summary(operation: &Map<String, Value>, method: HttpMethod, path: &str) 
         )
 }
 
-fn operation_presentation(operation: &Map<String, Value>, summary: &str) -> OperationPresentation {
+fn operation_presentation(operation: &Map<String, Value>, summary: &str) -> ToolPresentation {
     let title = safe_presentation_text(operation.get("summary")).map(str::to_string);
     let description = safe_presentation_text(operation.get("description"))
         .unwrap_or(summary)
@@ -1970,7 +1968,7 @@ fn operation_presentation(operation: &Map<String, Value>, summary: &str) -> Oper
         .and_then(Value::as_object)
         .and_then(|external| safe_presentation_text(external.get("description")))
         .map(str::to_string);
-    OperationPresentation::new(title, description, deprecated, tags, guidance)
+    ToolPresentation::new(title, description, deprecated, tags, guidance)
 }
 
 fn safe_presentation_text(value: Option<&Value>) -> Option<&str> {
@@ -1980,7 +1978,7 @@ fn safe_presentation_text(value: Option<&Value>) -> Option<&str> {
         .filter(|value| crate::types::valid_presentation_text(value))
 }
 
-fn operation_schema_source(key: &OperationKey) -> String {
+fn operation_schema_source(key: &ToolKey) -> String {
     let digest = Sha256::digest(key.as_str().as_bytes());
     digest
         .iter()
@@ -2108,10 +2106,10 @@ fn invalid_response_status() -> CatalogDiagnostic {
     )
 }
 
-fn invalid_operation_index() -> CatalogDiagnostic {
+fn invalid_tool_index() -> CatalogDiagnostic {
     diagnostic(
-        "invalid_operation_path_index",
-        "the Materialized Operation Catalog has an incoherent path index",
+        "invalid_tool_path_index",
+        "the Materialized Tool Catalog has an incoherent path index",
     )
 }
 

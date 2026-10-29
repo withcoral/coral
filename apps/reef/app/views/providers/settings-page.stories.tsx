@@ -16,7 +16,7 @@ const provider: ProviderSettingsView = {
   path: '/workspaces/demo/providers/00000000-0000-4000-8000-000000000001',
   account: 'caller',
   enabled: true,
-  operationsReady: true,
+  toolsReady: true,
   connection: 'connected',
   canConnect: true,
   canReconnect: true,
@@ -166,9 +166,9 @@ export const YourAccountReconnect: Story = {
   },
 }
 
-export const NoOperationsReady: Story = {
+export const NoToolsReady: Story = {
   args: {
-    provider: { ...provider, enabled: false, operationsReady: false },
+    provider: { ...provider, enabled: false, toolsReady: false },
   },
 }
 

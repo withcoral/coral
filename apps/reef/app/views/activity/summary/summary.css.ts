@@ -16,7 +16,17 @@ export const heading = style({
   justifyContent: 'space-between',
   gap: 12,
 })
-export const panel = style({ padding: 16, outline: 'none' })
+export const panels = style({ display: 'grid' })
+export const panel = style({
+  gridArea: '1 / 1',
+  minWidth: 0,
+  padding: 16,
+  outline: 'none',
+  selectors: {
+    // A hidden lens still takes up its space, so it sizes the shared cell.
+    '&[hidden]': { display: 'block', visibility: 'hidden' },
+  },
+})
 export const lens = style({ display: 'flex', flexDirection: 'column', gap: 16 })
 
 export const labeled = style({
@@ -33,15 +43,15 @@ export const truncate = style({
 export const count = style({ fontVariantNumeric: 'tabular-nums' })
 export const stopSplit = style({ display: 'inline-flex', alignItems: 'center', gap: 10 })
 
-export const operation = style({
+export const tool = style({
   display: 'inline-flex',
   alignItems: 'center',
   gap: 8,
   minWidth: 0,
   maxWidth: '100%',
 })
-// A long provider name gives way before the operation does.
-export const operationProvider = style({
+// A long provider name gives way before the tool does.
+export const toolProvider = style({
   flexShrink: 1,
   minWidth: 0,
   maxWidth: '50%',

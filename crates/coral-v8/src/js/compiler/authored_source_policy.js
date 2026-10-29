@@ -524,10 +524,10 @@ function analyzeSavedFunctionDependencies(source, fileName, targetName) {
   return savedFunctionDependencyAnalysis(sourceFile, program);
 }
 
-// The number of segments under `coral` that name an Operation's Call Root:
+// The number of segments under `coral` that name a Tool's Call Root:
 // `providers.<namespace>` for an Owner's Provider, `workspace` for the
 // Built-in Provider. Undefined for any other root.
-function operationCallRootLength(segments) {
+function toolCallRootLength(segments) {
   if (segments[0] === 'providers') return 2;
   if (segments[0] === 'workspace') return 1;
   return undefined;
@@ -536,8 +536,8 @@ function operationCallRootLength(segments) {
 // Each maximal literal `coral.providers` or `coral.workspace` chain, relative
 // to `coral` and cut before its first computed segment, where it starts, and
 // whether it is called. A cut chain is not called: its computed segment may
-// name the Operation. Aliased roots are not followed.
-function operationReferenceChains(sourceFile, program) {
+// name the Tool. Aliased roots are not followed.
+function toolReferenceChains(sourceFile, program) {
   const checker = program.getTypeChecker();
   const chains = [];
   walkRuntimeNodes(sourceFile, (node) => {
@@ -546,7 +546,7 @@ function operationReferenceChains(sourceFile, program) {
       !parentContinuesCoralPath(node)
     ) {
       const access = coralAccess(node, checker, sourceFile);
-      if (access?.root === 'lexical' && operationCallRootLength(access.segments) !== undefined) {
+      if (access?.root === 'lexical' && toolCallRootLength(access.segments) !== undefined) {
         const computed = access.segments.indexOf(undefined);
         const segments = access.segments.slice(0, computed === -1 ? undefined : computed);
         const called =
@@ -563,10 +563,10 @@ function operationReferenceChains(sourceFile, program) {
 
 // Every chain prefix that could be a Call Path: a Call Root and at least one
 // identifier segment.
-function candidateOperationPaths(chains) {
+function candidateToolPaths(chains) {
   const paths = new Set();
   for (const { segments } of chains) {
-    const rootLength = operationCallRootLength(segments);
+    const rootLength = toolCallRootLength(segments);
     for (let length = 2; length <= segments.length; length += 1) {
       if (!ts.isIdentifierText(segments[length - 1], ts.ScriptTarget.ES2025)) break;
       if (length > rootLength) {
@@ -577,15 +577,15 @@ function candidateOperationPaths(chains) {
   return [...paths].toSorted();
 }
 
-// The Saved Functions and Operations one Saved Function module names, from
+// The Saved Functions and Tools one Saved Function module names, from
 // one analysis: what its typed preparation needs.
 function analyzeSavedFunctionCallPaths(source, fileName, targetName) {
   const { program, sourceFile } = referenceAnalysisProgram(source, fileName, targetName);
   const dependencies = savedFunctionDependencyAnalysis(sourceFile, program);
   if (dependencies.validationError !== undefined) return dependencies;
-  const chains = operationReferenceChains(sourceFile, program);
+  const chains = toolReferenceChains(sourceFile, program);
   return {
     ...dependencies,
-    operations: { callPaths: candidateOperationPaths(chains), chains },
+    tools: { callPaths: candidateToolPaths(chains), chains },
   };
 }

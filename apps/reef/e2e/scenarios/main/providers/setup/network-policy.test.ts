@@ -10,7 +10,7 @@ import {
   addProviderFromFile,
   createWorkspace,
   createWorkspaceViaUi,
-  enableOperation,
+  enableTool,
   openCustomSource,
   programRunner,
 } from '../../../../support/providers.ts'
@@ -49,7 +49,7 @@ test.for(['http', 'trusted', 'untrusted'] as const)(
         actor.accessToken,
         `Network policy ${crypto.randomUUID()}`,
       )
-      await step('Publish the private hostname and enable its operation', async () => {
+      await step('Publish the private hostname and enable its tool', async () => {
         const path = await addProviderFromFile(
           page,
           workspace,
@@ -57,7 +57,7 @@ test.for(['http', 'trusted', 'untrusted'] as const)(
           'sidecar',
         )
         await page.goto(path)
-        await enableOperation(page, 'hello')
+        await enableTool(page, 'hello')
       })
       await step('Dispatch as the signed-in user with normal TLS verification', async () => {
         const token = await mcpToken(page, workspace)

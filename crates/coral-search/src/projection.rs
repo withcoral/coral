@@ -3,7 +3,7 @@ use crate::{
     ApprovalRequirement, AuthoringDescription, EntityKind, ExactAuthoringDescription,
     RetrieverState, RetrieverStatus, SearchHit, SearchPage,
 };
-use coral_catalog::OperationHints;
+use coral_catalog::ToolHints;
 use serde_json::{Map, Value, json};
 
 #[cfg(test)]
@@ -64,14 +64,14 @@ fn hit(hit: &SearchHit) -> Value {
     if !hidden.is_empty() {
         fields.insert("matched_inputs".to_string(), json!(hidden));
     }
-    if let Some(operation) = hit.operation() {
-        if operation.hints() != OperationHints::default() {
-            fields.insert("hints".to_string(), hints(operation.hints()));
+    if let Some(tool) = hit.tool() {
+        if tool.hints() != ToolHints::default() {
+            fields.insert("hints".to_string(), hints(tool.hints()));
         }
-        if operation.approval_requirement() == ApprovalRequirement::Required {
+        if tool.approval_requirement() == ApprovalRequirement::Required {
             fields.insert("approval_required".to_string(), json!(true));
         }
-        if operation.deprecated() {
+        if tool.deprecated() {
             fields.insert("deprecated".to_string(), json!(true));
         }
     }
@@ -153,28 +153,28 @@ fn authoring(description: &AuthoringDescription) -> Value {
             json!(description.typescript_declaration()),
         ),
     ]);
-    if let AuthoringDescription::Operation(operation) = description {
+    if let AuthoringDescription::Tool(tool) = description {
         fields.extend([
             (
                 "provider_access".to_string(),
-                json!(crate::provider_filter_value(operation.provider_call_root())),
+                json!(crate::provider_filter_value(tool.provider_call_root())),
             ),
             (
                 "provider_id".to_string(),
-                json!(operation.provider_id().to_string()),
+                json!(tool.provider_id().to_string()),
             ),
             (
                 "provider_display_name".to_string(),
-                json!(operation.provider_display_name()),
+                json!(tool.provider_display_name()),
             ),
-            ("title".to_string(), json!(operation.title())),
-            ("deprecated".to_string(), json!(operation.deprecated())),
-            ("tags".to_string(), json!(operation.tags())),
-            ("guidance".to_string(), json!(operation.guidance())),
-            ("hints".to_string(), hints(operation.hints())),
+            ("title".to_string(), json!(tool.title())),
+            ("deprecated".to_string(), json!(tool.deprecated())),
+            ("tags".to_string(), json!(tool.tags())),
+            ("guidance".to_string(), json!(tool.guidance())),
+            ("hints".to_string(), hints(tool.hints())),
             (
                 "approval_required".to_string(),
-                json!(operation.approval_requirement() == ApprovalRequirement::Required),
+                json!(tool.approval_requirement() == ApprovalRequirement::Required),
             ),
         ]);
     }
@@ -183,14 +183,14 @@ fn authoring(description: &AuthoringDescription) -> Value {
 
 fn entity_kind(kind: EntityKind) -> &'static str {
     match kind {
-        EntityKind::Operation => "operation",
+        EntityKind::ProviderTool => "provider_tool",
         EntityKind::SavedFunction => "saved_function",
     }
 }
 
 /// Only the hints the Provider declared. An absent key is undeclared, not a
 /// protocol default.
-fn hints(hints: OperationHints) -> Value {
+fn hints(hints: ToolHints) -> Value {
     Value::Object(
         [
             ("read_only", hints.read_only()),

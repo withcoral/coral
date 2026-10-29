@@ -10,7 +10,7 @@ import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import type { StopReason } from '@/lib/activity-summary'
 import type { FilterQuery } from '@/utils/filter-query'
 import { counted, number, outcomes } from './format'
-import { STOP_REASONS, type OperationRow } from './operations'
+import { STOP_REASONS, type ToolRow } from './tools'
 import * as styles from './summary.css'
 
 export function Note({ children }: { children: string }) {
@@ -76,37 +76,29 @@ export function Reason({ reason }: { reason: StopReason }) {
 }
 
 /**
- * The provider's logo and name, then its namespace and the operation: two providers with one
+ * The provider's logo and name, then its namespace and the tool: two providers with one
  * name differ by namespace. The full Call Path is the cell's title. With `to`, the namespace
- * and operation are the row's link.
+ * and tool are the row's link.
  */
-export function OperationName({
-  row,
-  to,
-  query,
-}: {
-  row: OperationRow
-  to?: string
-  query?: FilterQuery
-}) {
+export function ToolName({ row, to, query }: { row: ToolRow; to?: string; query?: FilterQuery }) {
   const mark = (text: string) => (query ? <HighlightedMatches text={text} query={query} /> : text)
-  const operation = (
+  const tool = (
     <Typography.BodySmall as="span" className={styles.truncate}>
       {row.namespace && (
         <Typography.BodySmall as="span" variant="tertiary">
           {mark(row.namespace)}.
         </Typography.BodySmall>
       )}
-      {mark(row.operation)}
+      {mark(row.tool)}
     </Typography.BodySmall>
   )
   return (
-    <span className={styles.operation}>
+    <span className={styles.tool}>
       <Logo name={row.provider} icons={row.icons} size="20" />
-      <Typography.BodySmall as="span" className={styles.operationProvider}>
+      <Typography.BodySmall as="span" className={styles.toolProvider}>
         {mark(row.provider)}
       </Typography.BodySmall>
-      {to ? <Table.RowLink to={to}>{operation}</Table.RowLink> : operation}
+      {to ? <Table.RowLink to={to}>{tool}</Table.RowLink> : tool}
     </span>
   )
 }

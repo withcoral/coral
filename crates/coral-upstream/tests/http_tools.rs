@@ -37,13 +37,13 @@ fn ready(document: &str) -> PreparedProviderCatalog {
     ))
 }
 
-/// Plans the catalog's only Operation.
+/// Plans the catalog's only Tool.
 fn try_plan(
     prepared: &PreparedProviderCatalog,
     arguments: &serde_json::Value,
 ) -> Result<ReadyHttpDispatch, coral_upstream::Error> {
     ReadyHttpDispatch::plan(
-        prepared.operations().first().expect("Operation"),
+        prepared.tools().first().expect("Tool"),
         prepared.schema_graph(),
         arguments,
         limits(4096),
@@ -61,7 +61,7 @@ async fn send(dispatch: ReadyHttpDispatch) -> Result<HttpOutcome, coral_upstream
         .await
 }
 
-/// Operations under `paths` behind `server`, sent with `authentication`. Each
+/// Tools under `paths` behind `server`, sent with `authentication`. Each
 /// Credential Field the method reads is presented under its own name.
 fn configured(
     server: &str,
@@ -121,7 +121,7 @@ async fn cross_origin_pair(method_name: &str) -> (MockServer, MockServer) {
 }
 
 #[tokio::test]
-async fn operations_send_a_default_user_agent_and_preserve_an_explicit_header() {
+async fn tools_send_a_default_user_agent_and_preserve_an_explicit_header() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/"))
@@ -170,11 +170,11 @@ async fn multipart_media_list_selects_one_permitted_binary_type() {
     let server = MockServer::start().await;
     let document = include_str!("../../coral-catalog/tests/fixtures/openapi-http-corpus.yaml");
     let prepared = ready(&document.replace("https://api.example.test/v1", &server.uri()));
-    let operation = prepared
-        .operations()
+    let tool = prepared
+        .tools()
         .iter()
-        .find(|operation| operation.key().as_str() == "users/update-avatar")
-        .expect("avatar Operation");
+        .find(|tool| tool.key().as_str() == "users/update-avatar")
+        .expect("avatar Tool");
     Mock::given(method("PUT"))
         .and(path("/user/avatar"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
@@ -184,7 +184,7 @@ async fn multipart_media_list_selects_one_permitted_binary_type() {
     for mime in ["image/png", "image/jpeg"] {
         let arguments = serde_json::json!({"body":{"avatar":{"_tag":"BinaryValue", "encoding":"base64", "data":"AP8=", "mimeType":mime, "byteLength":2}}});
         let dispatch =
-            ReadyHttpDispatch::plan(operation, prepared.schema_graph(), &arguments, limits(4096))
+            ReadyHttpDispatch::plan(tool, prepared.schema_graph(), &arguments, limits(4096))
                 .expect("permitted multipart type");
         send(dispatch).await.expect("uploaded");
     }
@@ -206,7 +206,7 @@ async fn multipart_media_list_selects_one_permitted_binary_type() {
     }
     let invalid = serde_json::json!({"body":{"avatar":{"_tag":"BinaryValue", "encoding":"base64", "data":"AP8=", "mimeType":"application/pdf", "byteLength":2}}});
     assert!(matches!(
-        ReadyHttpDispatch::plan(operation, prepared.schema_graph(), &invalid, limits(4096)),
+        ReadyHttpDispatch::plan(tool, prepared.schema_graph(), &invalid, limits(4096)),
         Err(coral_upstream::Error::InvalidArguments(_))
     ));
     server.verify().await;
@@ -613,9 +613,9 @@ paths:
     }
 }
 
-/// One GET Operation at `{server}/v1` + `template`, whose path parameters
+/// One GET Tool at `{server}/v1` + `template`, whose path parameters
 /// `a` and `b` use `parameters` as their serialization fields.
-fn path_operation(server: &str, template: &str, parameters: &str) -> PreparedProviderCatalog {
+fn path_tool(server: &str, template: &str, parameters: &str) -> PreparedProviderCatalog {
     ready(&format!(
         r#"openapi: 3.1.0
 info: {{ title: Path arguments, version: "1" }}
@@ -679,7 +679,7 @@ fn a_path_argument_cannot_become_a_dot_segment() {
         (JSON, SPLIT, "..", ".", Some("%22..%22/%22.%22")),
     ] {
         let expected = expected.map(|path| format!("/v1/files/{path}"));
-        let prepared = path_operation("https://api.example.test", template, parameters);
+        let prepared = path_tool("https://api.example.test", template, parameters);
         let result = try_plan(&prepared, &serde_json::json!({"a": a, "b": b}));
         let case = format!("{parameters} {template} a={a:?} b={b:?}");
         match expected {
@@ -691,12 +691,12 @@ fn a_path_argument_cannot_become_a_dot_segment() {
         }
     }
     // The Program learns which argument to correct.
-    let prepared = path_operation("https://api.example.test", SPLIT, SIMPLE);
+    let prepared = path_tool("https://api.example.test", SPLIT, SIMPLE);
     assert!(
         matches!(
             try_plan(&prepared, &serde_json::json!({"a": "x", "b": "../admin"})),
             Err(coral_upstream::Error::InvalidArguments(reason))
-                if reason == "Operation argument `b` cannot contain a `.` or `..` path segment"
+                if reason == "Tool argument `b` cannot contain a `.` or `..` path segment"
         ),
         "the reason names the argument"
     );
@@ -716,7 +716,7 @@ async fn a_traversal_argument_never_reaches_an_undeclared_endpoint() {
         .mount(&server)
         .await;
     let schema = "schema: { type: string }";
-    let prepared = path_operation(&server.uri(), "/files/{a}/{b}", schema);
+    let prepared = path_tool(&server.uri(), "/files/{a}/{b}", schema);
     let arguments = serde_json::json!({"a": "report", "b": "content"});
     let dispatch = plan(&prepared, &arguments);
     assert_eq!(dispatch.url().path(), "/v1/files/report/content");
@@ -981,10 +981,10 @@ async fn complete_responses_decode_by_their_declared_media_and_schema() {
     }
 }
 
-/// A response to an Operation declaring `responses`, and its class.
+/// A response to a Tool declaring `responses`, and its class.
 struct ClassCase {
     name: &'static str,
-    /// The Operation's declared `responses`, as YAML.
+    /// The Tool's declared `responses`, as YAML.
     responses: &'static str,
     /// The first request answers `302` to the response below.
     redirected: bool,
@@ -1083,7 +1083,7 @@ async fn each_outcome_is_a_declared_success_or_names_why_it_is_not() {
             class: OutcomeClass::ErrorResponse,
         },
         ClassCase {
-            name: "a 2xx the Operation does not declare",
+            name: "a 2xx the Tool does not declare",
             responses: JSON_200,
             redirected: false,
             status: 201,
@@ -1489,7 +1489,7 @@ paths:
     source.verify().await;
 }
 
-/// One POST Operation at `/` that takes a JSON body.
+/// One POST Tool at `/` that takes a JSON body.
 const POST_JSON: &str = r#"
   /:
     post:
@@ -1502,7 +1502,7 @@ const POST_JSON: &str = r#"
         "204": {description: done}
 "#;
 
-/// One GET Operation at `/`.
+/// One GET Tool at `/`.
 const GET_ROOT: &str = r#"
   /:
     get:
@@ -1511,7 +1511,7 @@ const GET_ROOT: &str = r#"
         "204": {description: done}
 "#;
 
-/// One GET Operation at `/boards` with an ordinary `limit` argument.
+/// One GET Tool at `/boards` with an ordinary `limit` argument.
 const GET_BOARDS: &str = r#"
   /boards:
     get:
@@ -1807,7 +1807,7 @@ async fn query_credentials_follow_a_same_origin_redirect_but_never_reach_evidenc
         "{} {:?} {}",
         outcome.final_url(),
         outcome.redirects(),
-        outcome.operation_result()
+        outcome.tool_result()
     );
     assert!(!evidence.contains("canary"), "{evidence}");
 }
@@ -1836,7 +1836,7 @@ fn a_query_credential_is_counted_as_the_url_carries_it() {
     let prepared = configured("http://127.0.0.1:9", GET_BOARDS, trello());
     let dispatch = |budget: usize| {
         ReadyHttpDispatch::plan(
-            prepared.operations().first().expect("Operation"),
+            prepared.tools().first().expect("Tool"),
             prepared.schema_graph(),
             &serde_json::json!({}),
             limits(budget),
@@ -1954,7 +1954,7 @@ paths:
     let arguments = serde_json::json!({"X-Note": "n".repeat(100)});
     let dispatch = |budget: usize| {
         ReadyHttpDispatch::plan(
-            prepared.operations().first().expect("Operation"),
+            prepared.tools().first().expect("Tool"),
             prepared.schema_graph(),
             &arguments,
             limits(budget),
@@ -1982,7 +1982,7 @@ async fn a_response_over_the_budget_is_refused() {
     let prepared = configured(&server.uri(), GET_ROOT, AuthenticationConfiguration::None);
     let dispatch = |budget: usize| {
         ReadyHttpDispatch::plan(
-            prepared.operations().first().expect("Operation"),
+            prepared.tools().first().expect("Tool"),
             prepared.schema_graph(),
             &serde_json::json!({}),
             limits(budget),
@@ -1998,7 +1998,7 @@ async fn a_response_over_the_budget_is_refused() {
     let result = send(dispatch(4096))
         .await
         .expect("response")
-        .operation_result()
+        .tool_result()
         .to_string()
         .len();
     assert!(matches!(
@@ -2036,7 +2036,7 @@ async fn retained_headers(
     let outcome = send(dispatch)
         .await
         .expect("a complete response is an outcome");
-    let result = outcome.operation_result().to_string();
+    let result = outcome.tool_result().to_string();
     assert!(!result.contains("canary"), "{result}");
     outcome
         .headers()

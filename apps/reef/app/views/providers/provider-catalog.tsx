@@ -99,7 +99,6 @@ function Rows({ scroll, children }: { scroll: boolean; children: React.ReactNode
       fade="bottom"
       height="auto"
       scrollDirection="vertical"
-      surface="floating"
     >
       <div className={styles.catalogScrollContent}>{children}</div>
     </ScrollArea.Container>

@@ -1,4 +1,4 @@
-//! One-use HTTP and MCP dispatch for Coral Operations, plus bounded MCP discovery.
+//! One-use HTTP and MCP dispatch for Coral Tools, plus bounded MCP discovery.
 //!
 //! Protocol adapters own planning, serialization, bounded sending, and complete
 //! result capture. They never retry, traverse pagination, or evaluate Coral
@@ -113,17 +113,17 @@ pub enum Error {
     /// A supplied host credential cannot occupy its position safely.
     #[error("upstream credential cannot be sent")]
     CredentialUnusable,
-    /// The cataloged Operation cannot be invoked faithfully.
-    #[error("Operation is unavailable")]
-    OperationUnavailable,
+    /// The cataloged Tool cannot be invoked faithfully.
+    #[error("Tool is unavailable")]
+    ToolUnavailable,
     /// The retained binding does not match the selected protocol Adapter.
-    #[error("Operation does not use the selected execution protocol")]
+    #[error("Tool does not use the selected execution protocol")]
     UnsupportedProtocol,
     /// A finite result limit must be positive.
     #[error("upstream result limit must be positive")]
     InvalidLimit,
-    /// An available Operation has no selected HTTP server.
-    #[error("available Operation has no selected HTTP server")]
+    /// An available Tool has no selected HTTP server.
+    #[error("available Tool has no selected HTTP server")]
     MissingServer,
     /// The retained HTTP server and path do not form a URL.
     #[error("invalid retained HTTP URL: {0}")]
@@ -140,16 +140,16 @@ pub enum Error {
     /// Logical arguments do not satisfy the retained wire recipe. The reason is
     /// Coral's own and reaches the Program: it may name an argument, never hold
     /// an argument value or upstream content.
-    #[error("invalid Operation arguments: {0}")]
+    #[error("invalid Tool arguments: {0}")]
     InvalidArguments(String),
     /// A JSON request value could not be encoded.
-    #[error("HTTP Operation JSON encoding failed: {0}")]
+    #[error("HTTP Tool JSON encoding failed: {0}")]
     EncodeJson(#[source] serde_json::Error),
     /// A content-based parameter cannot use this media type.
     #[error("unsupported HTTP request media type: {0}")]
     UnsupportedRequestMedia(String),
     /// The encoded request crossed the accepted finite bound before dispatch.
-    #[error("Operation input exceeded its limit")]
+    #[error("Tool input exceeded its limit")]
     InputTooLarge,
     /// The complete body crossed the accepted finite bound.
     #[error("upstream result exceeded its limit")]
@@ -166,7 +166,7 @@ pub enum Error {
     /// The upstream protocol no longer matches the materialized recipe.
     #[error("upstream MCP protocol differs from the retained binding")]
     McpProtocolChanged,
-    /// The MCP peer answered the Operation request with a JSON-RPC error instead
+    /// The MCP peer answered the Tool request with a JSON-RPC error instead
     /// of a result, so the request was received and refused rather than lost.
     #[error("upstream MCP peer rejected the request: {0}")]
     McpRejected(McpRejection),

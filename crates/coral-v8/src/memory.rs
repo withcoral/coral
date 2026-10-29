@@ -85,7 +85,7 @@ impl Drop for ActiveLimit {
 
 pub(crate) fn with_heap_limit<T>(
     isolate: &mut v8::OwnedIsolate,
-    operation: impl FnOnce(&mut v8::OwnedIsolate) -> Result<T, Error>,
+    work: impl FnOnce(&mut v8::OwnedIsolate) -> Result<T, Error>,
 ) -> Result<T, Error> {
     let state = Rc::new(HeapLimitState {
         handle: isolate.thread_safe_handle(),
@@ -93,7 +93,7 @@ pub(crate) fn with_heap_limit<T>(
     });
     let _active = ActiveLimit(ACTIVE_LIMIT.with_borrow_mut(|active| active.replace(state.clone())));
     isolate.add_near_heap_limit_callback(near_heap_limit, std::ptr::null_mut());
-    let result = operation(isolate);
+    let result = work(isolate);
     isolate.remove_near_heap_limit_callback(near_heap_limit, 0);
     if state.exceeded.get() {
         Err(Error::MemoryLimitExceeded)

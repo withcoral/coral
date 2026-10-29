@@ -9,7 +9,13 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+test-support = ["opentelemetry_sdk/testing"]
+
 [dependencies]
+axum = { workspace = true, features = ["matched-path"] }
+http.workspace = true
+http-body.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 tracing.workspace = true
@@ -18,3 +24,5 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+tower = { workspace = true, features = ["util"] }

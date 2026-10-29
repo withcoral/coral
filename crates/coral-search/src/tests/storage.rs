@@ -16,9 +16,9 @@ async fn sqlite_triggers_keep_the_text_index_in_step_with_search_entities() {
     let upstream = MockServer::start().await;
     let tracer = Tracer::publish(&upstream).await;
     let database = tracer.modules.search.database.clone();
-    let doc = tracer.operation_doc();
+    let doc = tracer.tool_doc();
 
-    tracer.upsert_operation_row("Daily outlook").await;
+    tracer.upsert_tool_row("Daily outlook").await;
     assert_eq!(
         text_matches(&database, &tracer.workspace, "outlook").await,
         std::slice::from_ref(&doc)
@@ -29,7 +29,7 @@ async fn sqlite_triggers_keep_the_text_index_in_step_with_search_entities() {
         "the Provider name is name-like and loses its dots"
     );
 
-    tracer.upsert_operation_row("Weekly summary").await;
+    tracer.upsert_tool_row("Weekly summary").await;
     assert!(
         text_matches(&database, &tracer.workspace, "outlook")
             .await
@@ -48,7 +48,7 @@ async fn sqlite_triggers_keep_the_text_index_in_step_with_search_entities() {
                 .to_owned(),
         )
         .await
-        .expect("delete the Operation row");
+        .expect("delete the Tool row");
     assert!(
         text_matches(&database, &tracer.workspace, "summary")
             .await
@@ -103,32 +103,26 @@ async fn sqlite_text_index_follows_a_saved_function_delete_cascade() {
 #[tokio::test]
 async fn sqlite_key_step_keeps_one_copy_of_each_row_indexed_before_it() {
     coral_test_support::database_only!(Sqlite);
-    // Every step but 39, the one under test, which reads only search tables.
-    let before_step = coral_test_support::edited_migration_plan(|migrations| {
-        migrations
-            .into_iter()
-            .filter(|migration| migration.version != 39)
-            .collect()
-    });
-    let modules = TestModules::with_plan(&before_step).await;
-    let database = modules.search.database.clone();
-    let user = organization_user(database.clone(), USER).await;
-    let workspace = modules.create_workspace(&user).await;
-    let provider = modules
-        .publish_openapi(&user, &workspace, NAMES, "tracker", 20)
-        .await;
-    modules.converge().await;
-    let generation = active_generation(&database, &provider).await;
+    // The steps before 39, the one under test. Later steps rename what the
+    // indexer writes, so the rows are written as an indexer before 39 wrote
+    // them, through the text index triggers of step 30.
+    let before_step = coral_test_support::migration_plan_before(39);
+    let fixture = coral_test_support::TestDatabase::new(&before_step)
+        .await
+        .unwrap();
+    let database = fixture.database();
+    let workspace = WorkspaceId::parse("7d3c1a52-8f0e-4b6a-9c41-2e5d8b0f6a13").unwrap();
+    let generation = "generation";
     let comments = format!("{generation}:listComments");
     let create = format!("{generation}:create");
+    index_two_rows_before_key_step(&fixture, &workspace, generation).await;
     assert_eq!(
         text_index_docs(&database, &workspace).await,
         [create.clone(), comments.clone()]
     );
     // An `INSERT OR REPLACE` leaves a second copy beside the row's own, and
     // a copy can outlive its row. The step keeps one copy of each row.
-    modules
-        .fixture
+    fixture
         .execute_fixture_sql(&format!(
             "INSERT INTO search_entities_fts (workspace_id, doc_id, title) \
              VALUES ('{workspace}', '{comments}', 'Read the stale notes'), \
@@ -167,24 +161,63 @@ async fn sqlite_key_step_keeps_one_copy_of_each_row_indexed_before_it() {
         "the update replaced the row's copy"
     );
 
-    modules
-        .index
-        .remove_provider(workspace.clone(), provider.clone());
-    modules.index.settled().await;
+    let rows = fixture
+        .execute_fixture_sql(&format!(
+            "CREATE TABLE removed AS SELECT * FROM search_entities; \
+             DELETE FROM search_entities WHERE workspace_id = '{workspace}'"
+        ))
+        .await
+        .expect("remove the rows");
+    assert_eq!(rows, 2);
     assert!(
         text_index_docs(&database, &workspace).await.is_empty(),
         "the removal deleted every copy"
     );
 
-    modules
-        .index
-        .index_active_generation(workspace.clone(), provider);
-    modules.index.settled().await;
+    fixture
+        .execute_fixture_sql("INSERT INTO search_entities SELECT * FROM removed")
+        .await
+        .expect("index the rows again");
     assert_eq!(
         text_index_docs(&database, &workspace).await,
         [create, comments],
         "the removal left no key to block the rows' return"
     );
+}
+
+/// Writes a Generation's two Search Entities as an indexer before step 39
+/// wrote them, so step 30's triggers copy each into the text index.
+async fn index_two_rows_before_key_step(
+    fixture: &coral_test_support::TestDatabase,
+    workspace: &WorkspaceId,
+    generation: &str,
+) {
+    let entity = |key: &str, title: &str| {
+        format!(
+            "('{workspace}', '{generation}:{key}', 'operation', 'provider', '{generation}', \
+             '{key}', 'coral.providers.tracker.{key}', 'tracker.{key}', '{title}', '{title}', \
+             'tracker', '{title}', FALSE, '{key}', 1)"
+        )
+    };
+    fixture
+        .execute_fixture_sql(&format!(
+            "INSERT INTO workspace_records (id, display_name, state, lifecycle_version, \
+             created_at_unix_nanos, updated_at_unix_nanos) \
+             VALUES ('{workspace}', 'Search', 'active', 1, 1, 1); \
+             INSERT INTO provider_generations (id, input_kind, pinned_input, input_digest, \
+             credential_contract, schema_graph_json, typescript_view, materializer_version, \
+             created_at_unix_nanos) VALUES ('{generation}', 'openapi', '{{}}', \
+             '{digest}', 'none', '{{}}', 'declare', 'v1', 1); \
+             INSERT INTO search_entities (workspace_id, doc_id, kind, provider_id, \
+             provider_generation_id, operation_key, call_path, qualified_name, title, \
+             description, provider_name, searchable_text, deprecated, fingerprint, \
+             indexed_at_unix_nanos) VALUES {listed}, {created}",
+            digest = "0".repeat(64),
+            listed = entity("listComments", "List the comments"),
+            created = entity("create", "Create an issue"),
+        ))
+        .await
+        .expect("index two rows");
 }
 
 #[tokio::test]
@@ -240,7 +273,7 @@ async fn postgres_vector_weights_each_field_and_splits_names_by_dots_and_camel_c
     let upstream = MockServer::start().await;
     let tracer = Tracer::publish(&upstream).await;
     let database = tracer.modules.search.database.clone();
-    tracer.upsert_operation_row("GitHub Outlook.report").await;
+    tracer.upsert_tool_row("GitHub Outlook.report").await;
 
     for (query, matches) in [
         ("daily:A", true),
@@ -259,7 +292,7 @@ async fn postgres_vector_weights_each_field_and_splits_names_by_dots_and_camel_c
         ("hub", false),
     ] {
         assert_eq!(
-            vector_matches(&database, &tracer.operation_doc(), query).await,
+            vector_matches(&database, &tracer.tool_doc(), query).await,
             matches,
             "{query}"
         );
@@ -484,12 +517,12 @@ impl Tracer {
         }
     }
 
-    fn operation_doc(&self) -> String {
+    fn tool_doc(&self) -> String {
         format!("{}:forecast", self.generation_id)
     }
 
-    /// Writes the Operation row the way the indexer will: an upsert by key.
-    async fn upsert_operation_row(&self, title: &str) {
+    /// Writes the Tool row the way the indexer will: an upsert by key.
+    async fn upsert_tool_row(&self, title: &str) {
         self.modules
             .search
             .database
@@ -499,8 +532,8 @@ impl Tracer {
                     .columns(row_columns())
                     .values_panic([
                         self.workspace.to_string().into(),
-                        self.operation_doc().into(),
-                        "operation".into(),
+                        self.tool_doc().into(),
+                        "provider_tool".into(),
                         Some(self.provider_id.clone()).into(),
                         Some(self.generation_id.clone()).into(),
                         Some("forecast".to_string()).into(),
@@ -525,7 +558,7 @@ impl Tracer {
                     .to_owned(),
             )
             .await
-            .expect("upsert the Operation row");
+            .expect("upsert the Tool row");
     }
 }
 
@@ -602,7 +635,7 @@ fn row_columns() -> [Alias; 18] {
         "kind",
         "provider_id",
         "provider_generation_id",
-        "operation_key",
+        "tool_key",
         "saved_function_id",
         "principal_id",
         "principal_kind",
@@ -683,6 +716,6 @@ async fn vector_matches(database: &Database, doc: &str, query: &str) -> bool {
         )
         .await
         .unwrap()
-        .expect("the Operation row");
+        .expect("the Tool row");
     matches
 }

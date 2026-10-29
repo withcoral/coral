@@ -3,10 +3,11 @@
 //! process, or one with no claim accepted more than one lease ago, has no
 //! process that owns it. The sweep recreates its Run Owner with the mailbox
 //! already queued (every Approval Request timer that passed, in deadline
-//! order, then the end)
-//! and that owner writes one chunk: the expiries, then the Run's end with
-//! every nonterminal Invocation ended, the Run taken over with a new claim.
-//! Coral never resumes a Run.
+//! order, then the requests waiting in the Run's Run Inbox, in insert order,
+//! then the end) and that owner writes one chunk: the expiries and the
+//! requests it applied, then the Run's end with every nonterminal Invocation
+//! ended, the Run taken over with a new claim. The chunk deletes the Run
+//! Inbox rows it applied. Coral never resumes a Run.
 //!
 //! A Run with a live lease belongs to another process (a rolling update's
 //! other process) and is never touched; a local owner whose lease lapsed is
@@ -19,9 +20,12 @@ use std::time::Duration;
 use coral_workspace::WorkspaceId;
 use uuid::Uuid;
 
-use crate::approval::ApprovalId;
-use crate::lifecycle::{RunRecord, RunTerminationKind};
-use crate::owner::{self, Message, OwnerHandle, OwnerStart, Timer};
+use crate::approval::DecideWork;
+use crate::lifecycle::RunRecord;
+use crate::owner::{
+    self, ChunkWork as _, Message, OwnerHandle, OwnerStart, Recovered, RecoveryStep, Timer,
+};
+use crate::run_inbox::Delivery;
 use crate::termination::end_in_one_chunk;
 use crate::types::AcceptedRun;
 use crate::{Error, RunId, RunModule, approval, run_repository};
@@ -47,9 +51,10 @@ impl RunModule {
     /// acceptance, every `running` Run with no owner in this process whose
     /// lease lapsed, or with no claim and accepted more than one lease ago,
     /// and recreates its Run Owner. Returns once those owners exist, with how
-    /// many it recreated; each ends its Run in one chunk of its own. Until
-    /// that chunk lands a decision or a cancellation for the Run waits in the
-    /// Run Inbox; once the Run ended, the record answers.
+    /// many it recreated; each ends its Run in one chunk of its own, after
+    /// the requests the snapshot found waiting in the Run's Run Inbox. A
+    /// request inserted after the snapshot waits until that chunk lands; once
+    /// the Run ended, the record answers it.
     ///
     /// Bootstrap runs the first pass before any listener binds, then on a
     /// fixed cadence of [`Self::sweep_interval`].
@@ -77,32 +82,38 @@ impl RunModule {
             if self.owners.contains(&run.id) {
                 continue;
             }
-            let timers = passed_timers(&mut transaction, &run, now).await?;
-            recoveries.push((run, timers));
+            let mut queued = passed_timers(&mut transaction, &run, now).await?;
+            let waiting = self
+                .inbox
+                .waiting(&mut transaction, &run.workspace_id, &run.id)
+                .await?;
+            queued.extend(waiting.into_iter().map(Delivery::into_message));
+            recoveries.push((run, queued));
         }
         transaction.commit().await?;
         Ok(recoveries
             .into_iter()
-            .map(|(run, timers)| self.schedule_recovery(&run, timers))
+            .map(|(run, queued)| self.schedule_recovery(&run, queued))
             .filter(|recreated| *recreated)
             .count())
     }
 
-    /// Recreates the owner of `run`, with a new claim, its mailbox queued
-    /// with `timers` and then the end; its chunk finishes a termination the
-    /// row records, else interrupts the Run. `false` when an owner for the Run became live
-    /// here meanwhile, or the process began shutting down. The owner is
-    /// registered, so the next sweep leaves the Run to it and the Shutdown
-    /// Drain waits for it.
-    fn schedule_recovery(&self, run: &RunRecord, timers: Vec<Timer>) -> bool {
+    /// Recreates the owner of `run`, with a new claim, its mailbox `queued`
+    /// (the passed timers, then the waiting Run Inbox requests) and then the
+    /// end; its chunk finishes a termination the row records, else the
+    /// cancellation the owner applied, else interrupts the Run. `false` when
+    /// an owner for the Run became live here meanwhile, or the process began
+    /// shutting down. The owner is registered, so the next sweep leaves the
+    /// Run to it and the Shutdown Drain waits for it.
+    fn schedule_recovery(&self, run: &RunRecord, queued: Vec<Message>) -> bool {
         // Held until the owner is registered, so a shutdown counts it.
         let Ok(_admitted) = self.admission.admit() else {
             return false;
         };
         let claim_id = Uuid::new_v4().hyphenated().to_string();
         let (handle, mailbox) = OwnerHandle::new(run.id.clone(), claim_id.clone());
-        for timer in timers {
-            handle.send(Message::Timer(timer));
+        for message in queued {
+            handle.send(message);
         }
         handle.send(Message::Recover);
         let Some(registration) = self.owners.register_recovered(handle.clone()) else {
@@ -157,13 +168,16 @@ impl RunModule {
 
     /// A recovered owner's one chunk ([`end_in_one_chunk`]): takes the Run
     /// over from `taken` and `lease_until`, the claim and lease its row held
-    /// when the sweep found the lease lapsed, with `takeover_claim_id`, expires the `expired` Approval
-    /// Requests, and ends the Run with the termination its row records, else
-    /// timed out past its deadline, else interrupted. A
-    /// termination the row records since the sweep read it was applied
-    /// first: only the queued expiries whose deadline came before it still
-    /// apply. The row is read without a hold; the write is predicated on the
-    /// claim and the head the row showed.
+    /// when the sweep found the lease lapsed, with `takeover_claim_id`;
+    /// writes what the owner `recovered`, in its order; ends the Run with the
+    /// termination its row records, else the cancellation the owner applied,
+    /// else timed out past its deadline, else interrupted; and deletes the
+    /// Run Inbox rows the owner applied. A termination the row records,
+    /// even one recorded since the sweep read it, was applied first: only
+    /// the expiries whose deadline came before it still apply, a
+    /// cancellation is a repeat, and a decision closes its request. The row
+    /// is read without a hold; the write is predicated on the claim and the
+    /// head the row showed.
     ///
     /// # Errors
     ///
@@ -206,45 +220,59 @@ impl RunModule {
         // A termination the row records stands: it was applied first, and
         // closes every request whose deadline had not passed by then: only
         // a deadline strictly before its start keeps its expiry.
-        let expired = match run.termination {
-            Some(recorded) if !recovery.expired.is_empty() => {
-                let before_it = approval::undecided_by(
-                    &mut transaction,
-                    &run,
-                    recorded.started_at_unix_nanos.saturating_sub(1),
-                )
-                .await?;
-                recovery
-                    .expired
+        let steps = &recovery.recovered.steps;
+        let expires_before_it = match run.termination {
+            Some(recorded)
+                if steps
                     .iter()
-                    .filter(|approval| before_it.iter().any(|(id, _)| id == *approval))
-                    .cloned()
-                    .collect()
+                    .any(|step| matches!(step, RecoveryStep::Expire(_))) =>
+            {
+                let before = recorded.started_at_unix_nanos.saturating_sub(1);
+                Some(approval::undecided_by(&mut transaction, &run, before).await?)
             }
-            _ => recovery.expired.to_vec(),
+            _ => None,
         };
-        let termination = if let Some(recorded) = run.termination {
-            recorded
-        } else {
-            let kind = if now >= run.deadline_at_unix_nanos {
-                RunTerminationKind::TimedOut
-            } else {
-                RunTerminationKind::Interrupted
-            };
-            run.request_termination(kind, now)?.termination
-        };
+        let mut events = Vec::new();
+        for step in steps {
+            match step {
+                RecoveryStep::Expire(approval) => {
+                    if expires_before_it
+                        .as_ref()
+                        .is_none_or(|before_it| before_it.iter().any(|(id, _)| id == approval))
+                    {
+                        let mut expiry = DecideWork::expiry(approval.clone());
+                        events.extend(expiry.run(&mut transaction, &run, now).await?);
+                    }
+                }
+                RecoveryStep::Decide { request, record } => {
+                    let record = *record && run.termination.is_none();
+                    let mut decision = DecideWork::decision(request.clone(), record);
+                    events.extend(decision.run(&mut transaction, &run, now).await?);
+                }
+            }
+        }
+        // A cancellation's Event comes after the steps': a decision applied
+        // after it only closes its request, which writes no Event.
         end_in_one_chunk(
             &mut transaction,
             &run,
-            &termination,
-            &expired,
+            recovery.recovered.termination.clone(),
+            events,
             Some(run_repository::Takeover {
                 claim_id: recovery.takeover_claim_id,
                 instance: &self.instance,
             }),
-            now.max(termination.started_at_unix_nanos),
+            now,
         )
         .await?;
+        self.inbox
+            .remove(
+                &mut transaction,
+                recovery.workspace_id,
+                recovery.run_id,
+                &recovery.recovered.rows,
+            )
+            .await?;
         transaction.commit().await?;
         Ok(())
     }
@@ -259,11 +287,11 @@ pub(crate) struct RecoveryWrite<'a> {
     /// The lease expiry the Run row held when the sweep read it.
     pub(crate) lease_until: Option<i64>,
     pub(crate) takeover_claim_id: &'a str,
-    pub(crate) expired: &'a [ApprovalId],
+    pub(crate) recovered: &'a Recovered,
 }
 
-/// The Run's Approval Request timers that passed by `now_unix_nanos`, in
-/// deadline order: each request still undecided. A termination the row
+/// The Run's Approval Request timers that passed by `now_unix_nanos`, as
+/// messages in deadline order: each request still undecided. A termination the row
 /// records was applied at its start: only a request whose deadline came
 /// before it still expires. The Run deadline is judged by the chunk's write,
 /// and no request's deadline comes after it.
@@ -271,7 +299,7 @@ async fn passed_timers(
     transaction: &mut coral_db::Transaction<'_>,
     run: &RunRecord,
     now_unix_nanos: i64,
-) -> Result<Vec<Timer>, Error> {
+) -> Result<Vec<Message>, Error> {
     Ok(approval::undecided_by(transaction, run, now_unix_nanos)
         .await?
         .into_iter()
@@ -279,6 +307,6 @@ async fn passed_timers(
             run.termination
                 .is_none_or(|termination| *deadline < termination.started_at_unix_nanos)
         })
-        .map(|(approval, _)| Timer::Approval(approval))
+        .map(|(approval, _)| Message::Timer(Timer::Approval(approval)))
         .collect())
 }

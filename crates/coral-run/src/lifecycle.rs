@@ -114,6 +114,15 @@ pub(crate) struct RequestedTermination {
 }
 
 impl RequestedTermination {
+    /// A termination the Run row records, written again as it is: the row
+    /// keeps a recorded cancellation's requester.
+    pub(crate) const fn recorded(termination: RunTermination) -> Self {
+        Self {
+            termination,
+            requester: None,
+        }
+    }
+
     pub(crate) fn new(
         kind: RunTerminationKind,
         requester: Option<Principal>,

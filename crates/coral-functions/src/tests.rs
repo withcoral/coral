@@ -1026,16 +1026,16 @@ async fn accepted_saved_function_diagnostics_are_bounded() {
 struct DeclaresReposGet;
 
 #[async_trait::async_trait]
-impl crate::OperationDeclarationReader for DeclaresReposGet {
+impl crate::ToolDeclarationReader for DeclaresReposGet {
     async fn read(
         &self,
         call_paths: &[String],
-    ) -> Result<Vec<crate::OperationDeclaration>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Vec<crate::ToolDeclaration>, Box<dyn std::error::Error + Send + Sync>> {
         Ok(call_paths
             .iter()
             .filter(|path| *path == "coral.providers.github.repos.get")
             .map(|path| {
-                crate::OperationDeclaration::new(
+                crate::ToolDeclaration::new(
                     path.clone(),
                     "export default function (input: { \"owner\": string }): Promise<{ data: string }>;".to_owned(),
                 )
@@ -1048,22 +1048,22 @@ impl crate::OperationDeclarationReader for DeclaresReposGet {
 struct StalledReader;
 
 #[async_trait::async_trait]
-impl crate::OperationDeclarationReader for StalledReader {
+impl crate::ToolDeclarationReader for StalledReader {
     async fn read(
         &self,
         _call_paths: &[String],
-    ) -> Result<Vec<crate::OperationDeclaration>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Vec<crate::ToolDeclaration>, Box<dyn std::error::Error + Send + Sync>> {
         std::future::pending().await
     }
 }
 
-/// A reader that never answers leaves Operations untyped, and the save still
+/// A reader that never answers leaves Tools untyped, and the save still
 /// compiles in time.
 #[tokio::test]
 async fn a_stalled_declaration_read_saves_untyped_in_time() {
     let fixture = SavedFunctionTestModules::new().await;
     let (workspace_id, principal) = fixture.user_workspace("user:stalled-typing").await;
-    let readers: [(&str, &dyn crate::OperationDeclarationReader, Vec<u64>); 2] = [
+    let readers: [(&str, &dyn crate::ToolDeclarationReader, Vec<u64>); 2] = [
         ("a reader that answers", &DeclaresReposGet, vec![2353]),
         ("a reader that never answers", &StalledReader, vec![]),
     ];

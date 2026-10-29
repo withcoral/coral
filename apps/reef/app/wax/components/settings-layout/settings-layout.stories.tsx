@@ -67,7 +67,7 @@ export const WideColumns: Story = {
         </SettingsAside>
       }
     >
-      <Card title="Operations" description="Every operation the source offers." />
+      <Card title="Tools" description="Every tool the source offers." />
     </SettingsWideColumns>
   ),
 }

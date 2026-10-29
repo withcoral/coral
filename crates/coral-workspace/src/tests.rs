@@ -1425,12 +1425,7 @@ async fn remove_membership_authority(
     reason = "one upgrade covers each Membership state the backfill meets"
 )]
 async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere() {
-    let before_backfill = coral_test_support::edited_migration_plan(|migrations| {
-        migrations
-            .into_iter()
-            .filter(|migration| migration.version < 22)
-            .collect()
-    });
+    let before_backfill = coral_test_support::migration_plan_before(22);
     let fixture = TestDatabase::new(&before_backfill)
         .await
         .expect("create database from before the backfill");

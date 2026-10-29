@@ -19,7 +19,7 @@ import { AttemptEnded } from './attempt-ended'
 import { useReadRecipe } from './read-recipe'
 import { NAMESPACE, suggestedNamespace } from './fields'
 import { ConfigurationStep } from './configuration-step'
-import { OperationsStep } from './operations-step'
+import { ToolsStep } from './tools-step'
 import { AccountStep } from './account-step'
 import { StepPage } from './step-frame'
 import type { FormContext, SetupView, StepperPageProps } from './types'
@@ -84,11 +84,11 @@ function StepperAttemptPage({
     attempt.state === 'frozen' ? attempt : { ...attempt, namespace: shownNamespace }
   const { stage, ended } = attemptProgress(local, setup, result)
   const configurationPath = attemptPath(basePath, reviseAttempt(local, 'configuration'))
-  // Back from the account question returns to the operations, the step before
+  // Back from the account question returns to the tools, the step before
   // it. Withdrawing the acceptance is what sends the attempt back there.
-  const operationsPath = attemptPath(basePath, {
+  const toolsPath = attemptPath(basePath, {
     ...reviseAttempt(local),
-    operationsAccepted: false,
+    toolsAccepted: false,
   })
   const setNamespace = (namespace: string) => setAnswers((current) => ({ ...current, namespace }))
   const key = `${setup?.id}:${setup?.configuration?.revision}`
@@ -111,10 +111,10 @@ function StepperAttemptPage({
       recipe={recipeConfiguration}
       retry={<Button.InternalLink to={basePath}>Choose a source</Button.InternalLink>}
     />
-  ) : stage === 'discovery' || stage === 'operations' ? (
+  ) : stage === 'discovery' || stage === 'tools' ? (
     // Discovery is this same step without a list yet: it asks for the sign-in
     // that produces one, in the panel the list will fill.
-    <OperationsStep
+    <ToolsStep
       key={key}
       attempt={local}
       setup={setup}
@@ -140,7 +140,7 @@ function StepperAttemptPage({
       result={result}
       pending={pending}
       callbackUrl={callbackUrl}
-      backPath={operationsPath}
+      backPath={toolsPath}
       documentationUrl={recipeDocumentationUrl}
       disabled={local.kind === 'workspace' && !NAMESPACE.test(local.namespace)}
     />

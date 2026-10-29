@@ -219,18 +219,23 @@ test('the sidebar preference holds for the next load', async () => {
   expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
 })
 
-test('collapsed, the help menu holds the external links', async () => {
-  render('/workspaces/ops', { minimized: true })
-  expect(screen.queryByRole('link', { name: 'Chat on Slack' })).not.toBeInTheDocument()
-  await userEvent.click(screen.getByRole('button', { name: 'Get help' }))
-  const items = ['Chat on Slack', 'Star on GitHub'].map((name) =>
-    screen.getByRole('menuitem', { name }),
-  )
-  expect(items.map((a) => [a.getAttribute('href'), a.getAttribute('target')])).toEqual([
-    ['https://slack.withcoral.com/connect', '_blank'],
-    ['https://github.com/withcoral/coral', '_blank'],
-  ])
-})
+test.each([false, true])(
+  'the help menu holds the external links (collapsed: %s)',
+  async (minimized) => {
+    render('/workspaces/ops', { minimized })
+    expect(screen.queryByRole('link', { name: 'Chat on Slack' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Help and feedback' }))
+    const items = ['Read the docs', 'Chat on Slack', 'Star on GitHub', 'Give feedback'].map(
+      (name) => screen.getByRole('menuitem', { name }),
+    )
+    expect(items.map((a) => [a.getAttribute('href'), a.getAttribute('target')])).toEqual([
+      ['https://withcoral.com/docs', '_blank'],
+      ['https://slack.withcoral.com/connect', '_blank'],
+      ['https://github.com/withcoral/coral', '_blank'],
+      ['https://github.com/withcoral/coral/issues/new', '_blank'],
+    ])
+  },
+)
 
 // Catches: a local deployment, where nobody else can sign in, offering pages
 // to manage other people, or losing the organization's other pages with them.

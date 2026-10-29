@@ -171,7 +171,7 @@ pub(crate) enum Message {
     /// A fenced Invocation gave back its slot under the Fan-out Limit
     /// without an upstream result: the fence denied it, another writer ended
     /// it, it stopped to refresh a token, its dispatch failed before a result
-    /// was recorded (the credentials, the send, a Built-in Operation), or the
+    /// was recorded (the credentials, the send, a Built-in Tool), or the
     /// Run is ending. An Invocation that does record a result frees its slot
     /// through [`Self::InvocationResult`] instead.
     DispatchEnded,
@@ -223,8 +223,9 @@ pub(crate) enum Message {
     /// The self-interrupt's one chunk, or a recovered owner's, is recorded,
     /// or another writer ended or took the Run first.
     Interrupted(Result<(), CommitRejection>),
-    /// A recovered owner has applied every timer that passed: end the Run in
-    /// one chunk. The sweep queues it last.
+    /// A recovered owner has applied every timer that passed and every
+    /// request waiting in the Run Inbox: end the Run in one chunk. The sweep
+    /// queues it last.
     Recover,
     /// The process interrupts the Run: its Shutdown Drain is out, or another
     /// owner registered for the Run.

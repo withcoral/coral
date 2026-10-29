@@ -16,12 +16,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    ArgumentProblem, BuiltinCredentialRoute, BuiltinOperation, Definition, ListedProviderState,
-    NAMESPACE_REASON, derived_schema, operation_result,
+    ArgumentProblem, BuiltinCredentialRoute, BuiltinTool, Definition, ListedProviderState,
+    NAMESPACE_REASON, derived_schema, tool_result,
 };
 use crate::{
-    AuthenticationConfiguration, CredentialField, OperationHints, OperationPresentation,
-    ServerSelection,
+    AuthenticationConfiguration, CredentialField, ServerSelection, ToolHints, ToolPresentation,
 };
 
 mod output;
@@ -36,9 +35,9 @@ pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Configure;
 
 pub(super) fn definition() -> Definition {
     Definition {
-        key: BuiltinOperation::GetProvider.key(),
+        key: BuiltinTool::GetProvider.key(),
         summary: "Read a Provider's configuration",
-        presentation: OperationPresentation::new(
+        presentation: ToolPresentation::new(
             Some("Get provider".to_string()),
             "Read the configuration of one Provider in this Workspace, in the shapes \
              addProvider takes."
@@ -46,7 +45,7 @@ pub(super) fn definition() -> Definition {
             false,
             vec!["providers".to_string()],
             Some(
-                "Pass the namespace of a Provider whose Operations are called under \
+                "Pass the namespace of a Provider whose Tools are called under \
                  coral.providers.<namespace>. A namespace that no Provider holds fails with \
                  provider_not_found. The result never holds a secret or a credential value: \
                  a credential part with source literal and no value holds a fixed value that \
@@ -56,8 +55,8 @@ pub(super) fn definition() -> Definition {
                     .to_string(),
             ),
         ),
-        // Read-only: the default Operation Access State is enabled.
-        hints: OperationHints::new(Some(true), None, Some(true), None),
+        // Read-only: the default Tool Access State is enabled.
+        hints: ToolHints::new(Some(true), None, Some(true), None),
         input: derived_schema::<Arguments>(Contract::Deserialize),
         output: derived_schema::<GetProviderResult>(Contract::Serialize),
     }
@@ -69,7 +68,7 @@ pub(super) fn definition() -> Definition {
 #[schemars(description = "")]
 struct Arguments {
     #[schemars(
-        description = "The Provider Namespace, such as github. The Provider's Operations are \
+        description = "The Provider Namespace, such as github. The Provider's Tools are \
                        called under coral.providers.<namespace>."
     )]
     namespace: String,
@@ -111,10 +110,8 @@ impl GetProviderArguments {
 #[schemars(deny_unknown_fields, description = "")]
 pub struct GetProviderResult {
     /// The Provider Namespace.
-    #[schemars(
-        description = "The Provider Namespace. Its Operations are called under \
-                       coral.providers.<namespace>."
-    )]
+    #[schemars(description = "The Provider Namespace. Its Tools are called under \
+                       coral.providers.<namespace>.")]
     pub namespace: String,
     /// Whether the Provider accepts calls.
     #[schemars(
@@ -134,10 +131,10 @@ pub struct GetProviderResult {
 }
 
 impl GetProviderResult {
-    /// The Operation Result.
+    /// The Tool Result.
     #[must_use]
-    pub fn into_operation_result(self) -> Value {
-        operation_result(&self)
+    pub fn into_tool_result(self) -> Value {
+        tool_result(&self)
     }
 }
 

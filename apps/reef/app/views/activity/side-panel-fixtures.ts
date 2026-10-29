@@ -112,7 +112,7 @@ export const endedRun = (state: Exclude<RunState, 'running'>, overrides: Partial
   run({ state, endedAt: later, durationNanos: '242000000000', ...overrides })
 
 /**
- * The program the gallery's Run accepted. Each operation, log and emission the gallery
+ * The program the gallery's Run accepted. Each tool, log and emission the gallery
  * shows under that Run sits at its own call here (see `programAt`).
  */
 export const source = `const invoices = await coral.providers.billing.listInvoices({ status: 'overdue' })
@@ -161,7 +161,7 @@ export function runDetail(row: RunRow, overrides: Partial<RunDetail> = {}): RunD
   }
 }
 
-/** An operation call of the Run, stored at its call path's call in the accepted program. */
+/** A tool call of the Run, stored at its call path's call in the accepted program. */
 export function invocation(overrides: Partial<InvocationRow> = {}): InvocationRow {
   const callPath = overrides.callPath ?? 'coral.providers.mail.send'
   return {
@@ -173,7 +173,7 @@ export function invocation(overrides: Partial<InvocationRow> = {}): InvocationRo
     task: taskName,
     run: runName,
     provider: `${workspace}/providers/mail`,
-    operation: 'send',
+    tool: 'send',
     callPath,
     state: 'pending',
     outcome: 'unknown',
@@ -208,7 +208,7 @@ export const mailArguments = JSON.stringify({
   body: 'Your invoice is ready for review.',
 })
 
-/** The operation's detail, with the Run it ran in as context, as Coral's loader reads it. */
+/** The tool's detail, with the Run it ran in as context, as Coral's loader reads it. */
 export function invocationDetail(
   row: InvocationRow,
   overrides: Partial<InvocationDetail> = {},
@@ -235,8 +235,8 @@ export const invocationResults = {
   },
   coral_failure: {
     kind: 'coral_failure',
-    code: 'operation_disabled',
-    message: 'The operation coral.providers.mail.send is disabled in this workspace.',
+    code: 'tool_disabled',
+    message: 'The tool coral.providers.mail.send is disabled in this workspace.',
   },
   run_terminated: { kind: 'run_terminated' },
   indeterminate: { kind: 'indeterminate' },
@@ -458,7 +458,7 @@ export function interaction(
     name: `${taskName}/interactions/${tool}-${outcome}`,
     agent: '',
     tool,
-    intent: 'Find the operation that merges a pull request',
+    intent: 'Find the tool that merges a pull request',
     outcome,
     startedAt: at,
     completedAt: outcome === 'unknown' ? null : at,
@@ -484,19 +484,19 @@ export function discovery(
   const targets =
     view.kind === 'search' ? view.page.hits : view.kind === 'describe' ? [view.description] : []
   for (const target of targets) {
-    const operation = providerOperation(target.callPath)
-    // The loader names an untitled operation by its path inside its provider.
-    if (operation && target.title === target.callPath) target.title = operation.relativePath
+    const tool = providerTool(target.callPath)
+    // The loader names an untitled tool by its path inside its provider.
+    if (tool && target.title === target.callPath) target.title = tool.relativePath
     if (options.gone) continue
     const path = functionTarget(target.callPath)
-    target.currentHref = operation
-      ? `/${workspace}/providers/${operation.namespace}/ops/${operation.relativePath}`
+    target.currentHref = tool
+      ? `/${workspace}/providers/${tool.namespace}/tools/${tool.relativePath}`
       : `/${workspace}/functions/${path}`
   }
   return { kind: 'discovery', context, response, view }
 }
 /** The gallery's providers all sit at `coral.providers.<namespace>`, as the loader finds them. */
-function providerOperation(callPath: string) {
+function providerTool(callPath: string) {
   const match = /^coral\.providers\.([^.]+)\.(.+)$/.exec(callPath)
   return match ? { namespace: match[1], relativePath: match[2] } : null
 }
@@ -571,11 +571,11 @@ const programError = (overrides: Partial<ProgramError>): ProgramError => ({
   name: 'Error',
   message: '',
   frames: [],
-  operationCode: '',
-  operationTraceId: '',
-  operationStatus: 0,
-  operationBody: '',
-  operationBodyTruncated: false,
+  toolCode: '',
+  toolTraceId: '',
+  toolStatus: 0,
+  toolBody: '',
+  toolBodyTruncated: false,
   cause: null,
   errors: [],
   truncated: false,
@@ -585,7 +585,7 @@ const programError = (overrides: Partial<ProgramError>): ProgramError => ({
   ...overrides,
 })
 
-/** A grouped program error with a cause, operation identity, and bounded content. */
+/** A grouped program error with a cause, tool identity, and bounded content. */
 export const groupedError = programError({
   name: 'AggregateError',
   message: '2 of 24 reminders failed',
@@ -595,10 +595,10 @@ export const groupedError = programError({
   ],
   errors: [
     programError({
-      name: 'CoralOperationError',
+      name: 'CoralToolError',
       message: 'Mail rejected the recipient address.',
-      operationCode: 'upstream_rejected',
-      operationTraceId: '4bf92f3577b34da6a3ce929d0e0e4736',
+      toolCode: 'upstream_rejected',
+      toolTraceId: '4bf92f3577b34da6a3ce929d0e0e4736',
       frames: [{ source: 'program.ts', line: 4, column: 11 }],
     }),
     programError({
@@ -621,7 +621,7 @@ export const groupedError = programError({
 export const failureMessages = {
   program_rejected: 'The program threw before it returned a value.',
   invalid_program_value: 'The program returned a value that is not JSON: undefined.',
-  resource_limit_exceeded: 'The program made more than 1000 operation calls.',
+  resource_limit_exceeded: 'The program made more than 1000 tool calls.',
   memory_limit_exceeded: 'The program used more than 64 MiB of memory.',
   program_execution_failed: 'The program failed while it ran.',
   run_authority_lost: 'The agent that started this run lost access to the workspace.',

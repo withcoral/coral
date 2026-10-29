@@ -127,15 +127,15 @@ async fn resource_references_preserve_position_and_only_read_with_the_issuing_pr
         }).expect(1).mount(&server).await;
     let catalog = catalog(&server.uri());
     let tool = catalog
-        .operations()
+        .tools()
         .iter()
         .find(|op| op.key().as_str() == "mixed")
         .expect("tool");
     let read = catalog
-        .operations()
+        .tools()
         .iter()
         .find(|op| op.key().as_str() == "resources/read")
-        .expect("resource Operation");
+        .expect("resource Tool");
     let resources = Arc::new(McpResources::default());
     let upstream = McpUpstream::new(
         DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
@@ -150,7 +150,7 @@ async fn resource_references_preserve_position_and_only_read_with_the_issuing_pr
     )
     .expect("plan");
     let outcome = upstream.send(dispatch).await.expect("links");
-    let content = &outcome.operation_result()["data"]["content"];
+    let content = &outcome.tool_result()["data"]["content"];
     assert_eq!(content[0], json!({"type": "text", "text": "before"}));
     assert_eq!(content[1]["name"], "report");
     assert_eq!(content[1]["title"], "Report");
@@ -161,12 +161,7 @@ async fn resource_references_preserve_position_and_only_read_with_the_issuing_pr
     assert_eq!(content[1]["_meta"], json!({"vendor/version": 2}));
     assert_eq!(content[2]["resource"]["text"], "inline");
     assert_eq!(content[3], json!({"type": "text", "text": "after"}));
-    assert!(
-        !outcome
-            .operation_result()
-            .to_string()
-            .contains("private://")
-    );
+    assert!(!outcome.tool_result().to_string().contains("private://"));
     assert_eq!(
         server.received_requests().await.expect("requests").len(),
         3,
@@ -223,31 +218,23 @@ async fn resource_references_preserve_position_and_only_read_with_the_issuing_pr
     // `isError` belongs to tool results; on a read it is an extension field.
     assert_eq!(outcome.class(), coral_upstream::OutcomeClass::Success);
     assert_eq!(
-        outcome.operation_result()["data"]["contents"][0]["text"],
+        outcome.tool_result()["data"]["contents"][0]["text"],
         "report body"
     );
     assert_eq!(
-        outcome.operation_result()["data"]["contents"][0]["_meta"],
+        outcome.tool_result()["data"]["contents"][0]["_meta"],
         json!({"vendor/page": 1})
     );
     assert_eq!(
-        outcome.operation_result()["metadata"],
+        outcome.tool_result()["metadata"],
         json!({"kind": "mcp", "_meta": {"vendor/read": true}})
     );
     assert_eq!(
-        outcome.operation_result()["data"]["content"],
+        outcome.tool_result()["data"]["content"],
         json!(["read extension, not a tool block"])
     );
-    assert_eq!(
-        outcome.operation_result()["data"]["ttlMs"],
-        "provider extension"
-    );
-    assert!(
-        !outcome
-            .operation_result()
-            .to_string()
-            .contains("private://")
-    );
+    assert_eq!(outcome.tool_result()["data"]["ttlMs"], "provider extension");
+    assert!(!outcome.tool_result().to_string().contains("private://"));
     assert_eq!(server.received_requests().await.expect("requests").len(), 6);
 }
 
@@ -256,13 +243,13 @@ async fn call_once(
     limit: usize,
 ) -> Result<coral_upstream::McpOutcome, coral_upstream::Error> {
     let catalog = catalog(&server.uri());
-    let operation = catalog
-        .operations()
+    let tool = catalog
+        .tools()
         .iter()
         .find(|op| op.key().as_str() == "mixed")
         .expect("tool");
     let dispatch = ReadyMcpDispatch::plan(
-        operation,
+        tool,
         &json!({"page": 2}),
         "provider-a",
         Arc::new(McpResources::default()),
@@ -295,7 +282,7 @@ async fn request_associated_sse_preserves_an_empty_complete_result_and_absent_fi
         .await
         .expect("SSE complete response");
     assert_eq!(
-        outcome.operation_result(),
+        outcome.tool_result(),
         &json!({"data": {"content": []}, "metadata": {"kind": "mcp"}})
     );
     server.verify().await;
@@ -318,16 +305,16 @@ async fn request_associated_sse_preserves_an_empty_complete_result_and_absent_fi
 #[test]
 fn mcp_request_limit_includes_the_wire_envelope_before_dispatch() {
     let catalog = catalog("http://127.0.0.1:1/mcp");
-    let operation = catalog
-        .operations()
+    let tool = catalog
+        .tools()
         .iter()
         .find(|op| op.key().as_str() == "mixed")
-        .expect("Operation");
+        .expect("Tool");
     let arguments = json!({"text":"x".repeat(950)});
     assert!(arguments.to_string().len() < 1024);
     assert!(matches!(
         ReadyMcpDispatch::plan(
-            operation,
+            tool,
             &arguments,
             "provider-a",
             Arc::new(McpResources::default()),
@@ -350,16 +337,16 @@ async fn mcp_request_at_the_wire_byte_limit_is_sent_once() {
     )
     .await;
     let catalog = catalog(&server.uri());
-    let operation = catalog
-        .operations()
+    let tool = catalog
+        .tools()
         .iter()
         .find(|op| op.key().as_str() == "mixed")
-        .expect("Operation");
+        .expect("Tool");
     let empty_wire = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mixed","arguments":{"text":""},"_meta":{"progressToken":0}}}"#;
     let arguments = json!({"text":"x".repeat(1024 - empty_wire.len())});
     let limits = coral_value::ValueLimits::new(512, 2048, 1024, 4096).expect("limits");
     let dispatch = ReadyMcpDispatch::plan(
-        operation,
+        tool,
         &arguments,
         "provider-a",
         Arc::new(McpResources::default()),
@@ -387,7 +374,7 @@ async fn mcp_request_at_the_wire_byte_limit_is_sent_once() {
     let oversized = json!({"text":"x".repeat(1025 - empty_wire.len())});
     assert!(matches!(
         ReadyMcpDispatch::plan(
-            operation,
+            tool,
             &oversized,
             "provider-a",
             Arc::new(McpResources::default()),
@@ -622,15 +609,15 @@ async fn a_json_rpc_error_on_resources_read_is_a_typed_rejection_without_a_listi
             .await;
         let catalog = catalog(&server.uri());
         let tool = catalog
-            .operations()
+            .tools()
             .iter()
             .find(|op| op.key().as_str() == "mixed")
             .expect("tool");
         let read = catalog
-            .operations()
+            .tools()
             .iter()
             .find(|op| op.key().as_str() == "resources/read")
-            .expect("resource Operation");
+            .expect("resource Tool");
         let resources = Arc::new(McpResources::default());
         let upstream = McpUpstream::new(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
@@ -645,8 +632,7 @@ async fn a_json_rpc_error_on_resources_read_is_a_typed_rejection_without_a_listi
         )
         .expect("plan");
         let outcome = upstream.send(dispatch).await.expect("link");
-        let args =
-            json!({"reference": outcome.operation_result()["data"]["content"][0]["resource"]});
+        let args = json!({"reference": outcome.tool_result()["data"]["content"][0]["resource"]});
         let dispatch = ReadyMcpDispatch::plan(
             read,
             &args,
@@ -737,7 +723,7 @@ async fn a_refused_initialize_is_an_incomplete_request_not_a_rejection() {
             .any(|request| request
                 .body_json::<Value>()
                 .is_ok_and(|value| value["method"] == "tools/call")),
-        "the Operation request is never sent without a session"
+        "the Tool request is never sent without a session"
     );
 }
 
@@ -764,7 +750,7 @@ async fn tool_extension_fields_do_not_change_the_result_method() {
             .await
             .expect("extensions cannot reclassify a complete tool result");
         assert_eq!(
-            outcome.operation_result(),
+            outcome.tool_result(),
             &json!({"data": expected, "metadata": {"kind": "mcp"}})
         );
         server.verify().await;
@@ -806,7 +792,7 @@ async fn complete_tool_outcomes_preserve_content_and_only_is_error_is_an_error_r
             .remove("_meta")
             .expect("metadata");
         assert_eq!(
-            outcome.operation_result(),
+            outcome.tool_result(),
             &json!({"data": result, "metadata": {"kind": "mcp", "_meta": meta}})
         );
         assert_eq!(
@@ -895,14 +881,14 @@ async fn bearer_contract_sends_the_host_credential_and_credential_free_dispatch_
             AuthenticationConfiguration::Bearer
         ))),
     );
-    let operation = authenticated
-        .operations()
+    let tool = authenticated
+        .tools()
         .iter()
-        .find(|operation| operation.relative_path() == "mixed")
+        .find(|tool| tool.relative_path() == "mixed")
         .expect("tool");
     let resources = Arc::new(McpResources::default());
     let mut ready = ReadyMcpDispatch::plan(
-        operation,
+        tool,
         &json!({"page": 2}),
         "provider",
         resources.clone(),
@@ -916,7 +902,7 @@ async fn bearer_contract_sends_the_host_credential_and_credential_free_dispatch_
         .unwrap()
         .send(
             ReadyMcpDispatch::plan(
-                operation,
+                tool,
                 &json!({"page": 2}),
                 "provider",
                 resources.clone(),
@@ -939,16 +925,16 @@ async fn bearer_contract_sends_the_host_credential_and_credential_free_dispatch_
     .send(ready)
     .await
     .expect("authenticated call");
-    assert_eq!(outcome.operation_result()["data"]["content"], json!([]));
+    assert_eq!(outcome.tool_result()["data"]["content"], json!([]));
 
     let credential_free = catalog(&url);
-    let operation = credential_free
-        .operations()
+    let tool = credential_free
+        .tools()
         .iter()
-        .find(|operation| operation.relative_path() == "mixed")
+        .find(|tool| tool.relative_path() == "mixed")
         .expect("tool");
     let mut ready = ReadyMcpDispatch::plan(
-        operation,
+        tool,
         &json!({"page": 2}),
         "provider",
         resources,
@@ -964,7 +950,7 @@ async fn bearer_contract_sends_the_host_credential_and_credential_free_dispatch_
 }
 
 #[tokio::test]
-async fn mcp_operations_send_confirmed_service_headers_without_credentials() {
+async fn mcp_tools_send_confirmed_service_headers_without_credentials() {
     let server = server(json!({"content": []})).await;
     let snapshot = McpDiscoverySnapshot::parse(&json!({
         "protocolVersion": "2025-11-25", "serverInfo": {"name": "fixture", "version": "1"},
@@ -982,7 +968,7 @@ async fn mcp_operations_send_confirmed_service_headers_without_credentials() {
         panic!("catalog");
     };
     let dispatch = ReadyMcpDispatch::plan(
-        catalog.operations().first().unwrap(),
+        catalog.tools().first().unwrap(),
         &json!({"page": 2}),
         "provider-a",
         Arc::new(McpResources::default()),

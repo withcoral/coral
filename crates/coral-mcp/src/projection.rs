@@ -4,6 +4,7 @@ mod discovery;
 mod run;
 
 use coral_task::TaskOutcome;
+use coral_workspace::TraceId;
 use rmcp::model::CallToolResult;
 use schemars::{
     JsonSchema, Schema,
@@ -28,20 +29,41 @@ pub(crate) fn success(value: impl Serialize) -> Result<CallToolResult, ToolFailu
     Ok(CallToolResult::structured(value))
 }
 
-pub(crate) fn failure(error: &ToolFailure) -> CallToolResult {
+/// A Coral-owned tool failure, named by the trace of the call that failed.
+pub(crate) fn failure(error: &ToolFailure, trace: &TraceId) -> CallToolResult {
     CallToolResult::structured_error(
-        serde_json::to_value(error).expect("string-only tool failures serialize"),
+        serde_json::to_value(TracedFailure {
+            code: error.code,
+            message: &error.message,
+            trace_id: trace.as_str(),
+        })
+        .expect("string-only tool failures serialize"),
     )
 }
 
-#[derive(Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+/// Why Coral could not complete a tool call. Its result names the call's
+/// trace beside it, never inside caller-influenced text.
 pub(crate) struct ToolFailure {
     code: &'static str,
     message: String,
 }
 
+#[derive(Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "ToolFailure")]
+struct TracedFailure<'a> {
+    code: &'static str,
+    message: &'a str,
+    /// The W3C trace identifier of this tool call. Give it to the operator
+    /// to find the call in Coral's telemetry. It grants no authority.
+    trace_id: &'a str,
+}
+
 impl ToolFailure {
+    pub(crate) const fn code(&self) -> &'static str {
+        self.code
+    }
+
     pub(crate) fn stable(code: &'static str, message: &'static str) -> Self {
         Self {
             code,
@@ -75,7 +97,7 @@ pub(crate) struct StartedTask {
     #[schemars(schema_with = "crate::arguments::identifier_schema")]
     pub(crate) task_id: String,
     /// The namespaces of the Providers you can search, and coral.workspace for
-    /// Coral's own operations: the values `search` accepts as `provider`.
+    /// the Built-in Provider's tools: the values `search` accepts as `provider`.
     pub(crate) providers: Vec<String>,
 }
 
@@ -119,7 +141,7 @@ impl From<TaskOutcome> for Outcome {
 )]
 enum ToolOutput<T> {
     Success(T),
-    Failure(ToolFailure),
+    Failure(TracedFailure<'static>),
 }
 
 pub(crate) fn output_schema<T: JsonSchema>() -> Map<String, Value> {

@@ -234,12 +234,13 @@ export const SummaryOverview: Story = {
                 needsSetup: 0,
               },
             ],
-            operations: [
-              { callPath: 'coral.providers.github.getIssue', calls: 81 },
-              { callPath: 'coral.providers.linear.searchIssues', calls: 40 },
-              { callPath: 'coral.providers.gmail.sendMessage', calls: 16 },
+            tools: [
+              { callPath: 'coral.providers.github.getIssue', calls: 81, callers: [] },
+              { callPath: 'coral.providers.linear.searchIssues', calls: 40, callers: [] },
+              { callPath: 'coral.providers.gmail.sendMessage', calls: 16, callers: [] },
             ],
             approvals: { approved: 5, declined: 2, medianWaitSeconds: 95 },
+            callers: [],
             contextImpactBytes: '-3204411',
             contextActors: [
               { key: 'you', label: 'You', bytes: '-2900000' },

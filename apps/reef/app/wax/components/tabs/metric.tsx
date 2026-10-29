@@ -14,27 +14,26 @@ export function MetricList({
   return <BaseTabs.List className={classNames(styles.metricList, className)} {...props} />
 }
 
-export interface MetricTabProps {
-  value: string
-  icon: IconName
-  label: string
+/** A number and the lines under it. */
+export interface MetricFigure {
   /** The number, as you want it read. */
   metric: string
   /** Lines under the number, one fact each. */
   details?: readonly string[]
-  variant?: 'success' | 'error' | 'tertiary'
 }
 
-/** A tab that shows a metric: its label, its value, and a line or two that explain it. */
-export function MetricTab({ value, icon, label, metric, details = [], variant }: MetricTabProps) {
+export interface MetricTabProps extends MetricFigure {
+  value: string
+  icon: IconName
+  label: string
+  variant?: 'success' | 'error' | 'tertiary'
+  /** Numbers beside the first, such as its parts. */
+  parts?: readonly MetricFigure[]
+}
+
+function Figure({ metric, details = [], variant }: MetricFigure & Pick<MetricTabProps, 'variant'>) {
   return (
-    <BaseTabs.Tab value={value} className={styles.metricTab}>
-      <span className={styles.metricLabel}>
-        <Icon name={icon} size="14" color="tertiary" />
-        <Typography.BodySmall as="span" variant="tertiary">
-          {label}
-        </Typography.BodySmall>
-      </span>
+    <span className={styles.metricFigure}>
       <Typography.HeadingMedium as="span" variant={variant}>
         {metric}
       </Typography.HeadingMedium>
@@ -49,6 +48,27 @@ export function MetricTab({ value, icon, label, metric, details = [], variant }:
           {detail}
         </Typography.BodySmall>
       ))}
+    </span>
+  )
+}
+
+/** A tab that shows a metric: its label, its value, and a line or two that explain it. */
+export function MetricTab({ value, icon, label, variant, parts = [], ...figure }: MetricTabProps) {
+  return (
+    <BaseTabs.Tab value={value} className={styles.metricTab}>
+      <span className={styles.metricLabel}>
+        <Icon name={icon} size="14" color="tertiary" />
+        <Typography.BodySmall as="span" variant="tertiary">
+          {label}
+        </Typography.BodySmall>
+      </span>
+      <span className={styles.metricFigures}>
+        <Figure {...figure} variant={variant} />
+        {parts.map((part, index) => (
+          // Two parts can read the same.
+          <Figure key={index} {...part} />
+        ))}
+      </span>
     </BaseTabs.Tab>
   )
 }

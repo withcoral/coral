@@ -14,7 +14,7 @@ import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
-// Selection changes on the page (provider, operation) reuse the
+// Selection changes on the page (provider, tool) reuse the
 // tree: they are one table, and the address only names what is revealed. A
 // child loader still checks Workspace authority on each. Refreshes, mutations,
 // query changes, and leaving the page reload it.
@@ -27,13 +27,14 @@ export function shouldRevalidate({
   if ((formMethod && formMethod.toUpperCase() !== 'GET') || actionStatus !== undefined) return true
   if (currentUrl.search !== nextUrl.search || currentUrl.pathname === nextUrl.pathname) return true
   // `new` is the Add provider page, whose result must reload the catalog.
-  const pagePath = /^(\/workspaces\/[^/]+\/providers)(?:\/(?!new(?:\/|$))[^/]+(?:\/ops\/[^/]+)?)?$/
+  const pagePath =
+    /^(\/workspaces\/[^/]+\/providers)(?:\/(?!new(?:\/|$))[^/]+(?:\/tools\/[^/]+)?)?$/
   const current = pagePath.exec(currentUrl.pathname)
   const next = pagePath.exec(nextUrl.pathname)
   return !current || !next || current[1] !== next[1]
 }
 
-/** Loads the Workspace tree independently of operation selection. */
+/** Loads the Workspace tree independently of tool selection. */
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
     const { api, workspace: w } = await authorizedWorkspace(request, context, params.workspace)
@@ -47,12 +48,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const selectedProvider = params.provider ? uuidOr404(params.provider) : null
     if (selectedProvider && !providers.some((i) => i.id === selectedProvider))
       throw new Response('Not found', { status: 404, headers: privateHeaders })
-    const selectedOperation = params.operation ?? null
+    const selectedTool = params.tool ?? null
     if (
-      selectedOperation &&
+      selectedTool &&
       !providers
         .find((i) => i.id === selectedProvider)
-        ?.operations.some((o) => o.relativePath === selectedOperation)
+        ?.tools.some((o) => o.relativePath === selectedTool)
     )
       throw new Response('Not found', { status: 404, headers: privateHeaders })
     return data(
@@ -61,7 +62,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         providers,
         recipes: RECIPE_CHOICES,
         selectedProvider,
-        selectedOperation,
+        selectedTool,
         form: formContext(context),
       },
       { headers: privateHeaders },

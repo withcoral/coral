@@ -10,19 +10,15 @@ use super::provider_setup::{
 use super::*;
 
 /// A Program that calls `updateProvider` with exactly `arguments` and returns
-/// its Operation Result, or the failure it catches.
+/// its Tool Result, or the failure it catches.
 fn update_provider(arguments: &serde_json::Value) -> RunSubmission {
     workspace_call("updateProvider", &arguments.to_string())
 }
 
-/// Runs a Built-in Operation and returns its result, or the failure it catches.
-async fn call(
-    scope: &AdminScope,
-    operation: &str,
-    arguments: &serde_json::Value,
-) -> serde_json::Value {
+/// Runs a Built-in Tool and returns its result, or the failure it catches.
+async fn call(scope: &AdminScope, tool: &str, arguments: &serde_json::Value) -> serde_json::Value {
     scope
-        .outcome(workspace_call(operation, &arguments.to_string()))
+        .outcome(workspace_call(tool, &arguments.to_string()))
         .await
 }
 
@@ -53,14 +49,14 @@ async fn publications_since(
 }
 
 // Catches: an update that resets a field the call omits, or that loses a kept
-// Operation's Call Path or Operation Access State.
+// Tool's Call Path or Tool Access State.
 #[tokio::test]
 async fn coral_publishes_a_change_nobody_needs_to_act_on() {
     let scope = AdminScope::new("user:update-provider").await;
     scope.publish_weather().await;
     let forecast = "coral.providers.weather.getForecast";
     scope
-        .set_access_to(forecast, OperationAccessState::Disabled)
+        .set_access_to(forecast, ToolAccessState::Disabled)
         .await;
     let before = saved(&scope, "weather").await;
     let events = scope.lifecycle_events().await;
@@ -87,8 +83,8 @@ async fn coral_publishes_a_change_nobody_needs_to_act_on() {
                 "displayName": "Forecasts",
                 "credentialRoute": "none",
                 "authentication": "none",
-                // The kept Operation stays disabled, so the Program cannot call it.
-                "operations": 0,
+                // The kept Tool stays disabled, so the Program cannot call it.
+                "tools": 0,
                 "accountRequired": false,
             },
             "metadata": { "kind": "builtin" },
@@ -111,17 +107,17 @@ async fn coral_publishes_a_change_nobody_needs_to_act_on() {
         ),
         "{published:?}"
     );
-    // The kept Operation keeps its Call Path, so it resolves, and its policy.
+    // The kept Tool keeps its Call Path, so it resolves, and its policy.
     let decision = scope
         .fixture
         .policies
         .decision(&scope.owner_user(), &scope.policy_target(forecast).await)
         .await
         .unwrap();
-    assert_eq!(decision.access_state(), OperationAccessState::Disabled);
+    assert_eq!(decision.access_state(), ToolAccessState::Disabled);
 }
 
-/// The Weather document with a second Operation, `getAlerts`.
+/// The Weather document with a second Tool, `getAlerts`.
 const WITH_ALERTS: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version":"2"},"security":[],"servers":[{"url":"https://weather.example"}],"paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"OK"}}}},"/alerts":{"get":{"operationId":"getAlerts","responses":{"200":{"description":"OK"}}}}}}"#;
 /// [`WITH_ALERTS`] with no responses for `getForecast`, which cannot run then.
 const BROKEN_FORECAST: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version":"2"},"security":[],"servers":[{"url":"https://weather.example"}],"paths":{"/forecast":{"get":{"operationId":"getForecast"}},"/alerts":{"get":{"operationId":"getAlerts","responses":{"200":{"description":"OK"}}}}}}"#;
@@ -134,12 +130,9 @@ fn openapi_document(document: &str) -> serde_json::Value {
 /// approval, so each test reads the call's own outcome.
 async fn unattended(user: &str) -> AdminScope {
     let scope = AdminScope::new(user).await;
-    for operation in ["addProvider", "updateProvider"] {
+    for tool in ["addProvider", "updateProvider"] {
         scope
-            .set_access_to(
-                &format!("coral.workspace.{operation}"),
-                OperationAccessState::Enabled,
-            )
+            .set_access_to(&format!("coral.workspace.{tool}"), ToolAccessState::Enabled)
             .await;
     }
     scope
@@ -203,7 +196,7 @@ async fn a_rename_alone_keeps_the_generation() {
 }
 
 // Catches: a refresh that reads a URL other than the one saved when the call
-// runs, or a source that only adds Operations waiting for a person.
+// runs, or a source that only adds Tools waiting for a person.
 #[tokio::test]
 async fn refresh_reads_the_source_url_saved_when_the_call_runs() {
     let scope = unattended("user:update-refresh").await;
@@ -211,7 +204,7 @@ async fn refresh_reads_the_source_url_saved_when_the_call_runs() {
     let second = document_server(WITH_ALERTS).await;
     create_weather(&scope, url_source(&first)).await;
 
-    // A new source that only adds an Operation publishes at once.
+    // A new source that only adds a Tool publishes at once.
     let replaced = call(
         &scope,
         "updateProvider",
@@ -223,10 +216,7 @@ async fn refresh_reads_the_source_url_saved_when_the_call_runs() {
         Some(&serde_json::json!("published")),
         "{replaced}"
     );
-    assert_eq!(
-        replaced.pointer("/data/operations"),
-        Some(&serde_json::json!(2))
-    );
+    assert_eq!(replaced.pointer("/data/tools"), Some(&serde_json::json!(2)));
 
     let (first_before, second_before) = (fetches(&first).await, fetches(&second).await);
     let refreshed = call(
@@ -265,7 +255,7 @@ enum Saved {
 }
 
 // Catches: Coral publishing a change only a person can confirm (a source that
-// drops or breaks an Operation Programs call now, a new way to sign in, a new Credential
+// drops or breaks a Tool Programs call now, a new way to sign in, a new Credential
 // Route, or an application's secret), or a link that confirms the change for
 // the person, opens another task than Reef starts for the same change, or
 // loses the route the Program asked for.
@@ -290,7 +280,7 @@ async fn a_change_that_needs_a_person_returns_the_update_page() {
             "refresh",
             "",
         ),
-        // A source that keeps an Operation Programs call now, but breaks it.
+        // A source that keeps a Tool Programs call now, but breaks it.
         (
             Saved::Document,
             serde_json::json!({ "source": openapi_document(BROKEN_FORECAST) }),
@@ -412,7 +402,7 @@ async fn each_rejection_names_its_cause_and_changes_nothing() {
             serde_json::json!({ "namespace": "weather", "refresh": true }),
             serde_json::json!({
                 "code": "invalid_input",
-                "message": "Operation arguments are invalid at `refresh`: the Provider was read \
+                "message": "Tool arguments are invalid at `refresh`: the Provider was read \
                             from an uploaded document, which Coral cannot read again; send \
                             `source` with the new document instead",
             }),
@@ -422,7 +412,7 @@ async fn each_rejection_names_its_cause_and_changes_nothing() {
             serde_json::json!({ "namespace": "weather", "credentialRoute": "caller" }),
             serde_json::json!({
                 "code": "invalid_input",
-                "message": "Operation arguments are invalid at `credentialRoute`: the source \
+                "message": "Tool arguments are invalid at `credentialRoute`: the source \
                             declares no credential; use `none`, or give `authentication` to say \
                             how a person signs in",
             }),
@@ -440,7 +430,7 @@ async fn each_rejection_names_its_cause_and_changes_nothing() {
             serde_json::json!({ "namespace": "weather", "displayName": " " }),
             serde_json::json!({
                 "code": "invalid_input",
-                "message": "Operation arguments are invalid at `displayName`: Provider display \
+                "message": "Tool arguments are invalid at `displayName`: Provider display \
                             name must be non-blank, contain no control or format characters, \
                             and be at most 256 bytes",
             }),

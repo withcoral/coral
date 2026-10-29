@@ -2,8 +2,8 @@ import { Typography } from '@/wax/components'
 import * as Table from '@/wax/components/table'
 import type { ActivitySummaryData } from '@/lib/activity-summary'
 import { duration, number } from './format'
-import { fixFor, operationRows, type SummaryProvider } from './operations'
-import { Note, OperationName, Reason, Section, StatCards } from './parts'
+import { fixFor, toolRows, type SummaryProvider } from './tools'
+import { Note, ToolName, Reason, Section, StatCards } from './parts'
 import * as styles from './summary.css'
 
 /** What needs you: the stops you fix, what people decided, and the calls they did not allow. */
@@ -17,7 +17,7 @@ export function NeedsYouLens({
   const { approvals } = summary
   // One cursor runs through both tables, so ↑ and ↓ read them as one list.
   const cursor = Table.useRowCursor()
-  const rows = operationRows(summary, providers)
+  const rows = toolRows(summary, providers)
   const toFix = rows
     .flatMap((row) =>
       (['blocked', 'needsSetup'] as const)
@@ -39,7 +39,7 @@ export function NeedsYouLens({
             variant="card"
             layout="fixed"
             columns={[
-              { label: 'Operation', width: { fill: 3 } },
+              { label: 'Tool', width: { fill: 3 } },
               { label: 'Reason', width: { fill: 1.6 } },
               { label: 'Calls', width: 72, align: 'right' },
             ]}
@@ -51,7 +51,7 @@ export function NeedsYouLens({
                 return (
                   <Table.Row key={`${row.callPath}/${reason}`} to={fix}>
                     <Table.Cell title={row.callPath}>
-                      <OperationName row={row} to={fix} />
+                      <ToolName row={row} to={fix} />
                     </Table.Cell>
                     <Table.Cell>
                       <Reason reason={reason} />
@@ -90,18 +90,18 @@ export function NeedsYouLens({
             variant="card"
             layout="fixed"
             columns={[
-              { label: 'Operation', width: { fill: 3 } },
+              { label: 'Tool', width: { fill: 3 } },
               { label: 'Not allowed', width: { fill: 1.6 } },
             ]}
           >
             <Table.Head />
             <Table.Body>
               {notAllowed.map((row) => {
-                const to = row.pages?.operation
+                const to = row.pages?.tool
                 return (
                   <Table.Row key={row.callPath} to={to}>
                     <Table.Cell title={row.callPath}>
-                      <OperationName row={row} to={to} />
+                      <ToolName row={row} to={to} />
                     </Table.Cell>
                     <Table.Cell>
                       <Typography.BodySmall as="span" className={styles.count}>

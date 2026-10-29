@@ -7,7 +7,7 @@ import { withOwnerSession } from '../../../../support/actors.ts'
 import { managementClients } from '../../../../support/management.ts'
 import { oauthApiServer } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   chooseAccount,
   chooseFile,
   collectDataResponses,
@@ -104,7 +104,7 @@ test('Workspace OAuth supports external-browser consent and application secret r
         await page.getByRole('radio', { name: 'Use S256 PKCE', exact: true }).check()
         await page.getByLabel('Client secret', { exact: true }).fill(secret)
         await confirmConfiguration(page)
-        await acceptOperations(page)
+        await acceptTools(page)
         await chooseAccount(page, 'own-later')
         await page.getByRole('button', { name: 'Add provider', exact: true }).waitFor()
         await page.getByRole('button', { name: 'Add provider', exact: true }).click()

@@ -7,7 +7,7 @@ const MESSAGE_BYTES: usize = 1024;
 const NAME_BYTES: usize = 64;
 const STACK_BYTES: usize = 16 * 1024;
 const ERROR_JSON_BYTES: usize = 8 * 1024;
-const OPERATION_BODY_BYTES: usize = 1024;
+const TOOL_BODY_BYTES: usize = 1024;
 
 /// An authored location in the existing Program error's stack.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,12 +31,12 @@ impl fmt::Display for ProgramErrorFrame {
     }
 }
 
-/// Trusted fields of a host-created `OperationError`, read from host-only
+/// Trusted fields of a host-created `ToolError`, read from host-only
 /// private state rather than from properties a Program can redefine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProgramOperationError {
-    /// Stable Operation error code; absent on Program-created errors.
+pub struct ProgramToolError {
+    /// Stable Tool error code; absent on Program-created errors.
     pub code: String,
     /// Existing correlation identifier, if supplied to the Program.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,8 +52,8 @@ pub struct ProgramOperationError {
     pub body_truncated: bool,
 }
 
-/// The status and bounded encoded `data` of one Operation Result.
-pub(crate) fn operation_outcome_excerpt(outcome_json: &str) -> (Option<u16>, Option<String>, bool) {
+/// The status and bounded encoded `data` of one Tool Result.
+pub(crate) fn tool_outcome_excerpt(outcome_json: &str) -> (Option<u16>, Option<String>, bool) {
     let Ok(outcome) = serde_json::from_str::<serde_json::Value>(outcome_json) else {
         return (None, None, false);
     };
@@ -64,7 +64,7 @@ pub(crate) fn operation_outcome_excerpt(outcome_json: &str) -> (Option<u16>, Opt
     let Some(body) = outcome.get("data").map(serde_json::Value::to_string) else {
         return (status, None, false);
     };
-    let excerpt = prefix(&body, OPERATION_BODY_BYTES);
+    let excerpt = prefix(&body, TOOL_BODY_BYTES);
     let truncated = excerpt.len() < body.len();
     (status, Some(excerpt.to_string()), truncated)
 }
@@ -79,9 +79,9 @@ pub struct ProgramError {
     pub message: String,
     /// Mapped authored locations, excluding generated and host frames.
     pub frames: Vec<ProgramErrorFrame>,
-    /// Existing fields available only on a privately marked `OperationError`.
+    /// Existing fields available only on a privately marked `ToolError`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub operation: Option<ProgramOperationError>,
+    pub tool: Option<ProgramToolError>,
     /// Existing cause, independently bounded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cause: Option<Box<Self>>,
@@ -140,7 +140,7 @@ impl ProgramError {
             name: "Error".to_string(),
             message: message.to_string(),
             frames: Vec::new(),
-            operation: None,
+            tool: None,
             cause: None,
             errors: Vec::new(),
             truncated: false,
@@ -274,7 +274,7 @@ fn read_error<'s>(
     } else {
         error.frames = crate::source_map::authored_frames(&native_stack(scope, value), source_map);
     }
-    error.operation = crate::runtime::operation_error_fields(scope, object);
+    error.tool = crate::runtime::tool_error_fields(scope, object);
     if error.frames.len() > 16 {
         error.frames.truncate(16);
         error.truncated = true;

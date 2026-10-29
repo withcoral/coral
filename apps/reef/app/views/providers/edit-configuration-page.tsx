@@ -14,7 +14,7 @@ import { trail } from '@/views/management/layout'
 import { Fields } from '@/views/management/forms'
 import { DocumentSubmitButton } from '@/components/document-submit-button'
 import { ConfigurationStep } from './configuration-step'
-import { OperationsSection, OperationsSummary } from './operations-section'
+import { ToolsSection, ToolsSummary } from './tools-section'
 import { RefreshLayout } from './update-source'
 import { DiscoveryStep, SignInStatus } from './setup-steps'
 import { usePublication } from './publication-form'
@@ -44,7 +44,7 @@ export function EditConfigurationPage({
   cancelPath,
   settingsPath = `${cancelPath}/settings`,
   providersPath,
-  currentOperations,
+  currentTools,
   source,
   etag,
   setup,
@@ -95,7 +95,7 @@ export function EditConfigurationPage({
       : 'Edit configuration'
   const needsChoice = accounts || (currentAccount === 'none' && route !== 'none')
   const needsReplacement = route === 'fixed' && (settingChanged || requiresInterruptionAcceptance)
-  // A sign-in from reading the operations can become the shared account.
+  // A sign-in from reading the tools can become the shared account.
   const sharedDecision = route === 'fixed' && Boolean(setup.authorized || setup.authorization)
   const grant = frozen
     ? attempt.accountGrant
@@ -113,7 +113,7 @@ export function EditConfigurationPage({
     : frozen || result?.failed
       ? 'outcome'
       : stage === 'discovery'
-        ? 'operations'
+        ? 'tools'
         : stage !== 'configuration' && (needsChoice || needsReplacement || sharedDecision)
           ? 'account'
           : refresh && stage !== 'configuration'
@@ -260,7 +260,7 @@ export function EditConfigurationPage({
     ) : view === 'catalog' ? (
       <StepFrame
         title={title}
-        meta={<OperationsSummary setup={setup} discovering={false} />}
+        meta={<ToolsSummary setup={setup} discovering={false} />}
         actions={
           <>
             {cancel}
@@ -270,11 +270,11 @@ export function EditConfigurationPage({
       >
         {publication.body}
         <RefreshLayout source={source}>
-          <OperationsSection setup={setup} previous={currentOperations} />
+          <ToolsSection setup={setup} previous={currentTools} />
         </RefreshLayout>
       </StepFrame>
-    ) : view === 'operations' ? (
-      <StepFrame title="Operations" actions={cancel}>
+    ) : view === 'tools' ? (
+      <StepFrame title="Tools" actions={cancel}>
         <DiscoveryStep
           setup={setup}
           form={form}
@@ -384,7 +384,7 @@ export function EditConfigurationPage({
           callbackUrl={callbackUrl}
           title={title}
           actions={cancel}
-          // A refresh shows the operations next, so its form only confirms.
+          // A refresh shows the tools next, so its form only confirms.
           confirmLabel={refresh ? 'Next' : 'Save'}
           // Only a new read can differ from what is saved. Edit configuration
           // reads the saved source, so its defaults are no change.

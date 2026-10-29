@@ -259,7 +259,7 @@ for (const method of everyMethod) {
       location: 'path',
       type: 'string',
       required: true,
-      description: `Resource path segment ${name}. See the original resource pattern in the operation description.`,
+      description: `Resource path segment ${name}. See the original resource pattern in the tool description.`,
     }
   }
   const names = Object.keys(parameters).toSorted(byName)
@@ -371,5 +371,5 @@ const document = {
 const target = new URL(`../recipes/${RECIPE_ID}/openapi.json`, import.meta.url)
 await writeFile(target, `${JSON.stringify(document, stable, 2)}\n`)
 console.log(
-  `Wrote ${everyMethod.length} operations from Discovery revision ${discovery.revision} to ${target.pathname}`,
+  `Wrote ${everyMethod.length} tools from Discovery revision ${discovery.revision} to ${target.pathname}`,
 )

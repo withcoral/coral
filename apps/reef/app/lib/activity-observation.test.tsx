@@ -373,7 +373,7 @@ const invocation = {
   name: 'workspaces/w/invocations/i',
   run: parentRun.name,
   provider: 'p',
-  operation: 'call',
+  tool: 'call',
   callPath: 'p.call',
   state: 'pending' as const,
   outcome: 'unknown' as const,
@@ -431,7 +431,7 @@ function Reader() {
   )
 }
 it.each([false, true])(
-  'pins the exact operation review without repeating loaders (from Run: %s)',
+  'pins the exact tool review without repeating loaders (from Run: %s)',
   async (fromRun) => {
     const observations: URLSearchParams[] = []
     const streams: ReadableStreamDefaultController<Uint8Array>[] = []

@@ -15,7 +15,7 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-const ROWS = Array.from({ length: 30 }, (_, i) => `operation.${i + 1}`)
+const ROWS = Array.from({ length: 30 }, (_, i) => `tool.${i + 1}`)
 
 function Example({ initial = [] }: { initial?: string[] }) {
   const [selected, setSelected] = useState<string[]>(initial)
@@ -63,5 +63,5 @@ export const Empty: Story = { args: { children: null }, render: () => <Example /
 
 export const WithSelection: Story = {
   args: { children: null },
-  render: () => <Example initial={['operation.2', 'operation.5']} />,
+  render: () => <Example initial={['tool.2', 'tool.5']} />,
 }

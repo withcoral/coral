@@ -100,9 +100,9 @@ pub enum Error {
     /// The Provider version cannot advance further.
     #[error("Provider version overflowed")]
     ProviderAccountSettingVersionOverflow,
-    /// The active Provider has no matching materialized Operation.
-    #[error("Operation was not found")]
-    OperationNotFound,
+    /// The active Provider has no matching materialized Tool.
+    #[error("Tool was not found")]
+    ToolNotFound,
     /// One request identity was reused with different request content.
     #[error("management request id was already used with different request content")]
     RequestIdConflict,

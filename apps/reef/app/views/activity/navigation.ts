@@ -706,7 +706,7 @@ export function stepStop(
 
 /**
  * The position among its Run's records, as Coral ordered them, of a record inside a
- * Run: an Operation Invocation or any Program Run Event, its lifecycle included.
+ * Run: a Tool Invocation or any Program Run Event, its lifecycle included.
  * Undefined for any other record, such as the Run itself or its final value, or when its Run's
  * loaded window does not hold it.
  */

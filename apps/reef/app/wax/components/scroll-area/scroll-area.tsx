@@ -18,8 +18,6 @@ interface ScrollAreaBaseProps extends React.HTMLAttributes<HTMLDivElement>, Read
   ref?: React.Ref<HTMLDivElement>
   /** Axes that may scroll. Defaults to 'both'. */
   scrollDirection?: 'both' | 'horizontal' | 'vertical'
-  /** The surface the fade blends into, such as 'main' for the sidebar. Defaults to 'content'. */
-  surface?: 'content' | 'floating' | 'main'
   /** Ref to the scrollable viewport element. Useful for virtualization libraries. */
   viewportRef?: React.Ref<HTMLDivElement>
   /** Class name applied to the scrollable viewport element. */
@@ -87,7 +85,6 @@ export function Container({
   renderViewport,
   scrollDirection = 'both',
   style,
-  surface = 'content',
   viewportClassName,
   viewportRef,
   width = '100%',
@@ -107,6 +104,7 @@ export function Container({
     <BaseScrollArea.Viewport
       className={classNames(
         styles.viewport,
+        styles.viewportFade[fade],
         styles.nativeViewportFade[fade],
         readingKey && styles.anchoredViewport,
         viewportClassName,
@@ -134,7 +132,7 @@ export function Container({
 
   return (
     <BaseScrollArea.Root
-      className={classNames(styles.root, styles.surface[surface], className)}
+      className={classNames(styles.root, className)}
       ref={ref}
       style={{ height: maxHeight ? undefined : height, maxHeight, width, ...style }}
       {...rest}

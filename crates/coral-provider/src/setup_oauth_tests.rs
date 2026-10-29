@@ -2301,14 +2301,14 @@ async fn active_contract(
     namespace: &str,
 ) -> ProviderCredentialContract {
     let mut tx = harness.database.begin().await.unwrap();
-    let target = crate::resolve_owner_operation_in_transaction(
+    let target = crate::resolve_owner_tool_in_transaction(
         &mut tx,
         workspace,
         &format!("coral.providers.{namespace}.getData"),
     )
     .await
     .unwrap()
-    .expect("callable Operation");
+    .expect("callable Tool");
     let contract =
         coral_catalog::credential_contract_in_transaction(&mut tx, target.provider_generation_id())
             .await

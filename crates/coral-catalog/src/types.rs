@@ -7,9 +7,7 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use crate::schema::SharedTypes;
-use crate::{
-    Error, ExecutionBinding, McpDiscoverySnapshot, OpenApiDocument, OperationPathAssignment,
-};
+use crate::{Error, ExecutionBinding, McpDiscoverySnapshot, OpenApiDocument, ToolPathAssignment};
 
 macro_rules! uuid_id {
     ($name:ident, $label:literal) => {
@@ -192,13 +190,13 @@ impl DiagnosticCode {
     }
 }
 
-/// Whether a safe Catalog diagnostic blocks one Operation or records widening.
+/// Whether a safe Catalog diagnostic blocks one Tool or records widening.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CatalogDiagnosticSeverity {
-    /// The Operation cannot be invoked faithfully.
+    /// The Tool cannot be invoked faithfully.
     Error,
-    /// The Operation remains available with a sound wider authoring projection.
+    /// The Tool remains available with a sound wider authoring projection.
     Warning,
 }
 
@@ -286,7 +284,7 @@ impl CatalogDiagnostic {
         &self.message
     }
 
-    /// Returns whether this diagnostic blocks the Operation.
+    /// Returns whether this diagnostic blocks the Tool.
     #[must_use]
     pub const fn severity(&self) -> CatalogDiagnosticSeverity {
         self.severity
@@ -294,13 +292,13 @@ impl CatalogDiagnostic {
 
     pub(crate) fn list_from_storage(value: &str) -> Result<Vec<Self>, Error> {
         let diagnostics: Vec<Self> = serde_json::from_str(value).map_err(|_error| {
-            Error::CorruptData("Materialized Operation diagnostics are not valid JSON".to_string())
+            Error::CorruptData("Materialized Tool diagnostics are not valid JSON".to_string())
         })?;
         for diagnostic in &diagnostics {
             DiagnosticCode::parse(diagnostic.code.0.clone())?;
             if diagnostic.message.is_empty() {
                 return Err(Error::CorruptData(
-                    "Materialized Operation diagnostic message is empty".to_string(),
+                    "Materialized Tool diagnostic message is empty".to_string(),
                 ));
             }
         }
@@ -308,13 +306,13 @@ impl CatalogDiagnostic {
     }
 }
 
-/// Provider-scoped stable key for one materialized Operation.
+/// Provider-scoped stable key for one materialized Tool.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct OperationKey(String);
+pub struct ToolKey(String);
 
-impl OperationKey {
-    /// Parses one Provider-scoped Operation Key.
+impl ToolKey {
+    /// Parses one Provider-scoped Tool Key.
     ///
     /// # Errors
     ///
@@ -322,7 +320,7 @@ impl OperationKey {
     pub fn parse(value: &str) -> Result<Self, Error> {
         if value.is_empty() || value.chars().any(char::is_control) {
             return Err(Error::InvalidInput(
-                "Operation Key must be non-empty and contain no control characters".to_string(),
+                "Tool Key must be non-empty and contain no control characters".to_string(),
             ));
         }
         Ok(Self(value.to_string()))
@@ -335,7 +333,7 @@ impl OperationKey {
     }
 }
 
-impl TryFrom<String> for OperationKey {
+impl TryFrom<String> for ToolKey {
     type Error = Error;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
@@ -343,8 +341,8 @@ impl TryFrom<String> for OperationKey {
     }
 }
 
-impl From<OperationKey> for String {
-    fn from(key: OperationKey) -> Self {
+impl From<ToolKey> for String {
+    fn from(key: ToolKey) -> Self {
         key.0
     }
 }
@@ -371,7 +369,7 @@ impl SchemaId {
             })
         {
             return Err(Error::CorruptData(
-                "Materialized Operation has an invalid schema identity".to_string(),
+                "Materialized Tool has an invalid schema identity".to_string(),
             ));
         }
         Ok(Self(value))
@@ -750,16 +748,16 @@ fn normalize_openapi_30_numeric_bounds(object: &mut serde_json::Map<String, Valu
     }
 }
 
-/// Structural availability of one cataloged Operation.
+/// Structural availability of one cataloged Tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperationAvailability {
-    /// Coral can faithfully invoke this Operation in the current profile.
+pub enum ToolAvailability {
+    /// Coral can faithfully invoke this Tool in the current profile.
     Available,
     /// Reef can inspect it, but Principal-facing discovery must omit it.
     Unavailable,
 }
 
-impl OperationAvailability {
+impl ToolAvailability {
     pub(crate) const fn as_storage_str(self) -> &'static str {
         match self {
             Self::Available => "available",
@@ -772,26 +770,26 @@ impl OperationAvailability {
             "available" => Ok(Self::Available),
             "unavailable" => Ok(Self::Unavailable),
             _ => Err(Error::CorruptData(format!(
-                "Materialized Operation has unrecognized availability '{value}'"
+                "Materialized Tool has unrecognized availability '{value}'"
             ))),
         }
     }
 }
 
-/// Effect hints the Provider declared for one Operation.
+/// Effect hints the Provider declared for one Tool.
 ///
 /// Each hint is `None` unless the Provider declared it. Coral never assumes a
-/// protocol default, so an undeclared hint says nothing about the Operation.
-/// OpenAPI/HTTP-sourced Operations declare none in v1.
+/// protocol default, so an undeclared hint says nothing about the Tool.
+/// OpenAPI/HTTP-sourced Tools declare none in v1.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct OperationHints {
+pub struct ToolHints {
     read_only: Option<bool>,
     destructive: Option<bool>,
     idempotent: Option<bool>,
     open_world: Option<bool>,
 }
 
-impl OperationHints {
+impl ToolHints {
     /// Creates hints from exact declared values.
     #[must_use]
     pub const fn new(
@@ -808,43 +806,43 @@ impl OperationHints {
         }
     }
 
-    /// Returns whether the Operation declared that it changes nothing.
+    /// Returns whether the Tool declared that it changes nothing.
     #[must_use]
     pub const fn read_only(&self) -> Option<bool> {
         self.read_only
     }
 
-    /// Returns whether the Operation declared that it may destroy data.
+    /// Returns whether the Tool declared that it may destroy data.
     #[must_use]
     pub const fn destructive(&self) -> Option<bool> {
         self.destructive
     }
 
-    /// Returns whether the Operation declared that repeating a call has no further effect.
+    /// Returns whether the Tool declared that repeating a call has no further effect.
     #[must_use]
     pub const fn idempotent(&self) -> Option<bool> {
         self.idempotent
     }
 
-    /// Returns whether the Operation declared that it reaches entities outside the Provider.
+    /// Returns whether the Tool declared that it reaches entities outside the Provider.
     #[must_use]
     pub const fn open_world(&self) -> Option<bool> {
         self.open_world
     }
 
-    /// Returns whether the Operation declared that it changes nothing.
+    /// Returns whether the Tool declared that it changes nothing.
     #[must_use]
     pub const fn declares_read_only(&self) -> bool {
         matches!(self.read_only, Some(true))
     }
 }
 
-/// Maximum raw content bytes in one complete Operation Authoring Description.
-pub const OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES: usize = 256 * 1024;
+/// Maximum raw content bytes in one complete Tool Authoring Description.
+pub const TOOL_AUTHORING_DESCRIPTION_MAX_BYTES: usize = 256 * 1024;
 
-/// Safe Provider-authored presentation metadata for one Operation.
+/// Safe Provider-authored presentation metadata for one Tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OperationPresentation {
+pub struct ToolPresentation {
     title: Option<String>,
     description: String,
     deprecated: bool,
@@ -852,7 +850,7 @@ pub struct OperationPresentation {
     guidance: Option<String>,
 }
 
-impl OperationPresentation {
+impl ToolPresentation {
     pub(crate) const fn new(
         title: Option<String>,
         description: String,
@@ -927,16 +925,16 @@ fn unsafe_control(character: char) -> bool {
     character.is_control() && !character.is_whitespace()
 }
 
-/// The diagnostic that makes an Operation unavailable when its Authoring
-/// Description is over [`OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES`].
+/// The diagnostic that makes a Tool unavailable when its Authoring
+/// Description is over [`TOOL_AUTHORING_DESCRIPTION_MAX_BYTES`].
 ///
-/// The declaration counted is the Operation's own: the Provider's shared
+/// The declaration counted is the Tool's own: the Provider's shared
 /// types it names are declared once for the Provider and not counted here.
-pub(crate) fn operation_description_too_large(
+pub(crate) fn tool_description_too_large(
     relative_path: &str,
     provider_display_name: &str,
     typescript_declaration: &str,
-    presentation: &OperationPresentation,
+    presentation: &ToolPresentation,
 ) -> Option<CatalogDiagnostic> {
     let raw_bytes = [
         relative_path.len(),
@@ -949,29 +947,29 @@ pub(crate) fn operation_description_too_large(
     ]
     .into_iter()
     .fold(8 * 1024usize, usize::saturating_add);
-    (raw_bytes > OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES).then(|| CatalogDiagnostic {
-        code: DiagnosticCode("operation_authoring_description_too_large".to_string()),
+    (raw_bytes > TOOL_AUTHORING_DESCRIPTION_MAX_BYTES).then(|| CatalogDiagnostic {
+        code: DiagnosticCode("tool_authoring_description_too_large".to_string()),
         message: format!(
-            "the Operation Authoring Description is {raw_bytes} bytes, over the discovery limit of {OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES} bytes"
+            "the Tool Authoring Description is {raw_bytes} bytes, over the discovery limit of {TOOL_AUTHORING_DESCRIPTION_MAX_BYTES} bytes"
         ),
         severity: CatalogDiagnosticSeverity::Error,
     })
 }
 
-/// Minimal structurally available Operation identity used before search hydration.
+/// Minimal structurally available Tool identity used before search hydration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogSearchTarget {
-    key: OperationKey,
+    key: ToolKey,
     relative_path: String,
-    hints: OperationHints,
+    hints: ToolHints,
     http_method: Option<crate::HttpMethod>,
 }
 
 impl CatalogSearchTarget {
     pub(crate) const fn new(
-        key: OperationKey,
+        key: ToolKey,
         relative_path: String,
-        hints: OperationHints,
+        hints: ToolHints,
         http_method: Option<crate::HttpMethod>,
     ) -> Self {
         Self {
@@ -984,11 +982,11 @@ impl CatalogSearchTarget {
 
     /// Returns the private Provider-catalog policy address.
     #[must_use]
-    pub const fn key(&self) -> &OperationKey {
+    pub const fn key(&self) -> &ToolKey {
         &self.key
     }
 
-    /// Returns the collision-free Operation-relative Call Path projection.
+    /// Returns the collision-free Tool-relative Call Path projection.
     #[must_use]
     pub fn relative_path(&self) -> &str {
         &self.relative_path
@@ -996,35 +994,35 @@ impl CatalogSearchTarget {
 
     /// Returns the declared effect hints used by exact policy.
     #[must_use]
-    pub const fn hints(&self) -> OperationHints {
+    pub const fn hints(&self) -> ToolHints {
         self.hints
     }
 
-    /// Returns the method of an HTTP Operation; `None` for other protocols.
+    /// Returns the method of an HTTP Tool; `None` for other protocols.
     #[must_use]
     pub const fn http_method(&self) -> Option<crate::HttpMethod> {
         self.http_method
     }
 }
 
-/// What the search index reads of one structurally available Operation: its
+/// What the search index reads of one structurally available Tool: its
 /// presentation, and the binding and input schema its declaration fields come
 /// from. It omits schemas, declarations and diagnostics, which a large
-/// Provider's indexing cannot afford to hold for every Operation.
+/// Provider's indexing cannot afford to hold for every Tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchableOperation {
-    key: OperationKey,
+pub struct SearchableTool {
+    key: ToolKey,
     relative_path: String,
-    presentation: OperationPresentation,
+    presentation: ToolPresentation,
     execution_binding: ExecutionBinding,
     input_schema: SchemaId,
 }
 
-impl SearchableOperation {
+impl SearchableTool {
     pub(crate) const fn new(
-        key: OperationKey,
+        key: ToolKey,
         relative_path: String,
-        presentation: OperationPresentation,
+        presentation: ToolPresentation,
         execution_binding: ExecutionBinding,
         input_schema: SchemaId,
     ) -> Self {
@@ -1039,11 +1037,11 @@ impl SearchableOperation {
 
     /// Returns the private Provider-catalog policy address.
     #[must_use]
-    pub const fn key(&self) -> &OperationKey {
+    pub const fn key(&self) -> &ToolKey {
         &self.key
     }
 
-    /// Returns the collision-free Operation-relative Call Path projection.
+    /// Returns the collision-free Tool-relative Call Path projection.
     #[must_use]
     pub fn relative_path(&self) -> &str {
         &self.relative_path
@@ -1051,7 +1049,7 @@ impl SearchableOperation {
 
     /// Returns the title, description, tags, guidance and deprecation.
     #[must_use]
-    pub const fn presentation(&self) -> &OperationPresentation {
+    pub const fn presentation(&self) -> &ToolPresentation {
         &self.presentation
     }
 
@@ -1064,14 +1062,14 @@ impl SearchableOperation {
     }
 }
 
-/// Secret-free Operation definition materialized by this profile.
+/// Secret-free Tool definition materialized by this profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MaterializedOperation {
-    key: OperationKey,
+pub struct MaterializedTool {
+    key: ToolKey,
     relative_path: String,
     summary: String,
-    presentation: OperationPresentation,
-    hints: OperationHints,
+    presentation: ToolPresentation,
+    hints: ToolHints,
     execution_binding: ExecutionBinding,
     binding_json: String,
     input_schema: SchemaId,
@@ -1079,22 +1077,22 @@ pub struct MaterializedOperation {
     output_schema_json: String,
     typescript_declaration: String,
     type_references: Vec<String>,
-    availability: OperationAvailability,
+    availability: ToolAvailability,
     diagnostics: Vec<CatalogDiagnostic>,
     diagnostics_json: String,
 }
 
-impl MaterializedOperation {
+impl MaterializedTool {
     #[expect(
         clippy::too_many_arguments,
-        reason = "one immutable Operation definition is assembled at materialization"
+        reason = "one immutable Tool definition is assembled at materialization"
     )]
     pub(crate) fn new(
-        key: OperationKey,
+        key: ToolKey,
         relative_path: String,
         summary: String,
-        presentation: OperationPresentation,
-        hints: OperationHints,
+        presentation: ToolPresentation,
+        hints: ToolHints,
         execution_binding: ExecutionBinding,
         binding_json: String,
         input_schema: SchemaId,
@@ -1109,12 +1107,12 @@ impl MaterializedOperation {
             .iter()
             .any(|diagnostic| diagnostic.severity == CatalogDiagnosticSeverity::Error)
         {
-            OperationAvailability::Unavailable
+            ToolAvailability::Unavailable
         } else {
-            OperationAvailability::Available
+            ToolAvailability::Available
         };
         let hints = match execution_binding {
-            ExecutionBinding::Http(_) => OperationHints::default(),
+            ExecutionBinding::Http(_) => ToolHints::default(),
             ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => hints,
         };
         Self {
@@ -1136,13 +1134,13 @@ impl MaterializedOperation {
         }
     }
 
-    /// Returns the Operation Key.
+    /// Returns the Tool Key.
     #[must_use]
-    pub const fn key(&self) -> &OperationKey {
+    pub const fn key(&self) -> &ToolKey {
         &self.key
     }
 
-    /// Returns the collision-free Operation-relative JavaScript path.
+    /// Returns the collision-free Tool-relative JavaScript path.
     #[must_use]
     pub fn relative_path(&self) -> &str {
         &self.relative_path
@@ -1162,17 +1160,17 @@ impl MaterializedOperation {
 
     /// Returns complete safe Provider-authored presentation metadata.
     #[must_use]
-    pub const fn presentation(&self) -> &OperationPresentation {
+    pub const fn presentation(&self) -> &ToolPresentation {
         &self.presentation
     }
 
     /// Returns the declared effect hints.
     #[must_use]
-    pub const fn hints(&self) -> OperationHints {
+    pub const fn hints(&self) -> ToolHints {
         self.hints
     }
 
-    /// Returns the method of an HTTP Operation; `None` for other protocols.
+    /// Returns the method of an HTTP Tool; `None` for other protocols.
     #[must_use]
     pub const fn http_method(&self) -> Option<crate::HttpMethod> {
         match &self.execution_binding {
@@ -1186,7 +1184,7 @@ impl MaterializedOperation {
     }
 
     /// Stamps client ownership into every OAuth credential contract this
-    /// Operation's recipe carries, re-encoding the retained recipe.
+    /// Tool's recipe carries, re-encoding the retained recipe.
     pub(crate) fn with_oauth_client(
         mut self,
         policy: &crate::OAuthClientPolicy,
@@ -1245,7 +1243,7 @@ impl MaterializedOperation {
         &self.output_schema_json
     }
 
-    /// Returns the Operation's own TypeScript declaration. It names the
+    /// Returns the Tool's own TypeScript declaration. It names the
     /// Provider's shared types without declaring them; the complete
     /// declaration comes from [`crate::PreparedProviderCatalog::authoring_declaration`]
     /// or [`crate::authoring_declaration_in_transaction`].
@@ -1254,7 +1252,7 @@ impl MaterializedOperation {
         &self.typescript_declaration
     }
 
-    /// Returns the shared types the Operation's own declaration names.
+    /// Returns the shared types the Tool's own declaration names.
     pub(crate) fn type_references(&self) -> &[String] {
         &self.type_references
     }
@@ -1263,9 +1261,9 @@ impl MaterializedOperation {
         &self.diagnostics_json
     }
 
-    /// Returns whether this Operation can be invoked faithfully.
+    /// Returns whether this Tool can be invoked faithfully.
     #[must_use]
-    pub const fn availability(&self) -> OperationAvailability {
+    pub const fn availability(&self) -> ToolAvailability {
         self.availability
     }
 
@@ -1292,42 +1290,42 @@ impl ProviderGenerationFingerprint {
     pub(crate) fn from_material(
         schema_graph_json: &str,
         typescript_view: &str,
-        operations: &[MaterializedOperation],
+        tools: &[MaterializedTool],
         configuration_json: Option<&str>,
     ) -> Self {
         let mut hasher = Sha256::new();
         fingerprint_text(&mut hasher, configuration_json.unwrap_or_default());
         fingerprint_text(&mut hasher, schema_graph_json);
         fingerprint_text(&mut hasher, typescript_view);
-        hasher.update(operations.len().to_be_bytes());
-        for operation in operations {
-            for tag in operation.presentation.tags() {
+        hasher.update(tools.len().to_be_bytes());
+        for tool in tools {
+            for tag in tool.presentation.tags() {
                 fingerprint_text(&mut hasher, tag);
             }
             for value in [
-                operation.key.as_str(),
-                operation.relative_path.as_str(),
-                operation.binding_kind(),
-                operation.summary.as_str(),
-                operation.presentation.title().unwrap_or_default(),
-                operation.presentation.description(),
-                if operation.presentation.deprecated() {
+                tool.key.as_str(),
+                tool.relative_path.as_str(),
+                tool.binding_kind(),
+                tool.summary.as_str(),
+                tool.presentation.title().unwrap_or_default(),
+                tool.presentation.description(),
+                if tool.presentation.deprecated() {
                     "deprecated"
                 } else {
                     "current"
                 },
-                operation.presentation.guidance().unwrap_or_default(),
-                hint_fingerprint(operation.hints.read_only),
-                hint_fingerprint(operation.hints.destructive),
-                hint_fingerprint(operation.hints.idempotent),
-                hint_fingerprint(operation.hints.open_world),
-                operation.binding_json(),
-                operation.input_schema_json.as_str(),
-                operation.output_schema_json.as_str(),
-                operation.typescript_declaration.as_str(),
-                &operation.type_references.join("\n"),
-                operation.availability.as_storage_str(),
-                operation.diagnostics_json.as_str(),
+                tool.presentation.guidance().unwrap_or_default(),
+                hint_fingerprint(tool.hints.read_only),
+                hint_fingerprint(tool.hints.destructive),
+                hint_fingerprint(tool.hints.idempotent),
+                hint_fingerprint(tool.hints.open_world),
+                tool.binding_json(),
+                tool.input_schema_json.as_str(),
+                tool.output_schema_json.as_str(),
+                tool.typescript_declaration.as_str(),
+                &tool.type_references.join("\n"),
+                tool.availability.as_storage_str(),
+                tool.diagnostics_json.as_str(),
             ] {
                 fingerprint_text(&mut hasher, value);
             }
@@ -1381,7 +1379,7 @@ pub struct PreparedProviderCatalog {
     schema_graph: SchemaGraph,
     schema_graph_json: String,
     typescript_view: String,
-    operations: Vec<MaterializedOperation>,
+    tools: Vec<MaterializedTool>,
     shared_types: SharedTypes,
     configuration_json: Option<String>,
 }
@@ -1389,24 +1387,24 @@ pub struct PreparedProviderCatalog {
 pub(crate) struct PreparedCatalogParts {
     pub(crate) schema_graph_json: String,
     pub(crate) typescript_view: String,
-    pub(crate) operations: Vec<MaterializedOperation>,
+    pub(crate) tools: Vec<MaterializedTool>,
     pub(crate) shared_types: SharedTypes,
 }
 
 impl PreparedProviderCatalog {
-    /// Holds `operations` in Operation Key order, the order storage returns
+    /// Holds `tools` in Tool Key order, the order storage returns
     /// them in, so a stored Generation's fingerprint matches the prepared one.
     pub(crate) fn new(
         display_name: String,
         schema_graph: SchemaGraph,
         schema_graph_json: String,
-        mut operations: Vec<MaterializedOperation>,
+        mut tools: Vec<MaterializedTool>,
         shared_types: SharedTypes,
     ) -> Self {
-        operations.sort_by(|left, right| left.key().cmp(right.key()));
-        let typescript_view = operations
+        tools.sort_by(|left, right| left.key().cmp(right.key()));
+        let typescript_view = tools
             .iter()
-            .flat_map(|operation| operation.typescript_declaration().lines())
+            .flat_map(|tool| tool.typescript_declaration().lines())
             .chain(
                 shared_types
                     .iter()
@@ -1422,22 +1420,22 @@ impl PreparedProviderCatalog {
             schema_graph,
             schema_graph_json,
             typescript_view,
-            operations,
+            tools,
             shared_types,
             configuration_json: None,
         }
     }
 
     /// Binds credentials only after structural and authoring availability is final.
-    /// Every recipe retains the same contract, even an unavailable first Operation.
+    /// Every recipe retains the same contract, even an unavailable first Tool.
     pub(crate) fn bind_http_credential_destinations(mut self) -> Result<Self, Error> {
-        // Most Operations share a server. Every Operation gets a copy of this
-        // list, so collapse it once rather than once per Operation.
+        // Most Tools share a server. Every Tool gets a copy of this
+        // list, so collapse it once rather than once per Tool.
         let destinations = self
-            .operations
+            .tools
             .iter()
-            .filter(|operation| operation.availability() == OperationAvailability::Available)
-            .filter_map(|operation| match operation.execution_binding() {
+            .filter(|tool| tool.availability() == ToolAvailability::Available)
+            .filter_map(|tool| match tool.execution_binding() {
                 ExecutionBinding::Http(binding) if !binding.credential_slots().is_empty() => {
                     binding.server_url().map(str::to_owned)
                 }
@@ -1446,8 +1444,8 @@ impl PreparedProviderCatalog {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        for operation in &mut self.operations {
-            if let ExecutionBinding::Http(binding) = &mut operation.execution_binding {
+        for tool in &mut self.tools {
+            if let ExecutionBinding::Http(binding) = &mut tool.execution_binding {
                 let slots = binding
                     .credential_slots()
                     .iter()
@@ -1461,7 +1459,7 @@ impl PreparedProviderCatalog {
                     })
                     .collect();
                 binding.set_credential_slots(slots);
-                operation.binding_json = binding.to_storage_json()?;
+                tool.binding_json = binding.to_storage_json()?;
             }
         }
         Ok(self)
@@ -1498,10 +1496,10 @@ impl PreparedProviderCatalog {
     /// # Errors
     /// Returns a catalog error if a retained recipe cannot be re-encoded.
     pub fn with_oauth_client(mut self, policy: &crate::OAuthClientPolicy) -> Result<Self, Error> {
-        self.operations = self
-            .operations
+        self.tools = self
+            .tools
             .into_iter()
-            .map(|operation| operation.with_oauth_client(policy))
+            .map(|tool| tool.with_oauth_client(policy))
             .collect::<Result<Vec<_>, Error>>()?;
         Ok(self)
     }
@@ -1509,9 +1507,9 @@ impl PreparedProviderCatalog {
     /// Returns the exact credential contract retained with the executable recipes.
     #[must_use]
     pub fn credential_contract(&self) -> crate::ProviderCredentialContract {
-        self.operations
+        self.tools
             .first()
-            .and_then(|operation| match operation.execution_binding() {
+            .and_then(|tool| match tool.execution_binding() {
                 ExecutionBinding::Http(binding) => binding
                     .credential_slots()
                     .first()
@@ -1522,26 +1520,24 @@ impl PreparedProviderCatalog {
             .unwrap_or(crate::ProviderCredentialContract::NONE)
     }
 
-    /// Returns every Operation in deterministic Operation-Key order.
+    /// Returns every Tool in deterministic Tool-Key order.
     #[must_use]
-    pub fn operations(&self) -> &[MaterializedOperation] {
-        &self.operations
+    pub fn tools(&self) -> &[MaterializedTool] {
+        &self.tools
     }
 
-    /// Returns an Operation's complete self-contained declaration: its own
+    /// Returns a Tool's complete self-contained declaration: its own
     /// declaration and every shared type it reaches.
     #[must_use]
-    pub fn authoring_declaration(&self, operation: &MaterializedOperation) -> String {
-        self.shared_types.compose(
-            &operation.typescript_declaration,
-            &operation.type_references,
-        )
+    pub fn authoring_declaration(&self, tool: &MaterializedTool) -> String {
+        self.shared_types
+            .compose(&tool.typescript_declaration, &tool.type_references)
     }
 
     /// Returns current path assignments for regeneration carry-forward.
     #[must_use]
-    pub fn operation_paths(&self) -> Vec<OperationPathAssignment> {
-        OperationPathAssignment::for_operations(&self.operations)
+    pub fn tool_paths(&self) -> Vec<ToolPathAssignment> {
+        ToolPathAssignment::for_tools(&self.tools)
     }
 
     /// Returns opaque equality evidence for canonical package reuse.
@@ -1550,7 +1546,7 @@ impl PreparedProviderCatalog {
         ProviderGenerationFingerprint::from_material(
             &self.schema_graph_json,
             &self.typescript_view,
-            &self.operations,
+            &self.tools,
             self.configuration_json.as_deref(),
         )
     }
@@ -1559,7 +1555,7 @@ impl PreparedProviderCatalog {
         PreparedCatalogParts {
             schema_graph_json: self.schema_graph_json,
             typescript_view: self.typescript_view,
-            operations: self.operations,
+            tools: self.tools,
             shared_types: self.shared_types,
         }
     }
@@ -1647,7 +1643,7 @@ mod tests {
     #[test]
     fn presentation_metadata_retains_prose_whitespace_and_rejects_other_control_characters() {
         let presentation = |description: &str| {
-            OperationPresentation::new(
+            ToolPresentation::new(
                 Some("Update split DNS".to_string()),
                 description.to_string(),
                 false,

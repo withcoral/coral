@@ -60,10 +60,10 @@ async fn describe(
         .await
 }
 
-/// Both results are the Operation's description; only the declaration
+/// Both results are the Tool's description; only the declaration
 /// differs.
 #[tokio::test]
-async fn describe_returns_the_fitted_declaration_or_the_named_types_of_the_same_operation() {
+async fn describe_returns_the_fitted_declaration_or_the_named_types_of_the_same_tool() {
     let fixture = TestModules::new().await;
     let scope = TracerScope::new(&fixture).await;
     github(&fixture, &scope).await;
@@ -71,11 +71,11 @@ async fn describe_returns_the_fitted_declaration_or_the_named_types_of_the_same_
     let mut declarations = Vec::new();
     for types in [&[][..], &["Repository"]] {
         let exact = describe(&fixture, &scope, types).await.unwrap();
-        let AuthoringDescription::Operation(operation) = exact.authoring() else {
-            panic!("{types:?}: an Operation path describes an Operation");
+        let AuthoringDescription::Tool(tool) = exact.authoring() else {
+            panic!("{types:?}: a Tool path describes a Tool");
         };
-        assert_eq!(operation.call_path().as_str(), ISSUES_LIST);
-        declarations.push(operation.typescript_declaration().to_string());
+        assert_eq!(tool.call_path().as_str(), ISSUES_LIST);
+        declarations.push(tool.typescript_declaration().to_string());
     }
 
     let [fitted, repository] = declarations.as_slice() else {

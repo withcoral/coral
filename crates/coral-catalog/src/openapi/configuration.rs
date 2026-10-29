@@ -20,7 +20,7 @@ impl OpenApiDocument {
     /// Returns a safe diagnostic for structurally invalid input.
     #[expect(
         clippy::too_many_lines,
-        reason = "inspection groups inherited declarations and their Operations in one traversal"
+        reason = "inspection groups inherited declarations and their Tools in one traversal"
     )]
     pub fn configuration_review(&self) -> Result<ProviderConfigurationReview, CatalogDiagnostic> {
         let document = parse_document(self)?;
@@ -118,7 +118,7 @@ impl OpenApiDocument {
                 }
             }
             if let Some(group) = groups.get_mut(&located.server_declaration) {
-                group.operations.push(located.key.as_str().into());
+                group.tools.push(located.key.as_str().into());
             }
         }
         let has_schemes = document
@@ -201,7 +201,7 @@ impl OpenApiDocument {
     }
 
     /// Validates explicit configuration independently of the pinned source.
-    /// Unresolved Operation-specific declarations stay local catalog diagnostics.
+    /// Unresolved Tool-specific declarations stay local catalog diagnostics.
     /// # Errors
     /// Returns safe field errors, leaving this document and accepted settings intact.
     pub fn configure(
@@ -294,8 +294,7 @@ pub fn validate_openapi_configuration(
     for group in review.iter().flat_map(|review| &review.servers) {
         let selected = configuration.servers.get(&group.declaration);
         // Missing local configuration is previewed as unavailable, not replaced by the root.
-        if (selected.is_some()
-            || (group.declaration == "#/servers" && !group.operations.is_empty()))
+        if (selected.is_some() || (group.declaration == "#/servers" && !group.tools.is_empty()))
             && resolve_selection(group, selected).is_err()
         {
             errors.push(field_error(
@@ -661,7 +660,7 @@ fn server_group(declaration: &str, object: &Map<String, Value>) -> ServerGroup {
         .collect();
     ServerGroup {
         declaration: declaration.into(),
-        operations: Vec::new(),
+        tools: Vec::new(),
         options,
     }
 }

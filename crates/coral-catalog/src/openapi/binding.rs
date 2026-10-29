@@ -527,15 +527,15 @@ fn media_type_match_rank(
     Some((specificity, std::cmp::Reverse(parameters.len())))
 }
 
-/// How one complete HTTP response relates to an Operation's declared
+/// How one complete HTTP response relates to a Tool's declared
 /// successes. A Program receives only `Declared` and `Untyped`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuccessSelection<'b> {
-    /// A non-2xx status, whether or not the Operation declares it.
+    /// A non-2xx status, whether or not the Tool declares it.
     ErrorStatus,
     /// A 2xx status that selects no declared success.
     Undeclared,
-    /// The final 2xx after a followed redirect, when the Operation declares no
+    /// The final 2xx after a followed redirect, when the Tool declares no
     /// success to describe it. Its declaration types it as unknown.
     Untyped,
     /// The declared success response the status selects.
@@ -595,7 +595,7 @@ pub struct HttpExecutionBinding {
 }
 
 impl HttpExecutionBinding {
-    /// Returns the responses this Operation declares as successes: each 2xx
+    /// Returns the responses this Tool declares as successes: each 2xx
     /// code and the `2XX` range, or `default` when no 2xx response is
     /// declared. A Program receives only these; every other response rejects
     /// its call. With none, only [`SuccessSelection::Untyped`] can succeed.
@@ -636,7 +636,7 @@ impl HttpExecutionBinding {
     }
 
     /// Returns how a complete response with `status`, reached after a followed
-    /// redirect when `redirected`, relates to this Operation's declared successes.
+    /// redirect when `redirected`, relates to this Tool's declared successes.
     #[must_use]
     pub fn success_for(&self, status: u16, redirected: bool) -> SuccessSelection<'_> {
         if !matches!(status, 200..=299) {

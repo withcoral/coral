@@ -51,7 +51,7 @@ pub(super) fn render(declarations: &Declarations, callable: Callable<'_>) -> Str
     let result = declarations.callable.result.as_ref().map_or_else(
         || "unknown".to_string(),
         |result| match callable {
-            Callable::Operation { .. } => renderer.operation_result(result),
+            Callable::Tool { .. } => renderer.tool_result(result),
             Callable::SavedFunction { .. } => {
                 renderer.saved_function_result(result, &mut HashSet::new())
             }

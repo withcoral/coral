@@ -4,7 +4,7 @@ use super::repository::{EventFault, fixture};
 use crate::WorkspaceWorkflow;
 use coral_provider::{LifecycleAction, LifecycleActor, ProviderId, ProviderModule};
 use coral_search::SearchIndex;
-use coral_search::test_fixtures::indexed_operations;
+use coral_search::test_fixtures::indexed_tools;
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
     AuthenticatedUser, AuthoritySource, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
@@ -95,24 +95,24 @@ async fn creating_a_workspace_creates_its_builtin_provider_with_the_creator_as_a
         .unwrap();
     assert_eq!(provider.call_root().as_str(), "coral.workspace");
 
-    // The commit notified search of every Built-in Operation; no reconcile pass ran.
+    // The commit notified search of every Built-in Tool; no reconcile pass ran.
     let catalog = f
         .providers
         .inspect_catalog_page(&f.creator, workspace.id(), provider.id(), None, 100)
         .await
         .unwrap();
-    let mut indexed = indexed_operations(&f.db.database(), workspace.id())
+    let mut indexed = indexed_tools(&f.db.database(), workspace.id())
         .await
         .unwrap()
         .into_iter()
-        .map(|operation| (operation.call_path, operation.provider_name))
+        .map(|tool| (tool.call_path, tool.provider_name))
         .collect::<Vec<_>>();
     indexed.sort();
     let mut expected = catalog
         .iter()
-        .map(|operation| {
+        .map(|tool| {
             (
-                format!("coral.workspace.{}", operation.key.as_str()),
+                format!("coral.workspace.{}", tool.key.as_str()),
                 "workspace Coral".to_string(),
             )
         })

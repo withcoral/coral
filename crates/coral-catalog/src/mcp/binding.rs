@@ -109,8 +109,8 @@ impl McpToolAnnotations {
 
     /// Returns the declared effect hints, without assuming protocol defaults.
     #[must_use]
-    pub const fn hints(&self) -> crate::OperationHints {
-        crate::OperationHints::new(
+    pub const fn hints(&self) -> crate::ToolHints {
+        crate::ToolHints::new(
             self.read_only_hint,
             self.destructive_hint,
             self.idempotent_hint,

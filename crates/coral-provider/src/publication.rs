@@ -62,7 +62,7 @@ pub async fn regeneration_for_request_in_transaction(
 /// Publishes one Workspace-owned Provider, or a new Generation of one, or
 /// renames one, in its own transaction and notifies Universal Search after the
 /// commit. The workflow that owns that transaction implements it, so a Built-in
-/// Operation publishes and renames exactly as Reef does.
+/// Tool publishes and renames exactly as Reef does.
 #[async_trait::async_trait]
 pub trait WorkspaceProviderPublisher: Send + Sync {
     /// Publishes the request's Setup. Safe structural and domain failures are
@@ -214,7 +214,7 @@ struct RegenerationBaseline {
     generation_id: coral_catalog::ProviderGenerationId,
     fingerprint: coral_catalog::ProviderGenerationFingerprint,
     display_name: ProviderDisplayName,
-    operation_paths: Vec<coral_catalog::OperationPathAssignment>,
+    tool_paths: Vec<coral_catalog::ToolPathAssignment>,
 }
 
 struct PinnedPublication {
@@ -298,7 +298,7 @@ impl ProviderModule {
             Preflight::Materialize(pinned) => pinned,
         };
         let paths = match &pinned.command {
-            Command::Regenerate { regeneration, .. } => regeneration.operation_paths.as_slice(),
+            Command::Regenerate { regeneration, .. } => regeneration.tool_paths.as_slice(),
             Command::Workspace(_) => &[],
         };
         // No transaction survives preflight. Cancellation here accepts no Publication.
@@ -406,7 +406,7 @@ impl ProviderModule {
                             &provider.generation_id,
                         )
                         .await?,
-                        operation_paths: coral_catalog::operation_paths_in_transaction(
+                        tool_paths: coral_catalog::tool_paths_in_transaction(
                             &mut transaction,
                             &provider.generation_id,
                         )

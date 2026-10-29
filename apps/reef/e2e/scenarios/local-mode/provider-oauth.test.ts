@@ -3,7 +3,7 @@ import { withBrowserSession } from '../../support/browser-session.ts'
 import { loopbackFixtures } from '../../support/config.ts'
 import { oauthApiServer } from '../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   chooseAccount,
   chooseFile,
   collectDataResponses,
@@ -30,7 +30,7 @@ test('Local provider OAuth completes on Coral’s loopback callback listener', a
       await page.getByRole('button', { name: 'Read', exact: true }).click()
       await page.getByLabel('Namespace', { exact: true }).fill('localRecords')
       await confirmConfiguration(page)
-      await acceptOperations(page)
+      await acceptTools(page)
       await chooseAccount(page, 'shared')
       stepper = page.url()
       await openDialog(page, page.getByRole('button', { name: /^Sign in/ }))

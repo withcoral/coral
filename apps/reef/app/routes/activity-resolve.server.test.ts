@@ -1,5 +1,5 @@
-import { createRouterTransport } from '@connectrpc/connect'
-import { afterEach, expect, it, vi } from 'vitest'
+import { Code, ConnectError, createRouterTransport } from '@connectrpc/connect'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ActivityService } from '@/generated/coral/management/v1/activity_pb'
 import {
   AccountConnectionState,
@@ -77,6 +77,33 @@ it('reports an already completed Run instead of claiming cancellation won', asyn
   cancelActivityRun.mockResolvedValueOnce({ state: 2 })
   const response = await action(authRouteTestArgs(request('cancel'), {}))
   expect(response.data).toEqual({ message: 'The run already succeeded.' })
+})
+// Coral answers this while its Run Owner has not recorded the request yet.
+const notYetRecorded = () => new ConnectError('RUN_REQUEST_NOT_YET_RECORDED', Code.Unavailable)
+describe.each([
+  ['cancellation', 'cancel', cancelActivityRun, { message: 'The run already failed.' }],
+  ['decision', 'approve', decideApproval, { state: 'declined' }],
+] as const)('a %s that Coral has not recorded yet', (_, intent, send, result) => {
+  it('is sent once more and answers what Coral recorded', async () => {
+    send.mockRejectedValueOnce(notYetRecorded())
+    const response = await action(authRouteTestArgs(request(intent), {}))
+    expect(response.data).toEqual(result)
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+  it('is sent only once more, then answers that Coral is recording it', async () => {
+    send.mockRejectedValueOnce(notYetRecorded()).mockRejectedValueOnce(notYetRecorded())
+    const response = await action(authRouteTestArgs(request(intent), {}))
+    expect(response.init?.status).toBe(202)
+    expect(response.data).toEqual({ recording: true })
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+  // Catches: every UNAVAILABLE read as a request that Coral is recording.
+  it('is not sent again when Coral is not available', async () => {
+    send.mockRejectedValueOnce(new ConnectError('connection refused', Code.Unavailable))
+    const response = await action(authRouteTestArgs(request(intent), {}))
+    expect(response.init?.status).toBe(503)
+    expect(send).toHaveBeenCalledOnce()
+  })
 })
 it('uses only Run cancellation and rejects unrelated or bulk decision intents', async () => {
   await action(authRouteTestArgs(request('cancel'), {}))

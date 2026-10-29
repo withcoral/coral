@@ -30,6 +30,7 @@ fn apply_without_tick(
         })
         .collect()
 }
+use crate::owner::RecoveryStep;
 use crate::termination::ShutdownAction;
 use crate::{AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, CoralFailure, FanOutLimit};
 
@@ -1190,27 +1191,19 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
 
     let (engine, _release) = BlockingEngine::new();
     let fixture = TestModules::new(Arc::new(engine)).await;
-    let operation = fixture
-        .user_operation("user:apply-fence", "Fence rows")
-        .await;
+    let tool = fixture.user_tool("user:apply-fence", "Fence rows").await;
     let run = fixture
         .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("return 1;"),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
         .await
         .unwrap();
-    wait_until_started(&fixture, &operation.workspace_id, run.run_id()).await;
-    let record = fixture
-        .run_record(&operation.workspace_id, run.run_id())
-        .await;
+    wait_until_started(&fixture, &tool.workspace_id, run.run_id()).await;
+    let record = fixture.run_record(&tool.workspace_id, run.run_id()).await;
     // Four Invocations: a request names one of them, so a batch says which
     // ones it holds.
     let mut invocations = Vec::new();
     for _ in 0..4 {
-        invocations.push(admitted_invocation(&fixture, &operation, run.run_id()).await);
+        invocations.push(admitted_invocation(&fixture, &tool, run.run_id()).await);
     }
     let ids: [crate::InvocationId; 4] = invocations
         .iter()
@@ -1218,7 +1211,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         .collect::<Vec<_>>()
         .try_into()
         .expect("four Invocations");
-    let invoker = test_invoker(&fixture, &operation, &record);
+    let invoker = test_invoker(&fixture, &tool, &record);
     let fence_as = |state: &mut OwnerState, index: usize, now: i64| -> (Vec<Effect>, FenceAnswer) {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let admitted = invocations.get(index).expect("one of four").clone();
@@ -1669,7 +1662,7 @@ type Woken = tokio::sync::oneshot::Receiver<()>;
 /// Parks `admitted` on `wait`, as a landed held recheck reports it.
 fn park(
     state: &mut OwnerState,
-    invoker: &crate::invocation::OperationInvoker,
+    invoker: &crate::invocation::ToolInvoker,
     admitted: &Arc<crate::invocation::AdmittedInvocation>,
     wait: ParkedWait,
     now: i64,
@@ -1741,24 +1734,18 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
 
     let (engine, _release) = BlockingEngine::new();
     let fixture = TestModules::new(Arc::new(engine)).await;
-    let operation = fixture
-        .user_operation("user:apply-requests", "Request rows")
+    let tool = fixture
+        .user_tool("user:apply-requests", "Request rows")
         .await;
     let run = fixture
         .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("return 1;"),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
         .await
         .unwrap();
-    wait_until_started(&fixture, &operation.workspace_id, run.run_id()).await;
-    let record = fixture
-        .run_record(&operation.workspace_id, run.run_id())
-        .await;
-    let admitted = admitted_invocation(&fixture, &operation, run.run_id()).await;
-    let invoker = test_invoker(&fixture, &operation, &record);
+    wait_until_started(&fixture, &tool.workspace_id, run.run_id()).await;
+    let record = fixture.run_record(&tool.workspace_id, run.run_id()).await;
+    let admitted = admitted_invocation(&fixture, &tool, run.run_id()).await;
+    let invoker = test_invoker(&fixture, &tool, &record);
 
     // Two decisions on one request: the first rides the next chunk with the
     // deletion of its row; the second, a repeat, has its row deleted by the
@@ -2420,24 +2407,18 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
 async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_rest() {
     let (engine, _release) = BlockingEngine::new();
     let fixture = TestModules::new(Arc::new(engine)).await;
-    let operation = fixture
-        .user_operation("user:apply-wakeups", "Parked waits")
+    let tool = fixture
+        .user_tool("user:apply-wakeups", "Parked waits")
         .await;
     let run = fixture
         .runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("return 1;"),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
         .await
         .unwrap();
-    wait_until_started(&fixture, &operation.workspace_id, run.run_id()).await;
-    let record = fixture
-        .run_record(&operation.workspace_id, run.run_id())
-        .await;
-    let admitted = admitted_invocation(&fixture, &operation, run.run_id()).await;
-    let invoker = test_invoker(&fixture, &operation, &record);
+    wait_until_started(&fixture, &tool.workspace_id, run.run_id()).await;
+    let record = fixture.run_record(&tool.workspace_id, run.run_id()).await;
+    let admitted = admitted_invocation(&fixture, &tool, run.run_id()).await;
+    let invoker = test_invoker(&fixture, &tool, &record);
 
     // An approval wait, then a connection wait: the first arms the periodic
     // precheck, the second the subscription. A ring before the subscription
@@ -2703,6 +2684,108 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
     }
 }
 
+/// A recovered owner applies the Run Inbox requests the sweep queued after
+/// the timers, as a live owner applies them: a decision past its request's
+/// deadline is a repeat of its expiry, even past the Run deadline; a
+/// cancellation is the first termination unless the Run deadline passed,
+/// whose timeout comes first; a decision after a termination closes its
+/// request. Its chunk deletes every row it applied.
+#[test]
+fn a_recovered_owner_applies_its_run_inbox_requests_in_insert_order() {
+    use crate::run_inbox::InboxRow;
+    #[derive(Debug, Clone, Copy)]
+    enum Sent {
+        Cancel,
+        Decision,
+    }
+    #[derive(Debug, PartialEq)]
+    enum Step {
+        Expire,
+        Record,
+        Close,
+        Cancel,
+    }
+    let run_deadline = LIMITS.deadline_at_unix_nanos;
+    // (the requests delivered, in order, each with when it was applied;
+    // what the chunk writes, the cancellation last)
+    let cases = [
+        (vec![(Sent::Decision, 3)], vec![Step::Record]),
+        (
+            vec![(Sent::Decision, APPROVAL_DEADLINE)],
+            vec![Step::Expire],
+        ),
+        (vec![(Sent::Decision, run_deadline)], vec![Step::Expire]),
+        (
+            vec![(Sent::Decision, 3), (Sent::Cancel, 4)],
+            vec![Step::Record, Step::Cancel],
+        ),
+        (
+            vec![(Sent::Cancel, 3), (Sent::Decision, 4)],
+            vec![Step::Close, Step::Cancel],
+        ),
+        (
+            vec![(Sent::Cancel, 3), (Sent::Decision, APPROVAL_DEADLINE)],
+            vec![Step::Close, Step::Cancel],
+        ),
+        (vec![(Sent::Cancel, run_deadline)], vec![]),
+    ];
+    for (delivered, written) in cases {
+        let approval = approval_id();
+        let mut state = OwnerState::recovered(LIMITS, 1);
+        let rows = (0..delivered.len())
+            .map(|index| format!("row-{index}"))
+            .collect::<Vec<_>>();
+        for (&(sent, at), row) in delivered.iter().zip(&rows) {
+            let effects = match sent {
+                Sent::Cancel => cancel(&mut state, row, at),
+                Sent::Decision => decide(&mut state, &approval, row, at),
+            };
+            assert!(effects.is_empty(), "{delivered:?}: {effects:?}");
+        }
+        let effects = apply_without_tick(&mut state, Message::Recover, run_deadline + 1);
+        let [Effect::Recover(recovered)] = effects.as_slice() else {
+            panic!("{delivered:?}: one chunk, nothing else: {effects:?}");
+        };
+        let steps = recovered
+            .steps
+            .iter()
+            .map(|step| match step {
+                RecoveryStep::Expire(expired) => {
+                    assert_eq!(*expired, approval);
+                    Step::Expire
+                }
+                RecoveryStep::Decide { record: true, .. } => Step::Record,
+                RecoveryStep::Decide { record: false, .. } => Step::Close,
+            })
+            .chain(recovered.termination.iter().map(|intent| {
+                assert_eq!(intent.requester, Some(requester()));
+                Step::Cancel
+            }))
+            .collect::<Vec<_>>();
+        assert_eq!(steps, written, "{delivered:?}");
+        assert_eq!(
+            recovered.rows,
+            rows.into_iter().map(InboxRow).collect::<Vec<_>>(),
+            "{delivered:?}"
+        );
+    }
+    // A cancellation whose intent the row cannot hold is not applied, and
+    // its row stays.
+    let mut state = OwnerState::recovered(
+        OwnerLimits {
+            shutdown_grace_nanos: i64::MAX,
+            ..LIMITS
+        },
+        1,
+    );
+    assert!(cancel(&mut state, "cancel", 3).is_empty());
+    let effects = apply_without_tick(&mut state, Message::Recover, 4);
+    let [Effect::Recover(recovered)] = effects.as_slice() else {
+        panic!("one chunk, nothing else: {effects:?}");
+    };
+    assert!(recovered.termination.is_none() && recovered.rows.is_empty());
+}
+
 /// A recovered owner gathers the Approval Request timers the sweep queued,
 /// in order, and its end writes them in one chunk. The write's answer, or a
 /// stop (the Shutdown Drain is out) whether the chunk is queued or in
@@ -2719,10 +2802,16 @@ fn a_recovered_owner_writes_its_queued_expiries_in_one_chunk_and_retires() {
     ] {
         effects.extend(apply_without_tick(&mut state, message, 3));
     }
-    let [Effect::Recover { expired }] = effects.as_slice() else {
+    let [Effect::Recover(recovered)] = effects.as_slice() else {
         panic!("one chunk, nothing else: {effects:?}");
     };
-    assert_eq!(expired, &[first, second]);
+    assert!(
+        matches!(
+            recovered.steps.as_slice(),
+            [RecoveryStep::Expire(one), RecoveryStep::Expire(two)] if *one == first && *two == second
+        ),
+        "{recovered:?}"
+    );
     assert!(apply_without_tick(&mut state, Message::Drained, 4).is_empty());
     assert!(matches!(
         apply_without_tick(

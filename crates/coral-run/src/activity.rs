@@ -7,7 +7,7 @@ use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 pub enum RunEntryAnchor {
     /// An immutable Event sequence.
     Event(u64),
-    /// An Operation admission.
+    /// A Tool admission.
     Invocation(crate::InvocationId),
     /// The terminal Event.
     Final,
@@ -32,7 +32,7 @@ pub enum RunEntryWindow {
     After(u64),
     /// Start with one exact Event.
     Event(u64),
-    /// Start with one exact Operation admission.
+    /// Start with one exact Tool admission.
     Invocation(crate::InvocationId),
     /// Terminal event and optional Final Value.
     Final,
@@ -46,9 +46,9 @@ pub enum RunEntryWindow {
         preceding: u16,
     },
 }
-/// One child row; Invocation end Events do not duplicate Operation rows.
+/// One child row; Invocation end Events do not duplicate Tool rows.
 pub enum RunEntry {
-    /// Current Operation state, without arguments or result.
+    /// Current Tool state, without arguments or result.
     Invocation(InvocationSummary),
     /// Immutable Event identity, without its payload.
     Event {

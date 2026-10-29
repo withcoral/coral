@@ -4,7 +4,7 @@ import { withBrowserSession } from '../../../support/browser-session.ts'
 import { shownArguments } from '../../../support/arguments.ts'
 import { managementClients } from '../../../support/management.ts'
 import {
-  acceptOperations,
+  acceptTools,
   addedProviders,
   collectDataResponses,
   connectSharedAccount,
@@ -109,10 +109,10 @@ test("A workspace owner's Program adds a provider with a shared account, and you
       // The Setup holds the namespace and route the Program asked for.
       expect([...url.searchParams.keys()]).toEqual(['setup'])
     })
-    await step('Review the operations, connect the account, and add the provider', async () => {
+    await step('Review the tools, connect the account, and add the provider', async () => {
       await page.goto(link)
-      // The stepper opens at the operations, with nothing left to configure.
-      await acceptOperations(page)
+      // The stepper opens at the tools, with nothing left to configure.
+      await acceptTools(page)
       await connectSharedAccount(page, 'weather-token')
       const add = page.getByRole('button', { name: 'Add provider', exact: true })
       await add.waitFor()
@@ -171,7 +171,7 @@ test("A workspace owner's Program prepares a confidential OAuth application, and
     })
     await step('The stepper asks for the secret and names the one host it goes to', async () => {
       await page.goto(link)
-      await acceptOperations(page)
+      await acceptTools(page)
       await page
         .getByText(
           `Enter the secret of this OAuth application. Coral sends it only to ${new URL(upstream.origin).host}.`,
@@ -285,7 +285,7 @@ test("Another owner finds nothing at an owner's sign-in link, and the owner who 
     async ({ page, step }) => {
       await step('Alice opens the same link and adds the provider', async () => {
         await page.goto(link)
-        await acceptOperations(page)
+        await acceptTools(page)
         await connectSharedAccount(page, 'weather-token')
         const add = page.getByRole('button', { name: 'Add provider', exact: true })
         await add.waitFor()

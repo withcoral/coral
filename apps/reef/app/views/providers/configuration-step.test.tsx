@@ -42,9 +42,9 @@ const review: ConfigurationReviewView = {
   documentDisplayName: 'Example',
   servers: [],
   destinations: {},
-  operationCount: null,
-  operations: [],
-  unavailableOperations: [],
+  toolCount: null,
+  tools: [],
+  unavailableTools: [],
   diagnostic: '',
   readable: true,
   errors: {},
@@ -306,7 +306,7 @@ it('resolves equally named variables per server declaration', () => {
     servers: [
       {
         declaration: '#/servers',
-        operations: ['metrics'],
+        tools: ['metrics'],
         options: [
           {
             url: 'https://api.{site}/v1',
@@ -323,7 +323,7 @@ it('resolves equally named variables per server declaration', () => {
       },
       {
         declaration: '#/paths/~1logs/servers',
-        operations: ['logs'],
+        tools: ['logs'],
         options: [
           {
             url: 'https://{prefix}.{site}/v2',

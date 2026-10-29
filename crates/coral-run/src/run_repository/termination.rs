@@ -130,9 +130,10 @@ pub(crate) struct Takeover<'a> {
 
 /// The one chunk that interrupts a Run its owner can no longer run: the
 /// termination intent and the terminal outcome together, the worker claim
-/// released, the `invocation.ended` Events of its ended Invocations, and
-/// `run.ended`. Predicated on the claim `run` holds (its execution claim, or
-/// the worker claim of a Run that never started). `takeover` carries the
+/// released, the Events its writer applied (the `invocation.ended` Events of
+/// its ended Invocations among them), and `run.ended`. Predicated on the
+/// claim `run` holds (its execution claim, or the worker claim of a Run that
+/// never started). `takeover` carries the
 /// claim id a recovering writer mints when it takes the Run over from a
 /// started owner that can no longer write: every commit still in flight
 /// under the old claim then mismatches. The row then records the taking
@@ -140,12 +141,12 @@ pub(crate) struct Takeover<'a> {
 pub(crate) async fn interrupt_run(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
-    invocation_events: &[OwnedEvent],
-    termination: &RunTermination,
+    events: &[OwnedEvent],
+    termination: &RequestedTermination,
     takeover: Option<Takeover<'_>>,
     terminal_at_unix_nanos: i64,
 ) -> Result<(), Error> {
-    let mut values = termination_values(termination);
+    let mut values = request_values(termination);
     // A Run that never started has no execution claim to take over: its row
     // pairs the execution claim with the start mark, and the released worker
     // claim is all the fence a late start mark needs. Its holder stays the
@@ -164,8 +165,8 @@ pub(crate) async fn interrupt_run(
         transaction,
         run,
         run.execution_claim_id.as_deref(),
-        invocation_events,
-        &termination.kind.outcome(),
+        events,
+        &termination.termination.kind.outcome(),
         terminal_at_unix_nanos,
         values,
     )

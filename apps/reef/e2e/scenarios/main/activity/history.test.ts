@@ -9,7 +9,7 @@ import {
   createWorkspace,
   observeRun,
   programRunner,
-  setOperationPolicy,
+  setToolPolicy,
 } from '../../../support/providers.ts'
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
 
@@ -104,9 +104,9 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
               true,
             )
           }
-          expect(
-            (await execute.endTask('failure', 'No invoice export operation 🪸')).isError,
-          ).not.toBe(true)
+          expect((await execute.endTask('failure', 'No invoice export tool 🪸')).isError).not.toBe(
+            true,
+          )
           expect((await execute.endTask('success', 'Must not replace feedback')).isError).not.toBe(
             true,
           )
@@ -153,7 +153,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           ).toEqual(['TIME · UTC', 'RECORD', 'DUR', 'CONTEXT'])
           expect(await page.content()).not.toContain('historical-source-249')
           expect(await page.content()).not.toContain('replacement-source-249')
-          expect(await page.content()).not.toContain('No invoice export operation')
+          expect(await page.content()).not.toContain('No invoice export tool')
           await page.goto(`/workspaces/${second}/activity`)
           await breadcrumb(page, 'Activity').waitFor()
           expect(await page.getByRole('link', { name: intent, exact: true }).count()).toBe(1)
@@ -164,7 +164,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         await page.goto(
           `/workspaces/${first}/activity?record=${encodeURIComponent(`workspaces/${first}/tasks/${task}`)}`,
         )
-        await page.getByText('No invoice export operation 🪸', { exact: true }).waitFor()
+        await page.getByText('No invoice export tool 🪸', { exact: true }).waitFor()
         await page
           .getByRole('dialog')
           .locator('header')
@@ -175,13 +175,13 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           await page
             .getByRole('table', { name: 'Activity records', includeHidden: true })
             .innerText(),
-        ).not.toContain('No invoice export operation')
+        ).not.toContain('No invoice export tool')
       })
       await step('Inspect the recorded description instead of today’s function', async () => {
         await page.goto(
           `/workspaces/${first}/activity?${new URLSearchParams({ expand: `workspaces/${first}/tasks/${task}` })}`,
         )
-        await page.getByRole('link', { name: 'Inspect one Operation', exact: true }).first().click()
+        await page.getByRole('link', { name: 'Inspect one Tool', exact: true }).first().click()
         await openRecordedSource(page, 'historical-source-249')
         expect(await page.content()).not.toContain('replacement-source-249')
         const rejectedRow = page
@@ -249,7 +249,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           })
           expect(await list.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
           const selectedLink = list
-            .getByRole('link', { name: 'Inspect one Operation', exact: true })
+            .getByRole('link', { name: 'Inspect one Tool', exact: true })
             .last()
           const relativePosition = async () =>
             (await selectedLink.boundingBox())!.y - (await list.boundingBox())!.y
@@ -309,7 +309,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           selected,
         )
         await table
-          .getByRole('rowgroup', { name: 'Call one Operation records', exact: true })
+          .getByRole('rowgroup', { name: 'Call one Tool records', exact: true })
           .evaluate((element) => {
             const port = element.closest('[role=table]')!
             port.scrollTop +=
@@ -431,7 +431,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           'historyFixture',
         )
         await page.goto(providerPath)
-        await setOperationPolicy(page, 'lookup', 'Disabled')
+        await setToolPolicy(page, 'lookup', 'Disabled')
         const execute = programRunner(page, target, first, {
           accessToken: await mcpToken(page, first),
           taskIntent: `Inspect an invocation ${crypto.randomUUID()}`,
@@ -444,30 +444,32 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         )
         expect(observed.update.final_value).toEqual({
           kind: 'value',
-          value: 'operation_disabled',
+          value: 'tool_disabled',
         })
         const tree = new URLSearchParams()
         tree.append('expand', `workspaces/${first}/tasks/${execute.taskId()}`)
         tree.append('expand', `workspaces/${first}/runs/${observed.update.run_id}`)
         await page.goto(`/workspaces/${first}/activity?${tree}`)
         expect(await page.content()).not.toContain('exact-arguments-249')
-        const operationLink = page
+        const toolLink = page
           .getByRole('table', { name: 'Activity records', exact: true })
           .getByRole('link', {
             name: 'coral.providers.historyFixture.lookup',
             exact: true,
           })
         const table = page.getByRole('table', { name: 'Activity records', exact: true })
-        expect(await table.getByLabel('20 B added', { exact: true }).count()).toBe(3)
+        // The Run returns only the failure code, so its context is that code's JSON.
+        const added = `${JSON.stringify('tool_disabled').length} B added`
+        expect(await table.getByLabel(added, { exact: true }).count()).toBe(3)
         expect(await table.getByLabel('No net context change', { exact: true }).count()).toBe(1)
-        await operationLink.click()
+        await toolLink.click()
         // The one scalar argument shows under its own field, with its exact JSON spelling.
         // The program beside it spells the same token, so read the record's own detail.
         await page
           .getByRole('region', { name: 'Selected record', exact: true })
           .getByText('"exact-arguments-249"', { exact: true })
           .waitFor()
-        await page.getByText('Coral failure: operation_disabled', { exact: true }).waitFor()
+        await page.getByText('Coral failure: tool_disabled', { exact: true }).waitFor()
       })
       await step(
         'Keep Agent list context and retained history after removing its Registration',
@@ -490,7 +492,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           const runName = `workspaces/${first}/runs/${observed.update.run_id}`
           const taskName = `workspaces/${first}/tasks/${execute.taskId()}`
           await page.goto(`/${name}?expand=${encodeURIComponent(taskName)}`)
-          await page.getByRole('link', { name: 'Call one Operation', exact: true }).click()
+          await page.getByRole('link', { name: 'Call one Tool', exact: true }).click()
           await page.waitForURL((url) => url.searchParams.get('record') === runName)
           expect(new URL(page.url()).pathname).toBe(`/${name}`)
           await page.getByRole('button', { name: 'Close details', exact: true }).click()
@@ -502,7 +504,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
               exact: true,
             })
             .waitFor()
-          await page.getByRole('link', { name: 'Call one Operation', exact: true }).click()
+          await page.getByRole('link', { name: 'Call one Tool', exact: true }).click()
           await page.locator('pre').filter({ hasText: 'retained-agent-output' }).first().waitFor()
           expect(
             await page

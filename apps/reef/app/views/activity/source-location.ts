@@ -1,6 +1,6 @@
 // Activity shows accepted source snapshots. A highlight is only ever retained
 // Coral evidence: a failed Run's top error frame, or the location Coral stored
-// for an operation call, emission or log.
+// for a tool call, emission or log.
 
 import { sourceLines } from '@/wax/components/code-block'
 import type { ActivityRow, RunDetail } from './types'
@@ -71,7 +71,7 @@ export function sourceLocationFor(context: RunDetail): SourceLocation | null {
   return { documentId, highlight: { startLine: frame.line, endLine: frame.line } }
 }
 
-/** A record one call in the author's code made: an operation call, a log or an emission. */
+/** A record one call in the author's code made: a tool call, a log or an emission. */
 export function madeByCall(
   row: ActivityRow,
 ): row is Extract<ActivityRow, { kind: 'invocation' | 'output' }> {
@@ -83,7 +83,7 @@ export function madeByCall(
 }
 
 /**
- * The location Coral stored for an operation call, emission or log, in this
+ * The location Coral stored for a tool call, emission or log, in this
  * Run's accepted program or one of its linked Saved Function snapshots. Null
  * for any other record, a record with no stored location, a record of another Run, a snapshot
  * this Run did not link, or a line or column outside the document. A column

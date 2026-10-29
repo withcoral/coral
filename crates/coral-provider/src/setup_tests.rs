@@ -321,7 +321,7 @@ async fn configuration_confirmation_pins_input_and_invalid_edits_preserve_author
         .unwrap();
     assert_eq!(reloaded.revision, 2);
     assert!(reloaded.confirmed.is_some());
-    assert!(reloaded.unavailable_operations.is_empty());
+    assert!(reloaded.unavailable_tools.is_empty());
     assert_eq!(
         harness
             .providers
@@ -1238,7 +1238,7 @@ pub(super) async fn workspace_owner(
     (owner, workspace)
 }
 
-/// Resolves one Operation and selects the credential evidence an Invocation
+/// Resolves one Tool and selects the credential evidence an Invocation
 /// by `principal` would carry.
 pub(super) async fn credential_evidence(
     database: &coral_db::Database,
@@ -1248,13 +1248,13 @@ pub(super) async fn credential_evidence(
     principal: &coral_workspace::Principal,
 ) -> Result<crate::account::CredentialEvidence, Error> {
     let mut tx = database.begin().await.unwrap();
-    let target = crate::resolve_owner_operation_in_transaction(
+    let target = crate::resolve_owner_tool_in_transaction(
         &mut tx,
         workspace,
         &format!("coral.providers.{namespace}.{relative_path}"),
     )
     .await?
-    .expect("callable Operation");
+    .expect("callable Tool");
     let evidence = crate::account::select_in_transaction(&mut tx, &target, principal)
         .await?
         .expect("route evidence");
@@ -1670,7 +1670,7 @@ async fn mcp_bearer_source_seals_a_credential_that_publication_promotes_to_the_s
                 .body_json::<Value>()
                 .is_ok_and(|body| body["method"] == "tools/call")
         }),
-        "discovery never invokes an Operation"
+        "discovery never invokes a Tool"
     );
 }
 

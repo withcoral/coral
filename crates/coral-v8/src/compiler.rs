@@ -9,9 +9,9 @@ use crate::source_map::{AuthoredSourceMapping, normalize as normalize_source_map
 use crate::v8_support::{format_thrown_value, read_global_string, run_script};
 use crate::{
     CompiledProgram, CompilerDiagnostic, CoralDeclarations, DiagnosticCategory, Error,
-    IsolateLimits, LinkedSavedFunctionSource, OperationReferences, ProgramExecutionControl,
-    SavedFunctionCallPaths, SavedFunctionCompilation, SavedFunctionDeclarationField,
-    SavedFunctionReference,
+    IsolateLimits, LinkedSavedFunctionSource, ProgramExecutionControl, SavedFunctionCallPaths,
+    SavedFunctionCompilation, SavedFunctionDeclarationField, SavedFunctionReference,
+    ToolReferences,
 };
 
 const TYPESCRIPT_SOURCE: &str = include_str!("../vendor/typescript.js");
@@ -177,7 +177,7 @@ impl ProgramCompiler {
         })
     }
 
-    /// Finds the Saved Functions and Operations one Saved Function module
+    /// Finds the Saved Functions and Tools one Saved Function module
     /// names directly, to type it.
     ///
     /// # Errors
@@ -254,7 +254,7 @@ impl ProgramCompiler {
     fn request<T: Send + 'static>(
         &self,
         deadline: Instant,
-        operation: impl FnOnce(&mut CompilerIsolate) -> Result<T, Error> + Send + 'static,
+        work: impl FnOnce(&mut CompilerIsolate) -> Result<T, Error> + Send + 'static,
     ) -> Result<T, Error> {
         let deadline = deadline.min(Instant::now() + COMPILATION_TIMEOUT);
         let control = ProgramExecutionControl::new();
@@ -278,7 +278,7 @@ impl ProgramCompiler {
                 }
                 let active = compiler.as_mut().expect("compiler initialized");
                 worker_control.install(&active.isolate.thread_safe_handle());
-                let mut result = operation(active);
+                let mut result = work(active);
                 worker_control.uninstall();
                 if worker_control.is_requested() || Instant::now() >= deadline {
                     result = Err(Error::CompilationTimedOut);
@@ -357,7 +357,7 @@ struct SavedFunctionPathsOutput {
 struct SavedFunctionCallPathsOutput {
     references: Vec<SavedFunctionReference>,
     validation_error: Option<SavedFunctionReferenceError>,
-    operations: Option<OperationReferences>,
+    tools: Option<ToolReferences>,
 }
 
 #[derive(Deserialize)]
@@ -489,14 +489,14 @@ impl CompilerIsolate {
         )?;
         let output: SavedFunctionCallPathsOutput = serde_json::from_str(&json)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
-        match (output.validation_error, output.operations) {
+        match (output.validation_error, output.tools) {
             (Some(error), _) => Err(invalid_saved_function_reference(error)),
-            (None, Some(operations)) => Ok(SavedFunctionCallPaths {
+            (None, Some(tools)) => Ok(SavedFunctionCallPaths {
                 functions: output.references,
-                operations,
+                tools,
             }),
             (None, None) => Err(Error::CompilerProtocol(
-                "compiler returned no Operation references".to_string(),
+                "compiler returned no Tool references".to_string(),
             )),
         }
     }

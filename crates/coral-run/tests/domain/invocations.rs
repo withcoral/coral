@@ -1,8 +1,8 @@
-//! Operation Invocation outcomes through real and scripted Programs.
+//! Tool Invocation outcomes through real and scripted Programs.
 use super::*;
 
 #[tokio::test]
-async fn program_operation_settles_after_durable_invocation_completion() {
+async fn program_tool_settles_after_durable_invocation_completion() {
     let upstream = Arc::new(ScriptedUpstream::json(
         200,
         serde_json::json!({
@@ -14,23 +14,21 @@ async fn program_operation_settles_after_durable_invocation_completion() {
         upstream.clone(),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:operation-runner", "Call weather")
-        .await;
+    let tool = fixture.user_tool("user:tool-runner", "Call weather").await;
 
     let accepted = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("invoke-operation"),
+            &tool.principal,
+            &tool.workspace_id,
+            submission("invoke-tool"),
         )
         .await
-        .expect("accept Program that invokes one Operation");
+        .expect("accept Program that invokes one Tool");
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -42,7 +40,7 @@ async fn program_operation_settles_after_durable_invocation_completion() {
         }) if value.as_json() == &scripted_http_result(&serde_json::json!({"temperature": 21}))
     ));
     assert!(matches!(
-        retained_events(&fixture.runs, &operation.principal, &operation.workspace_id, terminal.run_id()).await.as_slice(),
+        retained_events(&fixture.runs, &tool.principal, &tool.workspace_id, terminal.run_id()).await.as_slice(),
         [started, invocation_started, invocation_ended, ended]
             if started.kind() == &RunEventKind::Started
                 && matches!(invocation_started.kind(), RunEventKind::InvocationStarted { .. })
@@ -52,8 +50,8 @@ async fn program_operation_settles_after_durable_invocation_completion() {
     let first_page = fixture
         .runs
         .inspect_run(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             terminal.run_id(),
             &crate::RunInspection {
                 event_limit: 2,
@@ -74,8 +72,8 @@ async fn program_operation_settles_after_durable_invocation_completion() {
     let second_page = fixture
         .runs
         .inspect_run(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             terminal.run_id(),
             &crate::RunInspection {
                 event_after: first_page.events.last().unwrap().sequence(),
@@ -107,30 +105,30 @@ async fn coral_failure_is_coded_and_durable_before_program_continues() {
         Arc::new(ScriptedUpstream::json(200, serde_json::json!({}))),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:coral-failure", "Catch a safe failure")
+    let tool = fixture
+        .user_tool("user:coral-failure", "Catch a safe failure")
         .await;
     // The message names what to correct, never a submitted value.
     for (argument, message) in [
         (
             r#"{unexpected: "secret-canary"}"#,
-            "Operation arguments are invalid: Operation argument `unexpected` is not declared",
+            "Tool arguments are invalid: Tool argument `unexpected` is not declared",
         ),
         (
             "null",
-            "Operation arguments are invalid: Operation arguments must be an object",
+            "Tool arguments are invalid: Tool arguments must be an object",
         ),
     ] {
         let accepted = fixture
             .runs
             .start(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 submission(
                     &r#"
             try { await coral.providers.weather.getForecast(ARGUMENT); }
             catch (error) {
-                if (!(error instanceof coral.OperationError)) throw error;
+                if (!(error instanceof coral.ToolError)) throw error;
                 await coral.emit({code: error.code, message: error.message});
                 return "handled";
             }
@@ -142,14 +140,14 @@ async fn coral_failure_is_coded_and_durable_before_program_continues() {
             .expect("accept Program");
         let terminal = wait_for_terminal(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
         )
         .await;
         assert_eq!(terminal.state(), RunState::Succeeded);
         assert!(
-            matches!(retained_events(&fixture.runs, &operation.principal, &operation.workspace_id, terminal.run_id()).await.as_slice(), [_, started, ended, emission, _]
+            matches!(retained_events(&fixture.runs, &tool.principal, &tool.workspace_id, terminal.run_id()).await.as_slice(), [_, started, ended, emission, _]
                 if matches!(started.kind(), RunEventKind::InvocationStarted { .. })
                 && matches!(ended.kind(), RunEventKind::InvocationEnded { result_kind: crate::InvocationResultKind::CoralFailure, .. })
                 && matches!(emission.kind(), RunEventKind::ProgramEmitted { value } if value.as_json() == &serde_json::json!({
@@ -187,7 +185,7 @@ async fn builtin_add_provider_waits_for_approval_by_default() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let (workspace_id, owner) = builtin_scope(&fixture, "user:builtin-policy").await;
     let mut transaction = fixture.database.begin().await.unwrap();
-    let target = coral_provider::resolve_invocation_operation_in_transaction(
+    let target = coral_provider::resolve_invocation_tool_in_transaction(
         &mut transaction,
         &workspace_id,
         coral_provider::InvocationCaller::new(&fixture.workspaces, &owner, 12),
@@ -195,26 +193,23 @@ async fn builtin_add_provider_waits_for_approval_by_default() {
     )
     .await
     .unwrap()
-    .expect("the Built-in Operation resolves");
+    .expect("the Built-in Tool resolves");
     let decision = coral_policy::invocation_decision_in_transaction(
         &mut transaction,
-        &OperationPolicyTarget::new(
+        &ToolPolicyTarget::new(
             workspace_id.clone(),
             target.provider_access().id().clone(),
-            target.operation().key().clone(),
+            target.tool().key().clone(),
         ),
-        target.operation().hints(),
-        target.operation().http_method(),
+        target.tool().hints(),
+        target.tool().http_method(),
         coral_db::RowLock::Shared,
     )
     .await
     .unwrap();
     transaction.rollback().await.unwrap();
     // addProvider declares no read-only hint, so it takes the cautious default.
-    assert_eq!(
-        decision.access_state(),
-        OperationAccessState::ApprovalRequired
-    );
+    assert_eq!(decision.access_state(), ToolAccessState::ApprovalRequired);
 }
 
 #[tokio::test]
@@ -230,8 +225,8 @@ async fn program_calls_a_provider_named_workspace_at_its_owner_call_root() {
         )),
     )
     .await;
-    let operation = fixture
-        .user_operation_under(
+    let tool = fixture
+        .user_tool_under(
             "user:workspace-namespace",
             "Call the workspace Provider",
             "https://upstream.example",
@@ -241,16 +236,16 @@ async fn program_calls_a_provider_named_workspace_at_its_owner_call_root() {
     let accepted = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission("return (await coral.providers.workspace.getForecast()).data.temperature;"),
         )
         .await
         .expect("accept Program");
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -278,15 +273,15 @@ async fn terminal_persistence_failure_settles_neither_invocation_promise_nor_run
     let fixture =
         TestModules::with_invocation_adapters(engine.clone(), upstream.clone(), observer.clone())
             .await;
-    let operation = fixture
-        .user_operation("user:persistence-fault", "Lose terminal commit")
+    let tool = fixture
+        .user_tool("user:persistence-fault", "Lose terminal commit")
         .await;
     let accepted = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("invoke-operation"),
+            &tool.principal,
+            &tool.workspace_id,
+            submission("invoke-tool"),
         )
         .await
         .expect("accept Program");
@@ -297,8 +292,8 @@ async fn terminal_persistence_failure_settles_neither_invocation_promise_nor_run
     let update = fixture
         .runs
         .observe(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &immediate(None, 100),
         )
@@ -307,7 +302,7 @@ async fn terminal_persistence_failure_settles_neither_invocation_promise_nor_run
 
     assert_eq!(update.state(), RunState::Running);
     assert!(matches!(
-        retained_events(&fixture.runs, &operation.principal, &operation.workspace_id, update.run_id()).await.as_slice(),
+        retained_events(&fixture.runs, &tool.principal, &tool.workspace_id, update.run_id()).await.as_slice(),
         [started, invocation_started]
             if started.kind() == &RunEventKind::Started
                 && matches!(invocation_started.kind(), RunEventKind::InvocationStarted { .. })
@@ -316,7 +311,7 @@ async fn terminal_persistence_failure_settles_neither_invocation_promise_nor_run
 }
 
 #[tokio::test]
-async fn fatal_async_operation_stops_noncooperative_program_code() {
+async fn fatal_async_tool_stops_noncooperative_program_code() {
     let scripted =
         Arc::new(ScriptedUpstream::json(200, serde_json::json!({}))) as Arc<dyn UpstreamSender>;
     let valid_call =
@@ -337,16 +332,12 @@ async fn fatal_async_operation_stops_noncooperative_program_code() {
             Arc::new(TerminalCommitFault::default()),
         )
         .await;
-        let operation = fixture
-            .user_operation("user:async-host-fatal", "Stop after host failure")
+        let tool = fixture
+            .user_tool("user:async-host-fatal", "Stop after host failure")
             .await;
         let accepted = fixture
             .runs
-            .start(
-                &operation.principal,
-                &operation.workspace_id,
-                submission(source),
-            )
+            .start(&tool.principal, &tool.workspace_id, submission(source))
             .await
             .expect("accept Program");
         let terminal = tokio::time::timeout(Duration::from_secs(2), async {
@@ -354,8 +345,8 @@ async fn fatal_async_operation_stops_noncooperative_program_code() {
                 let update = fixture
                     .runs
                     .observe(
-                        &operation.principal,
-                        &operation.workspace_id,
+                        &tool.principal,
+                        &tool.workspace_id,
                         accepted.run_id(),
                         &immediate(None, 100),
                     )
@@ -372,8 +363,8 @@ async fn fatal_async_operation_stops_noncooperative_program_code() {
             fixture
                 .runs
                 .cancel(
-                    &operation.principal,
-                    &operation.workspace_id,
+                    &tool.principal,
+                    &tool.workspace_id,
                     accepted.run_id(),
                     &immediate(None, 100),
                 )
@@ -400,22 +391,22 @@ async fn known_incomplete_response_is_a_durable_coral_failure() {
         upstream.clone(),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:incomplete-response", "Observe an incomplete response")
+    let tool = fixture
+        .user_tool("user:incomplete-response", "Observe an incomplete response")
         .await;
     let accepted = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("invoke-operation"),
+            &tool.principal,
+            &tool.workspace_id,
+            submission("invoke-tool"),
         )
         .await
         .expect("accept Program");
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -424,8 +415,8 @@ async fn known_incomplete_response_is_a_durable_coral_failure() {
     assert!(
         retained_events(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             terminal.run_id()
         )
         .await
@@ -449,12 +440,12 @@ async fn upstream_send_failures_keep_their_cause_in_the_coral_failure() {
         (
             || UpstreamSendError::Rejected(coral_upstream::McpRejection::InvalidParams),
             "invalid_input",
-            "Operation arguments are invalid",
+            "Tool arguments are invalid",
         ),
         (
             || UpstreamSendError::Rejected(coral_upstream::McpRejection::UnknownTool),
-            "operation_unavailable",
-            "Operation is unavailable",
+            "tool_unavailable",
+            "Tool is unavailable",
         ),
         (
             || UpstreamSendError::Rejected(coral_upstream::McpRejection::Other(-32603)),
@@ -477,19 +468,19 @@ async fn upstream_send_failures_keep_their_cause_in_the_coral_failure() {
             upstream.clone(),
         )
         .await;
-        let operation = fixture
-            .user_operation("user:send-failure", "Catch an upstream send failure")
+        let tool = fixture
+            .user_tool("user:send-failure", "Catch an upstream send failure")
             .await;
         let accepted = fixture
             .runs
             .start(
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 submission(
                     r#"
             try { await coral.providers.weather.getForecast({}); }
             catch (error) {
-                if (!(error instanceof coral.OperationError)) throw error;
+                if (!(error instanceof coral.ToolError)) throw error;
                 return {code: error.code, message: error.message};
             }
             return "resolved";
@@ -500,8 +491,8 @@ async fn upstream_send_failures_keep_their_cause_in_the_coral_failure() {
             .expect("accept Program");
         let terminal = wait_for_terminal(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
         )
         .await;
@@ -521,8 +512,8 @@ async fn upstream_send_failures_keep_their_cause_in_the_coral_failure() {
         assert!(
             retained_events(
                 &fixture.runs,
-                &operation.principal,
-                &operation.workspace_id,
+                &tool.principal,
+                &tool.workspace_id,
                 terminal.run_id()
             )
             .await
@@ -548,29 +539,29 @@ async fn unknown_call_path_creates_no_invocation_or_send() {
         upstream.clone(),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:unknown-operation", "Call unknown Operation")
+    let tool = fixture
+        .user_tool("user:unknown-tool", "Call unknown Tool")
         .await;
     let accepted = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("invoke-operation"),
+            &tool.principal,
+            &tool.workspace_id,
+            submission("invoke-tool"),
         )
         .await
         .expect("accept Program before host resolution");
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
 
     assert_eq!(terminal.state(), RunState::Failed);
     assert!(matches!(
-        retained_events(&fixture.runs, &operation.principal, &operation.workspace_id, terminal.run_id()).await.as_slice(),
+        retained_events(&fixture.runs, &tool.principal, &tool.workspace_id, terminal.run_id()).await.as_slice(),
         [started, ended]
             if started.kind() == &RunEventKind::Started
                 && ended.kind() == &RunEventKind::Ended { state: RunState::Failed }
@@ -579,7 +570,7 @@ async fn unknown_call_path_creates_no_invocation_or_send() {
 }
 
 #[tokio::test]
-async fn real_program_dispatches_concurrent_operations_and_waits_for_both() {
+async fn real_program_dispatches_concurrent_tools_and_waits_for_both() {
     let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
         200,
         serde_json::json!({"temperature": 21}),
@@ -592,12 +583,12 @@ async fn real_program_dispatches_concurrent_operations_and_waits_for_both() {
         upstream.clone(),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:parallel-program", "Concurrent Operations")
+    let tool = fixture
+        .user_tool("user:parallel-program", "Concurrent Tools")
         .await;
     let accepted = fixture.runs.start(
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         submission("const results = await Promise.all([coral.providers.weather.getForecast(), coral.providers.weather.getForecast()]); return results.length;"),
     ).await.expect("accept Program");
     let concurrent = tokio::time::timeout(Duration::from_secs(2), async {
@@ -608,11 +599,11 @@ async fn real_program_dispatches_concurrent_operations_and_waits_for_both() {
     .await;
     // Release even on failure so the regression cannot strand runtime shutdown.
     upstream.release.store(true, Ordering::SeqCst);
-    concurrent.expect("both Operations dispatch before either returns");
+    concurrent.expect("both Tools dispatch before either returns");
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -620,8 +611,8 @@ async fn real_program_dispatches_concurrent_operations_and_waits_for_both() {
     assert_eq!(
         retained_events(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             terminal.run_id()
         )
         .await
@@ -646,15 +637,15 @@ async fn upstream_send_holds_no_database_transaction_or_lock() {
         upstream.clone(),
     )
     .await;
-    let operation = fixture
-        .user_operation("user:unlocked-send", "Send without database lock")
+    let tool = fixture
+        .user_tool("user:unlocked-send", "Send without database lock")
         .await;
     let accepted = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission("invoke-operation"),
+            &tool.principal,
+            &tool.workspace_id,
+            submission("invoke-tool"),
         )
         .await
         .expect("accept Program");
@@ -663,9 +654,9 @@ async fn upstream_send_holds_no_database_transaction_or_lock() {
     tokio::time::timeout(
         Duration::from_secs(2),
         fixture.policies.set_access_state(
-            &change(operation.user.clone(), 100, 'c'),
-            operation.policy_target.clone(),
-            OperationAccessState::Disabled,
+            &change(tool.user.clone(), 100, 'c'),
+            tool.policy_target.clone(),
+            ToolAccessState::Disabled,
         ),
     )
     .await
@@ -675,8 +666,8 @@ async fn upstream_send_holds_no_database_transaction_or_lock() {
 
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -684,7 +675,7 @@ async fn upstream_send_holds_no_database_transaction_or_lock() {
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
 }
 
-/// Runs `source` against one real `getForecast` Operation at `server`, then
+/// Runs `source` against one real `getForecast` Tool at `server`, then
 /// reads back its terminal outcome and its only Invocation.
 async fn run_real_forecast(
     user_id: &str,
@@ -693,28 +684,24 @@ async fn run_real_forecast(
 ) -> (RunTerminalOutcome, crate::InvocationDetail) {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let runs = fixture.live_runs(None);
-    let operation = fixture
-        .user_operation_at(user_id, "Call real weather", &server.uri())
+    let tool = fixture
+        .user_tool_at(user_id, "Call real weather", &server.uri())
         .await;
     let accepted = runs
-        .start(
-            &operation.principal,
-            &operation.workspace_id,
-            submission(source),
-        )
+        .start(&tool.principal, &tool.workspace_id, submission(source))
         .await
-        .expect("accept real Operation Program");
+        .expect("accept real Tool Program");
     let terminal = wait_for_terminal(
         &runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
     let history = runs
         .activity_entries(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             accepted.run_id(),
             &crate::RunEntryWindow::Start,
             100,
@@ -723,10 +710,10 @@ async fn run_real_forecast(
         .await
         .expect("read Run activity");
     let Some(crate::RunEntry::Invocation(summary)) = history.entries.first() else {
-        panic!("operation summary")
+        panic!("tool summary")
     };
     let detail = runs
-        .inspect_invocation(&operation.principal, &operation.workspace_id, &summary.id)
+        .inspect_invocation(&tool.principal, &tool.workspace_id, &summary.id)
         .await
         .expect("inspect Invocation");
     (
@@ -754,7 +741,7 @@ async fn real_forecast(
         final_value: FinalValue::Present(value),
     } = outcome
     else {
-        panic!("real HTTP Operation should produce a Final Value: {outcome:?}");
+        panic!("real HTTP Tool should produce a Final Value: {outcome:?}");
     };
     (value.as_json().clone(), detail)
 }
@@ -788,11 +775,11 @@ async fn a_non_success_http_outcome_rejects_the_call_and_is_retained() {
         panic!("an uncaught upstream error fails the Run: {outcome:?}");
     };
     assert_eq!(failure.code(), crate::RunFailureCode::ProgramRejected);
-    let operation = failure
+    let tool = failure
         .error()
-        .and_then(|error| error.operation.as_ref())
-        .expect("trusted Operation error fields");
-    assert_eq!(operation.code, "error_response");
+        .and_then(|error| error.tool.as_ref())
+        .expect("trusted Tool error fields");
+    assert_eq!(tool.code, "error_response");
     assert_eq!(
         detail.summary.outcome,
         Some(crate::InvocationResultKind::UpstreamOutcome)
@@ -835,7 +822,7 @@ async fn a_caught_error_response_carries_status_data_and_metadata() {
           return "returned";
         } catch (error) {
           return {
-            isOperationError: error instanceof coral.OperationError,
+            isToolError: error instanceof coral.ToolError,
             code: error.code,
             status: error.status,
             data: error.data,
@@ -856,7 +843,7 @@ async fn a_caught_error_response_carries_status_data_and_metadata() {
     assert_eq!(
         value.as_json(),
         &serde_json::json!({
-            "isOperationError": true,
+            "isToolError": true,
             "code": "error_response",
             "status": 422,
             "data": {"temperature": 18},
@@ -967,7 +954,7 @@ async fn a_stop_already_set_never_launches_the_upstream_send() {
         }
     };
     let ready = coral_upstream::ReadyHttpDispatch::plan(
-        prepared.operations().first().expect("Operation"),
+        prepared.tools().first().expect("Tool"),
         prepared.schema_graph(),
         &serde_json::json!({}),
         coral_value::ValueLimits::default(),
@@ -994,7 +981,7 @@ async fn a_stop_already_set_never_launches_the_upstream_send() {
 }
 
 #[tokio::test]
-async fn blocked_destination_is_a_durable_catchable_operation_error() {
+async fn blocked_destination_is_a_durable_catchable_tool_error() {
     let sink = wiremock::MockServer::start().await;
     let fixture =
         TestModules::with_upstream(
@@ -1007,8 +994,8 @@ async fn blocked_destination_is_a_durable_catchable_operation_error() {
             ),
         )
         .await;
-    let operation = fixture
-        .user_operation_at(
+    let tool = fixture
+        .user_tool_at(
             "user:blocked-destination",
             "Observe destination rejection",
             &sink.uri(),
@@ -1017,13 +1004,13 @@ async fn blocked_destination_is_a_durable_catchable_operation_error() {
     let accepted = fixture
         .runs
         .start(
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             submission(
                 r#"
         try { await coral.providers.weather.getForecast({city: "canary"}); }
         catch (error) {
-            if (!(error instanceof coral.OperationError)) throw error;
+            if (!(error instanceof coral.ToolError)) throw error;
             await coral.emit({code: error.code, message: error.message});
             return "handled";
         }
@@ -1034,8 +1021,8 @@ async fn blocked_destination_is_a_durable_catchable_operation_error() {
         .unwrap();
     let terminal = wait_for_terminal(
         &fixture.runs,
-        &operation.principal,
-        &operation.workspace_id,
+        &tool.principal,
+        &tool.workspace_id,
         accepted.run_id(),
     )
     .await;
@@ -1043,8 +1030,8 @@ async fn blocked_destination_is_a_durable_catchable_operation_error() {
     assert!(
         retained_events(
             &fixture.runs,
-            &operation.principal,
-            &operation.workspace_id,
+            &tool.principal,
+            &tool.workspace_id,
             terminal.run_id()
         )
         .await

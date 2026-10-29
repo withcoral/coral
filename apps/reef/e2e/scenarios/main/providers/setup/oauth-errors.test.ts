@@ -2,7 +2,7 @@ import { expect, test } from 'vitest'
 import { withOwnerSession } from '../../../../support/actors.ts'
 import { oauthApiServer } from '../../../../support/provider-fixtures.ts'
 import {
-  acceptOperations,
+  acceptTools,
   chooseAccount,
   chooseFile,
   confirmConfiguration,
@@ -24,7 +24,7 @@ test('Denied OAuth consent settles the setup and allows a new sign-in', async (c
       await chooseFile(page, 'oauth.json', upstream.document('Denied consent'))
       await page.getByRole('button', { name: 'Read', exact: true }).click()
       await confirmConfiguration(page)
-      await acceptOperations(page)
+      await acceptTools(page)
       await chooseAccount(page, 'shared')
       await signInAndShareAccount(page)
       await page.getByRole('link', { name: 'Deny fixture access', exact: true }).click()

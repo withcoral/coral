@@ -3,48 +3,48 @@ use std::fmt::Write as _;
 
 use sha2::{Digest as _, Sha256};
 
-use crate::{CatalogDiagnostic, MaterializedOperation, OperationKey};
+use crate::{CatalogDiagnostic, MaterializedTool, ToolKey};
 
 /// One active Generation-relative path retained across regeneration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationPathAssignment {
-    key: OperationKey,
+pub struct ToolPathAssignment {
+    key: ToolKey,
     relative_path: String,
 }
 
-impl OperationPathAssignment {
-    pub(crate) const fn new(key: OperationKey, relative_path: String) -> Self {
+impl ToolPathAssignment {
+    pub(crate) const fn new(key: ToolKey, relative_path: String) -> Self {
         Self { key, relative_path }
     }
 
-    pub(crate) fn for_operation(operation: &MaterializedOperation) -> Self {
+    pub(crate) fn for_tool(tool: &MaterializedTool) -> Self {
         Self {
-            key: operation.key().clone(),
-            relative_path: operation.relative_path().to_string(),
+            key: tool.key().clone(),
+            relative_path: tool.relative_path().to_string(),
         }
     }
 
-    pub(crate) fn for_operations(operations: &[MaterializedOperation]) -> Vec<Self> {
-        operations.iter().map(Self::for_operation).collect()
+    pub(crate) fn for_tools(tools: &[MaterializedTool]) -> Vec<Self> {
+        tools.iter().map(Self::for_tool).collect()
     }
 
-    /// Returns the exact Operation Key that owns this active path.
+    /// Returns the exact Tool Key that owns this active path.
     #[must_use]
-    pub const fn key(&self) -> &OperationKey {
+    pub const fn key(&self) -> &ToolKey {
         &self.key
     }
 
-    /// Returns the collision-free Operation-relative JavaScript path.
+    /// Returns the collision-free Tool-relative JavaScript path.
     #[must_use]
     pub fn relative_path(&self) -> &str {
         &self.relative_path
     }
 }
 
-pub(super) fn assign_operation_paths<'a>(
-    keys: impl Iterator<Item = &'a OperationKey>,
-    previous_paths: &[OperationPathAssignment],
-) -> Result<BTreeMap<OperationKey, String>, CatalogDiagnostic> {
+pub(super) fn assign_tool_paths<'a>(
+    keys: impl Iterator<Item = &'a ToolKey>,
+    previous_paths: &[ToolPathAssignment],
+) -> Result<BTreeMap<ToolKey, String>, CatalogDiagnostic> {
     let keys = keys.cloned().collect::<BTreeSet<_>>();
     let mut assigned = BTreeMap::new();
     let mut used = HashSet::new();
@@ -57,8 +57,8 @@ pub(super) fn assign_operation_paths<'a>(
                     .is_some())
         {
             return Err(diagnostic(
-                "invalid_operation_path_index",
-                "the previous active catalog has incoherent Operation paths",
+                "invalid_tool_path_index",
+                "the previous active catalog has incoherent Tool paths",
             ));
         }
     }
@@ -66,7 +66,7 @@ pub(super) fn assign_operation_paths<'a>(
         if assigned.contains_key(&key) {
             continue;
         }
-        let base = operation_relative_path(&key);
+        let base = tool_relative_path(&key);
         let relative_path = if used.insert(base.clone()) {
             base
         } else {
@@ -77,7 +77,7 @@ pub(super) fn assign_operation_paths<'a>(
     Ok(assigned)
 }
 
-fn collision_path(base: &str, key: &OperationKey, used: &mut HashSet<String>) -> String {
+fn collision_path(base: &str, key: &ToolKey, used: &mut HashSet<String>) -> String {
     let digest = Sha256::digest(key.as_str().as_bytes());
     let mut encoded = String::with_capacity(64);
     for byte in digest {
@@ -90,10 +90,10 @@ fn collision_path(base: &str, key: &OperationKey, used: &mut HashSet<String>) ->
             return candidate;
         }
     }
-    unreachable!("distinct Operation Keys have a collision-free SHA-256 suffix")
+    unreachable!("distinct Tool Keys have a collision-free SHA-256 suffix")
 }
 
-/// Projects one Operation Key onto its idiomatic JavaScript call shape.
+/// Projects one Tool Key onto its idiomatic JavaScript call shape.
 ///
 /// A provider-authored key such as `actions/add-repo-access-to-runner-group`
 /// or `compute.instances.list` becomes the dotted path
@@ -102,7 +102,7 @@ fn collision_path(base: &str, key: &OperationKey, used: &mut HashSet<String>) ->
 /// words. A deterministic `METHOD /path` fallback key stays one segment, such
 /// as `getReposOwnerRepo`, because its URL slashes are not namespaces. Distinct
 /// keys that project onto the same path receive collision suffixes.
-fn operation_relative_path(key: &OperationKey) -> String {
+fn tool_relative_path(key: &ToolKey) -> String {
     let key = key.as_str();
     if is_method_fallback_key(key) {
         return safe_segment(camel_case(&words(key)));
@@ -208,9 +208,9 @@ fn diagnostic(code: &'static str, message: &'static str) -> CatalogDiagnostic {
 /// Whether `value` is a Call Path segment that the Program Runtime Surface's
 /// Call Path proxy cannot route. The proxy answers `then` with `undefined`, so
 /// awaiting a path does not treat it as a thenable; the rest are object-model
-/// names. Operation paths, Provider namespaces and Saved Function paths all
+/// names. Tool paths, Provider namespaces and Saved Function paths all
 /// reserve these. Language keywords such as `delete` stay usable: property
-/// access accepts them, and an Operation's declaration does not spell its
+/// access accepts them, and a Tool's declaration does not spell its
 /// path.
 #[must_use]
 pub fn call_path_segment_is_reserved(value: &str) -> bool {
@@ -235,7 +235,7 @@ mod tests {
     use super::*;
 
     fn path(key: &str) -> String {
-        operation_relative_path(&OperationKey::parse(key).expect("test key"))
+        tool_relative_path(&ToolKey::parse(key).expect("test key"))
     }
 
     #[test]
@@ -287,22 +287,21 @@ mod tests {
     #[test]
     fn paths_assigned_under_earlier_naming_rules_carry_forward() {
         for (key, earlier) in [("items/then", "items.then"), ("pulls/get", "pulls._get")] {
-            let key = OperationKey::parse(key).expect("test key");
-            let previous = OperationPathAssignment {
+            let key = ToolKey::parse(key).expect("test key");
+            let previous = ToolPathAssignment {
                 key: key.clone(),
                 relative_path: earlier.to_string(),
             };
-            let assigned =
-                assign_operation_paths([&key].into_iter(), &[previous]).expect("assignment");
+            let assigned = assign_tool_paths([&key].into_iter(), &[previous]).expect("assignment");
             assert_eq!(assigned.get(&key).map(String::as_str), Some(earlier));
         }
     }
 
     #[test]
     fn colliding_projections_receive_deterministic_suffixes() {
-        let keys = ["get-user", "getUser", "get_user"]
-            .map(|key| OperationKey::parse(key).expect("test key"));
-        let assigned = assign_operation_paths(keys.iter(), &[]).expect("assignment");
+        let keys =
+            ["get-user", "getUser", "get_user"].map(|key| ToolKey::parse(key).expect("test key"));
+        let assigned = assign_tool_paths(keys.iter(), &[]).expect("assignment");
         let paths = assigned.values().collect::<BTreeSet<_>>();
         assert_eq!(paths.len(), 3);
         assert!(paths.iter().all(|path| path.starts_with("getUser")));

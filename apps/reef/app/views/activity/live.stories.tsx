@@ -65,7 +65,7 @@ const storedAt = (line: number): RecordSourceLocation => ({
   column: 3,
 })
 
-function operation(
+function tool(
   run: string,
   sequence: number,
   callPath: string,
@@ -73,7 +73,7 @@ function operation(
 ): Child {
   return invocationRow(run, `${run.split('/').at(-1)}-${sequence}`, {
     task: run === program.name ? task.name : '',
-    operation: callPath,
+    tool: callPath,
     callPath,
     sourceLocation: storedAt(lineOf.invocation),
     ...overrides,
@@ -108,9 +108,9 @@ const finalRow: Child = {
   eventKind: 'run.ended',
 }
 
-/** An operation of the program that waits for your approval. */
+/** A tool of the program that waits for your approval. */
 function waiting(sequence: number, callPath: string): Child {
-  return operation(program.name, sequence, callPath, { state: 'pending', requiresAction: true })
+  return tool(program.name, sequence, callPath, { state: 'pending', requiresAction: true })
 }
 const approvalOf = (invocation: string) => `${workspace}/approvals/${invocation.split('/').at(-1)}`
 
@@ -123,7 +123,7 @@ const world = {
   /** How many children one branch read returns. */
   window: 100,
   request: null as RequestDetail | null,
-  /** Each waiting operation's approval state, by operation. */
+  /** Each waiting tool's approval state, by tool. */
   approvals: new Map<string, string>(),
   /**
    * How the next decision ends: saved, refused with an error, held until released, or
@@ -209,7 +209,7 @@ function pageFor(url: URL): ActivityPage {
   const record = url.searchParams.get('record')
   const expanded = url.searchParams.has('tree') ? url.searchParams.getAll('expand') : []
   const run = { ...program, state: world.ended ? 'succeeded' : 'running' } as typeof program
-  // A decided operation no longer waits; it runs on.
+  // A decided tool no longer waits; it runs on.
   const current = world.children.map((row): Child => {
     const approval = world.approvals.get(row.name)
     return approval && row.kind === 'invocation'
@@ -255,7 +255,7 @@ function pageFor(url: URL): ActivityPage {
   })
   // Coral reads a child record with its Run, so the drawer shows that Run's source.
   const contextOf = (row: Child) => runDetail(row.run === run.name ? run : other)
-  // A waiting operation selected with its approval opens that approval's review.
+  // A waiting tool selected with its approval opens that approval's review.
   const approval =
     selectedRow?.kind === 'invocation' &&
     url.searchParams.get('request') === approvalOf(selectedRow.name)
@@ -343,8 +343,8 @@ function LiveRoute() {
       <button type="button" onClick={() => navigate(1)}>
         History forward
       </button>
-      <button type="button" onClick={() => arrive(operation(program.name, next(), 'mail.send'))}>
-        Add operation
+      <button type="button" onClick={() => arrive(tool(program.name, next(), 'mail.send'))}>
+        Add tool
       </button>
       <button type="button" onClick={() => arrive(output(program.name, next(), 'program.logged'))}>
         Add log
@@ -368,9 +368,7 @@ function LiveRoute() {
       </button>
       <button
         type="button"
-        onClick={() =>
-          arrive(operation(other.name, world.others.length + 1, 'other.call'), other.name)
-        }
+        onClick={() => arrive(tool(other.name, world.others.length + 1, 'other.call'), other.name)}
       >
         Add to other run
       </button>
@@ -468,7 +466,7 @@ async function settled(frames = 10) {
 }
 
 export const FollowsNewRecords: Story = {
-  beforeEach: () => world.reset([operation(program.name, 1, 'mail.list')]),
+  beforeEach: () => world.reset([tool(program.name, 1, 'mail.list')]),
   play: async (context) => {
     const { userEvent } = context
     const { toggle, address, press, selects, following, idle, canvas } = await surface(context)
@@ -482,14 +480,14 @@ export const FollowsNewRecords: Story = {
     await selects('mail.list', 'mail.list')
     await waitFor(() => expect(toggle()).toHaveFocus())
 
-    // Each new log, emission or operation of the Run replaces the selection.
+    // Each new log, emission or tool of the Run replaces the selection.
     await press('Add log')
     await selects('console.info #2', 'log #2')
     // A record that arrives while you work elsewhere leaves focus where it is.
     await expect(canvas.getByRole('button', { name: 'Add log' })).toHaveFocus()
     await press('Add emission')
     await selects('coral.emit #3', 'emission #3')
-    await press('Add operation')
+    await press('Add tool')
     await selects('mail.send', 'mail.send')
     await following(true)
 
@@ -521,13 +519,10 @@ export const FollowsNewRecords: Story = {
 export const YourSelectionStopsIt: Story = {
   parameters: {
     // A reload of a live address follows from the record it names.
-    initialEntry: `/workspaces/finance/activity?${expand}&record=${operation(program.name, 1, 'mail.list').name}&live=1&filter=kept`,
+    initialEntry: `/workspaces/finance/activity?${expand}&record=${tool(program.name, 1, 'mail.list').name}&live=1&filter=kept`,
   },
   beforeEach: () =>
-    world.reset([
-      operation(program.name, 1, 'mail.list'),
-      output(program.name, 2, 'program.logged'),
-    ]),
+    world.reset([tool(program.name, 1, 'mail.list'), output(program.name, 2, 'program.logged')]),
   play: async (context) => {
     const { userEvent } = context
     const { toggle, address, press, selects, following, link, rail, idle } = await surface(context)
@@ -590,7 +585,7 @@ export const WaitsForRecords: Story = {
     await idle()
     await settled()
     await selects('Send reminders', 'Reminder run')
-    await press('Add operation')
+    await press('Add tool')
     await selects('mail.send', 'mail.send')
 
     // Focus on the old record's content returns to the rail, not to the page.
@@ -646,7 +641,7 @@ export const UnsentCommentHolds: Story = {
 
     // A new record waits while your comment is unsent. No discard prompt opens.
     const held = address().toString()
-    await press('Add operation')
+    await press('Add tool')
     await idle()
     await settled()
     await expect(address().toString()).toBe(held)
@@ -660,7 +655,7 @@ export const UnsentCommentHolds: Story = {
 }
 
 export const FollowsInTheSourceSplit: Story = {
-  beforeEach: () => world.reset([operation(program.name, 1, 'mail.list')]),
+  beforeEach: () => world.reset([tool(program.name, 1, 'mail.list')]),
   play: async (context) => {
     const { userEvent } = context
     const { rail, toggle, address, press, selects, following } = await surface(context)
@@ -699,13 +694,13 @@ export const FollowsInTheSourceSplit: Story = {
     await expect(split).not.toBe('50')
 
     await userEvent.click(toggle())
-    await shows('mail.list', 'mail.list', operation(program.name, 1, 'mail.list').name, 2)
+    await shows('mail.list', 'mail.list', tool(program.name, 1, 'mail.list').name, 2)
     await press('Add log')
     await shows('console.info #2', 'log #2', `${program.name}/events/2`, 3)
     await press('Add emission')
     await shows('coral.emit #3', 'emission #3', `${program.name}/events/3`, 4)
-    await press('Add operation')
-    await shows('mail.send', 'mail.send', operation(program.name, 4, 'mail.send').name, 2)
+    await press('Add tool')
+    await shows('mail.send', 'mail.send', tool(program.name, 4, 'mail.send').name, 2)
     await expect(separator()).toHaveAttribute('aria-valuenow', split)
 
     // The toggle in the record's header turns live mode off.
@@ -718,11 +713,11 @@ export const FollowsInTheSourceSplit: Story = {
 }
 
 /**
- * Each new operation, log or emission that live mode selects slides in by Run order,
+ * Each new tool, log or emission that live mode selects slides in by Run order,
  * and the final value replaces it at once. Detail motion owns the rule.
  */
 export const SlidesToEachNewRecord: Story = {
-  beforeEach: () => world.reset([operation(program.name, 1, 'mail.list')]),
+  beforeEach: () => world.reset([tool(program.name, 1, 'mail.list')]),
   play: async (context) => {
     const { toggle, press, selects } = await surface(context)
     await selects('Send reminders', 'Reminder run')
@@ -738,7 +733,7 @@ export const SlidesToEachNewRecord: Story = {
         return moves
       }
       const fromBelow = ['translateY(100%)', 'translateY(0)']
-      await press('Add operation')
+      await press('Add tool')
       await selects('mail.send', 'mail.send')
       await expect(await starts()).toEqual(fromBelow)
       await press('Add log')
@@ -768,7 +763,7 @@ const withActions = () =>
     output(program.name, 5, 'program.logged'),
   ])
 
-/** The rail reviews the approval of `call`, and the table selects that operation only. */
+/** The rail reviews the approval of `call`, and the table selects that tool only. */
 async function reviews(context: Play, call: Child) {
   const { rail, table, address } = await surface(context)
   const label = call.kind === 'invocation' ? call.callPath : call.label

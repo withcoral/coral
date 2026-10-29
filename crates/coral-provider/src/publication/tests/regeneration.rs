@@ -77,13 +77,13 @@ async fn rejected_regeneration(change: InterveningChange) {
         .inspect_provider(&fixture.owner, &owner, &fixture.provider_id)
         .await
         .unwrap();
-    let operation_key = OperationKey::parse("getForecast").unwrap();
-    let original_operation = default_providers
-        .inspect_operation(
+    let tool_key = ToolKey::parse("getForecast").unwrap();
+    let original_tool = default_providers
+        .inspect_tool(
             &fixture.owner,
             &fixture.workspace_id,
             &fixture.provider_id,
-            &operation_key,
+            &tool_key,
         )
         .await
         .unwrap();
@@ -198,15 +198,15 @@ async fn rejected_regeneration(change: InterveningChange) {
     );
     assert_eq!(
         providers
-            .inspect_operation(
+            .inspect_tool(
                 &inspector,
                 &fixture.workspace_id,
                 &fixture.provider_id,
-                &operation_key
+                &tool_key
             )
             .await
             .unwrap(),
-        original_operation
+        original_tool
     );
     assert_eq!(
         providers

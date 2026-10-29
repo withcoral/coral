@@ -8,32 +8,32 @@ import type {
 import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import type { PersonalAccountState } from '@/views/accounts/types'
 import type { AccountLabel } from './account-labels'
-import type { SelectedOperation } from './selection'
+import type { SelectedTool } from './selection'
 export type { AccountChoice } from '@/lib/provider-publication-attempt/model'
 
 export type { ActionResult, FormContext, WorkspaceView }
 
-/** What happened to one operation in a bulk policy update. `unconfirmed` is
+/** What happened to one tool in a bulk policy update. `unconfirmed` is
  * the page's own reading of a lost response; the action never sends it. */
-export type OperationOutcome = SelectedOperation &
+export type ToolOutcome = SelectedTool &
   ({ status: 'updated' } | { status: 'unconfirmed' } | { status: 'failed'; reason: string })
 
-/** A bulk policy update's result: the shared shape plus one outcome per operation. */
+/** A bulk policy update's result: the shared shape plus one outcome per tool. */
 export interface PolicyActionResult extends ActionResult {
-  operations?: OperationOutcome[]
+  tools?: ToolOutcome[]
 }
 
 /**
- * The least an Operation needs to appear in the tree. A Setup that has not been
+ * The least a Tool needs to appear in the tree. A Setup that has not been
  * published yet can say this much; only an installed Provider can say more.
  */
-export interface OperationNodeView {
-  /** Operation-relative path, unique within its Provider. */
+export interface ToolNodeView {
+  /** Tool-relative path, unique within its Provider. */
   relativePath: string
   /** Provider-authored summary; empty when the Provider gave none. */
   summary: string
   available: boolean
-  /** Coral-authored reasons the Operation cannot be called; empty when available. */
+  /** Coral-authored reasons the Tool cannot be called; empty when available. */
   reasons: string[]
   /** The first OpenAPI tag, else the dotted prefix, else empty. */
   group: string
@@ -42,31 +42,31 @@ export interface OperationNodeView {
 }
 
 /** Effect hints the provider declared. An absent hint is undeclared, not false. */
-export interface OperationHintsView {
+export interface ToolHintsView {
   readOnly?: boolean
   destructive?: boolean
   idempotent?: boolean
   openWorld?: boolean
 }
 
-/** One Operation as the tree and its detail pane show it. */
-export interface OperationView extends OperationNodeView {
+/** One Tool as the tree and its detail pane show it. */
+export interface ToolView extends ToolNodeView {
   /** Full management API resource name, used for policy writes. */
   name: string
   /** The full call path Programs use; the relative path when not installed. */
   callPath: string
   /** Safe Provider-authored prose; may contain Markdown. */
   description: string
-  hints: OperationHintsView
+  hints: ToolHintsView
   policy: PolicyState
 }
 
-/** One operation the live provider has, as a refresh compares it. */
-export type LiveOperationView = Pick<OperationNodeView, 'relativePath' | 'summary'>
+/** One tool the live provider has, as a refresh compares it. */
+export type LiveToolView = Pick<ToolNodeView, 'relativePath' | 'summary'>
 
-/** One previewed Operation, as the operations step groups and lists it. */
-export interface ReviewOperationView extends OperationNodeView {
-  /** Operation Key, which the destination map and the unavailable list are keyed by. */
+/** One previewed Tool, as the tools step groups and lists it. */
+export interface ReviewToolView extends ToolNodeView {
+  /** Tool Key, which the destination map and the unavailable list are keyed by. */
   key: string
 }
 
@@ -76,7 +76,7 @@ export type CredentialMethod = 'none' | 'bearer' | 'header' | 'basic' | 'query' 
 /** The Credential Route as Reef names it: "Whose account does it use?" */
 export type { AccountLabel } from './account-labels'
 
-/** Search has not indexed the provider's operations yet, or could not, and why. */
+/** Search has not indexed the provider's tools yet, or could not, and why. */
 export type SearchIndexView = { state: 'pending' } | { state: 'failed'; reason: string }
 
 export interface ProviderView {
@@ -90,14 +90,14 @@ export interface ProviderView {
   blockers: string[]
   /** What you must do with your own account before you call the provider, if anything. */
   personalAccountAction: string | null
-  /** Whether search can find the provider's operations; null when it can, or when Coral sent no state. Calls still work. */
+  /** Whether search can find the provider's tools; null when it can, or when Coral sent no state. Calls still work. */
   searchIndex: SearchIndexView | null
   readyCount: number
   totalCount: number
   etag: string
   path: string
   enabled: boolean
-  operations: OperationView[]
+  tools: ToolView[]
 }
 
 /** What the settings page can read about one provider without owner-only or write calls. */
@@ -113,8 +113,8 @@ export interface ProviderSettingsView {
   path: string
   /** Disabled providers keep their settings but Coral refuses their calls. */
   enabled: boolean
-  /** False when Coral can call none of the provider's operations. */
-  operationsReady: boolean
+  /** False when Coral can call none of the provider's tools. */
+  toolsReady: boolean
   account: AccountChoice
   /** The state of the account calls use: yours, or the shared one. Unknown when unread. */
   connection: PersonalAccountState | 'unknown'
@@ -152,7 +152,7 @@ export interface WorkspaceProvidersPageProps {
   recipes?: readonly SourceChoice[]
   providers: ProviderView[]
   selectedProvider: string | null
-  selectedOperation: string | null
+  selectedTool: string | null
   form: FormContext
   result?: ActionResult
   pending?: boolean
@@ -245,7 +245,7 @@ export interface ConfigurationReviewView {
   documentDisplayName: string
   servers: {
     declaration: string
-    operations: string[]
+    tools: string[]
     options: {
       url: string
       variables: { name: string; defaultValue: string; enumerated: boolean; values: string[] }[]
@@ -253,10 +253,10 @@ export interface ConfigurationReviewView {
   }[]
   destinations: Record<string, string>
   /** Exact preview count, including a known empty catalog; null when not established. */
-  operationCount: number | null
-  /** Every previewed Operation in catalog order; empty until a catalog is read. */
-  operations: ReviewOperationView[]
-  unavailableOperations: { key: string; reasons: string[] }[]
+  toolCount: number | null
+  /** Every previewed Tool in catalog order; empty until a catalog is read. */
+  tools: ReviewToolView[]
+  unavailableTools: { key: string; reasons: string[] }[]
   diagnostic: string
   /** False when Coral cannot read the source; the diagnostic says why. */
   readable: boolean
@@ -349,7 +349,7 @@ export interface SetupView {
     clientId: string
     expiresAt: string
   } | null
-  /** Why the last attempt to list Operations after sign-in did not complete; empty otherwise. */
+  /** Why the last attempt to list Tools after sign-in did not complete; empty otherwise. */
   discoveryFailure: string
   /** When this attempt expires; empty when it does not. */
   expiresAt: string
@@ -432,8 +432,8 @@ export interface UpdatePageProps {
   cancelPath: string
   /** The provider's settings, where Edit configuration opens from. */
   settingsPath?: string
-  /** The live provider's operations; a refresh groups the new and removed ones. */
-  currentOperations?: readonly LiveOperationView[]
+  /** The live provider's tools; a refresh groups the new and removed ones. */
+  currentTools?: readonly LiveToolView[]
   providersPath: string
   setup: SetupView | null
   attempt: UpdateAttempt

@@ -49,6 +49,6 @@ impl GetPolicy {
                 .map(|(path, state)| (path, state.into()))
                 .collect(),
         }
-        .into_operation_result())
+        .into_tool_result())
     }
 }

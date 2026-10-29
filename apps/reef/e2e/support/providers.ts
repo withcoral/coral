@@ -12,7 +12,7 @@ import {
   type ProviderConfiguration,
   type ProviderSetup,
 } from '../generated/coral/management/v1/provider_pb.ts'
-import { OperationAccessState } from '../generated/coral/management/v1/policy_pb.ts'
+import { ToolAccessState } from '../generated/coral/management/v1/policy_pb.ts'
 import type { Target } from './config.ts'
 import { managementClients } from './management.ts'
 import { mcpToken } from './actors.ts'
@@ -112,7 +112,7 @@ export async function backToConfiguration(page: Page) {
 }
 
 /**
- * Names the provider in Configuration and accepts the relisted operations.
+ * Names the provider in Configuration and accepts the relisted tools.
  * Use this for drafts without a retained grant. Retention journeys name the
  * provider before authorization because reopening Configuration clears that choice.
  */
@@ -120,7 +120,7 @@ export async function setNamespace(page: Page, namespace: string) {
   if (!(await configurationNext(page).count())) await backToConfiguration(page)
   await page.getByLabel('Namespace', { exact: true }).fill(namespace)
   await confirmConfiguration(page)
-  await acceptOperations(page)
+  await acceptTools(page)
 }
 
 /** One destination's URL field, named by the declaration it serves. */
@@ -152,7 +152,7 @@ export async function addProviderFromFile(
   await page.getByLabel('Display name', { exact: true }).waitFor()
   await page.getByLabel('Namespace', { exact: true }).fill(namespace)
   await confirmConfiguration(page, options.authentication)
-  await acceptOperations(page)
+  await acceptTools(page)
   if (options.account) {
     await chooseAccount(page, options.account)
     if (options.secret !== undefined) await connectSharedAccount(page, options.secret)
@@ -249,7 +249,7 @@ export function addedProviders<P extends { builtin: boolean }>(providers: readon
   return providers.filter((provider) => !provider.builtin)
 }
 
-/** The rail of provider tabs beside the operations table. */
+/** The rail of provider tabs beside the tools table. */
 const providersRail = (page: Page) =>
   page.getByRole('navigation', { name: 'installed providers', exact: true })
 
@@ -285,7 +285,7 @@ export async function openProviderSettings(page: Page) {
   await breadcrumb(page, 'Settings').waitFor()
 }
 
-/** Leaves settings for the provider's operations through the breadcrumb. */
+/** Leaves settings for the provider's tools through the breadcrumb. */
 export async function closeProviderSettings(page: Page) {
   await breadcrumb(page).getByRole('link').nth(1).click()
   await page.waitForURL((url) => !url.pathname.endsWith('/settings'))
@@ -310,8 +310,8 @@ export async function setProviderEnabled(
 /**
  * Waits for a provider's rail entry to show its status: its first blocker,
  * else "Connect your account" when only your own account is missing, else
- * "Ready". With `operations`, it also waits for the provider's group heading
- * to show its count and one Unavailable row for each operation Coral cannot
+ * "Ready". With `tools`, it also waits for the provider's group heading
+ * to show its count and one Unavailable row for each tool Coral cannot
  * call. Name the provider by its display name, or by its path when two
  * providers share one.
  */
@@ -319,7 +319,7 @@ export async function waitForProviderStatus(
   page: Page,
   provider: string | { path: string },
   status: string,
-  operations?: { available: number; total: number },
+  tools?: { available: number; total: number },
 ) {
   const rail = providersRail(page)
   const id = typeof provider === 'string' ? null : provider.path.split('/').at(-1)
@@ -332,10 +332,10 @@ export async function waitForProviderStatus(
     typeof provider === 'string'
       ? page.getByRole('rowgroup', { name: provider, exact: true })
       : page.locator(`#provider-group-${id}`)
-  if (!operations) return
-  const { available, total } = operations
+  if (!tools) return
+  const { available, total } = tools
   await group
-    .getByText(`${total} operation${total === 1 ? '' : 's'}`, { exact: true })
+    .getByText(`${total} tool${total === 1 ? '' : 's'}`, { exact: true })
     .first()
     .waitFor()
   await expect
@@ -343,8 +343,8 @@ export async function waitForProviderStatus(
     .toBe(total - available)
 }
 
-/** Opens one Operation's details drawer from the selected Provider's table. */
-export async function openOperation(page: Page, relativePath: string) {
+/** Opens one Tool's details drawer from the selected Provider's table. */
+export async function openTool(page: Page, relativePath: string) {
   await page.getByRole('link', { name: relativePath, exact: true }).click()
   const drawer = page.getByRole('dialog', { name: relativePath, exact: true })
   await drawer.waitFor()
@@ -426,12 +426,12 @@ export async function chooseAccount(page: Page, outcome: AccountOutcome) {
 }
 
 /**
- * Sets one operation's policy from the provider's operations table: its row's
+ * Sets one tool's policy from the provider's tools table: its row's
  * policy toggle has one radio per policy. A saved policy shows in the row
  * itself, so the helper waits for the new radio to stay checked and for the
  * request to release the row.
  */
-export async function setOperationPolicy(
+export async function setToolPolicy(
   page: Page,
   name: string,
   to: 'Always allow' | 'Needs approval' | 'Disabled',
@@ -446,51 +446,51 @@ export async function setOperationPolicy(
   expect(await row.getByText('Not saved', { exact: true }).count()).toBe(0)
 }
 
-/** Enables one operation that still has the default approval policy. */
-export async function enableOperation(page: Page, name: string) {
-  await setOperationPolicy(page, name, 'Always allow')
+/** Enables one tool that still has the default approval policy. */
+export async function enableTool(page: Page, name: string) {
+  await setToolPolicy(page, name, 'Always allow')
 }
 
-/** The operations an update lists under `group`, such as New or Removed. An open group's
+/** The tools an update lists under `group`, such as New or Removed. An open group's
  * toggle names it. */
-export function operationGroup(page: Page, group: string) {
+export function toolGroup(page: Page, group: string) {
   return page
     .getByRole('treeitem')
     .filter({ has: page.getByRole('button', { name: `Collapse ${group}`, exact: true }) })
 }
 
 /**
- * Accepts the listed operations. Every creation attempt shows them between
+ * Accepts the listed tools. Every creation attempt shows them between
  * Configuration and the account question; Next is a link, not a submission.
  */
-export async function acceptOperations(page: Page) {
+export async function acceptTools(page: Page) {
   expect(new URL(page.url()).pathname.endsWith('/new')).toBe(true)
-  await page.getByRole('heading', { name: 'Operations', exact: true }).waitFor()
+  await page.getByRole('heading', { name: 'Tools', exact: true }).waitFor()
   const next = page.getByRole('link', { name: 'Next', exact: true })
   await next.waitFor()
   await next.click()
   await next.waitFor({ state: 'detached' })
-  expect(new URL(page.url()).searchParams.get('operationsAccepted')).toBe('1')
+  expect(new URL(page.url()).searchParams.get('toolsAccepted')).toBe('1')
 }
 
 /**
- * Reads a protected server's operations with a token. The operations step asks
+ * Reads a protected server's tools with a token. The tools step asks
  * for it in a dialog, in the panel the rows will fill.
  */
-export async function readOperations(page: Page, secret: string) {
+export async function readTools(page: Page, secret: string) {
   const dialog = await openDialog(
     page,
-    page.getByRole('button', { name: 'Enter a token to read the operations', exact: true }),
+    page.getByRole('button', { name: 'Enter a token to read the tools', exact: true }),
   )
   await dialog.getByLabel('Token', { exact: true }).fill(secret)
-  await dialog.getByRole('button', { name: 'List operations', exact: true }).click()
+  await dialog.getByRole('button', { name: 'List tools', exact: true }).click()
 }
 
 /**
- * Starts the discovery sign-in. The operations step confirms what the sign-in
+ * Starts the discovery sign-in. The tools step confirms what the sign-in
  * is for before it leaves for the service, so the dialog repeats the action.
  */
-export async function signInToReadOperations(page: Page) {
+export async function signInToReadTools(page: Page) {
   const dialog = await openDialog(page, page.getByRole('button', { name: /^Sign in/ }))
   await dialog.getByRole('button', { name: /^Sign in/ }).click()
 }
@@ -700,7 +700,7 @@ interface ToolResult<T = unknown> {
 }
 
 /**
- * Creates a workspace where the owner's Programs call each Built-in Operation in `unattended`,
+ * Creates a workspace where the owner's Programs call each Built-in Tool in `unattended`,
  * such as addProvider, without approval. Every other one keeps its default.
  */
 export async function programWorkspace(
@@ -718,14 +718,14 @@ export async function programWorkspace(
       const builtin = (
         await api.providers.listProviders({ parent: workspace.name })
       ).providers.find((provider) => provider.builtin)!
-      const catalog = await api.providers.listOperations({ parent: builtin.name })
-      await api.policies.updateOperationPolicies({
+      const catalog = await api.providers.listTools({ parent: builtin.name })
+      await api.policies.updateToolPolicies({
         parent: builtin.name,
-        policies: catalog.operations
-          .filter((operation) => unattended.includes(operation.relativePath))
-          .map((operation) => ({
-            operation: operation.name,
-            accessState: OperationAccessState.ENABLED,
+        policies: catalog.tools
+          .filter((tool) => unattended.includes(tool.relativePath))
+          .map((tool) => ({
+            tool: tool.name,
+            accessState: ToolAccessState.ENABLED,
           })),
       })
     },
@@ -843,7 +843,7 @@ export function programRunner(
   }
   const execArguments = (program: string) => ({
     task_id: taskId,
-    intent: 'Call one Operation',
+    intent: 'Call one Tool',
     program,
     wait_ms: waitMs,
   })
@@ -909,14 +909,14 @@ export function programRunner(
       await initialize()
       return rpc('tools/call', {
         name: 'search',
-        arguments: { task_id: taskId, intent: 'Find Operations', query },
+        arguments: { task_id: taskId, intent: 'Find Tools', query },
       })
     },
     async describe(path: string): Promise<ToolResult> {
       await initialize()
       return rpc('tools/call', {
         name: 'describe',
-        arguments: { task_id: taskId, intent: 'Inspect one Operation', path },
+        arguments: { task_id: taskId, intent: 'Inspect one Tool', path },
       })
     },
     /** The tools this MCP session advertises, in order. */
@@ -950,10 +950,10 @@ export async function pausedForApproval(runner: ReturnType<typeof programRunner>
   return paused
 }
 
-/** Opens the paused call's review of the Built-in `operation` from the link the Program got. */
-export async function openReview(page: Page, paused: RunUpdate, operation: string) {
+/** Opens the paused call's review of the Built-in `tool` from the link the Program got. */
+export async function openReview(page: Page, paused: RunUpdate, tool: string) {
   await page.goto(paused.required_actions[0].run_status_url)
-  const name = `Review coral.workspace.${operation}`
+  const name = `Review coral.workspace.${tool}`
   await page.getByRole('link', { name, exact: true }).click()
   const review = page.getByRole('region', { name, exact: true })
   await review.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()

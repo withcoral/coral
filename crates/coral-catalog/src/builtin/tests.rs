@@ -1,4 +1,4 @@
-//! Each Built-in Operation's parser and results, held to the schemas a Program
+//! Each Built-in Tool's parser and results, held to the schemas a Program
 //! is typed from.
 
 use std::collections::BTreeMap;
@@ -7,23 +7,22 @@ use serde_json::{Value, json};
 
 use super::{
     AUTHENTICATION_KINDS, AddProviderResult, BuiltinAccessState, BuiltinArguments,
-    BuiltinCredentialRoute, BuiltinOperation, ConfigurationOutput, GetPolicyResult,
-    GetProviderResult, ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup,
-    ListedSetupState, ProviderFacts, ProviderSourceOutput, UpdatePolicyResult,
-    UpdateProviderResult, definition,
+    BuiltinCredentialRoute, BuiltinTool, ConfigurationOutput, GetPolicyResult, GetProviderResult,
+    ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
+    ProviderFacts, ProviderSourceOutput, UpdatePolicyResult, UpdateProviderResult, definition,
 };
 use crate::{CredentialField, ServerSelection};
 
-/// Arguments that use every part of `operation`'s input schema, from its own
+/// Arguments that use every part of `tool`'s input schema, from its own
 /// module.
-fn valid_arguments(operation: BuiltinOperation) -> Vec<Value> {
-    match operation {
-        BuiltinOperation::AddProvider => super::add_provider::tests::valid_arguments(),
-        BuiltinOperation::ListProviders => super::list_providers::valid_arguments(),
-        BuiltinOperation::GetProvider => super::get_provider::tests::valid_arguments(),
-        BuiltinOperation::GetPolicy => super::get_policy::valid_arguments(),
-        BuiltinOperation::UpdatePolicy => super::update_policy::valid_arguments(),
-        BuiltinOperation::UpdateProvider => super::update_provider::tests::valid_arguments(),
+fn valid_arguments(tool: BuiltinTool) -> Vec<Value> {
+    match tool {
+        BuiltinTool::AddProvider => super::add_provider::tests::valid_arguments(),
+        BuiltinTool::ListProviders => super::list_providers::valid_arguments(),
+        BuiltinTool::GetProvider => super::get_provider::tests::valid_arguments(),
+        BuiltinTool::GetPolicy => super::get_policy::valid_arguments(),
+        BuiltinTool::UpdatePolicy => super::update_policy::valid_arguments(),
+        BuiltinTool::UpdateProvider => super::update_provider::tests::valid_arguments(),
     }
 }
 
@@ -140,18 +139,18 @@ fn validator(schema: &Value) -> jsonschema::Validator {
 // beside a method that takes none or a word the schema does not list, or
 // rejects what a typed Program may send.
 #[test]
-fn each_operation_reads_exactly_the_arguments_its_input_schema_accepts() {
+fn each_tool_reads_exactly_the_arguments_its_input_schema_accepts() {
     let mut disagreements = Vec::new();
-    for operation in BuiltinOperation::ALL {
-        let schema = validator(&definition(operation).input);
-        for valid in valid_arguments(operation) {
-            assert!(schema.is_valid(&valid), "{}: {valid}", operation.key());
-            if let Err(problems) = BuiltinArguments::parse(operation, &valid) {
-                panic!("{} rejects {valid}: {problems:?}", operation.key());
+    for tool in BuiltinTool::ALL {
+        let schema = validator(&definition(tool).input);
+        for valid in valid_arguments(tool) {
+            assert!(schema.is_valid(&valid), "{}: {valid}", tool.key());
+            if let Err(problems) = BuiltinArguments::parse(tool, &valid) {
+                panic!("{} rejects {valid}: {problems:?}", tool.key());
             }
             for (change, description, arguments) in mutations(&valid) {
                 let schema_accepts = schema.is_valid(&arguments);
-                let parser_accepts = BuiltinArguments::parse(operation, &arguments).is_ok();
+                let parser_accepts = BuiltinArguments::parse(tool, &arguments).is_ok();
                 let disagree = match change {
                     Change::Structure => schema_accepts != parser_accepts,
                     Change::Word => parser_accepts && !schema_accepts,
@@ -159,7 +158,7 @@ fn each_operation_reads_exactly_the_arguments_its_input_schema_accepts() {
                 if disagree {
                     disagreements.push(format!(
                         "{} with {description}: the schema {} it, the parser {} it",
-                        operation.key(),
+                        tool.key(),
                         if schema_accepts { "accepts" } else { "rejects" },
                         if parser_accepts { "accepts" } else { "rejects" },
                     ));
@@ -183,7 +182,7 @@ fn facts() -> impl Iterator<Item = ProviderFacts> {
                 display_name: format!("Provider {index}"),
                 credential_route,
                 authentication,
-                operations: index,
+                tools: index,
                 account_required: index.is_multiple_of(2),
             },
         )
@@ -244,48 +243,48 @@ fn configured_providers() -> impl Iterator<Item = GetProviderResult> {
         })
 }
 
-/// What each Operation that publishes a Provider returns: the Provider, or
+/// What each Tool that publishes a Provider returns: the Provider, or
 /// the link where a person finishes it.
-fn publication_results() -> Vec<(BuiltinOperation, serde_json::Value)> {
+fn publication_results() -> Vec<(BuiltinTool, serde_json::Value)> {
     let mut results = facts()
         .flat_map(|facts| {
             [
                 (
-                    BuiltinOperation::AddProvider,
+                    BuiltinTool::AddProvider,
                     AddProviderResult::Published {
                         namespace: "weather".to_owned(),
                         facts: facts.clone(),
                     }
-                    .into_operation_result(),
+                    .into_tool_result(),
                 ),
                 (
-                    BuiltinOperation::UpdateProvider,
+                    BuiltinTool::UpdateProvider,
                     UpdateProviderResult::Published {
                         namespace: "weather".to_owned(),
                         facts,
                     }
-                    .into_operation_result(),
+                    .into_tool_result(),
                 ),
             ]
         })
         .collect::<Vec<_>>();
     results.extend([
         (
-            BuiltinOperation::AddProvider,
+            BuiltinTool::AddProvider,
             AddProviderResult::NeedsSignIn {
                 url: "https://coral.example/workspaces/w/providers/new?setup=s".to_owned(),
                 namespace: "weather".to_owned(),
             }
-            .into_operation_result(),
+            .into_tool_result(),
         ),
         (
-            BuiltinOperation::UpdateProvider,
+            BuiltinTool::UpdateProvider,
             UpdateProviderResult::NeedsSignIn {
                 url: "https://coral.example/workspaces/w/providers/p/update?setup=s&task=refresh"
                     .to_owned(),
                 namespace: "weather".to_owned(),
             }
-            .into_operation_result(),
+            .into_tool_result(),
         ),
     ]);
     results
@@ -293,7 +292,7 @@ fn publication_results() -> Vec<(BuiltinOperation, serde_json::Value)> {
 
 /// What `getPolicy` reads for a Provider without rules and for one with a
 /// rule of each state, and what `updatePolicy` returns when it sets them.
-fn policies() -> impl Iterator<Item = (BuiltinOperation, Value)> {
+fn policies() -> impl Iterator<Item = (BuiltinTool, Value)> {
     let states = BTreeMap::from([
         ("repos.get".to_owned(), BuiltinAccessState::Disabled),
         ("issues.create".to_owned(), BuiltinAccessState::Enabled),
@@ -309,15 +308,15 @@ fn policies() -> impl Iterator<Item = (BuiltinOperation, Value)> {
                 namespace: "github".to_owned(),
                 rules,
             };
-            (BuiltinOperation::GetPolicy, read.into_operation_result())
+            (BuiltinTool::GetPolicy, read.into_tool_result())
         })
         .chain([(
-            BuiltinOperation::UpdatePolicy,
+            BuiltinTool::UpdatePolicy,
             UpdatePolicyResult {
                 namespace: "github".to_owned(),
-                operations: states,
+                tools: states,
             }
-            .into_operation_result(),
+            .into_tool_result(),
         )])
 }
 
@@ -326,7 +325,7 @@ fn policies() -> impl Iterator<Item = (BuiltinOperation, Value)> {
 fn each_result_meets_its_output_schema() {
     let mut results = publication_results();
     results.push((
-        BuiltinOperation::ListProviders,
+        BuiltinTool::ListProviders,
         ListProvidersResult {
             providers: facts()
                 .enumerate()
@@ -372,33 +371,32 @@ fn each_result_meets_its_output_schema() {
             })
             .collect(),
         }
-        .into_operation_result(),
+        .into_tool_result(),
     ));
     results.push((
-        BuiltinOperation::ListProviders,
+        BuiltinTool::ListProviders,
         ListProvidersResult {
             providers: Vec::new(),
             setups: Vec::new(),
         }
-        .into_operation_result(),
+        .into_tool_result(),
     ));
     results.extend(
-        configured_providers()
-            .map(|saved| (BuiltinOperation::GetProvider, saved.into_operation_result())),
+        configured_providers().map(|saved| (BuiltinTool::GetProvider, saved.into_tool_result())),
     );
     results.extend(policies());
-    for (operation, result) in results {
+    for (tool, result) in results {
         assert_eq!(
             result.get("metadata"),
             Some(&json!({ "kind": "builtin" })),
             "the declaration's metadata"
         );
-        let data = result.get("data").expect("an Operation Result has data");
-        let schema = validator(&definition(operation).output);
+        let data = result.get("data").expect("a Tool Result has data");
+        let schema = validator(&definition(tool).output);
         let errors = schema
             .iter_errors(data)
             .map(|error| error.to_string())
             .collect::<Vec<_>>();
-        assert!(errors.is_empty(), "{}: {data}: {errors:?}", operation.key());
+        assert!(errors.is_empty(), "{}: {data}: {errors:?}", tool.key());
     }
 }

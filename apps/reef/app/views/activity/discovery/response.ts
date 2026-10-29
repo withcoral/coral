@@ -3,8 +3,8 @@ import type {
   Description,
   DiscoveryContext,
   DiscoveryView,
-  OperationFacts,
-  OperationFlags,
+  ToolFacts,
+  ToolFlags,
   SearchCoverage,
   SearchHit,
   SearchPage,
@@ -16,7 +16,7 @@ import type {
  * the tools' output schemas. `response.test.ts` checks each key and type here
  * against the snapshots of those schemas, so change both together.
  */
-const entityKind = z.enum(['operation', 'saved_function'])
+const entityKind = z.enum(['provider_tool', 'saved_function'])
 const hints = z.object({
   read_only: z.boolean().optional(),
   destructive: z.boolean().optional(),
@@ -72,7 +72,7 @@ const untrimmedSearchPageSchema = z.object({
   hits: z.array(
     z.discriminatedUnion('kind', [
       z.object({
-        kind: z.literal('operation'),
+        kind: z.literal('provider_tool'),
         ...untrimmedHitFields,
         provider_display_name: z.string(),
         title: z.string().nullable(),
@@ -102,7 +102,7 @@ const authoringFields = {
 const position = z.int().min(0).nullable()
 export const descriptionSchema = z.discriminatedUnion('kind', [
   z.object({
-    kind: z.literal('operation'),
+    kind: z.literal('provider_tool'),
     ...authoringFields,
     provider_display_name: z.string(),
     title: z.string().nullable(),
@@ -138,11 +138,11 @@ export function functionTarget(callPath: string) {
   return callPath.startsWith(FUNCTIONS) ? callPath.slice(FUNCTIONS.length) : null
 }
 
-function operationFlags(value: {
+function toolFlags(value: {
   approval_required?: boolean
   deprecated?: boolean
   hints?: z.infer<typeof hints>
-}): OperationFlags {
+}): ToolFlags {
   return {
     approvalRequired: value.approval_required ?? false,
     deprecated: value.deprecated ?? false,
@@ -154,13 +154,13 @@ function operationFlags(value: {
     },
   }
 }
-function operationFacts(
-  value: Parameters<typeof operationFlags>[0] & { provider_display_name: string },
-): OperationFacts {
-  return { providerLabel: value.provider_display_name, ...operationFlags(value) }
+function toolFacts(
+  value: Parameters<typeof toolFlags>[0] & { provider_display_name: string },
+): ToolFacts {
+  return { providerLabel: value.provider_display_name, ...toolFlags(value) }
 }
 /**
- * A Saved Function shows its path. An Operation without a title shows its Call
+ * A Saved Function shows its path. A Tool without a title shows its Call
  * Path until the loader links it to a provider and shortens it.
  */
 function title(value: { call_path: string; title?: string | null }) {
@@ -187,7 +187,7 @@ function searchCoverage({
 function searchPage(value: z.infer<typeof searchPageSchema>): SearchPage {
   return {
     hits: value.hits.map((hit): SearchHit => {
-      const kind = functionTarget(hit.call_path) === null ? 'operation' : 'saved_function'
+      const kind = functionTarget(hit.call_path) === null ? 'provider_tool' : 'saved_function'
       return {
         kind,
         callPath: hit.call_path,
@@ -195,7 +195,7 @@ function searchPage(value: z.infer<typeof searchPageSchema>): SearchPage {
         signatureLine: hit.signature_line,
         descriptionSnippet: hit.description_snippet,
         guidanceSnippet: hit.guidance_snippet ?? null,
-        operation: kind === 'operation' ? operationFlags(hit) : null,
+        tool: kind === 'provider_tool' ? toolFlags(hit) : null,
         matched: {
           fields: [],
           tags: hit.matched_tags ?? [],
@@ -217,11 +217,11 @@ function untrimmedSearchPage(value: z.infer<typeof untrimmedSearchPageSchema>): 
       title: title(hit),
       signatureLine: hit.signature_line,
       descriptionSnippet: hit.description_snippet,
-      guidanceSnippet: (hit.kind === 'operation' && hit.guidance_snippet) || null,
-      operation: hit.kind === 'operation' ? operationFlags(hit) : null,
+      guidanceSnippet: (hit.kind === 'provider_tool' && hit.guidance_snippet) || null,
+      tool: hit.kind === 'provider_tool' ? toolFlags(hit) : null,
       matched: {
         fields: hit.evidence.fields,
-        tags: (hit.kind === 'operation' && hit.matched_tags) || [],
+        tags: (hit.kind === 'provider_tool' && hit.matched_tags) || [],
         paths: hit.evidence.paths,
       },
       currentHref: null,
@@ -238,9 +238,9 @@ function description(value: z.infer<typeof descriptionSchema>): Description {
     title: title(value),
     description: value.description,
     declaration: value.typescript_declaration,
-    operation:
-      value.kind === 'operation'
-        ? { ...operationFacts(value), tags: value.tags, guidance: value.guidance }
+    tool:
+      value.kind === 'provider_tool'
+        ? { ...toolFacts(value), tags: value.tags, guidance: value.guidance }
         : null,
     savedFunction:
       value.kind === 'saved_function' && value.source !== undefined

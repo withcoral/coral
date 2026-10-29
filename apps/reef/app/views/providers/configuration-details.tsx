@@ -8,6 +8,7 @@ import type {
   SetupView,
 } from './types'
 import * as styles from './providers.css'
+import { countLabel } from '@/utils/count-label'
 import { filterQuery } from '@/utils/filter-query'
 
 /** The one label each credential method has, wherever a method is named. */
@@ -22,10 +23,6 @@ export const authenticationLabels: Record<CredentialMethod | '', string> = {
   oauth: 'OAuth authorization code',
 }
 
-export function countLabel(count: number, noun: string) {
-  return `${count.toLocaleString('en-US')} ${noun}${count === 1 ? '' : 's'}`
-}
-
 export interface AuthenticationOption {
   value: CredentialMethod
   label: string
@@ -38,7 +35,7 @@ export interface AuthenticationOption {
  */
 export function authenticationOptions(review: ConfigurationReviewView): AuthenticationOption[] {
   const descriptions: Record<CredentialMethod, string> = {
-    none: 'No credentials. Only public operations work.',
+    none: 'No credentials. Only public tools work.',
     bearer: 'A bearer token, sent in the Authorization header.',
     header: 'API keys, each sent in a named header.',
     basic: 'A username and password, sent as HTTP Basic.',
@@ -97,10 +94,10 @@ export function declaredAuthentication(
 /** Presentation only: preserve the domain's complete resolved URL, including its base path. */
 export function destinationGroups(setup: SetupView) {
   const groups = new Map<string, string[]>()
-  for (const [operation, url] of Object.entries(setup.configuration?.destinations ?? {})) {
-    const operations = groups.get(url) ?? []
-    operations.push(operation)
-    groups.set(url, operations)
+  for (const [tool, url] of Object.entries(setup.configuration?.destinations ?? {})) {
+    const tools = groups.get(url) ?? []
+    tools.push(tool)
+    groups.set(url, tools)
   }
   return groups
 }
@@ -126,7 +123,7 @@ export function configurationSummary(setup: SetupView) {
 
 /**
  * How Coral signs in, without the server count: Review lists the destinations
- * themselves beside the operations that use them, so a count only repeats them.
+ * themselves beside the tools that use them, so a count only repeats them.
  */
 export function signInSummary(setup: SetupView) {
   const review = setup.configuration
@@ -138,7 +135,7 @@ export function signInSummary(setup: SetupView) {
   }`
 }
 
-/** Coral is still to read the operations, so no count can be trusted yet. */
+/** Coral is still to read the tools, so no count can be trusted yet. */
 export function awaitingDiscovery(setup: SetupView) {
   const review = setup.configuration
   return Boolean(
@@ -153,17 +150,17 @@ export function awaitingDiscovery(setup: SetupView) {
 
 /**
  * Prefer the exact catalog count. Before a preview is available, OpenAPI
- * declarations can still describe operations; absent MCP keys prove no count.
+ * declarations can still describe tools; absent MCP keys prove no count.
  */
-export function operationCount(setup: SetupView) {
+export function toolCount(setup: SetupView) {
   const review = setup.configuration
   if (!review) return null
-  if (review.operationCount !== null) return review.operationCount
+  if (review.toolCount !== null) return review.toolCount
   const counted = new Set([
-    ...review.operations.map(({ key }) => key),
+    ...review.tools.map(({ key }) => key),
     ...Object.keys(review.destinations),
-    ...review.unavailableOperations.map(({ key }) => key),
-    ...review.servers.flatMap((server) => server.operations),
+    ...review.unavailableTools.map(({ key }) => key),
+    ...review.servers.flatMap((server) => server.tools),
   ]).size
   return setup.kind === 'mcp' && counted === 0 ? null : counted
 }
@@ -187,12 +184,12 @@ export function declaredSignInLabel(review: ConfigurationReviewView) {
     : (unnamed[review.authenticationStatus] ?? 'Unclear')
 }
 
-/** Safe discovery facts, including operations that cannot yet run. Missing previews are not empty catalogs. */
+/** Safe discovery facts, including tools that cannot yet run. Missing previews are not empty catalogs. */
 export function DiscoverySummary({ setup }: { setup: SetupView }) {
   const review = setup.configuration
   if (!review) return null
   const waiting = awaitingDiscovery(setup)
-  const operations = operationCount(setup)
+  const tools = toolCount(setup)
   const signIn = declaredSignInLabel(review)
   return (
     <>
@@ -204,11 +201,11 @@ export function DiscoverySummary({ setup }: { setup: SetupView }) {
           />
           <div className={styles.facts}>
             <ConfigurationFact
-              label="Operations"
+              label="Tools"
               value={
                 waiting
-                  ? 'Sign in to list operations'
-                  : (operations?.toLocaleString('en-US') ?? 'Not counted yet')
+                  ? 'Sign in to list tools'
+                  : (tools?.toLocaleString('en-US') ?? 'Not counted yet')
               }
             />
             <ConfigurationFact
@@ -219,10 +216,8 @@ export function DiscoverySummary({ setup }: { setup: SetupView }) {
           </div>
         </div>
       </Card.Container>
-      {!waiting && operations === 0 && (
-        <Banner title="No operations found">
-          Check the document or server, or change the source.
-        </Banner>
+      {!waiting && tools === 0 && (
+        <Banner title="No tools found">Check the document or server, or change the source.</Banner>
       )}
     </>
   )
@@ -241,12 +236,12 @@ export function ConfigurationFact({ label, value }: { label: string; value: stri
 }
 
 /** A bounded, searchable list shared by declaration, destination, and unavailable previews. */
-export function OperationDetails({
-  operations,
-  title = 'View operations',
+export function ToolDetails({
+  tools,
+  title = 'View tools',
   inline = false,
 }: {
-  operations: { key: string; reasons?: string[] }[]
+  tools: { key: string; reasons?: string[] }[]
   title?: string
   /** Under one line of text, without a rule of its own. */
   inline?: boolean
@@ -255,9 +250,7 @@ export function OperationDetails({
   const [page, setPage] = useState(0)
   const id = useId()
   const search = filterQuery(query)
-  const matches = operations.filter((operation) =>
-    search.matches(operation.key, ...(operation.reasons ?? [])),
-  )
+  const matches = tools.filter((tool) => search.matches(tool.key, ...(tool.reasons ?? [])))
   const pageSize = 50
   const currentPage = Math.min(page, Math.max(0, Math.ceil(matches.length / pageSize) - 1))
   const start = currentPage * pageSize
@@ -266,7 +259,7 @@ export function OperationDetails({
     <Disclosure title={title} variant={inline ? 'inline' : 'default'}>
       <div className={styles.field}>
         <Typography.BodySmallStrong as="label" htmlFor={id}>
-          Find an operation
+          Find a tool
         </Typography.BodySmallStrong>
         <Inputs.TextInput
           id={id}
@@ -284,8 +277,8 @@ export function OperationDetails({
       </div>
       <Typography.BodySmall as="p" role="status">
         {matches.length
-          ? `Showing ${start + 1}–${start + shown.length} of ${countLabel(matches.length, 'operation')}.`
-          : 'No operations match your search.'}
+          ? `Showing ${start + 1}–${start + shown.length} of ${countLabel(matches.length, 'tool')}.`
+          : 'No tools match your search.'}
       </Typography.BodySmall>
       <ul className={styles.list}>
         {shown.map(({ key, reasons }) => (
@@ -303,7 +296,7 @@ export function OperationDetails({
             disabled={currentPage === 0}
             onClick={() => setPage(currentPage - 1)}
           >
-            Previous operations
+            Previous tools
           </Button.TextButton>
           <Button.TextButton
             type="button"
@@ -311,7 +304,7 @@ export function OperationDetails({
             disabled={start + pageSize >= matches.length}
             onClick={() => setPage(currentPage + 1)}
           >
-            Next operations
+            Next tools
           </Button.TextButton>
         </div>
       )}
@@ -326,10 +319,10 @@ export function serverLabel(declaration: string) {
     const method = parts.length === 5 ? `${parts[3].toUpperCase()} ` : ''
     return `Server for ${method}${parts[2]}`
   }
-  return 'Operation-specific server'
+  return 'Tool-specific server'
 }
 
-/** Every resolved destination with the operations that use it. */
+/** Every resolved destination with the tools that use it. */
 export function DestinationList({
   setup,
   size = 'small',
@@ -343,13 +336,13 @@ export function DestinationList({
   const Line = size === 'body' ? Typography.Body : Typography.BodySmall
   return (
     <div className={styles.destinationList}>
-      {Array.from(groups, ([url, operations]) => (
+      {Array.from(groups, ([url, tools]) => (
         <section key={url} className={styles.destination} aria-label={url}>
           <Line as="p" className={styles.destinationLine}>
             <span className={styles.longValue}>{url}</span>
-            <span>Used by {countLabel(operations.length, 'operation')}.</span>
+            <span>Used by {countLabel(tools.length, 'tool')}.</span>
           </Line>
-          <OperationDetails operations={operations.map((key) => ({ key }))} inline />
+          <ToolDetails tools={tools.map((key) => ({ key }))} inline />
         </section>
       ))}
     </div>

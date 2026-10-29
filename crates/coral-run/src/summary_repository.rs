@@ -36,32 +36,69 @@ fn big_sum(expr: sea_query::SimpleExpr) -> sea_query::SimpleExpr {
 
 #[derive(sqlx::FromRow)]
 struct OutcomeRow {
+    principal_id: String,
+    principal_kind: String,
+    agent_label: Option<String>,
     call_path: String,
     result_kind: String,
     failure_code: Option<String>,
     calls: i64,
 }
 
-/// Ended Invocations grouped by Call Path and native outcome.
+fn principal(id: &str, kind: &str) -> Result<coral_workspace::Principal, Error> {
+    Ok(coral_workspace::Principal::from_parts(
+        coral_workspace::PrincipalId::parse(id)?,
+        coral_workspace::PrincipalKind::from_storage_str(kind)?,
+    ))
+}
+
+/// Ended Invocations grouped by invoking Principal, Call Path and native outcome.
 pub(crate) async fn call_outcomes(
     tx: &mut Transaction<'_>,
     authority: &HistoryAuthority,
     since: i64,
 ) -> Result<Vec<OutcomeEvidence>, Error> {
-    let fields = ["call_path", "result_kind", "failure_code"];
-    let mut select = authorized_runs_with(authority, "operation_invocations", "i");
-    select
-        .columns(fields.map(|name| (Alias::new("i"), Alias::new(name))))
+    let runs = ["workspace_id", "principal_id", "principal_kind"];
+    let invocations = ["call_path", "result_kind", "failure_code"];
+    let mut grouped = authorized_runs_with(authority, "tool_invocations", "i");
+    grouped
+        .columns(runs.map(|name| (Alias::new("r"), Alias::new(name))))
+        .columns(invocations.map(|name| (Alias::new("i"), Alias::new(name))))
         .expr_as(
             Expr::col((Alias::new("i"), Alias::new("id"))).count(),
             Alias::new("calls"),
         )
         .and_where(ended_since(since))
-        .group_by_columns(fields.map(|name| (Alias::new("i"), Alias::new(name))));
+        .group_by_columns(runs.map(|name| (Alias::new("r"), Alias::new(name))))
+        .group_by_columns(invocations.map(|name| (Alias::new("i"), Alias::new(name))));
+    // The label reads one Agent row per group, not per Invocation.
+    let select = Query::select()
+        .from_subquery(grouped, Alias::new("g"))
+        .columns(
+            [
+                "principal_id",
+                "principal_kind",
+                "call_path",
+                "result_kind",
+                "failure_code",
+                "calls",
+            ]
+            .map(|name| (Alias::new("g"), Alias::new(name))),
+        )
+        .expr_as(
+            coral_workspace::history_repository::agent_label(
+                column("g", "workspace_id"),
+                column("g", "principal_id"),
+            ),
+            Alias::new("agent_label"),
+        )
+        .to_owned();
     let rows: Vec<OutcomeRow> = tx.fetch_all(select).await?;
     rows.into_iter()
         .map(|row| {
             Ok(OutcomeEvidence {
+                principal: principal(&row.principal_id, &row.principal_kind)?,
+                agent_label: row.agent_label,
                 call_path: row.call_path,
                 kind: InvocationResultKind::from_storage_str(&row.result_kind)?,
                 // A code this build no longer knows is still an ended failure.
@@ -171,10 +208,7 @@ pub(crate) async fn actor_context(
     rows.into_iter()
         .map(|row| {
             Ok(ActorContext {
-                principal: coral_workspace::Principal::from_parts(
-                    coral_workspace::PrincipalId::parse(&row.principal_id)?,
-                    coral_workspace::PrincipalKind::from_storage_str(&row.principal_kind)?,
-                ),
+                principal: principal(&row.principal_id, &row.principal_kind)?,
                 agent_label: row.agent_label,
                 bytes: row.bytes,
             })

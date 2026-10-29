@@ -2,17 +2,17 @@
 /// Effect hints the upstream definition declared. An unset hint is undeclared;
 /// Coral never assumes a protocol default.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct OperationHints {
-    /// The Operation declares that it changes nothing.
+pub struct ToolHints {
+    /// The Tool declares that it changes nothing.
     #[prost(bool, optional, tag = "1")]
     pub read_only: ::core::option::Option<bool>,
-    /// The Operation declares that it may destroy data.
+    /// The Tool declares that it may destroy data.
     #[prost(bool, optional, tag = "2")]
     pub destructive: ::core::option::Option<bool>,
-    /// The Operation declares that repeating a call has no further effect.
+    /// The Tool declares that repeating a call has no further effect.
     #[prost(bool, optional, tag = "3")]
     pub idempotent: ::core::option::Option<bool>,
-    /// The Operation declares that it reaches entities outside the Provider.
+    /// The Tool declares that it reaches entities outside the Provider.
     #[prost(bool, optional, tag = "4")]
     pub open_world: ::core::option::Option<bool>,
 }
@@ -137,7 +137,7 @@ pub struct DeleteProviderRequest {
 }
 /// Reads the Provider's current administrative catalog.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ListOperationsRequest {
+pub struct ListToolsRequest {
     /// Exact Provider resource.
     #[prost(string, tag = "1")]
     pub parent: ::prost::alloc::string::String,
@@ -148,13 +148,13 @@ pub struct ListOperationsRequest {
     #[prost(string, tag = "3")]
     pub page_token: ::prost::alloc::string::String,
 }
-/// Safe complete catalog metadata, including structurally unavailable Operations.
+/// Safe complete catalog metadata, including structurally unavailable Tools.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ProviderOperation {
-    /// {provider}/operations/{encoded Operation Key}; not a separate entity identity.
+pub struct ProviderTool {
+    /// {provider}/tools/{encoded Tool Key}; not a separate entity identity.
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    /// Operation path relative to the immutable Provider namespace.
+    /// Tool path relative to the immutable Provider namespace.
     #[prost(string, tag = "2")]
     pub relative_path: ::prost::alloc::string::String,
     /// Safe upstream-authored summary.
@@ -163,7 +163,7 @@ pub struct ProviderOperation {
     /// Structural invocability, independent of credentials and approval.
     #[prost(bool, tag = "5")]
     pub available: bool,
-    /// Safe structural diagnostics for unavailable Operations.
+    /// Safe structural diagnostics for unavailable Tools.
     #[prost(message, repeated, tag = "6")]
     pub diagnostics: ::prost::alloc::vec::Vec<ProviderDiagnostic>,
     /// Safe upstream-authored grouping metadata.
@@ -175,14 +175,14 @@ pub struct ProviderOperation {
     /// Declared effect hints. A declared read-only hint, like a safe HTTP method,
     /// makes the policy default `enabled`.
     #[prost(message, optional, tag = "9")]
-    pub hints: ::core::option::Option<OperationHints>,
+    pub hints: ::core::option::Option<ToolHints>,
 }
-/// One page of administrative Operation metadata.
+/// One page of administrative Tool metadata.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ListOperationsResponse {
-    /// Current Operations in canonical order.
+pub struct ListToolsResponse {
+    /// Current Tools in canonical order.
     #[prost(message, repeated, tag = "1")]
-    pub operations: ::prost::alloc::vec::Vec<ProviderOperation>,
+    pub tools: ::prost::alloc::vec::Vec<ProviderTool>,
     /// Empty when no further page remains.
     #[prost(string, tag = "2")]
     pub next_page_token: ::prost::alloc::string::String,
@@ -581,15 +581,15 @@ pub struct ProviderServerOption {
     #[prost(message, repeated, tag = "2")]
     pub variables: ::prost::alloc::vec::Vec<ProviderServerVariable>,
 }
-/// Operations inheriting one server declaration.
+/// Tools inheriting one server declaration.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProviderServerGroup {
     /// Location of the declaration in the document.
     #[prost(string, tag = "1")]
     pub declaration: ::prost::alloc::string::String,
-    /// Operation Keys affected by this declaration.
+    /// Tool Keys affected by this declaration.
     #[prost(string, repeated, tag = "2")]
-    pub operations: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    pub tools: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Available declared alternatives.
     #[prost(message, repeated, tag = "3")]
     pub options: ::prost::alloc::vec::Vec<ProviderServerOption>,
@@ -607,24 +607,24 @@ pub struct ProviderConfigurationDifference {
     #[prost(string, optional, tag = "3")]
     pub document: ::core::option::Option<::prost::alloc::string::String>,
 }
-/// One Operation excluded from the callable catalog and its safe structural reasons.
+/// One Tool excluded from the callable catalog and its safe structural reasons.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct UnavailableProviderOperation {
-    /// Operation Key in the previewed catalog.
+pub struct UnavailableProviderTool {
+    /// Tool Key in the previewed catalog.
     #[prost(string, tag = "1")]
     pub key: ::prost::alloc::string::String,
     /// Blocking diagnostics from catalog materialization.
     #[prost(string, repeated, tag = "2")]
     pub reasons: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
-/// One Operation in a previewed catalog, with the labels the setup steps list it by.
-/// Availability is not repeated here; unavailable_operations carries it by Key.
+/// One Tool in a previewed catalog, with the labels the setup steps list it by.
+/// Availability is not repeated here; unavailable_tools carries it by Key.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ReviewedProviderOperation {
-    /// Operation Key in the previewed catalog.
+pub struct ReviewedProviderTool {
+    /// Tool Key in the previewed catalog.
     #[prost(string, tag = "1")]
     pub key: ::prost::alloc::string::String,
-    /// Operation-relative Call Path projection.
+    /// Tool-relative Call Path projection.
     #[prost(string, tag = "2")]
     pub relative_path: ::prost::alloc::string::String,
     /// Safe summary; empty when the Provider authored none.
@@ -649,18 +649,18 @@ pub struct ProviderConfigurationReview {
     /// Safe classification of document authentication declarations.
     #[prost(string, tag = "4")]
     pub authentication_status: ::prost::alloc::string::String,
-    /// Main and Operation-specific server controls.
+    /// Main and Tool-specific server controls.
     #[prost(message, repeated, tag = "5")]
     pub servers: ::prost::alloc::vec::Vec<ProviderServerGroup>,
-    /// Resolved destinations by Operation Key.
+    /// Resolved destinations by Tool Key.
     #[prost(map = "string, string", tag = "6")]
     pub destinations: ::std::collections::HashMap<
         ::prost::alloc::string::String,
         ::prost::alloc::string::String,
     >,
-    /// Operations that final validation currently marks unavailable.
+    /// Tools that final validation currently marks unavailable.
     #[prost(message, repeated, tag = "7")]
-    pub unavailable_operations: ::prost::alloc::vec::Vec<UnavailableProviderOperation>,
+    pub unavailable_tools: ::prost::alloc::vec::Vec<UnavailableProviderTool>,
     /// Safe structural diagnostic code.
     #[prost(string, tag = "8")]
     pub diagnostic: ::prost::alloc::string::String,
@@ -698,9 +698,9 @@ pub struct ProviderConfigurationReview {
     /// The host can currently bootstrap an OAuth client for this Setup.
     #[prost(bool, tag = "18")]
     pub automatic_client_available: bool,
-    /// Every previewed Operation with the labels the operations step groups and lists by.
+    /// Every previewed Tool with the labels the tools step groups and lists by.
     #[prost(message, repeated, tag = "19")]
-    pub operations: ::prost::alloc::vec::Vec<ReviewedProviderOperation>,
+    pub tools: ::prost::alloc::vec::Vec<ReviewedProviderTool>,
     /// Discovered, read-only device endpoint; empty when not advertised.
     #[prost(string, tag = "20")]
     pub device_authorization_url: ::prost::alloc::string::String,
@@ -1097,8 +1097,8 @@ pub enum ProviderBlocker {
     /// The inspected Agent needs its own Account before discovery; not a configuration
     /// failure. A User's own Account is never reported here.
     CallerAccountRequired = 4,
-    /// No Operation passes structural availability and current policy.
-    NoOperationsReady = 5,
+    /// No Tool passes structural availability and current policy.
+    NoToolsReady = 5,
     /// An Owner must connect the Provider's shared Account.
     SharedAccountRequired = 6,
     /// The Provider requires credentials but its setting supplies none.
@@ -1115,7 +1115,7 @@ impl ProviderBlocker {
             Self::WorkspaceArchived => "PROVIDER_BLOCKER_WORKSPACE_ARCHIVED",
             Self::ProviderDisabled => "PROVIDER_BLOCKER_PROVIDER_DISABLED",
             Self::CallerAccountRequired => "PROVIDER_BLOCKER_CALLER_ACCOUNT_REQUIRED",
-            Self::NoOperationsReady => "PROVIDER_BLOCKER_NO_OPERATIONS_READY",
+            Self::NoToolsReady => "PROVIDER_BLOCKER_NO_TOOLS_READY",
             Self::SharedAccountRequired => "PROVIDER_BLOCKER_SHARED_ACCOUNT_REQUIRED",
             Self::AccountSettingIncompatible => {
                 "PROVIDER_BLOCKER_ACCOUNT_SETTING_INCOMPATIBLE"
@@ -1131,7 +1131,7 @@ impl ProviderBlocker {
             "PROVIDER_BLOCKER_CALLER_ACCOUNT_REQUIRED" => {
                 Some(Self::CallerAccountRequired)
             }
-            "PROVIDER_BLOCKER_NO_OPERATIONS_READY" => Some(Self::NoOperationsReady),
+            "PROVIDER_BLOCKER_NO_TOOLS_READY" => Some(Self::NoToolsReady),
             "PROVIDER_BLOCKER_SHARED_ACCOUNT_REQUIRED" => {
                 Some(Self::SharedAccountRequired)
             }
@@ -1151,9 +1151,9 @@ pub enum SearchIndexState {
     Unspecified = 0,
     /// No indexing attempt has reached the active Generation yet.
     Pending = 1,
-    /// Search holds the active Generation's Operations.
+    /// Search holds the active Generation's Tools.
     Indexed = 2,
-    /// The last attempt failed: search cannot find the Operations until a retry succeeds.
+    /// The last attempt failed: search cannot find the Tools until a retry succeeds.
     Failed = 3,
 }
 impl SearchIndexState {
@@ -1187,7 +1187,7 @@ impl SearchIndexState {
 pub enum SearchIndexFailureReason {
     /// Not failed, not recognized by this client, or recorded before Coral kept the kind.
     Unspecified = 0,
-    /// An Operation could not become a search entry.
+    /// A Tool could not become a search entry.
     InvalidEntry = 1,
     /// The write did not finish within its limit.
     TimedOut = 2,
@@ -2770,12 +2770,12 @@ pub mod provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Lists current catalog metadata, including unavailable Operations.
-        pub async fn list_operations(
+        /// Lists current catalog metadata, including unavailable Tools.
+        pub async fn list_tools(
             &mut self,
-            request: impl tonic::IntoRequest<super::ListOperationsRequest>,
+            request: impl tonic::IntoRequest<super::ListToolsRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::ListOperationsResponse>,
+            tonic::Response<super::ListToolsResponse>,
             tonic::Status,
         > {
             self.inner
@@ -2788,15 +2788,12 @@ pub mod provider_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.ProviderService/ListOperations",
+                "/coral.management.v1.ProviderService/ListTools",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
-                    GrpcMethod::new(
-                        "coral.management.v1.ProviderService",
-                        "ListOperations",
-                    ),
+                    GrpcMethod::new("coral.management.v1.ProviderService", "ListTools"),
                 );
             self.inner.unary(req, path, codec).await
         }
@@ -2876,12 +2873,12 @@ pub(crate) mod provider_service_server {
             &self,
             request: tonic::Request<super::DeleteProviderRequest>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
-        /// Lists current catalog metadata, including unavailable Operations.
-        async fn list_operations(
+        /// Lists current catalog metadata, including unavailable Tools.
+        async fn list_tools(
             &self,
-            request: tonic::Request<super::ListOperationsRequest>,
+            request: tonic::Request<super::ListToolsRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::ListOperationsResponse>,
+            tonic::Response<super::ListToolsResponse>,
             tonic::Status,
         >;
     }
@@ -3432,26 +3429,25 @@ pub(crate) mod provider_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/coral.management.v1.ProviderService/ListOperations" => {
+                "/coral.management.v1.ProviderService/ListTools" => {
                     #[allow(non_camel_case_types)]
-                    struct ListOperationsSvc<T: ProviderService>(pub Arc<T>);
+                    struct ListToolsSvc<T: ProviderService>(pub Arc<T>);
                     impl<
                         T: ProviderService,
-                    > tonic::server::UnaryService<super::ListOperationsRequest>
-                    for ListOperationsSvc<T> {
-                        type Response = super::ListOperationsResponse;
+                    > tonic::server::UnaryService<super::ListToolsRequest>
+                    for ListToolsSvc<T> {
+                        type Response = super::ListToolsResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::ListOperationsRequest>,
+                            request: tonic::Request<super::ListToolsRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ProviderService>::list_operations(&inner, request)
-                                    .await
+                                <T as ProviderService>::list_tools(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -3462,7 +3458,7 @@ pub(crate) mod provider_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = ListOperationsSvc(inner);
+                        let method = ListToolsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -5459,7 +5455,7 @@ pub struct InspectTaskInteractionRequest {
 /// Summary of one Run.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ActivityRun {
-    /// Payload bytes returned to the caller, minus Operation Result bytes.
+    /// Payload bytes returned to the caller, minus Tool Result bytes.
     /// Absent until the Run ends, or if it could not be measured.
     #[prost(int64, optional, tag = "11")]
     pub context_impact_bytes: ::core::option::Option<i64>,
@@ -5508,10 +5504,10 @@ pub struct ActivityRun {
     #[prost(message, optional, tag = "15")]
     pub action_page: ::core::option::Option<ActivityActionPage>,
 }
-/// Summary of one Operation call.
+/// Summary of one Tool call.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityInvocation {
-    /// The Operation Result bytes kept for this call, as a negative number. Absent until
+    /// The Tool Result bytes kept for this call, as a negative number. Absent until
     /// the call ends, or if unknown.
     #[prost(int64, optional, tag = "17")]
     pub context_impact_bytes: ::core::option::Option<i64>,
@@ -5527,9 +5523,9 @@ pub struct ActivityInvocation {
     /// workspaces/{workspace}/providers/{provider} at the time of the call.
     #[prost(string, tag = "4")]
     pub provider: ::prost::alloc::string::String,
-    /// Operation key at the time of the call.
+    /// Tool key at the time of the call.
     #[prost(string, tag = "5")]
-    pub operation: ::prost::alloc::string::String,
+    pub tool: ::prost::alloc::string::String,
     /// Path the Program called, such as providers.github.getIssue.
     #[prost(string, tag = "6")]
     pub call_path: ::prost::alloc::string::String,
@@ -5603,7 +5599,7 @@ pub struct ActivitySourceSnapshot {
     #[prost(string, tag = "3")]
     pub source: ::prost::alloc::string::String,
 }
-/// Where the Run's accepted source made one record: an Operation call, an
+/// Where the Run's accepted source made one record: a Tool call, an
 /// emitted value or a log message. Absent when Coral did not record one,
 /// including for every record made before Coral recorded them.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -5663,12 +5659,12 @@ pub struct ActivityProgramError {
     /// Stack frames in the author's code.
     #[prost(message, repeated, tag = "3")]
     pub frames: ::prost::alloc::vec::Vec<ActivityErrorFrame>,
-    /// Operation Error code set by Coral, or empty. Safe to classify on.
+    /// Tool Error code set by Coral, or empty. Safe to classify on.
     #[prost(string, tag = "4")]
-    pub operation_code: ::prost::alloc::string::String,
-    /// W3C trace ID set by Coral for the failed Operation call, or empty.
+    pub tool_code: ::prost::alloc::string::String,
+    /// W3C trace ID set by Coral for the failed Tool call, or empty.
     #[prost(string, tag = "5")]
-    pub operation_trace_id: ::prost::alloc::string::String,
+    pub tool_trace_id: ::prost::alloc::string::String,
     /// The error's cause, if any.
     #[prost(message, optional, boxed, tag = "6")]
     pub cause: ::core::option::Option<::prost::alloc::boxed::Box<ActivityProgramError>>,
@@ -5687,28 +5683,28 @@ pub struct ActivityProgramError {
     /// This error refers back to one of its own causes.
     #[prost(bool, tag = "11")]
     pub circular: bool,
-    /// HTTP status of the upstream response that rejected the Operation call,
+    /// HTTP status of the upstream response that rejected the Tool call,
     /// or 0 when there was none.
     #[prost(uint32, tag = "12")]
-    pub operation_status: u32,
+    pub tool_status: u32,
     /// Start of that response's JSON-encoded data, at most 1 KiB, or empty.
     #[prost(string, tag = "13")]
-    pub operation_body: ::prost::alloc::string::String,
-    /// operation_body leaves out the rest of the data.
+    pub tool_body: ::prost::alloc::string::String,
+    /// tool_body leaves out the rest of the data.
     #[prost(bool, tag = "14")]
-    pub operation_body_truncated: bool,
+    pub tool_body_truncated: bool,
 }
 /// An event or outcome that carries no data.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityEmpty {}
-/// The Program made an Operation call.
+/// The Program made a Tool call.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityInvocationStarted {
     /// workspaces/{workspace}/invocations/{invocation}.
     #[prost(string, tag = "1")]
     pub invocation: ::prost::alloc::string::String,
 }
-/// An Operation call ended.
+/// A Tool call ended.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityInvocationEnded {
     /// workspaces/{workspace}/invocations/{invocation}.
@@ -5777,10 +5773,10 @@ pub mod activity_run_event {
         /// The Run started.
         #[prost(message, tag = "3")]
         Started(super::ActivityEmpty),
-        /// The Program made an Operation call.
+        /// The Program made a Tool call.
         #[prost(message, tag = "4")]
         InvocationStarted(super::ActivityInvocationStarted),
-        /// An Operation call ended.
+        /// A Tool call ended.
         #[prost(message, tag = "5")]
         InvocationEnded(super::ActivityInvocationEnded),
         /// The Program emitted a value.
@@ -6006,15 +6002,15 @@ pub struct SummarizeActivityRequest {
 /// windowed by the end time of its own fact: a call's end, a Run's end, or a decision.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SummarizeActivityResponse {
-    /// Operation calls that ended in the window, by outcome.
+    /// Tool calls that ended in the window, by outcome.
     #[prost(message, optional, tag = "1")]
     pub calls: ::core::option::Option<ActivityCallOutcomes>,
-    /// Operations with calls stopped in the window, one entry per Call Path, most stopped first.
+    /// Tools with calls stopped in the window, one entry per Call Path, most stopped first.
     #[prost(message, repeated, tag = "2")]
-    pub stopped: ::prost::alloc::vec::Vec<ActivityStoppedOperation>,
-    /// Operations with calls that ended in the window, one entry per Call Path.
+    pub stopped: ::prost::alloc::vec::Vec<ActivityStoppedTool>,
+    /// Tools with calls that ended in the window, one entry per Call Path.
     #[prost(message, repeated, tag = "3")]
-    pub operations: ::prost::alloc::vec::Vec<ActivityOperationCalls>,
+    pub tools: ::prost::alloc::vec::Vec<ActivityToolCalls>,
     /// Approval requests decided in the window.
     #[prost(message, optional, tag = "4")]
     pub approvals: ::core::option::Option<ActivityApprovalDecisions>,
@@ -6031,14 +6027,18 @@ pub struct SummarizeActivityResponse {
     /// context_impact_bytes.
     #[prost(message, repeated, tag = "7")]
     pub actors: ::prost::alloc::vec::Vec<ActivityContextShare>,
+    /// Calls that ended in the window per invoking actor, busiest first. They add up
+    /// to the calls outcomes.
+    #[prost(message, repeated, tag = "8")]
+    pub callers: ::prost::alloc::vec::Vec<ActivityCallerCalls>,
 }
-/// Ended Operation calls, by who acts next. The six counts add up to every ended call.
+/// Ended Tool calls, by who acts next. The six counts add up to every ended call.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityCallOutcomes {
     /// The upstream returned a complete response. It may still be an error response.
     #[prost(int64, tag = "1")]
     pub answered: i64,
-    /// A rule stopped the call: a disabled Operation, a required approval, lost access,
+    /// A rule stopped the call: a disabled Tool, a required approval, lost access,
     /// or a rejected destination.
     #[prost(int64, tag = "2")]
     pub blocked: i64,
@@ -6056,9 +6056,9 @@ pub struct ActivityCallOutcomes {
     #[prost(int64, tag = "6")]
     pub canceled: i64,
 }
-/// One Operation's stopped calls, split by who must act.
+/// One Tool's stopped calls, split by who must act.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ActivityStoppedOperation {
+pub struct ActivityStoppedTool {
     /// Retained Program Call Path.
     #[prost(string, tag = "1")]
     pub call_path: ::prost::alloc::string::String,
@@ -6072,14 +6072,33 @@ pub struct ActivityStoppedOperation {
     #[prost(int64, tag = "4")]
     pub needs_setup: i64,
 }
-/// One Operation's ended calls.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ActivityOperationCalls {
+/// One Tool's ended calls.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ActivityToolCalls {
     /// Retained Program Call Path.
     #[prost(string, tag = "1")]
     pub call_path: ::prost::alloc::string::String,
     /// Calls that ended in the window.
     #[prost(int64, tag = "2")]
+    pub calls: i64,
+    /// The same calls per invoking actor, busiest first. They add up to calls.
+    #[prost(message, repeated, tag = "3")]
+    pub callers: ::prost::alloc::vec::Vec<ActivityCallerCalls>,
+}
+/// Ended calls for one actor.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityCallerCalls {
+    /// Stable actor ID.
+    #[prost(string, tag = "1")]
+    pub key: ::prost::alloc::string::String,
+    /// "You", the Agent's name, or an unavailable label.
+    #[prost(string, tag = "2")]
+    pub label: ::prost::alloc::string::String,
+    /// workspaces/{workspace}/agents/{agent}, or empty for User work.
+    #[prost(string, tag = "3")]
+    pub agent: ::prost::alloc::string::String,
+    /// Calls that ended in the window.
+    #[prost(int64, tag = "4")]
     pub calls: i64,
 }
 /// Approval decisions in a window.
@@ -6181,14 +6200,14 @@ pub struct CancelActivityRunResponse {
     #[prost(enumeration = "ActivityRunState", tag = "1")]
     pub state: i32,
 }
-/// Selects one Operation call. List filters do not apply.
+/// Selects one Tool call. List filters do not apply.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct InspectInvocationRequest {
     /// workspaces/{workspace}/invocations/{invocation}.
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
 }
-/// One Operation call in full, with its arguments and outcome.
+/// One Tool call in full, with its arguments and outcome.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct InspectInvocationResponse {
     /// Call summary.
@@ -6397,7 +6416,7 @@ pub struct BrowseRunEntriesRequest {
     /// Optional list scope the Run must belong to. Leave empty to select the Run on its own.
     #[prost(message, optional, tag = "4")]
     pub scope: ::core::option::Option<ActivityScope>,
-    /// Start the page at this Operation call, Event ({run}/events/{sequence}) or Final
+    /// Start the page at this Tool call, Event ({run}/events/{sequence}) or Final
     /// Value ({run}/final). Cannot be combined with after.
     #[prost(string, tag = "5")]
     pub anchor: ::prost::alloc::string::String,
@@ -6428,16 +6447,16 @@ pub struct ActivityEventSummary {
 /// One child row of a Run, in order.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityRunEntry {
-    /// Exactly one is set. An Operation call appears once, not again at its end Event.
+    /// Exactly one is set. A Tool call appears once, not again at its end Event.
     #[prost(oneof = "activity_run_entry::Record", tags = "1, 2")]
     pub record: ::core::option::Option<activity_run_entry::Record>,
 }
 /// Nested message and enum types in `ActivityRunEntry`.
 pub mod activity_run_entry {
-    /// Exactly one is set. An Operation call appears once, not again at its end Event.
+    /// Exactly one is set. A Tool call appears once, not again at its end Event.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Record {
-        /// An Operation call.
+        /// A Tool call.
         #[prost(message, tag = "1")]
         Invocation(super::ActivityInvocation),
         /// An Event, without its payload.
@@ -6548,7 +6567,7 @@ impl ActivityRunState {
         }
     }
 }
-/// Operation call lifecycle states. They say nothing about upstream success.
+/// Tool call lifecycle states. They say nothing about upstream success.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ActivityInvocationState {
@@ -6585,7 +6604,7 @@ impl ActivityInvocationState {
         }
     }
 }
-/// How an Operation call ended.
+/// How a Tool call ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ActivityInvocationOutcome {
@@ -6921,7 +6940,7 @@ pub mod activity_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Lists one Run's Operations, Events and Final Value in order, as summaries.
+        /// Lists one Run's Tools, Events and Final Value in order, as summaries.
         pub async fn browse_run_entries(
             &mut self,
             request: impl tonic::IntoRequest<super::BrowseRunEntriesRequest>,
@@ -7038,7 +7057,7 @@ pub mod activity_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Gets one Operation call: its arguments, its outcome and any approval or connection requests.
+        /// Gets one Tool call: its arguments, its outcome and any approval or connection requests.
         pub async fn inspect_invocation(
             &mut self,
             request: impl tonic::IntoRequest<super::InspectInvocationRequest>,
@@ -7161,7 +7180,7 @@ pub mod activity_service_client {
             self.inner.unary(req, path, codec).await
         }
         /// Sums the caller's recent work in one Workspace: call outcomes, stopped and
-        /// busiest Operations, approval decisions, and context impact. Counts the caller's
+        /// busiest Tools, approval decisions, and context impact. Counts the caller's
         /// own work and, in a Workspace the caller owns, its Agents' work, like the
         /// pending-request queue. Other Users' work is never counted.
         pub async fn summarize_activity(
@@ -7224,7 +7243,7 @@ pub mod activity_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Cancels a whole Run; single Operation calls cannot be cancelled. The Run may
+        /// Cancels a whole Run; single Tool calls cannot be cancelled. The Run may
         /// already have ended another way; the response gives its current state.
         pub async fn cancel_activity_run(
             &mut self,
@@ -7350,7 +7369,7 @@ pub(crate) mod activity_service_server {
             tonic::Response<super::BrowseActivityRootsResponse>,
             tonic::Status,
         >;
-        /// Lists one Run's Operations, Events and Final Value in order, as summaries.
+        /// Lists one Run's Tools, Events and Final Value in order, as summaries.
         async fn browse_run_entries(
             &self,
             request: tonic::Request<super::BrowseRunEntriesRequest>,
@@ -7382,7 +7401,7 @@ pub(crate) mod activity_service_server {
             tonic::Response<super::InspectRunResponse>,
             tonic::Status,
         >;
-        /// Gets one Operation call: its arguments, its outcome and any approval or connection requests.
+        /// Gets one Tool call: its arguments, its outcome and any approval or connection requests.
         async fn inspect_invocation(
             &self,
             request: tonic::Request<super::InspectInvocationRequest>,
@@ -7417,7 +7436,7 @@ pub(crate) mod activity_service_server {
             tonic::Status,
         >;
         /// Sums the caller's recent work in one Workspace: call outcomes, stopped and
-        /// busiest Operations, approval decisions, and context impact. Counts the caller's
+        /// busiest Tools, approval decisions, and context impact. Counts the caller's
         /// own work and, in a Workspace the caller owns, its Agents' work, like the
         /// pending-request queue. Other Users' work is never counted.
         async fn summarize_activity(
@@ -7436,7 +7455,7 @@ pub(crate) mod activity_service_server {
             tonic::Response<super::DecideApprovalResponse>,
             tonic::Status,
         >;
-        /// Cancels a whole Run; single Operation calls cannot be cancelled. The Run may
+        /// Cancels a whole Run; single Tool calls cannot be cancelled. The Run may
         /// already have ended another way; the response gives its current state.
         async fn cancel_activity_run(
             &self,
@@ -9370,7 +9389,7 @@ impl AgentState {
         }
     }
 }
-/// Independent reasons Coral access is blocked, not Operation or client readiness.
+/// Independent reasons Coral access is blocked, not Tool or client readiness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum AgentAccessBlocker {
@@ -12999,57 +13018,57 @@ pub(crate) mod organization_workspace_service_server {
         const NAME: &'static str = SERVICE_NAME;
     }
 }
-/// Exact Provider-plus-Operation-Key address and Workspace decision.
+/// Exact Provider-plus-Tool-Key address and Workspace decision.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct OperationPolicy {
-    /// Canonical Provider Operation resource name, never a Call Path.
+pub struct ToolPolicy {
+    /// Canonical Provider Tool resource name, never a Call Path.
     #[prost(string, tag = "1")]
-    pub operation: ::prost::alloc::string::String,
+    pub tool: ::prost::alloc::string::String,
     /// Exact decision for the requested Provider.
-    #[prost(enumeration = "OperationAccessState", tag = "2")]
+    #[prost(enumeration = "ToolAccessState", tag = "2")]
     pub access_state: i32,
     /// True when an exact stored rule, false when effect-based default.
     #[prost(bool, tag = "3")]
     pub explicit: bool,
 }
-/// Reads a bounded selection, including structurally unavailable Operations.
+/// Reads a bounded selection, including structurally unavailable Tools.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetOperationPoliciesRequest {
+pub struct GetToolPoliciesRequest {
     /// Exact Provider resource name.
     #[prost(string, tag = "1")]
     pub parent: ::prost::alloc::string::String,
-    /// 1–100 distinct canonical Operation names for its Provider.
+    /// 1–100 distinct canonical Tool names for its Provider.
     #[prost(string, repeated, tag = "2")]
-    pub operations: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    pub tools: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// Effective decisions in request order.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetOperationPoliciesResponse {
+pub struct GetToolPoliciesResponse {
     /// Exact decisions.
     #[prost(message, repeated, tag = "1")]
-    pub policies: ::prost::alloc::vec::Vec<OperationPolicy>,
+    pub policies: ::prost::alloc::vec::Vec<ToolPolicy>,
 }
 /// Atomic bounded update; any rejected target leaves all decisions unchanged.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct UpdateOperationPoliciesRequest {
+pub struct UpdateToolPoliciesRequest {
     /// Exact Provider resource name.
     #[prost(string, tag = "1")]
     pub parent: ::prost::alloc::string::String,
-    /// 1–100 distinct canonical Operation targets; explicit is output-only.
+    /// 1–100 distinct canonical Tool targets; explicit is output-only.
     #[prost(message, repeated, tag = "2")]
-    pub policies: ::prost::alloc::vec::Vec<OperationPolicy>,
+    pub policies: ::prost::alloc::vec::Vec<ToolPolicy>,
 }
 /// Committed exact decisions.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct UpdateOperationPoliciesResponse {
+pub struct UpdateToolPoliciesResponse {
     /// All accepted decisions in request order.
     #[prost(message, repeated, tag = "1")]
-    pub policies: ::prost::alloc::vec::Vec<OperationPolicy>,
+    pub policies: ::prost::alloc::vec::Vec<ToolPolicy>,
 }
 /// Workspace decision, independent of structural availability or credential readiness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
-pub enum OperationAccessState {
+pub enum ToolAccessState {
     /// Not a valid write.
     Unspecified = 0,
     /// May continue without Invocation Approval.
@@ -13059,32 +13078,32 @@ pub enum OperationAccessState {
     /// Cannot dispatch.
     Disabled = 3,
 }
-impl OperationAccessState {
+impl ToolAccessState {
     /// String value of the enum field names used in the ProtoBuf definition.
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            Self::Unspecified => "OPERATION_ACCESS_STATE_UNSPECIFIED",
-            Self::Enabled => "OPERATION_ACCESS_STATE_ENABLED",
-            Self::ApprovalRequired => "OPERATION_ACCESS_STATE_APPROVAL_REQUIRED",
-            Self::Disabled => "OPERATION_ACCESS_STATE_DISABLED",
+            Self::Unspecified => "TOOL_ACCESS_STATE_UNSPECIFIED",
+            Self::Enabled => "TOOL_ACCESS_STATE_ENABLED",
+            Self::ApprovalRequired => "TOOL_ACCESS_STATE_APPROVAL_REQUIRED",
+            Self::Disabled => "TOOL_ACCESS_STATE_DISABLED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
-            "OPERATION_ACCESS_STATE_UNSPECIFIED" => Some(Self::Unspecified),
-            "OPERATION_ACCESS_STATE_ENABLED" => Some(Self::Enabled),
-            "OPERATION_ACCESS_STATE_APPROVAL_REQUIRED" => Some(Self::ApprovalRequired),
-            "OPERATION_ACCESS_STATE_DISABLED" => Some(Self::Disabled),
+            "TOOL_ACCESS_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "TOOL_ACCESS_STATE_ENABLED" => Some(Self::Enabled),
+            "TOOL_ACCESS_STATE_APPROVAL_REQUIRED" => Some(Self::ApprovalRequired),
+            "TOOL_ACCESS_STATE_DISABLED" => Some(Self::Disabled),
             _ => None,
         }
     }
 }
 /// Generated client implementations.
-pub mod operation_policy_service_client {
+pub mod tool_policy_service_client {
     #![allow(
         unused_variables,
         dead_code,
@@ -13094,12 +13113,12 @@ pub mod operation_policy_service_client {
     )]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
-    /// Reef-only exact Operation policy. No Principal, pattern, glob, or route dimension.
+    /// Reef-only exact Tool policy. No Principal, pattern, glob, or route dimension.
     #[derive(Debug, Clone)]
-    pub struct OperationPolicyServiceClient<T> {
+    pub struct ToolPolicyServiceClient<T> {
         inner: tonic::client::Grpc<T>,
     }
-    impl OperationPolicyServiceClient<tonic::transport::Channel> {
+    impl ToolPolicyServiceClient<tonic::transport::Channel> {
         /// Attempt to create a new client by connecting to a given endpoint.
         pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
         where
@@ -13110,7 +13129,7 @@ pub mod operation_policy_service_client {
             Ok(Self::new(conn))
         }
     }
-    impl<T> OperationPolicyServiceClient<T>
+    impl<T> ToolPolicyServiceClient<T>
     where
         T: tonic::client::GrpcService<tonic::body::Body>,
         T::Error: Into<StdError>,
@@ -13128,7 +13147,7 @@ pub mod operation_policy_service_client {
         pub fn with_interceptor<F>(
             inner: T,
             interceptor: F,
-        ) -> OperationPolicyServiceClient<InterceptedService<T, F>>
+        ) -> ToolPolicyServiceClient<InterceptedService<T, F>>
         where
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
@@ -13142,9 +13161,7 @@ pub mod operation_policy_service_client {
                 http::Request<tonic::body::Body>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
-            OperationPolicyServiceClient::new(
-                InterceptedService::new(inner, interceptor),
-            )
+            ToolPolicyServiceClient::new(InterceptedService::new(inner, interceptor))
         }
         /// Compress requests with the given encoding.
         ///
@@ -13177,12 +13194,12 @@ pub mod operation_policy_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        /// Reads 1–100 exact Operation decisions through one Provider.
-        pub async fn get_operation_policies(
+        /// Reads 1–100 exact Tool decisions through one Provider.
+        pub async fn get_tool_policies(
             &mut self,
-            request: impl tonic::IntoRequest<super::GetOperationPoliciesRequest>,
+            request: impl tonic::IntoRequest<super::GetToolPoliciesRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::GetOperationPoliciesResponse>,
+            tonic::Response<super::GetToolPoliciesResponse>,
             tonic::Status,
         > {
             self.inner
@@ -13195,24 +13212,24 @@ pub mod operation_policy_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.OperationPolicyService/GetOperationPolicies",
+                "/coral.management.v1.ToolPolicyService/GetToolPolicies",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new(
-                        "coral.management.v1.OperationPolicyService",
-                        "GetOperationPolicies",
+                        "coral.management.v1.ToolPolicyService",
+                        "GetToolPolicies",
                     ),
                 );
             self.inner.unary(req, path, codec).await
         }
         /// Applies 1–100 distinct exact decisions atomically, including lifecycle evidence.
-        pub async fn update_operation_policies(
+        pub async fn update_tool_policies(
             &mut self,
-            request: impl tonic::IntoRequest<super::UpdateOperationPoliciesRequest>,
+            request: impl tonic::IntoRequest<super::UpdateToolPoliciesRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::UpdateOperationPoliciesResponse>,
+            tonic::Response<super::UpdateToolPoliciesResponse>,
             tonic::Status,
         > {
             self.inner
@@ -13225,14 +13242,14 @@ pub mod operation_policy_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.OperationPolicyService/UpdateOperationPolicies",
+                "/coral.management.v1.ToolPolicyService/UpdateToolPolicies",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new(
-                        "coral.management.v1.OperationPolicyService",
-                        "UpdateOperationPolicies",
+                        "coral.management.v1.ToolPolicyService",
+                        "UpdateToolPolicies",
                     ),
                 );
             self.inner.unary(req, path, codec).await
@@ -13241,7 +13258,7 @@ pub mod operation_policy_service_client {
 }
 /// Generated server implementations.
 #[allow(dead_code, unreachable_pub)]
-pub(crate) mod operation_policy_service_server {
+pub(crate) mod tool_policy_service_server {
     #![allow(
         unused_variables,
         dead_code,
@@ -13250,36 +13267,36 @@ pub(crate) mod operation_policy_service_server {
         clippy::let_unit_value,
     )]
     use tonic::codegen::*;
-    /// Generated trait containing gRPC methods that should be implemented for use with OperationPolicyServiceServer.
+    /// Generated trait containing gRPC methods that should be implemented for use with ToolPolicyServiceServer.
     #[async_trait]
-    pub trait OperationPolicyService: std::marker::Send + std::marker::Sync + 'static {
-        /// Reads 1–100 exact Operation decisions through one Provider.
-        async fn get_operation_policies(
+    pub trait ToolPolicyService: std::marker::Send + std::marker::Sync + 'static {
+        /// Reads 1–100 exact Tool decisions through one Provider.
+        async fn get_tool_policies(
             &self,
-            request: tonic::Request<super::GetOperationPoliciesRequest>,
+            request: tonic::Request<super::GetToolPoliciesRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::GetOperationPoliciesResponse>,
+            tonic::Response<super::GetToolPoliciesResponse>,
             tonic::Status,
         >;
         /// Applies 1–100 distinct exact decisions atomically, including lifecycle evidence.
-        async fn update_operation_policies(
+        async fn update_tool_policies(
             &self,
-            request: tonic::Request<super::UpdateOperationPoliciesRequest>,
+            request: tonic::Request<super::UpdateToolPoliciesRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::UpdateOperationPoliciesResponse>,
+            tonic::Response<super::UpdateToolPoliciesResponse>,
             tonic::Status,
         >;
     }
-    /// Reef-only exact Operation policy. No Principal, pattern, glob, or route dimension.
+    /// Reef-only exact Tool policy. No Principal, pattern, glob, or route dimension.
     #[derive(Debug)]
-    pub struct OperationPolicyServiceServer<T> {
+    pub struct ToolPolicyServiceServer<T> {
         inner: Arc<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
         max_decoding_message_size: Option<usize>,
         max_encoding_message_size: Option<usize>,
     }
-    impl<T> OperationPolicyServiceServer<T> {
+    impl<T> ToolPolicyServiceServer<T> {
         pub fn new(inner: T) -> Self {
             Self::from_arc(Arc::new(inner))
         }
@@ -13330,10 +13347,9 @@ pub(crate) mod operation_policy_service_server {
             self
         }
     }
-    impl<T, B> tonic::codegen::Service<http::Request<B>>
-    for OperationPolicyServiceServer<T>
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for ToolPolicyServiceServer<T>
     where
-        T: OperationPolicyService,
+        T: ToolPolicyService,
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
@@ -13348,30 +13364,25 @@ pub(crate) mod operation_policy_service_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/coral.management.v1.OperationPolicyService/GetOperationPolicies" => {
+                "/coral.management.v1.ToolPolicyService/GetToolPolicies" => {
                     #[allow(non_camel_case_types)]
-                    struct GetOperationPoliciesSvc<T: OperationPolicyService>(
-                        pub Arc<T>,
-                    );
+                    struct GetToolPoliciesSvc<T: ToolPolicyService>(pub Arc<T>);
                     impl<
-                        T: OperationPolicyService,
-                    > tonic::server::UnaryService<super::GetOperationPoliciesRequest>
-                    for GetOperationPoliciesSvc<T> {
-                        type Response = super::GetOperationPoliciesResponse;
+                        T: ToolPolicyService,
+                    > tonic::server::UnaryService<super::GetToolPoliciesRequest>
+                    for GetToolPoliciesSvc<T> {
+                        type Response = super::GetToolPoliciesResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::GetOperationPoliciesRequest>,
+                            request: tonic::Request<super::GetToolPoliciesRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as OperationPolicyService>::get_operation_policies(
-                                        &inner,
-                                        request,
-                                    )
+                                <T as ToolPolicyService>::get_tool_policies(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -13383,7 +13394,7 @@ pub(crate) mod operation_policy_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = GetOperationPoliciesSvc(inner);
+                        let method = GetToolPoliciesSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -13399,29 +13410,25 @@ pub(crate) mod operation_policy_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/coral.management.v1.OperationPolicyService/UpdateOperationPolicies" => {
+                "/coral.management.v1.ToolPolicyService/UpdateToolPolicies" => {
                     #[allow(non_camel_case_types)]
-                    struct UpdateOperationPoliciesSvc<T: OperationPolicyService>(
-                        pub Arc<T>,
-                    );
+                    struct UpdateToolPoliciesSvc<T: ToolPolicyService>(pub Arc<T>);
                     impl<
-                        T: OperationPolicyService,
-                    > tonic::server::UnaryService<super::UpdateOperationPoliciesRequest>
-                    for UpdateOperationPoliciesSvc<T> {
-                        type Response = super::UpdateOperationPoliciesResponse;
+                        T: ToolPolicyService,
+                    > tonic::server::UnaryService<super::UpdateToolPoliciesRequest>
+                    for UpdateToolPoliciesSvc<T> {
+                        type Response = super::UpdateToolPoliciesResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<
-                                super::UpdateOperationPoliciesRequest,
-                            >,
+                            request: tonic::Request<super::UpdateToolPoliciesRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as OperationPolicyService>::update_operation_policies(
+                                <T as ToolPolicyService>::update_tool_policies(
                                         &inner,
                                         request,
                                     )
@@ -13436,7 +13443,7 @@ pub(crate) mod operation_policy_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = UpdateOperationPoliciesSvc(inner);
+                        let method = UpdateToolPoliciesSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -13474,7 +13481,7 @@ pub(crate) mod operation_policy_service_server {
             }
         }
     }
-    impl<T> Clone for OperationPolicyServiceServer<T> {
+    impl<T> Clone for ToolPolicyServiceServer<T> {
         fn clone(&self) -> Self {
             let inner = self.inner.clone();
             Self {
@@ -13487,8 +13494,8 @@ pub(crate) mod operation_policy_service_server {
         }
     }
     /// Generated gRPC service name
-    pub const SERVICE_NAME: &str = "coral.management.v1.OperationPolicyService";
-    impl<T> tonic::server::NamedService for OperationPolicyServiceServer<T> {
+    pub const SERVICE_NAME: &str = "coral.management.v1.ToolPolicyService";
+    impl<T> tonic::server::NamedService for ToolPolicyServiceServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
 }

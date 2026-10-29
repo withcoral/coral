@@ -45,7 +45,7 @@ pub struct AgentInspection {
     pub creator_profile: crate::UserProfile,
 }
 
-/// Independent blockers of Coral access, not client connectivity or Operation readiness.
+/// Independent blockers of Coral access, not client connectivity or Tool readiness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentAccessBlocker {
     /// Restore the Workspace before configuring or authenticating.

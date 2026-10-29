@@ -5,7 +5,7 @@
 //!
 //! Each run publishes one OpenAPI document, waits for the index, runs each
 //! query in a query file through search, and prints where the first accepted
-//! Operation ranks in the first page of hits.
+//! Tool ranks in the first page of hits.
 //!
 //! `github_search_stays_usable` runs in CI against a pinned copy of GitHub's
 //! document and fails when hit@10 falls below a floor. `search_quality_eval`
@@ -24,11 +24,11 @@
 //!
 //! - `SEARCH_EVAL_WRITE_LIMIT_SECS`: the index write limit; default one hour,
 //!   so a Provider larger than the server's limit still indexes.
-//! - `SEARCH_EVAL_DUMP`: a file to write every indexed Operation path to, one
+//! - `SEARCH_EVAL_DUMP`: a file to write every indexed Tool path to, one
 //!   per line, for writing queries.
 //!
 //! A query file is a YAML list. Each item has a `query`, as an agent might
-//! phrase it, and the Operation paths below the Provider namespace that it
+//! phrase it, and the Tool paths below the Provider namespace that it
 //! `accept`s:
 //!
 //! ```yaml
@@ -41,7 +41,7 @@
 //! A `*` matches any run of characters, dots included, so one pattern can
 //! accept every path to the same action. Quote a pattern that has one, since
 //! YAML reads a leading `*` as an alias. Every query must accept at least one
-//! path, and every path or pattern must match at least one indexed Operation.
+//! path, and every path or pattern must match at least one indexed Tool.
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -93,7 +93,7 @@ fn variable(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
-/// Where the first accepted Operation ranks, from 1, or `None` when no hit
+/// Where the first accepted Tool ranks, from 1, or `None` when no hit
 /// on the first page is accepted.
 type Rank = Option<usize>;
 
@@ -142,7 +142,7 @@ async fn search_quality_eval() {
 
 /// Publishes the document, runs every query, reports each rank, and returns
 /// the scores. Index writes may run for `write_limit`, or for the index's
-/// default when `None`; `dump` names a file for every indexed Operation path.
+/// default when `None`; `dump` names a file for every indexed Tool path.
 async fn evaluate(
     document_path: &str,
     queries_path: &str,
@@ -178,14 +178,14 @@ async fn evaluate(
         .collect::<Vec<_>>();
     assert_eq!(states, ["complete"], "the index write did not complete");
 
-    let operations = f
-        .operations()
+    let tools = f
+        .tools()
         .await
         .into_iter()
         .map(|(call_path, _)| relative(&call_path).to_string())
         .collect::<BTreeSet<_>>();
     if let Some(dump) = dump {
-        let lines = operations.iter().fold(String::new(), |mut lines, path| {
+        let lines = tools.iter().fold(String::new(), |mut lines, path| {
             writeln!(lines, "{path}").unwrap();
             lines
         });
@@ -198,16 +198,16 @@ async fn evaluate(
         .collect::<Vec<_>>();
     assert!(
         unanswerable.is_empty(),
-        "queries that accept no Operation: {unanswerable:?}"
+        "queries that accept no Tool: {unanswerable:?}"
     );
     let unknown = cases
         .iter()
         .flat_map(|case| &case.accept)
-        .filter(|pattern| !operations.iter().any(|path| matches(pattern, path)))
+        .filter(|pattern| !tools.iter().any(|path| matches(pattern, path)))
         .collect::<Vec<_>>();
     assert!(
         unknown.is_empty(),
-        "accepted paths or patterns that match no indexed Operation: {unknown:?}"
+        "accepted paths or patterns that match no indexed Tool: {unknown:?}"
     );
 
     let mut lines = String::new();
@@ -237,8 +237,8 @@ async fn evaluate(
     let searched = started.elapsed();
     let scores = Scores::of(&ranks);
     report(&format!(
-        "\nsearch eval: {document_path}\n{} Operations, {} queries; publish and index {indexed:.1?}, search {searched:.1?} in all\n\nrank  query\n{lines}\n{scores}\n",
-        operations.len(),
+        "\nsearch eval: {document_path}\n{} Tools, {} queries; publish and index {indexed:.1?}, search {searched:.1?} in all\n\nrank  query\n{lines}\n{scores}\n",
+        tools.len(),
         cases.len(),
     ));
     scores
