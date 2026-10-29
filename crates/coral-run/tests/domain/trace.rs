@@ -356,7 +356,7 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
 /// A Tool Invocation is a span of the Program's execute phase, admitted to
 /// the end, and each step it takes on the way to its dispatch is a child.
 #[tokio::test]
-async fn a_tool_invocation_traces_its_gates_fence_and_persistence_under_the_run() {
+async fn a_tool_invocation_traces_its_gates_enforcement_and_persistence_under_the_run() {
     capture();
     let upstream = Arc::new(ScriptedUpstream::json(
         500,
@@ -417,7 +417,7 @@ async fn a_tool_invocation_traces_its_gates_fence_and_persistence_under_the_run(
     for step in [
         "coral.invocation.plan",
         "coral.invocation.credentials",
-        "coral.invocation.dispatch_fence",
+        "coral.invocation.policy_enforcement_point",
         "coral.invocation.authorize",
         "coral.invocation.persist",
     ] {

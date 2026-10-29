@@ -344,8 +344,8 @@ impl TestModules {
         target
     }
 
-    /// Every Invocation row of a Run, in admission order: the fence's
-    /// durable evidence as persistence holds it.
+    /// Every Invocation row of a Run, in admission order: the enforcement
+    /// point's durable evidence as persistence holds it.
     pub(crate) async fn invocation_rows(
         &self,
         workspace_id: &coral_workspace::WorkspaceId,
@@ -1180,7 +1180,7 @@ pub(crate) async fn wait_for_connection(
     .expect("Invocation waits on durable connection")
 }
 
-/// One Invocation row's fence evidence.
+/// One Invocation row's enforcement evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InvocationRow {
     pub(crate) id: crate::InvocationId,
@@ -1488,7 +1488,7 @@ pub(crate) async fn admitted_invocation(
 }
 
 /// A Tool invoker bound to `run` as its owner would build it, for
-/// tests that call the fence's pieces directly.
+/// tests that call the enforcement point's pieces directly.
 pub(crate) fn test_invoker(
     fixture: &TestModules,
     tool: &ToolFixture,

@@ -119,13 +119,13 @@ async fn a_waiting_invocations_cancellation_or_deadline_does_not_cancel_the_refr
     clippy::too_many_lines,
     reason = "the Run/Account journey verifies both waiters and unchanged replacement state after a late exchange"
 )]
-async fn reconnect_disconnect_and_setting_changes_fence_invocations_waiting_on_a_refresh_claim() {
+async fn reconnect_disconnect_and_setting_changes_block_invocations_waiting_on_a_refresh_claim() {
     for mutation in ["reconnect", "disconnect", "setting"] {
         let endpoint = TokenEndpoint::new(StatusCode::OK).await;
         let server = MockServer::start().await;
         let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
         let tool = fixture
-            .user_tool_at("user:fenced-refresh", "Fenced refresh", &server.uri())
+            .user_tool_at("user:enforced-refresh", "Enforced refresh", &server.uri())
             .await;
         let (_directory, accounts) = oauth_account(&fixture, &tool, &server, &endpoint.url).await;
         let context = change(tool.user.clone(), 40, '4');
@@ -266,7 +266,7 @@ async fn reconnect_disconnect_and_setting_changes_fence_invocations_waiting_on_a
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn offboarding_and_rejoin_fence_a_late_refresh_without_overwriting_the_new_account() {
+async fn offboarding_and_rejoin_block_a_late_refresh_without_overwriting_the_new_account() {
     let endpoint = TokenEndpoint::new(StatusCode::OK).await;
     let server = MockServer::start().await;
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;

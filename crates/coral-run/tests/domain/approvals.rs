@@ -1357,12 +1357,12 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
 }
 
 #[tokio::test]
-async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_fence() {
+async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_enforcement_point() {
     let upstream = Arc::new(ScriptedUpstream::json(
         200,
         serde_json::json!({"temperature":21}),
     ));
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
@@ -1561,31 +1561,32 @@ async fn approval_event_fault(fixture: &TestModules, enabled: bool) {
         .await;
 }
 
-/// Holds the fence and, when set, moves time to `expire_at_checks` once the fence
-/// has loaded its final checks.
-struct ApprovalFenceExpiry {
+/// Holds the enforcement point and, when set, moves time to `expire_at_checks`
+/// once the enforcement point has loaded its final checks.
+struct ApprovalEnforcementExpiry {
     /// Holds the Invocation as it is about to wait for the decision.
-    wait: Arc<FenceGate>,
-    fence: Arc<FenceGate>,
+    wait: Arc<EnforcementGate>,
+    enforcement: Arc<EnforcementGate>,
     clock: Arc<TestClock>,
     expire_at_checks: Option<i64>,
 }
 
 #[async_trait]
-impl InvocationObserver for ApprovalFenceExpiry {
-    fn fence_attempt_finished(&self, permit: bool, durable_start: bool) {
-        self.fence.fence_attempt_finished(permit, durable_start);
+impl InvocationObserver for ApprovalEnforcementExpiry {
+    fn enforcement_check_finished(&self, permit: bool, durable_start: bool) {
+        self.enforcement
+            .enforcement_check_finished(permit, durable_start);
     }
 
     async fn approval_waiting(&self) -> Result<(), Error> {
-        self.wait.before_fence().await
+        self.wait.before_enforcement().await
     }
 
-    async fn before_fence(&self) -> Result<(), Error> {
-        self.fence.before_fence().await
+    async fn before_enforcement(&self) -> Result<(), Error> {
+        self.enforcement.before_enforcement().await
     }
 
-    async fn fence_checks_loaded(&self) {
+    async fn enforcement_checks_loaded(&self) {
         if let Some(at) = self.expire_at_checks {
             self.clock.next.store(at, Ordering::SeqCst);
         }
@@ -1594,8 +1595,8 @@ impl InvocationObserver for ApprovalFenceExpiry {
 
 /// An approved Invocation cannot dispatch once its approval expires, whether
 /// the approval expired before the held gate read it or, with the deadline
-/// the gate recorded in owner memory, while the fence loaded its final
-/// checks. The approval itself stays approved.
+/// the gate recorded in owner memory, while the enforcement point loaded its
+/// final checks. The approval itself stays approved.
 #[tokio::test]
 async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
     const APPROVAL_DEADLINE: i64 = 1_000_000;
@@ -1606,11 +1607,11 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
             upstream.clone(),
         )
         .await;
-        let (wait, release_wait) = FenceGate::blocking();
-        let (fence, release_fence) = FenceGate::blocking();
-        fixture.runs.invocation_observer = Arc::new(ApprovalFenceExpiry {
+        let (wait, release_wait) = EnforcementGate::blocking();
+        let (enforcement, release_enforcement) = EnforcementGate::blocking();
+        fixture.runs.invocation_observer = Arc::new(ApprovalEnforcementExpiry {
             wait: wait.clone(),
-            fence: fence.clone(),
+            enforcement: enforcement.clone(),
             clock: fixture.clock.clone(),
             expire_at_checks: during_final_checks.then_some(APPROVAL_DEADLINE),
         });
@@ -1629,9 +1630,10 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
         .await;
         wait_until(|| wait.entered()).await;
         // Isolate approval expiry from the longer Run and worker-claim deadlines.
-        // While the fence loads its checks, the deadline the gate records is
-        // the one the fence's clock sample passes; before the gate, the
-        // deadline has already passed when the gate reads the approval.
+        // While the enforcement point loads its checks, the deadline the gate
+        // records is the one the enforcement point's clock sample passes;
+        // before the gate, the deadline has already passed when the gate reads
+        // the approval.
         if during_final_checks {
             crate::approval_repository::set_approval_deadline(
                 &fixture.database,
@@ -1665,9 +1667,9 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
         }
         release_wait.send(()).unwrap();
         if during_final_checks {
-            wait_until(|| fence.entered()).await;
+            wait_until(|| enforcement.entered()).await;
         }
-        release_fence.send(()).unwrap();
+        release_enforcement.send(()).unwrap();
         let terminal = wait_for_terminal(
             &fixture.runs,
             &tool.principal,
@@ -1675,7 +1677,7 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
             run.run_id(),
         )
         .await;
-        fence.fences.assert_no_dispatch();
+        enforcement.enforcement_checks.assert_no_dispatch();
         assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
         assert_final_code(&terminal, "approval_expired");
         assert_eq!(
@@ -1690,20 +1692,20 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
     }
 }
 
-struct ApprovalFailureGate(Arc<FenceGate>);
+struct ApprovalFailureGate(Arc<EnforcementGate>);
 #[async_trait]
 impl InvocationObserver for ApprovalFailureGate {
     async fn before_failure_commit(&self) -> Result<(), Error> {
-        self.0.before_fence().await
+        self.0.before_enforcement().await
     }
 }
 
 /// A decision reads no policy: a decline made after the Tool was
 /// disabled is recorded as the decline, and the Invocation ends declined
-/// even though the fence already judged the policy failure.
+/// even though the enforcement point already judged the policy failure.
 #[tokio::test]
 async fn a_decline_after_a_policy_change_is_recorded_as_the_decline() {
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         Arc::new(RejectingUpstream),
@@ -1775,7 +1777,7 @@ async fn a_decline_after_a_policy_change_is_recorded_as_the_decline() {
 )]
 async fn first_durable_decision_wins_against_policy_changes_before_the_worker_observes_them() {
     for (policy_first, agent_case) in [(false, false), (true, false), (false, true), (true, true)] {
-        let (gate, release) = FenceGate::blocking();
+        let (gate, release) = EnforcementGate::blocking();
         let fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             Arc::new(RejectingUpstream),
@@ -1897,12 +1899,13 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
 /// While an Approval Request is pending, its Invocation is parked with its
 /// Run Owner and holds nothing. Commits elsewhere ring the content-free
 /// change signal, but an owner subscribes only for a connection wait, so
-/// they wake nothing, read nothing and fence nothing: the decision comes
+/// they wake nothing, read nothing and enforce nothing: the decision comes
 /// through the owner, and the periodic precheck (15 s away here) is the
 /// ceiling for everything else. Polling a snapshot per parked wait on every
 /// commit used to starve the pool.
 #[tokio::test]
-async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_fence_and_no_read() {
+async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_enforcement_check_and_no_read()
+{
     let wake_gap = Duration::from_secs(1);
     let (fixture, probe) = probed_fixture(
         crate::execution::ExecutionPolicy::testing()
@@ -1927,7 +1930,7 @@ async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_fence_and_no
         .unwrap();
     // The held gate requests the approval and parks the Invocation.
     probe.until_parked(1).await;
-    let (held, fences) = (probe.held(), probe.fences());
+    let (held, enforcement_checks) = (probe.held(), probe.enforcement_checks());
     for at in 0..3 {
         commit_elsewhere(&fixture, &bystander, at).await;
     }
@@ -1935,7 +1938,11 @@ async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_fence_and_no
     tokio::time::sleep(wake_gap + Duration::from_millis(500)).await;
 
     assert_eq!(probe.held() - held, 0, "held rechecks");
-    assert_eq!(probe.fences() - fences, 0, "fences");
+    assert_eq!(
+        probe.enforcement_checks() - enforcement_checks,
+        0,
+        "enforcement checks"
+    );
     assert_eq!(probe.parked(), 1, "the Invocation stays parked");
     assert_eq!(probe.prechecks(), Vec::new(), "snapshot reads");
     fixture
@@ -1953,9 +1960,10 @@ async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_fence_and_no
 /// A wait that became moot with no wake-up (the Workspace archived while a
 /// decision is pending) is found by the periodic precheck alone: its
 /// snapshot finds the authority lost, and the Invocation goes back to its
-/// held gate, which refuses it under the fence's shared holds and closes the
-/// request. No fence ever runs. The owner's timers run on the host clock, so
-/// the test shortens the precheck's period instead of advancing a clock 15 s.
+/// held gate, which refuses it under the enforcement point's shared holds and
+/// closes the request. No enforcement check ever runs. The owner's timers run
+/// on the host clock, so the test shortens the precheck's period instead of
+/// advancing a clock 15 s.
 #[tokio::test]
 async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_request_closed() {
     let (fixture, probe) = probed_fixture(
@@ -2019,7 +2027,7 @@ async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_reque
         1,
         "one held recheck, after the finding"
     );
-    assert_eq!(probe.fences(), 0, "no fence");
+    assert_eq!(probe.enforcement_checks(), 0, "no enforcement check");
     assert_eq!(
         approvals
             .get(&tool.principal, &tool.workspace_id, &request.id)

@@ -47,9 +47,9 @@
 - Open read-only work with `Database::begin_read_snapshot` and non-holding
   checks. `Database::begin` takes SQLite's write lock at `BEGIN`, so it waits
   behind every other writer.
-- The Dispatch Fence and the held rechecks before it read the fact rows
-  they never write (a Workspace, a Provider, a policy rule, an Account) with
-  `RowLock::Shared`
+- The Policy Enforcement Point and the held rechecks before it read the fact
+  rows they never write (a Workspace, a Provider, a policy rule, an Account)
+  with `RowLock::Shared`
   (`Transaction::fetch_optional_locked`; `coral_db::RowLock` documents what
   each backend does). Other decisions still take the exclusive no-op `UPDATE`
   hold on those rows; a row the transaction goes on to write always keeps it.
@@ -64,7 +64,7 @@
   wake-up is a hint; the held recheck decides.
 - A nonterminal Run's row and Events are written only through its Run
   Owner: the Program paths (Emissions, Logs, Invocation admission, held
-  rechecks, the Dispatch Fence, Invocation completion), the outside
+  rechecks, the Policy Enforcement Point, Invocation completion), the outside
   requests (an approval decision, a cancellation) and the owner's timers
   (the Run deadline, each Approval Request's and connection request's
   deadline) alike. An Event is applied in owner memory, a row write is a
@@ -79,8 +79,8 @@
   before it finds the deadline passed),
   the owner's own writes read the
   clock only for their own sample (the start mark, the terminal write and a
-  recovered owner's one chunk date a timeout they find passed; the Dispatch
-  Fence judges an approved
+  recovered owner's one chunk date a timeout they find passed; the Policy
+  Enforcement Point judges an approved
   request's deadline at dispatch, contract line 3, and records no expiry),
   and no chunk commit is predicated on the clock (contract line 5). Nothing
   outside the owner compares `now` with those deadlines to write TimedOut

@@ -417,7 +417,7 @@ test('Current Run and tool actions settle live while exact review stays selected
           .toBe(0)
         // The policy alone ends the parked call at its Run Owner's next periodic
         // precheck, up to 15 s later. An approval from elsewhere wakes the call now,
-        // and the Dispatch Fence still refuses the disabled Tool.
+        // and the Policy Enforcement Point still refuses the disabled Tool.
         const { requests } = await api.activity.inspectInvocation({ name: selected })
         const approval = requests.find(({ request }) => request.case === 'approval')?.request
         if (approval?.case !== 'approval') throw new Error('Expected an approval')

@@ -4,7 +4,8 @@
 //! policy address and lifecycle. Publication materializes outside the write transaction,
 //! then commits configuration, provisional credential promotion, request replay evidence
 //! and lifecycle events atomically. Retained generations survive compatible catalog
-//! updates; account-setting changes independently fence pending dispatch.
+//! updates; account-setting changes independently block pending dispatch at the
+//! Policy Enforcement Point.
 //! Adapters supply current actors, Workspace, clock, tracing and destination policy.
 pub use coral_workspace::WorkspaceId;
 
@@ -417,7 +418,7 @@ impl ProviderModule {
     ///
     /// Disabling preserves the Provider, its Generation, Provider Accounts,
     /// and historical attribution while blocking new Invocation admission and
-    /// every pending pre-fence dispatch.
+    /// every pending dispatch not yet past the Policy Enforcement Point.
     ///
     /// # Errors
     ///
@@ -752,8 +753,8 @@ impl<'a> InvocationCaller<'a> {
         }
     }
 
-    /// The caller's current Workspace authority, holding it as the dispatch
-    /// fence does; `None` when the caller has none.
+    /// The caller's current Workspace authority, holding it as the policy
+    /// enforcement point does; `None` when the caller has none.
     async fn authority(
         self,
         transaction: &mut coral_db::Transaction<'_>,
@@ -810,7 +811,8 @@ pub async fn resolve_invocation_tool_in_transaction(
         // Every Principal reaches an Owner-added Provider's Tools, so
         // admission reads no Workspace authority for it and takes no hold.
         ProviderCallRoot::Owner(_) => None,
-        // Hold Workspace authority before the Provider, the order the dispatch fence uses.
+        // Hold Workspace authority before the Provider, the order the policy
+        // enforcement point uses.
         ProviderCallRoot::Builtin => match caller.authority(transaction, workspace_id).await? {
             Some(authority) => authority.effective_user_role(),
             None => return Ok(None),
@@ -858,8 +860,8 @@ async fn resolve_reached_tool(
     call_root: &ProviderCallRoot,
     relative_path: &str,
 ) -> Result<Option<ResolvedInvocationTool>, Error> {
-    // Admission reads the Provider shared, like the Dispatch Fence that
-    // rechecks it: concurrent admissions read side by side, and a Provider
+    // Admission reads the Provider shared, like the Policy Enforcement Point
+    // that rechecks it: concurrent admissions read side by side, and a Provider
     // change waits for the admissions in flight.
     let Some(stored) = crate::runtime::active_provider_by_call_root_in_transaction(
         transaction,
@@ -893,9 +895,9 @@ async fn resolve_reached_tool(
 }
 
 /// Rechecks exact retained Provider dispatch evidence, holding the Provider
-/// row as `lock` says: shared in the Dispatch Fence, so concurrent fences
-/// read side by side and a Provider change waits for them; none in a read
-/// snapshot that only decides whether a held check is needed.
+/// row as `lock` says: shared in the Policy Enforcement Point, so concurrent
+/// enforcement checks read side by side and a Provider change waits for them;
+/// none in a read snapshot that only decides whether a held check is needed.
 ///
 /// Provider active-Generation selection may change after admission; this
 /// facet verifies the retained Tool by its Generation id rather than

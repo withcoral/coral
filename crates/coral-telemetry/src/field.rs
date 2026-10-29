@@ -40,7 +40,7 @@ const CORAL: &[&str] = &[
     "coral.shutdown.drain_ms",
     // The Tool Invocation, how it ended, the gate it waits at (authority,
     // identity or approval), its public failure code, and whether it passed
-    // its Dispatch Fence.
+    // its Policy Enforcement Point.
     "coral.invocation.id",
     "coral.invocation.result_kind",
     "coral.invocation.gate.kind",

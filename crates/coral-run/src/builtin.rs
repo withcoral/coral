@@ -99,8 +99,8 @@ impl BuiltinCall {
     }
 }
 
-/// How an Invocation whose worker was lost after the Dispatch Fence ends with
-/// its Run, from what its Tool left behind. `None` when the Tool
+/// How an Invocation whose worker was lost after the Policy Enforcement Point
+/// ends with its Run, from what its Tool left behind. `None` when the Tool
 /// leaves nothing Coral can read, as an upstream Tool does.
 pub(crate) async fn recover(
     transaction: &mut coral_db::Transaction<'_>,
@@ -220,7 +220,7 @@ fn setup_url(host: &BuiltinHost<'_>, setup: &ProviderSetupId) -> String {
 /// the Program can catch; anything else is a host defect.
 fn authority_error(error: coral_provider::Error) -> Error {
     match error {
-        coral_provider::Error::Workspace(error) if crate::fence::loses_authority(&error) => {
+        coral_provider::Error::Workspace(error) if crate::enforcement::loses_authority(&error) => {
             Error::InvocationRejected(CoralFailure::AuthorityLost.into())
         }
         other => other.into(),

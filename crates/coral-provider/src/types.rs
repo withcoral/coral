@@ -318,7 +318,8 @@ impl ProviderDisplayName {
 pub enum ProviderState {
     /// Accepts new Invocation admission and later upstream dispatch.
     Active,
-    /// Rejects new Invocation admission and every pending pre-fence dispatch.
+    /// Rejects new Invocation admission and every pending dispatch not yet past
+    /// the Policy Enforcement Point.
     Disabled,
 }
 

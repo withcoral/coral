@@ -1174,24 +1174,26 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
     }
 }
 
-/// The fence rows of the `apply` table: fence requests gather in one chunk's
-/// batch and commit when free; a stop answers every batch not yet committed
-/// at once and nothing else; a request past the deadline or after a stop is
-/// answered at once; the terminal write waits for a batch in flight.
+/// The enforcement rows of the `apply` table: enforcement requests gather in
+/// one chunk's batch and commit when free; a stop answers every batch not yet
+/// committed at once and nothing else; a request past the deadline or after a
+/// stop is answered at once; the terminal write waits for a batch in flight.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one table of fence message orders, each case a block"
+    reason = "one table of enforcement message orders, each case a block"
 )]
-async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at_once() {
-    use crate::invocation::{FenceOutcome, FenceRequest};
-    use crate::owner::FENCE_BATCH_CAP;
+async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_ones_at_once() {
+    use crate::invocation::{EnforcementOutcome, EnforcementRequest};
+    use crate::owner::ENFORCEMENT_BATCH_CAP;
 
-    type FenceAnswer = tokio::sync::oneshot::Receiver<Result<FenceOutcome, Error>>;
+    type EnforcementAnswer = tokio::sync::oneshot::Receiver<Result<EnforcementOutcome, Error>>;
 
     let (engine, _release) = BlockingEngine::new();
     let fixture = TestModules::new(Arc::new(engine)).await;
-    let tool = fixture.user_tool("user:apply-fence", "Fence rows").await;
+    let tool = fixture
+        .user_tool("user:apply-enforcement", "Enforcement rows")
+        .await;
     let run = fixture
         .runs
         .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
@@ -1212,35 +1214,37 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         .try_into()
         .expect("four Invocations");
     let invoker = test_invoker(&fixture, &tool, &record);
-    let fence_as = |state: &mut OwnerState, index: usize, now: i64| -> (Vec<Effect>, FenceAnswer) {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let admitted = invocations.get(index).expect("one of four").clone();
-        let request = FenceRequest::for_apply_test(invoker.clone(), admitted, sender);
-        (
-            apply_without_tick(state, Message::Fence(Box::new(request)), now),
-            receiver,
-        )
-    };
-    let fence = |state: &mut OwnerState, now: i64| fence_as(state, 0, now);
+    let enforce_as =
+        |state: &mut OwnerState, index: usize, now: i64| -> (Vec<Effect>, EnforcementAnswer) {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let admitted = invocations.get(index).expect("one of four").clone();
+            let request = EnforcementRequest::for_apply_test(invoker.clone(), admitted, sender);
+            (
+                apply_without_tick(state, Message::Enforce(Box::new(request)), now),
+                receiver,
+            )
+        };
+    let enforce = |state: &mut OwnerState, now: i64| enforce_as(state, 0, now);
     // One request per Invocation, in order, at the instants of `nows`;
     // the effects delivered.
-    let fence_each = |state: &mut OwnerState, nows: std::ops::Range<i64>| -> Vec<FenceAnswer> {
-        nows.enumerate()
-            .map(|(index, now)| {
-                let (effects, answer) = fence_as(state, index, now);
-                deliver(effects);
-                answer
-            })
-            .collect()
-    };
-    let answered = |receiver: &mut FenceAnswer| receiver.try_recv().ok();
+    let enforce_each =
+        |state: &mut OwnerState, nows: std::ops::Range<i64>| -> Vec<EnforcementAnswer> {
+            nows.enumerate()
+                .map(|(index, now)| {
+                    let (effects, answer) = enforce_as(state, index, now);
+                    deliver(effects);
+                    answer
+                })
+                .collect()
+        };
+    let answered = |receiver: &mut EnforcementAnswer| receiver.try_recv().ok();
     // The Invocations one commit's batch holds.
     let batched = |effects: &[Effect]| -> Vec<crate::InvocationId> {
         let [Effect::Commit { chunk, .. }] = effects else {
             panic!("{effects:?}");
         };
         chunk
-            .fence
+            .enforcement
             .as_ref()
             .map(|batch| batch.invocation_ids())
             .unwrap_or_default()
@@ -1251,7 +1255,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         let mut state = started(LIMITS);
         let mut answers = Vec::new();
         for now in [3, 4, 5] {
-            let (effects, answer) = fence(&mut state, now);
+            let (effects, answer) = enforce(&mut state, now);
             assert!(
                 deliver(effects).is_empty(),
                 "a request commits nothing by itself"
@@ -1266,12 +1270,12 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         };
         assert!(
             chunk.items.is_empty(),
-            "the fence writes no Event and is no item"
+            "the enforcement point writes no Event and is no item"
         );
         assert_eq!(chunk.works, 1, "one batch counts as one row work");
         assert_eq!(
             chunk
-                .fence
+                .enforcement
                 .as_ref()
                 .map(|batch| batch.invocation_ids().len()),
             Some(3)
@@ -1284,11 +1288,11 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
     // request in a batch holds one.
     {
         let mut state = started(OwnerLimits {
-            fan_out_invocations: FENCE_BATCH_CAP + 1,
+            fan_out_invocations: ENFORCEMENT_BATCH_CAP + 1,
             ..LIMITS
         });
-        for now in 0..=FENCE_BATCH_CAP {
-            let (effects, _) = fence(&mut state, 10 + i64::try_from(now).unwrap());
+        for now in 0..=ENFORCEMENT_BATCH_CAP {
+            let (effects, _) = enforce(&mut state, 10 + i64::try_from(now).unwrap());
             deliver(effects);
         }
         assert_eq!(state.pending_chunks(), 2);
@@ -1298,18 +1302,18 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         };
         assert_eq!(
             chunk
-                .fence
+                .enforcement
                 .as_ref()
                 .map(|batch| batch.invocation_ids().len()),
-            Some(FENCE_BATCH_CAP)
+            Some(ENFORCEMENT_BATCH_CAP)
         );
     }
 
-    // A fence-only chunk is no empty chunk for an Event above the bytes cap:
-    // that Event still commits alone, after the batch.
+    // An enforcement-only chunk is no empty chunk for an Event above the bytes
+    // cap: that Event still commits alone, after the batch.
     {
         let mut state = started(LIMITS);
-        let (effects, _) = fence(&mut state, 10);
+        let (effects, _) = enforce(&mut state, 10);
         deliver(effects);
         let (effects, _) = emit(&mut state, CHUNK_BYTES_CAP + 1, 11);
         deliver(effects);
@@ -1319,7 +1323,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
             panic!("{effects:?}");
         };
         assert!(
-            chunk.fence.is_some() && chunk.items.is_empty(),
+            chunk.enforcement.is_some() && chunk.items.is_empty(),
             "the batch commits first, without the Event"
         );
     }
@@ -1328,9 +1332,9 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
     // Program is terminated, and the chunk that held only the batch is gone.
     {
         let mut state = started(LIMITS);
-        let (effects, mut first) = fence(&mut state, 20);
+        let (effects, mut first) = enforce(&mut state, 20);
         deliver(effects);
-        let (effects, mut second) = fence(&mut state, 21);
+        let (effects, mut second) = enforce(&mut state, 21);
         deliver(effects);
         let effects = apply_without_tick(&mut state, Message::Stop, 22);
         assert!(
@@ -1354,13 +1358,13 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         for answer in [&mut first, &mut second] {
             assert!(
                 matches!(answered(answer), Some(Err(Error::ProgramHostTerminated))),
-                "a fence request not yet committed learns the stop at once"
+                "an enforcement request not yet committed learns the stop at once"
             );
         }
         assert_eq!(state.pending_chunks(), 0);
         assert!(apply_without_tick(&mut state, Message::Drained, 23).is_empty());
         // A request after the stop answers at once too.
-        let (effects, mut late) = fence(&mut state, 24);
+        let (effects, mut late) = enforce(&mut state, 24);
         assert!(deliver(effects).is_empty());
         assert!(matches!(
             answered(&mut late),
@@ -1374,7 +1378,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         let mut state = started(LIMITS);
         let (effects, _) = emit(&mut state, 10, 20);
         deliver(effects);
-        let (effects, mut pending) = fence(&mut state, 21);
+        let (effects, mut pending) = enforce(&mut state, 21);
         deliver(effects);
         deliver(apply_without_tick(&mut state, Message::Stop, 22));
         assert!(matches!(
@@ -1386,14 +1390,17 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
             panic!("{effects:?}");
         };
-        assert!(chunk.fence.is_none(), "the abandoned batch left the chunk");
+        assert!(
+            chunk.enforcement.is_none(),
+            "the abandoned batch left the chunk"
+        );
         assert_eq!(chunk.items.len(), 1, "the Emission commits");
     }
 
     // Past the deadline in owner memory a request answers at once.
     {
         let mut state = started(LIMITS);
-        let (effects, mut late) = fence(&mut state, LIMITS.deadline_at_unix_nanos);
+        let (effects, mut late) = enforce(&mut state, LIMITS.deadline_at_unix_nanos);
         assert!(deliver(effects).is_empty());
         assert!(matches!(
             answered(&mut late),
@@ -1402,11 +1409,11 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         assert_eq!(state.pending_chunks(), 0);
     }
 
-    // The terminal chunk waits for a fence in flight: the Program's end
-    // writes nothing until the batch's commit has answered.
+    // The terminal chunk waits for an enforcement check in flight: the
+    // Program's end writes nothing until the batch's commit has answered.
     {
         let mut state = started(LIMITS);
-        let (effects, mut answer) = fence(&mut state, 30);
+        let (effects, mut answer) = enforce(&mut state, 30);
         deliver(effects);
         assert!(matches!(
             apply_without_tick(&mut state, Message::Drained, 31).as_slice(),
@@ -1441,7 +1448,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
     // freed while nothing waits stays free.
     {
         let mut state = started(LIMITED);
-        let mut answers = fence_each(&mut state, 3..7);
+        let mut answers = enforce_each(&mut state, 3..7);
         assert_eq!(state.slots_held(), 2);
         assert_eq!(state.waiting_for_a_slot(), 2);
         assert_eq!(state.pending_chunks(), 1);
@@ -1482,7 +1489,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         let effects = apply_without_tick(&mut state, Message::Drained, 14);
         assert_eq!(batched(&effects), [ids[3].clone()]);
         deliver(apply_without_tick(&mut state, Message::Committed, 15));
-        let (effects, _) = fence(&mut state, 16);
+        let (effects, _) = enforce(&mut state, 16);
         deliver(effects);
         assert_eq!(state.slots_held(), 2);
         assert_eq!(state.waiting_for_a_slot(), 0);
@@ -1497,7 +1504,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
             run_output_bytes: 10,
             ..LIMITED
         });
-        let mut answers = fence_each(&mut state, 20..23);
+        let mut answers = enforce_each(&mut state, 20..23);
         deliver(apply_without_tick(&mut state, Message::Drained, 23));
         deliver(apply_without_tick(&mut state, Message::Committed, 24));
         let (effects, mut refused, refused_work) = result(&mut state, 11, 25);
@@ -1543,7 +1550,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
         ),
     ] {
         let mut state = started(LIMITED);
-        let mut answers = fence_each(&mut state, 30..33);
+        let mut answers = enforce_each(&mut state, 30..33);
         deliver(apply_without_tick(&mut state, Message::Drained, 33));
         assert!(state.has_commit_in_flight(), "{ending}");
         deliver(apply_without_tick(&mut state, message, 34));
@@ -1565,7 +1572,7 @@ async fn apply_batches_fence_requests_and_a_stop_answers_the_uncommitted_ones_at
     // every waiting request at once, like a request that arrives past it.
     {
         let mut state = started(LIMITED);
-        let mut answers = fence_each(&mut state, 40..44);
+        let mut answers = enforce_each(&mut state, 40..44);
         deliver(apply_without_tick(&mut state, Message::Drained, 44));
         deliver(apply_without_tick(&mut state, Message::Committed, 45));
         let effects = apply_without_tick(
@@ -1729,7 +1736,7 @@ fn committed_chunk(effects: Vec<Effect>) -> crate::owner::ChunkBuildView {
     reason = "one table of outside-request message orders, each case a block"
 )]
 async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_cancel_at_once() {
-    use crate::invocation::FenceRequest;
+    use crate::invocation::EnforcementRequest;
     use crate::lifecycle::RunTerminationKind;
 
     let (engine, _release) = BlockingEngine::new();
@@ -1776,23 +1783,23 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         assert_eq!(state.head(), 2);
     }
 
-    // A cancel while a fence is in flight: applied at once (the Program is
-    // terminated, the batch in flight is left to return on its own), and
-    // the intent, `cancellation.requested` and the deletion of its Run Inbox
-    // row ride the next chunk. The row delivered again changes nothing,
+    // A cancel while an enforcement check is in flight: applied at once (the
+    // Program is terminated, the batch in flight is left to return on its own),
+    // and the intent, `cancellation.requested` and the deletion of its Run
+    // Inbox row ride the next chunk. The row delivered again changes nothing,
     // before its deletion lands and after; a later row, a repeat, changes
     // nothing but has a chunk delete it.
     {
         let mut state = started(LIMITS);
         let (sender, _receiver) = tokio::sync::oneshot::channel();
-        let request = FenceRequest::for_apply_test(invoker.clone(), admitted.clone(), sender);
+        let request = EnforcementRequest::for_apply_test(invoker.clone(), admitted.clone(), sender);
         deliver(apply_without_tick(
             &mut state,
-            Message::Fence(Box::new(request)),
+            Message::Enforce(Box::new(request)),
             3,
         ));
         let batch = committed_chunk(apply_without_tick(&mut state, Message::Drained, 4));
-        assert_eq!(batch.fenced, 1);
+        assert_eq!(batch.pending_enforcement, 1);
         let effects = deliver(cancel(&mut state, "first", 5));
         assert!(stops(&effects), "{effects:?}");
         assert_eq!(
@@ -1804,7 +1811,7 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         assert_eq!(state.parked_requests(), 0);
         assert!(
             deliver(apply_without_tick(&mut state, Message::Drained, 7)).is_empty(),
-            "the intent waits behind the fence in flight"
+            "the intent waits behind the enforcement check in flight"
         );
         let intent = committed_chunk(apply_without_tick(&mut state, Message::Committed, 8));
         assert_eq!(intent.events, 1, "`cancellation.requested`");

@@ -28,8 +28,8 @@ pub(in crate::account) async fn scoped_account(
     scoped_account_locked(tx, workspace, provider, caller, coral_db::RowLock::None).await
 }
 
-/// [`scoped_account`] holding the row as `lock` says: the Dispatch Fence
-/// reads the Account it decides on shared, so a reconnect, disconnect or
+/// [`scoped_account`] holding the row as `lock` says: the Policy Enforcement
+/// Point reads the Account it decides on shared, so a reconnect, disconnect or
 /// refresh of that Account waits for the decisions in flight.
 pub(in crate::account) async fn scoped_account_locked(
     tx: &mut Transaction<'_>,

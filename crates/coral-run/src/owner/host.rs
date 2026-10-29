@@ -32,7 +32,7 @@ use coral_telemetry::safe;
 use coral_workspace::AuthenticatedPrincipal;
 
 use crate::execution::{Backoff, until_answered};
-use crate::invocation::{FenceBatch, PrecheckBatch, ToolInvoker};
+use crate::invocation::{EnforcementBatch, PrecheckBatch, ToolInvoker};
 use crate::lifecycle::RunRecord;
 use crate::owner::ChunkWork as _;
 use crate::program_output::ProgramOutputWriter;
@@ -750,7 +750,7 @@ async fn commit_until_answered(
     output_total: usize,
 ) -> Option<Result<(), CommitRejection>> {
     let mut items = chunk.items;
-    let mut fence = chunk.fence;
+    let mut enforcement = chunk.enforcement;
     let records = Records {
         termination: chunk.termination,
         inbox_rows: chunk.inbox_rows,
@@ -767,7 +767,7 @@ async fn commit_until_answered(
             module,
             accepted,
             &mut items,
-            &mut fence,
+            &mut enforcement,
             &records,
             &mut written,
         )
@@ -811,7 +811,7 @@ async fn commit_until_answered(
             work.settle(outcome.map_err(CommitRejection::lost));
         }
     }
-    if let Some(batch) = fence {
+    if let Some(batch) = enforcement {
         batch.settle(outcome.map_err(CommitRejection::lost));
     }
     Some(outcome)
@@ -881,16 +881,16 @@ fn refusal(run: &RunRecord, claim_id: &str, head: u64) -> Option<CommitRejection
 }
 
 /// One attempt to commit the chunk, in one transaction that holds no Run
-/// row: the row work, then the fence, the deletion of the Run Inbox rows it
-/// records, then the head update predicated on
-/// the owner's claim and the head it tracks. A recommit first checks whether
-/// the attempt it repeats landed; a head update that matches no row is
-/// classified from the row read again.
+/// row: the row work, then the enforcement point, the deletion of the Run Inbox
+/// rows it records, then the head update predicated on the owner's claim and
+/// the head it tracks. A recommit first checks whether the attempt it repeats
+/// landed; a head update that matches no row is classified from the row read
+/// again.
 async fn commit_once(
     module: &RunModule,
     accepted: &AcceptedRun,
     items: &mut [ChunkItem],
-    fence: &mut Option<Box<FenceBatch>>,
+    enforcement: &mut Option<Box<EnforcementBatch>>,
     records: &Records,
     written: &mut Written,
 ) -> Attempt {
@@ -930,9 +930,9 @@ async fn commit_once(
                 produced.push(work.run(&mut transaction, &run, now).await?);
             }
         }
-        // The fence decides every ready Invocation of the chunk together,
-        // after the row work; it writes no Event.
-        if let Some(batch) = fence.as_mut() {
+        // The enforcement point decides every ready Invocation of the chunk
+        // together, after the row work; it writes no Event.
+        if let Some(batch) = enforcement.as_mut() {
             batch.run(&mut transaction, &run, now).await?;
         }
         // The requests this chunk records leave the Run Inbox with it.

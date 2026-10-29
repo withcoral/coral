@@ -6,20 +6,20 @@
 //! The Invocation creates a request only after Account selection. Its immutable
 //! target and once-selected credentials are the binding, not a second argument
 //! snapshot or a caller-supplied approval target. Private Generation provenance
-//! stays private. The Dispatch Fence checks the approval again, at its own
-//! clock sample, from the decision the held gate recorded: an approval never
-//! changes once made.
+//! stays private. The Policy Enforcement Point checks the approval again, at
+//! its own clock sample, from the decision the held gate recorded: an approval
+//! never changes once made.
 //!
 //! A decision is authorized and concealed here, then waits in the Run's Run
 //! Inbox until the Run's owner, in whichever Coral Instance holds the Run,
 //! records it in its next chunk; the first decision wins, and a repeat
-//! receives the recorded answer. The decision reads no policy: the Dispatch
-//! Fence judges the approval when the Invocation dispatches. A request's
-//! deadline is the owner's timer: it expires the request in a chunk of its
-//! own, in mailbox order with the decisions that race it, and only the owner
-//! records an expiry. The first terminal transition and its safe lifecycle
-//! event commit together; a lost response can be recovered by
-//! reading or deciding again. Invocation owns live gate ordering and Promise
+//! receives the recorded answer. The decision reads no policy: the Policy
+//! Enforcement Point judges the approval when the Invocation dispatches. A
+//! request's deadline is the owner's timer: it expires the request in a chunk
+//! of its own, in mailbox order with the decisions that race it, and only the
+//! owner records an expiry. The first terminal transition and its safe
+//! lifecycle event commit together; a lost response can be recovered by reading
+//! or deciding again. Invocation owns live gate ordering and Promise
 //! settlement. Approval owns only request validity, decisions and evidence,
 //! not required-action projections or UI.
 
@@ -39,8 +39,8 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::approval_repository::{self, StoredApproval};
+use crate::enforcement::ApprovalFact;
 use crate::engine::{Clock, SystemClock};
-use crate::fence::ApprovalFact;
 use crate::invocation::AdmittedInvocation;
 use crate::owner::{ChunkWork, DecisionRequest};
 use crate::run_inbox::{InboxRequest, OutsideRequest, RunInbox};
@@ -445,8 +445,8 @@ fn conceal(error: coral_workspace::Error) -> Error {
 }
 /// Whether the Tool's current policy asks for a decision, as a read
 /// snapshot shows it: the request's `actionable` projection. A decision
-/// itself reads no policy; the Dispatch Fence judges the approval against
-/// the policy current when the Invocation dispatches.
+/// itself reads no policy; the Policy Enforcement Point judges the approval
+/// against the policy current when the Invocation dispatches.
 async fn decision_required(
     tx: &mut Transaction<'_>,
     workspaces: &WorkspaceModule,
@@ -460,7 +460,7 @@ async fn decision_required(
     {
         // A lost authority makes the request moot; any other failure is the
         // caller's to see.
-        crate::fence::authority_failure(error)?;
+        crate::enforcement::authority_failure(error)?;
         return Ok(false);
     }
     let tool = coral_catalog::tool_in_transaction(tx, &target.generation, &target.tool)
@@ -567,7 +567,8 @@ pub(super) async fn pending_for_run(
 
 /// What the held approval gate found for an Invocation.
 pub(crate) enum Gate {
-    /// The approval the fence decides on once the Invocation is ready.
+    /// The approval the enforcement point decides on once the Invocation is
+    /// ready.
     Ready(ApprovalFact),
     /// A decision is still pending. The request expires at this instant
     /// unless decided first: the owner's timer records the expiry.
@@ -581,7 +582,7 @@ pub(crate) enum Gate {
 // this settles appends its `invocation.ended` to `events`. A request this
 // creates waits at most `approval_wait_nanos`, bounded by the Run deadline.
 // The gate never judges a deadline: the owner's timer expires a pending
-// request, and the fence judges an approved one at dispatch.
+// request, and the enforcement point judges an approved one at dispatch.
 pub(super) async fn gate(
     tx: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,
@@ -648,7 +649,7 @@ pub(super) async fn gate(
     }
 }
 
-/// The request's recorded decision as the fence decides on it.
+/// The request's recorded decision as the enforcement point decides on it.
 fn approval_fact(row: &StoredApproval) -> ApprovalFact {
     match row.state {
         ApprovalState::Pending => ApprovalFact::Pending {

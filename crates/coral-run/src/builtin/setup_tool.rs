@@ -273,9 +273,9 @@ async fn published_result_in_transaction(
     Ok(result(&published, &rules))
 }
 
-/// Settles a call whose worker was lost after the dispatch fence, from the
-/// Provider its Publication published: `result` describes it, as the call
-/// would have. Without one, the Run ended first.
+/// Settles a call whose worker was lost after the Policy Enforcement Point,
+/// from the Provider its Publication published: `result` describes it, as the
+/// call would have. Without one, the Run ended first.
 pub(super) async fn recover_published(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
