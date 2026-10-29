@@ -4,6 +4,7 @@
 use std::future::Future;
 
 use coral_provider::{GenerationEntries, ProviderId};
+use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -114,8 +115,22 @@ impl SearchIndex {
         if let Some(statistics) = work.statistics {
             statistics.record(&pass);
         }
-        work.generations.record(&pass, "generations");
-        work.functions.record(&pass, "functions");
+        pass.record(
+            "coral.search.reconcile.generations_indexed",
+            safe::number(work.generations.indexed),
+        );
+        pass.record(
+            "coral.search.reconcile.generations_failed",
+            safe::number(work.generations.failed),
+        );
+        pass.record(
+            "coral.search.reconcile.functions_indexed",
+            safe::number(work.functions.indexed),
+        );
+        pass.record(
+            "coral.search.reconcile.functions_failed",
+            safe::number(work.functions.failed),
+        );
         if work.failed() {
             coral_telemetry::record_failure(&pass, "reconcile_failed");
         }
@@ -129,7 +144,7 @@ impl SearchIndex {
         let Some(now) = crate::unix_now_nanos() else {
             // TODO: an error monitor for failed index writes is still to be set up.
             tracing::error!(
-                error.type = IndexError::Clock.code(),
+                error.type = safe::kind(IndexError::Clock.code()),
                 "failed to start a search index reconcile pass"
             );
             work.step_failed = true;
@@ -193,7 +208,7 @@ impl SearchIndex {
         if let Err(error) = removed {
             // TODO: an error monitor for failed index writes is still to be set up.
             tracing::error!(
-                error.type = error.code(),
+                error.type = safe::kind(error.code()),
                 "failed to remove superseded Provider Generations from the search index"
             );
             return Err(());
@@ -225,7 +240,7 @@ impl SearchIndex {
             Err(error) => {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
-                    error.type = error.code(),
+                    error.type = safe::kind(error.code()),
                     "failed to reconcile the indexed Provider Generations"
                 );
                 return Err(());
@@ -322,7 +337,7 @@ impl SearchIndex {
             Err(error) => {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
-                    error.type = error.code(),
+                    error.type = safe::kind(error.code()),
                     "failed to reconcile the indexed Saved Functions"
                 );
                 Err(())
@@ -347,7 +362,7 @@ impl SearchIndex {
             Err(error) => {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
-                    error.type = error.code(),
+                    error.type = safe::kind(error.code()),
                     "failed to check the Workspaces' search statistics"
                 );
                 return Err(());
@@ -361,7 +376,7 @@ impl SearchIndex {
             let span = tracing::info_span!(
                 parent: None,
                 "coral.search.refresh_statistics",
-                coral.workspace.id = %workspace_id,
+                coral.workspace.id = safe::id(&workspace_id),
                 coral.search.rows_written = Empty,
                 coral.search.write.trigger = Empty,
                 error.type = Empty,
@@ -379,15 +394,15 @@ impl SearchIndex {
             .await;
             match refreshed {
                 Ok(rows) => {
-                    span.record("coral.search.rows_written", rows);
+                    span.record("coral.search.rows_written", safe::number(rows));
                     work.workspaces_recounted += 1;
                     work.rows_written += rows;
                 }
                 Err(error) => {
                     // TODO: an error monitor for failed index writes is still to be set up.
                     tracing::error!(
-                        coral.workspace.id = %workspace_id,
-                        error.type = error.code(),
+                        coral.workspace.id = safe::id(&workspace_id),
+                        error.type = safe::kind(error.code()),
                         "failed to refresh a Workspace's search statistics"
                     );
                     work.failed = true;
@@ -415,13 +430,16 @@ impl StatisticsWork {
     fn record(self, span: &tracing::Span) {
         span.record(
             "coral.search.reconcile.workspaces_checked",
-            self.workspaces_checked,
+            safe::number(self.workspaces_checked),
         );
         span.record(
             "coral.search.reconcile.workspaces_recounted",
-            self.workspaces_recounted,
+            safe::number(self.workspaces_recounted),
         );
-        span.record("coral.search.reconcile.rows_written", self.rows_written);
+        span.record(
+            "coral.search.reconcile.rows_written",
+            safe::number(self.rows_written),
+        );
     }
 }
 
@@ -436,19 +454,6 @@ struct ItemWork {
 }
 
 impl ItemWork {
-    /// Records the counts on the pass's span under `items`, `generations` or
-    /// `functions`.
-    fn record(self, pass: &tracing::Span, items: &str) {
-        pass.record(
-            format!("coral.search.reconcile.{items}_indexed").as_str(),
-            self.indexed,
-        );
-        pass.record(
-            format!("coral.search.reconcile.{items}_failed").as_str(),
-            self.failed,
-        );
-    }
-
     /// Counts one item's attempt, `Ok(false)` when the item was gone.
     fn count(&mut self, attempt: &Result<bool, IndexError>) {
         match attempt {

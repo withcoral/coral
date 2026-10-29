@@ -1,11 +1,13 @@
 //! Complete bounded HTTP response capture and decoding.
 
 use coral_catalog::{HttpExecutionBinding, HttpRedirectPolicy, SchemaGraph, SuccessSelection};
+use coral_telemetry::safe;
 use serde_json::Value;
 use tracing::Instrument as _;
 use url::Url;
 
 use super::response_headers::{CredentialNames, safe_response_headers};
+use crate::span_field::{self, Declared};
 use crate::{
     Error, OutcomeClass, ReadyHttpDispatch, is_json_media_type, media_type_essence,
     read_bounded_body,
@@ -281,9 +283,9 @@ impl HttpUpstream {
                 .await
                 .map_err(Error::send)?;
             let status = response.status().as_u16();
-            span.record("http.response.status_code", status);
+            span.record("http.response.status_code", safe::number(status));
             if status >= 400 {
-                coral_telemetry::record_failure(&span, status.to_string());
+                coral_telemetry::record_failure(&span, safe::http_status_code(status));
             }
             if binding.redirect_policy() == HttpRedirectPolicy::Follow
                 && redirects.len() < MAX_REDIRECTS
@@ -346,7 +348,7 @@ impl HttpUpstream {
                 content_length_describes_body,
             )
             .await?;
-            span.record("http.response.body.size", response_body.len());
+            span.record("http.response.body.size", safe::number(response_body.len()));
             let content_type =
                 selected_decode_facts(&binding, status, !response_body.is_empty(), content_type);
             let (data, decode_diagnostics) = decode_response_body(
@@ -658,20 +660,17 @@ fn client_span(
     template: Option<&str>,
     request_body_size: Option<usize>,
 ) -> tracing::Span {
-    let name = template.map_or_else(
-        || method.as_str().to_string(),
-        |template| format!("{method} {template}"),
-    );
+    let template = template.map(Declared);
     tracing::info_span!(
         "http.client",
-        otel.name = name,
+        otel.name = safe::http_span_name(method, template.as_ref()),
         otel.kind = "client",
-        http.request.method = method.as_str(),
-        url.scheme = url.scheme(),
-        server.address = url.host_str().unwrap_or_default(),
-        server.port = url.port_or_known_default(),
-        url.template = template,
-        http.request.body.size = request_body_size,
+        http.request.method = safe::http_method(method),
+        url.scheme = safe::kind(span_field::scheme(url)),
+        server.address = span_field::host(url).as_ref().map(safe::id),
+        server.port = url.port_or_known_default().map(safe::number),
+        url.template = template.as_ref().map(safe::id),
+        http.request.body.size = request_body_size.map(safe::number),
         http.response.status_code = tracing::field::Empty,
         http.response.body.size = tracing::field::Empty,
         error.type = tracing::field::Empty,

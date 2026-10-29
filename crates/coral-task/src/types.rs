@@ -61,6 +61,9 @@ impl fmt::Display for TaskId {
     }
 }
 
+/// Words from Coral's word list, or a UUID: it holds no other text.
+impl coral_telemetry::safe::Identifier for TaskId {}
+
 /// Bounded declared intent of one Task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskIntent(String);

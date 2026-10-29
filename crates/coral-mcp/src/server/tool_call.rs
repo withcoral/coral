@@ -1,6 +1,7 @@
 //! The span and trace of one MCP tool call.
 
 use coral_task::TaskId;
+use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, TraceId, WorkspaceId};
 use rmcp::ErrorData;
 use rmcp::model::CallToolResponse;
@@ -24,7 +25,7 @@ pub(super) struct ToolCall {
 impl ToolCall {
     /// Opens the span of a call to the tool `name`, as a child of `request`,
     /// the span of the HTTP request that carried it. The caller is
-    /// authenticated, so the span names its Workspace and Principal kind.
+    /// authenticated, so the span names its Workspace and Principal.
     pub(super) fn open(
         name: &str,
         request: Option<&tracing::Span>,
@@ -36,12 +37,13 @@ impl ToolCall {
         let span = tracing::info_span!(
             parent: request.and_then(tracing::Span::id),
             "coral.mcp.tool",
-            otel.name = tool.map_or_else(|| "tools/call".to_owned(), |tool| format!("tools/call {tool}")),
+            otel.name = safe::span_name("tools/call", tool.as_ref()),
             otel.kind = "server",
             mcp.method.name = "tools/call",
-            gen_ai.tool.name = tool,
-            coral.workspace.id = %workspace,
-            coral.principal.kind = principal.principal().kind().as_storage_str(),
+            gen_ai.tool.name = tool.map(safe::kind),
+            coral.workspace.id = safe::id(workspace),
+            coral.principal.id = safe::id(&principal.telemetry_id()),
+            coral.principal.kind = safe::kind(principal.principal().kind().as_storage_str()),
             coral.task.id = tracing::field::Empty,
             coral.mcp.failure.code = tracing::field::Empty,
             rpc.response.status_code = tracing::field::Empty,
@@ -62,16 +64,17 @@ impl ToolCall {
         match dispatched.instrument(span.clone()).await {
             Ok(response) => Ok(response),
             Err(DispatchError::Tool(error)) => {
-                span.record("coral.mcp.failure.code", error.code());
+                span.record("coral.mcp.failure.code", safe::kind(error.code()));
                 coral_telemetry::record_failure(span, "tool_error");
                 let trace = span.in_scope(TraceId::current_or_new);
                 Ok(projection::failure(&error, &trace).into())
             }
             Err(DispatchError::Protocol(error)) => {
                 let code = error.code.0;
-                span.record("rpc.response.status_code", tracing::field::display(code));
+                let status = safe::json_rpc_code(i64::from(code));
+                span.record("rpc.response.status_code", safe::kind(status));
                 if !CALLER_ERROR_CODES.contains(&code) {
-                    coral_telemetry::record_failure(span, code.to_string());
+                    coral_telemetry::record_failure(span, status);
                 }
                 Err(error)
             }
@@ -82,5 +85,5 @@ impl ToolCall {
 /// Names the Task that the current tool call acts in. Call it from the call's
 /// handler, where the tool span is current, not from inside a child span.
 pub(super) fn record_task(task: &TaskId) {
-    tracing::Span::current().record("coral.task.id", tracing::field::display(task));
+    tracing::Span::current().record("coral.task.id", safe::id(task));
 }

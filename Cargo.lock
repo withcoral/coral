@@ -612,6 +612,7 @@ dependencies = [
  "coral-outbound",
  "coral-provider",
  "coral-search",
+ "coral-telemetry",
  "coral-test-support",
  "coral-workspace",
  "sea-query",
@@ -709,6 +710,7 @@ dependencies = [
  "coral-catalog",
  "coral-db",
  "coral-outbound",
+ "coral-telemetry",
  "coral-test-support",
  "coral-v8",
  "coral-workspace",
@@ -762,6 +764,7 @@ dependencies = [
  "async-trait",
  "coral-catalog",
  "coral-db",
+ "coral-telemetry",
  "coral-test-support",
  "coral-v8",
  "coral-workspace",
@@ -1013,6 +1016,7 @@ dependencies = [
  "coral-provider",
  "coral-run",
  "coral-search",
+ "coral-telemetry",
  "coral-test-support",
  "coral-workspace",
  "sea-query",
@@ -1041,6 +1045,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

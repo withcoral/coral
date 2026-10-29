@@ -4,8 +4,9 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use coral_telemetry::safe;
 use coral_telemetry::{OtlpLogFilter, OtlpSpanFilter};
-use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
+use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{
     LogExporter, MetricExporter, SpanExporter as OtlpSpanExporter, WithExportConfig, WithHttpConfig,
 };
@@ -17,7 +18,7 @@ use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{
     BatchSpanProcessor, Sampler, SdkTracer, SdkTracerProvider, TracerProviderBuilder,
 };
-use tracing_opentelemetry::{OpenTelemetryLayer, OpenTelemetrySpanExt as _};
+use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::Layer as _;
 use tracing_subscriber::filter::{self, FilterExt as _, Filtered, Targets};
 use tracing_subscriber::layer::SubscriberExt;
@@ -233,9 +234,9 @@ pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
         "coral.runtime",
         error.type = tracing::field::Empty,
         otel.kind = "internal",
-        process.executable.name = process_executable_name(),
+        process.executable.name = safe::id(&process_executable_name()),
         process.exit.code = tracing::field::Empty,
-        process.pid = i64::from(std::process::id()),
+        process.pid = safe::number(i64::from(std::process::id())),
     );
     coral_telemetry::set_parent_from_trace_headers(&span, traceparent, None);
     span
@@ -243,16 +244,31 @@ pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
 
 fn record_run_success(span: &tracing::Span) {
     span.record("process.exit.code", 0_i64);
-    span.set_status(OtelStatus::Ok);
+    coral_telemetry::record_success(span);
 }
 
 fn record_run_error(span: &tracing::Span, error: &impl RunErrorTelemetry) {
-    span.record("process.exit.code", i64::from(error.telemetry_exit_code()));
+    span.record(
+        "process.exit.code",
+        safe::number(i64::from(error.telemetry_exit_code())),
+    );
     coral_telemetry::record_failure(span, error.telemetry_error_code());
 }
 
-fn process_executable_name() -> String {
-    std::env::current_exe()
+/// The file name of the executable this process runs.
+struct ExecutableName(String);
+
+/// The operator installed the executable and chose its name.
+impl safe::Identifier for ExecutableName {}
+
+impl std::fmt::Display for ExecutableName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+fn process_executable_name() -> ExecutableName {
+    let name = std::env::current_exe()
         .ok()
         .and_then(|path| {
             path.file_name()
@@ -266,7 +282,8 @@ fn process_executable_name() -> String {
             })
         })
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "coral".to_string())
+        .unwrap_or_else(|| "coral".to_string());
+    ExecutableName(name)
 }
 
 type TraceLayerFilter<S> =
@@ -413,7 +430,7 @@ pub fn shutdown_tracing() {
         && let Err(error) = provider.shutdown()
     {
         tracing::warn!(
-            error.type = sdk_error_code(&error),
+            error.type = safe::kind(sdk_error_code(&error)),
             "OTEL meter provider shutdown failed"
         );
     }
@@ -422,7 +439,7 @@ pub fn shutdown_tracing() {
         && let Err(error) = provider.shutdown()
     {
         tracing::warn!(
-            error.type = sdk_error_code(&error),
+            error.type = safe::kind(sdk_error_code(&error)),
             "OTEL trace provider shutdown failed"
         );
     }
@@ -431,7 +448,7 @@ pub fn shutdown_tracing() {
         && let Err(error) = provider.shutdown()
     {
         tracing::warn!(
-            error.type = sdk_error_code(&error),
+            error.type = safe::kind(sdk_error_code(&error)),
             "OTEL logger provider shutdown failed"
         );
     }

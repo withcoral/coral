@@ -20,10 +20,6 @@ const ABSENT: &str = "00000000-0000-4000-8000-000000000000";
 /// new trace for an invalid one, and is the trace of the exported request and
 /// tool spans either way.
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one table of tool failures, each checked in every supported protocol version"
-)]
 async fn tool_failures_name_the_trace_of_their_request() {
     let capture = capture();
     let tracer = Tracer::start().await;
@@ -119,14 +115,13 @@ async fn tool_failures_name_the_trace_of_their_request() {
     session.close().await;
 
     let spans = capture.spans.finished();
-    let workspace = tracer.workspace_a.to_string();
     for (context, trace, tool, failure, task) in &failures {
         assert_spans_in_trace(
             &spans,
             context,
             trace,
             tool,
-            &workspace,
+            &tracer,
             *failure,
             task.as_deref(),
         );
@@ -134,14 +129,14 @@ async fn tool_failures_name_the_trace_of_their_request() {
 }
 
 /// The request span and the tool span both carry `trace`. The tool span is
-/// an MCP server span that names the caller's Workspace and Principal kind,
-/// the Task the call names, and a tool failure's Coral code.
+/// an MCP server span that names `tracer`'s Workspace and authenticated
+/// Principal, the Task the call names, and a tool failure's Coral code.
 fn assert_spans_in_trace(
     spans: &[SpanData],
     context: &str,
     trace: &str,
     tool: &str,
-    workspace: &str,
+    tracer: &Tracer,
     failure: Option<&str>,
     task: Option<&str>,
 ) {
@@ -159,8 +154,13 @@ fn assert_spans_in_trace(
     assert_eq!(tool_span.span_kind, SpanKind::Server, "{context}");
     let attribute = |name: &str| attribute(tool_span, name);
     assert_eq!(
-        attribute("coral.workspace.id").as_deref(),
-        Some(workspace),
+        attribute("coral.workspace.id"),
+        Some(tracer.workspace_a.to_string()),
+        "{context}"
+    );
+    assert_eq!(
+        attribute("coral.principal.id").as_deref(),
+        Some(tracer.local_user.user_id().as_str()),
         "{context}"
     );
     assert_eq!(
@@ -331,7 +331,6 @@ async fn records_carry_the_trace_of_their_request() {
         .list_lifecycle_events(&owner, &tracer.workspace_a)
         .await
         .expect("lifecycle events");
-    let workspace = tracer.workspace_a.to_string();
     for (context, path, parent, task) in saved {
         let recorded = events
             .iter()
@@ -350,7 +349,7 @@ async fn records_carry_the_trace_of_their_request() {
             &context,
             recorded,
             "save_function",
-            &workspace,
+            &tracer,
             None,
             Some(&task),
         );

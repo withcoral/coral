@@ -117,7 +117,9 @@ pub use agent_types::{
 };
 pub use coral_telemetry::TraceId;
 pub use error::Error;
-pub use principal::{AuthenticatedPrincipal, Principal, PrincipalId, PrincipalKind};
+pub use principal::{
+    AuthenticatedPrincipal, AuthenticatedPrincipalId, Principal, PrincipalId, PrincipalKind,
+};
 pub use principal_authority::PrincipalWorkspaceEvidence;
 pub use types::{
     AdministrativeLifecycleEvent, AuthenticatedUser, AuthoritySource, ChangeContext,

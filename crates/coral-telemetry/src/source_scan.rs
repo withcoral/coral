@@ -2,18 +2,21 @@
 //!
 //! The export filters drop every key the field catalog does not list, so a
 //! field under any other key never leaves the host. This test turns that
-//! silent drop into a failure: every field of a span or event, and every
-//! key a span records later, must be one the catalog lists. `otel.*` keys
-//! configure the span and are not exported, and `coral.local.*` keys stay on
-//! the host.
+//! silent drop into a failure: every field of a span, an event or a
+//! `#[tracing::instrument]`, and every key a span records later, must be one
+//! the catalog lists. `otel.*` keys configure the span, and `coral.local.*`
+//! keys stay on the host.
 //!
-//! An event leaves the host as a log record whose text is its message, or as
-//! a span event named by its message, and the filters cannot tell a message
-//! written in the source from one formatted from a value. So an event's
-//! message must be fixed text, and no field may take an error's value. A
-//! failure is named by `error.type`, and its value is a bounded code: a
-//! string literal, the error's `code()`, or a `*_code(..)` helper that maps a
-//! library's error to one.
+//! A filter cannot tell what a cataloged key's value holds, so the value
+//! must be a literal, `Empty`, or a call of a [`crate::safe`] constructor,
+//! which takes only types that cannot hold caller or error text. A value
+//! recorded with `%` or `?` is neither. A failure is named by `error.type`,
+//! whose value is a code: a literal, or a constructor that returns
+//! `&'static str`. An event leaves the host as a log record or span event
+//! named by its message, so the message must be fixed text.
+//!
+//! The OpenTelemetry span API sets names, attributes, events and links past
+//! all of this, so only this crate calls it.
 
 use std::path::{Path, PathBuf};
 
@@ -26,9 +29,36 @@ const SPAN_MACROS: [&str; 6] = [
     "error_span!",
     "span!",
 ];
+const INSTRUMENT_ATTRIBUTES: [&str; 2] = ["#[tracing::instrument", "#[instrument"];
+const SAFE_CONSTRUCTORS: [&str; 9] = [
+    "id",
+    "kind",
+    "number",
+    "flag",
+    "span_name",
+    "http_span_name",
+    "http_method",
+    "http_status_code",
+    "json_rpc_code",
+];
+/// The constructors whose value is a code, the only values of `error.type`.
+const CODE_CONSTRUCTORS: [&str; 4] = ["kind", "http_method", "http_status_code", "json_rpc_code"];
+const OPENTELEMETRY_SPAN_CALLS: [&str; 8] = [
+    ".update_name",
+    ".set_attribute",
+    ".set_attributes",
+    ".add_event",
+    ".add_event_with_timestamp",
+    ".add_link",
+    ".set_status",
+    ".record_error",
+];
+/// The calls that make runtime text `'static`, which [`crate::safe::kind`]
+/// takes for build-time text.
+const LEAKS: [&str; 2] = [".leak", "::leak"];
 
 #[test]
-fn every_span_and_event_uses_cataloged_keys_and_no_error_text() {
+fn every_span_and_event_uses_cataloged_keys_and_safe_values() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("the crates directory");
@@ -54,19 +84,20 @@ fn every_span_and_event_uses_cataloged_keys_and_no_error_text() {
         .iter()
         .flat_map(|(file, text)| test_module_files(file, text))
         .collect::<Vec<_>>();
+    let owner = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut violations = Vec::new();
     for (file, text) in &sources {
         if test_modules.contains(file) {
             continue;
         }
         let display = file.strip_prefix(crates).unwrap_or(file).display();
-        for (line, problem) in violations_in(&production_code(text)) {
+        for (line, problem) in violations_in(&production_code(text), file.starts_with(&owner)) {
             violations.push(format!("{display}:{line}: {problem}"));
         }
     }
     assert!(
         violations.is_empty(),
-        "spans and events must use cataloged keys and carry no error text:\n{}",
+        "spans and events must use cataloged keys and safe values:\n{}",
         violations.join("\n")
     );
 }
@@ -76,38 +107,54 @@ fn every_span_and_event_uses_cataloged_keys_and_no_error_text() {
 #[test]
 fn the_checks_find_what_they_check() {
     let source = r#"
-        tracing::warn!(coral.run.id = %id, coral.local.path = %path, "fixed text");
+        tracing::warn!(coral.run.id = safe::id(&id), coral.local.path = %path, "fixed text");
         tracing::warn!("fixed {{braces}}");
         warn!(error.type = "clock", "fixed text");
-        warn!(error.type = error.code(), "fixed text");
-        warn!(error.type = sdk_error_code(&error), "fixed text");
+        warn!(error.type = safe::kind(error.code()), "fixed text");
         tracing::event!(target: "coral_error", tracing::Level::ERROR, "fixed text");
         tracing::info_span!("coral.run.start", otel.kind = "internal", coral.run.status = Empty);
-        span.record("coral.run.status", "ok");
+        tracing::info_span!(name: "coral.x", otel.name = safe::span_name("GET", route.as_ref()));
+        tracing::info_span!("x", http.route = route.map(safe::id), process.pid = 1_i64);
+        span.record("coral.run.status", safe::kind("ok"));
+        span.record("coral.invocation.dispatch_started", true);
         metric.record(1, &[]);
+        reply.record(outcome);
+        #[tracing::instrument(skip_all, name = "coral.private.get_task")]
         tracing::warn!("failed: {error}");
         tracing::error!("failed: {}", detail);
         tracing::warn!(error.type = %error, "fixed text");
-        tracing::error!(error.type = error.to_string(), "fixed text");
-        tracing::error!(error.type = %IndexError::Clock, "fixed text");
-        tracing::event!(tracing::Level::WARN, coral.run.id = ?err, "fixed text");
+        tracing::error!(error.type = error.code(), "fixed text");
+        tracing::error!(error.type = safe::id(&kind), "fixed text");
+        tracing::event!(tracing::Level::WARN, coral.run.id = ?run, "fixed text");
+        tracing::warn!(coral.tool.call_path = %detail, "fixed text");
+        tracing::warn!(coral.tool.call_path = detail, "fixed text");
+        tracing::warn!(coral.tool.call_path = decode(detail), "fixed text");
         tracing::warn!(misclassified = 1, "fixed text");
         tracing::warn!(%claim_id, "fixed text");
         tracing::warn!({ RUN_ID } = %id, "fixed text");
         tracing::info_span!("coral.run.start", detail = Empty);
+        tracing::info_span!("x", otel.name = format!("GET {path}"));
         span.record("detail", 1);
-        warn!(error.type = std::any::type_name_of_val(&error), "fixed text");
-        warn!(error.type = kind, "fixed text");
+        span.record(KEY, safe::number(1));
+        span.record("coral.run.status", status);
+        span.record("error.type", error.to_string());
+        #[tracing::instrument(name = "coral.private.get_task")]
+        #[instrument(skip_all, err)]
+        #[tracing::instrument(skip_all, fields(coral.tool.call_path = %detail))]
+        span.context().span().update_name(path);
+        span.set_status(Status::error(text));
+        safe::kind(String::leak(text))
+        safe::kind(Box::leak(text.into_boxed_str()))
         #[cfg(test)]
         mod tests {
             fn ignored() { tracing::warn!(misclassified = 1, "test {error}"); }
         }
     "#;
-    let lines = violations_in(&production_code(source))
+    let lines = violations_in(&production_code(source), false)
         .into_iter()
         .map(|(line, _)| line)
         .collect::<Vec<_>>();
-    assert_eq!(lines, (11..=23).collect::<Vec<_>>());
+    assert_eq!(lines, (15..=39).collect::<Vec<_>>());
 }
 
 fn rust_files(directory: &Path, files: &mut Vec<PathBuf>) {
@@ -268,8 +315,10 @@ fn char_end(bytes: &[u8], start: usize) -> usize {
     }
 }
 
-/// Each span and event in `code` that breaks a rule, by line.
-fn violations_in(code: &str) -> Vec<(usize, String)> {
+/// Each span, event and span-API call in `code` that breaks a rule, by
+/// line. `owner` is whether `code` is this crate's own, the one place that
+/// calls the OpenTelemetry span API.
+fn violations_in(code: &str, owner: bool) -> Vec<(usize, String)> {
     let mut violations = Vec::new();
     for name in EVENT_MACROS {
         for (line, arguments) in calls(code, name) {
@@ -284,21 +333,38 @@ fn violations_in(code: &str) -> Vec<(usize, String)> {
             violations.extend(problem.map(|problem| (line, problem)));
         }
     }
+    for name in INSTRUMENT_ATTRIBUTES {
+        for (line, arguments) in calls(code, name) {
+            violations.extend(instrument_problem(arguments).map(|problem| (line, problem)));
+        }
+    }
     for (line, arguments) in calls(code, ".record") {
-        let key = split_arguments(arguments)
-            .first()
-            .map(|key| key.trim())
-            .and_then(|key| key.strip_prefix('"')?.strip_suffix('"'));
-        if let Some(key) = key.filter(|key| !is_allowed_key(key)) {
-            violations.push((line, format!("key is not cataloged: {key}")));
+        violations.extend(record_problem(arguments).map(|problem| (line, problem)));
+    }
+    if !owner {
+        for name in OPENTELEMETRY_SPAN_CALLS {
+            for (line, _) in calls(code, name) {
+                violations.push((
+                    line,
+                    format!("only coral-telemetry calls the OpenTelemetry span API: {name}"),
+                ));
+            }
+        }
+    }
+    for name in LEAKS {
+        for (line, _) in calls(code, name) {
+            violations.push((
+                line,
+                format!("leaked text passes for build-time text: {name}"),
+            ));
         }
     }
     violations.sort();
     violations
 }
 
-/// The line and arguments of each call of the macro or method `name` in
-/// `code`.
+/// The line and arguments of each call of the macro, method or attribute
+/// `name` in `code`.
 fn calls<'a>(code: &'a str, name: &str) -> Vec<(usize, &'a str)> {
     let mut found = Vec::new();
     let mut from = 0;
@@ -314,7 +380,10 @@ fn calls<'a>(code: &'a str, name: &str) -> Vec<(usize, &'a str)> {
             .and_then(|rest| rest.find(|character: char| !character.is_whitespace()))
             .map(|offset| from + offset)
             .filter(|&open| code.as_bytes().get(open) == Some(&b'('));
-        let (Some(open), false) = (open, preceded_by_word && !name.starts_with('.')) else {
+        let (Some(open), false) = (
+            open,
+            preceded_by_word && name.starts_with(char::is_alphabetic),
+        ) else {
             continue;
         };
         let Some(end) = closing(code, open) else {
@@ -348,44 +417,152 @@ fn event_problem(arguments: &str) -> Option<String> {
 fn field_problem(argument: &str) -> Option<String> {
     // A macro's `$` arguments are fields its own callers name.
     if argument.starts_with(['"', '$'])
-        || ["target:", "parent:", "name:"]
+        || ["target:", "parent:"]
             .iter()
             .any(|prefix| argument.starts_with(prefix))
         || argument.contains("Level::")
     {
         return None;
     }
+    if let Some(name) = argument.strip_prefix("name:") {
+        return (!is_literal(name.trim())).then(|| format!("name is not fixed text: {argument}"));
+    }
     let (key, value) = match argument.split_once('=') {
-        Some((key, value)) if !value.starts_with('=') => (key.trim(), value.trim()),
-        _ => {
-            let shorthand = argument.trim_start_matches(['%', '?']).trim();
-            (shorthand, shorthand)
-        }
+        Some((key, value)) if !value.starts_with('=') => (key.trim(), Some(value.trim())),
+        _ => (argument.trim_start_matches(['%', '?']).trim(), None),
     };
     if !is_allowed_key(key) {
         return Some(format!("key is not cataloged: {argument}"));
     }
-    let sigil = value.starts_with(['%', '?']);
-    let value = value.trim_start_matches(['%', '?']).trim();
-    if key == "error.type" {
-        return (sigil || !is_code(value)).then(|| format!("error.type is not a code: {argument}"));
+    match value {
+        Some(value) => value_problem(key, value).map(|problem| format!("{problem}: {argument}")),
+        None => Some(format!("value is not a safe value: {argument}")),
     }
-    (!is_code(value) && names_an_error(value)).then(|| format!("field takes an error: {argument}"))
 }
 
-/// Whether `value` is a bounded code: a string literal, a `code()` call, or
-/// a `*_code(..)` helper. A span field declared `Empty` is recorded later,
-/// through `record_failure`.
-fn is_code(value: &str) -> bool {
-    if value.ends_with("Empty") {
-        return true;
+/// What is wrong with `value`, the value of the field `key`. A
+/// `coral.local.*` field stays on the host, so its value may be anything.
+fn value_problem(key: &str, value: &str) -> Option<&'static str> {
+    if key.starts_with(crate::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX) {
+        return None;
     }
-    let literal = value.starts_with('"') && value.ends_with('"') && value.len() > 1;
-    let helper = value
+    if value.starts_with('?') {
+        return Some("value is recorded with Debug");
+    }
+    if value.starts_with('%') {
+        return Some("value is recorded with Display");
+    }
+    let constructor = safe_constructor(value);
+    if key == "error.type" {
+        let code = is_literal(value)
+            || is_empty(value)
+            || constructor.is_some_and(|constructor| CODE_CONSTRUCTORS.contains(&constructor));
+        return (!code).then_some("error.type is not a code");
+    }
+    let safe = is_literal(value) || is_empty(value) || constructor.is_some();
+    (!safe).then_some("value is not a safe value")
+}
+
+/// The `safe` constructor that `value` is a call of, or that it maps an
+/// `Option` with.
+fn safe_constructor(value: &str) -> Option<&'static str> {
+    let mapped = value
         .strip_suffix(')')
-        .and_then(|call| call.split_once('('))
-        .is_some_and(|(function, _)| function.ends_with("code"));
-    literal || value.ends_with(".code()") || helper
+        .and_then(|value| value.rsplit_once(".map("))
+        .map(|(_, constructor)| constructor);
+    let path = if let Some(constructor) = mapped {
+        constructor
+    } else {
+        let open = value.find('(')?;
+        (closing(value, open)? == value.len()).then_some(())?;
+        value.get(..open)?
+    };
+    let name = ["coral_telemetry::safe::", "crate::safe::", "safe::"]
+        .iter()
+        .find_map(|prefix| path.strip_prefix(prefix))?;
+    SAFE_CONSTRUCTORS
+        .iter()
+        .copied()
+        .find(|constructor| *constructor == name)
+}
+
+/// Whether `value` is a string, number or `bool` literal.
+fn is_literal(value: &str) -> bool {
+    (value.starts_with('"') && value.ends_with('"') && value.len() > 1)
+        || value.starts_with(|character: char| character.is_ascii_digit())
+        || value == "true"
+        || value == "false"
+}
+
+/// Whether `value` declares a span field that is recorded later.
+fn is_empty(value: &str) -> bool {
+    value == "Empty" || value.ends_with("::Empty")
+}
+
+/// What is wrong with a `.record(key, value)` call whose arguments are
+/// `arguments`. A call with another number of arguments, or with an
+/// attribute slice, records something other than a span field.
+fn record_problem(arguments: &str) -> Option<String> {
+    let arguments = split_arguments(arguments);
+    let [key, value] = arguments.as_slice() else {
+        return None;
+    };
+    let (key, value) = (key.trim(), value.trim());
+    if value.starts_with("&[") {
+        return None;
+    }
+    let Some(name) = key.strip_prefix('"').and_then(|key| key.strip_suffix('"')) else {
+        return Some(format!("key is not a literal: {key}"));
+    };
+    if !is_allowed_key(name) {
+        return Some(format!("key is not cataloged: {name}"));
+    }
+    value_problem(name, value).map(|problem| format!("{problem}: {name} = {value}"))
+}
+
+/// What is wrong with a `#[tracing::instrument(..)]` whose arguments are
+/// `arguments`. Without `skip_all` the span records every argument with
+/// Debug; `err` and `ret` record the error and the return value.
+fn instrument_problem(arguments: &str) -> Option<String> {
+    let arguments = split_arguments(arguments)
+        .into_iter()
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    if !arguments.contains(&"skip_all") {
+        return Some("instrument records its arguments: add skip_all".to_owned());
+    }
+    for argument in arguments {
+        let name = argument
+            .split(|character: char| !(character.is_alphanumeric() || character == '_'))
+            .next()
+            .unwrap_or("");
+        match name {
+            "err" | "ret" => return Some(format!("instrument records a value: {argument}")),
+            "fields" => {
+                let fields = argument
+                    .strip_prefix("fields")
+                    .map(str::trim)
+                    .and_then(|fields| fields.strip_prefix('(')?.strip_suffix(')'))
+                    .unwrap_or("");
+                let problem = split_arguments(fields)
+                    .into_iter()
+                    .find_map(|field| field_problem(field.trim()));
+                if problem.is_some() {
+                    return problem;
+                }
+            }
+            "name" => {
+                let value = argument
+                    .split_once('=')
+                    .map_or("", |(_, value)| value.trim());
+                if !is_literal(value) {
+                    return Some(format!("name is not fixed text: {argument}"));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Whether a span or event may carry `key`: one the catalog lists, an
@@ -420,14 +597,4 @@ fn split_arguments(arguments: &str) -> Vec<&str> {
         parts.push(last);
     }
     parts
-}
-
-/// Whether `expression` names an error value, by the names Coral gives them.
-fn names_an_error(expression: &str) -> bool {
-    expression
-        .split(|character: char| !(character.is_alphanumeric() || character == '_'))
-        .map(str::to_ascii_lowercase)
-        .any(|word| {
-            word == "e" || word == "err" || word.ends_with("error") || word.ends_with("_err")
-        })
 }

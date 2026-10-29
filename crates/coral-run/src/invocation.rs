@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_policy::ToolAccessState;
 use coral_provider::{InvocationCaller, ResolvedInvocationTool};
+use coral_telemetry::safe;
 use coral_upstream::{McpRejection, McpResources, ReadyDispatch, UpstreamOutcome};
 use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
@@ -286,11 +287,7 @@ impl ToolInvoker {
             })?;
         let (target, policy, builtin) = self.resolve(call_path, &arguments).await?;
         let id = InvocationId::generate();
-        let span = crate::trace::invocation_span(
-            &id,
-            call_path,
-            &target.provider_access().id().to_string(),
-        );
+        let span = crate::trace::invocation_span(&id, call_path, target.provider_access().id());
         let admitted = Arc::new(AdmittedInvocation {
             id,
             workspace_id: self.workspace_id.clone(),
@@ -434,7 +431,9 @@ impl ToolInvoker {
             Dispatch::Upstream(ReadyDispatch::Mcp(_)) => "mcp",
             Dispatch::Builtin(_) => "builtin",
         };
-        admitted.span.record("coral.provider.protocol", protocol);
+        admitted
+            .span
+            .record("coral.provider.protocol", safe::kind(protocol));
         Ok(planned)
     }
 

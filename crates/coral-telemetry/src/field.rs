@@ -3,10 +3,10 @@
 //!
 //! Coral's own fields are named `coral.*`, after the glossary; the standard
 //! OpenTelemetry semantic-convention keys keep their standard names. Each
-//! value is an opaque identifier, a bounded kind, a count or a duration,
-//! never caller text, an error's `Display` text or a credential. The export
-//! filters drop every other key, and a source check fails on a span or event
-//! that names one, so a field records only what its name promises.
+//! value is an identifier, a bounded kind, a count or a duration, never
+//! caller text, an error's `Display` text or a credential: [`crate::safe`]
+//! builds every value. The export filters drop every other key, and a source
+//! check fails on a span or event that names one.
 
 /// Coral's own fields.
 const CORAL: &[&str] = &[
@@ -17,8 +17,6 @@ const CORAL: &[&str] = &[
     "coral.principal.id",
     // Whether the Principal is a User or an Agent.
     "coral.principal.kind",
-    // The OAuth client a request came through.
-    "coral.client.id",
     // The Task the work belongs to.
     "coral.task.id",
     // The Program Run, its status, and the phase a span covers.

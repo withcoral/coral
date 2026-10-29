@@ -79,6 +79,9 @@ impl fmt::Display for RunId {
     }
 }
 
+/// Words from Coral's word list, or a UUID: it holds no other text.
+impl coral_telemetry::safe::Identifier for RunId {}
+
 /// Stable Coral-generated Tool Invocation identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct InvocationId(Uuid);
@@ -110,6 +113,10 @@ impl fmt::Display for InvocationId {
         write!(formatter, "{}", self.0.hyphenated())
     }
 }
+
+/// A UUID Coral generated, or one parsed in its canonical form: it holds
+/// no text.
+impl coral_telemetry::safe::Identifier for InvocationId {}
 
 /// Exact submitted TypeScript async-function body.
 #[derive(Debug, Clone, PartialEq, Eq)]

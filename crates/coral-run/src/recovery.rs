@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
 use uuid::Uuid;
 
@@ -120,8 +121,8 @@ impl RunModule {
             return false;
         };
         tracing::info!(
-            coral.run.id = %run.id,
-            coral.run.claim.id = %claim_id,
+            coral.run.id = safe::id(&run.id),
+            coral.run.claim.id = crate::trace::claim(&claim_id).as_ref().map(safe::id),
             "expired-lease sweep recreates the Run Owner of a Run no process owns"
         );
         // The Run as its owner needs it; a recovered owner starts no Program,
@@ -158,8 +159,8 @@ impl RunModule {
         tokio::spawn(async move {
             if let Err(ended) = owner_task.await {
                 tracing::error!(
-                    coral.run.id = %run_id,
-                    error.type = crate::worker::owner_task_end_code(&ended),
+                    coral.run.id = safe::id(&run_id),
+                    error.type = safe::kind(crate::worker::owner_task_end_code(&ended)),
                     "recovered Run Owner ended without retiring; the next sweep recovers its Run"
                 );
             }

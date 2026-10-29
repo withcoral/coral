@@ -47,6 +47,10 @@ macro_rules! uuid_id {
                 write!(formatter, "{}", self.0.hyphenated())
             }
         }
+
+        /// A UUID Coral generated, or one parsed in its canonical form: it holds
+        /// no text.
+        impl coral_telemetry::safe::Identifier for $name {}
     };
 }
 

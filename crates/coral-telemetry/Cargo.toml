@@ -21,6 +21,7 @@ opentelemetry_sdk.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 opentelemetry-appender-tracing.workspace = true

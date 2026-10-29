@@ -303,7 +303,8 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
             let span = crate::trace::invocation_span(
                 &id,
                 "coral.providers.weather.getForecast",
-                "provider",
+                &coral_provider::ProviderId::parse("00000000-0000-4000-8000-000000000001")
+                    .expect("Provider ID"),
             );
             let (kind, code) = crate::invocation::invocation_end(&ended, sent);
             crate::trace::record_invocation_end(&span, kind, code);

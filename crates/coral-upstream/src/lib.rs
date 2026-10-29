@@ -8,6 +8,7 @@
 mod dispatch;
 mod http;
 mod mcp;
+mod span_field;
 
 pub use dispatch::{OutcomeClass, ReadyDispatch, UpstreamOutcome};
 pub use http::{HttpDecodeDiagnostic, HttpOutcome, HttpRedirect, HttpUpstream, ReadyHttpDispatch};

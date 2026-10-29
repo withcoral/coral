@@ -11,6 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_functions::SavedFunctionSearchMaterial;
+use coral_telemetry::safe;
 
 use super::plan::QueryPlan;
 use super::repository;
@@ -200,7 +201,8 @@ impl EntityRetriever for SavedFunctionRetriever {
         }
         let Some(matched) = evidence.build() else {
             tracing::debug!(
-                coral.saved_function.call_path = function.call_path.as_str(),
+                coral.saved_function.call_path =
+                    safe::id(&super::RankedCallPath(&function.call_path)),
                 "a ranked Saved Function has no evidence and leaves the page"
             );
             return Ok(Hydrated::Dropped);

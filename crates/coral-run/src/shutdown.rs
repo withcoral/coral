@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use coral_telemetry::safe;
 use tokio::sync::watch;
 use tokio::time::timeout;
 
@@ -105,8 +106,8 @@ impl RunModule {
             return;
         }
         tracing::warn!(
-            coral.shutdown.live_runs = self.owners.live().len(),
-            coral.shutdown.drain_ms = drain.as_millis(),
+            coral.shutdown.live_runs = safe::number(self.owners.live().len()),
+            coral.shutdown.drain_ms = safe::number(drain.as_millis()),
             "the Shutdown Drain is out: interrupting the Runs still live"
         );
         let interrupt_live = || {
@@ -124,7 +125,7 @@ impl RunModule {
         .await;
         if committed.is_err() {
             tracing::warn!(
-                coral.shutdown.live_runs = self.owners.live().len(),
+                coral.shutdown.live_runs = safe::number(self.owners.live().len()),
                 "Runs still live after the commit grace keep their lease; \
                  the next process's expired-lease sweep ends them"
             );

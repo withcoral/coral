@@ -29,6 +29,20 @@ impl fmt::Display for PrincipalId {
     }
 }
 
+/// The ID of an authenticated Principal, as a span field.
+#[derive(Debug, Clone, Copy)]
+pub struct AuthenticatedPrincipalId<'a>(&'a PrincipalId);
+
+impl fmt::Display for AuthenticatedPrincipalId<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Only an authenticated Principal makes one. [`PrincipalId`] itself is not
+/// an Identifier: it parses any text without whitespace.
+impl coral_telemetry::safe::Identifier for AuthenticatedPrincipalId<'_> {}
+
 /// Stable Principal classification; kind never grants permission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrincipalKind {
@@ -132,6 +146,13 @@ impl AuthenticatedPrincipal {
     #[must_use]
     pub const fn principal(&self) -> &Principal {
         &self.principal
+    }
+
+    /// The Principal's ID as a span field. A span names a Principal only
+    /// through this, so only after authentication.
+    #[must_use]
+    pub const fn telemetry_id(&self) -> AuthenticatedPrincipalId<'_> {
+        AuthenticatedPrincipalId(&self.principal.id)
     }
 
     /// Returns User authority evidence for explicitly User-only actions.

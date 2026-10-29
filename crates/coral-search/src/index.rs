@@ -10,6 +10,7 @@ use coral_catalog::ProviderGenerationId;
 use coral_db::{Database, Transaction};
 use coral_functions::SavedFunctionEntry;
 use coral_provider::{GenerationEntries, ProviderId};
+use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
@@ -198,10 +199,10 @@ impl SearchIndex {
             Err(_) => {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
-                    coral.workspace.id = %workspace_id,
-                    coral.provider.id = %provider_id,
-                    coral.search.generation.id = expected.map(tracing::field::display),
-                    error.type = error.code(),
+                    coral.workspace.id = safe::id(&workspace_id),
+                    coral.provider.id = safe::id(&provider_id),
+                    coral.search.generation.id = expected.map(safe::id),
+                    error.type = safe::kind(error.code()),
                     "failed to prepare a Provider Generation for the search index"
                 );
             }
@@ -234,7 +235,7 @@ impl SearchIndex {
         let span = tracing::info_span!(
             parent: None,
             "coral.search.remove_generation",
-            coral.search.generation.id = %generation_id,
+            coral.search.generation.id = safe::id(&generation_id),
             coral.search.write.trigger = Empty,
             error.type = Empty,
         );
@@ -246,8 +247,8 @@ impl SearchIndex {
             if let Err(error) = &removed {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
-                    coral.search.generation.id = %generation_id,
-                    error.type = error.code(),
+                    coral.search.generation.id = safe::id(&generation_id),
+                    error.type = safe::kind(error.code()),
                     "failed to remove a Provider Generation from the search index"
                 );
             }
@@ -261,8 +262,8 @@ impl SearchIndex {
         let span = tracing::info_span!(
             parent: None,
             "coral.search.remove_provider",
-            coral.workspace.id = %workspace_id,
-            coral.provider.id = %provider_id,
+            coral.workspace.id = safe::id(&workspace_id),
+            coral.provider.id = safe::id(&provider_id),
             coral.search.write.trigger = Empty,
             error.type = Empty,
         );
@@ -277,9 +278,9 @@ impl SearchIndex {
             if let Err(error) = &removed {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
-                    coral.workspace.id = %workspace_id,
-                    coral.provider.id = %provider_id,
-                    error.type = error.code(),
+                    coral.workspace.id = safe::id(&workspace_id),
+                    coral.provider.id = safe::id(&provider_id),
+                    error.type = safe::kind(error.code()),
                     "failed to remove a Provider from the search index"
                 );
             }
@@ -395,7 +396,7 @@ impl SearchIndex {
     ) -> Result<(), IndexError> {
         tracing::Span::current().record(
             "coral.search.generation.id",
-            tracing::field::display(entries.generation_id()),
+            safe::id(entries.generation_id()),
         );
         let rows = match self.write(&ToolIndexer, entries).await {
             Ok(rows) => rows,
@@ -406,10 +407,10 @@ impl SearchIndex {
         };
         for (_, warning) in rows.warnings() {
             tracing::warn!(
-                coral.workspace.id = %entries.workspace_id(),
-                coral.provider.id = %entries.provider_id(),
-                coral.search.generation.id = %entries.generation_id(),
-                coral.search.warning.code = %warning.code(),
+                coral.workspace.id = safe::id(&entries.workspace_id()),
+                coral.provider.id = safe::id(&entries.provider_id()),
+                coral.search.generation.id = safe::id(&entries.generation_id()),
+                coral.search.warning.code = safe::id(warning.diagnostic_code()),
                 "a Tool was indexed with a catalog warning"
             );
         }
@@ -424,18 +425,16 @@ impl SearchIndex {
         };
         // TODO: an error monitor for failed index writes is still to be set up.
         tracing::error!(
-            coral.workspace.id = %entry.workspace_id(),
-            coral.principal.id = %entry.principal().id(),
-            coral.saved_function.id = %entry.id(),
-            error.type = error.code(),
+            coral.workspace.id = safe::id(&entry.workspace_id()),
+            coral.saved_function.id = safe::id(&entry.id()),
+            error.type = safe::kind(error.code()),
             "failed to index a Saved Function"
         );
         if let Err(record_error) = self.record_failed_function(entry, &error).await {
             tracing::error!(
-                coral.workspace.id = %entry.workspace_id(),
-                coral.principal.id = %entry.principal().id(),
-                coral.saved_function.id = %entry.id(),
-                error.type = record_error.code(),
+                coral.workspace.id = safe::id(&entry.workspace_id()),
+                coral.saved_function.id = safe::id(&entry.id()),
+                error.type = safe::kind(record_error.code()),
                 "failed to record a failed Saved Function index attempt"
             );
         }
@@ -446,18 +445,18 @@ impl SearchIndex {
     async fn fail_generation(&self, generation: AttemptedGeneration<'_>, error: &IndexError) {
         // TODO: an error monitor for failed index writes is still to be set up.
         tracing::error!(
-            coral.workspace.id = %generation.workspace_id(),
-            coral.provider.id = %generation.provider_id(),
-            coral.search.generation.id = %generation.generation_id(),
-            error.type = error.code(),
+            coral.workspace.id = safe::id(&generation.workspace_id()),
+            coral.provider.id = safe::id(&generation.provider_id()),
+            coral.search.generation.id = safe::id(&generation.generation_id()),
+            error.type = safe::kind(error.code()),
             "failed to index a Provider Generation"
         );
         if let Err(record_error) = self.record_failed_generation(generation, error).await {
             tracing::error!(
-                coral.workspace.id = %generation.workspace_id(),
-                coral.provider.id = %generation.provider_id(),
-                coral.search.generation.id = %generation.generation_id(),
-                error.type = record_error.code(),
+                coral.workspace.id = safe::id(&generation.workspace_id()),
+                coral.provider.id = safe::id(&generation.provider_id()),
+                coral.search.generation.id = safe::id(&generation.generation_id()),
+                error.type = safe::kind(record_error.code()),
                 "failed to record a failed Provider Generation index attempt"
             );
         }
@@ -525,8 +524,14 @@ impl SearchIndex {
         .await
         .unwrap_or_else(|_elapsed| Err(IndexError::Overran(self.write_limit)));
         let span = tracing::Span::current();
-        span.record("coral.search.writer_wait_ms", millis(locked - started));
-        span.record("coral.search.write_ms", millis(locked.elapsed()));
+        span.record(
+            "coral.search.writer_wait_ms",
+            safe::number(millis(locked - started)),
+        );
+        span.record(
+            "coral.search.write_ms",
+            safe::number(millis(locked.elapsed())),
+        );
         written.map(|()| rows)
     }
 
@@ -612,9 +617,9 @@ fn generation_span(
     tracing::info_span!(
         parent: None,
         "coral.search.index_generation",
-        coral.workspace.id = %workspace_id,
-        coral.provider.id = %provider_id,
-        coral.search.generation.id = generation_id.map(tracing::field::display),
+        coral.workspace.id = safe::id(&workspace_id),
+        coral.provider.id = safe::id(&provider_id),
+        coral.search.generation.id = generation_id.map(safe::id),
         coral.search.skipped = Empty,
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,
@@ -630,8 +635,8 @@ fn function_span(entry: &SavedFunctionEntry) -> tracing::Span {
     tracing::info_span!(
         parent: None,
         "coral.search.index_function",
-        coral.workspace.id = %entry.workspace_id(),
-        coral.saved_function.id = %entry.id(),
+        coral.workspace.id = safe::id(&entry.workspace_id()),
+        coral.saved_function.id = safe::id(&entry.id()),
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,
         coral.search.write.trigger = Empty,
@@ -641,7 +646,7 @@ fn function_span(entry: &SavedFunctionEntry) -> tracing::Span {
 
 /// Records on the current write span why the write wrote nothing.
 fn skipped(reason: &'static str) {
-    tracing::Span::current().record("coral.search.skipped", reason);
+    tracing::Span::current().record("coral.search.skipped", safe::kind(reason));
 }
 
 /// What started an index write, recorded on its span, so a trace query can
@@ -673,7 +678,7 @@ fn in_write_span<T>(
     trigger: WriteTrigger,
     write: impl Future<Output = Result<T, IndexError>>,
 ) -> impl Future<Output = Result<T, IndexError>> {
-    span.record("coral.search.write.trigger", trigger.as_str());
+    span.record("coral.search.write.trigger", safe::kind(trigger.as_str()));
     coral_telemetry::link_to_current(&span);
     let write = Box::pin(write.instrument(span.clone()));
     async move {
@@ -690,7 +695,7 @@ fn in_write_span<T>(
 async fn rollback(transaction: Transaction<'_>) {
     if let Err(error) = transaction.rollback().await {
         tracing::error!(
-            error.type = error.code(),
+            error.type = safe::kind(error.code()),
             "failed to roll back a search index write"
         );
     }

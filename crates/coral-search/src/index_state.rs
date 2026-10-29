@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use coral_catalog::ProviderGenerationId;
 use coral_db::Transaction;
 use coral_provider::ActiveGeneration;
+use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedUser, WorkspaceAction, WorkspaceId};
 
 use crate::indexer::{self, IndexError};
@@ -37,8 +38,8 @@ impl UniversalSearchModule {
             Err(StateReadError::Authority(error)) => Err(error),
             Err(StateReadError::Read(error)) => {
                 tracing::warn!(
-                    coral.workspace.id = %workspace,
-                    error.type = error.code(),
+                    coral.workspace.id = safe::id(&workspace),
+                    error.type = safe::kind(error.code()),
                     "failed to read the Providers' search index states"
                 );
                 Ok(BTreeMap::new())

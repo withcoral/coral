@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use coral_telemetry::safe;
 use tokio::sync::Notify;
 
 use crate::{Error, RunId};
@@ -67,10 +68,10 @@ impl<'a> Backoff<'a> {
     pub(crate) async fn wait(&mut self, error: &Error) {
         self.attempts += 1;
         tracing::warn!(
-            coral.run.id = %self.run_id,
-            coral.run.write = self.write,
-            coral.run.write.attempt = self.attempts,
-            error.type = error.code(),
+            coral.run.id = safe::id(&self.run_id),
+            coral.run.write = safe::kind(self.write),
+            coral.run.write.attempt = safe::number(self.attempts),
+            error.type = safe::kind(error.code()),
             "Run Owner write did not land; retrying after a backoff"
         );
         tokio::time::sleep(retry_backoff(self.attempts)).await;

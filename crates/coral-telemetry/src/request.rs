@@ -19,6 +19,7 @@ use opentelemetry::trace::TraceContextExt as _;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
+use crate::safe::{self, Identifier};
 use crate::{record_failure, set_parent_from_http_headers};
 
 /// The target of every request span, for `trace_filter`.
@@ -97,19 +98,19 @@ pub fn request_span(extensions: &http::Extensions) -> Option<&tracing::Span> {
 struct RequestSpan(tracing::Span);
 
 async fn trace_http_request(mut request: Request, next: Next) -> Response {
-    let method = http_method(request.method());
+    let method = request.method().clone();
     let route = request
         .extensions()
         .get::<MatchedPath>()
-        .map(MatchedPath::as_str);
+        .map(|path| Route(path.as_str()));
     let span = tracing::info_span!(
         target: REQUEST_TARGET,
         parent: None,
         "coral.http.request",
-        otel.name = http_span_name(method, route),
+        otel.name = safe::http_span_name(&method, route.as_ref()),
         otel.kind = "server",
-        http.request.method = method,
-        http.route = route,
+        http.request.method = safe::http_method(&method),
+        http.route = route.as_ref().map(safe::id),
         http.response.status_code = tracing::field::Empty,
         error.type = tracing::field::Empty,
     );
@@ -117,9 +118,9 @@ async fn trace_http_request(mut request: Request, next: Next) -> Response {
     request.extensions_mut().insert(RequestSpan(span.clone()));
     let response = next.run(request).instrument(span.clone()).await;
     let status = response.status();
-    span.record("http.response.status_code", i64::from(status.as_u16()));
+    span.record("http.response.status_code", safe::number(status.as_u16()));
     if status.is_server_error() {
-        record_failure(&span, status.as_str());
+        record_failure(&span, safe::http_status_code(status.as_u16()));
     }
     response.map(|body| {
         Body::new(TracedBody {
@@ -130,27 +131,28 @@ async fn trace_http_request(mut request: Request, next: Next) -> Response {
     })
 }
 
-/// The exported name of an HTTP server span: `{method} {route}`, the method
-/// alone without a route, and `HTTP` for a method outside the standard set.
-fn http_span_name(method: &'static str, route: Option<&str>) -> String {
-    let method = if method == "_OTHER" { "HTTP" } else { method };
-    route.map_or_else(|| method.to_owned(), |route| format!("{method} {route}"))
+/// The route template a request matched.
+struct Route<'a>(&'a str);
+
+/// The template of a route Coral registered, such as `/oauth/{id}`, never
+/// the request's path.
+impl Identifier for Route<'_> {}
+
+impl std::fmt::Display for Route<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
 }
 
-/// The request method as a span field: a standard method's name, else
-/// `_OTHER`, so a caller cannot choose the text.
-fn http_method(method: &http::Method) -> &'static str {
-    match method.as_str() {
-        "GET" => "GET",
-        "HEAD" => "HEAD",
-        "POST" => "POST",
-        "PUT" => "PUT",
-        "DELETE" => "DELETE",
-        "CONNECT" => "CONNECT",
-        "OPTIONS" => "OPTIONS",
-        "TRACE" => "TRACE",
-        "PATCH" => "PATCH",
-        _ => "_OTHER",
+/// The method of a gRPC call a gRPC handler answered, `package.Service/Method`.
+struct ServedGrpcMethod<'a>(&'a str);
+
+/// A method Coral serves: only a gRPC handler's answer makes one.
+impl Identifier for ServedGrpcMethod<'_> {}
+
+impl std::fmt::Display for ServedGrpcMethod<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
     }
 }
 
@@ -213,10 +215,11 @@ fn record_grpc_status(span: &tracing::Span, path: Option<&str>, code: i32) {
         .filter(|method| !method.is_empty());
     match method {
         Some(method) if code != GRPC_UNIMPLEMENTED => {
+            let method = ServedGrpcMethod(method);
             // The span has started by now, and a started span takes its new
             // name only through OpenTelemetry, not `otel.name`.
-            span.context().span().update_name(method.to_owned());
-            span.record("rpc.method", method);
+            span.context().span().update_name(method.to_string());
+            span.record("rpc.method", safe::id(&method));
         }
         _ => {
             span.record("rpc.method", "_OTHER");
@@ -227,7 +230,7 @@ fn record_grpc_status(span: &tracing::Span, path: Option<&str>, code: i32) {
         .and_then(|code| GRPC_STATUS_NAMES.get(code))
         .copied()
         .unwrap_or("UNKNOWN");
-    span.record("rpc.response.status_code", status);
+    span.record("rpc.response.status_code", safe::kind(status));
     if GRPC_SERVER_ERRORS.contains(&code) {
         record_failure(span, status);
     }

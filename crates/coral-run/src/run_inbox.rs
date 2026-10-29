@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use coral_db::{ChangeSubscription, Database, Transaction};
+use coral_telemetry::safe;
 use coral_workspace::{Principal, WorkspaceId};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::{Instant, sleep_until};
@@ -344,7 +345,7 @@ impl Inbox for TableInbox {
                 Ok(deliveries) => return deliveries,
                 Err(error) => {
                     tracing::warn!(
-                        error.type = error.code(),
+                        error.type = safe::kind(error.code()),
                         "Run Inbox read failed; the next read tries again"
                     );
                 }

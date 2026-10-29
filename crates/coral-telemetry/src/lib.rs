@@ -8,6 +8,7 @@ mod export;
 mod field;
 mod request;
 mod run;
+pub mod safe;
 #[cfg(test)]
 mod source_scan;
 #[cfg(any(test, feature = "test-support"))]
@@ -74,12 +75,18 @@ const TRACESTATE_HEADER: &str = "tracestate";
 /// Prefix for host-only span attributes that must not be exported over OTLP.
 pub const LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX: &str = "coral.local.";
 
-/// Marks `span` failed with the categorical `error_type` and no message
-/// text, so no caller-controlled text reaches its status. A span that
-/// succeeds leaves its status unset, as the OpenTelemetry conventions ask.
-pub fn record_failure(span: &tracing::Span, error_type: impl AsRef<str>) {
-    span.record("error.type", error_type.as_ref());
+/// Marks `span` failed with the code `error_type` and no message text, so no
+/// caller-controlled text reaches its status. A span that succeeds leaves its
+/// status unset, as the OpenTelemetry conventions ask.
+pub fn record_failure(span: &tracing::Span, error_type: &'static str) {
+    span.record("error.type", safe::kind(error_type));
     span.set_status(OtelStatus::error(""));
+}
+
+/// Marks `span`, a span whose success callers rely on, such as a process's,
+/// successful.
+pub fn record_success(span: &tracing::Span) {
+    span.set_status(OtelStatus::Ok);
 }
 
 /// Links `span`, a span not yet entered, to the current span, when there is

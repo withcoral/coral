@@ -12,6 +12,7 @@ use super::response::{TrustedRedirect, direct_error};
 use super::{AuthorizationServerHttpState, query, sign_in_cookie};
 use coral_auth::authorization_codes::{AuthorizationGrant, CodeIssue};
 use coral_auth::{LoginProvisioning, UserDirectory, VerifiedOidcLogin};
+use coral_telemetry::safe;
 use coral_workspace::UserId;
 
 pub(super) async fn oidc_callback(
@@ -86,7 +87,7 @@ async fn complete(
         Ok(exchange) => exchange,
         Err(error) => {
             tracing::warn!(
-                error.type = error.code(),
+                error.type = safe::kind(error.code()),
                 "OIDC callback could not exchange the provider code"
             );
             return trusted.error("server_error", "authorization failed");
@@ -104,7 +105,7 @@ async fn complete(
         Ok(identity) => identity,
         Err(error) => {
             tracing::warn!(
-                error.type = error.code(),
+                error.type = safe::kind(error.code()),
                 "OIDC callback could not validate the provider identity"
             );
             return trusted.error("server_error", "authorization failed");
@@ -173,7 +174,7 @@ pub(super) async fn issue_code(
         }
         Err(error) => {
             tracing::warn!(
-                error.type = error.code(),
+                error.type = safe::kind(error.code()),
                 "Sign-in could not store the authorization code"
             );
             trusted.error("server_error", "authorization failed")

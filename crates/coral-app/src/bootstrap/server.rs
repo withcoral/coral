@@ -22,6 +22,7 @@ use crate::state::DatabaseConfig;
 use crate::state::{AppStateLayout, InitializedState, StateLock, initialize_state};
 use crate::telemetry::TelemetryConfig;
 use coral_db::{Database, DatabaseOptions};
+use coral_telemetry::safe;
 
 /// HTTP/2 `SETTINGS_MAX_HEADER_LIST_SIZE` for the private listener.
 const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 128 * 1024;
@@ -599,7 +600,7 @@ impl RunningServer {
         {
             // Workers are already stopped; unreleased leases expire on their own.
             tracing::warn!(
-                error.type = error.code(),
+                error.type = safe::kind(error.code()),
                 "device authorization lease release failed"
             );
         }
@@ -865,7 +866,7 @@ pub(crate) async fn start_server(
                     && let Err(error) = accounts.recover_device_authorizations(now).await
                 {
                     tracing::warn!(
-                        error.type = error.code(),
+                        error.type = safe::kind(error.code()),
                         "device authorization recovery failed"
                     );
                 }
@@ -901,11 +902,11 @@ async fn sweep_expired_leases(runs: &coral_run::RunModule) {
     match runs.sweep_expired_leases().await {
         Ok(0) => {}
         Ok(recovered) => tracing::info!(
-            coral.run.recovered = recovered,
+            coral.run.recovered = safe::number(recovered),
             "expired-lease sweep recovered Runs"
         ),
         Err(error) => tracing::warn!(
-            error.type = error.code(),
+            error.type = safe::kind(error.code()),
             "expired-lease sweep failed; the next pass retries"
         ),
     }

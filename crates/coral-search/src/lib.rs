@@ -62,6 +62,7 @@ use std::sync::Arc;
 
 use coral_db::{Database, Transaction};
 use coral_provider::LoadedGenerations;
+use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 
@@ -336,9 +337,9 @@ impl UniversalSearchModule {
                     failed += 1;
                     // TODO: attach an error monitor to failed rankings.
                     tracing::error!(
-                        coral.search.retriever = retriever.kind().as_str(),
-                        coral.workspace.id = %context.workspace_id,
-                        error.type = error.code(),
+                        coral.search.retriever = safe::kind(retriever.kind().as_str()),
+                        coral.workspace.id = safe::id(&context.workspace_id),
+                        error.type = safe::kind(error.code()),
                         "a Universal Search retriever could not rank"
                     );
                     RetrieverStatus::new(

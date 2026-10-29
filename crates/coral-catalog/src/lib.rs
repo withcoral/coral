@@ -127,11 +127,12 @@ pub use openapi::{
 pub use paths::{ToolPathAssignment, call_path_segment_is_reserved, provider_namespace_is_valid};
 pub use search::{DeclarationIndexEntry, PreparedDeclarationFields, StoredDeclarationFields};
 pub use types::{
-    CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, MaterializationOutcome,
-    MaterializedTool, PreparedProviderCatalog, ProviderGenerationFingerprint, ProviderGenerationId,
-    ProviderSetupInput, ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId,
-    SchemaSemantics, SearchableTool, TOOL_AUTHORING_DESCRIPTION_MAX_BYTES, ToolAvailability,
-    ToolHints, ToolKey, ToolPresentation,
+    CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, DiagnosticCode,
+    MaterializationOutcome, MaterializedTool, PreparedProviderCatalog,
+    ProviderGenerationFingerprint, ProviderGenerationId, ProviderSetupInput,
+    ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId, SchemaSemantics,
+    SearchableTool, TOOL_AUTHORING_DESCRIPTION_MAX_BYTES, ToolAvailability, ToolHints, ToolKey,
+    ToolPresentation,
 };
 
 /// Materializes one pinned Provider Setup input with the deployment-selected policy.

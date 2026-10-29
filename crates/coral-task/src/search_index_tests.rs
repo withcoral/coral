@@ -375,7 +375,6 @@ async fn a_failed_index_write_keeps_the_save_and_leaves_only_a_failed_state_unti
         assert_eq!(event.level, tracing::Level::ERROR);
         for (field, value) in [
             ("coral.workspace.id", fixture.workspace.to_string()),
-            ("coral.principal.id", user.clone()),
             ("coral.saved_function.id", saved.id().to_string()),
             ("error.type", "\"database\"".to_string()),
         ] {

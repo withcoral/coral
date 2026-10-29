@@ -28,6 +28,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tracing::Instrument as _;
 
+use coral_telemetry::safe;
 use coral_workspace::AuthenticatedPrincipal;
 
 use crate::execution::{Backoff, until_answered};
@@ -263,8 +264,8 @@ fn spawn_precheck(
         let found = batch.run().await;
         if let Err(error) = &found {
             tracing::debug!(
-                coral.run.id = %handle.run_id(),
-                error.type = error.code(),
+                coral.run.id = safe::id(&handle.run_id()),
+                error.type = safe::kind(error.code()),
                 "Run Owner's check of its parked waits found nothing: the next one reads again"
             );
         }
@@ -283,8 +284,8 @@ fn interrupt(
     last_commit_age_nanos: i64,
 ) {
     tracing::warn!(
-        coral.run.id = %accepted.id,
-        coral.run.last_commit_age_ms = last_commit_age_nanos / 1_000_000,
+        coral.run.id = safe::id(&accepted.id),
+        coral.run.last_commit_age_ms = safe::number(last_commit_age_nanos / 1_000_000),
         "Run Owner interrupts its Run: no commit succeeded within three leases"
     );
     handle.stop().request();
@@ -367,8 +368,8 @@ fn run_effect(
         Effect::Suspect {
             last_commit_age_nanos,
         } => tracing::warn!(
-            coral.run.id = %accepted.id,
-            coral.run.last_commit_age_ms = last_commit_age_nanos / 1_000_000,
+            coral.run.id = safe::id(&accepted.id),
+            coral.run.last_commit_age_ms = safe::number(last_commit_age_nanos / 1_000_000),
             "Run Owner is suspect: no commit succeeded within a lease; \
              Program requests answer once recorded"
         ),
@@ -566,13 +567,13 @@ fn spawn_interruption(module: &RunModule, accepted: &AcceptedRun, handle: &Owner
             match &recorded {
                 Ok(()) => {
                     tracing::warn!(
-                        coral.run.id = %accepted.id,
+                        coral.run.id = safe::id(&accepted.id),
                         "Run Owner recorded its interruption"
                     );
                 }
                 Err(rejection) => tracing::warn!(
-                    coral.run.id = %accepted.id,
-                    error.type = rejection.code(),
+                    coral.run.id = safe::id(&accepted.id),
+                    error.type = safe::kind(rejection.code()),
                     "Run Owner's interruption was not written: the Run is no longer its own"
                 ),
             }
@@ -621,16 +622,16 @@ fn spawn_recovery(
         .await;
         match &recorded {
             Ok(()) => tracing::info!(
-                coral.run.id = %accepted.id,
+                coral.run.id = safe::id(&accepted.id),
                 "recovered Run Owner ended its Run"
             ),
             Err(Error::RunEnded) => tracing::info!(
-                coral.run.id = %accepted.id,
+                coral.run.id = safe::id(&accepted.id),
                 "recovered Run Owner found its Run ended"
             ),
             Err(error) => tracing::warn!(
-                coral.run.id = %accepted.id,
-                error.type = error.code(),
+                coral.run.id = safe::id(&accepted.id),
+                error.type = safe::kind(error.code()),
                 "recovered Run Owner wrote nothing: the Run is not its own, or the next sweep tries again"
             ),
         }
@@ -776,8 +777,10 @@ async fn commit_until_answered(
     };
     if let Err(CommitRejection::Corrupt) = outcome {
         tracing::error!(
-            coral.run.id = %accepted.id,
-            coral.run.claim.id = %accepted.claim_id,
+            coral.run.id = safe::id(&accepted.id),
+            coral.run.claim.id = crate::trace::claim(&accepted.claim_id)
+                .as_ref()
+                .map(safe::id),
             "Run Ledger head contradicts its Run Owner's history; the owner stops and writes nothing more"
         );
     }

@@ -10,6 +10,7 @@
 //! ending it, once its lease lapses), and every write is predicated on the
 //! claim and the head the row showed.
 
+use coral_telemetry::safe;
 use coral_workspace::AuthenticatedPrincipal;
 use tracing::Instrument as _;
 
@@ -78,10 +79,10 @@ impl RunModule {
     ) {
         let takeover_claim_id = uuid::Uuid::new_v4().hyphenated().to_string();
         tracing::error!(
-            coral.run.id = %run.id,
-            coral.run.claim.id = %run.claim_id,
-            coral.run.takeover_claim.id = %takeover_claim_id,
-            error.type = owner_task_end_code(ended),
+            coral.run.id = safe::id(&run.id),
+            coral.run.claim.id = crate::trace::claim(&run.claim_id).as_ref().map(safe::id),
+            coral.run.takeover_claim.id = crate::trace::claim(&takeover_claim_id).as_ref().map(safe::id),
+            error.type = safe::kind(owner_task_end_code(ended)),
             "Run Owner task ended without retiring; interrupting its Run"
         );
         match self
@@ -96,14 +97,14 @@ impl RunModule {
             Ok(()) => {}
             Err(Error::ClaimMismatch | Error::RunEnded) => {
                 tracing::warn!(
-                    coral.run.id = %run.id,
+                    coral.run.id = safe::id(&run.id),
                     "Run of a failed Run Owner was already ended"
                 );
             }
             Err(error) => {
                 tracing::error!(
-                    coral.run.id = %run.id,
-                    error.type = error.code(),
+                    coral.run.id = safe::id(&run.id),
+                    error.type = safe::kind(error.code()),
                     "Run of a failed Run Owner could not be interrupted"
                 );
             }

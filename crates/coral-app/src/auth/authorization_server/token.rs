@@ -16,6 +16,7 @@ use super::{AuthorizationResource, AuthorizationServerHttpState};
 use coral_auth::PrivateAudience;
 use coral_auth::authorization_codes::{AuthorizationGrant, CodeRedemption};
 use coral_mcp::McpEndpoint;
+use coral_telemetry::safe;
 
 /// The largest form body this endpoint reads.
 ///
@@ -143,7 +144,7 @@ async fn redeem(
         Ok(None) => Err(TokenError::InvalidGrant),
         Err(error) => {
             tracing::warn!(
-                error.type = error.code(),
+                error.type = safe::kind(error.code()),
                 "token endpoint could not redeem the authorization code"
             );
             Err(TokenError::ServerError)
