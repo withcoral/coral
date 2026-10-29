@@ -10,8 +10,9 @@ use coral_telemetry::{metric, safe};
 use tracing::Instrument as _;
 use tracing::field::Empty;
 
+use crate::lifecycle::{RunRecord, RunTerminationKind};
 use crate::types::HeldRunId;
-use crate::{RunState, RunTerminalOutcome};
+use crate::{FinalValue, RunState, RunTerminalOutcome};
 
 /// One phase of a Run under its Run Owner.
 #[derive(Debug, Clone, Copy)]
@@ -124,17 +125,72 @@ pub(crate) fn claim(claim_id: &str) -> Option<uuid::Uuid> {
     uuid::Uuid::parse_str(claim_id).ok()
 }
 
-/// Records the terminal outcome the current phase wrote: its state, and for
-/// a failure, a timeout or an interruption, its failure code as the error.
-/// A success or a cancellation is not an error. The Run's end and its
-/// duration from `accepted_at` to `ended_at`, in Unix nanoseconds, are
-/// counted too.
-pub(crate) fn record_run_end(outcome: &RunTerminalOutcome, accepted_at: i64, ended_at: i64) {
+/// How a Run's committed terminal write ended it, as its end records it.
+#[derive(Debug)]
+pub(crate) enum RunEnd<'a> {
+    /// Ended before its Program started.
+    Unstarted(&'a RunTerminalOutcome),
+    /// Its Program returned, and the write recorded `outcome`: the Final
+    /// Value is rejected when it was over the Run's output budget.
+    Returned {
+        outcome: &'a RunTerminalOutcome,
+        final_value_over_budget: bool,
+    },
+    /// This Coral Instance ended it for `reason`, stopping its Program if
+    /// the Program had started.
+    Stopped {
+        outcome: &'a RunTerminalOutcome,
+        reason: RunTerminationKind,
+    },
+    /// A recovered Run Owner ended it. Its Program, if it started, ended
+    /// with the Coral Instance that ran it, so none is stopped here.
+    Recovered(&'a RunTerminalOutcome),
+}
+
+impl RunEnd<'_> {
+    const fn outcome(&self) -> &RunTerminalOutcome {
+        match self {
+            Self::Unstarted(outcome)
+            | Self::Returned { outcome, .. }
+            | Self::Stopped { outcome, .. }
+            | Self::Recovered(outcome) => outcome,
+        }
+    }
+}
+
+/// Records the end of `run`, whose terminal write committed at `ended_at`
+/// (Unix nanoseconds), on the current phase's span: its state, and for a
+/// failure, a timeout or an interruption, its failure code as the error. A
+/// success or a cancellation is not an error. Counts the Run's end and its
+/// duration from acceptance, the Program it stopped, and the Final Value it
+/// kept or rejected.
+pub(crate) fn record_run_end(run: &RunRecord, end: &RunEnd<'_>, ended_at: i64) {
+    let outcome = end.outcome();
     let span = tracing::Span::current();
     let state = outcome.state();
     span.record("coral.run.status", safe::kind(state.as_storage_str()));
     if let Some(code) = outcome.failure_code() {
         coral_telemetry::record_failure(&span, code);
+    }
+    match end {
+        RunEnd::Returned {
+            outcome:
+                RunTerminalOutcome::Succeeded {
+                    final_value: FinalValue::Present(value),
+                },
+            ..
+        } => metric::output_kept(metric::OutputKind::FinalValue, value.encoded_json().len()),
+        RunEnd::Returned {
+            final_value_over_budget: true,
+            ..
+        } => metric::output_rejected(metric::OutputKind::FinalValue),
+        RunEnd::Stopped { reason, .. } if run.execution_started() => {
+            metric::program_terminated(termination_reason(*reason));
+        }
+        RunEnd::Unstarted(_)
+        | RunEnd::Returned { .. }
+        | RunEnd::Stopped { .. }
+        | RunEnd::Recovered(_) => {}
     }
     let status = match state {
         RunState::Succeeded => metric::RunStatus::Succeeded,
@@ -144,7 +200,7 @@ pub(crate) fn record_run_end(outcome: &RunTerminalOutcome, accepted_at: i64, end
         RunState::Interrupted => metric::RunStatus::Interrupted,
         RunState::Running => return,
     };
-    let elapsed = u64::try_from(ended_at.saturating_sub(accepted_at)).unwrap_or(0);
+    let elapsed = u64::try_from(ended_at.saturating_sub(run.accepted_at_unix_nanos)).unwrap_or(0);
     metric::run_ended(
         status,
         outcome.failure_code(),
@@ -152,16 +208,13 @@ pub(crate) fn record_run_end(outcome: &RunTerminalOutcome, accepted_at: i64, end
     );
 }
 
-/// Counts a Program Coral stopped before it returned, for the termination
-/// its Run recorded.
-pub(crate) fn record_program_termination(kind: crate::lifecycle::RunTerminationKind) {
-    use crate::lifecycle::RunTerminationKind;
-    metric::program_terminated(match kind {
+const fn termination_reason(kind: RunTerminationKind) -> metric::TerminationReason {
+    match kind {
         RunTerminationKind::Canceled => metric::TerminationReason::Canceled,
         RunTerminationKind::TimedOut => metric::TerminationReason::TimedOut,
         RunTerminationKind::Interrupted => metric::TerminationReason::Interrupted,
         RunTerminationKind::MemoryLimitExceeded => metric::TerminationReason::MemoryLimitExceeded,
-    });
+    }
 }
 
 /// The `coral.invocation` span of one admitted Tool Invocation of the Tool

@@ -10,7 +10,7 @@
 //! ending it, once its lease lapses), and every write is predicated on the
 //! claim and the head the row showed.
 
-use coral_telemetry::metric::{self, ClaimKind, ClaimOutcome, OutputKind};
+use coral_telemetry::metric::{self, ClaimKind, ClaimOutcome};
 use coral_telemetry::safe;
 use coral_workspace::AuthenticatedPrincipal;
 
@@ -18,6 +18,7 @@ use crate::engine::ExecutionCompletion;
 use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
 use crate::owner::{self, OwnerHandle, OwnerStart, StartedExecution};
 use crate::termination::ShutdownAction;
+use crate::trace::RunEnd;
 use crate::types::AcceptedRun;
 use crate::{
     Error, FinalValue, RunFailure, RunFailureCode, RunModule, RunState, RunTerminalOutcome,
@@ -211,7 +212,7 @@ impl RunModule {
             run_repository::finish_unstarted_run(&mut transaction, &run, &outcome, started_at)
                 .await?;
             transaction.commit().await?;
-            crate::trace::record_run_end(&outcome, run.accepted_at_unix_nanos, started_at);
+            crate::trace::record_run_end(&run, &RunEnd::Unstarted(&outcome), started_at);
             return Ok(None);
         }
 
@@ -274,8 +275,8 @@ impl RunModule {
             .await?;
         transaction.commit().await?;
         crate::trace::record_run_end(
-            &RunTerminalOutcome::TimedOut,
-            run.accepted_at_unix_nanos,
+            &run,
+            &RunEnd::Unstarted(&RunTerminalOutcome::TimedOut),
             now_unix_nanos,
         );
         Ok(None)
@@ -375,51 +376,60 @@ impl RunModule {
             self.finish_termination_in_transaction(&mut transaction, &run, completed_at)
                 .await?;
             transaction.commit().await?;
-            crate::trace::record_run_end(&kind.outcome(), run.accepted_at_unix_nanos, completed_at);
+            crate::trace::record_run_end(
+                &run,
+                &RunEnd::Returned {
+                    outcome: &kind.outcome(),
+                    final_value_over_budget: false,
+                },
+                completed_at,
+            );
             return Ok(None);
         }
-        let outcome = match completion {
-            ExecutionCompletion::Succeeded(final_value) => RunTerminalOutcome::Succeeded {
-                final_value: final_value.clone(),
-            },
-            ExecutionCompletion::Failed(failure) => RunTerminalOutcome::Failed(failure.clone()),
-            ExecutionCompletion::ProgramHostTerminated
-            | ExecutionCompletion::MemoryLimitExceeded => unreachable!(
-                "host termination creates durable interruption evidence before completion"
-            ),
-        };
-        // The Final Value is decided against the recorded total, which the
-        // owner's last chunk wrote from its exact in-memory total.
-        let final_value_over_budget = matches!(&outcome, RunTerminalOutcome::Succeeded {
-            final_value: FinalValue::Present(value),
-        } if !run.output_fits(value.encoded_json().len()));
-        let outcome = if final_value_over_budget {
-            RunTerminalOutcome::Failed(RunFailure::new(
-                RunFailureCode::ResourceLimitExceeded,
-                "Run output exceeds its limit".to_string(),
-            ))
-        } else {
-            outcome
-        };
+        let (outcome, final_value_over_budget) = returned_outcome(&run, completion);
         run_repository::finish_run(&mut transaction, &run, claim_id, &outcome, completed_at)
             .await?;
         transaction.commit().await?;
-        record_final_value(&outcome, final_value_over_budget);
-        crate::trace::record_run_end(&outcome, run.accepted_at_unix_nanos, completed_at);
+        crate::trace::record_run_end(
+            &run,
+            &RunEnd::Returned {
+                outcome: &outcome,
+                final_value_over_budget,
+            },
+            completed_at,
+        );
         Ok(None)
     }
 }
 
-/// Records the size of the Final Value a Run kept, or its rejection when it
-/// was over the Run's output budget.
-fn record_final_value(outcome: &RunTerminalOutcome, over_budget: bool) {
-    if let RunTerminalOutcome::Succeeded {
+/// The outcome of a Program that returned on its own, and whether its Final
+/// Value was over the Run's output budget, which fails the Run instead. The
+/// Final Value is decided against the recorded total, which the owner's last
+/// chunk wrote from its exact in-memory total.
+fn returned_outcome(
+    run: &RunRecord,
+    completion: &ExecutionCompletion,
+) -> (RunTerminalOutcome, bool) {
+    let outcome = match completion {
+        ExecutionCompletion::Succeeded(final_value) => RunTerminalOutcome::Succeeded {
+            final_value: final_value.clone(),
+        },
+        ExecutionCompletion::Failed(failure) => RunTerminalOutcome::Failed(failure.clone()),
+        ExecutionCompletion::ProgramHostTerminated | ExecutionCompletion::MemoryLimitExceeded => {
+            unreachable!("host termination creates durable interruption evidence before completion")
+        }
+    };
+    let over_budget = matches!(&outcome, RunTerminalOutcome::Succeeded {
         final_value: FinalValue::Present(value),
-    } = outcome
-    {
-        metric::output_kept(OutputKind::FinalValue, value.encoded_json().len());
-    } else if over_budget {
-        metric::output_rejected(OutputKind::FinalValue);
+    } if !run.output_fits(value.encoded_json().len()));
+    if over_budget {
+        let failure = RunFailure::new(
+            RunFailureCode::ResourceLimitExceeded,
+            "Run output exceeds its limit".to_string(),
+        );
+        (RunTerminalOutcome::Failed(failure), true)
+    } else {
+        (outcome, false)
     }
 }
 

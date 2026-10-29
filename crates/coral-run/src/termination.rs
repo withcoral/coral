@@ -13,6 +13,7 @@ use crate::observation::read_until;
 use crate::observation::validate_cursor;
 use crate::run_inbox::{InboxRequest, OutsideRequest};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
+use crate::trace::RunEnd;
 use crate::{
     Error, RunId, RunModule, RunObservation, RunState, RunTerminalOutcome, RunUpdate,
     invocation_lifecycle, invocation_repository, run_repository,
@@ -173,12 +174,12 @@ impl RunModule {
             }
             transaction.commit().await?;
             if let Some(termination) = run.termination {
-                if run.execution_started() {
-                    crate::trace::record_program_termination(termination.kind);
-                }
                 crate::trace::record_run_end(
-                    &termination.kind.outcome(),
-                    run.accepted_at_unix_nanos,
+                    &run,
+                    &RunEnd::Stopped {
+                        outcome: &termination.kind.outcome(),
+                        reason: termination.kind,
+                    },
                     terminal_at,
                 );
             }
@@ -297,10 +298,14 @@ impl RunModule {
         )
         .await?;
         transaction.commit().await?;
-        if run.execution_started() {
-            crate::trace::record_program_termination(RunTerminationKind::Interrupted);
-        }
-        crate::trace::record_run_end(&ended, run.accepted_at_unix_nanos, now);
+        crate::trace::record_run_end(
+            &run,
+            &RunEnd::Stopped {
+                outcome: &ended,
+                reason: RunTerminationKind::Interrupted,
+            },
+            now,
+        );
         Ok(())
     }
 
