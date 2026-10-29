@@ -1,16 +1,19 @@
 //! Cross-crate telemetry helpers.
 //!
 //! This crate owns transport-neutral W3C propagation, safe telemetry utilities
-//! shared by application, domain, and adapter crates, and the filter that
-//! decides what spans may leave the host.
+//! shared by application, domain, and adapter crates, the safe fields, and
+//! the filters that decide what spans and log records may leave the host.
 
+#[cfg(test)]
+mod event_text;
 mod export;
+pub mod field;
 mod request;
 mod run;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
-pub use export::OtlpSpanFilter;
+pub use export::{OtlpLogFilter, OtlpSpanFilter};
 pub use request::{REQUEST_TARGET, request_span, trace_grpc_routes, trace_http_routes};
 pub use run::RunTrace;
 
@@ -70,6 +73,15 @@ const TRACESTATE_HEADER: &str = "tracestate";
 
 /// Prefix for host-only span attributes that must not be exported over OTLP.
 pub const LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX: &str = "coral.local.";
+
+/// The sanitized type of `error`, for an event's `error.type`: its Rust type
+/// name, never its text or its sources. The event's code location says
+/// where it failed.
+#[must_use]
+pub fn error_type<E: ?Sized>(error: &E) -> &'static str {
+    std::any::type_name_of_val(error).trim_start_matches('&')
+}
+
 /// Records a categorical failure without accepting caller-controlled message text.
 pub fn record_failure(
     span: &tracing::Span,
@@ -176,7 +188,7 @@ fn set_parent_from_context(span: &tracing::Span, context: Option<Context>) {
         return;
     };
     if let Err(error) = span.set_parent(context) {
-        tracing::debug!(%error, "failed to set parent trace context");
+        tracing::debug!(error.type = error_type(&error), "failed to set parent trace context");
     }
 }
 

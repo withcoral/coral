@@ -78,10 +78,10 @@ impl RunModule {
     ) {
         let takeover_claim_id = uuid::Uuid::new_v4().hyphenated().to_string();
         tracing::error!(
-            run_id = %run.id,
+            coral.run.id = %run.id,
             claim_id = %run.claim_id,
             takeover_claim_id = %takeover_claim_id,
-            ended = %ended,
+            error.type = if ended.is_panic() { "panic" } else { "cancelled" },
             "Run Owner task ended without retiring; interrupting its Run"
         );
         match self
@@ -96,14 +96,14 @@ impl RunModule {
             Ok(()) => {}
             Err(Error::ClaimMismatch | Error::RunEnded) => {
                 tracing::warn!(
-                    run_id = %run.id,
+                    coral.run.id = %run.id,
                     "Run of a failed Run Owner was already ended"
                 );
             }
             Err(error) => {
                 tracing::error!(
-                    run_id = %run.id,
-                    error = %error,
+                    coral.run.id = %run.id,
+                    error.type = coral_telemetry::error_type(&error),
                     "Run of a failed Run Owner could not be interrupted"
                 );
             }

@@ -195,14 +195,13 @@ impl SearchIndex {
                 self.fail_generation((&active).into(), error).await;
             }
             Ok(_) => {}
-            Err(read_error) => {
+            Err(_) => {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
-                    workspace_id = %workspace_id,
-                    provider_id = %provider_id,
-                    generation_id = expected.map(tracing::field::display),
-                    error = %error,
-                    read_error = %read_error,
+                    coral.workspace.id = %workspace_id,
+                    coral.provider.id = %provider_id,
+                    coral.search.generation.id = expected.map(tracing::field::display),
+                    error.type = error.code(),
                     "failed to prepare a Provider Generation for the search index"
                 );
             }
@@ -249,8 +248,8 @@ impl SearchIndex {
             if let Err(error) = &removed {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
-                    generation_id = %generation_id,
-                    error = %error,
+                    coral.search.generation.id = %generation_id,
+                    error.type = error.code(),
                     "failed to remove a Provider Generation from the search index"
                 );
             }
@@ -282,9 +281,9 @@ impl SearchIndex {
             if let Err(error) = &removed {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
-                    workspace_id = %workspace_id,
-                    provider_id = %provider_id,
-                    error = %error,
+                    coral.workspace.id = %workspace_id,
+                    coral.provider.id = %provider_id,
+                    error.type = error.code(),
                     "failed to remove a Provider from the search index"
                 );
             }
@@ -410,15 +409,13 @@ impl SearchIndex {
                 return Err(error);
             }
         };
-        for (tool_key, warning) in rows.warnings() {
+        for (_, warning) in rows.warnings() {
             tracing::warn!(
-                workspace_id = %entries.workspace_id(),
-                provider_id = %entries.provider_id(),
-                generation_id = %entries.generation_id(),
-                tool_key = %tool_key.as_str(),
-                code = %warning.code(),
-                "{}",
-                warning.message()
+                coral.workspace.id = %entries.workspace_id(),
+                coral.provider.id = %entries.provider_id(),
+                coral.search.generation.id = %entries.generation_id(),
+                coral.search.warning.code = %warning.code(),
+                "a Tool was indexed with a catalog warning"
             );
         }
         Ok(())
@@ -432,18 +429,18 @@ impl SearchIndex {
         };
         // TODO: an error monitor for failed index writes is still to be set up.
         tracing::error!(
-            workspace_id = %entry.workspace_id(),
-            principal_id = %entry.principal().id(),
-            saved_function_id = %entry.id(),
-            error = %error,
+            coral.workspace.id = %entry.workspace_id(),
+            coral.principal.id = %entry.principal().id(),
+            coral.saved_function.id = %entry.id(),
+            error.type = error.code(),
             "failed to index a Saved Function"
         );
         if let Err(record_error) = self.record_failed_function(entry, &error).await {
             tracing::error!(
-                workspace_id = %entry.workspace_id(),
-                principal_id = %entry.principal().id(),
-                saved_function_id = %entry.id(),
-                error = %record_error,
+                coral.workspace.id = %entry.workspace_id(),
+                coral.principal.id = %entry.principal().id(),
+                coral.saved_function.id = %entry.id(),
+                error.type = record_error.code(),
                 "failed to record a failed Saved Function index attempt"
             );
         }
@@ -454,18 +451,18 @@ impl SearchIndex {
     async fn fail_generation(&self, generation: AttemptedGeneration<'_>, error: &IndexError) {
         // TODO: an error monitor for failed index writes is still to be set up.
         tracing::error!(
-            workspace_id = %generation.workspace_id(),
-            provider_id = %generation.provider_id(),
-            generation_id = %generation.generation_id(),
-            error = %error,
+            coral.workspace.id = %generation.workspace_id(),
+            coral.provider.id = %generation.provider_id(),
+            coral.search.generation.id = %generation.generation_id(),
+            error.type = error.code(),
             "failed to index a Provider Generation"
         );
         if let Err(record_error) = self.record_failed_generation(generation, error).await {
             tracing::error!(
-                workspace_id = %generation.workspace_id(),
-                provider_id = %generation.provider_id(),
-                generation_id = %generation.generation_id(),
-                error = %record_error,
+                coral.workspace.id = %generation.workspace_id(),
+                coral.provider.id = %generation.provider_id(),
+                coral.search.generation.id = %generation.generation_id(),
+                error.type = record_error.code(),
                 "failed to record a failed Provider Generation index attempt"
             );
         }
@@ -708,7 +705,10 @@ fn in_write_span<T>(
 /// caller still reports the write's error, the cause.
 async fn rollback(transaction: Transaction<'_>) {
     if let Err(error) = transaction.rollback().await {
-        tracing::error!(error = %error, "failed to roll back a search index write");
+        tracing::error!(
+            error.type = coral_telemetry::error_type(&error),
+            "failed to roll back a search index write"
+        );
     }
 }
 

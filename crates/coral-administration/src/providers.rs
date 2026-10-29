@@ -147,8 +147,8 @@ impl ProviderWorkflow {
                 .await
             {
                 tracing::warn!(
-                    workspace_id = %workspace_id,
-                    error = %error,
+                    coral.workspace.id = %workspace_id,
+                    error.type = coral_telemetry::error_type(&error),
                     "failed to install a Built-in Provider"
                 );
             }
@@ -194,9 +194,9 @@ impl ProviderWorkflow {
                 .await
             {
                 tracing::warn!(
-                    workspace_id = %outdated.workspace_id(),
-                    provider_id = %outdated.provider_id(),
-                    error = %error,
+                    coral.workspace.id = %outdated.workspace_id(),
+                    coral.provider.id = %outdated.provider_id(),
+                    error.type = coral_telemetry::error_type(&error),
                     "failed to update a Built-in Provider's catalog"
                 );
             }

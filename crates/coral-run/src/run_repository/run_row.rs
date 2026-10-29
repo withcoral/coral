@@ -214,7 +214,12 @@ impl RunRow {
 fn decode_trace(stored: Option<&str>) -> Option<coral_telemetry::RunTrace> {
     let stored = stored?;
     coral_telemetry::RunTrace::parse(stored)
-        .inspect_err(|error| tracing::warn!(%error, "Run row has an invalid Run Trace"))
+        .inspect_err(|error| {
+            tracing::warn!(
+                error.type = coral_telemetry::error_type(error),
+                "Run row has an invalid Run Trace"
+            );
+        })
         .ok()
 }
 

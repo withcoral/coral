@@ -105,7 +105,10 @@ pub(super) async fn oauth_token(
     let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_secs(),
         Err(error) => {
-            tracing::warn!(%error, "token endpoint could not read the system clock");
+            tracing::warn!(
+                error.type = coral_telemetry::error_type(&error),
+                "token endpoint could not read the system clock"
+            );
             return token_error(TokenError::ServerError);
         }
     };
@@ -141,7 +144,10 @@ async fn redeem(
         Ok(Some(authorization)) => Ok(authorization),
         Ok(None) => Err(TokenError::InvalidGrant),
         Err(error) => {
-            tracing::warn!(%error, "token endpoint could not redeem the authorization code");
+            tracing::warn!(
+                error.type = coral_telemetry::error_type(&error),
+                "token endpoint could not redeem the authorization code"
+            );
             Err(TokenError::ServerError)
         }
     }
@@ -222,7 +228,10 @@ impl TokenTarget {
             }
         };
         token.map_err(|error| {
-            tracing::warn!(%error, "token endpoint could not issue an access token");
+            tracing::warn!(
+                error.type = coral_telemetry::error_type(&error),
+                "token endpoint could not issue an access token"
+            );
             TokenError::ServerError
         })
     }

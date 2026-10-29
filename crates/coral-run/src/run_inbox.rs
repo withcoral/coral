@@ -343,7 +343,10 @@ impl Inbox for TableInbox {
             match run_repository::held_by(&self.database, instance).await {
                 Ok(deliveries) => return deliveries,
                 Err(error) => {
-                    tracing::warn!(%error, "Run Inbox read failed; the next read tries again");
+                    tracing::warn!(
+                        error.type = coral_telemetry::error_type(&error),
+                        "Run Inbox read failed; the next read tries again"
+                    );
                 }
             }
         }

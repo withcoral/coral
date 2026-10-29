@@ -91,7 +91,10 @@ pub(crate) async fn tool_declarations(
         .read(call_paths)
         .await
         .inspect_err(|error| {
-            tracing::warn!(%error, "Tool declarations are unavailable; the source is checked untyped");
+            tracing::warn!(
+                error.type = coral_telemetry::error_type(&error),
+                "Tool declarations are unavailable; the source is checked untyped"
+            );
         })
         .ok()?;
     let bytes = declarations

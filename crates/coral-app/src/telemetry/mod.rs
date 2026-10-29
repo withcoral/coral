@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use coral_telemetry::OtlpSpanFilter;
+use coral_telemetry::{OtlpLogFilter, OtlpSpanFilter};
 use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
 use opentelemetry_otlp::{
     LogExporter, MetricExporter, SpanExporter as OtlpSpanExporter, WithExportConfig, WithHttpConfig,
@@ -148,7 +148,9 @@ fn build_otlp_logger_provider(
         .map_err(|e| AppError::InvalidInput(e.to_string()))?;
     Ok(SdkLoggerProvider::builder()
         .with_resource(resource.clone())
-        .with_log_processor(BatchLogProcessor::builder(exporter).build())
+        .with_log_processor(OtlpLogFilter::new(
+            BatchLogProcessor::builder(exporter).build(),
+        ))
         .build())
 }
 
@@ -365,7 +367,7 @@ fn try_init_tracing(config: &TelemetryConfig, instance_id: &str) -> Result<(), A
         .try_init()
     {
         tracing::warn!(
-            detail = %error,
+            error.type = coral_telemetry::error_type(&error),
             "skipping coral-app tracing subscriber: host process has already installed one"
         );
         return Ok(());
@@ -374,7 +376,7 @@ fn try_init_tracing(config: &TelemetryConfig, instance_id: &str) -> Result<(), A
         tracing::warn!(
             provided_filter = %config.otel.log_filter.as_deref().unwrap_or(DEFAULT_LOG_FILTER),
             fallback_filter = DEFAULT_LOG_FILTER,
-            detail = %error,
+            error.type = coral_telemetry::error_type(&error),
             "invalid log_filter; falling back to default filter"
         );
     }
@@ -382,7 +384,7 @@ fn try_init_tracing(config: &TelemetryConfig, instance_id: &str) -> Result<(), A
         tracing::warn!(
             provided_filter = %config.otel.trace_filter,
             fallback_filter = DEFAULT_TRACE_FILTER,
-            detail = %error,
+            error.type = coral_telemetry::error_type(&error),
             "invalid trace_filter; falling back to default filter"
         );
     }
@@ -396,19 +398,28 @@ pub fn shutdown_tracing() {
         && let Some(provider) = guard.take()
         && let Err(error) = provider.shutdown()
     {
-        tracing::warn!("OTEL meter provider shutdown error: {error}");
+        tracing::warn!(
+            error.type = coral_telemetry::error_type(&error),
+            "OTEL meter provider shutdown failed"
+        );
     }
     if let Ok(mut guard) = PROVIDER.lock()
         && let Some(provider) = guard.take()
         && let Err(error) = provider.shutdown()
     {
-        tracing::warn!("OTEL trace provider shutdown error: {error}");
+        tracing::warn!(
+            error.type = coral_telemetry::error_type(&error),
+            "OTEL trace provider shutdown failed"
+        );
     }
     if let Ok(mut guard) = LOGGER_PROVIDER.lock()
         && let Some(provider) = guard.take()
         && let Err(error) = provider.shutdown()
     {
-        tracing::warn!("OTEL logger provider shutdown error: {error}");
+        tracing::warn!(
+            error.type = coral_telemetry::error_type(&error),
+            "OTEL logger provider shutdown failed"
+        );
     }
 }
 

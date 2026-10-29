@@ -85,7 +85,10 @@ async fn complete(
     {
         Ok(exchange) => exchange,
         Err(error) => {
-            tracing::warn!(%error, "OIDC callback could not exchange the provider code");
+            tracing::warn!(
+                error.type = coral_telemetry::error_type(&error),
+                "OIDC callback could not exchange the provider code"
+            );
             return trusted.error("server_error", "authorization failed");
         }
     };
@@ -100,7 +103,10 @@ async fn complete(
     {
         Ok(identity) => identity,
         Err(error) => {
-            tracing::warn!(%error, "OIDC callback could not validate the provider identity");
+            tracing::warn!(
+                error.type = coral_telemetry::error_type(&error),
+                "OIDC callback could not validate the provider identity"
+            );
             return trusted.error("server_error", "authorization failed");
         }
     };
@@ -166,7 +172,10 @@ pub(super) async fn issue_code(
             trusted.error("invalid_request", "authorization was already completed")
         }
         Err(error) => {
-            tracing::warn!(%error, "Sign-in could not store the authorization code");
+            tracing::warn!(
+                error.type = coral_telemetry::error_type(&error),
+                "Sign-in could not store the authorization code"
+            );
             trusted.error("server_error", "authorization failed")
         }
     }

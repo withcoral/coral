@@ -282,7 +282,10 @@ async fn resolve_client(
         .resolve(client_id)
         .await
         .map_err(|error| {
-            tracing::warn!(%error, "OAuth client metadata resolution failed");
+            tracing::warn!(
+                error.type = coral_telemetry::error_type(&error),
+                "OAuth client metadata resolution failed"
+            );
         })
 }
 

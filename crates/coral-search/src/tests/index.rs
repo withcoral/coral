@@ -316,10 +316,7 @@ async fn a_failed_removal_leaves_the_superseded_generation_and_still_indexes_the
         logs.events()
             .iter()
             .any(|event| event.level == tracing::Level::ERROR
-                && event
-                    .fields
-                    .get("error")
-                    .is_some_and(|error| error.contains(INJECTED_FAULT))),
+                && event.fields.get("error.type").map(String::as_str) == Some("\"database\"")),
         "the failed removal is logged"
     );
 
@@ -1054,11 +1051,16 @@ async fn a_bounded_walk_indexes_the_tool_and_logs_a_warning() {
         .expect("one warning");
     assert_eq!(event.target, "coral_search::index");
     for (field, value) in [
-        ("workspace_id", world.workspace.to_string()),
-        ("provider_id", wide.to_string()),
-        ("generation_id", entries.generation_id().to_string()),
-        ("tool_key", "wide".to_string()),
-        ("code", "tool_search_material_truncated".to_string()),
+        ("coral.workspace.id", world.workspace.to_string()),
+        ("coral.provider.id", wide.to_string()),
+        (
+            "coral.search.generation.id",
+            entries.generation_id().to_string(),
+        ),
+        (
+            "coral.search.warning.code",
+            "tool_search_material_truncated".to_string(),
+        ),
     ] {
         assert_eq!(event.fields.get(field), Some(&value), "{field}");
     }
@@ -1105,18 +1107,16 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
         assert_eq!(event.level, tracing::Level::ERROR);
         assert_eq!(event.target, "coral_search::index");
         for (field, value) in [
-            ("workspace_id", world.workspace.to_string()),
-            ("provider_id", world.tracer.to_string()),
-            ("generation_id", entries.generation_id().to_string()),
+            ("coral.workspace.id", world.workspace.to_string()),
+            ("coral.provider.id", world.tracer.to_string()),
+            (
+                "coral.search.generation.id",
+                entries.generation_id().to_string(),
+            ),
+            ("error.type", "\"database\"".to_string()),
         ] {
             assert_eq!(event.fields.get(field), Some(&value), "{field}");
         }
-        assert!(
-            event
-                .fields
-                .get("error")
-                .is_some_and(|error| error.contains(INJECTED_FAULT))
-        );
     }
 }
 
@@ -1458,14 +1458,12 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
     // SQLite's writer stalls the write before the Workspace's lock;
     // Postgres's table lock stalls it after.
     let expected = match database.system() {
-        DatabaseSystem::Sqlite => "waited more than",
-        DatabaseSystem::Postgres => "ran past its",
+        DatabaseSystem::Sqlite => "\"writer_busy\"",
+        DatabaseSystem::Postgres => "\"overran\"",
     };
-    assert!(
-        first
-            .fields
-            .get("error")
-            .is_some_and(|error| error.contains(expected)),
+    assert_eq!(
+        first.fields.get("error.type").map(String::as_str),
+        Some(expected),
         "{first:?}"
     );
 
@@ -1678,7 +1676,7 @@ async fn a_failed_state_read_reports_no_states_and_logs_the_error() {
     let [event] = logs.events().try_into().expect("one log event");
     assert_eq!(event.level, tracing::Level::WARN);
     assert_eq!(
-        event.fields.get("workspace_id"),
+        event.fields.get("coral.workspace.id"),
         Some(&world.workspace.to_string())
     );
 }

@@ -135,7 +135,10 @@ impl SearchIndex {
         let mut work = PassWork::default();
         let Some(now) = crate::unix_now_nanos() else {
             // TODO: an error monitor for failed index writes is still to be set up.
-            tracing::error!(error = %IndexError::Clock, "failed to start a search index reconcile pass");
+            tracing::error!(
+                error.type = IndexError::Clock.code(),
+                "failed to start a search index reconcile pass"
+            );
             work.step_failed = true;
             return work;
         };
@@ -197,7 +200,7 @@ impl SearchIndex {
         if let Err(error) = removed {
             // TODO: an error monitor for failed index writes is still to be set up.
             tracing::error!(
-                error = %error,
+                error.type = error.code(),
                 "failed to remove superseded Provider Generations from the search index"
             );
             return Err(());
@@ -228,7 +231,10 @@ impl SearchIndex {
             Ok(stale) => stale,
             Err(error) => {
                 // TODO: an error monitor for failed index writes is still to be set up.
-                tracing::error!(error = %error, "failed to reconcile the indexed Provider Generations");
+                tracing::error!(
+                    error.type = error.code(),
+                    "failed to reconcile the indexed Provider Generations"
+                );
                 return Err(());
             }
         };
@@ -323,7 +329,10 @@ impl SearchIndex {
             }
             Err(error) => {
                 // TODO: an error monitor for failed index writes is still to be set up.
-                tracing::error!(error = %error, "failed to reconcile the indexed Saved Functions");
+                tracing::error!(
+                    error.type = error.code(),
+                    "failed to reconcile the indexed Saved Functions"
+                );
                 Err(())
             }
         }
@@ -345,7 +354,10 @@ impl SearchIndex {
             Ok(check) => check,
             Err(error) => {
                 // TODO: an error monitor for failed index writes is still to be set up.
-                tracing::error!(error = %error, "failed to check the Workspaces' search statistics");
+                tracing::error!(
+                    error.type = error.code(),
+                    "failed to check the Workspaces' search statistics"
+                );
                 return Err(());
             }
         };
@@ -385,8 +397,8 @@ impl SearchIndex {
                 Err(error) => {
                     // TODO: an error monitor for failed index writes is still to be set up.
                     tracing::error!(
-                        workspace_id = %workspace_id,
-                        error = %error,
+                        coral.workspace.id = %workspace_id,
+                        error.type = error.code(),
                         "failed to refresh a Workspace's search statistics"
                     );
                     work.failed = true;

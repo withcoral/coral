@@ -337,8 +337,8 @@ impl UniversalSearchModule {
                     // TODO: attach an error monitor to failed rankings.
                     tracing::error!(
                         retriever = ?retriever.kind(),
-                        workspace_id = %context.workspace_id,
-                        error = %error,
+                        coral.workspace.id = %context.workspace_id,
+                        error.type = coral_telemetry::error_type(&error),
                         "a Universal Search retriever could not rank"
                     );
                     RetrieverStatus::new(

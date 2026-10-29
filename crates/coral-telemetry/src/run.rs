@@ -64,7 +64,7 @@ impl RunTrace {
         if let Err(error) =
             span.set_parent(Context::new().with_remote_span_context(self.accept.clone()))
         {
-            tracing::debug!(%error, "failed to join the Run Trace");
+            tracing::debug!(error.type = crate::error_type(&error), "failed to join the Run Trace");
         }
     }
 

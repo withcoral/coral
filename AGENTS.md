@@ -28,6 +28,9 @@
 - Keep cross-crate W3C propagation, safe telemetry fields, and export filtering
   in `coral-telemetry`. Domain modules own signal timing. Application bootstrap
   owns exporter configuration.
+- Give span and event fields only keys that `coral_telemetry::field` lists;
+  export drops any other key. Record a failure as `error.type` with a stable
+  code or `coral_telemetry::error_type(&error)`, never as error text.
 - Keep generated files marked `linguist-generated` in `.gitattributes`.
 
 ### Persistence

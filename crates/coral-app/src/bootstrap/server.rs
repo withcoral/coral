@@ -581,7 +581,10 @@ impl RunningServer {
             && let Err(error) = accounts.stop_device_authorizations().await
         {
             // Workers are already stopped; unreleased leases expire on their own.
-            tracing::warn!(%error, "device authorization lease release failed");
+            tracing::warn!(
+                error.type = coral_telemetry::error_type(&error),
+                "device authorization lease release failed"
+            );
         }
         if let Some(shutdown_tx) = self
             .shutdown_tx
@@ -844,7 +847,10 @@ pub(crate) async fn start_server(
                     && let Ok(now) = i64::try_from(elapsed.as_nanos())
                     && let Err(error) = accounts.recover_device_authorizations(now).await
                 {
-                    tracing::warn!(%error, "device authorization recovery failed");
+                    tracing::warn!(
+                        error.type = coral_telemetry::error_type(&error),
+                        "device authorization recovery failed"
+                    );
                 }
             }
         })
@@ -878,7 +884,10 @@ async fn sweep_expired_leases(runs: &coral_run::RunModule) {
     match runs.sweep_expired_leases().await {
         Ok(0) => {}
         Ok(recovered) => tracing::info!(recovered, "expired-lease sweep recovered Runs"),
-        Err(error) => tracing::warn!(%error, "expired-lease sweep failed; the next pass retries"),
+        Err(error) => tracing::warn!(
+            error.type = coral_telemetry::error_type(&error),
+            "expired-lease sweep failed; the next pass retries"
+        ),
     }
 }
 

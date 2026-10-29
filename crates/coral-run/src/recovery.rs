@@ -120,7 +120,7 @@ impl RunModule {
             return false;
         };
         tracing::info!(
-            run_id = %run.id,
+            coral.run.id = %run.id,
             claim_id = %claim_id,
             "expired-lease sweep recreates the Run Owner of a Run no process owns"
         );
@@ -158,8 +158,8 @@ impl RunModule {
         tokio::spawn(async move {
             if let Err(ended) = owner_task.await {
                 tracing::error!(
-                    run_id = %run_id,
-                    ended = %ended,
+                    coral.run.id = %run_id,
+                    error.type = if ended.is_panic() { "panic" } else { "cancelled" },
                     "recovered Run Owner ended without retiring; the next sweep recovers its Run"
                 );
             }
