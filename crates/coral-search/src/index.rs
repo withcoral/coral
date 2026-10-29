@@ -236,6 +236,7 @@ impl SearchIndex {
             parent: None,
             "coral.search.remove_generation",
             coral.search.generation.id = %generation_id,
+            coral.search.write.trigger = Empty,
             status = Empty,
             error.type = Empty,
             exception.message = Empty,
@@ -265,6 +266,7 @@ impl SearchIndex {
             "coral.search.remove_provider",
             coral.workspace.id = %workspace_id,
             coral.provider.id = %provider_id,
+            coral.search.write.trigger = Empty,
             status = Empty,
             error.type = Empty,
             exception.message = Empty,
@@ -352,7 +354,7 @@ impl SearchIndex {
                     // A predecessor that panicked has finished all the same.
                     drop(previous.await);
                 }
-                drop(in_write_span(span, failure, write).await);
+                drop(in_write_span(span, WriteTrigger::Notified, failure, write).await);
             }
             .with_current_subscriber(),
         ));
@@ -630,6 +632,7 @@ fn generation_span(
         coral.search.skipped = Empty,
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,
+        coral.search.write.trigger = Empty,
         status = Empty,
         error.type = Empty,
         exception.message = Empty,
@@ -647,6 +650,7 @@ fn function_span(entry: &SavedFunctionEntry) -> tracing::Span {
         coral.saved_function.id = %entry.id(),
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,
+        coral.search.write.trigger = Empty,
         status = Empty,
         error.type = Empty,
         exception.message = Empty,
@@ -658,15 +662,37 @@ fn skipped(reason: &'static str) {
     tracing::Span::current().record("coral.search.skipped", reason);
 }
 
-/// Runs one write in `span`, a root span, links it to the current span,
-/// such as a reconcile pass's, and marks it with `failure` and the error's
-/// kind when the write fails. The write is boxed, so a pass's future holds
-/// one pointer for it rather than a second copy.
+/// What started an index write, recorded on its span, so a trace query can
+/// tell the writes a reconcile pass had to repair from those a change
+/// notified.
+#[derive(Debug, Clone, Copy)]
+enum WriteTrigger {
+    /// A committing workflow's notification.
+    Notified,
+    /// A reconcile pass.
+    Reconcile,
+}
+
+impl WriteTrigger {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Notified => "notified",
+            Self::Reconcile => "reconcile",
+        }
+    }
+}
+
+/// Runs one write in `span`, a root span, records its `trigger`, links it to
+/// the current span, such as a reconcile pass's, and marks it with `failure`
+/// and the error's kind when the write fails. The write is boxed, so a pass's
+/// future holds one pointer for it rather than a second copy.
 fn in_write_span<T>(
     span: tracing::Span,
+    trigger: WriteTrigger,
     failure: &'static str,
     write: impl Future<Output = Result<T, IndexError>>,
 ) -> impl Future<Output = Result<T, IndexError>> {
+    span.record("coral.search.write.trigger", trigger.as_str());
     coral_telemetry::link_to_current(&span);
     let write = Box::pin(write.instrument(span.clone()));
     async move {

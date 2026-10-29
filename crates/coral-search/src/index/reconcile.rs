@@ -12,8 +12,8 @@ use tracing::field::Empty;
 use tracing::instrument::WithSubscriber as _;
 
 use super::{
-    FUNCTION_FAILURE, GENERATION_FAILURE, SearchIndex, function_span, generation_span,
-    in_write_span, skipped,
+    FUNCTION_FAILURE, GENERATION_FAILURE, SearchIndex, WriteTrigger, function_span,
+    generation_span, in_write_span, skipped,
 };
 use crate::indexer::functions::SavedFunctionIndexer;
 use crate::indexer::tools::ToolIndexer;
@@ -239,7 +239,7 @@ impl SearchIndex {
                 generation.provider_id(),
                 Some(generation.generation_id()),
             );
-            let indexed = in_write_span(span, GENERATION_FAILURE, async {
+            let indexed = in_write_span(span, WriteTrigger::Reconcile, GENERATION_FAILURE, async {
                 match self
                     .prepare_stored_generation(generation.workspace_id(), generation.provider_id())
                     .await
@@ -311,6 +311,7 @@ impl SearchIndex {
                 for entry in &stale {
                     let indexed = in_write_span(
                         function_span(entry),
+                        WriteTrigger::Reconcile,
                         FUNCTION_FAILURE,
                         self.write_function(entry),
                     )
@@ -358,12 +359,14 @@ impl SearchIndex {
                 "coral.search.refresh_statistics",
                 coral.workspace.id = %workspace_id,
                 coral.search.rows_written = Empty,
+                coral.search.write.trigger = Empty,
                 status = Empty,
                 error.type = Empty,
                 exception.message = Empty,
             );
             let refreshed = in_write_span(
                 span.clone(),
+                WriteTrigger::Reconcile,
                 "refreshing a Workspace's search statistics failed",
                 self.within_limit(async {
                     let mut transaction = self.database.begin().await?;

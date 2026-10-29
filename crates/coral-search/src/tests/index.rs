@@ -587,6 +587,14 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
             "{} did not fail",
             span.name
         );
+        assert_eq!(
+            span.fields
+                .get("coral.search.write.trigger")
+                .map(String::as_str),
+            Some("\"reconcile\""),
+            "{}",
+            span.name
+        );
     }
     assert_eq!(
         write_names(&writes),
@@ -890,7 +898,7 @@ async fn a_notice_for_a_replaced_generation_writes_nothing() {
         replaced.generation_id()
     );
 
-    let (_, write) = world.traced_notice(|index| notify(index, &replaced)).await;
+    let write = world.traced_notice(|index| notify(index, &replaced)).await;
 
     assert!(world.tool_rows().await.is_empty());
     assert!(world.states().await.is_empty());
@@ -961,31 +969,9 @@ async fn a_notified_write_traces_itself_and_links_to_its_notifier() {
             world.reject_complete_states().await;
         }
 
-        let (request, write) = world.traced_notice(|index| notice(index, &entries)).await;
+        let write = world.traced_notice(|index| notice(index, &entries)).await;
 
         assert_eq!(write.name, name, "{case}");
-        assert_eq!(write.parent_span_id, SpanId::INVALID, "{case} is a root");
-        assert!(
-            request.end_time < write.end_time,
-            "{case} does not hold its notifier's span open"
-        );
-        assert_ne!(
-            write.span_context.trace_id(),
-            request.span_context.trace_id(),
-            "{case}"
-        );
-        assert_eq!(
-            write
-                .links
-                .iter()
-                .map(|link| (link.span_context.trace_id(), link.span_context.span_id()))
-                .collect::<Vec<_>>(),
-            [(
-                request.span_context.trace_id(),
-                request.span_context.span_id()
-            )],
-            "{case} links to its notifier"
-        );
         assert_eq!(
             attribute(&write, "error.type"),
             fails.then(|| "database".to_string()),
@@ -1849,9 +1835,11 @@ impl World {
         row.is_some()
     }
 
-    /// Sends `notice` in a request span and waits for the write it starts.
-    /// Returns the request's span and the write's.
-    async fn traced_notice(&self, notice: impl FnOnce(&SearchIndex)) -> (SpanData, SpanData) {
+    /// Sends `notice` in a request span, waits for the write it starts, and
+    /// returns the write's span. Asserts what every notified write's span
+    /// shows: it is a root, marked `notified`, that links to the request and
+    /// does not hold the request's span open.
+    async fn traced_notice(&self, notice: impl FnOnce(&SearchIndex)) -> SpanData {
         let capture = SpanCapture::default();
         {
             let _subscriber = tracing::subscriber::set_default(capture.subscriber());
@@ -1883,7 +1871,32 @@ impl World {
             .collect::<Vec<_>>()
             .try_into()
             .expect("one write span");
-        (request, write)
+        assert_eq!(write.parent_span_id, SpanId::INVALID, "a root");
+        assert_ne!(
+            write.span_context.trace_id(),
+            request.span_context.trace_id()
+        );
+        assert!(
+            request.end_time < write.end_time,
+            "the write does not hold its notifier's span open"
+        );
+        assert_eq!(
+            write
+                .links
+                .iter()
+                .map(|link| (link.span_context.trace_id(), link.span_context.span_id()))
+                .collect::<Vec<_>>(),
+            [(
+                request.span_context.trace_id(),
+                request.span_context.span_id()
+            )],
+            "the write links to its notifier"
+        );
+        assert_eq!(
+            attribute(&write, "coral.search.write.trigger").as_deref(),
+            Some("notified")
+        );
+        write
     }
 
     /// Runs one pass and returns the spans it started.
