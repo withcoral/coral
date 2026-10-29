@@ -1,5 +1,6 @@
 /** @vitest-environment happy-dom */
 import { act } from '@testing-library/react'
+import { useLayoutEffect } from 'react'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { afterEach, expect, it, vi } from 'vitest'
 import { useLoaderData } from 'react-router'
@@ -85,6 +86,14 @@ const searchValue = (search: Search, position: number) => ({
   startedAtUnixNanos: now + BigInt(search.order) * second,
 })
 
+/** The window a read of `total` records takes. An offset at or past the end reads the
+ * last window, as Coral does. */
+const windowOf = (input: { pageSize: number; viewport?: { offset: bigint } }, total: number) => {
+  const size = input.pageSize || 50
+  const offset = Number(input.viewport?.offset ?? 0n)
+  return { size, offset, from: offset >= total ? Math.max(0, total - size) : offset }
+}
+
 /** Coral's history, newest Task first. It counts the list reads it serves. */
 function coral() {
   const tasks: Task[] = []
@@ -151,11 +160,8 @@ function coral() {
       inspectTask: (input) => {
         const task = tasks.find(({ id }) => taskName(id) === input.name)!
         const total = task.children.length
-        const size = input.pageSize || 50
-        const offset = Number(input.viewport?.offset ?? 0n)
+        const { size, offset, from } = windowOf(input, total)
         taskReads.push({ name: input.name, newest: size === 1 && offset >= total && total > 0 })
-        // An offset at or past the end reads the last window, as Coral does.
-        const from = offset >= total ? Math.max(0, total - size) : offset
         return {
           task: root(task).record.value,
           total: BigInt(total),
@@ -169,10 +175,7 @@ function coral() {
       },
       browseRunEntries: (input) => {
         const run = find(input.name)
-        const size = input.pageSize || 50
-        const offset = Number(input.viewport?.offset ?? 0n)
-        // An offset at or past the end reads the last window, as Coral does.
-        const from = offset >= run.logs ? Math.max(0, run.logs - size) : offset
+        const { size, from } = windowOf(input, run.logs)
         const to = Math.min(run.logs, from + size)
         return {
           run: runValue(run),
@@ -260,9 +263,15 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+/** The loader's page the view last committed. */
+let committed: ActivityPage | undefined
 /** The Activity route's view of its loader's page. */
 function Route() {
-  return <LiveActivity initial={useLoaderData<ActivityPage>()} />
+  const page = useLoaderData<ActivityPage>()
+  useLayoutEffect(() => {
+    committed = page
+  })
+  return <LiveActivity initial={page} />
 }
 
 /** Activity at the Workspace route with page live mode on, opened on the Run of `task`. */
@@ -338,6 +347,17 @@ function open(world: ReturnType<typeof coral>, task: string) {
           const found = container.querySelector('[role=table]')
           expect(found).not.toBeNull()
           return found!
+        },
+        { timeout: 5000 },
+      )
+      // The router holds a page before React commits it, and a page React has not
+      // committed starts a new observation from the one before. A scroll before then
+      // reaches only the observation that page replaces.
+      await vi.waitFor(
+        () => {
+          expect(router.state.navigation.state).toBe('idle')
+          expect(router.state.revalidation).toBe('idle')
+          expect(committed).toBe(Object.values(router.state.loaderData).at(-1))
         },
         { timeout: 5000 },
       )

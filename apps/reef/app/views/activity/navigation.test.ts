@@ -1208,12 +1208,13 @@ describe('live scopes', () => {
   })
 
   // The list orders Tasks by when they started, not by their newest record, so the
-  // loader names the newest record across the list's scope (`liveLatest.latest`).
-  // Catches: live mode leaving a Run that just ended for an older record of a newer Task.
+  // loader names the newest record across the list's scope (`liveLatest.latest`). The
+  // loader's tests own which record that is.
+  // Catches: live mode leaving the record the loader names for the Task first in the list.
   const over2 = runRow('over2', other.name)
   it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
     [
-      "shows an older Task's Run that ended after a newer Task's older record",
+      "shows an older Task's Run that ended, which the loader names, over the newer Task first in the list",
       {
         ...opened(finished, [lookup, finished], [fresh]),
         ...latestOf(work.name, finished.name, true),
@@ -1221,7 +1222,7 @@ describe('live scopes', () => {
       { kind: 'run', run: finished.name, chain: [work.name, finished.name] },
     ],
     [
-      "shows an older Task's newer Search over a newer Task's Run that ended",
+      "shows an older Task's Search, which the loader names, over the newer Task first in the list",
       {
         ...opened(finished, [finished, lookup], [fresh]),
         ...latestOf(work.name, lookup.name, false),

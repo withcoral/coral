@@ -10,6 +10,8 @@ export function activityChanges() {
       for (const watch of watches) watch.enqueue({ changed })
     },
     watch: async function* (_input: unknown, context: { signal: AbortSignal }) {
+      // A watch aborted before it starts leaves the waiting changes to the next one.
+      if (context.signal.aborted) return
       let controller!: ReadableStreamDefaultController<{ changed: boolean }>
       const reader = new ReadableStream<{ changed: boolean }>({
         start(value) {

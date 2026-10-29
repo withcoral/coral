@@ -388,8 +388,9 @@ export function liveTarget(
  *    count.
  * 4. The newest record, which it only shows: the one the loader names across the list's
  *    scope (`liveLatest.latest`), else of the newest top-level record in the list's
- *    order. A Search, a Describe or another tool call, or a Run to its newest record. A
- *    Task while it has no record. A newer record replaces it.
+ *    order. A Search, a Describe or another tool call, or a Run that ended, which shows
+ *    the Run itself, never its newest record. A Task while it has no record. A newer
+ *    record replaces it.
  * It may follow any standalone Run, and a Task that started `TAKS_MAX_AGE` before `now`
  * or later. This cutoff conflicts with step 4, which should show the newest record of
  * any age: when the newest record is a Task over an hour old, it shows the newest

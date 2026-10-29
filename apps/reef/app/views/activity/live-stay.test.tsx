@@ -449,6 +449,23 @@ it.each(comments)(
   },
 )
 
+// Catches: a navigation that replaces the pick you discarded a comment for asking about
+// the comment again, landing somewhere else, or leaving the comment behind.
+it('clears the comment you discarded when another navigation replaces the pick', async () => {
+  const view = await pickFromComment(true)
+  delay = 300
+  screen.getByRole('button', { name: 'Discard comment' }).click()
+  await pass(100)
+  const other = runName('new')
+  void view.router.navigate(`${list}?tree=1&record=${encodeURIComponent(other)}`)
+  await pass(300)
+  await pass(MIN_LIVE_RECORD_STAY_MS)
+  expect(view.address().get('record')).toBe(other)
+  expect(view.records).not.toContain(runName('older'))
+  expect(screen.queryByRole('dialog', { name: 'Discard your comment?' })).toBeNull()
+  expect(screen.getByRole('textbox', { name: 'Comment (optional)' })).toHaveValue('')
+})
+
 // Catches: a pick you gave up to keep your comment holding live mode after you clear it,
 // or the wait starting again from then.
 it.each(comments)(

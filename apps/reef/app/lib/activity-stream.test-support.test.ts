@@ -17,3 +17,20 @@ it('passes a change made after an abort to the next watch', async () => {
   expect((await next.next()).value).toEqual({ changed: false })
   await next.return(undefined)
 })
+
+// Catches: a watch that was aborted before it started taking the changes that wait for
+// the next watch, so the watch that reconnects never sees them.
+it('leaves waiting changes to the next watch when a watch starts aborted', async () => {
+  const changes = activityChanges()
+  changes.emit(false)
+  const aborted = new AbortController()
+  aborted.abort()
+  const first = changes.watch({}, { signal: aborted.signal })
+  await first.next()
+  await first.return(undefined)
+
+  const next = changes.watch({}, { signal: new AbortController().signal })
+  expect((await next.next()).value).toEqual({ changed: true })
+  expect((await next.next()).value).toEqual({ changed: false })
+  await next.return(undefined)
+})

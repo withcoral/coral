@@ -2211,8 +2211,10 @@ function liveWorld(roots: LiveRoot[], queued: Record<string, string> = {}) {
       : [{ item: root.run, task: '' }],
   )
   const recent = BigInt(Date.now()) * 1_000_000n
-  /** `seconds` after `recent`, to the nanosecond. */
-  const after = (seconds: number) => recent + BigInt(Math.round(seconds * 1e9))
+  /** `seconds` after `start`, to the nanosecond. */
+  const after = (seconds: number, start = recent) => start + BigInt(Math.round(seconds * 1e9))
+  /** When the Task `root` started: `recent`, or long before it when it is old. */
+  const startOf = (root: (typeof tasks)[number]) => (root.old ? 1_000_000_000n : recent)
   const runView = ({ item, task: owner }: (typeof all)[number]) => ({
     ...execution,
     ...(!owner && item.at !== undefined && { startedAtUnixNanos: after(item.at) }),
@@ -2237,11 +2239,11 @@ function liveWorld(roots: LiveRoot[], queued: Record<string, string> = {}) {
   )
   /** When the record at `position` of the Task `root` started. */
   const childAt = (root: (typeof tasks)[number], position: number) =>
-    root.old ? 1_000_000_000n : after(root.runs[position]!.at ?? position)
+    after(root.runs[position]!.at ?? position, startOf(root))
   const taskValue = (root: (typeof tasks)[number]) => ({
     ...goal,
     name: taskName(root.id),
-    startedAtUnixNanos: root.old ? 1_000_000_000n : recent,
+    startedAtUnixNanos: startOf(root),
     contextImpactBytes: 1n,
     contextImpactPartial: root.partial ?? false,
   })
@@ -2779,7 +2781,7 @@ describe("Page live's projection past the list", () => {
     })),
   ]
   const recentTasks = busy.map((root) => taskName((root as { id: string }).id))
-  // `b` first, in the loaded list, or last, two pages past it.
+  // `b` first, in the loaded list, or last, at index 150, outside the initial window.
   // Catches: finding the newest record only among the Tasks the list loaded, or reading
   // a Task's children more than once in a load.
   it.each<[string, LiveRoot[]]>([
