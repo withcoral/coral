@@ -1,10 +1,18 @@
 //! Span capture for tests that assert what Coral traces.
 
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracer, SdkTracerProvider, SpanData};
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_sdk::logs::{InMemoryLogExporter, SdkLoggerProvider, SimpleLogProcessor};
+use opentelemetry_sdk::trace::{
+    InMemorySpanExporter, SdkTracer, SdkTracerProvider, SimpleSpanProcessor, SpanData,
+};
 use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::Layer;
+use tracing_subscriber::filter::{LevelFilter, Targets};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::registry::LookupSpan;
+
+use crate::{OtlpLogFilter, OtlpSpanFilter};
 
 /// Records every finished span in memory.
 ///
@@ -45,6 +53,21 @@ impl SpanCapture {
         Self { provider, exporter }
     }
 
+    /// A capture whose spans also go through the span export filter, into
+    /// `export`.
+    #[must_use]
+    pub fn exporting_to(export: &ExportCapture) -> Self {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .with_span_processor(OtlpSpanFilter::new(
+                SimpleSpanProcessor::new(export.spans.clone()),
+                Targets::new().with_default(LevelFilter::TRACE),
+            ))
+            .build();
+        Self { provider, exporter }
+    }
+
     /// A subscriber that gives every span trace context and captures it.
     #[must_use]
     pub fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync + use<> {
@@ -73,6 +96,64 @@ impl SpanCapture {
         self.exporter
             .get_finished_spans()
             .expect("read captured spans")
+    }
+}
+
+/// Records what leaves the host: every span and log record the export filters
+/// let through, with an operator filter that admits every target and level.
+///
+/// [`SpanCapture`] reads a span before those filters. A test that plants
+/// private data reads this too, so it also covers a library's spans and events
+/// and any crate it did not name. Spans reach it through a
+/// [`SpanCapture::exporting_to`] capture, since a subscriber holds only one
+/// layer that gives spans trace context; log records through
+/// [`ExportCapture::log_layer`].
+#[derive(Debug, Clone)]
+pub struct ExportCapture {
+    spans: InMemorySpanExporter,
+    logs: InMemoryLogExporter,
+    logger: SdkLoggerProvider,
+}
+
+impl Default for ExportCapture {
+    fn default() -> Self {
+        let logs = InMemoryLogExporter::default();
+        let logger = SdkLoggerProvider::builder()
+            .with_log_processor(OtlpLogFilter::new(SimpleLogProcessor::new(logs.clone())))
+            .build();
+        Self {
+            spans: InMemorySpanExporter::default(),
+            logs,
+            logger,
+        }
+    }
+}
+
+impl ExportCapture {
+    /// A layer that sends every event through the log export filter, as
+    /// application bootstrap wires it.
+    #[must_use]
+    pub fn log_layer<S>(&self) -> impl Layer<S> + use<S>
+    where
+        S: tracing::Subscriber + for<'span> LookupSpan<'span>,
+    {
+        OpenTelemetryTracingBridge::new(&self.logger)
+    }
+
+    /// Everything that has left so far, as text to search.
+    ///
+    /// # Panics
+    ///
+    /// Panics when an in-memory exporter fails.
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.logger.force_flush().expect("flush exported logs");
+        let spans = self
+            .spans
+            .get_finished_spans()
+            .expect("read exported spans");
+        let logs = self.logs.get_emitted_logs().expect("read exported logs");
+        format!("{spans:?}{logs:?}")
     }
 }
 

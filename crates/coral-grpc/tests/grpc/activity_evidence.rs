@@ -168,13 +168,15 @@ async fn successful_terminal_preserves_absent_final_value_versus_explicit_null()
 
 /// coral-run owns what cancellation does to a waiting or dispatched Invocation
 /// (`user_and_agent_cancellation_*`). This checks their projection: the queued
-/// card, the review, a stale decision, and each typed outcome.
+/// card, the review, a stale decision, and each typed outcome. What the Run
+/// Status Page reads and sends stays out of the spans of its requests.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "one Run per Invocation gate projects the card, review, stale decision, and typed outcome"
 )]
 async fn cancellation_retains_pending_and_dispatched_invocation_distinctions_and_typed_actor() {
+    let capture = crate::capture();
     let f = Fixture::new().await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -186,7 +188,7 @@ async fn cancellation_retains_pending_and_dispatched_invocation_distinctions_and
         .mount(&server)
         .await;
     let provider = publish_http(&f, &server.uri()).await;
-    let source = "return await coral.providers.evidence.read({body: {private: 'argument'}});";
+    let source = "// source-canary\nreturn await coral.providers.evidence.read({body: {private: 'argument-canary'}});";
     // HTTP's default approval gate holds the first call before dispatch.
     let pending = start(&f, source).await;
     wait_invocation(&f, &pending, true).await;
@@ -291,7 +293,7 @@ async fn cancellation_retains_pending_and_dispatched_invocation_distinctions_and
             wire::DecideApprovalRequest {
                 name: approval.clone(),
                 decision: "approve".into(),
-                comment: Some("too late".into()),
+                comment: Some("comment-canary".into()),
             },
             &member,
             "reef",
@@ -341,6 +343,13 @@ async fn cancellation_retains_pending_and_dispatched_invocation_distinctions_and
         exact.invocation.unwrap().outcome(),
         wire::ActivityInvocationOutcome::Indeterminate
     );
+
+    let spans = format!("{:?}", capture.finished());
+    assert!(spans.contains("ActivityService/DecideApproval"), "{spans}");
+    assert!(spans.contains("ActivityService/InspectApproval"), "{spans}");
+    for private in ["source-canary", "argument-canary", "comment-canary"] {
+        assert!(!spans.contains(private), "{private}: {spans}");
+    }
 }
 
 async fn cancel(f: &Fixture, run: &coral_run::RunId) {

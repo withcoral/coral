@@ -271,6 +271,7 @@ impl PublicClientAccount {
 
     async fn new() -> Self {
         use coral_provider::account::SetupOAuthClient;
+        super::trace::capture();
         let server = MockServer::start().await;
         let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
         let tool = fixture
@@ -408,7 +409,7 @@ impl PublicClientAccount {
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "access_token":"initial-access-canary", "refresh_token":"retained-refresh-canary",
-                "token_type":"Bearer", "expires_in":1, "scope":"read"
+                "token_type":"Bearer", "expires_in":1, "scope":"read account-metadata-canary"
             })))
             .expect(1)
             .mount(server)
@@ -543,6 +544,15 @@ impl PublicClientAccount {
             "one execution, invocation and emission"
         );
         assert!(!format!("{terminal:?}").contains("canary"));
+        super::trace::assert_untraced([
+            "code-canary",
+            "initial-access-canary",
+            "retained-refresh-canary",
+            "renewed-access-canary",
+            "latest-access-canary",
+            "private-upstream-canary",
+            "account-metadata-canary",
+        ]);
         assert!(
             !self
                 .accounts
@@ -807,7 +817,8 @@ impl CredentialScheme {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn shared_account_credentials_reach_the_upstream_but_never_run_history() {
+async fn shared_account_credentials_reach_the_upstream_but_never_run_history_or_traces() {
+    super::trace::capture();
     for scheme in CredentialScheme::ALL {
         let server = MockServer::start().await;
         let mut expected = Mock::given(method("GET")).and(path("/forecast"));
@@ -860,6 +871,7 @@ async fn shared_account_credentials_reach_the_upstream_but_never_run_history() {
         for canary in scheme.canaries() {
             assert!(!history.contains(canary), "{scheme:?} leaked {canary}");
         }
+        super::trace::assert_untraced(scheme.canaries());
     }
 }
 

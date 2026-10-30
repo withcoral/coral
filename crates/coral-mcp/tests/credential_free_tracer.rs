@@ -19,7 +19,7 @@ use coral_provider::{ManagementRequestId, ProviderModule, WorkspaceProviderPubli
 use coral_run::RunModule;
 use coral_search::UniversalSearchModule;
 use coral_task::TaskModule;
-use coral_telemetry::testing::SpanCapture;
+use coral_telemetry::testing::{ExportCapture, SpanCapture};
 use coral_test_support::TestDatabase;
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, TraceId, WorkspaceDisplayName, WorkspaceId, WorkspaceModule,
@@ -39,6 +39,7 @@ use thiserror as _;
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, oneshot};
 use tower as _;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
 use uuid as _;
 
@@ -154,6 +155,16 @@ impl TestUpstream {
             signals.release_worker.notified().await;
             json_response(r#"{"released":true}"#)
         }
+        /// A Result and a response header that hold private data.
+        async fn private_record() -> ([(header::HeaderName, &'static str); 2], &'static str) {
+            (
+                [
+                    (header::CONTENT_TYPE, "application/json"),
+                    (header::SET_COOKIE, "session=response-header-c0ral-private"),
+                ],
+                r#"{"record":"result-c0ral-private"}"#,
+            )
+        }
         fn json_response(
             body: &'static str,
         ) -> ([(header::HeaderName, &'static str); 1], &'static str) {
@@ -166,6 +177,7 @@ impl TestUpstream {
             .route("/disconnected-first", get(disconnected_first))
             .route("/disconnected-second", get(disconnected_second))
             .route("/lost-worker", get(lost_worker))
+            .route("/private-record", get(private_record))
             .with_state(signals.clone());
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .await
@@ -378,13 +390,18 @@ impl Tracer {
 
     /// Makes `getForecast` wait for the invoking User's approval.
     async fn require_approval(&self) {
+        self.require_approval_of("getForecast").await;
+    }
+
+    /// Makes `tool` wait for the invoking User's approval.
+    async fn require_approval_of(&self, tool: &str) {
         self.policies
             .set_access_state(
                 &change(self.local_user.clone(), 50, 'a'),
                 ToolPolicyTarget::new(
                     self.workspace_a.clone(),
                     self.provider_id.clone(),
-                    ToolKey::parse("getForecast").expect("Tool Key"),
+                    ToolKey::parse(tool).expect("Tool Key"),
                 ),
                 ToolAccessState::ApprovalRequired,
             )
@@ -1450,118 +1467,41 @@ async fn an_abandoned_exec_request_does_not_cancel_accepted_work() {
     .expect("accepted Run continues to its second Tool after request loss");
 }
 
-/// Private Program content reaches authorized readers only, never telemetry.
-#[tokio::test(flavor = "multi_thread")]
-async fn private_program_content_stays_out_of_traces_and_logs() {
-    let capture = capture();
-    tracing::info_span!(target: "coral_mcp::failure_test", "capture_ready")
-        .in_scope(|| tracing::info!(target: "coral_mcp::failure_test", "capture ready"));
-    let tracer = Tracer::start().await;
-    let client = tracer.sdk().await;
-    let task_id = start_task(&client, "Keep private content out of telemetry").await;
-    for program in [
-        "throw new TypeError('Customer address is missing');",
-        "return {toJSON() { throw new Error('Invoice cannot be serialized'); }};",
-        "throw Object.assign(new Error('authored'), {name:'ToolError', code:'account_required', credential:'attached-canary'});",
-    ] {
-        let failed = call(&client, "exec", json!({
-            "task_id": task_id, "intent": "Fail with private content", "wait_ms": 5000, "program": program
-        })).await;
-        assert_eq!(structured(&failed)["state"], "failed");
-    }
-    call(
-        &client,
-        "save_function",
-        json!({
-            "task_id":task_id, "intent":"Fail inside a Saved Function",
-            "path":"diagnostics.fail", "description":"Fail with an authored message",
-            "source":"export default function fail() { throw new Error('saved-function-canary'); }"
-        }),
-    )
-    .await;
-    let linked = call(
-        &client,
-        "exec",
-        json!({
-            "task_id":task_id, "intent":"Observe the Saved Function failure", "wait_ms":5000,
-            "program":"return coral.functions.diagnostics.fail();"
-        }),
-    )
-    .await;
-    assert_eq!(structured(&linked)["state"], "failed");
-    let ended = call(
-        &client,
-        "end_task",
-        json!({"task_id": task_id, "outcome": "success", "feedback": "  Completed the tracer 🪸\n"}),
-    )
-    .await;
-    assert_eq!(structured(&ended)["outcome"], "success");
-    client.service.cancel().await.expect("close MCP client");
-    tracer.server.shutdown().await.expect("stop MCP server");
-    let spans = capture.spans.finished();
-    assert!(!spans.is_empty(), "capture is active");
-    let metrics = capture.metrics.points();
-    let operations = metrics
-        .iter()
-        .filter(|point| point.name == "coral.request.duration")
-        .filter_map(|point| point.attributes.get("operation").cloned())
-        .collect::<std::collections::BTreeSet<_>>();
-    for tool in ["start_task", "exec", "save_function", "end_task"] {
-        assert!(
-            operations.contains(&format!("tools/call {tool}")),
-            "each tool call's request is named by its tool: {operations:?}"
-        );
-    }
-    let exported = format!("{spans:?}{metrics:?}");
-    let logs = capture.logs.0.lock().expect("captured logs");
-    let logs = String::from_utf8_lossy(&logs);
-    for canary in [
-        "Customer address is missing",
-        "saved-function-canary",
-        "Invoice cannot be serialized",
-        "attached-canary",
-        "Completed the tracer 🪸",
-    ] {
-        assert!(
-            !exported.contains(canary),
-            "Private content must not reach traces or metrics"
-        );
-        assert!(
-            !logs.contains(canary),
-            "Private content must not reach operational logs"
-        );
-    }
-}
-
 /// The process-wide trace and log capture of the production Adapter and domain
-/// targets, not the test client's wire dumps. It installs once per process.
+/// targets, not the test client's wire dumps, and of what leaves the host. It
+/// installs once per process.
 struct Capture {
     spans: SpanCapture,
     logs: LogCapture,
     metrics: coral_telemetry::testing::MetricCapture,
+    exported: ExportCapture,
 }
 
 fn capture() -> &'static Capture {
     static CAPTURE: std::sync::OnceLock<Capture> = std::sync::OnceLock::new();
     CAPTURE.get_or_init(|| {
-        let spans = SpanCapture::default();
+        let exported = ExportCapture::default();
+        let spans = SpanCapture::exporting_to(&exported);
         let logs = LogCapture::default();
         let metrics = coral_telemetry::testing::MetricCapture::default();
         let log_writer = logs.clone();
+        // Every crate and library. TRACE adds only per-frame HTTP noise,
+        // which would fill the capture.
         tracing_subscriber::Registry::default()
-            .with(
-                tracing_subscriber::filter::Targets::new()
-                    .with_target(coral_telemetry::REQUEST_TARGET, tracing::Level::TRACE)
-                    .with_target("coral_mcp", tracing::Level::TRACE)
-                    .with_target("coral_run", tracing::Level::TRACE)
-                    .with_target("coral_v8", tracing::Level::TRACE),
-            )
-            .with(spans.layer())
+            .with(spans.layer().with_filter(LevelFilter::DEBUG))
             .with(metrics.layer())
+            .with(exported.log_layer().with_filter(LevelFilter::DEBUG))
             .with(
                 tracing_subscriber::fmt::layer()
                     .with_ansi(false)
-                    .with_writer(move || log_writer.clone()),
+                    .with_writer(move || log_writer.clone())
+                    .with_filter(
+                        tracing_subscriber::filter::Targets::new()
+                            .with_target(coral_telemetry::REQUEST_TARGET, tracing::Level::TRACE)
+                            .with_target("coral_mcp", tracing::Level::TRACE)
+                            .with_target("coral_run", tracing::Level::TRACE)
+                            .with_target("coral_v8", tracing::Level::TRACE),
+                    ),
             )
             .try_init()
             .expect("install telemetry capture");
@@ -1569,6 +1509,7 @@ fn capture() -> &'static Capture {
             spans,
             logs,
             metrics,
+            exported,
         }
     })
 }
@@ -1870,6 +1811,8 @@ mod client_visible_contracts;
 mod default_contracts;
 #[path = "credential_free_tracer/input_contracts.rs"]
 mod input_contracts;
+#[path = "credential_free_tracer/private_data_contracts.rs"]
+mod private_data_contracts;
 #[path = "credential_free_tracer/prompt_contracts.rs"]
 mod prompt_contracts;
 #[path = "credential_free_tracer/trace_contracts.rs"]
@@ -2831,7 +2774,11 @@ async fn publish_tools(
                         "application/json": {
                             "schema": {
                                 "type": "object",
-                                "properties": {(property): {"type": if property == "temperatureC" {"number"} else {"boolean"}}},
+                                "properties": {(property): {"type": match property {
+                                    "temperatureC" => "number",
+                                    "record" => "string",
+                                    _ => "boolean",
+                                }}},
                                 "required": [property]
                             }
                         }
@@ -2840,6 +2787,11 @@ async fn publish_tools(
             }
         })
     };
+    let mut private_record = tool("getPrivateRecord", "record");
+    private_record.as_object_mut().expect("operation").insert(
+        "parameters".to_owned(),
+        json!([{"name": "token", "in": "query", "schema": {"type": "string"}}]),
+    );
     let document = json!({
         "openapi": "3.1.0",
         "info": {"title": "Weather Tracer", "version": "1"},
@@ -2849,7 +2801,8 @@ async fn publish_tools(
             "/forecast": {"get": tool("getForecast", "temperatureC")},
             "/disconnected-first": {"get": tool("disconnectedFirst", "first")},
             "/disconnected-second": {"get": tool("disconnectedSecond", "second")},
-            "/lost-worker": {"get": tool("lostWorker", "released")}
+            "/lost-worker": {"get": tool("lostWorker", "released")},
+            "/private-record": {"get": private_record}
         }
     });
     let setup = providers
@@ -2884,6 +2837,7 @@ async fn publish_tools(
         "disconnectedFirst",
         "disconnectedSecond",
         "lostWorker",
+        "getPrivateRecord",
     ]
     .into_iter()
     .enumerate()

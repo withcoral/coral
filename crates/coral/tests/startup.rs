@@ -269,6 +269,52 @@ fn runtime_stops_gracefully_when_stdin_closes_only_when_its_launcher_opts_in() {
     }
 }
 
+/// Telemetry is best effort. With a collector that refuses connections, and
+/// with one that accepts them and never answers, a runtime comes ready, stays
+/// ready while traced requests fail to export, and stops cleanly having lost
+/// what it could not flush.
+#[test]
+fn an_unreachable_collector_changes_neither_readiness_nor_a_clean_stop() {
+    // Connections queue in the backlog of a listener that never accepts them.
+    let stalled = std::net::TcpListener::bind("127.0.0.1:0").expect("bind stalled collector");
+    let refused = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind a free port")
+        .local_addr()
+        .expect("free port");
+    for collector in [
+        refused,
+        stalled.local_addr().expect("stalled collector address"),
+    ] {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let state_root = local_state_root(&temp);
+        let config = state_root.join("config.toml");
+        let raw = std::fs::read_to_string(&config).expect("read config");
+        std::fs::write(
+            &config,
+            format!("{raw}[otel]\nendpoint = 'http://{collector}'\n"),
+        )
+        .expect("write config");
+        let mut runtime = Runtime::start(&state_root, true);
+
+        let client = reqwest::blocking::Client::new();
+        let endpoint = format!("{}/workspaces/absent/mcp", runtime.mcp_origin);
+        for _ in 0..32 {
+            let traced = client.post(&endpoint).send().expect("traced request");
+            assert!(traced.status().is_client_error(), "{collector}");
+        }
+        assert!(
+            runtime.ready(),
+            "{collector}: export never decides readiness"
+        );
+
+        runtime.close_stdin();
+        let status = runtime
+            .exit_within(EXIT_TIMEOUT)
+            .expect("the runtime stops without its collector");
+        assert_eq!(status.code(), Some(0), "{collector}: {status}");
+    }
+}
+
 /// A relaunch while an earlier runtime still runs must not open the same
 /// stores. It exits with `EX_TEMPFAIL` so a launcher can retry it.
 #[test]

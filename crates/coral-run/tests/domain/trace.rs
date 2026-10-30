@@ -21,6 +21,15 @@ pub(super) fn capture() -> &'static SpanCapture {
     })
 }
 
+/// Asserts that no span or span event holds any of `canaries`. A test calls
+/// [`capture`] before its work, or this reads nothing of it.
+pub(super) fn assert_untraced(canaries: impl IntoIterator<Item = &'static str>) {
+    let spans = format!("{:?}", capture().finished());
+    for canary in canaries {
+        assert!(!spans.contains(canary), "a span holds {canary}");
+    }
+}
+
 /// Every span export attempt [`FailingExporter`] refused.
 static FAILED_EXPORTS: AtomicUsize = AtomicUsize::new(0);
 

@@ -63,6 +63,18 @@ struct Fixture {
     search_index: coral_search::SearchIndex,
 }
 
+/// The process-wide span capture: a subscriber set for one test thread misses
+/// callsites another test's thread registered first.
+fn capture() -> &'static coral_telemetry::testing::SpanCapture {
+    static CAPTURE: OnceLock<coral_telemetry::testing::SpanCapture> = OnceLock::new();
+    CAPTURE.get_or_init(|| {
+        let capture = coral_telemetry::testing::SpanCapture::default();
+        tracing::subscriber::set_global_default(capture.subscriber())
+            .expect("install the span capture");
+        capture
+    })
+}
+
 fn change(user: &AuthenticatedUser) -> ChangeContext {
     ChangeContext::new(user.clone(), 1, TraceId::current_or_new())
 }

@@ -254,7 +254,9 @@ fn span_level_attribute(span: &SpanData) -> Option<tracing::Level> {
 
 #[cfg(test)]
 mod tests {
-    use opentelemetry::logs::{AnyValue, Severity};
+    use opentelemetry::logs::{
+        AnyValue, LogRecord as _, Logger as _, LoggerProvider as _, Severity,
+    };
     use opentelemetry::trace::TraceContextExt as _;
     use opentelemetry::trace::{
         SpanContext, SpanId, Status, TraceFlags, TraceId, TraceState, TracerProvider as _,
@@ -386,6 +388,139 @@ mod tests {
                 "{attributes:?}"
             );
         }
+    }
+
+    /// Keys a convention or a careless span gives private data. Each stands
+    /// for a field that reached a span past every earlier check, so only
+    /// the filter stands between it and the collector.
+    const FORBIDDEN: &[&str] = &[
+        "url.full",
+        "url.path",
+        "url.query",
+        "http.request.header.authorization",
+        "http.request.header.cookie",
+        "http.response.header.set-cookie",
+        "user_agent.original",
+        "client.address",
+        "exception.message",
+        "exception.stacktrace",
+        "db.query.text",
+        "db.statement",
+        "user.email",
+        "enduser.id",
+        "mcp.session.id",
+        "gen_ai.tool.call.arguments",
+        "gen_ai.tool.call.result",
+        "coral.program.source",
+        "coral.task.intent",
+        "coral.invocation.arguments",
+        "coral.invocation.result",
+        "coral.run.emission",
+        "coral.run.log",
+        "coral.saved_function.source",
+        "coral.approval.comment",
+        "coral.account.metadata",
+        "coral.account.token",
+        "coral.credential",
+        "coral.local.credential",
+        // One character from a cataloged key.
+        "coral.run.id.value",
+        "coral.run.i",
+    ];
+
+    /// The filter rejects a forbidden key wherever a misclassified field puts
+    /// it: on a span, a span event, a link or a log record. The cataloged key
+    /// beside it leaves, so the rejection is the key's and not the record's.
+    #[test]
+    fn a_misclassified_forbidden_attribute_never_leaves() {
+        const CANARY: &str = "forbidden-canary";
+        let attributes = || {
+            FORBIDDEN
+                .iter()
+                .map(|key| KeyValue::new(*key, CANARY))
+                .chain([KeyValue::new("coral.run.id", "run-1")])
+                .collect::<Vec<_>>()
+        };
+
+        let memory = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_span_processor(OtlpSpanFilter::new(
+                SimpleSpanProcessor::new(memory.clone()),
+                "coral_app=trace".parse().expect("trace filter"),
+            ))
+            .build();
+        let subscriber = tracing_subscriber::Registry::default().with(
+            tracing_opentelemetry::layer()
+                .with_tracer(provider.tracer("export-filter-test"))
+                .with_level(true),
+        );
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(target: "coral_app", "misclassified");
+            for attribute in attributes() {
+                span.set_attribute(attribute.key, attribute.value);
+            }
+            span.add_link_with_attributes(
+                SpanContext::new(
+                    TraceId::from_hex("00000000000000000000000000000077").unwrap(),
+                    SpanId::from_hex("0000000000000088").unwrap(),
+                    TraceFlags::SAMPLED,
+                    true,
+                    TraceState::default(),
+                ),
+                attributes(),
+            );
+            span.add_event("misclassified", attributes());
+            span.in_scope(|| {});
+        });
+        provider.force_flush().expect("flush spans");
+        let spans = memory.get_finished_spans().expect("finished spans");
+        provider.shutdown().expect("provider shutdown");
+
+        let logs = InMemoryLogExporter::default();
+        let log_provider = SdkLoggerProvider::builder()
+            .with_log_processor(OtlpLogFilter::new(SimpleLogProcessor::new(logs.clone())))
+            .build();
+        let logger = log_provider.logger("export-filter-test");
+        let mut record = logger.create_log_record();
+        record.set_target("coral_app");
+        record.add_attributes(
+            attributes()
+                .into_iter()
+                .map(|attribute| (attribute.key, AnyValue::from(attribute.value.to_string()))),
+        );
+        logger.emit(record);
+        log_provider.force_flush().expect("flush logs");
+        let records = logs.get_emitted_logs().expect("emitted logs");
+
+        let [span] = spans.as_slice() else {
+            panic!("one exported span: {spans:?}");
+        };
+        let [event] = span.events.events.as_slice() else {
+            panic!("one exported event: {:?}", span.events);
+        };
+        let [link] = span.links.links.as_slice() else {
+            panic!("one exported link: {:?}", span.links);
+        };
+        for (place, kept) in [
+            ("span", keys(&span.attributes)),
+            ("event", keys(&event.attributes)),
+            ("link", keys(&link.attributes)),
+        ] {
+            assert!(kept.contains(&"coral.run.id"), "{place}: {kept:?}");
+        }
+        let [log] = records.as_slice() else {
+            panic!("one exported log record: {records:?}");
+        };
+        assert_eq!(
+            log.record
+                .attributes_iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>(),
+            ["coral.run.id"]
+        );
+        let exported = format!("{spans:?}{records:?}");
+        assert!(!exported.contains(CANARY), "{exported}");
+        log_provider.shutdown().expect("provider shutdown");
     }
 
     /// Exports the events below as log records through the filter and
