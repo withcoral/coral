@@ -98,7 +98,7 @@ async fn context_impact_task_total_includes_unloaded_measurements_and_ignores_no
     loop {
         let page = f
             .tasks
-            .activity_interactions(&f.runs, &f.actor, &identity, &window, 1, None)
+            .activity_interactions(&f.runs, &f.actor, &identity, &window, 1, None, None)
             .await
             .unwrap();
         task_totals.push(page.task.context_impact_bytes());
@@ -143,6 +143,7 @@ async fn context_impact_task_total_includes_unloaded_measurements_and_ignores_no
             &HistoryScope::Personal(None),
             &ActivityWindow::Edge,
             1,
+            None,
         )
         .await
         .unwrap();
@@ -276,7 +277,7 @@ async fn child_viewports_seek_bounded_history_and_refresh_around_an_authorized_a
     };
     let page = f
         .tasks
-        .activity_interactions(&f.runs, &f.actor, &identity, &window, 3, None)
+        .activity_interactions(&f.runs, &f.actor, &identity, &window, 3, None, None)
         .await
         .unwrap();
     assert_eq!(page.offset, 4);
@@ -306,6 +307,7 @@ async fn child_viewports_seek_bounded_history_and_refresh_around_an_authorized_a
             },
             3,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -327,6 +329,7 @@ async fn child_viewports_seek_bounded_history_and_refresh_around_an_authorized_a
                 preceding: 0,
             },
             3,
+            None,
             None,
         )
         .await
@@ -413,6 +416,7 @@ async fn context_impact_is_partial_while_a_run_runs_and_skips_an_unmeasured_chil
             &InteractionWindow::Start,
             100,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -440,6 +444,7 @@ async fn task_impact(f: &Fixture, goal: &Task) -> (Option<i64>, bool) {
             &HistoryScope::Personal(None),
             &ActivityWindow::Edge,
             1,
+            None,
         )
         .await
         .unwrap();
@@ -468,6 +473,7 @@ async fn task_read(f: &Fixture, goal: &Task) -> Task {
             },
             &InteractionWindow::Start,
             1,
+            None,
             None,
         )
         .await
@@ -552,7 +558,7 @@ async fn root_windows_page_in_qualified_order_around_anchors() {
         let (tasks, runs, actor, scope) = (&f.tasks, &f.runs, &f.actor, &scope);
         async move {
             tasks
-                .activity_roots(runs, actor, scope, &window, 2)
+                .activity_roots(runs, actor, scope, &window, 2, None)
                 .await
                 .unwrap()
         }
@@ -590,13 +596,13 @@ async fn root_windows_keep_their_rows_when_new_roots_arrive() {
     let scope = HistoryScope::Personal(None);
     let first = f
         .tasks
-        .activity_roots(&f.runs, &f.actor, &scope, &ActivityWindow::Edge, 2)
+        .activity_roots(&f.runs, &f.actor, &scope, &ActivityWindow::Edge, 2, None)
         .await
         .unwrap();
     let after = ActivityWindow::After(first.rows.last().unwrap().identity());
     let next = f
         .tasks
-        .activity_roots(&f.runs, &f.actor, &scope, &after, 2)
+        .activity_roots(&f.runs, &f.actor, &scope, &after, 2, None)
         .await
         .unwrap();
     f.tasks
@@ -610,7 +616,7 @@ async fn root_windows_keep_their_rows_when_new_roots_arrive() {
         .unwrap();
     let refreshed = f
         .tasks
-        .activity_roots(&f.runs, &f.actor, &scope, &after, 2)
+        .activity_roots(&f.runs, &f.actor, &scope, &after, 2, None)
         .await
         .unwrap();
     assert!(refreshed.has_before && refreshed.has_after);
@@ -619,7 +625,7 @@ async fn root_windows_keep_their_rows_when_new_roots_arrive() {
     let retained = ActivityWindow::Records(next.rows.iter().map(ActivityRoot::identity).collect());
     let reading = f
         .tasks
-        .activity_roots(&f.runs, &f.actor, &scope, &retained, 2)
+        .activity_roots(&f.runs, &f.actor, &scope, &retained, 2, None)
         .await
         .unwrap();
     assert_eq!(
@@ -631,14 +637,14 @@ async fn root_windows_keep_their_rows_when_new_roots_arrive() {
     assert!(!reading.anchor_unavailable);
     assert!(matches!(
         f.tasks
-            .activity_roots(&f.runs, &f.actor, &scope, &retained, 1)
+            .activity_roots(&f.runs, &f.actor, &scope, &retained, 1, None)
             .await,
         Err(Error::InvalidInput(_))
     ));
     for size in [0, 101] {
         assert!(matches!(
             f.tasks
-                .activity_roots(&f.runs, &f.actor, &scope, &ActivityWindow::Edge, size)
+                .activity_roots(&f.runs, &f.actor, &scope, &ActivityWindow::Edge, size, None)
                 .await,
             Err(Error::InvalidInput(_))
         ));
@@ -668,7 +674,7 @@ async fn root_windows_conceal_another_users_private_anchor() {
     ] {
         let concealed = f
             .tasks
-            .activity_roots(&f.runs, &f.actor, &scope, &window, 2)
+            .activity_roots(&f.runs, &f.actor, &scope, &window, 2, None)
             .await
             .unwrap();
         assert!(concealed.anchor_unavailable && concealed.rows.is_empty());
@@ -713,6 +719,7 @@ async fn root_windows_reauthorize_rows_and_anchors_after_membership_loss() {
                 ActivityIdentity::Task(surviving.workspace_id().clone(), surviving.id().clone()),
             ]),
             2,
+            None,
         )
         .await
         .unwrap();
@@ -729,7 +736,7 @@ async fn root_windows_reauthorize_rows_and_anchors_after_membership_loss() {
     ] {
         let unavailable = f
             .tasks
-            .activity_roots(&f.runs, &f.actor, &scope, &window, 2)
+            .activity_roots(&f.runs, &f.actor, &scope, &window, 2, None)
             .await
             .unwrap();
         assert!(unavailable.anchor_unavailable && unavailable.rows.is_empty());
@@ -746,6 +753,7 @@ async fn root_windows_reauthorize_rows_and_anchors_after_membership_loss() {
                 },
                 &InteractionWindow::Start,
                 2,
+                None,
                 None
             )
             .await,
@@ -753,7 +761,7 @@ async fn root_windows_reauthorize_rows_and_anchors_after_membership_loss() {
     ));
     let remaining = f
         .tasks
-        .activity_roots(&f.runs, &f.actor, &scope, &ActivityWindow::Edge, 100)
+        .activity_roots(&f.runs, &f.actor, &scope, &ActivityWindow::Edge, 100, None)
         .await
         .unwrap();
     assert_eq!(
@@ -770,7 +778,7 @@ async fn empty_root_windows_distinguish_boundaries_from_lost_retained_identities
     for window in [ActivityWindow::Edge, ActivityWindow::Records(vec![])] {
         let empty = f
             .tasks
-            .activity_roots(&f.runs, &f.actor, &scope, &window, 10)
+            .activity_roots(&f.runs, &f.actor, &scope, &window, 10, None)
             .await
             .unwrap();
         assert!(empty.rows.is_empty());
@@ -785,7 +793,7 @@ async fn empty_root_windows_distinguish_boundaries_from_lost_retained_identities
     ] {
         let empty = f
             .tasks
-            .activity_roots(&f.runs, &f.actor, &scope, &window, 10)
+            .activity_roots(&f.runs, &f.actor, &scope, &window, 10, None)
             .await
             .unwrap();
         assert!(empty.rows.is_empty());
@@ -799,6 +807,7 @@ async fn empty_root_windows_distinguish_boundaries_from_lost_retained_identities
             &scope,
             &ActivityWindow::Records(vec![identity.clone()]),
             10,
+            None,
         )
         .await
         .unwrap();
@@ -822,7 +831,7 @@ async fn empty_root_windows_distinguish_boundaries_from_lost_retained_identities
     ] {
         let empty = f
             .tasks
-            .activity_roots(&f.runs, &f.actor, &scope, &window, 10)
+            .activity_roots(&f.runs, &f.actor, &scope, &window, 10, None)
             .await
             .unwrap();
         assert!(empty.rows.is_empty());
@@ -842,7 +851,7 @@ async fn root_and_child_reads_do_not_renew_retention_and_expired_anchors_do_not_
     let scope = HistoryScope::Personal(None);
     let roots = f
         .tasks
-        .activity_roots(&f.runs, &f.actor, &scope, &ActivityWindow::Edge, 10)
+        .activity_roots(&f.runs, &f.actor, &scope, &ActivityWindow::Edge, 10, None)
         .await
         .unwrap();
     let children = f
@@ -854,6 +863,7 @@ async fn root_and_child_reads_do_not_renew_retention_and_expired_anchors_do_not_
             &InteractionWindow::Start,
             10,
             Some(&scope),
+            None,
         )
         .await
         .unwrap();
@@ -874,6 +884,7 @@ async fn root_and_child_reads_do_not_renew_retention_and_expired_anchors_do_not_
             &scope,
             &ActivityWindow::At(roots.rows.first().unwrap().identity()),
             10,
+            None,
         )
         .await
         .unwrap();
@@ -887,7 +898,8 @@ async fn root_and_child_reads_do_not_renew_retention_and_expired_anchors_do_not_
                 &identity,
                 &InteractionWindow::Start,
                 10,
-                Some(&scope)
+                Some(&scope),
+                None
             )
             .await,
         Err(Error::TaskNotFound)
@@ -956,7 +968,7 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
     for actor in [&f.actor, &second_owner] {
         let roots = f
             .tasks
-            .activity_roots(&f.runs, actor, &scope, &ActivityWindow::Edge, 10)
+            .activity_roots(&f.runs, actor, &scope, &ActivityWindow::Edge, 10, None)
             .await
             .unwrap();
         assert!(
@@ -972,6 +984,7 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
                 &InteractionWindow::Start,
                 1,
                 Some(&scope),
+                None,
             )
             .await
             .unwrap();
@@ -988,7 +1001,8 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
                     actor,
                     &HistoryScope::Personal(None),
                     &ActivityWindow::Edge,
-                    10
+                    10,
+                    None
                 )
                 .await
                 .unwrap()
@@ -1003,7 +1017,8 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
                     &task,
                     &InteractionWindow::Start,
                     1,
-                    Some(&HistoryScope::Personal(None))
+                    Some(&HistoryScope::Personal(None)),
+                    None
                 )
                 .await,
             Err(Error::TaskNotFound)
@@ -1018,7 +1033,14 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
             AuthenticatedPrincipal::user(provision_user(f.tasks.database.clone(), id, role).await);
         assert!(matches!(
             f.tasks
-                .activity_roots(&f.runs, &non_member, &scope, &ActivityWindow::Edge, 10)
+                .activity_roots(
+                    &f.runs,
+                    &non_member,
+                    &scope,
+                    &ActivityWindow::Edge,
+                    10,
+                    None
+                )
                 .await,
             Err(Error::Workspace(coral_workspace::Error::WorkspaceNotFound))
         ));
@@ -1031,6 +1053,7 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
                     &InteractionWindow::Start,
                     1,
                     Some(&scope),
+                    None,
                 )
                 .await,
             Err(Error::Workspace(coral_workspace::Error::WorkspaceNotFound))
@@ -1038,7 +1061,7 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
     }
     assert!(matches!(
         f.tasks
-            .activity_roots(&f.runs, &agent, &scope, &ActivityWindow::Edge, 10)
+            .activity_roots(&f.runs, &agent, &scope, &ActivityWindow::Edge, 10, None)
             .await,
         Err(Error::Workspace(coral_workspace::Error::PermissionDenied(
             _
@@ -1071,7 +1094,8 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
                 &task,
                 &InteractionWindow::Start,
                 1,
-                Some(&wrong_agent)
+                Some(&wrong_agent),
+                None
             )
             .await,
         Err(Error::TaskNotFound)
@@ -1088,7 +1112,7 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
         .unwrap();
     assert!(matches!(
         f.tasks
-            .activity_roots(&f.runs, &f.actor, &scope, &ActivityWindow::Edge, 10)
+            .activity_roots(&f.runs, &f.actor, &scope, &ActivityWindow::Edge, 10, None)
             .await,
         Err(Error::Workspace(coral_workspace::Error::PermissionDenied(
             _
@@ -1122,7 +1146,14 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
     .unwrap();
     let roots = f
         .tasks
-        .activity_roots(&f.runs, &second_owner, &scope, &ActivityWindow::Edge, 10)
+        .activity_roots(
+            &f.runs,
+            &second_owner,
+            &scope,
+            &ActivityWindow::Edge,
+            10,
+            None,
+        )
         .await
         .unwrap();
     assert!(matches!(roots.rows.as_slice(), [ActivityRoot::Task(task)] if task.id() == goal.id()));

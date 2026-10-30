@@ -841,15 +841,16 @@ export function programRunner(
       taskId = task.structuredContent.task_id
     }
   }
-  const execArguments = (program: string) => ({
+  const execArguments = (program: string, intent = 'Call one Tool') => ({
     task_id: taskId,
-    intent: 'Call one Tool',
+    intent,
     program,
     wait_ms: waitMs,
   })
-  const exec = async (program: string): Promise<ToolResult<RunUpdate>> => {
+  /** Runs `program` in the Task; `intent` is the Run's own, as an Agent states it. */
+  const exec = async (program: string, intent?: string): Promise<ToolResult<RunUpdate>> => {
     await initialize()
-    return rpc('tools/call', { name: 'exec', arguments: execArguments(program) })
+    return rpc('tools/call', { name: 'exec', arguments: execArguments(program, intent) })
   }
   return Object.assign(async (program: string) => JSON.stringify(await exec(program)), {
     exec,

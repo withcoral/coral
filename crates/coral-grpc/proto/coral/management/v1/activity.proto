@@ -105,6 +105,9 @@ message ActivityTask {
   string actor = 8;
   // workspaces/{workspace}/agents/{agent} if an Agent started it; empty for a User.
   string agent = 9;
+  // Set when the read has a query: true if intent contains it, false if only
+  // the intent of one of the Task's Runs does.
+  optional bool intent_matches = 12;
 }
 
 // A set of already-loaded records to refresh.
@@ -123,7 +126,7 @@ message ActivityViewport {
   uint32 preceding = 3;
 }
 
-// Selects one Task and a page of its interactions. List filters do not apply.
+// Selects one Task and a page of its interactions. Only query filters them.
 message InspectTaskRequest {
   reserved 6;
   reserved "retained";
@@ -140,6 +143,10 @@ message InspectTaskRequest {
   string anchor = 5;
   // Return the rows around a scroll position. Cannot be combined with after or anchor.
   ActivityViewport viewport = 7;
+  // The list's query. If the Task's intent does not contain it, return only
+  // the Run submissions whose intent does. Same rules as in
+  // BrowseActivityRootsRequest.
+  string query = 8;
 }
 
 // Summary of one tool call in a Task.
@@ -888,6 +895,11 @@ message BrowseActivityRootsRequest {
   string anchor = 5;
   // Refresh only these Tasks and Runs. Cannot be combined with before, after or anchor.
   ActivityRecords retained = 6;
+  // Return only the Tasks whose intent, or the intent of one of their Runs,
+  // contains this text. ASCII letters match in either case; other characters
+  // match exactly. Surrounding whitespace is ignored. 3 to 1024 characters;
+  // leave empty to list all activity. Runs started outside a Task never match.
+  string query = 7;
 }
 // One top-level entry: a Task, or a Run started outside any Task.
 message ActivityRoot {

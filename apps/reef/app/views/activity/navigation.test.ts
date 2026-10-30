@@ -1498,3 +1498,59 @@ describe('live scopes', () => {
     expect(query.getAll('liveExpanded')).toEqual([oldTask])
   })
 })
+
+describe('search navigation', () => {
+  const searched = activityPage({
+    expanded: [task],
+    query: 'invoices',
+    listPath: '/workspaces/w/activity',
+  })
+  const location = `?q=invoices&tree=1&expand=${task}&anchor=${task}&offset.${task}=4&record=${run}&live=latest&liveExpanded=${task}&pendingAfter=p`
+
+  it('opens the list for a new search from its newest records, with the open record and live mode', () => {
+    const nav = activityNavigation(searched, '/workspaces/w/activity', location)
+    expect([...target(nav.searchHref('billing'))]).toEqual([
+      ['record', run],
+      ['live', 'latest'],
+      ['pendingAfter', 'p'],
+      ['q', 'billing'],
+    ])
+    expect(target(nav.searchHref('')).has('q')).toBe(false)
+  })
+
+  it('keeps the list where it is while the text is too short to search', () => {
+    const nav = activityNavigation(
+      { ...searched, query: '' },
+      '/workspaces/w/activity',
+      `?tree=1&expand=${task}&anchor=${task}`,
+    )
+    const short = target(nav.searchHref('in'))
+    expect(short.get('q')).toBe('in')
+    expect(short.getAll('expand')).toEqual([task])
+    expect(short.get('anchor')).toBe(task)
+  })
+
+  it('keeps a Task you collapse during a search collapsed, and forgets it when you open it', () => {
+    const nav = activityNavigation(searched, '/workspaces/w/activity', location)
+    const closed = target(nav.toggleHref(task))
+    expect(closed.getAll('expand')).toEqual([])
+    expect(closed.getAll('collapse')).toEqual([task])
+    const reopened = activityNavigation(
+      { ...searched, expanded: [] },
+      '/workspaces/w/activity',
+      `?${closed}`,
+    ).toggleHref(task)
+    expect(target(reopened).getAll('expand')).toEqual([task])
+    expect(target(reopened).has('collapse')).toBe(false)
+    const unsearched = activityNavigation(
+      { ...searched, query: '' },
+      '/workspaces/w/activity',
+      location,
+    )
+    expect(target(unsearched.toggleHref(task)).has('collapse')).toBe(false)
+  })
+
+  it('shows the complete list while a search is typed', () => {
+    expect(readsActivity(new URLSearchParams('q=in'))).toBe(true)
+  })
+})

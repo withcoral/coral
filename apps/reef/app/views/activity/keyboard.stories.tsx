@@ -172,10 +172,12 @@ export const FocusOrder: Story = {
     await press('{ArrowDown}')
     await expect(before).toHaveFocus()
     await expect(cursor()).toBeNull()
-    // Tab reaches the live toggle beside the list heading, then the table itself, which shows
-    // its focus until a cursor row does.
+    // Tab reaches the live toggle beside the list heading, then the search, then the table
+    // itself, which shows its focus until a cursor row does.
     await press('{Tab}')
     await expect(canvas.getByRole('button', { name: 'Follow latest activity' })).toHaveFocus()
+    await press('{Tab}')
+    await expect(canvas.getByRole('searchbox', { name: 'Search intent' })).toHaveFocus()
     await press('{Tab}')
     await expect(table).toHaveFocus()
     await expect(getComputedStyle(table).outlineStyle).not.toBe('none')

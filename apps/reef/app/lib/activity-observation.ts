@@ -24,6 +24,7 @@ import {
 } from './activity-list'
 import { activityPageFetchKey, fetchedActivityPage } from './activity-page-fetch'
 import { subscribeActivityStream } from './activity-stream'
+import { activitySearchKey } from './activity-search'
 
 const idle = () => {}
 // Selection, expansion and reading position never change which list is loaded.
@@ -31,6 +32,7 @@ const windowIndependentKeys = new Set<string>([
   ...selectionKeys,
   'pendingAfter',
   'expand',
+  'collapse',
   'tree',
   'anchor',
   'before',
@@ -275,6 +277,8 @@ function pageHref(page: ActivityPage, search: string, query: Record<string, stri
   const next = new URLSearchParams({ tree: '1', ...query, [activityPageFetchKey]: 'page' })
   const expanded = new Set(current.getAll('expand'))
   for (const name of expanded) next.append('expand', name)
+  for (const key of [activitySearchKey, 'collapse'])
+    for (const value of current.getAll(key)) next.append(key, value)
   // Records that the page brings in open their child windows where the URL keeps them.
   for (const [key, value] of current) {
     const parent = branchCoordinate(key)

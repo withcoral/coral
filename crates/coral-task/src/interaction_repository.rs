@@ -1,6 +1,7 @@
 use crate::{
     AttemptEvidence, AttemptFailure, AttemptKind, AttemptOutcome, AttributedCommand, Error,
-    InteractionDetail, InteractionId, InteractionSummary, TaskId, TaskIdentity, TaskIntent,
+    IntentQuery, InteractionDetail, InteractionId, InteractionSummary, TaskId, TaskIdentity,
+    TaskIntent,
 };
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
@@ -232,13 +233,15 @@ pub(super) async fn count(
     transaction: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     task: &TaskId,
+    matching: Option<&IntentQuery>,
 ) -> Result<i64, Error> {
+    let children = children(transaction.system(), workspace, task, matching);
     let (total,) = transaction
         .fetch_optional::<(i64,)>(
             Query::select()
                 .expr(Expr::col(TaskInteractions::Id).count())
                 .from(TaskInteractions::Table)
-                .cond_where(scope(workspace, task))
+                .cond_where(children)
                 .to_owned(),
         )
         .await?
@@ -246,13 +249,25 @@ pub(super) async fn count(
     Ok(total)
 }
 
+/// The anchor's ordinal among the children `matching` keeps; none for an anchor it
+/// leaves out.
 pub(super) async fn position(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     task: &TaskId,
     id: &InteractionId,
+    matching: Option<&IntentQuery>,
 ) -> Result<Option<u64>, Error> {
-    let Some(row) = summary(tx, workspace, task, id).await? else {
+    let children = children(tx.system(), workspace, task, matching);
+    let anchor: Option<SummaryRow> = tx
+        .fetch_optional(
+            summary_select()
+                .cond_where(children.clone())
+                .and_where(Expr::col(TaskInteractions::Id).eq(id.to_string()))
+                .to_owned(),
+        )
+        .await?;
+    let Some(row) = anchor.map(SummaryRow::decode).transpose()? else {
         return Ok(None);
     };
     let (position,) = tx
@@ -260,7 +275,7 @@ pub(super) async fn position(
             Query::select()
                 .expr(Expr::col(TaskInteractions::Id).count())
                 .from(TaskInteractions::Table)
-                .cond_where(scope(workspace, task))
+                .cond_where(children)
                 .and_where(
                     Expr::tuple([
                         Expr::col(TaskInteractions::StartedAtUnixNanos),
@@ -292,9 +307,10 @@ pub(super) async fn activity_page(
     task: &TaskId,
     window: &crate::InteractionWindow,
     limit: u16,
+    matching: Option<&IntentQuery>,
 ) -> Result<ActivityPage, Error> {
     use crate::InteractionWindow as W;
-    let total = count(tx, workspace, task).await?;
+    let total = count(tx, workspace, task, matching).await?;
     if let W::Viewport {
         offset,
         anchor,
@@ -302,7 +318,7 @@ pub(super) async fn activity_page(
     } = window
     {
         let at = if let Some(id) = anchor {
-            position(tx, workspace, task, id).await?
+            position(tx, workspace, task, id, matching).await?
         } else {
             None
         };
@@ -317,7 +333,7 @@ pub(super) async fn activity_page(
         let rows: Vec<SummaryRow> = tx
             .fetch_all(
                 summary_select()
-                    .cond_where(scope(workspace, task))
+                    .cond_where(children(tx.system(), workspace, task, matching))
                     .order_by(TaskInteractions::StartedAtUnixNanos, Order::Asc)
                     .order_by(TaskInteractions::Id, Order::Asc)
                     .offset(offset)
@@ -343,9 +359,11 @@ pub(super) async fn activity_page(
             return Err(Error::InvalidInput("unresolved interaction window".into()));
         }
     };
-    let rows = page(tx, workspace, task, after, at, limit + 1).await?;
+    let rows = page(tx, workspace, task, after, at, limit + 1, matching).await?;
     let offset = if let Some(first) = rows.first() {
-        position(tx, workspace, task, &first.id).await?.unwrap_or(0)
+        position(tx, workspace, task, &first.id, matching)
+            .await?
+            .unwrap_or(0)
     } else {
         0
     };
@@ -364,7 +382,7 @@ pub(super) async fn list(
     after: Option<&InteractionId>,
     limit: u16,
 ) -> Result<Vec<InteractionSummary>, Error> {
-    page(transaction, workspace, task, after, None, limit).await
+    page(transaction, workspace, task, after, None, limit, None).await
 }
 pub(super) async fn page(
     transaction: &mut Transaction<'_>,
@@ -373,9 +391,10 @@ pub(super) async fn page(
     after: Option<&InteractionId>,
     at: Option<&InteractionId>,
     limit: u16,
+    matching: Option<&IntentQuery>,
 ) -> Result<Vec<InteractionSummary>, Error> {
     let mut query = summary_select();
-    query.cond_where(scope(workspace, task));
+    query.cond_where(children(transaction.system(), workspace, task, matching));
     if let Some(after) = at.or(after) {
         let row = summary(transaction, workspace, task, after)
             .await?
@@ -546,6 +565,26 @@ fn scope(workspace: &WorkspaceId, task: &TaskId) -> Condition {
     Condition::all()
         .add(Expr::col(TaskInteractions::WorkspaceId).eq(workspace.to_string()))
         .add(Expr::col(TaskInteractions::TaskId).eq(task.to_string()))
+}
+/// The Task's children, or with `matching`, only its Run submissions whose
+/// intent contains the query.
+fn children(
+    system: coral_db::DatabaseSystem,
+    workspace: &WorkspaceId,
+    task: &TaskId,
+    matching: Option<&IntentQuery>,
+) -> Condition {
+    let scope = scope(workspace, task);
+    match matching {
+        None => scope,
+        Some(query) => scope
+            .add(Expr::col(TaskInteractions::RunId).is_not_null())
+            .add(crate::repository::activity::intent_contains(
+                system,
+                "task_interactions",
+                query,
+            )),
+    }
 }
 
 pub(crate) fn encode_kind(kind: AttemptKind) -> &'static str {

@@ -79,6 +79,7 @@ import {
 } from './activity-live-types'
 import { ACTIVITY_PAGE_SIZE } from './activity-list'
 import { activityPageFetchKey } from './activity-page-fetch'
+import { ACTIVITY_SEARCH_MAX_CHARS, activitySearch, activitySearchKey } from './activity-search'
 
 /** Activity and its requests, and the current catalog that discovery links open. */
 export type ActivityApi = Pick<
@@ -124,6 +125,7 @@ function taskView(task: ActivityTask): TaskRow {
     endedAt: task.endedAtUnixNanos === undefined ? null : timestamp(task.endedAtUnixNanos),
     actor: task.actor,
     agent: task.agent,
+    ...(task.intentMatches !== undefined && { intentMatches: task.intentMatches }),
   }
 }
 function interactionView(value: ActivityInteraction): InteractionRow {
@@ -1061,6 +1063,8 @@ async function liveLatestWork(
   // watch says newer ones exist too, which this reads from the top.
   if (liveScopeOf(query.get('live')) !== 'latest' || liveHold(page)) return undefined
   if (newestPage && page.hasBefore) return undefined
+  // Live mode follows only what the search lists.
+  const search = page.query ?? ''
   const now = Date.now()
   const { roots, complete } = await everyRoot()
   const tasks = roots.filter(
@@ -1183,7 +1187,7 @@ async function liveLatestWork(
       let value
       try {
         value = await api.activity.browseActivityRoots(
-          { scope, after: rows.at(-1)?.name ?? '', pageSize: ROOT_SCAN_PAGE },
+          { scope, after: rows.at(-1)?.name ?? '', pageSize: ROOT_SCAN_PAGE, query: search },
           { signal },
         )
       } catch (error) {
@@ -1247,6 +1251,7 @@ async function liveLatestWork(
           name,
           pageSize: offset === undefined ? 1 : size,
           scope,
+          query: search,
           viewport:
             offset === undefined ? undefined : { offset: BigInt(offset), anchor: '', preceding: 0 },
         },
@@ -1458,7 +1463,12 @@ const missingBranch = (): ActivityBranch => ({ rows: [], next: '', unavailable: 
  * Before continuous loading, a page link named the record next to it. The reader now
  * opens at an anchor, so the link redirects to the first record of the page it named.
  */
-async function redirectToAnchor(request: Request, api: ActivityApi, scope: ActivityScope) {
+async function redirectToAnchor(
+  request: Request,
+  api: ActivityApi,
+  scope: ActivityScope,
+  search: string,
+) {
   const url = new URL(request.url)
   const before = url.searchParams.get('before') ?? ''
   const after = url.searchParams.get('after') ?? ''
@@ -1469,7 +1479,7 @@ async function redirectToAnchor(request: Request, api: ActivityApi, scope: Activ
   url.searchParams.delete('anchor')
   try {
     const value = await api.activity.browseActivityRoots(
-      { scope, before, after, anchor: '', pageSize: ACTIVITY_PAGE_SIZE },
+      { scope, before, after, anchor: '', pageSize: ACTIVITY_PAGE_SIZE, query: search },
       { signal: request.signal },
     )
     const first = value.roots[0]?.record.value?.name
@@ -1495,6 +1505,8 @@ export async function loadActivity(
   const query = new URL(request.url).searchParams
   const { signal } = request
   const seen: LoadEvidence = { roots: new Map(), ends: new Map() }
+  const search = activitySearch(query.get(activitySearchKey))
+  if ([...search].length > ACTIVITY_SEARCH_MAX_CHARS) invalid('Invalid activity search')
   // Observation names its reading window directly; navigation names only an anchor.
   const reading = options.reading
   if (
@@ -1502,7 +1514,7 @@ export async function loadActivity(
     (query.has('before') || query.has('after')) &&
     query.get(activityPageFetchKey) !== 'page'
   )
-    await redirectToAnchor(request, api, options.scope)
+    await redirectToAnchor(request, api, options.scope, search)
   const expanded = [...new Set(query.getAll('expand'))]
   if (expanded.length > MAX_EXPANDED_RECORDS) invalid('Expand at most 20 records at a time')
   for (const name of expanded)
@@ -1530,6 +1542,7 @@ export async function loadActivity(
     unavailable: false,
     selected,
     selectedRow: null,
+    query: search,
     listPath:
       options.listPath ?? (scope.agent ? `/${scope.agent}` : `/${scope.workspace}/activity`),
   }
@@ -1564,6 +1577,7 @@ export async function loadActivity(
         scope,
         anchor: viewport(name) ? '' : anchor(name),
         viewport: viewport(name),
+        query: search,
       },
       { signal },
     )
@@ -1650,6 +1664,7 @@ export async function loadActivity(
         anchor: reading || query.has('before') || query.has('after') ? '' : (rootAnchor ?? ''),
         retained: reading && !reading.followRoot ? { names: reading.roots } : undefined,
         pageSize: ACTIVITY_PAGE_SIZE,
+        query: search,
       },
       { signal },
     )
@@ -1663,6 +1678,21 @@ export async function loadActivity(
     page.hasBefore = value.hasBefore
     page.hasAfter = value.hasAfter
     page.anchorUnavailable = value.anchorUnavailable
+    // A search keeps a Task whose intent does not match for its matching Runs, so it
+    // shows them, until you collapse it. The reader expands one that a later page or
+    // snapshot brings in.
+    const collapsed = new Set(query.getAll('collapse'))
+    const navigation = !reading && query.get(activityPageFetchKey) !== 'page'
+    for (const row of page.rows)
+      if (
+        navigation &&
+        row.kind === 'task' &&
+        row.intentMatches === false &&
+        !collapsed.has(row.name) &&
+        !page.expanded.includes(row.name) &&
+        page.expanded.length < MAX_EXPANDED_RECORDS
+      )
+        page.expanded.push(row.name)
   } catch (error) {
     if (!unavailable(error)) throw error
     page.rows = []

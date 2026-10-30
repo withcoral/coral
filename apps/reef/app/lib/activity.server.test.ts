@@ -3152,3 +3152,77 @@ describe('a request reviewed from a later page of the Run actions', () => {
     })
   })
 })
+
+/** Roots whose Tasks carry `matches`, as Coral answers a query; the reads record their input. */
+function searched(matches: Record<string, boolean>): Handlers {
+  return {
+    activity: {
+      browseRequiredActions: () => ({ actions: [], actionCount: 0n }),
+      browseActivityRoots: (input) => ({
+        roots: Object.entries(matches).map(([name, intentMatches]) => ({
+          record: {
+            case: 'task' as const,
+            value: {
+              ...goal,
+              name,
+              intentMatches: input.query ? intentMatches : undefined,
+            },
+          },
+        })),
+      }),
+      inspectTask: (input) => ({
+        task: { ...goal, name: input.name },
+        interactions: [],
+        total: 0n,
+        offset: 0n,
+      }),
+    },
+  }
+}
+const queries = (calls: { method: string; input: unknown }[], method: string) =>
+  calls
+    .filter((call) => call.method === method)
+    .map((call) => (call.input as { query: string }).query)
+
+describe('intent search', () => {
+  it.each([
+    ['  invoices ', 'invoices'],
+    ['inv', 'inv'],
+    [' in ', ''],
+    ['', ''],
+  ])('reads activity for the typed query %j as %j', async (typed, sent) => {
+    const { api, calls } = coral(searched({ [task]: false }))
+    const page = await loadActivity(request({ q: typed }), api, { scope })
+    expect(queries(calls, 'roots')).toEqual([sent])
+    expect(page.query).toBe(sent)
+    // Only a Task that a query keeps for its Runs opens to show them.
+    expect(queries(calls, 'task')).toEqual(sent ? [sent] : [])
+  })
+
+  it('reveals the Runs of a Task kept for them, unless you collapsed it', async () => {
+    const other = `${task}-matching`
+    const { api } = coral(searched({ [task]: false, [other]: true }))
+    const revealed = await loadActivity(request({ q: 'invoices' }), api, {
+      scope,
+    })
+    expect(revealed.expanded).toEqual([task])
+    expect(revealed.branches[task]).toBeDefined()
+    const collapsed = await loadActivity(
+      request({ q: 'invoices', tree: '1', collapse: task }),
+      api,
+      { scope },
+    )
+    expect(collapsed.expanded).toEqual([])
+  })
+
+  it('reads a live snapshot for the search, and leaves opening new Tasks to the reader', async () => {
+    const { api, calls } = coral(searched({ [task]: false }))
+    const page = await loadActivity(request({ q: 'invoices', tree: '1' }), api, {
+      scope,
+      reading: { roots: [], followRoot: true, branches: {} },
+    })
+    expect(queries(calls, 'roots')).toEqual(['invoices'])
+    expect(page.rows).toMatchObject([{ name: task, intentMatches: false }])
+    expect(page.expanded).toEqual([])
+  })
+})

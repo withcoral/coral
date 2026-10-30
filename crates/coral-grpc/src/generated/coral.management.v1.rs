@@ -5340,6 +5340,10 @@ pub struct ActivityTask {
     /// workspaces/{workspace}/agents/{agent} if an Agent started it; empty for a User.
     #[prost(string, tag = "9")]
     pub agent: ::prost::alloc::string::String,
+    /// Set when the read has a query: true if intent contains it, false if only
+    /// the intent of one of the Task's Runs does.
+    #[prost(bool, optional, tag = "12")]
+    pub intent_matches: ::core::option::Option<bool>,
 }
 /// A set of already-loaded records to refresh.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -5361,7 +5365,7 @@ pub struct ActivityViewport {
     #[prost(uint32, tag = "3")]
     pub preceding: u32,
 }
-/// Selects one Task and a page of its interactions. List filters do not apply.
+/// Selects one Task and a page of its interactions. Only query filters them.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct InspectTaskRequest {
     /// workspaces/{workspace}/tasks/{task}.
@@ -5382,6 +5386,11 @@ pub struct InspectTaskRequest {
     /// Return the rows around a scroll position. Cannot be combined with after or anchor.
     #[prost(message, optional, tag = "7")]
     pub viewport: ::core::option::Option<ActivityViewport>,
+    /// The list's query. If the Task's intent does not contain it, return only
+    /// the Run submissions whose intent does. Same rules as in
+    /// BrowseActivityRootsRequest.
+    #[prost(string, tag = "8")]
+    pub query: ::prost::alloc::string::String,
 }
 /// Summary of one tool call in a Task.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -6368,6 +6377,12 @@ pub struct BrowseActivityRootsRequest {
     /// Refresh only these Tasks and Runs. Cannot be combined with before, after or anchor.
     #[prost(message, optional, tag = "6")]
     pub retained: ::core::option::Option<ActivityRecords>,
+    /// Return only the Tasks whose intent, or the intent of one of their Runs,
+    /// contains this text. ASCII letters match in either case; other characters
+    /// match exactly. Surrounding whitespace is ignored. 3 to 80 characters;
+    /// leave empty to list all activity. Runs started outside a Task never match.
+    #[prost(string, tag = "7")]
+    pub query: ::prost::alloc::string::String,
 }
 /// One top-level entry: a Task, or a Run started outside any Task.
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -314,6 +314,8 @@ export interface ActivityPage {
    */
   liveLatest?: LiveLatest
   selectedRow: ActivityRow | null
+  /** The search Coral read the list for, or empty for all activity. */
+  query?: string
   listPath: string
 }
 
@@ -398,6 +400,11 @@ export interface TaskRow {
   endedAt: string | null
   actor: string
   agent: string
+  /**
+   * Set while a search lists the Task: true if its intent matches, false if it shows
+   * only for its matching Runs.
+   */
+  intentMatches?: boolean
 }
 export interface InteractionRow {
   position?: number

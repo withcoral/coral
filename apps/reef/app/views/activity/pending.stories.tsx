@@ -313,7 +313,7 @@ export const Combined: Story = {
     await expect(heading.compareDocumentPosition(live)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
     await expect(pending.compareDocumentPosition(live)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
     await expect(live).toHaveAttribute('aria-pressed', 'false')
-    // Tab reaches it after the actions, and before the table.
+    // Tab reaches it after the actions, then the search, and then the table.
     live.focus()
     await userEvent.tab({ shift: true })
     await expect(pending.closest('section')).toContainElement(
@@ -321,6 +321,8 @@ export const Combined: Story = {
     )
     await userEvent.tab()
     await expect(live).toHaveFocus()
+    await userEvent.tab()
+    await expect(canvas.getByRole('searchbox', { name: 'Search intent' })).toHaveFocus()
     await userEvent.tab()
     await expect(canvas.getByRole('table', { name: 'Activity records' })).toHaveFocus()
   },

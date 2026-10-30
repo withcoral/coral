@@ -95,6 +95,15 @@ fn limit(value: u32) -> Result<u16, Status> {
         _ => Err(Status::invalid_argument("invalid page size")),
     }
 }
+/// An empty query lists all activity.
+fn intent_query(value: &str) -> Result<Option<coral_task::IntentQuery>, Status> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    coral_task::IntentQuery::parse(value)
+        .map(Some)
+        .map_err(error)
+}
 fn task(task: &coral_task::Task) -> wire::ActivityTask {
     wire::ActivityTask {
         context_impact_bytes: task.context_impact_bytes(),
@@ -112,6 +121,7 @@ fn task(task: &coral_task::Task) -> wire::ActivityTask {
         ended_at_unix_nanos: task.ended_at_unix_nanos(),
         actor: task.principal().id().to_string(),
         agent: execution::agent(task.workspace_id(), task.principal()),
+        intent_matches: task.intent_matches(),
     }
 }
 fn interaction(parent: &str, value: &coral_task::InteractionSummary) -> wire::ActivityInteraction {
@@ -517,6 +527,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
         let window = interaction_window(&input, &identity)?;
         let size = limit(input.page_size)?;
         let selection = input.scope.as_ref().map(scope).transpose()?;
+        let query = intent_query(&input.query)?;
         let page = self
             .tasks
             .activity_interactions(
@@ -526,6 +537,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
                 &window,
                 size,
                 selection.as_ref(),
+                query.as_ref(),
             )
             .await
             .map_err(error)?;
