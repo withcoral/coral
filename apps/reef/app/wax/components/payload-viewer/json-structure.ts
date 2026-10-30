@@ -70,7 +70,6 @@ export function jsonStructure(source: string): JsonNode | 'invalid' | 'deep' {
   const open: OpenContainer[] = []
   let deepest = 0
   for (;;) {
-    // A value: a container opens, or a scalar is read whole.
     space()
     const start = at
     const char = source[at]
@@ -104,7 +103,6 @@ export function jsonStructure(source: string): JsonNode | 'invalid' | 'deep' {
       if (!kind) return 'invalid'
       value = { kind, start, end: at, raw: source.slice(start, at) }
     }
-    // Then the value takes its place, and each container it ends closes in turn.
     for (;;) {
       const parent = open.at(-1)
       if (!parent) {
