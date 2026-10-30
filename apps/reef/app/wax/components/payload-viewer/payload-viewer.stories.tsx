@@ -666,6 +666,27 @@ export const HugeSingleLineScrollsInRaw: Story = {
 }
 
 /**
+ * Catches: a huge payload on one line that mounts whole once Wrap is off. Its line still
+ * shows in rows near the view, and the card scrolls to its end.
+ */
+export const HugeSingleLineStaysBoundedUnwrapped: Story = {
+  args: { value: hugeArray },
+  play: async (context) => {
+    const viewer = await openExpanded(context)
+    await context.userEvent.click(within(viewer).getByRole('radio', { name: 'Raw' }))
+    await context.userEvent.click(within(viewer).getByRole('button', { name: 'Wrap' }))
+    const raw = within(viewer).getByRole('group', { name: 'Raw' })
+    await expect(mounted(raw, /item-\d{5}/)).toBeLessThan(5_000)
+    const scroller = scrollerOf(raw)
+    await waitFor(() => {
+      scroller.scrollTop = scroller.scrollHeight
+      expect(raw).toHaveTextContent('"item-09999"]')
+    })
+    await expect(mounted(raw, /item-\d{5}/)).toBeLessThan(5_000)
+  },
+}
+
+/**
  * Catches: a payload of few lines but many characters that mounts whole. Past the character
  * bound, only the part near the view mounts.
  */

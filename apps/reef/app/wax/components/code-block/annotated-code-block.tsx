@@ -1,5 +1,5 @@
 import classNames from 'classnames'
-import { Fragment, useEffect, useMemo, useRef } from 'react'
+import { Fragment, useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { HighlightedMatches, type Highlight } from '@/wax/components/highlighted-matches'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
@@ -40,14 +40,10 @@ export function AnnotatedCodeBlock({
   marks?: ReadonlyMap<number, Highlight[]>
 }) {
   const lines = useMemo(() => splitLines(highlightSource(code, language)), [code, language])
-  // Where each run starts in its line, so a mark finds the runs it falls in.
-  const offsets = useMemo(
-    () =>
-      lines.map((runs) => {
-        let at = 0
-        return runs.map(({ text }) => (at += text.length) - text.length)
-      }),
-    [lines],
+  // By line, each run's text with the parts of the marks that fall in it.
+  const shown = useMemo(
+    () => lines.map((runs, index) => markedRuns(runs, marks?.get(index + 1))),
+    [lines, marks],
   )
   const viewportRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -90,16 +86,15 @@ export function AnnotatedCodeBlock({
                 {lineNumber}
               </span>
               <span className={styles.lineText}>
-                {runs.map(({ text, className }, i) => {
-                  const shown = markedRun(text, offsets[index]![i]!, marks?.get(lineNumber))
-                  return className ? (
+                {runs.map(({ className }, i) =>
+                  className ? (
                     <span key={i} className={className}>
-                      {shown}
+                      {shown[index]![i]}
                     </span>
                   ) : (
-                    <Fragment key={i}>{shown}</Fragment>
-                  )
-                })}
+                    <Fragment key={i}>{shown[index]![i]}</Fragment>
+                  ),
+                )}
               </span>
             </div>
           )
@@ -109,15 +104,28 @@ export function AnnotatedCodeBlock({
   )
 }
 
-/** A run's `text`, from `start` in its line, with the parts of `marks` that fall in it. */
-function markedRun(text: string, start: number, marks: Highlight[] | undefined) {
-  if (!marks?.length) return text
-  const inRun = marks.flatMap(({ range: [from, to], current }): Highlight[] => {
-    const range: Highlight['range'] = [
-      Math.max(from, start) - start,
-      Math.min(to, start + text.length) - start,
-    ]
-    return range[0] < range[1] ? [{ range, current }] : []
+/**
+ * Each run's text with the parts of `marks` that fall in it. Find's marks come in order
+ * and never overlap, so one pass over the runs visits each mark only where it falls.
+ */
+function markedRuns(runs: { text: string }[], marks: Highlight[] | undefined): ReactNode[] {
+  if (!marks?.length) return runs.map(({ text }) => text)
+  let next = 0
+  let start = 0
+  return runs.map(({ text }, index) => {
+    const end = start + text.length
+    // A mark that ended before this run is behind every later run too.
+    while (next < marks.length && marks[next]!.range[1] <= start) next++
+    const inRun: Highlight[] = []
+    for (let at = next; at < marks.length && marks[at]!.range[0] < end; at++) {
+      const {
+        range: [from, to],
+        current,
+      } = marks[at]!
+      if (from < to)
+        inRun.push({ range: [Math.max(from, start) - start, Math.min(to, end) - start], current })
+    }
+    start = end
+    return inRun.length ? <HighlightedMatches key={index} text={text} highlights={inRun} /> : text
   })
-  return inRun.length ? <HighlightedMatches text={text} highlights={inRun} /> : text
 }
