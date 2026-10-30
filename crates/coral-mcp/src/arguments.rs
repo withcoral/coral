@@ -275,10 +275,26 @@ where
 {
     serde_json::from_value(Value::Object(arguments.unwrap_or_default())).map_err(|error| {
         ErrorData::invalid_params(
-            format!("invalid arguments for '{}': {error}", T::NAME),
+            format!(
+                "invalid arguments for '{}': {}",
+                T::NAME,
+                argument_problem(&error)
+            ),
             None,
         )
     })
+}
+
+/// What is wrong with arguments a caller can act on, without their text. A
+/// missing field is named by Coral's own schema. Every other message quotes
+/// the value or key it rejected, which can be private.
+fn argument_problem(error: &serde_json::Error) -> String {
+    let problem = error.to_string();
+    if problem.starts_with("missing field ") {
+        problem
+    } else {
+        "a value does not match the tool's input schema".to_owned()
+    }
 }
 
 /// Every tool this Adapter serves, as `tools/list` advertises them.
@@ -397,6 +413,33 @@ fn mutation_annotations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A caller learns which field is missing, but a rejected value or key
+    /// does not come back in the error.
+    #[test]
+    fn invalid_arguments_name_a_missing_field_and_never_quote_the_caller() {
+        const SCHEMA: &str = "a value does not match the tool's input schema";
+        for (arguments, problem) in [
+            (json!({}), "missing field `task_id`"),
+            (json!({"task_id": "t", "outcome": "value-canary"}), SCHEMA),
+            (json!({"task_id": ["value-canary"]}), SCHEMA),
+            (
+                json!({"task_id": "t", "outcome": "success", "key-canary": 1}),
+                SCHEMA,
+            ),
+        ] {
+            let Value::Object(arguments) = arguments else {
+                panic!("object arguments");
+            };
+            let Err(error) = parse::<EndTaskArguments>(Some(arguments)) else {
+                panic!("rejected: {problem}");
+            };
+            assert_eq!(
+                error.message,
+                format!("invalid arguments for 'end_task': {problem}")
+            );
+        }
+    }
 
     /// The `types` schema caps the item count; the per-name byte limit is
     /// domain-validated and not advertised.

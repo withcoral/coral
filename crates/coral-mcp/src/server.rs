@@ -133,7 +133,7 @@ impl McpServer {
                 self.end_task(arguments).await
             }
             _ => Err(DispatchError::Protocol(ErrorData::invalid_params(
-                format!("tool '{name}' not found"),
+                "tool not found",
                 None,
             ))),
         };
