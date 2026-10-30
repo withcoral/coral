@@ -9,7 +9,7 @@ import { fakeManagementTransport } from '@/lib/management.test-support'
 import * as overview from './workspace'
 import * as workspaces from './workspaces'
 
-const coral = vi.hoisted(() => ({ transport: undefined as unknown }))
+const coral = vi.hoisted(() => ({ transport: undefined as unknown, mcpEndpoint: true }))
 vi.mock('@/lib/coral-request.server', () => ({
   managementTransportForRequest: () => coral.transport,
 }))
@@ -29,7 +29,7 @@ coral.transport = fakeManagementTransport({
       displayName: 'Finance',
       effectiveRole: WorkspaceRole.OWNER,
       state: WorkspaceState.ACTIVE,
-      mcpEndpoint: `https://mcp.example.test/${name}/mcp`,
+      mcpEndpoint: coral.mcpEndpoint ? `https://mcp.example.test/${name}/mcp` : '',
     }),
   },
   agents: { listAgents: () => ({ agents: [] }) },
@@ -130,3 +130,22 @@ it('opens onboarding only on the overview of the workspace just created', async 
 it('does not open onboarding on an overview reached without creating the workspace', async () => {
   expect(await openOverview(new Browser(), localRuntimeConfig, null, created)).toBe(false)
 })
+
+// Catches: an overview without an MCP endpoint using up onboarding it cannot show.
+it.each(deployments)(
+  'in %s, onboarding waits for the workspace MCP endpoint',
+  async (_, runtime, token) => {
+    const browser = new Browser()
+    await createWorkspace(browser, runtime, token)
+
+    coral.mcpEndpoint = false
+    try {
+      expect(await openOverview(browser, runtime, token, created)).toBe(false)
+      expect(await openOverview(browser, runtime, token, created)).toBe(false)
+    } finally {
+      coral.mcpEndpoint = true
+    }
+    expect(await openOverview(browser, runtime, token, created)).toBe(true)
+    expect(await openOverview(browser, runtime, token, created)).toBe(false)
+  },
+)

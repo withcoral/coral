@@ -49,7 +49,7 @@ export interface WorkspaceOverviewProps {
   /** Whether this visit follows the workspace's creation, so onboarding opens. */
   onboarding?: boolean
   /** The MCP clients this deployment says may have a Coral plugin. The prompt asks them to look for it. */
-  agentsWithAvailablePlugins: readonly string[]
+  clientsWithAvailablePlugins: readonly string[]
 }
 
 /**
@@ -66,7 +66,7 @@ export function WorkspaceOverview({
   recipes,
   summary,
   onboarding = false,
-  agentsWithAvailablePlugins,
+  clientsWithAvailablePlugins,
 }: WorkspaceOverviewProps) {
   const owner = w.effectiveRole === 'owner'
   const active = w.state === 'active'
@@ -81,12 +81,13 @@ export function WorkspaceOverview({
   // One prompt for the onboarding dialog and the quick start's last tab. Coral serves the
   // implicit local user only when it runs without authentication, and that same runtime
   // setting serves its MCP server with no sign-in.
-  const prompt = onboardingPrompt(
-    w.displayName,
-    w.mcpEndpoint,
-    !w.profile.local,
-    agentsWithAvailablePlugins,
-  )
+  const prompt = onboardingPrompt({
+    displayName: w.displayName,
+    endpoint: w.mcpEndpoint,
+    signIn: !w.profile.local,
+    owner,
+    clientsWithAvailablePlugins,
+  })
   const members = owners?.map((o) => ({ profile: o.profile, user: o.user, enabled: o.enabled }))
   if (members && ownMembership && !members.some((m) => m.user === ownMembership.user))
     members.unshift({
@@ -131,12 +132,13 @@ export function WorkspaceOverview({
       {w.mcpEndpoint && (
         <OnboardingDialog
           prompt={prompt}
+          owner={owner}
           open={onboardingOpen}
           onClose={() => setOnboardingOpen(false)}
         />
       )}
       {active && w.connectEndpoint && (
-        <WorkspaceQuickStart endpoint={w.connectEndpoint} prompt={prompt} />
+        <WorkspaceQuickStart endpoint={w.connectEndpoint} prompt={prompt} owner={owner} />
       )}
       <div className={styles.cards}>
         <Card.Container className={styles.panel}>

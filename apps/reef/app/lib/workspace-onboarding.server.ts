@@ -2,7 +2,7 @@ import { createCookie, type RouterContextProvider } from 'react-router'
 import { authCookieSecure, hostBoundCookieName } from '@/auth/config.server'
 import { runtimeConfigContext } from './runtime-config.server'
 
-const ONBOARDING_COOKIE = 'coral_workspace_onboarding'
+const ONBOARDING_COOKIE = 'coral_web_workspace_onboarding'
 const ONBOARDING_MAX_AGE_SECONDS = 10 * 60
 
 /**
