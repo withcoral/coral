@@ -379,6 +379,9 @@ const promptCopy = (opener: string, connect: string[], steps: string[], data: st
     'Do not rename the workspace or change the MCP server URL. The server name is only a label in your client.',
     data,
   ].join('\n')
+/** How the client reads a tool policy, which lists only the tools with a rule. */
+const policyReview =
+  "If I agree, read the provider's tool policy with coral.workspace.getPolicy. It lists only the tools with a rule. Tool search shows the default state of each other tool. Tell me the state of each tool."
 /** An owner's prompt, which adds a provider. */
 const onboardingCopy = (connect: string[], data = dataRule) =>
   promptCopy(
@@ -390,6 +393,10 @@ const onboardingCopy = (connect: string[], data = dataRule) =>
       '6. Use coral.workspace.addProvider to add that provider. If Coral asks for an approval, guide me through it.',
       '7. If the status is published, the provider is ready. Call its tools under coral.providers.<namespace>.',
       '8. If the status is needs_sign_in, give me the returned link. I sign in and publish the provider on that page. The call does not wait for me. When I tell you I am done, use coral.workspace.listProviders to check that the provider is published.',
+      '9. When the provider is published, ask me if I want to review its tool policy. Wait for my answer.',
+      `10. ${policyReview}`,
+      '11. If I want a change, propose it. Wait for me to confirm it.',
+      '12. Use coral.workspace.updatePolicy only for the tools I confirm. Do not make a tool less restricted unless I confirm that tool. If Coral asks for an approval, guide me through it.',
     ],
     data,
   )
@@ -402,6 +409,9 @@ const memberCopy = (connect: string[], data = dataRule) =>
       '4. Use coral.workspace.listProviders to show me the providers in this workspace.',
       "5. Call a provider's tools under coral.providers.<namespace>.",
       '6. Only a workspace owner can add a provider. If I want a new provider, tell me to ask a workspace owner. Do not call coral.workspace.addProvider.',
+      "7. After you show me the providers, ask me if I want to review a provider's tool policy. Wait for my answer.",
+      `8. ${policyReview}`,
+      '9. Only a workspace owner can change a tool policy. If I want a change, help me ask a workspace owner for it. Do not call coral.workspace.updatePolicy.',
     ],
     data,
   )
