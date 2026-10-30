@@ -146,3 +146,48 @@ it('never scrolls when not following selection, even if the range is out of view
   )
   expect(scrollTo).not.toHaveBeenCalled()
 })
+
+const line = 'const answer = 42 // the answer'
+
+it.each([
+  { name: 'a match across syntax runs', ranges: [[6, 16]] },
+  {
+    name: 'two matches in one run',
+    ranges: [
+      [21, 24],
+      [25, 28],
+    ],
+  },
+  {
+    name: 'matches in different runs',
+    ranges: [
+      [0, 2],
+      [15, 17],
+      [25, 31],
+    ],
+  },
+])('marks $name, and only the current match as current', ({ ranges }) => {
+  const { container } = render(
+    <AnnotatedCodeBlock
+      code={line}
+      language="typescript"
+      highlight={null}
+      followHighlight={false}
+      revealKey="a"
+      marks={
+        new Map([
+          [1, ranges.map(([from, to], index) => ({ range: [from!, to!], current: index === 0 }))],
+        ])
+      }
+    />,
+  )
+  const marks = [...container.querySelectorAll('mark')]
+  const text = (current: boolean) =>
+    marks
+      .filter((mark) => mark.hasAttribute('aria-current') === current)
+      .map((mark) => mark.textContent)
+      .join('')
+  const [[from, to], ...rest] = ranges as [number, number][]
+  expect(text(true)).toBe(line.slice(from, to))
+  expect(text(false)).toBe(rest.map(([a, b]) => line.slice(a, b)).join(''))
+})

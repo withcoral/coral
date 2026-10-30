@@ -36,8 +36,9 @@ const ROW_ESTIMATE = 22
 const BODY_PADDING = 12
 /** Each level of a structure indents its rows this much. */
 const INDENT = 18
-/** A wrapped line longer than this shows as consecutive rows of this many characters, so a
- * huge line, such as minified JSON, mounts only near the view too. */
+/** Past the whole bounds, a line longer than this shows as consecutive rows of this many
+ * characters, wrapped or not, so a huge line, such as minified JSON, mounts only near the
+ * view too. */
 const SEGMENT_LENGTH = 500
 /** A payload within both bounds mounts whole, so the page's own find, a screen reader and a
  * selection by hand reach all of it; past either, only its rows near the view mount. Rows
@@ -153,8 +154,8 @@ function Viewer({
   )
   // A whole payload keeps each line in one row, so a selection by hand holds it as retained.
   const segments = useMemo(
-    () => lineSegments(lines, wrap && !whole ? SEGMENT_LENGTH : Infinity),
-    [lines, wrap, whole],
+    () => lineSegments(lines, whole ? Infinity : SEGMENT_LENGTH),
+    [lines, whole],
   )
   /** By unit offset, the structure row that shows it. */
   const rowOf = useMemo(() => {
