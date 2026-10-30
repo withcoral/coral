@@ -131,6 +131,7 @@ pub fn name_request_operation(
 struct RequestTimer {
     metrics: Option<Metrics>,
     cpu: CpuTime,
+    span: tracing::Span,
     interface: Interface,
     started: Instant,
     /// The route template or served method, else `_OTHER`.
@@ -147,6 +148,7 @@ impl RequestTimer {
         let metrics = crate::metric::current();
         Self {
             cpu: CpuTime::new(false),
+            span: tracing::Span::none(),
             metrics,
             interface,
             started: Instant::now(),
@@ -159,6 +161,12 @@ impl RequestTimer {
 
 impl Drop for RequestTimer {
     fn drop(&mut self) {
+        if let Some(cpu) = self.cpu.elapsed() {
+            self.span.record(
+                "coral.request.cpu_ns",
+                safe::number(u64::try_from(cpu.as_nanos()).unwrap_or(u64::MAX)),
+            );
+        }
         if let Some(metrics) = &self.metrics {
             let operation = self
                 .named
@@ -203,6 +211,7 @@ async fn trace_http_request(mut request: Request, next: Next, interface: Interfa
     if let Some(route) = &route {
         route.0.clone_into(&mut timer.operation);
     }
+    timer.span = span.clone();
     timer.cpu = CpuTime::new(timer.metrics.is_some() || !span.is_disabled());
     set_parent_from_http_headers(&span, request.headers());
     request.extensions_mut().insert(RequestSpan(span.clone()));
@@ -271,6 +280,7 @@ async fn trace_grpc_request(mut request: Request, next: Next) -> Response {
         coral.request.cpu_ns = tracing::field::Empty,
     );
     // The parent must be set before the handler enters the span and so starts it.
+    timer.span = span.clone();
     timer.cpu = CpuTime::new(timer.metrics.is_some() || !span.is_disabled());
     set_parent_from_http_headers(&span, request.headers());
     request.extensions_mut().insert(RequestSpan(span.clone()));
@@ -420,12 +430,6 @@ impl http_body::Body for TracedBody {
 
 impl Drop for TracedBody {
     fn drop(&mut self) {
-        if let Some(cpu) = self.timer.cpu.elapsed() {
-            self.span.record(
-                "coral.request.cpu_ns",
-                safe::number(u64::try_from(cpu.as_nanos()).unwrap_or(u64::MAX)),
-            );
-        }
         // A gRPC stream dropped before its end was cut off by the caller.
         if let Some(path) = self.grpc_path.take() {
             record_grpc_status(&self.span, &mut self.timer, Some(&path), GRPC_CANCELLED);

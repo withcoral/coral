@@ -5,7 +5,7 @@
 macro_rules! attribute {
     ($(#[$meta:meta])* $name:ident { $($(#[$variant_meta:meta])* $variant:ident => $value:literal,)* }) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
         pub enum $name {
             $(
                 #[doc = concat!("`", $value, "`")]
@@ -239,15 +239,19 @@ attribute! {
 }
 
 attribute! {
-    /// The transaction a caller is waiting to begin, for `transaction.mode`.
-    TransactionMode {
-        Write => "write",
-        ReadSnapshot => "read_snapshot",
+    /// The database entry point acquiring a connection, for `operation`.
+    AcquisitionOperation {
+        BeginWrite => "begin_write",
+        BeginReadSnapshot => "begin_read_snapshot",
+        Execute => "execute",
+        FetchOptional => "fetch_optional",
+        FetchAll => "fetch_all",
+        Ping => "ping",
     }
 }
 
 attribute! {
-    /// How waiting to acquire a transaction ended, for `outcome`.
+    /// How a database acquisition ended, for `outcome`.
     AcquisitionOutcome {
         Ready => "ready",
         Failed => "failed",
@@ -272,5 +276,21 @@ attribute! {
         TimedOut => "timed_out",
         Stopped => "stopped",
         Failed => "failed",
+    }
+}
+
+attribute! {
+    /// The path to a catalog's first successful search projection.
+    VisibilityPath {
+        Initial => "initial",
+        Retried => "retried",
+    }
+}
+
+attribute! {
+    /// The independently bounded worker queue's production purpose.
+    CompilerRole {
+        Run => "run",
+        Authoring => "authoring",
     }
 }

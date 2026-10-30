@@ -70,6 +70,58 @@ async fn request_cpu_is_attributed_to_the_named_operation_without_counting_await
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn canceled_handlers_keep_cpu_on_the_span_and_metric() {
+    use std::future::Future as _;
+    for grpc in [false, true] {
+        let spans = SpanCapture::default();
+        let metrics = MetricCapture::default();
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default()
+                .with(spans.layer())
+                .with(metrics.layer()),
+        );
+        let router = Router::new().route(
+            "/service/Call",
+            any(|| async {
+                let until = std::time::Instant::now() + std::time::Duration::from_millis(2);
+                while std::time::Instant::now() < until {
+                    std::hint::black_box(42_u64.wrapping_mul(13));
+                }
+                std::future::pending::<&'static str>().await
+            }),
+        );
+        let router = if grpc {
+            trace_grpc_routes(router)
+        } else {
+            trace_http_routes(router, Interface::Mcp)
+        };
+        let mut request =
+            Box::pin(router.oneshot(Request::get("/service/Call").body(Body::empty()).unwrap()));
+        std::future::poll_fn(|context| {
+            assert!(request.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(request);
+        assert!(
+            metrics
+                .values("coral.request.cpu.duration")
+                .iter()
+                .any(|cpu| *cpu > 0.0)
+        );
+        let recorded = spans.finished();
+        let request = recorded.first().expect("canceled request span closes");
+        let cpu =
+            attribute(request, "coral.request.cpu_ns").and_then(|value| value.parse::<u64>().ok());
+        assert!(
+            cpu.is_some_and(|cpu| cpu > 0),
+            "canceled handler keeps its CPU evidence: {request:?}"
+        );
+    }
+}
+
 /// Sends `request` to `router`, reads at most `frames` frames of the
 /// response body, then drops it, as a caller that hangs up would. Returns the
 /// spans that finished, with the data read or the body's error.

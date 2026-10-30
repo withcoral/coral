@@ -1,6 +1,7 @@
 //! Memory failures through the compiler and executor Interfaces.
 
 use coral_telemetry as _;
+use coral_telemetry::metric::CompilerRole;
 use coral_v8::{Error, IsolateLimits, ProgramCompiler, ProgramExecutor};
 use coral_value as _;
 use deno_core_icudata as _;
@@ -19,7 +20,8 @@ fn deadline() -> std::time::Instant {
 
 #[test]
 fn memory_limit_fails_only_the_allocating_program() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let program = compiler
         .compile(
             deadline(),
@@ -52,7 +54,7 @@ fn memory_limit_fails_only_the_allocating_program() {
 fn compiler_memory_failure_allows_the_next_request_to_succeed() {
     let limits =
         IsolateLimits::new(16 * 1024 * 1024, 64 * 1024 * 1024).expect("valid isolate limits");
-    let compiler = ProgramCompiler::new(limits).expect("start bounded compiler");
+    let compiler = ProgramCompiler::new(limits, CompilerRole::Run).expect("start bounded compiler");
     // The module text alone fills the compiler's heap budget, and its empty
     // statements make the parser allocate from the first token, so V8 trips
     // the limit during parsing, before any type checking runs. A source that

@@ -6,7 +6,7 @@ use std::future::Future;
 use coral_provider::{GenerationEntries, ProviderId};
 use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::MissedTickBehavior;
 use tracing::Instrument as _;
 use tracing::field::Empty;
@@ -44,20 +44,22 @@ impl SearchIndex {
         let index = self.clone();
         let mut starts = tokio::time::interval(self.reconcile_interval);
         starts.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        tokio::spawn(
-            async move {
-                let reconcile = async {
-                    loop {
-                        starts.tick().await;
-                        index.reconcile().await;
-                    }
-                };
-                // The observer shares this task's shutdown, but its reads never
-                // gate a reconcile pass or hold the writer mutex.
-                tokio::join!(reconcile, index.observe_backlog_loop());
+        tokio::spawn(async move {
+            let mut tasks = JoinSet::new();
+            let observer = index.clone();
+            tasks.spawn(async move { observer.observe_backlog_loop().await; }.with_current_subscriber());
+            tasks.spawn(async move {
+                loop {
+                    starts.tick().await;
+                    index.reconcile().await;
+                }
+            }.with_current_subscriber());
+            // Separate tasks let synchronous row building yield the observer
+            // another runtime worker. Dropping this set aborts both children.
+            if let Some(Err(_error)) = tasks.join_next().await {
+                tracing::error!(error.type = "search_background_task", "search background task stopped");
             }
-            .with_current_subscriber(),
-        )
+        }.with_current_subscriber())
     }
 
     /// Runs one reconcile pass under the in-process mutex, so it converges

@@ -222,6 +222,15 @@ impl MetricCapture {
         points
     }
 
+    /// The captured values of the instrument `name`, in export order.
+    #[must_use]
+    pub fn values(&self, name: &str) -> Vec<f64> {
+        self.named(name)
+            .into_iter()
+            .map(|point| point.value)
+            .collect()
+    }
+
     /// The points of the instrument `name`.
     #[must_use]
     pub fn named(&self, name: &str) -> Vec<MetricPoint> {

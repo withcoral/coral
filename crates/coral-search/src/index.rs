@@ -58,6 +58,8 @@ pub struct SearchIndex {
     last_write: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
     in_flight: Arc<watch::Sender<usize>>,
     telemetry: Arc<telemetry::IndexTelemetry>,
+    #[cfg(test)]
+    row_build_pause: Option<Arc<RowBuildPause>>,
     /// A test-only index whose notifications write nothing.
     #[cfg(any(test, feature = "test-fixtures"))]
     inert: bool,
@@ -70,7 +72,43 @@ pub struct SearchIndex {
     stall_before_write: Option<Duration>,
 }
 
+// A timing-only hook: exercise synchronous row work without building an
+// artificial large catalog or tying the test to its machine's throughput.
+#[cfg(test)]
+struct RowBuildPause {
+    entered: Arc<tokio::sync::Notify>,
+    release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+#[cfg(test)]
+pub(crate) struct RowBuildHold {
+    entered: Arc<tokio::sync::Notify>,
+    release: std::sync::mpsc::Sender<()>,
+}
+#[cfg(test)]
+impl RowBuildHold {
+    pub(crate) async fn entered(&self) {
+        self.entered.notified().await;
+    }
+}
+#[cfg(test)]
+impl Drop for RowBuildHold {
+    fn drop(&mut self) {
+        let _sent = self.release.send(());
+    }
+}
+
 impl SearchIndex {
+    #[cfg(test)]
+    pub(crate) fn hold_row_building(&mut self) -> RowBuildHold {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let (release, receiver) = std::sync::mpsc::channel();
+        self.row_build_pause = Some(Arc::new(RowBuildPause {
+            entered: entered.clone(),
+            release: std::sync::Mutex::new(Some(receiver)),
+        }));
+        RowBuildHold { entered, release }
+    }
+
     /// Builds the write side over migrated domain persistence. The reconcile task
     /// runs a pass every `reconcile_interval`, and a pass retries a failed
     /// Generation or Saved Function by the retry module's rule, whose waits
@@ -86,6 +124,8 @@ impl SearchIndex {
             last_write: Arc::new(std::sync::Mutex::new(None)),
             in_flight: Arc::new(watch::Sender::new(0)),
             telemetry: Arc::new(telemetry::IndexTelemetry::default()),
+            #[cfg(test)]
+            row_build_pause: None,
             #[cfg(any(test, feature = "test-fixtures"))]
             inert: false,
             #[cfg(any(test, feature = "test-fixtures"))]
@@ -493,6 +533,14 @@ impl SearchIndex {
         entry: &'e I::Entry,
     ) -> Result<I::Rows<'e>, IndexError> {
         let workspace_id = indexer.workspace_id(entry);
+        #[cfg(test)]
+        if let Some(pause) = &self.row_build_pause {
+            let receiver = pause.release.lock().unwrap().take();
+            if let Some(receiver) = receiver {
+                pause.entered.notify_one();
+                let _released = receiver.recv_timeout(Duration::from_secs(5));
+            }
+        }
         let rows = indexer.rows(entry)?;
         #[cfg(any(test, feature = "test-fixtures"))]
         if let Some(stall) = self.stall_before_write {
@@ -539,15 +587,23 @@ impl SearchIndex {
             safe::number(millis(locked.elapsed())),
         );
         written.map(|effect| {
-            if let indexer::IndexEffect::PublicationVisible {
-                published_at_unix_nanos,
-                recovered,
-            } = effect
-                && let Some(elapsed) =
-                    crate::unix_now_nanos().and_then(|now| now.checked_sub(published_at_unix_nanos))
-                && let Ok(nanos) = u64::try_from(elapsed)
-            {
-                metric::publication_visible(recovered, Duration::from_nanos(nanos));
+            match effect {
+                indexer::IndexEffect::FirstVisible {
+                    published_at_unix_nanos,
+                    path,
+                } => {
+                    if let Some(elapsed) = elapsed_since(published_at_unix_nanos) {
+                        metric::publication_visible(path, elapsed);
+                    }
+                }
+                indexer::IndexEffect::Recovered {
+                    unavailable_since_unix_nanos,
+                } => {
+                    if let Some(elapsed) = elapsed_since(unavailable_since_unix_nanos) {
+                        metric::index_recovered(elapsed);
+                    }
+                }
+                indexer::IndexEffect::Updated => {}
             }
             rows
         })
@@ -732,4 +788,9 @@ impl Drop for InFlightWrite {
     fn drop(&mut self) {
         self.0.send_modify(|writes| *writes -= 1);
     }
+}
+
+fn elapsed_since(since_unix_nanos: i64) -> Option<Duration> {
+    let elapsed = crate::unix_now_nanos()?.checked_sub(since_unix_nanos)?;
+    Some(Duration::from_nanos(u64::try_from(elapsed).ok()?))
 }

@@ -118,9 +118,12 @@ impl IndexError {
 /// Evidence emitted only after the caller commits the index transaction.
 pub(crate) enum IndexEffect {
     Updated,
-    PublicationVisible {
+    FirstVisible {
         published_at_unix_nanos: i64,
-        recovered: bool,
+        path: coral_telemetry::metric::VisibilityPath,
+    },
+    Recovered {
+        unavailable_since_unix_nanos: i64,
     },
 }
 
@@ -306,23 +309,46 @@ pub(crate) fn compact_identifier_variant(value: &str) -> Option<String> {
     (!compact.is_empty() && compact != normalized).then_some(compact)
 }
 
-/// The current projection backlog, including failed items whose retry is not
-/// due. This is a read snapshot, not a queue of only the work a pass will try.
+/// A snapshot of projection work, distinct from catalogs awaiting first visibility.
+pub(crate) struct ProjectionBacklog {
+    pub catalogs: u64,
+    pub functions: u64,
+    /// None when a legacy failed row has unknown visibility history.
+    pub first_visibility: Option<Vec<coral_catalog::ProviderGenerationId>>,
+}
+
 pub(crate) async fn projection_backlog(
     transaction: &mut Transaction<'_>,
     providers: &[coral_provider::ActiveGeneration],
     functions: &[coral_functions::SavedFunctionIndexRevision],
-) -> Result<(Vec<coral_catalog::ProviderGenerationId>, u64), IndexError> {
+) -> Result<ProjectionBacklog, IndexError> {
     let generations = repository::recorded_generations(transaction)
         .await?
         .into_iter()
         .map(|state| (state.generation.clone(), state))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let missing = providers.iter().filter(|provider| {
-        let key = repository::WorkspaceGeneration { workspace_id: provider.workspace_id().clone(), generation_id: provider.generation_id().clone() };
-        !generations.get(&key).is_some_and(|state| state.indexer_revision >= Some(INDEXER_REVISION)
-            && matches!(&state.outcome, repository::RecordedOutcome::Complete { display_name } if display_name == provider.display_name()))
-    }).map(|provider| provider.generation_id().clone()).collect();
+    let mut catalogs = 0;
+    let mut first_visibility = Some(Vec::new());
+    for provider in providers {
+        let key = repository::WorkspaceGeneration {
+            workspace_id: provider.workspace_id().clone(),
+            generation_id: provider.generation_id().clone(),
+        };
+        let state = generations.get(&key);
+        if state.is_some_and(|state| tools::current_projection(state, provider)) {
+            continue;
+        }
+        catalogs += 1;
+        match state.map(|state| state.visibility) {
+            None | Some(repository::RecordedVisibility::NeverVisible) => {
+                if let Some(missing) = &mut first_visibility {
+                    missing.push(provider.generation_id().clone());
+                }
+            }
+            Some(repository::RecordedVisibility::Unknown) => first_visibility = None,
+            Some(repository::RecordedVisibility::Visible { .. }) => {}
+        }
+    }
     let recorded = repository::recorded_functions(transaction)
         .await?
         .into_iter()
@@ -338,8 +364,9 @@ pub(crate) async fn projection_backlog(
             recorded.get(&key) != Some(&repository::function_fingerprint(entry.revision()))
         })
         .count();
-    Ok((
-        missing,
-        u64::try_from(missing_functions).unwrap_or(u64::MAX),
-    ))
+    Ok(ProjectionBacklog {
+        catalogs,
+        functions: u64::try_from(missing_functions).unwrap_or(u64::MAX),
+        first_visibility,
+    })
 }

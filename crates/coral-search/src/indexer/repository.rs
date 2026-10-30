@@ -70,6 +70,8 @@ enum SearchIndexStates {
     ErrorKind,
     /// The indexer revision that wrote a Generation's state and rows.
     IndexerRevision,
+    EverVisible,
+    UnavailableSinceUnixNanos,
     /// The columns of a failed attempt's [`RetryRule`], [`RETRY_COLUMNS`].
     FailedAttempts,
     RetryAfterUnixNanos,
@@ -382,6 +384,36 @@ pub(super) async fn write_generation_state(
             retry,
         } => (FAILED, Some(error), failure.map(failure_kind), Some(retry)),
     };
+    let complete = name == COMPLETE;
+    let ever_visible: SimpleExpr = if complete {
+        Expr::val(true)
+    } else {
+        Expr::case(
+            Expr::col((SearchIndexStates::Table, SearchIndexStates::State)).eq(COMPLETE),
+            true,
+        )
+        .finally(Expr::col((
+            SearchIndexStates::Table,
+            SearchIndexStates::EverVisible,
+        )))
+        .into()
+    };
+    let unavailable_since: SimpleExpr = if complete {
+        Expr::val(Option::<i64>::None)
+    } else {
+        Expr::case(
+            Expr::col((SearchIndexStates::Table, SearchIndexStates::State)).eq(COMPLETE),
+            state.attempted_at_unix_nanos,
+        )
+        .finally(Func::coalesce([
+            Expr::col((
+                SearchIndexStates::Table,
+                SearchIndexStates::UnavailableSinceUnixNanos,
+            )),
+            Expr::val(state.attempted_at_unix_nanos),
+        ]))
+        .into()
+    };
     transaction
         .execute(
             Query::insert()
@@ -398,6 +430,8 @@ pub(super) async fn write_generation_state(
                     SearchIndexStates::Error,
                     SearchIndexStates::ErrorKind,
                     SearchIndexStates::IndexerRevision,
+                    SearchIndexStates::EverVisible,
+                    SearchIndexStates::UnavailableSinceUnixNanos,
                 ]))
                 .values_panic(
                     [
@@ -412,6 +446,8 @@ pub(super) async fn write_generation_state(
                         error.into(),
                         error_kind.into(),
                         INDEXER_REVISION.into(),
+                        complete.into(),
+                        (!complete).then_some(state.attempted_at_unix_nanos).into(),
                     ]
                     .into_iter()
                     .chain(retry_values(retry.as_ref())),
@@ -426,6 +462,11 @@ pub(super) async fn write_generation_state(
                             SearchIndexStates::ErrorKind,
                             SearchIndexStates::IndexerRevision,
                         ]))
+                        .value(SearchIndexStates::EverVisible, ever_visible)
+                        .value(
+                            SearchIndexStates::UnavailableSinceUnixNanos,
+                            unavailable_since,
+                        )
                         .to_owned(),
                 )
                 .to_owned(),
@@ -826,6 +867,7 @@ pub(super) struct RecordedGeneration {
     /// The indexer revision that wrote the row; `None` when a Coral without
     /// indexer revisions wrote it.
     pub(super) indexer_revision: Option<i64>,
+    pub(super) visibility: RecordedVisibility,
 }
 
 /// The outcome a Generation's state row records.
@@ -843,20 +885,50 @@ struct RecordedGenerationRow {
     state: String,
     provider_display_name: String,
     indexer_revision: Option<i64>,
+    ever_visible: Option<bool>,
+    unavailable_since_unix_nanos: Option<i64>,
     #[sqlx(flatten)]
     retry: RetryColumns,
 }
 
-/// Whether this exact projection was complete before the write, or absent.
-pub(super) async fn generation_was_complete(
+/// Durable evidence about whether a catalog has been searchable before.
+#[derive(Clone, Copy)]
+pub(super) enum RecordedVisibility {
+    NeverVisible,
+    Visible { unavailable_since: Option<i64> },
+    Unknown,
+}
+
+fn recorded_visibility(
+    state: &str,
+    ever_visible: Option<bool>,
+    unavailable_since: Option<i64>,
+) -> RecordedVisibility {
+    if state == COMPLETE {
+        return RecordedVisibility::Visible {
+            unavailable_since: None,
+        };
+    }
+    match ever_visible {
+        Some(true) => RecordedVisibility::Visible { unavailable_since },
+        Some(false) => RecordedVisibility::NeverVisible,
+        None => RecordedVisibility::Unknown,
+    }
+}
+
+pub(super) async fn generation_visibility(
     transaction: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     generation: &ProviderGenerationId,
-) -> Result<Option<bool>, IndexError> {
-    let row: Option<(String,)> = transaction
+) -> Result<Option<RecordedVisibility>, IndexError> {
+    let row: Option<(String, Option<bool>, Option<i64>)> = transaction
         .fetch_optional(
             Query::select()
-                .column(SearchIndexStates::State)
+                .columns([
+                    SearchIndexStates::State,
+                    SearchIndexStates::EverVisible,
+                    SearchIndexStates::UnavailableSinceUnixNanos,
+                ])
                 .from(SearchIndexStates::Table)
                 .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace.to_string()))
                 .and_where(
@@ -866,7 +938,7 @@ pub(super) async fn generation_was_complete(
                 .to_owned(),
         )
         .await?;
-    Ok(row.map(|(state,)| state == COMPLETE))
+    Ok(row.map(|(state, visible, since)| recorded_visibility(&state, visible, since)))
 }
 
 /// Reads every Generation's state row in every Workspace.
@@ -882,6 +954,8 @@ pub(super) async fn recorded_generations(
                     SearchIndexStates::State,
                     SearchIndexStates::ProviderDisplayName,
                     SearchIndexStates::IndexerRevision,
+                    SearchIndexStates::EverVisible,
+                    SearchIndexStates::UnavailableSinceUnixNanos,
                 ]))
                 .from(SearchIndexStates::Table)
                 .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
@@ -891,6 +965,11 @@ pub(super) async fn recorded_generations(
     rows.into_iter()
         .map(|row| {
             // The state check admits only `complete` and `failed`.
+            let visibility = recorded_visibility(
+                &row.state,
+                row.ever_visible,
+                row.unavailable_since_unix_nanos,
+            );
             let outcome = if row.state == COMPLETE {
                 RecordedOutcome::Complete {
                     display_name: row.provider_display_name,
@@ -904,6 +983,7 @@ pub(super) async fn recorded_generations(
                 generation: workspace_generation(&row.workspace_id, &row.provider_generation_id)?,
                 outcome,
                 indexer_revision: row.indexer_revision,
+                visibility,
             })
         })
         .collect()

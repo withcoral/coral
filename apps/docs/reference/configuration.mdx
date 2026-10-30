@@ -1,6 +1,6 @@
 ---
-title: 'Configuration Reference'
-sidebarTitle: 'Configuration'
+title: "Configuration Reference"
+sidebarTitle: "Configuration"
 ---
 
 Your configuration lives in the `config.toml` file of Coral's configuration folder. By default the folder is located in:
@@ -70,8 +70,8 @@ All provider calls not covered by an explicit policy in this section are treated
 
 ### `[search]`
 
-| Key                          | Description                                                                    | Required | Default |
-| ---------------------------- | ------------------------------------------------------------------------------ | -------- | ------- |
+| Key                          | Description                                                                         | Required | Default |
+| ---------------------------- | ----------------------------------------------------------------------------------- | -------- | ------- |
 | `reconcile_interval_seconds` | Interval on which provider tool and saved function search indexing is executed | No       | `300`   |
 
 ### `[updates]`
@@ -90,14 +90,14 @@ Every request has a trace, even when you do not set `endpoint`. A failed MCP too
 
 `trace_sample_ratio` controls which traces Coral exports. It applies to each trace Coral starts: a request without a valid caller `traceparent`, and each Program Run, which starts its own trace. A request with a valid caller `traceparent` follows the caller's sampled flag. An unsampled trace keeps its trace ID, so logs and tool failures still name it. Metrics are never sampled.
 
-| Key                  | Description                                                                        | Required | Default                                                                                                                                                     |
-| -------------------- | ---------------------------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `endpoint`           | URL of the http otel endpoint to which telemetry will be sent.                     | No       | N/A                                                                                                                                                         |
-| `headers`            | Additional headers sent to the otel endpoint, formatted as `name=value,name=value` | No       | None                                                                                                                                                        |
-| `log_filter`         | Filters to apply to logs before otel export                                        | No       | `coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info`                                                                 |
-| `trace_filter`       | Filters to apply to traces before otel export                                      | No       | `coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_search=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off` |
-| `service_name`       | Name of the service when exporting OTEL data                                       | No       | `coral`                                                                                                                                                     |
-| `trace_sample_ratio` | Share of the traces Coral starts that it exports, from `0.0` to `1.0`              | No       | `1.0`                                                                                                                                                       |
+| Key            | Description                                                                        | Required | Default                                                                                                                                 |
+| -------------- | ---------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `endpoint`     | URL of the http otel endpoint to which telemetry will be sent.                     | No       | N/A                                                                                                                                     |
+| `headers`      | Additional headers sent to the otel endpoint, formatted as `name=value,name=value` | No       | None                                                                                                                                    |
+| `log_filter`   | Filters to apply to logs before otel export                                        | No       | `coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info`                                             |
+| `trace_filter` | Filters to apply to traces before otel export                                      | No       | `coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_search=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off` |
+| `service_name` | Name of the service when exporting OTEL data                                       | No       | `coral`                                                                                                                                 |
+| `trace_sample_ratio` | Share of the traces Coral starts that it exports, from `0.0` to `1.0`        | No       | `1.0`                                                                                                                                   |
 
 #### Metrics
 
@@ -108,64 +108,67 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 - `coral.run.queue.depth` counts the program runs on this Coral instance that are accepted but not started yet. A run starts right after it is accepted, so this is usually 0. A run that waits for recovery by another Coral instance is not counted.
 - `coral.program.execution.heap.peak` is sampled each time a program waits and when it ends. A program that frees memory before it waits or ends shows less than its true peak.
 
-| Metric                                   | Kind      | Attributes                                                                   |
-| ---------------------------------------- | --------- | ---------------------------------------------------------------------------- |
-| `coral.request.duration`                 | Histogram | `interface`, `operation`, `outcome`                                          |
-| `coral.program.compile.duration`         | Histogram | `outcome`                                                                    |
-| `coral.program.execution.cpu.duration`   | Histogram | None. Recorded only on Linux and macOS.                                      |
-| `coral.program.execution.heap.peak`      | Histogram | None                                                                         |
-| `coral.program.termination`              | Counter   | `outcome`                                                                    |
-| `coral.run.accepted`                     | Counter   | `principal.kind`                                                             |
-| `coral.run.ended`                        | Counter   | `run.status`, `failure.code`                                                 |
-| `coral.run.duration`                     | Histogram | `run.status`                                                                 |
-| `coral.run.phase.duration`               | Histogram | `run.phase`                                                                  |
-| `coral.run.active`                       | Gauge     | None                                                                         |
-| `coral.run.queue.depth`                  | Gauge     | None                                                                         |
-| `coral.run.recovery`                     | Counter   | `outcome`                                                                    |
-| `coral.run.claims`                       | Counter   | `operation`, `outcome`                                                       |
-| `coral.invocation.started`               | Counter   | `provider.protocol`, `tool.effect`                                           |
+| Metric                                   | Kind      | Attributes                                                              |
+| ---------------------------------------- | --------- | ----------------------------------------------------------------------- |
+| `coral.request.duration`                 | Histogram | `interface`, `operation`, `outcome`                                     |
+| `coral.program.compile.duration`         | Histogram | `outcome`                                                               |
+| `coral.program.execution.cpu.duration`   | Histogram | None. Recorded only on Linux and macOS.                                 |
+| `coral.program.execution.heap.peak`      | Histogram | None                                                                    |
+| `coral.program.termination`              | Counter   | `outcome`                                                               |
+| `coral.run.accepted`                     | Counter   | `principal.kind`                                                        |
+| `coral.run.ended`                        | Counter   | `run.status`, `failure.code`                                            |
+| `coral.run.duration`                     | Histogram | `run.status`                                                            |
+| `coral.run.phase.duration`               | Histogram | `run.phase`                                                             |
+| `coral.run.active`                       | Gauge     | None                                                                    |
+| `coral.run.queue.depth`                  | Gauge     | None                                                                    |
+| `coral.run.recovery`                     | Counter   | `outcome`                                                               |
+| `coral.run.claims`                       | Counter   | `operation`, `outcome`                                                  |
+| `coral.invocation.started`               | Counter   | `provider.protocol`, `tool.effect`                                      |
 | `coral.invocation.ended`                 | Counter   | `provider.protocol`, `tool.effect`, `invocation.result_kind`, `failure.code` |
-| `coral.invocation.duration`              | Histogram | `provider.protocol`, `tool.effect`, `invocation.result_kind`                 |
-| `coral.invocation.gate.duration`         | Histogram | `gate.kind`                                                                  |
-| `coral.invocation.active`                | Gauge     | None                                                                         |
-| `coral.upstream.duration`                | Histogram | `provider.protocol`, `outcome`                                               |
-| `coral.upstream.request.size`            | Histogram | `provider.protocol`                                                          |
-| `coral.upstream.response.size`           | Histogram | `provider.protocol`                                                          |
-| `coral.persistence.transaction.duration` | Histogram | `db.system`, `outcome`                                                       |
-| `coral.persistence.transaction.failures` | Counter   | `db.system`, `failure.code`                                                  |
-| `coral.persistence.pool.in_use`          | Gauge     | `db.system`                                                                  |
-| `coral.output.size`                      | Histogram | `output.kind`                                                                |
-| `coral.output.rejections`                | Counter   | `output.kind`                                                                |
-| `coral.telemetry.dropped`                | Counter   | `signal.kind`, `drop.reason`                                                 |
+| `coral.invocation.duration`              | Histogram | `provider.protocol`, `tool.effect`, `invocation.result_kind`            |
+| `coral.invocation.gate.duration`         | Histogram | `gate.kind`                                                             |
+| `coral.invocation.active`                | Gauge     | None                                                                    |
+| `coral.upstream.duration`                | Histogram | `provider.protocol`, `outcome`                                          |
+| `coral.upstream.request.size`            | Histogram | `provider.protocol`                                                     |
+| `coral.upstream.response.size`           | Histogram | `provider.protocol`                                                     |
+| `coral.persistence.transaction.duration` | Histogram | `db.system`, `outcome`                                                  |
+| `coral.persistence.transaction.failures` | Counter   | `db.system`, `failure.code`                                             |
+| `coral.persistence.pool.in_use`          | Gauge     | `db.system`                                                             |
+| `coral.output.size`                      | Histogram | `output.kind`                                                           |
+| `coral.output.rejections`                | Counter   | `output.kind`                                                           |
+| `coral.telemetry.dropped`                | Counter   | `signal.kind`, `drop.reason`                                            |
 
 #### Concurrency bottlenecks
 
-Compare these signals for the same instance, version, backend and time window:
+Use these signals together to separate database admission, compiler saturation, search projection lag, and direct request CPU.
 
-| Metric                                         | Kind      | Attributes                                 |
-| ---------------------------------------------- | --------- | ------------------------------------------ |
-| `coral.persistence.acquisition.duration`       | Histogram | `db.system`, `transaction.mode`, `outcome` |
-| `coral.persistence.acquisition.waiters`        | Gauge     | `db.system`, `transaction.mode`            |
-| `coral.compiler.request.duration`              | Histogram | `operation`, `outcome`                     |
-| `coral.compiler.queue.duration`                | Histogram | `operation`                                |
-| `coral.compiler.work.duration`                 | Histogram | `operation`, `outcome`                     |
-| `coral.compiler.queue.depth`                   | Gauge     | None                                       |
-| `coral.compiler.active`                        | Gauge     | None                                       |
-| `coral.search.index.backlog`                   | Gauge     | `search.entity.kind`                       |
-| `coral.search.index.backlog.sample.age`        | Gauge     | None                                       |
-| `coral.search.publication.pending.age`         | Gauge     | None                                       |
-| `coral.search.publication.visibility.duration` | Histogram | `outcome`                                  |
-| `coral.request.cpu.duration`                   | Histogram | `interface`, `operation`, `outcome`        |
+| Metric                                         | Kind      | Attributes                              |
+| ---------------------------------------------- | --------- | --------------------------------------- |
+| `coral.persistence.acquisition.duration`       | Histogram | `db.system`, `operation`, `outcome`     |
+| `coral.persistence.acquisition.waiters`        | Gauge     | `db.system`, `operation`                |
+| `coral.compiler.request.duration`              | Histogram | `compiler.role`, `operation`, `outcome` |
+| `coral.compiler.queue.duration`                | Histogram | `compiler.role`, `operation`            |
+| `coral.compiler.work.duration`                 | Histogram | `compiler.role`, `operation`, `outcome` |
+| `coral.compiler.queue.depth`                   | Gauge     | `compiler.role`                         |
+| `coral.compiler.active`                        | Gauge     | `compiler.role`                         |
+| `coral.search.index.backlog`                   | Gauge     | `search.projection.kind`                |
+| `coral.search.index.backlog.sample.age`        | Gauge     | None                                    |
+| `coral.search.index.first_visibility.age`      | Gauge     | None                                    |
+| `coral.search.publication.visibility.duration` | Histogram | `outcome`                               |
+| `coral.search.index.recovery.duration`         | Histogram | None                                    |
+| `coral.request.cpu.duration`                   | Histogram | `interface`, `operation`, `outcome`     |
 
-**Database acquisition.** `acquisition.duration` covers the wait for a pooled connection and `BEGIN`. It ends as `ready`, `failed` or `canceled`. `transaction.mode` is `write` or `read_snapshot`. Transaction duration starts after acquisition. The waiter gauge counts callers awaiting that answer. A detached Postgres `BEGIN` can finish after its caller cancels.
+**Database acquisition.** `operation` identifies `begin_write`, `begin_read_snapshot`, `execute`, `fetch_optional`, `fetch_all`, or `ping`. Acquisition duration covers the wait for a pooled connection. For transaction entry points, it also includes `BEGIN`. Direct-query execution is excluded. Outcomes are `ready`, `failed`, or `canceled`. A query failure after acquisition does not count as an acquisition failure. Transaction duration starts after acquisition. The waiter gauge counts callers awaiting acquisition; a detached Postgres `BEGIN` can finish after its caller cancels.
 
-**Compiler.** `operation` is `program`, `saved_function` or `analysis`. Request duration includes queueing and ends when the caller receives an answer. Outcomes distinguish `queue_full`, `stopped`, `timed_out`, `rejected`, `failed` and `ok`. Queue depth includes enqueue attempts until they succeed or fail. An accepted job remains queued after its caller times out, until the worker dequeues it. Work duration starts at dequeue and includes expiry checks and isolate recovery. These signals include Saved Function authoring; `coral.program.compile.duration` still covers Program admission only.
+**Compiler.** `compiler.role` distinguishes the Run compiler (`run`) from the Saved Function compiler (`authoring`). Each has one worker and 32 queue slots. Check depth, active work, waits, and outcomes by role. `operation` identifies `program`, `saved_function`, or `analysis`. Request duration includes queueing and ends when the caller receives an answer. Outcomes distinguish `queue_full`, `stopped`, `timed_out`, `rejected`, `failed`, and `ok`. Queue depth includes enqueue attempts until they succeed or fail. An accepted job remains queued after its caller times out until the worker dequeues it. Work duration starts at dequeue and includes expiry checks and isolate recovery. `coral.program.compile.duration` still covers Program admission only.
 
-**Indexing.** Backlog counts active Provider Generations and current Saved Function revisions without a current projection, including failed retries that are not due yet. An independent observer takes read-only backlog snapshots every 30 seconds when metrics are enabled. Its reads do not gate reconciliation. Check `sample.age` before trusting a count: during a slow or waiting read it describes an older snapshot. A failed read reports no snapshot, rather than zero. Pending publication age covers Provider Generations only and advances from the oldest publication in the snapshot.
+**Search backlog.** `search.projection.kind` distinguishes Provider catalog projections (`provider_catalog`) from Saved Function projections (`saved_function`). These are units of indexing work, not counts of searchable Tools. Backlog includes missing or stale projections and failed retries that are not due yet. An observer runs in a separate supervised task, with shared shutdown, and takes read-only snapshots every 30 seconds. Each snapshot read has a 30-second limit. Check `sample.age` before trusting a count. A failed read reports no snapshot. A stopped observer removes its observation rather than reporting its last count.
 
-Visibility duration runs from the Generation's stored publication timestamp to the successful index commit. It includes the publication transaction, unlike a client measurement from the publication response. `initial` means no prior index state; `recovered` means a failed projection became complete. Rewriting an already-complete projection records no visibility duration. This also captures recovery after a lost notification or restart. It does not measure client setup time.
+**First visibility and recovery.** `first_visibility.age` covers only published Provider catalogs that have never been searchable. Renames and index-version rebuilds do not reset first visibility. The age is zero when none are waiting and absent when visibility history or the clock is unknown. Legacy failed projections can have unknown history; no first-visibility latency is invented for them.
 
-**Request CPU.** On Linux and macOS, CPU samples bracket each poll of the request handler and response body. The metric uses the same operation and outcome as request duration. Traces also carry `coral.request.cpu_ns`. Await time, child tasks and dedicated compiler or Program execution threads are excluded. You can sum CPU seconds by operation to attribute direct request work; this is not total process CPU. Unsupported clocks report no CPU sample.
+`publication.visibility.duration` runs from the stored publication timestamp to the first successful index commit, including the publication transaction. `initial` identifies a first-attempt success; `retried` identifies success after failed initial attempts. Rewriting a complete projection records no visibility duration. If a previously searchable catalog becomes unavailable after a failed rebuild, `index.recovery.duration` measures from the first recorded failure to the recovery commit. Repeated failures preserve that start time. Visibility history survives restarts. These signals exclude client setup time.
+
+**Request CPU.** On Linux and macOS, CPU samples bracket each poll of the request handler and response body. Synchronous work in inline-awaited futures is included. Pending wait time, spawned tasks, and dedicated compiler or Program execution threads are excluded. The metric uses the same operation and outcome as request duration. Traces carry `coral.request.cpu_ns`, including when a handler is canceled. Sum CPU seconds by operation to attribute direct request work; this is not total process CPU. Unsupported clocks report no CPU sample.
 
 At most 2048 spans and 2048 log records wait for export. When a queue is full, the next span or log record is dropped and counted in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans and log records with `export_failed`. Neither delays a request or a program run. Metrics are cumulative by default, so a failed export loses no metric points: the next export carries their totals. If you select delta temporality, the metric points of a failed export are counted too. If you see drops, check that your collector is reachable and keeps up.
 

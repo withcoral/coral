@@ -1,3 +1,4 @@
+use coral_telemetry::metric::CompilerRole;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -56,6 +57,7 @@ pub struct ProgramCompiler {
     sender: mpsc::SyncSender<Option<CompilerJob>>,
     worker: Option<thread::JoinHandle<()>>,
     limits: IsolateLimits,
+    role: CompilerRole,
 }
 
 impl ProgramCompiler {
@@ -69,7 +71,7 @@ impl ProgramCompiler {
     /// Returns an initialization or memory-limit error when V8 or the packaged
     /// compiler cannot start within the selected budget, or when the packaged
     /// compiler version differs from the profile.
-    pub fn new(isolate_limits: IsolateLimits) -> Result<Self, Error> {
+    pub fn new(isolate_limits: IsolateLimits, role: CompilerRole) -> Result<Self, Error> {
         crate::v8_support::initialize()?;
         // ponytail: one warm isolate and 32 queued requests; use a pool only if
         // measured authoring throughput needs it. Saturation never queues unbounded work.
@@ -99,6 +101,7 @@ impl ProgramCompiler {
                 sender,
                 worker: Some(worker),
                 limits: isolate_limits,
+                role,
             }),
             Ok(Err(error)) => {
                 if worker.join().is_err() {
@@ -265,12 +268,17 @@ impl ProgramCompiler {
         work: impl FnOnce(&mut CompilerIsolate) -> Result<T, Error> + Send + 'static,
     ) -> Result<T, Error> {
         let started = Instant::now();
-        let result = self.request_kind(operation, deadline, work);
-        metric::compiler_requested(operation, compiler_outcome(&result), started.elapsed());
+        let result = self.enqueue_and_wait(operation, deadline, work);
+        metric::compiler_requested(
+            self.role,
+            operation,
+            compiler_outcome(&result),
+            started.elapsed(),
+        );
         result
     }
 
-    fn request_kind<T: Send + 'static>(
+    fn enqueue_and_wait<T: Send + 'static>(
         &self,
         operation: CompilerOperation,
         deadline: Instant,
@@ -281,7 +289,7 @@ impl ProgramCompiler {
         let worker_control = control.clone();
         let (response_sender, response_receiver) = mpsc::sync_channel(1);
         let limits = self.limits;
-        let queued = metric::compiler_queued(operation);
+        let queued = metric::compiler_queued(self.role, operation);
         self.sender
             .try_send(Some(Box::new(move |compiler| {
                 let active_measurement = queued.dequeued();
@@ -683,7 +691,8 @@ mod tests {
     fn timed_out_callers_stay_queued_until_dequeued_and_full_is_distinct() {
         let metrics = coral_telemetry::testing::MetricCapture::default();
         let _measured = tracing::subscriber::set_default(metrics.subscriber());
-        let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
+        let compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
         let (entered, started) = mpsc::channel();
         let (release, held) = mpsc::channel();
         std::thread::scope(|scope| {
@@ -712,24 +721,40 @@ mod tests {
                 ));
             }
             let depth = || {
-                metrics
-                    .named("coral.compiler.queue.depth")
-                    .iter()
-                    .map(|point| point.value)
-                    .collect::<Vec<_>>()
+                let mut values = metrics.values("coral.compiler.queue.depth");
+                values.sort_by(f64::total_cmp);
+                values
             };
             assert_eq!(
                 depth(),
                 [32.0],
                 "caller timeout does not remove the queued job"
             );
+            let authoring = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Authoring)
+                .expect("authoring compiler");
+            authoring
+                .prepare_saved_function(
+                    Instant::now() + COMPILATION_TIMEOUT,
+                    "export default () => 1;",
+                )
+                .expect("authoring queue remains available");
+            let depths = metrics.named("coral.compiler.queue.depth");
+            for (role, expected) in [("run", 32.0), ("authoring", 0.0)] {
+                let point = depths
+                    .iter()
+                    .find(|point| {
+                        point.attributes.get("compiler.role").map(String::as_str) == Some(role)
+                    })
+                    .expect("role-specific depth");
+                assert!((point.value - expected).abs() < f64::EPSILON);
+            }
             assert!(matches!(
                 compiler.prepare_saved_function(Instant::now(), "export default () => 1;"),
                 Err(Error::CompilerBusy)
             ));
             assert_eq!(
                 depth(),
-                [32.0],
+                [0.0, 32.0],
                 "a rejected enqueue releases its gauge contribution"
             );
             assert!(
@@ -746,14 +771,7 @@ mod tests {
             .compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;")
             .expect("worker drains expired requests and recovers");
         for name in ["coral.compiler.queue.depth", "coral.compiler.active"] {
-            assert_eq!(
-                metrics
-                    .named(name)
-                    .iter()
-                    .map(|point| point.value)
-                    .collect::<Vec<_>>(),
-                [0.0]
-            );
+            assert_eq!(metrics.values(name), [0.0, 0.0]);
         }
     }
 
@@ -761,11 +779,14 @@ mod tests {
     fn compiler_metrics_cover_programs_and_saved_function_authoring() {
         let metrics = coral_telemetry::testing::MetricCapture::default();
         let _measured = tracing::subscriber::set_default(metrics.subscriber());
-        let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
+        let compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
         compiler
             .compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;")
             .expect("Program");
-        compiler
+        let authoring = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Authoring)
+            .expect("authoring compiler");
+        authoring
             .prepare_saved_function(
                 Instant::now() + COMPILATION_TIMEOUT,
                 "export default function answer() { return 42; }",
@@ -777,7 +798,7 @@ mod tests {
             "coral.compiler.work.duration",
         ] {
             let points = metrics.named(name);
-            for operation in ["program", "saved_function"] {
+            for (operation, role) in [("program", "run"), ("saved_function", "authoring")] {
                 let point = points
                     .iter()
                     .find(|point| {
@@ -785,17 +806,14 @@ mod tests {
                     })
                     .unwrap_or_else(|| panic!("{name} covers {operation}"));
                 assert_eq!(point.count, 1);
+                assert_eq!(
+                    point.attributes.get("compiler.role").map(String::as_str),
+                    Some(role)
+                );
             }
         }
         for name in ["coral.compiler.queue.depth", "coral.compiler.active"] {
-            assert_eq!(
-                metrics
-                    .named(name)
-                    .iter()
-                    .map(|point| point.value)
-                    .collect::<Vec<_>>(),
-                [0.0]
-            );
+            assert_eq!(metrics.values(name), [0.0, 0.0]);
         }
     }
     use super::*;
@@ -809,7 +827,8 @@ mod tests {
 
     #[test]
     fn deadline_terminates_noncooperative_compiler_and_next_request_recovers() {
-        let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
+        let compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
         let entered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_entered = entered.clone();
         let result = compiler.request(
@@ -835,7 +854,8 @@ mod tests {
 
     #[test]
     fn expired_requests_never_execute_or_terminate_a_later_request() {
-        let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
+        let compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
         let result = compiler.request::<()>(CompilerOperation::Program, Instant::now(), |_| {
             panic!("expired job executed")
         });
@@ -880,7 +900,8 @@ mod tests {
 
     #[test]
     fn compiler_recycles_after_failure() {
-        let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
+        let compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
         let failed = compiler.request(
             CompilerOperation::Program,
             Instant::now() + COMPILATION_TIMEOUT,
@@ -902,7 +923,7 @@ mod tests {
             "const buffer = new ArrayBuffer(0, { maxByteLength: 4 * 1024 * 1024 }); buffer.resize(4 * 1024 * 1024); return new Uint8Array(buffer);",
         ] {
             let limits = IsolateLimits::new(16 * 1024 * 1024, 64 * 1024 * 1024).expect("limits");
-            let compiler = ProgramCompiler::new(limits).expect("compiler");
+            let compiler = ProgramCompiler::new(limits, CompilerRole::Run).expect("compiler");
             compiler
                 .request(
                     CompilerOperation::Program,

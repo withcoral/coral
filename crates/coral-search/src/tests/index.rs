@@ -39,8 +39,9 @@ async fn indexing_reports_visibility_lag_once_and_backlog_includes_failed_retrie
     let metrics = coral_telemetry::testing::MetricCapture::default();
     let _measured = tracing::subscriber::set_default(metrics.subscriber());
     world.reject_complete_states().await;
-    let background = world.index.spawn_reconcile_task();
     world.index.reconcile().await;
+    // Start sampling only after the failed attempt has committed its state.
+    let background = world.index.spawn_reconcile_task();
     let backlog = || {
         metrics
             .named("coral.search.index.backlog")
@@ -73,6 +74,12 @@ async fn indexing_reports_visibility_lag_once_and_backlog_includes_failed_retrie
     };
     let first = samples();
     assert!(first > 0);
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .iter()
+            .all(|point| point.attributes.get("outcome").map(String::as_str) == Some("retried"))
+    );
     world.index.reconcile().await;
     assert_eq!(
         samples(),
@@ -81,6 +88,275 @@ async fn indexing_reports_visibility_lag_once_and_backlog_includes_failed_retrie
     );
     background.abort();
     let _stopped = background.await;
+}
+
+#[tokio::test]
+async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() {
+    for rename in [true, false] {
+        let upstream = MockServer::start().await;
+        let world = World::publish_tracer(&upstream).await;
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let _measured = tracing::subscriber::set_default(metrics.subscriber());
+        world.index.reconcile().await;
+        let visibility = || metrics.named("coral.search.publication.visibility.duration");
+        let samples = || visibility().iter().map(|point| point.count).sum::<u64>();
+        let first = samples();
+        assert!(first > 0);
+        assert!(
+        visibility()
+            .iter()
+            .all(|point| point.attributes.get("outcome").map(String::as_str) == Some("initial"))
+    );
+
+        // An older writer can complete a projection without clearing the new
+        // outage column. The current complete state must remain authoritative.
+        world.set_outage_start(1).await;
+        // Exercise a real complete rewrite, not a reconcile pass that skips it.
+        world
+            .index
+            .index_active_generation(world.workspace.clone(), world.tracer.clone());
+        world.index.settled().await;
+        assert_eq!(samples(), first);
+
+        assert!(
+            metrics
+                .named("coral.search.index.recovery.duration")
+                .is_empty()
+        );
+        world.set_outage_start(1).await;
+
+        if rename {
+            world
+                .modules
+                .providers
+                .rename_provider(
+                    &change(world.user.clone(), 70, '7'),
+                    &world.workspace,
+                    &world.tracer,
+                    coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
+                )
+                .await
+                .unwrap();
+        } else {
+            world
+                .modules
+                .fixture
+                .execute_fixture_sql(
+                    "UPDATE search_index_states SET indexer_revision = 0 WHERE kind = 'provider_tool'",
+                )
+                .await
+                .unwrap();
+        }
+        world.reject_complete_states().await;
+        world.index.reconcile().await;
+        let states = world.search_index_states(Some(&world.tracer)).await;
+        assert!(
+            matches!(
+                states.get(&world.tracer),
+                Some(crate::SearchIndexState::Failed { .. })
+            ),
+            "rebuild failed: {states:?}"
+        );
+        let background = world.index.spawn_reconcile_task();
+        wait_for_observation(|| {
+            !metrics
+                .named("coral.search.index.first_visibility.age")
+                .is_empty()
+        })
+        .await;
+        assert!(
+            metrics
+                .values("coral.search.index.first_visibility.age")
+                .iter()
+                .all(|age| *age < 0.001),
+            "a previously visible catalog is not awaiting first visibility"
+        );
+        assert!(
+            metrics
+                .values("coral.search.index.backlog")
+                .iter()
+                .any(|count| *count >= 1.0),
+            "rebuild remains backlog (rename: {rename})"
+        );
+        background.abort();
+        let _stopped = background.await;
+
+        // Repeated failures retain the original outage clock.
+        let five_seconds_ago = crate::unix_now_nanos().unwrap() - 5_000_000_000;
+        world.set_outage_start(five_seconds_ago).await;
+        world.make_retries_due().await;
+        world.index.reconcile().await;
+        // A fresh index handle reads the durable history on recovery.
+        world.allow_complete_states().await;
+        world.make_retries_due().await;
+        let restarted = SearchIndex::new(world.modules.search.database.clone(), RECONCILE_INTERVAL);
+        restarted.reconcile().await;
+        assert_eq!(samples(), first);
+        let recovery = metrics.named("coral.search.index.recovery.duration");
+        assert!(!recovery.is_empty());
+        assert!(
+            recovery
+                .iter()
+                .all(|point| point.value >= 5.0 && point.value < 60.0),
+            "recovery measures this outage rather than the original publication's age"
+        );
+    }
+}
+
+#[tokio::test]
+async fn upgrading_preserves_visibility_even_when_an_older_writer_later_records_failure() {
+    let upstream = MockServer::start().await;
+    let modules = TestModules::with_plan(&coral_test_support::migration_plan_before(48)).await;
+    let world = World::publish_with_modules(modules, &upstream).await;
+    world.modules.fixture.execute_fixture_sql(
+        "INSERT INTO search_index_states (workspace_id, target_id, kind, provider_id, provider_generation_id, provider_display_name, state, attempted_at_unix_nanos, indexer_revision) SELECT workspace_id, active_generation_id, 'provider_tool', id, active_generation_id, display_name, 'complete', 1, 1 FROM provider_records WHERE active_generation_id IS NOT NULL"
+    ).await.unwrap();
+    world
+        .modules
+        .search
+        .database
+        .migrate(coral_db::migration_plan())
+        .await
+        .unwrap();
+    // An older writer updates only columns it knows. Backfilled visibility
+    // survives, but no precise outage clock can be invented for that writer.
+    world.modules.fixture.execute_fixture_sql(&format!(
+        "UPDATE search_index_states SET state = 'failed', error = 'older writer', failed_attempts = 1, retry_after_unix_nanos = 9223372036854775807, failed_coral_version = '{}' WHERE kind = 'provider_tool'", env!("CARGO_PKG_VERSION")
+    )).await.unwrap();
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let background = world.index.spawn_reconcile_task();
+    wait_for_observation(|| {
+        !metrics
+            .named("coral.search.index.first_visibility.age")
+            .is_empty()
+    })
+    .await;
+    assert!(
+        metrics
+            .values("coral.search.index.first_visibility.age")
+            .iter()
+            .all(|value| value.abs() < f64::EPSILON)
+    );
+    assert!(
+        metrics
+            .values("coral.search.index.backlog")
+            .iter()
+            .any(|value| *value >= 1.0)
+    );
+    background.abort();
+    let _stopped = background.await;
+    world
+        .index
+        .index_active_generation(world.workspace.clone(), world.tracer.clone());
+    world.index.settled().await;
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .is_empty()
+    );
+    assert!(
+        metrics
+            .named("coral.search.index.recovery.duration")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn legacy_failed_projections_keep_visibility_unknown_until_a_successful_commit() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world.reject_complete_states().await;
+    world.index.reconcile().await;
+    // Older releases left failed rows without first-visibility evidence.
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql(
+            "UPDATE search_index_states SET ever_visible = NULL WHERE state = 'failed'",
+        )
+        .await
+        .unwrap();
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let background = world.index.spawn_reconcile_task();
+    wait_for_observation(|| !metrics.named("coral.search.index.backlog").is_empty()).await;
+    assert!(
+        metrics
+            .values("coral.search.index.backlog")
+            .iter()
+            .any(|value| *value >= 1.0)
+    );
+    assert!(
+        metrics
+            .named("coral.search.index.first_visibility.age")
+            .is_empty()
+    );
+    background.abort();
+    let _stopped = background.await;
+    world.allow_complete_states().await;
+    world.make_retries_due().await;
+    world.index.reconcile().await;
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .is_empty(),
+        "unknown history must not invent first visibility"
+    );
+    assert!(
+        metrics
+            .named("coral.search.index.recovery.duration")
+            .is_empty(),
+        "unknown history must not invent an outage start"
+    );
+    let restarted = SearchIndex::new(world.modules.search.database.clone(), RECONCILE_INTERVAL);
+    let background = restarted.spawn_reconcile_task();
+    wait_for_observation(|| {
+        !metrics
+            .named("coral.search.index.first_visibility.age")
+            .is_empty()
+    })
+    .await;
+    assert!(
+        metrics
+            .values("coral.search.index.first_visibility.age")
+            .iter()
+            .all(|value| value.abs() < f64::EPSILON)
+    );
+    background.abort();
+    let _stopped = background.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backlog_sampling_continues_while_synchronous_index_work_is_held() {
+    let upstream = MockServer::start().await;
+    let mut world = World::publish_tracer(&upstream).await;
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let hold = world.index.hold_row_building();
+    let background = world.index.spawn_reconcile_task();
+    tokio::time::timeout(std::time::Duration::from_secs(5), hold.entered())
+        .await
+        .expect("row work starts");
+    // Any snapshot taken before the hold is now too old to satisfy this.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let fresh = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if metrics
+                .values("coral.search.index.backlog.sample.age")
+                .iter()
+                .any(|age| *age < 0.15)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    drop(hold);
+    background.abort();
+    let _stopped = background.await;
+    fresh.expect("synchronous reconciliation cannot stop the observer from refreshing");
 }
 
 #[tokio::test]
@@ -102,7 +378,7 @@ async fn an_unreadable_backlog_reports_unknown_and_recovers_after_the_next_snaps
     wait_for_observation(|| metrics.named("coral.search.index.backlog").is_empty()).await;
     assert!(
         metrics
-            .named("coral.search.publication.pending.age")
+            .named("coral.search.index.first_visibility.age")
             .is_empty()
     );
     world
@@ -125,6 +401,13 @@ async fn an_unreadable_backlog_reports_unknown_and_recovers_after_the_next_snaps
     );
     background.abort();
     let _stopped = background.await;
+    wait_for_observation(|| metrics.named("coral.search.index.backlog").is_empty()).await;
+    assert!(
+        metrics
+            .named("coral.search.index.backlog.sample.age")
+            .is_empty(),
+        "a stopped observer must not keep publishing its last snapshot"
+    );
 }
 
 async fn wait_for_observation(ready: impl Fn() -> bool) {
@@ -1812,7 +2095,10 @@ struct World {
 
 impl World {
     async fn publish_tracer(upstream: &MockServer) -> Self {
-        let modules = TestModules::new().await;
+        Self::publish_with_modules(TestModules::new().await, upstream).await
+    }
+
+    async fn publish_with_modules(modules: TestModules, upstream: &MockServer) -> Self {
         let user = organization_user(modules.search.database.clone(), USER).await;
         let workspace = modules.create_workspace(&user).await;
         let tracer = modules
@@ -2129,6 +2415,14 @@ impl World {
         self.reject_complete_states().await;
         self.index.reconcile().await;
         self.allow_complete_states().await;
+    }
+
+    /// Injects a persisted outage clock, including stale data an older writer
+    /// can leave when it does not know the new columns.
+    async fn set_outage_start(&self, at: i64) {
+        self.modules.fixture.execute_fixture_sql(&format!(
+            "UPDATE search_index_states SET unavailable_since_unix_nanos = {at} WHERE ever_visible = TRUE"
+        )).await.unwrap();
     }
 
     /// Makes every `complete` state row fail to insert, so an attempt fails

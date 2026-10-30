@@ -26,42 +26,58 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         "coral.compiler.request.duration",
         "histogram",
         "s",
-        &["operation", "outcome"],
+        &["compiler.role", "operation", "outcome"],
     ),
     (
         "coral.compiler.queue.duration",
         "histogram",
         "s",
-        &["operation"],
+        &["compiler.role", "operation"],
     ),
     (
         "coral.compiler.work.duration",
         "histogram",
         "s",
-        &["operation", "outcome"],
+        &["compiler.role", "operation", "outcome"],
     ),
-    ("coral.compiler.queue.depth", "gauge", "{request}", &[]),
-    ("coral.compiler.active", "gauge", "{request}", &[]),
+    (
+        "coral.compiler.queue.depth",
+        "gauge",
+        "{request}",
+        &["compiler.role"],
+    ),
+    (
+        "coral.compiler.active",
+        "gauge",
+        "{request}",
+        &["compiler.role"],
+    ),
     (
         "coral.persistence.acquisition.duration",
         "histogram",
         "s",
-        &["db.system", "transaction.mode", "outcome"],
+        &["db.system", "operation", "outcome"],
     ),
     (
         "coral.persistence.acquisition.waiters",
         "gauge",
         "{request}",
-        &["db.system", "transaction.mode"],
+        &["db.system", "operation"],
     ),
     (
         "coral.search.index.backlog",
         "gauge",
-        "{entity}",
-        &["search.entity.kind"],
+        "{projection}",
+        &["search.projection.kind"],
     ),
     ("coral.search.index.backlog.sample.age", "gauge", "s", &[]),
-    ("coral.search.publication.pending.age", "gauge", "s", &[]),
+    (
+        "coral.search.index.recovery.duration",
+        "histogram",
+        "s",
+        &[],
+    ),
+    ("coral.search.index.first_visibility.age", "gauge", "s", &[]),
     (
         "coral.search.publication.visibility.duration",
         "histogram",
@@ -200,12 +216,13 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
         RequestOutcome::Ok,
         Duration::from_millis(5),
     );
-    transaction_acquiring(DbSystem::Sqlite, TransactionMode::Write)
-        .finish(AcquisitionOutcome::Ready);
-    compiler_queued(CompilerOperation::Program)
+    database_acquiring(DbSystem::Sqlite, AcquisitionOperation::BeginWrite)
+        .finish(&Ok::<(), ()>(()));
+    compiler_queued(CompilerRole::Run, CompilerOperation::Program)
         .dequeued()
         .finish(CompilerOutcome::Ok);
     compiler_requested(
+        CompilerRole::Run,
         CompilerOperation::Program,
         CompilerOutcome::Ok,
         Duration::from_millis(5),
@@ -252,11 +269,15 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
         Some(SearchBacklog {
             generations: 2,
             functions: 1,
-            oldest_publication_age: Some(Duration::from_secs(5)),
+            first_visibility: Some(FirstVisibilityBacklog {
+                waiting: 1,
+                oldest_age: Some(Duration::from_secs(5)),
+            }),
             sample_age: Duration::from_secs(1),
         })
     });
-    publication_visible(false, Duration::from_secs(2));
+    publication_visible(VisibilityPath::Initial, Duration::from_secs(2));
+    index_recovered(Duration::from_secs(1));
     output_kept(OutputKind::Emission, 512);
     output_rejected(OutputKind::FinalValue);
     metrics.telemetry_dropped(SignalKind::Span, DropReason::QueueFull, 3);
@@ -304,14 +325,6 @@ fn every_instrument_exports_with_its_unit_and_only_its_attributes() {
     );
 }
 
-fn values(capture: &MetricCapture, name: &str) -> Vec<f64> {
-    capture
-        .named(name)
-        .into_iter()
-        .map(|point| point.value)
-        .collect()
-}
-
 /// A level counts what is live and returns to zero when it drops; an
 /// Invocation that drops without an end counts as a host defect.
 #[test]
@@ -321,15 +334,15 @@ fn levels_follow_their_guards_and_a_dropped_invocation_is_a_host_defect() {
         let first = run_active();
         let second = run_active();
         drop(first);
-        assert_eq!(values(&capture, "coral.run.active"), [1.0]);
+        assert_eq!(capture.values("coral.run.active"), [1.0]);
         drop(second);
         drop(invocation_started(
             ProviderProtocol::Http,
             ToolEffect::Write,
         ));
     });
-    assert_eq!(values(&capture, "coral.run.active"), [0.0]);
-    assert_eq!(values(&capture, "coral.invocation.active"), [0.0]);
+    assert_eq!(capture.values("coral.run.active"), [0.0]);
+    assert_eq!(capture.values("coral.invocation.active"), [0.0]);
     let ended = capture.named("coral.invocation.ended");
     assert_eq!(
         ended
@@ -353,12 +366,12 @@ fn pools_are_read_at_collection_while_observed() {
     let observed = tracing::subscriber::with_default(capture.subscriber(), || {
         observe_pool_in_use(DbSystem::Postgresql, move || read.load(Ordering::Relaxed))
     });
-    assert_eq!(values(&capture, "coral.persistence.pool.in_use"), [3.0]);
+    assert_eq!(capture.values("coral.persistence.pool.in_use"), [3.0]);
     in_use.store(0, Ordering::Relaxed);
-    assert_eq!(values(&capture, "coral.persistence.pool.in_use"), [0.0]);
+    assert_eq!(capture.values("coral.persistence.pool.in_use"), [0.0]);
     drop(observed);
     assert_eq!(
-        values(&capture, "coral.persistence.pool.in_use"),
+        capture.values("coral.persistence.pool.in_use"),
         [] as [f64; 0],
         "a dropped pool reports nothing"
     );
@@ -372,18 +385,22 @@ fn partial_backlog_snapshots_report_unknown_until_every_live_source_is_readable(
         Some(SearchBacklog {
             generations: 0,
             functions: 0,
-            oldest_publication_age: None,
+            first_visibility: None,
             sample_age: Duration::ZERO,
         })
     });
-    assert_eq!(values(&capture, "coral.search.index.backlog"), [0.0, 0.0]);
+    assert_eq!(capture.values("coral.search.index.backlog"), [0.0, 0.0]);
     let unknown = observe_search_backlog(|| None);
-    assert!(values(&capture, "coral.search.index.backlog").is_empty());
-    assert!(values(&capture, "coral.search.publication.pending.age").is_empty());
+    assert!(capture.values("coral.search.index.backlog").is_empty());
+    assert!(
+        capture
+            .values("coral.search.index.first_visibility.age")
+            .is_empty()
+    );
     drop(unknown);
-    assert_eq!(values(&capture, "coral.search.index.backlog"), [0.0, 0.0]);
+    assert_eq!(capture.values("coral.search.index.backlog"), [0.0, 0.0]);
     drop(known);
-    assert!(values(&capture, "coral.search.index.backlog").is_empty());
+    assert!(capture.values("coral.search.index.backlog").is_empty());
 }
 
 /// Without the layer, domain code records nothing and does not fail.

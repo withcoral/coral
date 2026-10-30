@@ -50,7 +50,7 @@ impl Drop for Measure<'_> {
     }
 }
 
-fn db_system(pools: &DatabaseBackend) -> DbSystem {
+pub(crate) fn db_system(pools: &DatabaseBackend) -> DbSystem {
     match pools {
         DatabaseBackend::Sqlite { .. } => DbSystem::Sqlite,
         DatabaseBackend::Postgres(_) => DbSystem::Postgresql,
@@ -62,20 +62,27 @@ fn in_use(size: u32, idle: usize) -> u64 {
     u64::from(size).saturating_sub(u64::try_from(idle).unwrap_or(u64::MAX))
 }
 
-impl Database {
-    /// Observes the pools' connections in use from the first transaction
-    /// that begins under the metrics layer: the database connects before
-    /// telemetry starts.
-    fn observe_pools(&self) {
-        if self.access.pool_metric.get().is_some() {
+impl<Access> Database<Access> {
+    /// Registers pool use on the first acquisition under the metrics layer.
+    /// The database connects before telemetry starts.
+    pub(crate) fn observe_pools(&self) {
+        if self.pool_metric.get().is_some() {
             return;
         }
         let observed = match &self.backend {
-            DatabaseBackend::Sqlite { reads, writes } => {
-                let (reads, writes) = (reads.clone(), writes.clone());
+            DatabaseBackend::Sqlite {
+                reads,
+                writes,
+                shared_pool,
+            } => {
+                let (reads, writes, shared_pool) = (reads.clone(), writes.clone(), *shared_pool);
                 metric::observe_pool_in_use(DbSystem::Sqlite, move || {
-                    in_use(reads.size(), reads.num_idle())
-                        .saturating_add(in_use(writes.size(), writes.num_idle()))
+                    let readers = in_use(reads.size(), reads.num_idle());
+                    if shared_pool {
+                        readers
+                    } else {
+                        readers.saturating_add(in_use(writes.size(), writes.num_idle()))
+                    }
                 })
             }
             DatabaseBackend::Postgres(pool) => {
@@ -87,7 +94,7 @@ impl Database {
         };
         if let Some(observed) = observed {
             // Another transaction may have set it first; this one then drops.
-            self.access.pool_metric.get_or_init(|| observed);
+            self.pool_metric.get_or_init(|| observed);
         }
     }
 }
@@ -118,8 +125,10 @@ impl Database {
     /// transaction creation.
     pub async fn begin(&self) -> Result<Transaction<'_>, Error> {
         self.observe_pools();
-        let acquisition =
-            metric::transaction_acquiring(db_system(&self.backend), metric::TransactionMode::Write);
+        let acquisition = metric::database_acquiring(
+            db_system(&self.backend),
+            metric::AcquisitionOperation::BeginWrite,
+        );
         let backend = match &self.backend {
             DatabaseBackend::Sqlite { writes, .. } => writes
                 .begin_with("BEGIN IMMEDIATE")
@@ -131,11 +140,7 @@ impl Database {
                 .map(TransactionBackend::Postgres),
         }
         .inspect_err(|error| record_failure(&self.backend, error));
-        acquisition.finish(if backend.is_ok() {
-            metric::AcquisitionOutcome::Ready
-        } else {
-            metric::AcquisitionOutcome::Failed
-        });
+        acquisition.finish(&backend);
         let backend = backend?;
         Ok(Transaction {
             backend,
@@ -159,9 +164,9 @@ impl Database {
     /// Returns an error when the backend rejects transaction creation.
     pub async fn begin_read_snapshot(&self) -> Result<Transaction<'_>, Error> {
         self.observe_pools();
-        let acquisition = metric::transaction_acquiring(
+        let acquisition = metric::database_acquiring(
             db_system(&self.backend),
-            metric::TransactionMode::ReadSnapshot,
+            metric::AcquisitionOperation::BeginReadSnapshot,
         );
         let backend = match &self.backend {
             DatabaseBackend::Sqlite { reads, .. } => reads
@@ -177,11 +182,7 @@ impl Database {
             .map(TransactionBackend::Postgres),
         }
         .inspect_err(|error| record_failure(&self.backend, error));
-        acquisition.finish(if backend.is_ok() {
-            metric::AcquisitionOutcome::Ready
-        } else {
-            metric::AcquisitionOutcome::Failed
-        });
+        acquisition.finish(&backend);
         let backend = backend?;
         Ok(Transaction {
             backend,

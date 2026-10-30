@@ -25,11 +25,11 @@ use opentelemetry::{InstrumentationScope, KeyValue};
 mod attribute;
 
 pub use attribute::{
-    AcquisitionOutcome, ClaimKind, ClaimOutcome, CompileOutcome, CompilerOperation,
-    CompilerOutcome, DbSystem, DropReason, GateKind, Interface, InvocationEnd, OutputKind,
-    PrincipalKind, ProviderProtocol, RecoveryOutcome, RequestOutcome, RunPhase, RunStatus,
-    SignalKind, TerminationReason, ToolEffect, TransactionMode, TransactionOutcome,
-    UpstreamOutcome,
+    AcquisitionOperation, AcquisitionOutcome, ClaimKind, ClaimOutcome, CompileOutcome,
+    CompilerOperation, CompilerOutcome, CompilerRole, DbSystem, DropReason, GateKind, Interface,
+    InvocationEnd, OutputKind, PrincipalKind, ProviderProtocol, RecoveryOutcome, RequestOutcome,
+    RunPhase, RunStatus, SignalKind, TerminationReason, ToolEffect, TransactionOutcome,
+    UpstreamOutcome, VisibilityPath,
 };
 
 /// Histogram bounds for a duration in seconds, from 5 ms to an hour.
@@ -64,8 +64,8 @@ struct Catalog {
     compiler_request_duration: Histogram<f64>,
     compiler_queue_duration: Histogram<f64>,
     compiler_work_duration: Histogram<f64>,
-    compiler_queue_depth: Level,
-    compiler_active: Level,
+    compiler_queue_depth: LabeledLevel<CompilerRole>,
+    compiler_active: LabeledLevel<CompilerRole>,
     program_execution_cpu_duration: Histogram<f64>,
     program_execution_heap_peak: Histogram<u64>,
     program_termination: Counter<u64>,
@@ -85,7 +85,7 @@ struct Catalog {
     upstream_request_size: Histogram<u64>,
     upstream_response_size: Histogram<u64>,
     persistence_acquisition_duration: Histogram<f64>,
-    persistence_acquisition_waiters: TaggedLevel,
+    persistence_acquisition_waiters: LabeledLevel<(DbSystem, AcquisitionOperation)>,
     persistence_transaction_duration: Histogram<f64>,
     persistence_transaction_failures: Counter<u64>,
     pools: Pools,
@@ -95,6 +95,7 @@ struct Catalog {
     _search_sample_age: ObservableGauge<f64>,
     _search_pending_age: ObservableGauge<f64>,
     search_publication_visibility_duration: Histogram<f64>,
+    search_index_recovery_duration: Histogram<f64>,
     output_size: Histogram<u64>,
     output_rejections: Counter<u64>,
     run_claims: Counter<u64>,
@@ -134,26 +135,22 @@ impl Level {
     }
 }
 
-type LevelValues = std::collections::BTreeMap<Vec<(&'static str, &'static str)>, i64>;
-
-/// A bounded family of live levels. Callers supply only cataloged enum values.
+/// A bounded gauge family keyed by catalog enums. Attribute conversion runs
+/// only during collection, not on the acquisition or compiler hot path.
 #[derive(Debug)]
-struct TaggedLevel {
-    values: Arc<Mutex<LevelValues>>,
+struct LabeledLevel<K> {
+    values: Arc<Mutex<std::collections::BTreeMap<K, i64>>>,
     _gauge: ObservableGauge<i64>,
 }
-
-impl TaggedLevel {
+impl<K: Ord + Copy + Send + 'static> LabeledLevel<K> {
     fn new(
         meter: &Meter,
         name: &'static str,
         unit: &'static str,
         description: &'static str,
+        attributes: fn(K) -> Vec<KeyValue>,
     ) -> Self {
-        let values = Arc::new(Mutex::new(std::collections::BTreeMap::<
-            Vec<(&'static str, &'static str)>,
-            i64,
-        >::new()));
+        let values = Arc::new(Mutex::new(std::collections::BTreeMap::<K, i64>::new()));
         let observed = Arc::clone(&values);
         let gauge = meter
             .i64_observable_gauge(name)
@@ -163,12 +160,8 @@ impl TaggedLevel {
                 let values = observed
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                for (attributes, value) in values.iter() {
-                    let attributes = attributes
-                        .iter()
-                        .map(|(key, value)| KeyValue::new(*key, *value))
-                        .collect::<Vec<_>>();
-                    gauge.observe(*value, &attributes);
+                for (key, value) in values.iter() {
+                    gauge.observe(*value, &attributes(*key));
                 }
             })
             .build();
@@ -177,23 +170,22 @@ impl TaggedLevel {
             _gauge: gauge,
         }
     }
-
-    fn add(&self, attributes: Vec<(&'static str, &'static str)>, delta: i64) {
+    fn add(&self, key: K, delta: i64) {
         let mut values = self
             .values
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *values.entry(attributes).or_default() += delta;
+        *values.entry(key).or_default() += delta;
     }
 }
 
 /// Measures one caller's wait for a connection and BEGIN. Dropping it before
 /// an answer records cancellation and releases the waiter, never a transaction.
 #[derive(Debug)]
-pub struct TransactionAcquisition {
+pub struct DatabaseAcquisition {
     metrics: Option<Metrics>,
     system: DbSystem,
-    mode: TransactionMode,
+    operation: AcquisitionOperation,
     outcome: AcquisitionOutcome,
     started: Instant,
 }
@@ -201,11 +193,14 @@ pub struct TransactionAcquisition {
 /// Starts one caller's acquisition wait. A detached backend BEGIN may outlive a
 /// canceled caller; the gauge counts callers, not detached database tasks.
 #[must_use = "the acquisition counts as waiting until the guard ends"]
-pub fn transaction_acquiring(system: DbSystem, mode: TransactionMode) -> TransactionAcquisition {
-    let guard = TransactionAcquisition {
+pub fn database_acquiring(
+    system: DbSystem,
+    operation: AcquisitionOperation,
+) -> DatabaseAcquisition {
+    let guard = DatabaseAcquisition {
         metrics: current(),
         system,
-        mode,
+        operation,
         outcome: AcquisitionOutcome::Canceled,
         started: Instant::now(),
     };
@@ -213,37 +208,34 @@ pub fn transaction_acquiring(system: DbSystem, mode: TransactionMode) -> Transac
         metrics
             .0
             .persistence_acquisition_waiters
-            .add(guard.attributes(), 1);
+            .add((guard.system, guard.operation), 1);
     }
     guard
 }
 
-impl TransactionAcquisition {
-    fn attributes(&self) -> Vec<(&'static str, &'static str)> {
-        vec![
-            ("db.system", self.system.as_str()),
-            ("transaction.mode", self.mode.as_str()),
-        ]
-    }
-
+impl DatabaseAcquisition {
     /// Ends the wait on its definite answer, successful or failed.
-    pub fn finish(mut self, outcome: AcquisitionOutcome) {
-        self.outcome = outcome;
+    pub fn finish<T, E>(mut self, result: &Result<T, E>) {
+        self.outcome = if result.is_ok() {
+            AcquisitionOutcome::Ready
+        } else {
+            AcquisitionOutcome::Failed
+        };
     }
 }
 
-impl Drop for TransactionAcquisition {
+impl Drop for DatabaseAcquisition {
     fn drop(&mut self) {
         if let Some(metrics) = &self.metrics {
             metrics
                 .0
                 .persistence_acquisition_waiters
-                .add(self.attributes(), -1);
+                .add((self.system, self.operation), -1);
             metrics.0.persistence_acquisition_duration.record(
                 self.started.elapsed().as_secs_f64(),
                 &[
                     KeyValue::new("db.system", self.system.as_str()),
-                    KeyValue::new("transaction.mode", self.mode.as_str()),
+                    KeyValue::new("operation", self.operation.as_str()),
                     KeyValue::new("outcome", self.outcome.as_str()),
                 ],
             );
@@ -340,7 +332,7 @@ impl Metrics {
         Self(Arc::new(Catalog {
             request_cpu_duration: seconds(
                 "coral.request.cpu.duration",
-                "CPU spent polling the request handler and response body; excludes awaits, child tasks and dedicated workers. Omitted without a supported thread CPU clock.",
+                "CPU spent polling the request handler and response body, including inline-awaited work; excludes pending wait time, spawned tasks and dedicated workers. Omitted without a supported thread CPU clock.",
             ),
             request_duration: seconds(
                 "coral.request.duration",
@@ -358,17 +350,19 @@ impl Metrics {
                 "coral.compiler.work.duration",
                 "Time the compiler worker spends handling one dequeued request, including isolate recovery.",
             ),
-            compiler_queue_depth: Level::new(
+            compiler_queue_depth: LabeledLevel::new(
                 &meter,
                 "coral.compiler.queue.depth",
                 "{request}",
                 "Compiler requests waiting to be dequeued, including enqueue attempts until accepted or rejected.",
+                |role: CompilerRole| vec![KeyValue::new("compiler.role", role.as_str())],
             ),
-            compiler_active: Level::new(
+            compiler_active: LabeledLevel::new(
                 &meter,
                 "coral.compiler.active",
                 "{request}",
                 "Requests the compiler worker is handling.",
+                |role: CompilerRole| vec![KeyValue::new("compiler.role", role.as_str())],
             ),
             program_compile_duration: seconds(
                 "coral.program.compile.duration",
@@ -454,11 +448,17 @@ impl Metrics {
                 "coral.persistence.acquisition.duration",
                 "Time awaiting a pooled connection and BEGIN, including canceled and failed waits.",
             ),
-            persistence_acquisition_waiters: TaggedLevel::new(
+            persistence_acquisition_waiters: LabeledLevel::new(
                 &meter,
                 "coral.persistence.acquisition.waiters",
                 "{request}",
-                "Callers awaiting a pooled connection and BEGIN.",
+                "Callers awaiting a pooled connection, plus BEGIN for transaction entry points.",
+                |(system, operation): (DbSystem, AcquisitionOperation)| {
+                    vec![
+                        KeyValue::new("db.system", system.as_str()),
+                        KeyValue::new("operation", operation.as_str()),
+                    ]
+                },
             ),
             persistence_transaction_duration: seconds(
                 "coral.persistence.transaction.duration",
@@ -481,13 +481,13 @@ impl Metrics {
             pools,
             _search_backlog: {
                 let sources = Arc::clone(&search_backlogs);
-                meter.u64_observable_gauge("coral.search.index.backlog").with_unit("{entity}")
+                meter.u64_observable_gauge("coral.search.index.backlog").with_unit("{projection}")
                     .with_description("Current projections missing or stale at the last successful read snapshot, including failed retries not yet due. Compare sample.age.")
                     .with_callback(move |gauge| {
                         let snapshots = search_snapshots(&sources);
                         if !snapshots.is_empty() {
-                            gauge.observe(snapshots.iter().map(|s| s.generations).sum(), &[KeyValue::new("search.entity.kind", "provider_generation")]);
-                            gauge.observe(snapshots.iter().map(|s| s.functions).sum(), &[KeyValue::new("search.entity.kind", "saved_function")]);
+                            gauge.observe(snapshots.iter().map(|s| s.generations).sum(), &[KeyValue::new("search.projection.kind", "provider_catalog")]);
+                            gauge.observe(snapshots.iter().map(|s| s.functions).sum(), &[KeyValue::new("search.projection.kind", "saved_function")]);
                         }
                     }).build()
             },
@@ -501,20 +501,25 @@ impl Metrics {
             },
             _search_pending_age: {
                 let sources = Arc::clone(&search_backlogs);
-                meter.f64_observable_gauge("coral.search.publication.pending.age").with_unit("s")
-                    .with_description("Age of the oldest stored publication awaiting a current Generation projection at the last snapshot; zero when none, absent for an unknown clock.")
+                meter.f64_observable_gauge("coral.search.index.first_visibility.age").with_unit("s")
+                    .with_description("Age of the oldest catalog publication never yet searchable; zero when none, absent for unknown visibility history or clock. Rebuilds are excluded.")
                     .with_callback(move |gauge| {
                         let snapshots = search_snapshots(&sources);
                         if snapshots.is_empty() { return; }
-                        if snapshots.iter().all(|s| s.generations == 0) { gauge.observe(0.0, &[]); }
-                        else if snapshots.iter().all(|s| s.generations == 0 || s.oldest_publication_age.is_some())
-                            && let Some(age) = snapshots.iter().filter_map(|s| s.oldest_publication_age).max() { gauge.observe(age.as_secs_f64(), &[]); }
+                        let Some(waiting) = snapshots.iter().map(|s| s.first_visibility.as_ref()).collect::<Option<Vec<_>>>() else { return; };
+                        if waiting.iter().all(|s| s.waiting == 0) { gauge.observe(0.0, &[]); }
+                        else if waiting.iter().all(|s| s.waiting == 0 || s.oldest_age.is_some())
+                            && let Some(age) = waiting.iter().filter_map(|s| s.oldest_age).max() { gauge.observe(age.as_secs_f64(), &[]); }
                     }).build()
             },
             search_backlogs,
             search_publication_visibility_duration: seconds(
                 "coral.search.publication.visibility.duration",
-                "Stored Generation publication time to a successful commit making an absent or failed projection complete. Includes publication commit; initial vs recovered transitions are separate. Complete rewrites record nothing.",
+                "Stored catalog publication time to its first successful index commit. Initial and retried attempts are separate; rebuilds and unknown legacy history record nothing.",
+            ),
+            search_index_recovery_duration: seconds(
+                "coral.search.index.recovery.duration",
+                "Time from a previously searchable catalog becoming unavailable to its successful recovery commit. Repeated failures preserve the outage start.",
             ),
             output_size: bytes(
                 "coral.output.size",
@@ -620,6 +625,7 @@ fn failure_code(code: Option<&'static str>) -> Option<KeyValue> {
 /// Records the caller's answer, separately from worker execution. A caller
 /// may time out while its job remains queued; the queue counts the actual job.
 pub fn compiler_requested(
+    role: CompilerRole,
     operation: CompilerOperation,
     outcome: CompilerOutcome,
     elapsed: Duration,
@@ -628,6 +634,7 @@ pub fn compiler_requested(
         catalog.compiler_request_duration.record(
             elapsed.as_secs_f64(),
             &[
+                KeyValue::new("compiler.role", role.as_str()),
                 KeyValue::new("operation", operation.as_str()),
                 KeyValue::new("outcome", outcome.as_str()),
             ],
@@ -641,6 +648,7 @@ pub fn compiler_requested(
 pub struct CompilerActivity {
     metrics: Option<Metrics>,
     operation: CompilerOperation,
+    role: CompilerRole,
     working: bool,
     outcome: CompilerOutcome,
     started: Instant,
@@ -649,16 +657,17 @@ pub struct CompilerActivity {
 /// Starts an enqueue attempt; a rejected job drops immediately and records no
 /// queue duration. A timed-out caller's accepted job stays counted until dequeued.
 #[must_use]
-pub fn compiler_queued(operation: CompilerOperation) -> CompilerActivity {
+pub fn compiler_queued(role: CompilerRole, operation: CompilerOperation) -> CompilerActivity {
     let activity = CompilerActivity {
         metrics: current(),
         operation,
+        role,
         working: false,
         outcome: CompilerOutcome::Stopped,
         started: Instant::now(),
     };
     if let Some(metrics) = &activity.metrics {
-        metrics.0.compiler_queue_depth.add(1);
+        metrics.0.compiler_queue_depth.add(role, 1);
     }
     activity
 }
@@ -668,12 +677,15 @@ impl CompilerActivity {
     #[must_use]
     pub fn dequeued(mut self) -> Self {
         if let Some(metrics) = &self.metrics {
-            metrics.0.compiler_queue_depth.add(-1);
+            metrics.0.compiler_queue_depth.add(self.role, -1);
             metrics.0.compiler_queue_duration.record(
                 self.started.elapsed().as_secs_f64(),
-                &[KeyValue::new("operation", self.operation.as_str())],
+                &[
+                    KeyValue::new("compiler.role", self.role.as_str()),
+                    KeyValue::new("operation", self.operation.as_str()),
+                ],
             );
-            metrics.0.compiler_active.add(1);
+            metrics.0.compiler_active.add(self.role, 1);
         }
         self.working = true;
         self.started = Instant::now();
@@ -691,43 +703,60 @@ impl Drop for CompilerActivity {
     fn drop(&mut self) {
         if let Some(metrics) = &self.metrics {
             if self.working {
-                metrics.0.compiler_active.add(-1);
+                metrics.0.compiler_active.add(self.role, -1);
                 metrics.0.compiler_work_duration.record(
                     self.started.elapsed().as_secs_f64(),
                     &[
+                        KeyValue::new("compiler.role", self.role.as_str()),
                         KeyValue::new("operation", self.operation.as_str()),
                         KeyValue::new("outcome", self.outcome.as_str()),
                     ],
                 );
             } else {
-                metrics.0.compiler_queue_depth.add(-1);
+                metrics.0.compiler_queue_depth.add(self.role, -1);
             }
         }
     }
 }
 
 /// A completed visibility transition, not a rewrite of an already-complete index.
-pub fn publication_visible(recovered: bool, elapsed: Duration) {
+pub fn publication_visible(path: VisibilityPath, elapsed: Duration) {
     with(|catalog| {
         catalog.search_publication_visibility_duration.record(
             elapsed.as_secs_f64(),
-            &[KeyValue::new(
-                "outcome",
-                if recovered { "recovered" } else { "initial" },
-            )],
+            &[KeyValue::new("outcome", path.as_str())],
         );
     });
 }
 
+/// A completed recovery of a previously searchable Provider catalog.
+pub fn index_recovered(elapsed: Duration) {
+    with(|catalog| {
+        catalog
+            .search_index_recovery_duration
+            .record(elapsed.as_secs_f64(), &[]);
+    });
+}
+
+/// Known first-visibility work, separate from rebuild backlog.
+#[derive(Clone, Copy)]
+pub struct FirstVisibilityBacklog {
+    /// Catalog publications whose first projection has not committed.
+    pub waiting: u64,
+    /// Age of the oldest such publication, absent when its clock is unknown.
+    pub oldest_age: Option<Duration>,
+}
+
 /// A read-only projection snapshot. Ages advance monotonically after the
 /// snapshot; the sample age lets operators distinguish backlog from stale data.
+#[derive(Clone, Copy)]
 pub struct SearchBacklog {
     /// Active Provider Generations without a current projection.
     pub generations: u64,
     /// Current Saved Function revisions without a current projection.
     pub functions: u64,
-    /// Age of the oldest pending Generation publication, when its clock is known.
-    pub oldest_publication_age: Option<Duration>,
+    /// None when a legacy failed projection has unknown visibility history.
+    pub first_visibility: Option<FirstVisibilityBacklog>,
     /// Time since the snapshot was read successfully.
     pub sample_age: Duration,
 }

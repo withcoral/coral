@@ -26,6 +26,8 @@
 mod host;
 pub(crate) use host::execute;
 
+use coral_telemetry::metric::CompilerRole;
+
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -110,7 +112,7 @@ pub(crate) struct V8ProgramEngine {
 impl V8ProgramEngine {
     pub(crate) fn new(isolate_limits: coral_v8::IsolateLimits) -> Result<Self, Error> {
         Ok(Self {
-            compiler: coral_v8::ProgramCompiler::new(isolate_limits)
+            compiler: coral_v8::ProgramCompiler::new(isolate_limits, CompilerRole::Run)
                 .map_err(|error| Error::ProgramRuntimeUnavailable(error.to_string()))?,
             executor: coral_v8::ProgramExecutor::new(isolate_limits),
         })
