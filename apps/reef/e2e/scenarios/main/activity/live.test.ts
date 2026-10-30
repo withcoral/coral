@@ -11,6 +11,7 @@ import {
   programRunner,
 } from '../../../support/providers.ts'
 import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
+import { shownPayload } from '../../../support/payloads.ts'
 import { ToolAccessState } from '../../../generated/coral/management/v1/policy_pb.ts'
 import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_pb.ts'
 
@@ -273,7 +274,7 @@ test('Activity automatically streams new rows and continuously loads bounded chi
         await page.getByRole('dialog').waitFor()
         await observedArrival()
         expect(new URL(page.url()).searchParams.get('record')).toBe(selected)
-        await page.locator('pre').filter({ hasText: '299' }).first().waitFor()
+        await shownPayload(page, '299').waitFor()
         await page.getByRole('button', { name: 'Close details', exact: true }).click()
         await page.waitForURL((url) => !url.searchParams.has('record'))
         // Back must reopen the detail, not find the one still exiting.
@@ -283,7 +284,7 @@ test('Activity automatically streams new rows and continuously loads bounded chi
         await expect.poll(relativePosition, { timeout: 10_000 }).toBeCloseTo(top, 0)
         await page.goBack()
         await page.waitForURL((url) => url.searchParams.get('record') === selected)
-        await page.locator('pre').filter({ hasText: '299' }).first().waitFor()
+        await shownPayload(page, '299').waitFor()
         await page.goForward()
         await page.waitForURL((url) => !url.searchParams.has('record'))
         await page.getByRole('dialog').waitFor({ state: 'hidden' })

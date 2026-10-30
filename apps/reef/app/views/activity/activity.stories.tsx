@@ -1026,10 +1026,11 @@ export const UpstreamToolError: Story = {
   play: async ({ canvasElement }) => {
     const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
     await expect(drawer.getByText('Upstream HTTP status: 404')).toBeVisible()
-    await expect(
-      drawer.getByText(codeContaining('No invoices for this account'), { selector: 'pre' }),
-    ).toBeVisible()
-    await expect(drawer.getByText('This is the start of the data.')).toBeVisible()
+    const data = drawer.getByRole('region', { name: 'Upstream response data for ToolError' })
+    await expect(within(data).getByRole('group', { name: 'Raw' })).toHaveTextContent(
+      '{"message":"No invoices for this account"',
+    )
+    await expect(drawer.getByText('This is only the start of the value.')).toBeVisible()
   },
 }
 export const RetainedSource: Story = {
@@ -1101,9 +1102,10 @@ export const FinalValueOnExec: Story = {
       await expect(within(table).getByRole('link', { name: 'final value' })).toBeVisible()
     }
     const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
-    await expect(
-      drawer.getByText(codeContaining('"invoices": 24'), { selector: 'pre' }),
-    ).toBeVisible()
+    const value = drawer.getByRole('region', { name: 'Final value' })
+    await expect(within(value).getByRole('group', { name: 'Structure' })).toHaveTextContent(
+      '"invoices": 24',
+    )
   },
 }
 export const NoFinalValue: Story = {
@@ -1160,14 +1162,13 @@ export const ExactNativeInteger: Story = {
     },
   },
   play: async ({ canvasElement }) => {
-    const value = await within(canvasElement.ownerDocument.body).findByText(
-      codeContaining('9007199254740993'),
-      {
-        selector: 'pre',
-      },
-    )
+    const response = await within(canvasElement.ownerDocument.body).findByRole('region', {
+      name: 'Provider response',
+    })
+    const value = within(response).getByRole('group', { name: 'Structure' })
     await expect(value).toBeVisible()
-    await expect(value.textContent).toContain('\n  "data": {\n    "id": 9007199254740993')
+    // The integer past 2^53 keeps every digit, under its key.
+    await expect(value).toHaveTextContent('"data": { 1 property"id": 9007199254740993')
   },
 }
 export const CoralFailure: Story = {
@@ -1699,7 +1700,7 @@ export const PendingConnectionFooter: Story = {
     }
   },
 }
-/** A call selected on its own, beside the evidence and source of the Run that made it. */
+/** A call selected on its own, beside the source of the Run that made it. */
 export const InvocationWithRunEvidence: Story = {
   args: {
     page: {
@@ -1745,16 +1746,9 @@ export const InvocationWithRunEvidence: Story = {
     )
     await expect(drawer.getByRole('heading', { level: 2, name: 'mail.send' })).toBeVisible()
     await expectAlignedHeaders(await openDrawer(canvasElement, 'Activity details'))
-    // The call's provider response and the Run's failure each show in their own card.
-    const failure = drawer.getByRole('region', { name: 'Error' })
-    await expect(failure).toHaveTextContent('The program failed after this call returned.')
-    await expect(failure).toHaveTextContent('program_execution_failed')
     await expect(drawer.getByRole('region', { name: 'Provider response' })).toBeVisible()
-    await expect(drawer.getByText('program run: failed')).toBeVisible()
-    // The call leads; the Run's source shows in its own pane below, not repeated in Details.
-    await expect(drawer.queryByText('Accepted program source', { selector: 'summary' })).toBeNull()
+    // The call leads; the Run's source shows in its own pane below.
     const source = drawer.getByRole('region', { name: 'Accepted source' })
     await expect(source.querySelector('[data-line="1"]')).toBeVisible()
-    await expect(drawer.getByText('Details', { selector: 'summary' })).toBeVisible()
   },
 }

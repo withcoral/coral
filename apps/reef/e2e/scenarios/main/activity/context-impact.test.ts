@@ -4,6 +4,7 @@ import { authenticatedTarget, loginActor, mcpToken } from '../../../support/acto
 import { withBrowserSession } from '../../../support/browser-session.ts'
 import { managementClients } from '../../../support/management.ts'
 import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
+import { shownPayload } from '../../../support/payloads.ts'
 import {
   addProviderFromFile,
   createWorkspace,
@@ -96,7 +97,7 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
           expect(await table.locator('[aria-label$="B added"]').count()).toBe(4)
           expect(await page.content()).not.toContain('x'.repeat(100))
           await table.getByRole('link', { name: 'final value', exact: true }).click()
-          await page.locator('pre').filter({ hasText: '"ok"' }).first().waitFor()
+          await shownPayload(page, '"ok"').waitFor()
           await page.getByRole('button', { name: 'Close details', exact: true }).click()
           await page.waitForURL((url) => !url.searchParams.has('record'))
         },

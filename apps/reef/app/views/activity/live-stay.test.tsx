@@ -275,7 +275,7 @@ it('turns on at once, then waits from the record it moved to', async () => {
   start('new')
   const view = await open('old', false)
   await act(async () => {
-    fireEvent.click(screen.getAllByRole('button', { name: 'Follow latest activity' })[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Live' }))
   })
   await settle()
   expect(view.address().get('record')).toBe(runName('new'))
@@ -304,7 +304,7 @@ it('follows the Run at once when you switch to it from page live mode while a st
   // stub has no Run toggle. The clock stands still, so the step goes in the render that
   // follows, not after any timer.
   await act(async () => {
-    fireEvent.click(screen.getAllByRole('button', { name: 'Follow latest activity' })[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Live' }))
   })
   const run = new URLSearchParams(view.address())
   run.set('live', '1')
@@ -327,7 +327,7 @@ it.each<[string, (view: Awaited<ReturnType<typeof open>>) => Promise<void>]>([
     'you turn live mode off',
     async () => {
       await act(async () => {
-        fireEvent.click(screen.getAllByRole('button', { name: 'Follow latest activity' })[0])
+        fireEvent.click(screen.getByRole('button', { name: 'Live' }))
       })
     },
   ],
@@ -365,7 +365,7 @@ it.each<[string, () => void, boolean]>([
     'turning live mode off',
     () =>
       screen
-        .getAllByRole('button', { name: 'Follow latest activity' })[0]
+        .getByRole('button', { name: 'Live' })
         .dispatchEvent(new MouseEvent('click', { bubbles: true })),
     false,
   ],

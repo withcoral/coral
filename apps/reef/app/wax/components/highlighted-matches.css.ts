@@ -8,3 +8,14 @@ export const match = style({
   color: theme.content.primary,
   fontWeight: theme.typography.bodySmallXStrong.fontWeight,
 })
+
+// A find's match is also tinted, so it shows in code; the current one is outlined too.
+export const found = style({
+  background: theme.content.warningBackground,
+  borderRadius: 2,
+  color: 'inherit',
+})
+export const current = style({
+  outline: `2px solid ${theme.stroke.focused}`,
+  outlineOffset: 1,
+})

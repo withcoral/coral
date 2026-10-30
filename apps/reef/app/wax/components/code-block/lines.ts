@@ -4,7 +4,7 @@ import type { Run } from './highlight'
  * JavaScript's line terminators: CRLF ends one line; a lone CR, LF, U+2028 and U+2029
  * each end one. U+2028 is the only character in category Zl, and U+2029 in Zp.
  */
-const LINE_TERMINATOR = /\r\n|[\r\n\p{Zl}\p{Zp}]/gu
+export const LINE_TERMINATOR = /\r\n|[\r\n\p{Zl}\p{Zp}]/gu
 
 /** The lines of `code` as JavaScript counts them, without their terminators. */
 export function sourceLines(code: string): string[] {

@@ -10,6 +10,8 @@ export interface SourceDocument {
   /** What the pane names the document; the accepted program, the pane's default, has none. */
   label?: string
   code: string
+  /** What a download of `code` is named. */
+  fileName: string
 }
 export interface SourceHighlight {
   startLine: number
@@ -29,11 +31,16 @@ const SAVED_FUNCTION_FRAME_SOURCE_PREFIX = 'Saved Function coral.functions.'
 /** The accepted program, then every Saved Function the Run linked, as accepted. */
 export function sourceDocumentsFor(context: RunDetail): SourceDocument[] {
   return [
-    { id: ACCEPTED_PROGRAM_DOCUMENT_ID, code: context.source },
+    {
+      id: ACCEPTED_PROGRAM_DOCUMENT_ID,
+      code: context.source,
+      fileName: `program-${context.run.name.split('/').at(-1)}.ts`,
+    },
     ...context.linkedFunctions.map((linked) => ({
       id: savedFunctionDocumentId(linked.savedFunction),
       label: `Saved-function snapshot: ${linked.path}`,
       code: linked.source,
+      fileName: `${linked.path}.ts`,
     })),
   ]
 }

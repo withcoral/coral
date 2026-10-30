@@ -1,5 +1,6 @@
 import classNames from 'classnames'
-import { useEffect, useMemo, useRef } from 'react'
+import { Fragment, useEffect, useMemo, useRef } from 'react'
+import { HighlightedMatches, type Highlight } from '@/wax/components/highlighted-matches'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 import { highlight as highlightSource, type Language } from './highlight'
@@ -17,7 +18,8 @@ export interface AnnotatedCodeHighlight {
  * only a change to `revealKey` attempts a new reveal, and the reveal itself
  * moves the viewport only when the range is not already fully visible, so a
  * caller can select the same range again without re-scrolling a reader's
- * manual position.
+ * manual position. A Find passes its `marks`: they show inside the syntax colouring,
+ * and the current match scrolls into view whenever it changes.
  */
 export function AnnotatedCodeBlock({
   code,
@@ -25,6 +27,7 @@ export function AnnotatedCodeBlock({
   highlight: range,
   followHighlight,
   revealKey,
+  marks,
 }: {
   code: string
   language: Language
@@ -32,8 +35,20 @@ export function AnnotatedCodeBlock({
   /** Auto-scroll the highlighted range into view when `revealKey` changes. */
   followHighlight: boolean
   revealKey: string
+  /** By line number, the parts of its text a Find found, in order. Each new map reveals
+   * its current match, so keep it the same between renders until Find moves. */
+  marks?: ReadonlyMap<number, Highlight[]>
 }) {
   const lines = useMemo(() => splitLines(highlightSource(code, language)), [code, language])
+  // Where each run starts in its line, so a mark finds the runs it falls in.
+  const offsets = useMemo(
+    () =>
+      lines.map((runs) => {
+        let at = 0
+        return runs.map(({ text }) => (at += text.length) - text.length)
+      }),
+    [lines],
+  )
   const viewportRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!followHighlight || !range) return
@@ -52,6 +67,12 @@ export function AnnotatedCodeBlock({
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealKey, followHighlight])
+  // The current match, once it has rendered.
+  useEffect(() => {
+    viewportRef.current
+      ?.querySelector('[aria-current="true"]')
+      ?.scrollIntoView?.({ block: 'nearest' })
+  }, [marks])
   return (
     <ScrollArea viewportRef={viewportRef} viewportClassName={styles.viewport} fade="both">
       <Typography.Code as="pre" className={styles.code}>
@@ -69,15 +90,16 @@ export function AnnotatedCodeBlock({
                 {lineNumber}
               </span>
               <span className={styles.lineText}>
-                {runs.map(({ text, className }, i) =>
-                  className ? (
+                {runs.map(({ text, className }, i) => {
+                  const shown = markedRun(text, offsets[index]![i]!, marks?.get(lineNumber))
+                  return className ? (
                     <span key={i} className={className}>
-                      {text}
+                      {shown}
                     </span>
                   ) : (
-                    text
-                  ),
-                )}
+                    <Fragment key={i}>{shown}</Fragment>
+                  )
+                })}
               </span>
             </div>
           )
@@ -85,4 +107,17 @@ export function AnnotatedCodeBlock({
       </Typography.Code>
     </ScrollArea>
   )
+}
+
+/** A run's `text`, from `start` in its line, with the parts of `marks` that fall in it. */
+function markedRun(text: string, start: number, marks: Highlight[] | undefined) {
+  if (!marks?.length) return text
+  const inRun = marks.flatMap(({ range: [from, to], current }): Highlight[] => {
+    const range: Highlight['range'] = [
+      Math.max(from, start) - start,
+      Math.min(to, start + text.length) - start,
+    ]
+    return range[0] < range[1] ? [{ range, current }] : []
+  })
+  return inRun.length ? <HighlightedMatches text={text} highlights={inRun} /> : text
 }

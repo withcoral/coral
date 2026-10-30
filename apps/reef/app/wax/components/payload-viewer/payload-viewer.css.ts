@@ -1,0 +1,95 @@
+import { style } from '@/wax/css'
+import { theme } from '@/wax/theme/theme.css'
+
+export const viewer = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  minWidth: 0,
+})
+
+/** The expanded viewer fills its dialog and scrolls its own body. */
+export const expandedViewer = style({ flex: 1, minHeight: 0 })
+
+export const toolbar = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 8,
+  minWidth: 0,
+})
+
+export const facts = style({ flexGrow: 1, minWidth: 0 })
+
+const frame = {
+  background: theme.surface.onMainContentSubtle,
+  border: `1px solid ${theme.stroke.secondary}`,
+  borderRadius: 8,
+}
+
+export const body = style({
+  ...theme.typography.code,
+  color: theme.content.primary,
+  margin: 0,
+  minWidth: 0,
+  // The rows' list adds the padding above and below, so it scrolls with them.
+  paddingInline: 12,
+  tabSize: 2,
+  // Tab reaches a body to scroll it by key.
+  selectors: {
+    '&:focus-visible': { outline: `2px solid ${theme.stroke.focused}`, outlineOffset: -2 },
+  },
+})
+export const framedBody = style(frame)
+
+export const actions = style({ alignItems: 'center', display: 'flex', gap: 2 })
+/** Inline, the actions sit in a compact row above the card, at its right. */
+export const inlineActions = style({ alignSelf: 'flex-end', marginBlockEnd: -4 })
+
+/** Inline, a payload shows at most 320px, or half the screen on a short one, then scrolls
+ * inside its card at the card's full width. Folding still sets how much there is to scroll. */
+export const INLINE_MAX_HEIGHT = 'min(320px, 50vh)'
+export const inlineBody = style({ maxHeight: INLINE_MAX_HEIGHT, overflow: 'auto' })
+
+/** In the expanded viewer, unwrapped lines scroll sideways. */
+export const sideways = style({ overflowX: 'auto' })
+export const expandedBody = style({ flex: 1, minHeight: 0, overflow: 'auto' })
+
+export const wrapped = style({ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' })
+export const unwrapped = style({ whiteSpace: 'pre' })
+
+/** A whole payload's rows, in flow, with the body's padding above and below. */
+export const wholeRows = style({ paddingBlock: 12, minWidth: 0 })
+/** The rows near the view, each placed at its offset in the whole list. */
+export const rows = style({ position: 'relative', minWidth: 0 })
+export const row = style({
+  position: 'absolute',
+  insetBlockStart: 0,
+  insetInlineStart: 0,
+  width: '100%',
+})
+/** An unwrapped row is as wide as its text, so the body scrolls sideways to it. */
+export const unwrappedRow = style({ minWidth: '100%', width: 'max-content' })
+
+export const line = style({ display: 'flex', alignItems: 'baseline', gap: 2, minWidth: 0 })
+export const lineText = style({ minWidth: 0 })
+/** An empty line keeps its height. */
+export const rawLine = style({ minBlockSize: '1lh' })
+/** A Raw line's own terminator: kept in the text, so it stays exact, but not shown. */
+export const terminator = style({ display: 'none' })
+
+/** A container's toggle sits in the indent, so keys stay aligned with their siblings. */
+export const toggle = style({ flexShrink: 0, marginInlineStart: -4 })
+export const toggleSpacer = style({ display: 'inline-block', flexShrink: 0, width: 18 })
+
+export const summary = style({ color: theme.content.tertiary })
+
+/** A numbered line; its caller sizes the number's column for the last line's number. */
+export const numbered = style({ display: 'grid', columnGap: 12 })
+export const lineNumber = style({
+  color: theme.content.tertiary,
+  textAlign: 'end',
+  userSelect: 'none',
+})
+
+export const moreButton = style({ marginInlineStart: 6 })
