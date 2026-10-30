@@ -223,7 +223,9 @@ export async function liveActions(context: TestContext) {
 
     await step('Approve the last one: the review selects the newest record', async () => {
       await rail.getByRole('button', { name: 'Approve this call', exact: true }).click()
-      await expect.poll(() => address().get('record')).not.toBe(waits[2]!.invocation)
+      // The advance waits for the decision and Activity's reload after it, so wait for
+      // its navigation rather than a fixed second.
+      await page.waitForURL((url) => url.searchParams.get('record') !== waits[2]!.invocation)
       // The approved calls wait on the held fixture, so the newest record stays put.
       expect(await newest()).toBe(address().get('record'))
       expect(address().has('request')).toBe(false)
