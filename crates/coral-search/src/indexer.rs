@@ -115,6 +115,15 @@ impl IndexError {
     }
 }
 
+/// Evidence emitted only after the caller commits the index transaction.
+pub(crate) enum IndexEffect {
+    Updated,
+    PublicationVisible {
+        published_at_unix_nanos: i64,
+        recovered: bool,
+    },
+}
+
 /// Writes one Search Entity kind into the search-owned tables.
 #[async_trait]
 pub(crate) trait EntityIndexer: Send + Sync {
@@ -149,7 +158,7 @@ pub(crate) trait EntityIndexer: Send + Sync {
         transaction: &mut Transaction<'_>,
         entry: &Self::Entry,
         rows: &Self::Rows<'_>,
-    ) -> Result<(), IndexError>;
+    ) -> Result<IndexEffect, IndexError>;
 
     /// Removes the rows and state the removal names.
     async fn remove(
@@ -295,4 +304,42 @@ pub(crate) fn compact_identifier_variant(value: &str) -> Option<String> {
         .filter(|character| character.is_alphanumeric())
         .collect::<String>();
     (!compact.is_empty() && compact != normalized).then_some(compact)
+}
+
+/// The current projection backlog, including failed items whose retry is not
+/// due. This is a read snapshot, not a queue of only the work a pass will try.
+pub(crate) async fn projection_backlog(
+    transaction: &mut Transaction<'_>,
+    providers: &[coral_provider::ActiveGeneration],
+    functions: &[coral_functions::SavedFunctionIndexRevision],
+) -> Result<(Vec<coral_catalog::ProviderGenerationId>, u64), IndexError> {
+    let generations = repository::recorded_generations(transaction)
+        .await?
+        .into_iter()
+        .map(|state| (state.generation.clone(), state))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let missing = providers.iter().filter(|provider| {
+        let key = repository::WorkspaceGeneration { workspace_id: provider.workspace_id().clone(), generation_id: provider.generation_id().clone() };
+        !generations.get(&key).is_some_and(|state| state.indexer_revision >= Some(INDEXER_REVISION)
+            && matches!(&state.outcome, repository::RecordedOutcome::Complete { display_name } if display_name == provider.display_name()))
+    }).map(|provider| provider.generation_id().clone()).collect();
+    let recorded = repository::recorded_functions(transaction)
+        .await?
+        .into_iter()
+        .map(|row| (row.function, row.fingerprint))
+        .collect::<std::collections::HashMap<_, _>>();
+    let missing_functions = functions
+        .iter()
+        .filter(|entry| {
+            let key = repository::WorkspaceFunction {
+                workspace_id: entry.workspace_id().clone(),
+                function_id: entry.id().clone(),
+            };
+            recorded.get(&key) != Some(&repository::function_fingerprint(entry.revision()))
+        })
+        .count();
+    Ok((
+        missing,
+        u64::try_from(missing_functions).unwrap_or(u64::MAX),
+    ))
 }

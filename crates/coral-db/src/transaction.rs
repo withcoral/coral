@@ -117,6 +117,9 @@ impl Database {
     /// when no pooled connection is available or the backend rejects
     /// transaction creation.
     pub async fn begin(&self) -> Result<Transaction<'_>, Error> {
+        self.observe_pools();
+        let acquisition =
+            metric::transaction_acquiring(db_system(&self.backend), metric::TransactionMode::Write);
         let backend = match &self.backend {
             DatabaseBackend::Sqlite { writes, .. } => writes
                 .begin_with("BEGIN IMMEDIATE")
@@ -127,8 +130,13 @@ impl Database {
                 .await
                 .map(TransactionBackend::Postgres),
         }
-        .inspect_err(|error| record_failure(&self.backend, error))?;
-        self.observe_pools();
+        .inspect_err(|error| record_failure(&self.backend, error));
+        acquisition.finish(if backend.is_ok() {
+            metric::AcquisitionOutcome::Ready
+        } else {
+            metric::AcquisitionOutcome::Failed
+        });
+        let backend = backend?;
         Ok(Transaction {
             backend,
             changes: &self.access.changes,
@@ -150,6 +158,11 @@ impl Database {
     ///
     /// Returns an error when the backend rejects transaction creation.
     pub async fn begin_read_snapshot(&self) -> Result<Transaction<'_>, Error> {
+        self.observe_pools();
+        let acquisition = metric::transaction_acquiring(
+            db_system(&self.backend),
+            metric::TransactionMode::ReadSnapshot,
+        );
         let backend = match &self.backend {
             DatabaseBackend::Sqlite { reads, .. } => reads
                 .begin()
@@ -163,8 +176,13 @@ impl Database {
             .await
             .map(TransactionBackend::Postgres),
         }
-        .inspect_err(|error| record_failure(&self.backend, error))?;
-        self.observe_pools();
+        .inspect_err(|error| record_failure(&self.backend, error));
+        acquisition.finish(if backend.is_ok() {
+            metric::AcquisitionOutcome::Ready
+        } else {
+            metric::AcquisitionOutcome::Failed
+        });
+        let backend = backend?;
         Ok(Transaction {
             backend,
             changes: &self.access.changes,

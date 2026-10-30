@@ -10,7 +10,7 @@ use coral_catalog::ProviderGenerationId;
 use coral_db::{Database, Transaction};
 use coral_functions::SavedFunctionEntry;
 use coral_provider::{GenerationEntries, ProviderId};
-use coral_telemetry::safe;
+use coral_telemetry::{metric, safe};
 use coral_workspace::WorkspaceId;
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
@@ -23,6 +23,7 @@ use crate::indexer::tools::{self, AttemptedGeneration, ToolIndexer, ToolRemoval}
 use crate::indexer::{self, EntityIndexer, IndexError};
 
 mod reconcile;
+mod telemetry;
 
 /// How long one index write may run before it is rolled back and logged as
 /// failed. The limit frees the mutex: a write stalled on a database lock would
@@ -56,6 +57,7 @@ pub struct SearchIndex {
     /// The last notified write; the next one waits for it.
     last_write: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
     in_flight: Arc<watch::Sender<usize>>,
+    telemetry: Arc<telemetry::IndexTelemetry>,
     /// A test-only index whose notifications write nothing.
     #[cfg(any(test, feature = "test-fixtures"))]
     inert: bool,
@@ -83,6 +85,7 @@ impl SearchIndex {
             reconcile_interval,
             last_write: Arc::new(std::sync::Mutex::new(None)),
             in_flight: Arc::new(watch::Sender::new(0)),
+            telemetry: Arc::new(telemetry::IndexTelemetry::default()),
             #[cfg(any(test, feature = "test-fixtures"))]
             inert: false,
             #[cfg(any(test, feature = "test-fixtures"))]
@@ -514,12 +517,15 @@ impl SearchIndex {
             if let Some(stall) = self.stall_after_lock {
                 tokio::time::sleep(stall).await;
             }
-            if let Err(error) = indexer.index(&mut transaction, entry, written_rows).await {
-                rollback(transaction).await;
-                return Err(error);
-            }
+            let effect = match indexer.index(&mut transaction, entry, written_rows).await {
+                Ok(effect) => effect,
+                Err(error) => {
+                    rollback(transaction).await;
+                    return Err(error);
+                }
+            };
             transaction.commit().await?;
-            Ok(())
+            Ok(effect)
         })
         .await
         .unwrap_or_else(|_elapsed| Err(IndexError::Overran(self.write_limit)));
@@ -532,7 +538,19 @@ impl SearchIndex {
             "coral.search.write_ms",
             safe::number(millis(locked.elapsed())),
         );
-        written.map(|()| rows)
+        written.map(|effect| {
+            if let indexer::IndexEffect::PublicationVisible {
+                published_at_unix_nanos,
+                recovered,
+            } = effect
+                && let Some(elapsed) =
+                    crate::unix_now_nanos().and_then(|now| now.checked_sub(published_at_unix_nanos))
+                && let Ok(nanos) = u64::try_from(elapsed)
+            {
+                metric::publication_visible(recovered, Duration::from_nanos(nanos));
+            }
+            rows
+        })
     }
 
     async fn erase<I: EntityIndexer>(

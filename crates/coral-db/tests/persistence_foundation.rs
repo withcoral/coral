@@ -985,4 +985,74 @@ async fn transactions_record_their_duration_by_outcome_and_return_their_connecti
         durations,
         [expected("committed", 1), expected("rolled_back", 2)]
     );
+    let acquisitions = metrics.named("coral.persistence.acquisition.duration");
+    for (mode, count) in [("write", 2), ("read_snapshot", 1)] {
+        let point = acquisitions
+            .iter()
+            .find(|point| {
+                point.attributes.get("transaction.mode").map(String::as_str) == Some(mode)
+            })
+            .expect("each transaction mode records acquisition separately");
+        assert_eq!(point.count, count);
+        assert_eq!(
+            point.attributes.get("outcome").map(String::as_str),
+            Some("ready")
+        );
+        assert_eq!(
+            point.attributes.get("db.system").map(String::as_str),
+            Some(system)
+        );
+    }
+}
+
+#[tokio::test]
+async fn canceling_a_queued_begin_releases_its_waiter_and_records_no_open_transaction() {
+    use std::future::Future as _;
+    use std::task::Poll;
+    let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
+    let database = fixture.database();
+    // SQLite has one writer; Postgres uses SQLx's default pool capacity.
+    // Occupy every connection before measuring the queued acquisition.
+    let capacity = match database.system() {
+        DatabaseSystem::Sqlite => 1,
+        DatabaseSystem::Postgres => sqlx::postgres::PgPoolOptions::new().get_max_connections(),
+    };
+    let mut holders = Vec::new();
+    for _ in 0..capacity {
+        holders.push(database.begin().await.unwrap());
+    }
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let mut waiting = Box::pin(database.begin());
+    std::future::poll_fn(|context| {
+        assert!(waiting.as_mut().poll(context).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    let waiters = || {
+        metrics
+            .named("coral.persistence.acquisition.waiters")
+            .iter()
+            .map(|point| point.value)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(waiters(), [1.0]);
+    drop(waiting);
+    assert_eq!(waiters(), [0.0]);
+    let points = metrics.named("coral.persistence.acquisition.duration");
+    assert_eq!(points.len(), 1);
+    let point = points.first().expect("canceled acquisition");
+    assert_eq!(point.count, 1);
+    assert_eq!(
+        point.attributes.get("outcome").map(String::as_str),
+        Some("canceled")
+    );
+    assert!(
+        metrics
+            .named("coral.persistence.transaction.duration")
+            .is_empty()
+    );
+    for holder in holders {
+        holder.rollback().await.unwrap();
+    }
 }

@@ -10,6 +10,8 @@
 
 /// Coral's own fields.
 const CORAL: &[&str] = &[
+    // Direct request-handler and body polling CPU, excluding awaits and child tasks.
+    "coral.request.cpu_ns",
     // The Workspace the work belongs to.
     "coral.workspace.id",
     // The authenticated Principal: only after authentication, and never as

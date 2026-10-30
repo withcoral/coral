@@ -33,6 +33,111 @@ const INJECTED_FAULT: &str = "injected index fault";
 const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(5);
 
 #[tokio::test]
+async fn indexing_reports_visibility_lag_once_and_backlog_includes_failed_retries() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    world.reject_complete_states().await;
+    let background = world.index.spawn_reconcile_task();
+    world.index.reconcile().await;
+    let backlog = || {
+        metrics
+            .named("coral.search.index.backlog")
+            .iter()
+            .map(|point| point.value)
+            .sum::<f64>()
+    };
+    wait_for_observation(|| backlog() >= 1.0).await;
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .is_empty(),
+        "a failed commit reports no visibility"
+    );
+    world.index.reconcile().await;
+    assert!(backlog() >= 1.0, "a retry not yet due is still backlog");
+    world.allow_complete_states().await;
+    world.make_retries_due().await;
+    world.index.reconcile().await;
+    wait_for_observation(|| {
+        !metrics.named("coral.search.index.backlog").is_empty() && backlog() < 1.0
+    })
+    .await;
+    let samples = || {
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .iter()
+            .map(|point| point.count)
+            .sum::<u64>()
+    };
+    let first = samples();
+    assert!(first > 0);
+    world.index.reconcile().await;
+    assert_eq!(
+        samples(),
+        first,
+        "an unchanged pass does not repeat publication latency"
+    );
+    background.abort();
+    let _stopped = background.await;
+}
+
+#[tokio::test]
+async fn an_unreadable_backlog_reports_unknown_and_recovers_after_the_next_snapshot() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let background = world.index.spawn_reconcile_task();
+    world.index.reconcile().await;
+    wait_for_observation(|| !metrics.named("coral.search.index.backlog").is_empty()).await;
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE search_index_states RENAME TO unavailable_index_states")
+        .await
+        .unwrap();
+    world.index.reconcile().await;
+    wait_for_observation(|| metrics.named("coral.search.index.backlog").is_empty()).await;
+    assert!(
+        metrics
+            .named("coral.search.publication.pending.age")
+            .is_empty()
+    );
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE unavailable_index_states RENAME TO search_index_states")
+        .await
+        .unwrap();
+    world.index.reconcile().await;
+    wait_for_observation(|| !metrics.named("coral.search.index.backlog").is_empty()).await;
+    assert!(
+        metrics
+            .named("coral.search.index.backlog")
+            .iter()
+            .all(|point| point.value < 1.0)
+    );
+    assert!(
+        !metrics.named("coral.search.index.backlog").is_empty(),
+        "a successful empty snapshot is a known zero"
+    );
+    background.abort();
+    let _stopped = background.await;
+}
+
+async fn wait_for_observation(ready: impl Fn() -> bool) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !ready() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background backlog observation converges");
+}
+
+#[tokio::test]
 async fn one_reconcile_pass_indexes_a_published_generation_and_a_second_changes_nothing() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;

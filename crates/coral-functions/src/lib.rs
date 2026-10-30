@@ -56,8 +56,9 @@ pub use types::{
     SavedFunctionChangeContext, SavedFunctionDeclaration, SavedFunctionDeclarationField,
     SavedFunctionDeclarationFieldProjection, SavedFunctionDeclarationSearchMaterial,
     SavedFunctionDescription, SavedFunctionDiagnostic, SavedFunctionDiagnosticCategory,
-    SavedFunctionEntry, SavedFunctionId, SavedFunctionPage, SavedFunctionPath, SavedFunctionSave,
-    SavedFunctionSearchMaterial, SavedFunctionSource, SavedFunctionSummary,
+    SavedFunctionEntry, SavedFunctionId, SavedFunctionIndexRevision, SavedFunctionPage,
+    SavedFunctionPath, SavedFunctionSave, SavedFunctionSearchMaterial, SavedFunctionSource,
+    SavedFunctionSummary,
 };
 
 /// Loads source-free metadata without consulting declaration relevance material.
@@ -122,6 +123,17 @@ pub async fn all_saved_function_entries_in_transaction(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<SavedFunctionEntry>, Error> {
     repository::list_every_entry_in_transaction(transaction).await
+}
+
+/// Reads only identities and current revisions for the background index's
+/// telemetry snapshot. The caller decides visibility; no declaration is read.
+///
+/// # Errors
+/// Returns a persistence or corrupt revision failure.
+pub async fn saved_function_index_revisions_in_transaction(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<SavedFunctionIndexRevision>, Error> {
+    repository::index_revisions(transaction).await
 }
 
 /// Hydrates one current ranked Saved Function without reading its source.

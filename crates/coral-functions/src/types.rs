@@ -638,6 +638,32 @@ impl SavedFunction {
     }
 }
 
+/// Minimal owner evidence for comparing a Saved Function's search projection;
+/// contains no source, declaration, description, or caller visibility decision.
+#[derive(Debug, Clone)]
+pub struct SavedFunctionIndexRevision {
+    pub(crate) id: SavedFunctionId,
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) revision: u64,
+}
+impl SavedFunctionIndexRevision {
+    /// The Saved Function's stable identity.
+    #[must_use]
+    pub const fn id(&self) -> &SavedFunctionId {
+        &self.id
+    }
+    /// Its owning Workspace.
+    #[must_use]
+    pub const fn workspace_id(&self) -> &WorkspaceId {
+        &self.workspace_id
+    }
+    /// The currently accepted definition revision.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+
 /// What Universal Search indexes about one current Saved Function. Never the source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedFunctionEntry {

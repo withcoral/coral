@@ -847,6 +847,28 @@ struct RecordedGenerationRow {
     retry: RetryColumns,
 }
 
+/// Whether this exact projection was complete before the write, or absent.
+pub(super) async fn generation_was_complete(
+    transaction: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    generation: &ProviderGenerationId,
+) -> Result<Option<bool>, IndexError> {
+    let row: Option<(String,)> = transaction
+        .fetch_optional(
+            Query::select()
+                .column(SearchIndexStates::State)
+                .from(SearchIndexStates::Table)
+                .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace.to_string()))
+                .and_where(
+                    Expr::col(SearchIndexStates::ProviderGenerationId).eq(generation.to_string()),
+                )
+                .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
+                .to_owned(),
+        )
+        .await?;
+    Ok(row.map(|(state,)| state == COMPLETE))
+}
+
 /// Reads every Generation's state row in every Workspace.
 pub(super) async fn recorded_generations(
     transaction: &mut Transaction<'_>,

@@ -237,3 +237,40 @@ attribute! {
         ExportFailed => "export_failed",
     }
 }
+
+attribute! {
+    /// The transaction a caller is waiting to begin, for `transaction.mode`.
+    TransactionMode {
+        Write => "write",
+        ReadSnapshot => "read_snapshot",
+    }
+}
+
+attribute! {
+    /// How waiting to acquire a transaction ended, for `outcome`.
+    AcquisitionOutcome {
+        Ready => "ready",
+        Failed => "failed",
+        Canceled => "canceled",
+    }
+}
+
+attribute! {
+    /// The bounded kind of work sent to the TypeScript compiler.
+    CompilerOperation {
+        Program => "program",
+        SavedFunction => "saved_function",
+        Analysis => "analysis",
+    }
+}
+attribute! {
+    /// A compiler request's outcome, including queue admission failures.
+    CompilerOutcome {
+        Ok => "ok",
+        Rejected => "rejected",
+        QueueFull => "queue_full",
+        TimedOut => "timed_out",
+        Stopped => "stopped",
+        Failed => "failed",
+    }
+}

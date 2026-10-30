@@ -23,6 +23,9 @@ tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 opentelemetry-appender-tracing.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

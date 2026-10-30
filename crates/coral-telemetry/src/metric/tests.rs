@@ -11,10 +11,62 @@ use crate::testing::MetricCapture;
 /// operators' dashboards.
 const CATALOG: &[(&str, &str, &str, &[&str])] = &[
     (
+        "coral.request.cpu.duration",
+        "histogram",
+        "s",
+        &["interface", "operation", "outcome"],
+    ),
+    (
         "coral.request.duration",
         "histogram",
         "s",
         &["interface", "operation", "outcome"],
+    ),
+    (
+        "coral.compiler.request.duration",
+        "histogram",
+        "s",
+        &["operation", "outcome"],
+    ),
+    (
+        "coral.compiler.queue.duration",
+        "histogram",
+        "s",
+        &["operation"],
+    ),
+    (
+        "coral.compiler.work.duration",
+        "histogram",
+        "s",
+        &["operation", "outcome"],
+    ),
+    ("coral.compiler.queue.depth", "gauge", "{request}", &[]),
+    ("coral.compiler.active", "gauge", "{request}", &[]),
+    (
+        "coral.persistence.acquisition.duration",
+        "histogram",
+        "s",
+        &["db.system", "transaction.mode", "outcome"],
+    ),
+    (
+        "coral.persistence.acquisition.waiters",
+        "gauge",
+        "{request}",
+        &["db.system", "transaction.mode"],
+    ),
+    (
+        "coral.search.index.backlog",
+        "gauge",
+        "{entity}",
+        &["search.entity.kind"],
+    ),
+    ("coral.search.index.backlog.sample.age", "gauge", "s", &[]),
+    ("coral.search.publication.pending.age", "gauge", "s", &[]),
+    (
+        "coral.search.publication.visibility.duration",
+        "histogram",
+        "s",
+        &["outcome"],
     ),
     (
         "coral.program.compile.duration",
@@ -141,12 +193,28 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
 
 /// Records every instrument once, with every attribute it can carry. The
 /// pool it returns is observed while it is held.
-fn record_each(metrics: &Metrics) -> Option<PoolObservation> {
+fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObservation>) {
     metrics.request_duration(
         Interface::Mcp,
         "/mcp".to_string(),
         RequestOutcome::Ok,
         Duration::from_millis(5),
+    );
+    transaction_acquiring(DbSystem::Sqlite, TransactionMode::Write)
+        .finish(AcquisitionOutcome::Ready);
+    compiler_queued(CompilerOperation::Program)
+        .dequeued()
+        .finish(CompilerOutcome::Ok);
+    compiler_requested(
+        CompilerOperation::Program,
+        CompilerOutcome::Ok,
+        Duration::from_millis(5),
+    );
+    metrics.request_cpu(
+        Interface::Grpc,
+        "_OTHER".to_string(),
+        RequestOutcome::Ok,
+        Duration::from_millis(1),
     );
     program_compiled(CompileOutcome::Ok, Duration::from_millis(30));
     program_executed(Some(Duration::from_millis(12)), 4096);
@@ -180,11 +248,20 @@ fn record_each(metrics: &Metrics) -> Option<PoolObservation> {
     );
     transaction_failed(DbSystem::Sqlite, "writer_busy");
     let pool = observe_pool_in_use(DbSystem::Sqlite, || 2);
+    let search = observe_search_backlog(|| {
+        Some(SearchBacklog {
+            generations: 2,
+            functions: 1,
+            oldest_publication_age: Some(Duration::from_secs(5)),
+            sample_age: Duration::from_secs(1),
+        })
+    });
+    publication_visible(false, Duration::from_secs(2));
     output_kept(OutputKind::Emission, 512);
     output_rejected(OutputKind::FinalValue);
     metrics.telemetry_dropped(SignalKind::Span, DropReason::QueueFull, 3);
     drop((active, queued));
-    pool
+    (pool, search)
 }
 
 #[test]
@@ -192,7 +269,10 @@ fn every_instrument_exports_with_its_unit_and_only_its_attributes() {
     let capture = MetricCapture::default();
     let pool =
         tracing::subscriber::with_default(capture.subscriber(), || record_each(&capture.metrics()));
-    assert!(pool.is_some(), "the pool is observed under the layer");
+    assert!(
+        pool.0.is_some() && pool.1.is_some(),
+        "the pool is observed under the layer"
+    );
     let points = capture.points();
     for (name, kind, unit, keys) in CATALOG {
         let found = points
@@ -282,6 +362,28 @@ fn pools_are_read_at_collection_while_observed() {
         [] as [f64; 0],
         "a dropped pool reports nothing"
     );
+}
+
+#[test]
+fn partial_backlog_snapshots_report_unknown_until_every_live_source_is_readable() {
+    let capture = MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(capture.subscriber());
+    let known = observe_search_backlog(|| {
+        Some(SearchBacklog {
+            generations: 0,
+            functions: 0,
+            oldest_publication_age: None,
+            sample_age: Duration::ZERO,
+        })
+    });
+    assert_eq!(values(&capture, "coral.search.index.backlog"), [0.0, 0.0]);
+    let unknown = observe_search_backlog(|| None);
+    assert!(values(&capture, "coral.search.index.backlog").is_empty());
+    assert!(values(&capture, "coral.search.publication.pending.age").is_empty());
+    drop(unknown);
+    assert_eq!(values(&capture, "coral.search.index.backlog"), [0.0, 0.0]);
+    drop(known);
+    assert!(values(&capture, "coral.search.index.backlog").is_empty());
 }
 
 /// Without the layer, domain code records nothing and does not fail.

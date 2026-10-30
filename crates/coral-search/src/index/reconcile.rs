@@ -46,10 +46,15 @@ impl SearchIndex {
         starts.set_missed_tick_behavior(MissedTickBehavior::Delay);
         tokio::spawn(
             async move {
-                loop {
-                    starts.tick().await;
-                    index.reconcile().await;
-                }
+                let reconcile = async {
+                    loop {
+                        starts.tick().await;
+                        index.reconcile().await;
+                    }
+                };
+                // The observer shares this task's shutdown, but its reads never
+                // gate a reconcile pass or hold the writer mutex.
+                tokio::join!(reconcile, index.observe_backlog_loop());
             }
             .with_current_subscriber(),
         )
