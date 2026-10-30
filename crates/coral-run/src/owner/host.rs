@@ -28,6 +28,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tracing::Instrument as _;
 
+use coral_telemetry::metric::{ClaimKind, ClaimOutcome, RecoveryOutcome};
 use coral_telemetry::safe;
 use coral_workspace::AuthenticatedPrincipal;
 
@@ -38,7 +39,7 @@ use crate::owner::ChunkWork as _;
 use crate::program_output::ProgramOutputWriter;
 use crate::recovery::RecoveryWrite;
 use crate::run_repository::{self, Chunk, OwnedEvent};
-use crate::trace::{Phase, phase_span};
+use crate::trace::{Phase, TimedSpan, phase_span};
 use crate::types::AcceptedRun;
 use crate::{Error, RunModule, engine, nanos_duration};
 
@@ -85,7 +86,7 @@ pub(crate) async fn host(
     // set by the first settle attempt, read by every later one.
     let mut settle_deadline: Option<Instant> = None;
     // One `coral.run.terminate` span covers every settle attempt.
-    let mut terminate: Option<tracing::Span> = None;
+    let mut terminate: Option<TimedSpan> = None;
     loop {
         let mut retired = false;
         for effect in effects.drain(..) {
@@ -121,6 +122,7 @@ pub(crate) async fn host(
                                 Phase::Terminate,
                             )
                         })
+                        .span()
                         .clone();
                     spawn_settle(&module, &accepted, &handle, shutdown, again, deadline, span);
                 }
@@ -392,24 +394,24 @@ fn run_effect(
             let actor = actor.clone();
             let handle = handle.clone();
             let span = phase_span(accepted.trace.as_ref(), &accepted.held_id(), Phase::Start);
-            tokio::spawn(
-                async move {
-                    #[cfg(test)]
-                    module
-                        .execution_observer
-                        .owner_starting(&accepted.id, &accepted.claim_id)
-                        .await;
-                    let started = until_answered(
-                        &accepted.held_id(),
-                        "execution start",
-                        || !handle.is_retired(),
-                        || module.start_execution(&accepted, &actor),
-                    )
+            // The Run waits for its start mark.
+            let queued = coral_telemetry::metric::run_queued();
+            tokio::spawn(span.instrument(async move {
+                #[cfg(test)]
+                module
+                    .execution_observer
+                    .owner_starting(&accepted.id, &accepted.claim_id)
                     .await;
-                    handle.send(Message::Started(started));
-                }
-                .instrument(span),
-            );
+                let started = until_answered(
+                    &accepted.held_id(),
+                    "execution start",
+                    || !handle.is_retired(),
+                    || module.start_execution(&accepted, &actor),
+                )
+                .await;
+                drop(queued);
+                handle.send(Message::Started(started));
+            }));
         }
         Effect::StartProgram(package) => {
             if let OwnerStart::Program(actor) = start {
@@ -428,19 +430,16 @@ fn run_effect(
                 &accepted.held_id(),
                 Phase::Complete,
             );
-            tokio::spawn(
-                async move {
-                    let completed = until_answered(
-                        &accepted.held_id(),
-                        "terminal write",
-                        || !handle.is_retired(),
-                        || module.complete_execution(&accepted, &completion, intent.as_ref()),
-                    )
-                    .await;
-                    handle.send(Message::Completed(completed));
-                }
-                .instrument(span),
-            );
+            tokio::spawn(span.instrument(async move {
+                let completed = until_answered(
+                    &accepted.held_id(),
+                    "terminal write",
+                    || !handle.is_retired(),
+                    || module.complete_execution(&accepted, &completion, intent.as_ref()),
+                )
+                .await;
+                handle.send(Message::Completed(completed));
+            }));
         }
         Effect::Commit { .. }
         | Effect::Settle { .. }
@@ -491,22 +490,19 @@ fn start_program(
     let stop = handle.stop();
     let handle = handle.clone();
     let span = phase_span(accepted.trace.as_ref(), &accepted.held_id(), Phase::Execute);
-    tokio::spawn(
-        async move {
-            let completion = engine::execute(
-                engine,
-                package,
-                linked_snapshots,
-                invoker,
-                output,
-                limits,
-                stop,
-            )
-            .await;
-            handle.send(Message::ProgramEnded(completion));
-        }
-        .instrument(span),
-    );
+    tokio::spawn(span.instrument(async move {
+        let completion = engine::execute(
+            engine,
+            package,
+            linked_snapshots,
+            invoker,
+            output,
+            limits,
+            stop,
+        )
+        .await;
+        handle.send(Message::ProgramEnded(completion));
+    }));
 }
 
 /// The end of a recorded termination's shutdown grace on this process's
@@ -565,34 +561,31 @@ fn spawn_interruption(module: &RunModule, accepted: &AcceptedRun, handle: &Owner
         &accepted.held_id(),
         Phase::Complete,
     );
-    tokio::spawn(
-        async move {
-            let recorded = module
-                .record_interruption(
-                    &accepted.workspace_id,
-                    &accepted.held_id(),
-                    &accepted.claim_id,
-                    None,
-                )
-                .await
-                .map_err(CommitRejection::from);
-            match &recorded {
-                Ok(()) => {
-                    tracing::warn!(
-                        coral.run.id = safe::id(&accepted.held_id()),
-                        "Run Owner recorded its interruption"
-                    );
-                }
-                Err(rejection) => tracing::warn!(
+    tokio::spawn(span.instrument(async move {
+        let recorded = module
+            .record_interruption(
+                &accepted.workspace_id,
+                &accepted.held_id(),
+                &accepted.claim_id,
+                None,
+            )
+            .await
+            .map_err(CommitRejection::from);
+        match &recorded {
+            Ok(()) => {
+                tracing::warn!(
                     coral.run.id = safe::id(&accepted.held_id()),
-                    error.type = safe::kind(rejection.code()),
-                    "Run Owner's interruption was not written: the Run is no longer its own"
-                ),
+                    "Run Owner recorded its interruption"
+                );
             }
-            handle.send(Message::Interrupted(recorded));
+            Err(rejection) => tracing::warn!(
+                coral.run.id = safe::id(&accepted.held_id()),
+                error.type = safe::kind(rejection.code()),
+                "Run Owner's interruption was not written: the Run is no longer its own"
+            ),
         }
-        .instrument(span),
-    );
+        handle.send(Message::Interrupted(recorded));
+    }));
 }
 
 /// The recovered owner's one chunk, written until the database answers. Its
@@ -609,7 +602,7 @@ fn spawn_recovery(
     let accepted = accepted.clone();
     let handle = handle.clone();
     let span = phase_span(accepted.trace.as_ref(), &accepted.held_id(), Phase::Recover);
-    tokio::spawn(async move {
+    tokio::spawn(span.instrument(async move {
         let write = RecoveryWrite {
             workspace_id: &accepted.workspace_id,
             run_id: &accepted.id,
@@ -632,6 +625,16 @@ fn spawn_recovery(
             || module.record_recovery(&write),
         )
         .await;
+        let (recovery, claim) = match &recorded {
+            Ok(()) => (RecoveryOutcome::Ended, Some(ClaimOutcome::Won)),
+            Err(Error::RunEnded) => (RecoveryOutcome::AlreadyEnded, None),
+            Err(Error::ClaimMismatch) => (RecoveryOutcome::Lost, Some(ClaimOutcome::Lost)),
+            Err(_) => (RecoveryOutcome::Failed, None),
+        };
+        coral_telemetry::metric::run_recovered(recovery);
+        if let Some(claim) = claim {
+            coral_telemetry::metric::run_claimed(ClaimKind::Recover, claim);
+        }
         match &recorded {
             Ok(()) => tracing::info!(
                 coral.run.id = safe::id(&accepted.held_id()),
@@ -650,7 +653,7 @@ fn spawn_recovery(
         handle.send(Message::Interrupted(
             recorded.map_err(CommitRejection::from),
         ));
-    }.instrument(span));
+    }));
 }
 
 fn spawn_commit(

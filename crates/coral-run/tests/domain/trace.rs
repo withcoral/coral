@@ -11,7 +11,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 /// The process-wide span capture. A subscriber set for one test's thread
 /// misses a callsite that another test's thread registered first, so every
 /// test here reads this one and selects its own spans.
-fn capture() -> &'static SpanCapture {
+pub(super) fn capture() -> &'static SpanCapture {
     static CAPTURE: std::sync::OnceLock<SpanCapture> = std::sync::OnceLock::new();
     CAPTURE.get_or_init(|| {
         let capture = SpanCapture::beside(FailingExporter);
@@ -293,7 +293,14 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
             let run_id =
                 crate::types::HeldRunId::fixture(crate::RunId::generate().expect("Run identifier"));
             crate::trace::phase_span(None, &run_id, crate::trace::Phase::Complete)
-                .in_scope(|| crate::trace::record_run_end(outcome));
+                .span()
+                .in_scope(|| {
+                    crate::trace::record_run_end(
+                        &unstarted_run(),
+                        &crate::trace::RunEnd::Unstarted(outcome),
+                        0,
+                    );
+                });
             run_id
         })
         .collect::<Vec<_>>();
@@ -303,14 +310,16 @@ fn spans_are_errors_only_by_the_run_and_invocation_status_rules() {
         .into_iter()
         .map(|(ended, sent, _, _)| {
             let id = crate::InvocationId::generate();
-            let span = crate::trace::invocation_span(
+            let trace = crate::trace::InvocationTrace::begin(
                 &id,
                 coral_provider::ResolvedCallPath::fixture(&weather, "getForecast"),
                 &coral_provider::ProviderId::parse("00000000-0000-4000-8000-000000000001")
                     .expect("Provider ID"),
             );
-            let (kind, code) = crate::invocation::invocation_end(&ended, sent);
-            crate::trace::record_invocation_end(&span, kind, code);
+            if sent {
+                trace.sending();
+            }
+            trace.end(&ended);
             id.to_string()
         })
         .collect::<Vec<_>>();
@@ -719,4 +728,35 @@ async fn an_unrecorded_cancellation_still_links_to_the_run_trace() {
             .collect::<Vec<_>>(),
         vec![run_trace.as_str().to_string()]
     );
+}
+
+/// A Run row whose Program never started, for recording an end with no
+/// database.
+fn unstarted_run() -> crate::lifecycle::RunRecord {
+    crate::lifecycle::RunRecord {
+        id: crate::RunId::generate().expect("Run identifier"),
+        workspace_id: coral_workspace::WorkspaceId::parse(&uuid::Uuid::new_v4().to_string())
+            .expect("Workspace identifier"),
+        principal: coral_workspace::Principal::from_parts(
+            coral_workspace::PrincipalId::parse("user:trace").expect("a principal id"),
+            coral_workspace::PrincipalKind::User,
+        ),
+        state: RunState::Running,
+        accepted_at_unix_nanos: 0,
+        deadline_at_unix_nanos: 1,
+        worker_claim_id: None,
+        worker_claim_expires_at_unix_nanos: None,
+        holder_instance_id: None,
+        execution_claim_id: None,
+        execution_started_at_unix_nanos: None,
+        termination: None,
+        shutdown_grace_nanos: 0,
+        chunk_sequence: 0,
+        last_event_sequence: None,
+        accumulated_output_bytes: 0,
+        terminal_outcome: None,
+        terminal_at_unix_nanos: None,
+        value_limits: coral_value::ValueLimits::default(),
+        trace: None,
+    }
 }

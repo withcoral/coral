@@ -25,9 +25,10 @@
   bootstrap-resolved operator destination policy to domain modules. Identity and
   inbound listener selection do not determine outbound permissions. See
   [ADR 0008](docs/adr/0008-outbound-network-permissions.md) for composition defaults.
-- Keep cross-crate W3C propagation, safe telemetry fields, and export filtering
-  in `coral-telemetry`. Domain modules own signal timing. Application bootstrap
-  owns exporter configuration.
+- Keep cross-crate W3C propagation, safe telemetry fields, the `coral.*`
+  metric catalog, and export filtering in `coral-telemetry`. Domain modules own
+  signal timing and record metrics through `coral_telemetry::metric`.
+  Application bootstrap owns exporter configuration.
 - Keep generated files marked `linguist-generated` in `.gitattributes`.
 
 ### Persistence

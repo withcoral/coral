@@ -194,14 +194,31 @@ mod sqlite_only {
             .expect("take the write lock");
 
         // Paused time lets the writer pool's acquire timeout elapse at once.
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let measured = tracing::subscriber::set_default(metrics.subscriber());
         tokio::time::pause();
         let Err(error) = database.begin().await else {
             panic!("a second writer must not begin while the first holds the lock");
         };
         tokio::time::resume();
+        drop(measured);
 
         assert!(matches!(error, coral_db::Error::WriterBusy), "{error:?}");
         assert!(error.is_serialization_conflict());
+        assert_eq!(
+            metrics
+                .named("coral.persistence.transaction.failures")
+                .into_iter()
+                .map(|point| (point.attributes, point.value))
+                .collect::<Vec<_>>(),
+            [(
+                [("db.system", "sqlite"), ("failure.code", "writer_busy")]
+                    .map(|(key, value)| (key.to_string(), value.to_string()))
+                    .into(),
+                1.0
+            )],
+            "the busy writer counts as a failed transaction"
+        );
         holder.commit().await.expect("commit lock holder");
         assert!(record(&database, "holder").await.is_some());
     }
@@ -911,4 +928,61 @@ async fn record(executor: impl QueryExecutor, id: &str) -> Option<Record> {
         .fetch_optional(select_record(id))
         .await
         .expect("read record")
+}
+
+/// Each transaction records how long it was open by how it ended: a commit,
+/// an explicit rollback, or a drop, which rolls back. Its connection counts
+/// as in use while it is open, and no longer once its pool has it back.
+#[tokio::test]
+async fn transactions_record_their_duration_by_outcome_and_return_their_connection() {
+    let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
+    let database = fixture.database();
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let in_use = || {
+        metrics
+            .named("coral.persistence.pool.in_use")
+            .into_iter()
+            .map(|point| point.value)
+            .collect::<Vec<_>>()
+    };
+    let open = database.begin().await.unwrap();
+    let [held] = in_use()[..] else {
+        panic!("one pool gauge");
+    };
+    assert!(held >= 1.0, "the open transaction's connection is in use");
+    open.commit().await.unwrap();
+    // The pool takes a connection back on a task of its own.
+    for _ in 0..200 {
+        if in_use() == [held - 1.0] {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(in_use(), [held - 1.0], "the committed connection is back");
+    database.begin().await.unwrap().rollback().await.unwrap();
+    drop(database.begin_read_snapshot().await.unwrap());
+
+    let system = match database.system() {
+        DatabaseSystem::Sqlite => "sqlite",
+        DatabaseSystem::Postgres => "postgresql",
+    };
+    let mut durations = metrics
+        .named("coral.persistence.transaction.duration")
+        .into_iter()
+        .map(|point| (point.attributes, point.count))
+        .collect::<Vec<_>>();
+    durations.sort();
+    let expected = |outcome: &str, count| {
+        (
+            [("db.system", system), ("outcome", outcome)]
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .into(),
+            count,
+        )
+    };
+    assert_eq!(
+        durations,
+        [expected("committed", 1), expected("rolled_back", 2)]
+    );
 }

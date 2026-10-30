@@ -18,13 +18,12 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_policy::ToolAccessState;
 use coral_provider::{InvocationCaller, ResolvedInvocationTool};
-use coral_telemetry::safe;
+use coral_telemetry::{metric, safe};
 use coral_upstream::{McpRejection, McpResources, ReadyDispatch, UpstreamOutcome};
 use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
@@ -287,8 +286,11 @@ impl ToolInvoker {
             })?;
         let (target, policy, builtin) = self.resolve(call_path, &arguments).await?;
         let id = InvocationId::generate();
-        let span =
-            crate::trace::invocation_span(&id, target.call_path(), target.provider_access().id());
+        let trace = crate::trace::InvocationTrace::begin(
+            &id,
+            target.call_path(),
+            target.provider_access().id(),
+        );
         let admitted = Arc::new(AdmittedInvocation {
             id,
             workspace_id: self.workspace_id.clone(),
@@ -298,19 +300,25 @@ impl ToolInvoker {
             arguments_json,
             source_location,
             admitted_at_unix_nanos: self.now()?.max(self.accepted_at_unix_nanos),
-            span: span.clone(),
+            span: trace.span().clone(),
         });
-        let sent = AtomicBool::new(false);
-        let ended = self
-            .invoke_admitted(&admitted, &arguments, policy, builtin, &sent)
-            .instrument(span.clone())
-            .await;
-        let (kind, failure_code) = invocation_end(&ended, sent.load(Ordering::Acquire));
-        crate::trace::record_invocation_end(&span, kind, failure_code);
+        let ended = async {
+            self.owner
+                .admit(Box::new(AdmissionWork {
+                    admitted: admitted.clone(),
+                }))
+                .await?;
+            trace.admitted(admitted.target.tool());
+            self.invoke_admitted(&admitted, &arguments, policy, builtin, &trace)
+                .await
+        }
+        .instrument(trace.span().clone())
+        .await;
+        trace.end(&ended);
         ended
     }
 
-    /// The Invocation from its admission to its end. `sent` is set once its
+    /// The admitted Invocation to its end, marked on `trace` once its
     /// upstream send begins.
     async fn invoke_admitted(
         &self,
@@ -318,14 +326,9 @@ impl ToolInvoker {
         arguments: &serde_json::Value,
         policy: ToolAccessState,
         builtin: Option<crate::builtin::BuiltinCall>,
-        sent: &AtomicBool,
+        trace: &crate::trace::InvocationTrace,
     ) -> Result<String, InvocationHostError> {
         let admitted = admitted.clone();
-        self.owner
-            .admit(Box::new(AdmissionWork {
-                admitted: admitted.clone(),
-            }))
-            .await?;
         let mut progress = InvocationProgress::default();
         if policy == ToolAccessState::Disabled {
             return Err(self
@@ -417,7 +420,7 @@ impl ToolInvoker {
                 }
             }
         };
-        self.dispatch_and_finish(&admitted, &progress, ready, slot, sent)
+        self.dispatch_and_finish(&admitted, &progress, ready, slot, trace)
             .await
     }
 
@@ -520,7 +523,7 @@ impl ToolInvoker {
         progress: &InvocationProgress,
         mut ready: Dispatch,
         mut slot: DispatchSlot,
-        sent: &AtomicBool,
+        trace: &crate::trace::InvocationTrace,
     ) -> Result<String, InvocationHostError> {
         // The owner's own terminal state, before anything leaves the process:
         // a stop that reached the owner ends this permitted Invocation as
@@ -552,7 +555,7 @@ impl ToolInvoker {
                     .await;
             }
         };
-        sent.store(true, Ordering::Release);
+        trace.sending();
         let outcome = match self.upstream.send(ready, self.stop.clone()).await {
             Ok(outcome) => outcome,
             Err(UpstreamSendError::Canceled) => {
@@ -767,11 +770,11 @@ impl ToolInvoker {
         admitted: &Arc<AdmittedInvocation>,
         progress: &mut InvocationProgress,
     ) -> Result<(), Error> {
-        self.account_gate(admitted, progress)
-            .instrument(gate_span(&admitted.span, Gate::Account))
+        gate_span(&admitted.span, Gate::Account)
+            .instrument(self.account_gate(admitted, progress))
             .await?;
-        self.approval_gate(admitted, progress)
-            .instrument(gate_span(&admitted.span, Gate::Approval))
+        gate_span(&admitted.span, Gate::Approval)
+            .instrument(self.approval_gate(admitted, progress))
             .await?;
         self.prepare_credentials(admitted, progress)
             .instrument(step_span(&admitted.span, Step::Credentials))
@@ -1095,9 +1098,8 @@ impl ToolInvoker {
         run: &RunRecord,
         target: EnforcementTarget<'_>,
     ) -> Result<Option<(Checked, i64)>, Error> {
-        let span = gate_span(&target.admitted.span, Gate::Authority);
-        self.held_checked_facts(tx, run, target)
-            .instrument(span)
+        gate_span(&target.admitted.span, Gate::Authority)
+            .instrument(self.held_checked_facts(tx, run, target))
             .await
     }
 
@@ -1205,6 +1207,8 @@ impl ToolInvoker {
             // Run takes no more work): the row is still dispatching and the
             // slot stays with this task until the row's end is recorded.
             slot.keep();
+        } else {
+            metric::output_kept(metric::OutputKind::Result, result_json.len());
         }
         applied
     }
@@ -1218,6 +1222,12 @@ impl ToolInvoker {
         failure: impl Into<Rejection>,
     ) -> Result<InvocationHostError, Error> {
         let failure: Rejection = failure.into();
+        if matches!(
+            failure.failure(),
+            CoralFailure::ResultTooLarge | CoralFailure::RunOutputTooLarge
+        ) {
+            metric::output_rejected(metric::OutputKind::Result);
+        }
         let completion = InvocationCompletion::Failure(failure.clone());
         #[cfg(test)]
         self.observer.before_failure_commit().await?;
@@ -2230,31 +2240,4 @@ impl crate::builtin::InvokingRun for ToolInvoker {
 enum Dispatch {
     Upstream(ReadyDispatch),
     Builtin(Box<crate::builtin::BuiltinCall>),
-}
-
-/// How an Invocation that returned `ended` ended, for its span: its result
-/// kind and failure code, or `None` for a host defect. A stop after its
-/// upstream send began leaves it `indeterminate`.
-pub(crate) fn invocation_end(
-    ended: &Result<String, InvocationHostError>,
-    sent: bool,
-) -> (Option<InvocationResultKind>, Option<&'static str>) {
-    match ended {
-        Ok(_) | Err(InvocationHostError::Upstream { .. }) => {
-            (Some(InvocationResultKind::UpstreamOutcome), None)
-        }
-        Err(InvocationHostError::Rejected(rejection)) => (
-            Some(InvocationResultKind::CoralFailure),
-            Some(rejection.code()),
-        ),
-        Err(InvocationHostError::Fatal(Error::ProgramHostTerminated)) => (
-            Some(if sent {
-                InvocationResultKind::Indeterminate
-            } else {
-                InvocationResultKind::RunTerminated
-            }),
-            None,
-        ),
-        Err(InvocationHostError::Fatal(_)) => (None, None),
-    }
 }

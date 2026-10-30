@@ -1,12 +1,16 @@
 //! Memory failures through the compiler and executor Interfaces.
 
+use coral_telemetry as _;
 use coral_v8::{Error, IsolateLimits, ProgramCompiler, ProgramExecutor};
 use coral_value as _;
 use deno_core_icudata as _;
+#[cfg(unix)]
+use rustix as _;
 use serde as _;
 use serde_json as _;
 use sourcemap as _;
 use thiserror as _;
+use tracing as _;
 use v8 as _;
 
 fn deadline() -> std::time::Instant {

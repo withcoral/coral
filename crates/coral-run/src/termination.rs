@@ -13,9 +13,10 @@ use crate::observation::read_until;
 use crate::observation::validate_cursor;
 use crate::run_inbox::{InboxRequest, OutsideRequest};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
+use crate::trace::RunEnd;
 use crate::{
-    Error, RunId, RunModule, RunObservation, RunState, RunTerminalOutcome, RunUpdate,
-    invocation_lifecycle, invocation_repository, run_repository,
+    Error, RunId, RunModule, RunObservation, RunState, RunUpdate, invocation_lifecycle,
+    invocation_repository, run_repository,
 };
 
 /// How much longer than its shutdown grace a cancellation, or the end of the
@@ -173,7 +174,14 @@ impl RunModule {
             }
             transaction.commit().await?;
             if let Some(termination) = run.termination {
-                crate::trace::record_run_end(&termination.kind.outcome());
+                crate::trace::record_run_end(
+                    &run,
+                    &RunEnd::Stopped {
+                        outcome: &termination.kind.outcome(),
+                        reason: termination.kind,
+                    },
+                    terminal_at,
+                );
             }
             return Ok(true);
         }
@@ -277,7 +285,7 @@ impl RunModule {
             return Err(Error::ClaimMismatch);
         }
         let now = self.now()?.max(run.accepted_at_unix_nanos);
-        let ended = end_in_one_chunk(
+        let kind = end_in_one_chunk(
             &mut transaction,
             &run,
             None,
@@ -290,7 +298,14 @@ impl RunModule {
         )
         .await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(&ended);
+        crate::trace::record_run_end(
+            &run,
+            &RunEnd::Stopped {
+                outcome: &kind.outcome(),
+                reason: kind,
+            },
+            now,
+        );
         Ok(())
     }
 
@@ -331,7 +346,7 @@ impl RunModule {
 /// Request closed, then `run.ended`, never before the termination. The
 /// worker claim is released and, for a started Run, the execution claim
 /// taken over by `takeover`. One head move, predicated on the claim and the
-/// head `run` shows. Returns the terminal state it wrote.
+/// head `run` shows. Returns the termination it wrote.
 pub(crate) async fn end_in_one_chunk(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
@@ -339,7 +354,7 @@ pub(crate) async fn end_in_one_chunk(
     mut events: Vec<OwnedEvent>,
     takeover: Option<run_repository::Takeover<'_>>,
     now_unix_nanos: i64,
-) -> Result<RunTerminalOutcome, Error> {
+) -> Result<RunTerminationKind, Error> {
     let termination = match (run.termination, cancellation) {
         (Some(recorded), _) => RequestedTermination::recorded(recorded),
         (None, Some(cancellation)) => {
@@ -370,7 +385,7 @@ pub(crate) async fn end_in_one_chunk(
         ended_at_unix_nanos,
     )
     .await?;
-    Ok(termination.termination.kind.outcome())
+    Ok(termination.termination.kind)
 }
 
 /// A recorded termination to settle: which Run, and until when its

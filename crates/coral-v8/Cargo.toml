@@ -10,6 +10,7 @@ publish = false
 workspace = true
 
 [dependencies]
+coral-telemetry.workspace = true
 coral-value.workspace = true
 deno_core_icudata.workspace = true
 serde.workspace = true
@@ -17,3 +18,10 @@ serde_json.workspace = true
 sourcemap.workspace = true
 thiserror.workspace = true
 v8.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[dev-dependencies]
+coral-telemetry = { workspace = true, features = ["test-support"] }
+tracing.workspace = true

@@ -597,10 +597,16 @@ impl ServerHandler for McpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let carrier = context
-            .extensions
-            .get::<axum::http::request::Parts>()
-            .and_then(|parts| coral_telemetry::request_span(&parts.extensions));
+        let parts = context.extensions.get::<axum::http::request::Parts>();
+        if let Some(parts) = parts {
+            // Each tool call records its request's duration under its tool.
+            coral_telemetry::name_request_operation(
+                &parts.extensions,
+                "tools/call",
+                crate::arguments::served_name(request.name.as_ref()),
+            );
+        }
+        let carrier = parts.and_then(|parts| coral_telemetry::request_span(&parts.extensions));
         let call = ToolCall::open(
             request.name.as_ref(),
             carrier,

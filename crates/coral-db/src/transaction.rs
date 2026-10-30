@@ -1,3 +1,6 @@
+use std::time::Instant;
+
+use coral_telemetry::metric::{self, DbSystem, TransactionOutcome};
 use sea_query::SelectStatement;
 use sea_query_sqlx::SqlxBinder;
 use sqlx::postgres::PgRow;
@@ -16,6 +19,82 @@ pub struct Transaction<'a> {
     backend: TransactionBackend,
     changes: &'a crate::changes::Changes,
     invalidated: bool,
+    measure: Measure<'a>,
+}
+
+/// Records how long one transaction was open and how it ended. A
+/// transaction dropped without a commit or a rollback rolled back.
+struct Measure<'a> {
+    pools: &'a DatabaseBackend,
+    started: Instant,
+    outcome: Option<TransactionOutcome>,
+}
+
+impl<'a> Measure<'a> {
+    fn start(pools: &'a DatabaseBackend) -> Self {
+        Self {
+            pools,
+            started: Instant::now(),
+            outcome: None,
+        }
+    }
+}
+
+impl Drop for Measure<'_> {
+    fn drop(&mut self) {
+        metric::transaction_ended(
+            db_system(self.pools),
+            self.outcome.unwrap_or(TransactionOutcome::RolledBack),
+            self.started.elapsed(),
+        );
+    }
+}
+
+fn db_system(pools: &DatabaseBackend) -> DbSystem {
+    match pools {
+        DatabaseBackend::Sqlite { .. } => DbSystem::Sqlite,
+        DatabaseBackend::Postgres(_) => DbSystem::Postgresql,
+    }
+}
+
+/// How many of a pool's `size` connections are not `idle`.
+fn in_use(size: u32, idle: usize) -> u64 {
+    u64::from(size).saturating_sub(u64::try_from(idle).unwrap_or(u64::MAX))
+}
+
+impl Database {
+    /// Observes the pools' connections in use from the first transaction
+    /// that begins under the metrics layer: the database connects before
+    /// telemetry starts.
+    fn observe_pools(&self) {
+        if self.access.pool_metric.get().is_some() {
+            return;
+        }
+        let observed = match &self.backend {
+            DatabaseBackend::Sqlite { reads, writes } => {
+                let (reads, writes) = (reads.clone(), writes.clone());
+                metric::observe_pool_in_use(DbSystem::Sqlite, move || {
+                    in_use(reads.size(), reads.num_idle())
+                        .saturating_add(in_use(writes.size(), writes.num_idle()))
+                })
+            }
+            DatabaseBackend::Postgres(pool) => {
+                let pool = pool.clone();
+                metric::observe_pool_in_use(DbSystem::Postgresql, move || {
+                    in_use(pool.size(), pool.num_idle())
+                })
+            }
+        };
+        if let Some(observed) = observed {
+            // Another transaction may have set it first; this one then drops.
+            self.access.pool_metric.get_or_init(|| observed);
+        }
+    }
+}
+
+/// Counts a transaction on `pools` that failed to begin or commit.
+fn record_failure(pools: &DatabaseBackend, error: &Error) {
+    metric::transaction_failed(db_system(pools), error.code());
 }
 
 enum TransactionBackend {
@@ -39,21 +118,23 @@ impl Database {
     /// transaction creation.
     pub async fn begin(&self) -> Result<Transaction<'_>, Error> {
         let backend = match &self.backend {
-            DatabaseBackend::Sqlite { writes, .. } => TransactionBackend::Sqlite(
-                writes
-                    .begin_with("BEGIN IMMEDIATE")
-                    .await
-                    .map_err(crate::error::writer_busy)?,
-            ),
-            DatabaseBackend::Postgres(pool) => {
-                TransactionBackend::Postgres(begin_postgres(pool, None).await?)
-            }
-        };
+            DatabaseBackend::Sqlite { writes, .. } => writes
+                .begin_with("BEGIN IMMEDIATE")
+                .await
+                .map(TransactionBackend::Sqlite)
+                .map_err(crate::error::writer_busy),
+            DatabaseBackend::Postgres(pool) => begin_postgres(pool, None)
+                .await
+                .map(TransactionBackend::Postgres),
+        }
+        .inspect_err(|error| record_failure(&self.backend, error))?;
+        self.observe_pools();
         Ok(Transaction {
             backend,
             changes: &self.access.changes,
             invalidated: false,
             token: TransactionToken(std::sync::Arc::new(())),
+            measure: Measure::start(&self.backend),
         })
     }
 
@@ -70,22 +151,26 @@ impl Database {
     /// Returns an error when the backend rejects transaction creation.
     pub async fn begin_read_snapshot(&self) -> Result<Transaction<'_>, Error> {
         let backend = match &self.backend {
-            DatabaseBackend::Sqlite { reads, .. } => {
-                TransactionBackend::Sqlite(reads.begin().await?)
-            }
-            DatabaseBackend::Postgres(pool) => TransactionBackend::Postgres(
-                begin_postgres(
-                    pool,
-                    Some("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"),
-                )
-                .await?,
-            ),
-        };
+            DatabaseBackend::Sqlite { reads, .. } => reads
+                .begin()
+                .await
+                .map(TransactionBackend::Sqlite)
+                .map_err(Error::from),
+            DatabaseBackend::Postgres(pool) => begin_postgres(
+                pool,
+                Some("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"),
+            )
+            .await
+            .map(TransactionBackend::Postgres),
+        }
+        .inspect_err(|error| record_failure(&self.backend, error))?;
+        self.observe_pools();
         Ok(Transaction {
             backend,
             changes: &self.access.changes,
             invalidated: false,
             token: TransactionToken(std::sync::Arc::new(())),
+            measure: Measure::start(&self.backend),
         })
     }
 }
@@ -168,47 +253,28 @@ impl Transaction<'_> {
     ///
     /// Returns a backend commit error. The caller must not publish in-memory
     /// effects before this method succeeds.
-    pub async fn commit(self) -> Result<(), Error> {
-        match self.backend {
-            TransactionBackend::Sqlite(transaction) if self.invalidated => {
-                let changed = self.changes.changed.clone();
-                // SQLite commits on a worker thread, so a cancelled commit can still
-                // land after the caller stops awaiting it. A drop guard would then
-                // wake readers before the commit is visible; notify from the task
-                // that observes the commit instead.
-                tokio::spawn(async move {
-                    transaction.commit().await?;
-                    changed.send_replace(());
-                    Ok::<_, sqlx::Error>(())
-                })
-                .await
-                .map_err(|_join| sqlx::Error::WorkerCrashed)??;
-            }
-            TransactionBackend::Sqlite(transaction) => transaction.commit().await?,
-            TransactionBackend::Postgres(mut transaction) => {
-                if let Some(channel) = self
-                    .changes
-                    .postgres_channel
-                    .as_ref()
-                    .filter(|_| self.invalidated)
-                {
-                    sqlx::query("SELECT pg_notify($1, '')")
-                        .bind(channel)
-                        .execute(&mut *transaction)
-                        .await?;
-                }
-                transaction.commit().await?;
-            }
+    pub async fn commit(mut self) -> Result<(), Error> {
+        // A commit abandoned before it answers may still land, so it did
+        // not roll back.
+        self.measure.outcome = Some(TransactionOutcome::Failed);
+        let committed = commit_backend(self.backend, self.changes, self.invalidated).await;
+        self.measure.outcome = Some(if committed.is_ok() {
+            TransactionOutcome::Committed
+        } else {
+            TransactionOutcome::Failed
+        });
+        if let Err(error) = &committed {
+            record_failure(self.measure.pools, error);
         }
-        Ok(())
+        committed
     }
-
     /// Explicitly rolls back every change in this transaction.
     ///
     /// # Errors
     ///
     /// Returns a backend rollback error.
-    pub async fn rollback(self) -> Result<(), Error> {
+    pub async fn rollback(mut self) -> Result<(), Error> {
+        self.measure.outcome = Some(TransactionOutcome::RolledBack);
         match self.backend {
             TransactionBackend::Sqlite(transaction) => transaction.rollback().await?,
             TransactionBackend::Postgres(transaction) => transaction.rollback().await?,
@@ -475,4 +541,44 @@ impl Transaction<'_> {
             }
         }
     }
+}
+
+/// Commits `backend`, then wakes the change subscribers when it changed
+/// something.
+async fn commit_backend(
+    backend: TransactionBackend,
+    subscribers: &crate::changes::Changes,
+    invalidated: bool,
+) -> Result<(), Error> {
+    match backend {
+        TransactionBackend::Sqlite(transaction) if invalidated => {
+            let changed = subscribers.changed.clone();
+            // SQLite commits on a worker thread, so a cancelled commit can still
+            // land after the caller stops awaiting it. A drop guard would then
+            // wake readers before the commit is visible; notify from the task
+            // that observes the commit instead.
+            tokio::spawn(async move {
+                transaction.commit().await?;
+                changed.send_replace(());
+                Ok::<_, sqlx::Error>(())
+            })
+            .await
+            .map_err(|_join| sqlx::Error::WorkerCrashed)??;
+        }
+        TransactionBackend::Sqlite(transaction) => transaction.commit().await?,
+        TransactionBackend::Postgres(mut transaction) => {
+            if let Some(channel) = subscribers
+                .postgres_channel
+                .as_ref()
+                .filter(|_| invalidated)
+            {
+                sqlx::query("SELECT pg_notify($1, '')")
+                    .bind(channel)
+                    .execute(&mut *transaction)
+                    .await?;
+            }
+            transaction.commit().await?;
+        }
+    }
+    Ok(())
 }

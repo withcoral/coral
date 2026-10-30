@@ -295,10 +295,13 @@ impl McpUpstream {
     /// Returns an error when no complete bounded MCP result is available.
     pub async fn send(&self, dispatch: ReadyMcpDispatch) -> Result<McpOutcome, Error> {
         let span = client_span(&dispatch);
+        let measure =
+            crate::exchange::ExchangeMeasure::start(coral_telemetry::metric::ProviderProtocol::Mcp);
         let sent = self
-            .send_session(dispatch, span.clone())
+            .send_session(dispatch, span.clone(), Arc::clone(measure.bytes()))
             .instrument(span.clone())
             .await;
+        measure.end(sent.as_ref().map(|_outcome| ()));
         match &sent {
             Ok(outcome) if outcome.class() == crate::OutcomeClass::ErrorResponse => {
                 coral_telemetry::record_failure(&span, "tool_error");
@@ -323,6 +326,7 @@ impl McpUpstream {
         &self,
         dispatch: ReadyMcpDispatch,
         span: tracing::Span,
+        bytes: Arc<crate::exchange::ExchangeBytes>,
     ) -> Result<McpOutcome, Error> {
         let mut config = StreamableHttpClientTransportConfig::with_uri(
             dispatch.binding.server_url().to_string(),
@@ -340,6 +344,7 @@ impl McpUpstream {
                 limit: dispatch.limits.upstream_bytes(),
                 result: captured.clone(),
                 span,
+                bytes: Some(bytes),
             },
             config,
         );

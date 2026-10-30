@@ -23,6 +23,10 @@ mod runtime;
 mod source_map;
 mod v8_support;
 
+// `tests/execution_usage.rs` uses `tracing`; the unit tests do not.
+#[cfg(test)]
+use tracing as _;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 

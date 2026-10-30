@@ -100,9 +100,21 @@ impl ProgramExecutor {
                 .allow_atomics_wait(false)
                 .heap_limits(0, self.limits.execution_heap_bytes()),
         );
-        crate::memory::with_heap_limit(&mut isolate, |isolate| {
+        let cpu_started = thread_cpu_time();
+        HEAP_PEAK.set(0);
+        let result = crate::memory::with_heap_limit(&mut isolate, |isolate| {
             Self::execute_in_isolate(isolate, program, host, control)
-        })
+        });
+        sample_heap(&mut isolate);
+        let mut heap_peak = HEAP_PEAK.get();
+        if matches!(result, Err(Error::MemoryLimitExceeded)) {
+            heap_peak = heap_peak.max(self.limits.execution_heap_bytes());
+        }
+        let cpu = cpu_started
+            .zip(thread_cpu_time())
+            .map(|(started, ended)| ended.saturating_sub(started));
+        coral_telemetry::metric::program_executed(cpu, heap_peak);
+        result
     }
 
     fn execute_in_isolate(
@@ -315,6 +327,7 @@ fn drain_program_work(
             }
         }
         if !completed && !program_execution_terminated(scope, control) {
+            sample_heap(scope);
             // Both Future wakeups and cross-thread termination unpark this thread.
             std::thread::park();
         }
@@ -594,7 +607,7 @@ fn program_emission_callback(
         None
     };
     let Some(encoded) = encoded else {
-        reject_output_promise(
+        reject_emission(
             scope,
             &mut return_value,
             ProgramOutputHostError::InvalidValue,
@@ -610,14 +623,16 @@ fn program_emission_callback(
         terminate_program_host(scope);
         return;
     };
-    let validated = host
-        .value_limits()
-        .validate_json(&encoded)
-        .map_err(|error| match error {
+    if let Err(error) = host.value_limits().validate_json(&encoded) {
+        let error = match error {
             coral_value::ValueError::Invalid => ProgramOutputHostError::InvalidValue,
             coral_value::ValueError::TooLarge => ProgramOutputHostError::LimitExceeded,
-        });
-    match validated.and_then(|_value| host.emit(&encoded, location)) {
+        };
+        reject_emission(scope, &mut return_value, error);
+        return;
+    }
+    // The host counts what it keeps and what it refuses.
+    match host.emit(&encoded, location) {
         Ok(()) => resolve_void_promise(scope, &mut return_value),
         Err(
             error @ (ProgramOutputHostError::InvalidValue | ProgramOutputHostError::LimitExceeded),
@@ -669,6 +684,16 @@ fn program_log_callback(
         ) => throw_output_error(scope, error),
         Err(ProgramOutputHostError::Fatal) => terminate_program_host(scope),
     }
+}
+
+/// Rejects an Emission before it reaches the host, and counts it.
+fn reject_emission(
+    scope: &mut v8::PinScope<'_, '_>,
+    return_value: &mut v8::ReturnValue,
+    error: ProgramOutputHostError,
+) {
+    coral_telemetry::metric::output_rejected(coral_telemetry::metric::OutputKind::Emission);
+    reject_output_promise(scope, return_value, error);
 }
 
 fn resolve_void_promise(scope: &mut v8::PinScope<'_, '_>, return_value: &mut v8::ReturnValue) {
@@ -975,26 +1000,24 @@ fn serialize_final_value(
     let mut try_catch = try_catch.init();
     let receiver = v8::undefined(&try_catch).into();
     let Some(encoded) = serializer.call(&try_catch, receiver, &[value]) else {
-        if let Some(exception) = try_catch.exception()
-            && let Some(error) = classify_output_exception(&mut try_catch, exception)
-        {
+        let Some(exception) = try_catch.exception() else {
+            return Err(rejected_final_value());
+        };
+        // An Emission or Log refused while serializing was counted where it
+        // was refused.
+        if let Some(error) = classify_output_exception(&mut try_catch, exception) {
             return Err(output_execution_error(error));
         }
-        return Err(try_catch
-            .exception()
-            .map_or_else(invalid_final_value, |exception| {
-                Error::ProgramOutputRejected(Box::new(crate::program_error::from_exception(
-                    &mut try_catch,
-                    exception,
-                    source_map,
-                )))
-            }));
+        coral_telemetry::metric::output_rejected(coral_telemetry::metric::OutputKind::FinalValue);
+        return Err(Error::ProgramOutputRejected(Box::new(
+            crate::program_error::from_exception(&mut try_catch, exception, source_map),
+        )));
     };
     if !encoded.is_string() {
-        return Err(invalid_final_value());
+        return Err(rejected_final_value());
     }
     let encoded =
-        v8::Local::<v8::String>::try_from(encoded).map_err(|_error| invalid_final_value())?;
+        v8::Local::<v8::String>::try_from(encoded).map_err(|_error| rejected_final_value())?;
     let encoded = encoded.to_rust_string_lossy(&try_catch);
     let limits = try_catch
         .get_slot::<ProgramHostSlot>()
@@ -1004,12 +1027,48 @@ fn serialize_final_value(
     limits
         .validate_json(&encoded)
         .map_err(|error| match error {
-            coral_value::ValueError::Invalid => invalid_final_value(),
-            coral_value::ValueError::TooLarge => Error::ResourceLimitExceeded,
+            coral_value::ValueError::Invalid => rejected_final_value(),
+            coral_value::ValueError::TooLarge => {
+                coral_telemetry::metric::output_rejected(
+                    coral_telemetry::metric::OutputKind::FinalValue,
+                );
+                Error::ResourceLimitExceeded
+            }
         })?;
     Ok(encoded)
 }
 
-fn invalid_final_value() -> Error {
+/// Rejects a Final Value that is not a Program Value, and counts it.
+fn rejected_final_value() -> Error {
+    coral_telemetry::metric::output_rejected(coral_telemetry::metric::OutputKind::FinalValue);
     Error::InvalidProgramValue(INVALID_FINAL_VALUE_MESSAGE.to_string())
+}
+
+thread_local! {
+    /// The most heap the isolate executing on this thread held when sampled.
+    static HEAP_PEAK: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Samples the heap the isolate holds: whenever the Program waits, and when
+/// it ends. A Program that reaches its heap limit held at least the limit.
+fn sample_heap(isolate: &mut v8::Isolate) {
+    let held = isolate.get_heap_statistics().total_heap_size();
+    HEAP_PEAK.set(HEAP_PEAK.get().max(held));
+}
+
+/// The CPU time the current thread has used. The Program's thread parks
+/// while it waits for its Tools, so this is the time it spent running.
+#[cfg(unix)]
+fn thread_cpu_time() -> Option<std::time::Duration> {
+    let time = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+    Some(std::time::Duration::new(
+        u64::try_from(time.tv_sec).ok()?,
+        u32::try_from(time.tv_nsec).ok()?,
+    ))
+}
+
+/// No thread CPU clock is read on this platform.
+#[cfg(not(unix))]
+const fn thread_cpu_time() -> Option<std::time::Duration> {
+    None
 }

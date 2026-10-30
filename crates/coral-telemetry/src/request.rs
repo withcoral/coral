@@ -8,6 +8,7 @@
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Instant;
 
 use axum::Router;
 use axum::body::Body;
@@ -19,6 +20,7 @@ use opentelemetry::trace::TraceContextExt as _;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
+use crate::metric::{Interface, Metrics, RequestOutcome};
 use crate::safe::{self, Identifier};
 use crate::{record_failure, set_parent_from_http_headers};
 
@@ -62,12 +64,15 @@ const GRPC_UNIMPLEMENTED: i32 = 12;
 /// never the request path, and records the response status. It stays open
 /// until the response body ends, so a stream's span covers the stream. A
 /// server error or a body that breaks off fails it; a client error is the
-/// caller's.
-pub fn trace_http_routes<S>(router: Router<S>) -> Router<S>
+/// caller's. Each request's duration is recorded under `interface`, by its
+/// route template and outcome, when its span ends.
+pub fn trace_http_routes<S>(router: Router<S>, interface: Interface) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    router.layer(axum::middleware::from_fn(trace_http_request))
+    router.layer(axum::middleware::from_fn(
+        move |request: Request, next: Next| trace_http_request(request, next, interface),
+    ))
 }
 
 /// Opens a gRPC server span for each call to the routes `router` has so far.
@@ -77,7 +82,8 @@ where
 /// after the body. A stream the caller cuts off before its end records
 /// CANCELLED, and one that ends or breaks off without a status records
 /// UNKNOWN. A response no gRPC handler started keeps the method `_OTHER`.
-/// Only the server-fault statuses fail the span.
+/// Only the server-fault statuses fail the span. Each call's duration is
+/// recorded by its method and outcome when its span ends.
 pub fn trace_grpc_routes<S>(router: Router<S>) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -97,7 +103,75 @@ pub fn request_span(extensions: &http::Extensions) -> Option<&tracing::Span> {
 #[derive(Clone)]
 struct RequestSpan(tracing::Span);
 
-async fn trace_http_request(mut request: Request, next: Next) -> Response {
+/// The operation a traced request's handler found it carried, shared by
+/// every copy of the request's extensions.
+#[derive(Clone, Default)]
+struct RequestOperation(std::sync::Arc<std::sync::OnceLock<String>>);
+
+/// Names the operation the traced request whose extensions are
+/// `extensions` carried, `{operation} {target}`, such as `tools/call exec`
+/// for an MCP tool call, so its `coral.request.duration` records that name in
+/// place of its route template. `target` is a name Coral serves, never
+/// caller text. The first name stands.
+pub fn name_request_operation(
+    extensions: &http::Extensions,
+    operation: &'static str,
+    target: Option<&'static str>,
+) {
+    if let Some(slot) = extensions.get::<RequestOperation>() {
+        slot.0
+            .get_or_init(|| safe::span_name(operation, target.as_ref()));
+    }
+}
+
+/// A request's duration, recorded when its response body drops.
+struct RequestTimer {
+    metrics: Option<Metrics>,
+    interface: Interface,
+    started: Instant,
+    /// The route template or served method, else `_OTHER`.
+    operation: String,
+    /// The operation the request's handler named, which takes its place.
+    named: RequestOperation,
+    /// A client error until a response arrives: a request dropped before
+    /// one was cut off by its caller.
+    outcome: RequestOutcome,
+}
+
+impl RequestTimer {
+    fn start(interface: Interface) -> Self {
+        Self {
+            metrics: crate::metric::current(),
+            interface,
+            started: Instant::now(),
+            operation: OTHER.to_owned(),
+            named: RequestOperation::default(),
+            outcome: RequestOutcome::ClientError,
+        }
+    }
+}
+
+impl Drop for RequestTimer {
+    fn drop(&mut self) {
+        if let Some(metrics) = &self.metrics {
+            metrics.request_duration(
+                self.interface,
+                self.named
+                    .0
+                    .get()
+                    .cloned()
+                    .unwrap_or_else(|| std::mem::take(&mut self.operation)),
+                self.outcome,
+                self.started.elapsed(),
+            );
+        }
+    }
+}
+
+const OTHER: &str = "_OTHER";
+
+async fn trace_http_request(mut request: Request, next: Next, interface: Interface) -> Response {
+    let mut timer = RequestTimer::start(interface);
     let method = request.method().clone();
     let route = request
         .extensions()
@@ -114,19 +188,29 @@ async fn trace_http_request(mut request: Request, next: Next) -> Response {
         http.response.status_code = tracing::field::Empty,
         error.type = tracing::field::Empty,
     );
+    if let Some(route) = &route {
+        route.0.clone_into(&mut timer.operation);
+    }
     set_parent_from_http_headers(&span, request.headers());
     request.extensions_mut().insert(RequestSpan(span.clone()));
+    request.extensions_mut().insert(timer.named.clone());
     let response = next.run(request).instrument(span.clone()).await;
     let status = response.status();
     span.record("http.response.status_code", safe::number(status.as_u16()));
-    if status.is_server_error() {
+    timer.outcome = if status.is_server_error() {
         record_failure(&span, safe::http_status_code(status.as_u16()));
-    }
+        RequestOutcome::ServerError
+    } else if status.is_client_error() {
+        RequestOutcome::ClientError
+    } else {
+        RequestOutcome::Ok
+    };
     response.map(|body| {
         Body::new(TracedBody {
             body,
             span,
             grpc_path: None,
+            timer,
         })
     })
 }
@@ -157,6 +241,7 @@ impl std::fmt::Display for ServedGrpcMethod<'_> {
 }
 
 async fn trace_grpc_request(mut request: Request, next: Next) -> Response {
+    let mut timer = RequestTimer::start(Interface::Grpc);
     let span = tracing::info_span!(
         target: REQUEST_TARGET,
         parent: None,
@@ -175,7 +260,7 @@ async fn trace_grpc_request(mut request: Request, next: Next) -> Response {
     let response = next.run(request).instrument(span.clone()).await;
     let grpc_path = match grpc_status(response.headers()) {
         Some(code) => {
-            record_grpc_status(&span, Some(&path), code);
+            record_grpc_status(&span, &mut timer, Some(&path), code);
             None
         }
         // A gRPC handler started this response, so its method is served and
@@ -188,7 +273,7 @@ async fn trace_grpc_request(mut request: Request, next: Next) -> Response {
             } else {
                 GRPC_UNKNOWN
             };
-            record_grpc_status(&span, None, code);
+            record_grpc_status(&span, &mut timer, None, code);
             None
         }
     };
@@ -197,6 +282,7 @@ async fn trace_grpc_request(mut request: Request, next: Next) -> Response {
             body,
             span,
             grpc_path,
+            timer,
         })
     })
 }
@@ -209,7 +295,12 @@ fn grpc_status(headers: &http::HeaderMap) -> Option<i32> {
 /// `/package.Service/Method`, when a gRPC handler answered it. Without one,
 /// or for a call that ended UNIMPLEMENTED, the method is `_OTHER`, since the
 /// caller chose it.
-fn record_grpc_status(span: &tracing::Span, path: Option<&str>, code: i32) {
+fn record_grpc_status(
+    span: &tracing::Span,
+    timer: &mut RequestTimer,
+    path: Option<&str>,
+    code: i32,
+) {
     let method = path
         .and_then(|path| path.strip_prefix('/'))
         .filter(|method| !method.is_empty());
@@ -220,6 +311,7 @@ fn record_grpc_status(span: &tracing::Span, path: Option<&str>, code: i32) {
             // name only through OpenTelemetry, not `otel.name`.
             span.context().span().update_name(method.to_string());
             span.record("rpc.method", safe::id(&method));
+            method.0.clone_into(&mut timer.operation);
         }
         _ => {
             span.record("rpc.method", "_OTHER");
@@ -231,9 +323,14 @@ fn record_grpc_status(span: &tracing::Span, path: Option<&str>, code: i32) {
         .copied()
         .unwrap_or("UNKNOWN");
     span.record("rpc.response.status_code", safe::kind(status));
-    if GRPC_SERVER_ERRORS.contains(&code) {
+    timer.outcome = if code == 0 {
+        RequestOutcome::Ok
+    } else if GRPC_SERVER_ERRORS.contains(&code) {
         record_failure(span, status);
-    }
+        RequestOutcome::ServerError
+    } else {
+        RequestOutcome::ClientError
+    };
 }
 
 /// A response body that holds its request's span open until it is dropped,
@@ -245,6 +342,8 @@ struct TracedBody {
     /// The request path of a gRPC call whose status is still to come in the
     /// trailers.
     grpc_path: Option<String>,
+    /// Recorded when the body drops, as the span ends.
+    timer: RequestTimer,
 }
 
 impl http_body::Body for TracedBody {
@@ -263,18 +362,22 @@ impl http_body::Body for TracedBody {
                 if let Some(code) = frame.trailers_ref().and_then(grpc_status)
                     && let Some(path) = this.grpc_path.take()
                 {
-                    record_grpc_status(&this.span, Some(&path), code);
+                    record_grpc_status(&this.span, &mut this.timer, Some(&path), code);
                 }
             }
             // The error's text may come from anywhere, so only its kind is kept.
-            Poll::Ready(Some(Err(_error))) => match this.grpc_path.take() {
-                Some(path) => record_grpc_status(&this.span, Some(&path), GRPC_UNKNOWN),
-                None => record_failure(&this.span, "response_body"),
-            },
+            Poll::Ready(Some(Err(_error))) => {
+                if let Some(path) = this.grpc_path.take() {
+                    record_grpc_status(&this.span, &mut this.timer, Some(&path), GRPC_UNKNOWN);
+                } else {
+                    record_failure(&this.span, "response_body");
+                    this.timer.outcome = RequestOutcome::ServerError;
+                }
+            }
             // A gRPC body that ends without a status broke the protocol.
             Poll::Ready(None) => {
                 if let Some(path) = this.grpc_path.take() {
-                    record_grpc_status(&this.span, Some(&path), GRPC_UNKNOWN);
+                    record_grpc_status(&this.span, &mut this.timer, Some(&path), GRPC_UNKNOWN);
                 }
             }
             Poll::Pending => {}
@@ -295,7 +398,7 @@ impl Drop for TracedBody {
     fn drop(&mut self) {
         // A gRPC stream dropped before its end was cut off by the caller.
         if let Some(path) = self.grpc_path.take() {
-            record_grpc_status(&self.span, Some(&path), GRPC_CANCELLED);
+            record_grpc_status(&self.span, &mut self.timer, Some(&path), GRPC_CANCELLED);
         }
     }
 }

@@ -47,6 +47,10 @@
 //! uses a pool for remote multi-worker topology and requires `verify-full` TLS
 //! for remote TCP connections.
 
+// `tests/persistence_foundation.rs` uses `tracing`; the unit tests do not.
+#[cfg(test)]
+use tracing as _;
+
 mod backend;
 mod changes;
 mod database;

@@ -162,7 +162,10 @@ impl CoralAuthorizationServer {
         start_listener(
             bind,
             health_routes(
-                coral_telemetry::trace_http_routes(provider_callback::router(accounts)),
+                coral_telemetry::trace_http_routes(
+                    provider_callback::router(accounts),
+                    coral_telemetry::metric::Interface::Auth,
+                ),
                 Some(readiness),
             ),
         )
@@ -228,7 +231,10 @@ impl CoralAuthorizationServer {
         start_listener(
             bind_addr,
             health_routes(
-                coral_telemetry::trace_http_routes(auth_router(state)),
+                coral_telemetry::trace_http_routes(
+                    auth_router(state),
+                    coral_telemetry::metric::Interface::Auth,
+                ),
                 self.readiness,
             ),
         )

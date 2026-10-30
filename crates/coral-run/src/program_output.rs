@@ -1,5 +1,7 @@
 //! Run-bound Program Emission and Program Log requests to the Run Owner.
 
+use coral_telemetry::metric::{self, OutputKind};
+
 use crate::owner::OwnerHandle;
 use crate::{Error, PROGRAM_LOG_MESSAGE_MAX_BYTES, ProgramLogLevel, ProgramValue, SourceLocation};
 
@@ -21,20 +23,41 @@ impl ProgramOutputWriter {
         encoded_json: &str,
         location: Option<SourceLocation>,
     ) -> Result<(), ProgramOutputWriteError> {
-        let value = match ProgramValue::with_limits(encoded_json.to_string(), self.limits) {
-            Ok(value) => value,
-            Err(Error::ProgramValueTooLarge) => {
-                return Err(ProgramOutputWriteError::LimitExceeded);
-            }
-            Err(Error::ProgramValueJson(_) | Error::InvalidProgramValue) => {
-                return Err(ProgramOutputWriteError::InvalidValue);
-            }
-            Err(error) => return Err(ProgramOutputWriteError::Fatal(error)),
-        };
-        self.owner.emit(value, location).await.map_err(output_error)
+        let written = self.write_emission(encoded_json, location).await;
+        record(OutputKind::Emission, encoded_json.len(), &written);
+        written
     }
 
     pub(crate) async fn log(
+        &self,
+        level: ProgramLogLevel,
+        message: &str,
+        location: Option<SourceLocation>,
+    ) -> Result<(), ProgramOutputWriteError> {
+        let written = self.write_log(level, message, location).await;
+        record(OutputKind::Log, message.len(), &written);
+        written
+    }
+
+    async fn write_emission(
+        &self,
+        encoded_json: &str,
+        location: Option<SourceLocation>,
+    ) -> Result<(), ProgramOutputWriteError> {
+        let value =
+            ProgramValue::with_limits(encoded_json.to_string(), self.limits).map_err(|error| {
+                match error {
+                    Error::ProgramValueTooLarge => ProgramOutputWriteError::LimitExceeded,
+                    Error::ProgramValueJson(_) | Error::InvalidProgramValue => {
+                        ProgramOutputWriteError::InvalidValue
+                    }
+                    error => ProgramOutputWriteError::Fatal(error),
+                }
+            })?;
+        self.owner.emit(value, location).await.map_err(output_error)
+    }
+
+    async fn write_log(
         &self,
         level: ProgramLogLevel,
         message: &str,
@@ -47,6 +70,19 @@ impl ProgramOutputWriter {
             .log(level, message.to_string(), location)
             .await
             .map_err(output_error)
+    }
+}
+
+/// Records an output of `kind` and `size` by whether the Run kept it. One
+/// too large or invalid is rejected; a fatal error keeps nothing, but
+/// rejects nothing either.
+fn record(kind: OutputKind, size: usize, written: &Result<(), ProgramOutputWriteError>) {
+    match written {
+        Ok(()) => metric::output_kept(kind, size),
+        Err(ProgramOutputWriteError::Fatal(_)) => {}
+        Err(ProgramOutputWriteError::InvalidValue | ProgramOutputWriteError::LimitExceeded) => {
+            metric::output_rejected(kind);
+        }
     }
 }
 

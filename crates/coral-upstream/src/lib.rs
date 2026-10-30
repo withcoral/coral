@@ -7,6 +7,7 @@
 //! boundary.
 
 mod dispatch;
+mod exchange;
 mod http;
 mod mcp;
 mod span_field;

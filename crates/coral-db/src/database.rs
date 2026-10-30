@@ -15,6 +15,9 @@ const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Only these handles commit changes, so only they carry change notification.
 pub struct ReadWrite {
     pub(crate) changes: crate::changes::Changes,
+    /// Keeps the pools in `coral.persistence.pool.in_use` once a transaction
+    /// begins under the metrics layer.
+    pub(crate) pool_metric: std::sync::OnceLock<coral_telemetry::metric::PoolObservation>,
 }
 
 /// Marks a database handle that can only inspect existing state.
@@ -186,6 +189,7 @@ async fn connect_sqlite(path: &Path, writer_wait: Duration) -> Result<Database, 
         backend: DatabaseBackend::Sqlite { reads, writes },
         access: ReadWrite {
             changes: crate::changes::Changes::local(),
+            pool_metric: std::sync::OnceLock::new(),
         },
     })
 }
@@ -217,6 +221,7 @@ async fn connect_postgres(url: &str, keepalive: Duration) -> Result<Database, Er
     Ok(Database {
         access: ReadWrite {
             changes: crate::changes::Changes::postgres(url, &pool, keepalive).await?,
+            pool_metric: std::sync::OnceLock::new(),
         },
         backend: DatabaseBackend::Postgres(pool),
     })
