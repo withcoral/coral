@@ -20,6 +20,7 @@ import {
   type RunRow,
   type TaskRow,
 } from './types'
+import { activitySearch, activitySearchKey } from '@/lib/activity-search'
 
 export const ActivityNavigationContext = createContext<ReturnType<
   typeof activityNavigation
@@ -41,8 +42,10 @@ export const selectionKeys = ['record', 'request', 'actionsAfter', 'live', 'live
 const clearSelection = Object.fromEntries(selectionKeys.map((key) => [key, null]))
 const listKeys = new Set<string>([
   ...selectionKeys,
+  activitySearchKey,
   'tree',
   'expand',
+  'collapse',
   'anchor',
   'before',
   'after',
@@ -195,15 +198,24 @@ export function activityNavigation(
     return `${path}?${next}`
   }
   const recordHref = (name: string) => href({ ...clearSelection, record: name })
+  /**
+   * The records a search keeps collapsed once `name` opens or closes. A search opens a
+   * Task it lists only for its Runs, so closing one is kept apart from never opening it.
+   */
+  const collapsing = (name: string, close: boolean) => {
+    const collapsed = context.getAll('collapse').filter((item) => item !== name)
+    return close && page.query ? [...collapsed, name] : collapsed
+  }
   /** `stopLive` also turns live mode off, for a collapse that hides the Run it follows. */
-  const toggleHref = (name: string, stopLive = false) =>
-    href({
+  const toggleHref = (name: string, stopLive = false) => {
+    const close = page.expanded.includes(name)
+    return href({
       ...(stopLive && { live: null, liveExpanded: null }),
       tree: '1',
-      expand: page.expanded.includes(name)
-        ? page.expanded.filter((item) => item !== name)
-        : [...page.expanded, name],
+      expand: close ? page.expanded.filter((item) => item !== name) : [...page.expanded, name],
+      collapse: collapsing(name, close),
     })
+  }
   /** Collapses `name` and selects it, for a collapse that hides the selected record. */
   const collapseHref = (name: string) =>
     href({
@@ -211,7 +223,22 @@ export function activityNavigation(
       record: name,
       tree: '1',
       expand: page.expanded.filter((item) => item !== name),
+      collapse: collapsing(name, true),
     })
+  /**
+   * The list for the typed search, from its newest records. It keeps the open record,
+   * its review and live mode. Text too short to search changes only the address.
+   */
+  const searchHref = (typed: string) => {
+    // Text that does not change what Coral searches keeps the list where it is.
+    if (activitySearch(typed) === (page.query ?? ''))
+      return href({ [activitySearchKey]: typed || null })
+    const next = new URLSearchParams()
+    for (const key of selectionKeys)
+      if (key !== 'liveExpanded') for (const value of query.getAll(key)) next.append(key, value)
+    if (typed) next.set(activitySearchKey, typed)
+    return `${page.listPath}?${next}`
+  }
   const backHref = href(clearSelection)
   /** What live mode follows, or null while it is off. */
   const liveScope = liveScopeOf(query.get('live'))
@@ -295,6 +322,7 @@ export function activityNavigation(
     recordHref,
     toggleHref,
     collapseHref,
+    searchHref,
     revealHref,
     backHref,
     liveScope,

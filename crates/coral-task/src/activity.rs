@@ -1,5 +1,5 @@
 //! Activity hierarchy: Task owns root grouping and accepted-execution associations.
-use crate::{AttemptKind, Error, InteractionSummary, Task, TaskId, TaskModule};
+use crate::{AttemptKind, Error, IntentQuery, InteractionSummary, Task, TaskId, TaskModule};
 use coral_run::{RunId, RunModule, RunSummary};
 use coral_workspace::{AuthenticatedPrincipal, HistoryScope, WorkspaceId};
 
@@ -157,6 +157,9 @@ impl TaskModule {
     }
 
     /// Reads a single bounded mixed root window in one authorization snapshot.
+    /// With a query, the window holds only the Tasks whose intent or Run
+    /// submission intent contains it, and each Task records which one matched.
+    /// Standalone Runs have no intent, so a query never keeps them.
     /// # Errors
     /// Rejects invalid windows, inaccessible scopes and persistence failures.
     pub async fn activity_roots(
@@ -166,13 +169,15 @@ impl TaskModule {
         scope: &HistoryScope,
         window: &ActivityWindow,
         limit: u16,
+        query: Option<&IntentQuery>,
     ) -> Result<ActivityRoots, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
         let authority = self
             .workspaces
             .history_authority_in_transaction(&mut tx, actor, scope)
             .await?;
-        let page = crate::repository::activity::roots(&mut tx, &authority, window, limit).await?;
+        let page =
+            crate::repository::activity::roots(&mut tx, &authority, window, limit, query).await?;
         let anchor_unavailable = page.anchor_unavailable
             || (page.identities.is_empty()
                 && matches!(window, ActivityWindow::Records(ids) if !ids.is_empty()));
@@ -188,6 +193,7 @@ impl TaskModule {
                     )
                     .await?;
                     task.context_impact = Some(context_impact(&totals));
+                    task.intent_match = query.map(|query| query.matches(task.intent()));
                     ActivityRoot::Task(task)
                 }
                 ActivityIdentity::Run(workspace, id) => ActivityRoot::Run(
@@ -205,8 +211,14 @@ impl TaskModule {
         })
     }
     /// Reads chronological tool summaries and accepted Run state without exact evidence.
+    /// With a query the Task's intent does not contain, the page holds only the
+    /// submissions whose Run intent contains it.
     /// # Errors
     /// Conceals inaccessible goals and rejects invalid page bounds.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one Task read takes its window, an optional list scope and the list's query"
+    )]
     pub async fn activity_interactions(
         &self,
         runs: &RunModule,
@@ -215,6 +227,7 @@ impl TaskModule {
         window: &InteractionWindow,
         limit: u16,
         selection: Option<&HistoryScope>,
+        query: Option<&IntentQuery>,
     ) -> Result<ActivityInteractions, Error> {
         if !(1..=100).contains(&limit) {
             return Err(Error::InvalidInput("invalid activity page size".into()));
@@ -229,6 +242,8 @@ impl TaskModule {
             crate::repository::activity::context_totals(&mut tx, &authority, workspace, task)
                 .await?;
         goal.context_impact = Some(context_impact(&totals));
+        goal.intent_match = query.map(|query| query.matches(goal.intent()));
+        let runs_matching = query.filter(|_| goal.intent_match == Some(false));
         if let InteractionWindow::Viewport { preceding, .. } = window
             && *preceding >= limit
         {
@@ -251,9 +266,15 @@ impl TaskModule {
             }
             other => other,
         };
-        let page =
-            crate::interaction_repository::activity_page(&mut tx, workspace, task, window, limit)
-                .await?;
+        let page = crate::interaction_repository::activity_page(
+            &mut tx,
+            workspace,
+            task,
+            window,
+            limit,
+            runs_matching,
+        )
+        .await?;
         let interactions = page.rows;
         let has_more = interactions.len() > usize::from(limit);
         let mut rows = Vec::with_capacity(usize::from(limit));

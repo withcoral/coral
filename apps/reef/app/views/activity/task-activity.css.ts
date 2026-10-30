@@ -32,6 +32,14 @@ export const listHeading = style({
   minWidth: 0,
   selectors: { '&:empty': { display: 'none' } },
 })
+/** The intent search, at the end of the list's heading. */
+export const search = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  marginInlineStart: 'auto',
+  width: 'min(280px, 100%)',
+})
 export const filters = style({
   display: 'flex',
   flexWrap: 'wrap',

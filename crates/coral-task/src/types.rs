@@ -91,6 +91,52 @@ impl TaskIntent {
     }
 }
 
+/// Fewest characters an Activity intent search accepts.
+pub const INTENT_QUERY_MIN_CHARS: usize = 3;
+/// Most characters an Activity intent search accepts. A query longer than
+/// [`TASK_INTENT_MAX_CHARS`] matches nothing; this only bounds the input.
+pub const INTENT_QUERY_MAX_CHARS: usize = 1024;
+
+/// A literal Activity search over Task intent and Run submission intent.
+///
+/// Matching is substring containment that ignores ASCII case, the same on
+/// SQLite and Postgres. Other characters match exactly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntentQuery(String);
+
+impl IntentQuery {
+    /// Trims surrounding whitespace and validates the query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] when the trimmed query has fewer than
+    /// [`INTENT_QUERY_MIN_CHARS`] or more than [`INTENT_QUERY_MAX_CHARS`]
+    /// characters, or contains a null character.
+    pub fn parse(value: &str) -> Result<Self, Error> {
+        let value = value.trim();
+        let length = value.chars().count();
+        if !(INTENT_QUERY_MIN_CHARS..=INTENT_QUERY_MAX_CHARS).contains(&length)
+            || value.contains('\0')
+        {
+            return Err(Error::InvalidInput(format!(
+                "intent query must be {INTENT_QUERY_MIN_CHARS} to {INTENT_QUERY_MAX_CHARS} characters with no null character"
+            )));
+        }
+        Ok(Self(value.to_ascii_lowercase()))
+    }
+
+    /// Whether `intent` contains the query.
+    #[must_use]
+    pub fn matches(&self, intent: &TaskIntent) -> bool {
+        intent.as_str().to_ascii_lowercase().contains(&self.0)
+    }
+
+    /// The query with ASCII letters in lowercase.
+    pub(crate) fn folded(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Terminal Task outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskOutcome {
@@ -131,6 +177,7 @@ pub(crate) struct ContextImpact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     pub(crate) context_impact: Option<ContextImpact>,
+    pub(crate) intent_match: Option<bool>,
     id: TaskId,
     workspace_id: WorkspaceId,
     principal: Principal,
@@ -178,6 +225,7 @@ impl Task {
     ) -> Self {
         Self {
             context_impact: None,
+            intent_match: None,
             id,
             workspace_id,
             principal,
@@ -203,6 +251,14 @@ impl Task {
     #[must_use]
     pub fn context_impact_partial(&self) -> bool {
         self.context_impact.is_some_and(|impact| impact.partial)
+    }
+
+    /// Whether the Task's own intent contains an activity read's intent query.
+    /// False when the read keeps the Task only for its matching Runs. Absent
+    /// without a query.
+    #[must_use]
+    pub const fn intent_matches(&self) -> Option<bool> {
+        self.intent_match
     }
 
     /// Returns the Coral-generated stable identity.

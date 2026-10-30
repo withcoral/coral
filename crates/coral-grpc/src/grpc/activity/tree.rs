@@ -1,6 +1,6 @@
 use super::{
-    GrpcServices, PrivateAudience, Request, Response, Status, error, execution, limit, resource,
-    scope, task, task_identity, wire,
+    GrpcServices, PrivateAudience, Request, Response, Status, error, execution, intent_query,
+    limit, resource, scope, task, task_identity, wire,
 };
 fn root_identity(name: &str) -> Result<coral_task::ActivityIdentity, Status> {
     if name.contains("/tasks/") {
@@ -53,6 +53,7 @@ pub(super) async fn roots(
             _ => return Err(Status::invalid_argument("ambiguous activity window")),
         }
     };
+    let query = intent_query(&input.query)?;
     let page = services
         .tasks
         .activity_roots(
@@ -61,6 +62,7 @@ pub(super) async fn roots(
             &scope(&input.scope.unwrap_or_default())?,
             &window,
             limit(input.page_size)?,
+            query.as_ref(),
         )
         .await
         .map_err(error)?;

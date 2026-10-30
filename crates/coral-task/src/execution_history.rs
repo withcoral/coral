@@ -210,6 +210,7 @@ impl TaskModule {
                     &submission.task.workspace,
                     &submission.task.task,
                     &submission.interaction.id,
+                    None,
                 )
                 .await?
                 .ok_or(Error::InteractionNotFound)?,
