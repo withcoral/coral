@@ -385,10 +385,10 @@ const onboardingCopy = (connect: string[], data = dataRule) =>
     'Help me connect to my Coral workspace "Operations team" and add a provider.',
     connect,
     [
-      '4. Search the workspace operations for coral.workspace.addProvider. Describe it to read its input.',
+      '4. Search the workspace tools for coral.workspace.addProvider. Describe it to read its input.',
       '5. Ask me which kind of provider or which specific service I want to connect. Give a few examples, such as GitHub, a weather service or Slack. These are only suggestions. I can connect any provider. Do not choose one for me.',
       '6. Use coral.workspace.addProvider to add that provider. If Coral asks for an approval, guide me through it.',
-      '7. If the status is published, the provider is ready. Call its operations under coral.providers.<namespace>.',
+      '7. If the status is published, the provider is ready. Call its tools under coral.providers.<namespace>.',
       '8. If the status is needs_sign_in, give me the returned link. I sign in and publish the provider on that page. The call does not wait for me. When I tell you I am done, use coral.workspace.listProviders to check that the provider is published.',
     ],
     data,
@@ -400,7 +400,7 @@ const memberCopy = (connect: string[], data = dataRule) =>
     connect,
     [
       '4. Use coral.workspace.listProviders to show me the providers in this workspace.',
-      "5. Call a provider's operations under coral.providers.<namespace>.",
+      "5. Call a provider's tools under coral.providers.<namespace>.",
       '6. Only a workspace owner can add a provider. If I want a new provider, tell me to ask a workspace owner. Do not call coral.workspace.addProvider.',
     ],
     data,
