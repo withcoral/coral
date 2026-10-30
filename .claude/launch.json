@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "reef-storybook",
+      "runtimeExecutable": "/Users/saul/.nvm/versions/node/v24.15.0/bin/npm",
+      "runtimeArgs": ["run", "storybook", "--prefix", "apps/reef", "--", "--no-open"],
+      "port": 6006
+    }
+  ]
+}
