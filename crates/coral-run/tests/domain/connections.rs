@@ -605,7 +605,7 @@ async fn a_declined_or_expired_request_does_not_bind_a_later_connection() {
             .unwrap();
         assert!(!format!("{events:?}").contains("late-connection-canary"));
     }
-    super::trace::assert_untraced(["late-connection-canary"]);
+    super::trace::assert_out_of_telemetry(["late-connection-canary"]);
 }
 
 /// Disconnecting blocks a waiting request before its first credentials

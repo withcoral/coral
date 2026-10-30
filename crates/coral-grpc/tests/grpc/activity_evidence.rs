@@ -178,6 +178,8 @@ async fn successful_terminal_preserves_absent_final_value_versus_explicit_null()
 async fn cancellation_retains_pending_and_dispatched_invocation_distinctions_and_typed_actor() {
     let capture = crate::capture();
     let f = Fixture::new().await;
+    f.sign_in_profiles(&[(&f.member, "name-canary", "email-canary@example.test", true)])
+        .await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(
@@ -347,7 +349,14 @@ async fn cancellation_retains_pending_and_dispatched_invocation_distinctions_and
     let spans = format!("{:?}", capture.finished());
     assert!(spans.contains("ActivityService/DecideApproval"), "{spans}");
     assert!(spans.contains("ActivityService/InspectApproval"), "{spans}");
-    for private in ["source-canary", "argument-canary", "comment-canary"] {
+    for private in [
+        "source-canary",
+        "argument-canary",
+        "comment-canary",
+        "name-canary",
+        "email-canary",
+        member.as_str(),
+    ] {
         assert!(!spans.contains(private), "{private}: {spans}");
     }
 }

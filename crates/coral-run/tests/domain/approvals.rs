@@ -169,7 +169,7 @@ async fn declining_commits_invocation_failure_with_the_winning_decision() {
         .unwrap();
     assert_eq!(events.len(), 1);
     assert!(!format!("{events:?}").contains("canary"));
-    super::trace::assert_untraced(["argument-canary", "comment-canary"]);
+    super::trace::assert_out_of_telemetry(["argument-canary", "comment-canary"]);
 }
 
 /// An approval-gated Workspace with every kind of Principal that might see an

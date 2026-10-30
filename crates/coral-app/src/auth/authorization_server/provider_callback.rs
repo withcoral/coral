@@ -78,6 +78,8 @@ mod tests {
         reason = "the adapter journey verifies durable cookie-free correlation across listener restart and duplicate callbacks"
     )]
     async fn loopback_callback_completes_saved_consent_without_a_reef_cookie() {
+        let capture = coral_telemetry::testing::SpanCapture::default();
+        let _subscriber = tracing::subscriber::set_default(capture.subscriber());
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
             directory.path().join("config.toml"),
@@ -236,5 +238,8 @@ mod tests {
         assert_eq!(progress.automatic_refresh, Some(false));
         callback.shutdown().await.unwrap();
         host.shutdown().await.unwrap();
+        let spans = capture.finished();
+        assert!(!spans.is_empty(), "the callback is traced");
+        assert!(!format!("{spans:?}").contains("canary"), "{spans:?}");
     }
 }

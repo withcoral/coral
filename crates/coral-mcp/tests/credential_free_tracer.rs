@@ -1467,9 +1467,9 @@ async fn an_abandoned_exec_request_does_not_cancel_accepted_work() {
     .expect("accepted Run continues to its second Tool after request loss");
 }
 
-/// The process-wide trace and log capture of the production Adapter and domain
-/// targets, not the test client's wire dumps, and of what leaves the host. It
-/// installs once per process.
+/// The process-wide capture of every span, the metrics, the operational logs
+/// of the production Adapter and domain targets, not the test client's wire
+/// dumps, and what leaves the host. It installs once per process.
 struct Capture {
     spans: SpanCapture,
     logs: LogCapture,
@@ -1485,8 +1485,8 @@ fn capture() -> &'static Capture {
         let logs = LogCapture::default();
         let metrics = coral_telemetry::testing::MetricCapture::default();
         let log_writer = logs.clone();
-        // Every crate and library. TRACE adds only per-frame HTTP noise,
-        // which would fill the capture.
+        // Every crate and library. TRACE adds only libraries' per-frame HTTP
+        // noise, which would fill the capture.
         tracing_subscriber::Registry::default()
             .with(spans.layer().with_filter(LevelFilter::DEBUG))
             .with(metrics.layer())
@@ -2338,14 +2338,20 @@ impl RawSession {
         arguments: Value,
         headers: &[(&str, &str)],
     ) -> Value {
+        let message = self.tool_answer(tool, arguments.clone(), headers).await;
         let params = json!({"name":tool, "arguments":arguments});
-        let mut request = self.request("tools/call", params.clone(), Some(2));
+        self.interpret("tools/call", &params, &message)
+            .unwrap_or_else(|error| panic!("raw tool {tool} failed: {error}"))
+    }
+
+    /// The whole JSON-RPC answer to one tool call, accepted or not.
+    async fn tool_answer(&self, tool: &str, arguments: Value, headers: &[(&str, &str)]) -> Value {
+        let params = json!({"name":tool, "arguments":arguments});
+        let mut request = self.request("tools/call", params, Some(2));
         for (name, value) in headers {
             request = request.header(*name, *value);
         }
-        let message = parse_message(request.send().await.expect("raw request")).await;
-        self.interpret("tools/call", &params, &message)
-            .unwrap_or_else(|error| panic!("raw tool {tool} failed: {error}"))
+        parse_message(request.send().await.expect("raw request")).await
     }
 
     /// Like [`Self::tool`], but `None` for a transient server failure (a 5xx

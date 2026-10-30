@@ -113,7 +113,7 @@ async fn management_rejects_unspecified_and_unknown_agent_states() {
 
 #[tokio::test]
 async fn management_validation_returns_standard_safe_error_info_and_preserves_trace_parent() {
-    let capture = super::capture();
+    let capture = crate::capture();
     let f = Fixture::new().await;
     let mut client = f.workspace_service();
     let mut update = request(

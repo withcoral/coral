@@ -2,11 +2,12 @@
 //! accepted it, that every phase joins on any Coral Instance.
 use super::*;
 
-use coral_telemetry::testing::{SpanCapture, attribute};
+use coral_telemetry::testing::{ExportCapture, SpanCapture, attribute};
 use opentelemetry::trace::{SpanId, TraceContextExt as _};
 use opentelemetry_sdk::trace::SpanData;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+use tracing_subscriber::layer::SubscriberExt as _;
 
 /// The process-wide span capture. A subscriber set for one test's thread
 /// misses a callsite that another test's thread registered first, so every
@@ -15,18 +16,27 @@ pub(super) fn capture() -> &'static SpanCapture {
     static CAPTURE: std::sync::OnceLock<SpanCapture> = std::sync::OnceLock::new();
     CAPTURE.get_or_init(|| {
         let capture = SpanCapture::beside(FailingExporter);
-        tracing::subscriber::set_global_default(capture.subscriber())
-            .expect("install the span capture");
+        let subscriber = tracing_subscriber::registry()
+            .with(capture.layer())
+            .with(operational_logs().log_layer());
+        tracing::subscriber::set_global_default(subscriber).expect("install the span capture");
         capture
     })
 }
 
-/// Asserts that no span or span event holds any of `canaries`. A test calls
-/// [`capture`] before its work, or this reads nothing of it.
-pub(super) fn assert_untraced(canaries: impl IntoIterator<Item = &'static str>) {
-    let spans = format!("{:?}", capture().finished());
+/// The operational logs of every test, as they leave the host.
+fn operational_logs() -> &'static ExportCapture {
+    static LOGS: std::sync::OnceLock<ExportCapture> = std::sync::OnceLock::new();
+    LOGS.get_or_init(ExportCapture::default)
+}
+
+/// Asserts that no span, span event or operational log holds any of
+/// `canaries`. A test calls [`capture`] before its work, or this reads
+/// nothing of it.
+pub(super) fn assert_out_of_telemetry(canaries: impl IntoIterator<Item = &'static str>) {
+    let telemetry = format!("{:?}{}", capture().finished(), operational_logs().text());
     for canary in canaries {
-        assert!(!spans.contains(canary), "a span holds {canary}");
+        assert!(!telemetry.contains(canary), "telemetry holds {canary}");
     }
 }
 

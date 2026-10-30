@@ -274,6 +274,49 @@ mod tests {
 
     use super::{OtlpLogFilter, OtlpSpanFilter};
 
+    /// Keys a convention or a careless span gives private data. Each stands
+    /// for a field that got past every earlier check, so only the filter
+    /// stands between it and the collector.
+    const FORBIDDEN: &[&str] = &[
+        "misclassified",
+        "url.full",
+        "url.path",
+        "url.query",
+        "http.request.header.authorization",
+        "http.request.header.cookie",
+        "http.response.header.set-cookie",
+        "user_agent.original",
+        "client.address",
+        "exception.message",
+        "exception.stacktrace",
+        "db.query.text",
+        "db.statement",
+        "user.email",
+        "enduser.id",
+        "mcp.session.id",
+        "gen_ai.tool.call.arguments",
+        "gen_ai.tool.call.result",
+        "coral.program.source",
+        "coral.task.intent",
+        "coral.invocation.arguments",
+        "coral.invocation.result",
+        "coral.run.emission",
+        "coral.run.log",
+        "coral.saved_function.source",
+        "coral.approval.comment",
+        "coral.account.metadata",
+        "coral.account.token",
+        "coral.credential",
+        "coral.local.credential",
+        // One character from a cataloged key.
+        "coral.run.id.value",
+        "coral.run.i",
+    ];
+
+    fn forbidden() -> impl Iterator<Item = KeyValue> {
+        FORBIDDEN.iter().map(|key| KeyValue::new(*key, "secret"))
+    }
+
     /// Exports the spans below through the filter and returns what left the host.
     fn exported(targets: &str) -> Vec<SpanData> {
         let memory = InMemorySpanExporter::default();
@@ -296,6 +339,15 @@ mod tests {
                 coral.run.id = "run-1",
                 misclassified = "secret",
             );
+            for attribute in forbidden() {
+                kept.set_attribute(attribute.key, attribute.value);
+            }
+            kept.add_event(
+                "misclassified",
+                forbidden()
+                    .chain([KeyValue::new("coral.run.id", "run-1")])
+                    .collect(),
+            );
             kept.add_link_with_attributes(
                 SpanContext::new(
                     TraceId::from_hex("00000000000000000000000000000077").unwrap(),
@@ -304,11 +356,9 @@ mod tests {
                     true,
                     TraceState::default(),
                 ),
-                vec![
-                    KeyValue::new("coral.local.link", "secret"),
-                    KeyValue::new("coral.run.id", "run-1"),
-                    KeyValue::new("misclassified", "secret"),
-                ],
+                forbidden()
+                    .chain([KeyValue::new("coral.run.id", "run-1")])
+                    .collect(),
             );
             kept.set_status(Status::error("secret"));
             kept.in_scope(|| {
@@ -344,10 +394,10 @@ mod tests {
             .collect()
     }
 
-    /// Only admitted spans leave, and they carry only cataloged keys: a
-    /// `coral.local.*` key or a misclassified one never leaves with them. A
-    /// failed span leaves failed, without its status text, and a library's
-    /// event leaves without its text.
+    /// Only admitted spans leave, and they carry only cataloged keys: no
+    /// forbidden key leaves on a span, an event or a link, while the cataloged
+    /// key beside it does. A failed span leaves failed, without its status
+    /// text, and a library's event leaves without its text.
     #[test]
     fn only_admitted_spans_leave_and_only_with_cataloged_keys() {
         // The filter admits both body targets, so only the deny list keeps them home.
@@ -364,9 +414,10 @@ mod tests {
             assert!(!keys(&kept.attributes).contains(&bridged), "{bridged}");
         }
         assert_eq!(kept.status, Status::error(""));
-        let [event, library] = kept.events.events.as_slice() else {
+        let [misclassified, event, library] = kept.events.events.as_slice() else {
             panic!("only the events of admitted targets: {:?}", kept.events);
         };
+        assert_eq!(keys(&misclassified.attributes), ["coral.run.id"]);
         assert_eq!(event.name, "coral event");
         assert_eq!(library.name, "event", "a library's event text stays home");
         assert!(keys(&event.attributes).contains(&"coral.workspace.id"));
@@ -388,139 +439,6 @@ mod tests {
                 "{attributes:?}"
             );
         }
-    }
-
-    /// Keys a convention or a careless span gives private data. Each stands
-    /// for a field that reached a span past every earlier check, so only
-    /// the filter stands between it and the collector.
-    const FORBIDDEN: &[&str] = &[
-        "url.full",
-        "url.path",
-        "url.query",
-        "http.request.header.authorization",
-        "http.request.header.cookie",
-        "http.response.header.set-cookie",
-        "user_agent.original",
-        "client.address",
-        "exception.message",
-        "exception.stacktrace",
-        "db.query.text",
-        "db.statement",
-        "user.email",
-        "enduser.id",
-        "mcp.session.id",
-        "gen_ai.tool.call.arguments",
-        "gen_ai.tool.call.result",
-        "coral.program.source",
-        "coral.task.intent",
-        "coral.invocation.arguments",
-        "coral.invocation.result",
-        "coral.run.emission",
-        "coral.run.log",
-        "coral.saved_function.source",
-        "coral.approval.comment",
-        "coral.account.metadata",
-        "coral.account.token",
-        "coral.credential",
-        "coral.local.credential",
-        // One character from a cataloged key.
-        "coral.run.id.value",
-        "coral.run.i",
-    ];
-
-    /// The filter rejects a forbidden key wherever a misclassified field puts
-    /// it: on a span, a span event, a link or a log record. The cataloged key
-    /// beside it leaves, so the rejection is the key's and not the record's.
-    #[test]
-    fn a_misclassified_forbidden_attribute_never_leaves() {
-        const CANARY: &str = "forbidden-canary";
-        let attributes = || {
-            FORBIDDEN
-                .iter()
-                .map(|key| KeyValue::new(*key, CANARY))
-                .chain([KeyValue::new("coral.run.id", "run-1")])
-                .collect::<Vec<_>>()
-        };
-
-        let memory = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_span_processor(OtlpSpanFilter::new(
-                SimpleSpanProcessor::new(memory.clone()),
-                "coral_app=trace".parse().expect("trace filter"),
-            ))
-            .build();
-        let subscriber = tracing_subscriber::Registry::default().with(
-            tracing_opentelemetry::layer()
-                .with_tracer(provider.tracer("export-filter-test"))
-                .with_level(true),
-        );
-        tracing::subscriber::with_default(subscriber, || {
-            let span = tracing::info_span!(target: "coral_app", "misclassified");
-            for attribute in attributes() {
-                span.set_attribute(attribute.key, attribute.value);
-            }
-            span.add_link_with_attributes(
-                SpanContext::new(
-                    TraceId::from_hex("00000000000000000000000000000077").unwrap(),
-                    SpanId::from_hex("0000000000000088").unwrap(),
-                    TraceFlags::SAMPLED,
-                    true,
-                    TraceState::default(),
-                ),
-                attributes(),
-            );
-            span.add_event("misclassified", attributes());
-            span.in_scope(|| {});
-        });
-        provider.force_flush().expect("flush spans");
-        let spans = memory.get_finished_spans().expect("finished spans");
-        provider.shutdown().expect("provider shutdown");
-
-        let logs = InMemoryLogExporter::default();
-        let log_provider = SdkLoggerProvider::builder()
-            .with_log_processor(OtlpLogFilter::new(SimpleLogProcessor::new(logs.clone())))
-            .build();
-        let logger = log_provider.logger("export-filter-test");
-        let mut record = logger.create_log_record();
-        record.set_target("coral_app");
-        record.add_attributes(
-            attributes()
-                .into_iter()
-                .map(|attribute| (attribute.key, AnyValue::from(attribute.value.to_string()))),
-        );
-        logger.emit(record);
-        log_provider.force_flush().expect("flush logs");
-        let records = logs.get_emitted_logs().expect("emitted logs");
-
-        let [span] = spans.as_slice() else {
-            panic!("one exported span: {spans:?}");
-        };
-        let [event] = span.events.events.as_slice() else {
-            panic!("one exported event: {:?}", span.events);
-        };
-        let [link] = span.links.links.as_slice() else {
-            panic!("one exported link: {:?}", span.links);
-        };
-        for (place, kept) in [
-            ("span", keys(&span.attributes)),
-            ("event", keys(&event.attributes)),
-            ("link", keys(&link.attributes)),
-        ] {
-            assert!(kept.contains(&"coral.run.id"), "{place}: {kept:?}");
-        }
-        let [log] = records.as_slice() else {
-            panic!("one exported log record: {records:?}");
-        };
-        assert_eq!(
-            log.record
-                .attributes_iter()
-                .map(|(key, _)| key.as_str())
-                .collect::<Vec<_>>(),
-            ["coral.run.id"]
-        );
-        let exported = format!("{spans:?}{records:?}");
-        assert!(!exported.contains(CANARY), "{exported}");
-        log_provider.shutdown().expect("provider shutdown");
     }
 
     /// Exports the events below as log records through the filter and
@@ -551,6 +469,15 @@ mod tests {
             });
             span.context().span().span_context().trace_id()
         });
+        let logger = provider.logger("export-filter-test");
+        let mut misclassified = logger.create_log_record();
+        misclassified.set_target("coral_app");
+        misclassified.add_attributes(
+            forbidden()
+                .chain([KeyValue::new("coral.run.id", "run-1")])
+                .map(|attribute| (attribute.key, AnyValue::from(attribute.value.to_string()))),
+        );
+        logger.emit(misclassified);
         provider.force_flush().expect("flush logs");
         let records = memory
             .get_emitted_logs()
@@ -563,15 +490,23 @@ mod tests {
     }
 
     /// A log record leaves with its text, level and trace but only cataloged
-    /// keys, and an event of a body target never leaves. A library's record
+    /// keys, so no forbidden key leaves, and an event of a body target never
+    /// leaves. A library's record
     /// leaves without its text, which Coral's checks never read. Tracing's
     /// callsite name leaves as the code location; an event's own name stays.
     #[test]
     fn log_records_leave_only_with_cataloged_keys() {
         let (records, trace) = exported_logs();
-        let [kept, library, named] = records.as_slice() else {
-            panic!("three exported log records: {records:?}");
+        let [kept, library, named, misclassified] = records.as_slice() else {
+            panic!("four exported log records: {records:?}");
         };
+        assert_eq!(
+            misclassified
+                .attributes_iter()
+                .map(|(key, value)| (key.as_str(), value.clone()))
+                .collect::<Vec<_>>(),
+            [("coral.run.id", AnyValue::from("run-1"))]
+        );
         assert_eq!(named.event_name(), Some("coral.test.named"));
         assert_eq!(kept.event_name(), None, "a callsite name is no event class");
         assert_eq!(library.target().map(AsRef::as_ref), Some("sqlx::query"));

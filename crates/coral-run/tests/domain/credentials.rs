@@ -544,7 +544,7 @@ impl PublicClientAccount {
             "one execution, invocation and emission"
         );
         assert!(!format!("{terminal:?}").contains("canary"));
-        super::trace::assert_untraced([
+        super::trace::assert_out_of_telemetry([
             "code-canary",
             "initial-access-canary",
             "retained-refresh-canary",
@@ -871,7 +871,7 @@ async fn shared_account_credentials_reach_the_upstream_but_never_run_history_or_
         for canary in scheme.canaries() {
             assert!(!history.contains(canary), "{scheme:?} leaked {canary}");
         }
-        super::trace::assert_untraced(scheme.canaries());
+        super::trace::assert_out_of_telemetry(scheme.canaries());
     }
 }
 

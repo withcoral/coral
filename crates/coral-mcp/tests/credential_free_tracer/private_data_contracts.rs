@@ -15,12 +15,12 @@ use rmcp::model::{ElicitRequestParams, ElicitationAction};
 use serde_json::{Value, json};
 
 use super::prompt_contracts::Session;
-use super::{RawSession, Tracer, capture, parse_message, protocol_window_ends};
+use super::{RawSession, Tracer, capture, protocol_window_ends};
 
 /// Every planted value holds this text, so one search finds any of them.
 const CANARY: &str = "c0ral-private";
 
-/// Sent with every call: what a client says about itself, and what it would
+/// Sent with each call: what a client says about itself, and what it would
 /// wrongly put in a header.
 const HEADERS: &[(&str, &str)] = &[
     ("user-agent", "client-identifier-c0ral-private"),
@@ -41,42 +41,47 @@ const FAILING_PROGRAMS: &[&str] = &[
     "throw Object.assign(new Error('authored'), {name:'ToolError', code:'account_required', credential:'attached-c0ral-private'});",
 ];
 
-/// Tool calls Coral refuses, each with private text where an identifier or a
-/// name belongs.
-fn refused_calls(task: &Value) -> [(&'static str, Value); 5] {
+/// Tool calls Coral refuses, each with private text where an identifier, a
+/// name or a value belongs, and what Coral answers instead of echoing it.
+fn refused_calls(task: &Value) -> [(&'static str, Value, &'static str); 7] {
     [
         (
             "search",
             json!({"task_id": "task-c0ral-private", "intent": "Search", "query": "weather"}),
+            "task id is invalid",
         ),
         (
             "describe",
             json!({"task_id": task, "intent": "Describe", "path": "coral.providers.weather.c0ral-private"}),
+            "Discovery input is invalid",
         ),
-        ("wait", json!({"run_id": "run-c0ral-private", "wait_ms": 0})),
-        ("cancel", json!({"run_id": "run-c0ral-private"})),
-        ("no_such_tool_c0ral_private", json!({})),
+        (
+            "wait",
+            json!({"run_id": "run-c0ral-private", "wait_ms": 0}),
+            "run id is invalid",
+        ),
+        (
+            "cancel",
+            json!({"run_id": "run-c0ral-private"}),
+            "run id is invalid",
+        ),
+        (
+            "end_task",
+            json!({"task_id": task, "outcome": "outcome-c0ral-private"}),
+            "invalid arguments for 'end_task'",
+        ),
+        (
+            "start_task",
+            json!({"intent": "Start", "key-c0ral-private": true}),
+            "invalid arguments for 'start_task'",
+        ),
+        ("no-such-tool-c0ral-private", json!({}), "tool not found"),
     ]
 }
 
-/// Sends one `tools/call`, whatever Coral answers, and returns all of it.
-async fn raw_call(session: &RawSession, tool: &str, arguments: Value) -> String {
-    let mut request = session.request(
-        "tools/call",
-        json!({"name": tool, "arguments": arguments}),
-        Some(2),
-    );
-    for (name, value) in HEADERS {
-        request = request.header(*name, *value);
-    }
-    parse_message(request.send().await.expect("raw request"))
-        .await
-        .to_string()
-}
-
 /// Starts a session on `endpoint` as a client that identifies itself with
-/// private text, and returns all Coral answers.
-async fn initialize(endpoint: String, bearer: Option<&str>) -> String {
+/// private text, and returns how Coral answers.
+async fn initialize(endpoint: String, bearer: Option<&str>) -> (reqwest::StatusCode, String) {
     let request = reqwest::Client::new()
         .post(endpoint)
         .header("accept", "application/json, text/event-stream")
@@ -86,41 +91,55 @@ async fn initialize(endpoint: String, bearer: Option<&str>) -> String {
                 "clientInfo":{"name":"client-info-c0ral-private", "version":"c0ral-private"},
             }}),
         );
-    super::authorized(request, bearer)
+    let response = super::authorized(request, bearer)
         .send()
         .await
-        .expect("initialize")
-        .text()
-        .await
-        .expect("response text")
+        .expect("initialize");
+    let status = response.status();
+    (status, response.text().await.expect("response text"))
 }
 
-/// What Coral answers a working Agent credential, an unusable one, a client
-/// that identifies itself with private text, and a URL that holds it.
-async fn initialized_sessions(tracer: &Tracer) -> String {
+/// Every answer to a working Agent credential, an unusable one, a client that
+/// identifies itself with private text, and URLs that hold it.
+async fn answers_to_private_sessions(tracer: &Tracer) -> String {
+    use reqwest::StatusCode;
     let origin = format!("http://{}", tracer.server.local_addr());
+    let organization = format!("{origin}/mcp");
     let mut answers = String::new();
-    for (endpoint, bearer) in [
+    for (endpoint, bearer, expected) in [
         (
-            format!("{origin}/mcp"),
+            organization.clone(),
             Some(tracer.agent_credential.as_str()),
+            StatusCode::OK,
         ),
-        (format!("{origin}/mcp"), Some("token-c0ral-private")),
-        (tracer.endpoint(), None),
+        (
+            organization,
+            Some("token-c0ral-private"),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (tracer.endpoint(), None, StatusCode::OK),
         (
             format!("{}?access_token=url-{CANARY}", tracer.endpoint()),
             None,
+            StatusCode::NOT_FOUND,
         ),
-        (format!("{origin}/workspaces/{CANARY}/mcp"), None),
+        (
+            format!("{origin}/workspaces/{CANARY}/mcp"),
+            None,
+            StatusCode::NOT_FOUND,
+        ),
     ] {
-        answers.push_str(&initialize(endpoint, bearer).await);
+        let (status, answer) = initialize(endpoint.clone(), bearer).await;
+        assert_eq!(status, expected, "{endpoint}: {answer}");
+        answers.push_str(&answer);
     }
     answers
 }
 
-/// Runs [`PROGRAM`] on a Run that waits for approval, reads what the Run Status
-/// Page shows, and approves it there with a comment.
-async fn approve_on_the_run_status_page(tracer: &Tracer, session: &RawSession, task: &Value) {
+/// Runs [`PROGRAM`] on a Run that waits for approval, then does what the Run
+/// Status Page does through its adapter: reads the Run and approves it with a
+/// comment.
+async fn approve_as_the_run_status_page_does(tracer: &Tracer, session: &RawSession, task: &Value) {
     let update = session
         .tool(
             "exec",
@@ -231,10 +250,11 @@ fn assert_bounded_dimensions(metrics: &[coral_telemetry::testing::MetricPoint]) 
 }
 
 /// A canary in anything a caller or an upstream hands Coral stays out of
-/// everything that leaves the host, the telemetry the host keeps, public
-/// errors and lifecycle events, whatever the operator's filters admit. No
-/// metric dimension takes a value from any of them. The authorized readers
-/// still get it, so the journey did carry the private data.
+/// everything that leaves the host, whichever crates and libraries the
+/// operator's filters admit, the telemetry the host keeps, public errors and
+/// Administrative Lifecycle Events. No metric dimension takes a value from any
+/// of them. The authorized readers still get it, so the journey did carry the
+/// private data.
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::too_many_lines,
@@ -315,13 +335,18 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         .await;
     assert_ne!(searched["isError"], true, "{searched}");
 
-    let mut public_errors = initialized_sessions(&tracer).await;
-    for (tool, arguments) in refused_calls(&task) {
-        public_errors.push_str(&raw_call(&session, tool, arguments).await);
+    let mut public_errors = answers_to_private_sessions(&tracer).await;
+    for (tool, arguments, refusal) in refused_calls(&task) {
+        let answer = session
+            .tool_answer(tool, arguments, HEADERS)
+            .await
+            .to_string();
+        assert!(answer.contains(refusal), "{tool}: {answer}");
+        public_errors.push_str(&answer);
     }
 
     tracer.require_approval_of("getPrivateRecord").await;
-    approve_on_the_run_status_page(&tracer, &session, &task).await;
+    approve_as_the_run_status_page_does(&tracer, &session, &task).await;
     approve_through_elicitation(&tracer).await;
 
     let ended = session
@@ -379,7 +404,7 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
             String::from_utf8_lossy(&logs).into_owned(),
         ),
         ("public errors", public_errors),
-        ("lifecycle events", format!("{lifecycle:?}")),
+        ("Administrative Lifecycle Events", format!("{lifecycle:?}")),
     ];
     for (sink, text) in &sinks {
         for private in [CANARY, tracer.agent_credential.as_str()] {
