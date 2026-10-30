@@ -681,8 +681,9 @@ export const DockedTransition: Story = {
     const duration = (animation: Animation) => Number(animation.effect!.getTiming().duration)
     /**
      * Does `act`, then holds the dock's width transition at `fraction` of its duration,
-     * and the rail's own motion with it, on the frame they start: a short one cannot end,
-     * nor the rail unmount, before the play reads the frame. `release` resumes what is
+     * and the rail's own motion at the same point, on the frame they start: a short one
+     * cannot end, nor the rail unmount, before the play reads the frame. A rail motion
+     * left behind would still run once the dock's has ended. `release` resumes what is
      * still held; a change of course has replaced the rest.
      */
     const hold = async (act: () => Promise<void>, fraction: number, phase: string) => {
@@ -695,8 +696,10 @@ export const DockedTransition: Story = {
             doc.removeEventListener('transitionrun', onTransition)
             const [transition] = dock.getAnimations()
             const motion = [transition!, ...(rail()?.getAnimations() ?? [])]
-            for (const animation of motion) animation.pause()
-            transition!.currentTime = duration(transition!) * fraction
+            for (const animation of motion) {
+              animation.pause()
+              animation.currentTime = duration(animation) * fraction
+            }
             const release = () => {
               for (const animation of motion) if (animation.playState === 'paused') animation.play()
             }
@@ -725,6 +728,9 @@ export const DockedTransition: Story = {
     await expect(midway).toBeLessThan(full)
     await expect(box(table).right + 16).toBeCloseTo(box(opened).left, 0)
     open.release()
+    // The close below starts from rest. A close during the entrance starts no exit
+    // motion of its own; this play does not cover that case.
+    await Promise.all(opened.getAnimations().map(({ finished }) => finished))
     await open.transition.finished
     await shows('Task 1')
     const settled = box(table).width
@@ -746,6 +752,13 @@ export const DockedTransition: Story = {
     // Closing, the dock narrows over the rail's own exit, which keeps the rail until then.
     const close = await hold(closeRail, 0.5, 'closing')
     await expect(duration(close.transition)).toBe(175)
+    // The rail's own exit runs with the dock's, held with it.
+    await expect(
+      opened
+        .getAnimations()
+        .filter((animation) => duration(animation) === 175)
+        .map(({ playState }) => playState),
+    ).toEqual(['paused', 'paused'])
     const half = box(table).width
     await expect(half).toBeGreaterThan(settled)
     await expect(half).toBeLessThan(full)
