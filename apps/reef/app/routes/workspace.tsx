@@ -72,7 +72,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       ],
       icons: RECIPE_CHOICES.find((r) => r.id === provider.namespace)?.icons,
     }))
-    const { onboarding, setCookie } = await consumeWorkspaceOnboarding(request, w.name, context)
+    // Onboarding needs the MCP endpoint, so a workspace without one keeps the onboarding cookie.
+    const { onboarding, setCookie } = w.mcpEndpoint
+      ? await consumeWorkspaceOnboarding(request, w.name, context)
+      : { onboarding: false, setCookie: null }
     return data(
       {
         workspace: w,
@@ -96,7 +99,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
           })),
         },
         onboarding,
-        agentsWithAvailablePlugins: context.get(runtimeConfigContext).agentsWithAvailablePlugins,
+        clientsWithAvailablePlugins: context.get(runtimeConfigContext).clientsWithAvailablePlugins,
       },
       { headers: setCookie ? { ...privateHeaders, 'Set-Cookie': setCookie } : privateHeaders },
     )

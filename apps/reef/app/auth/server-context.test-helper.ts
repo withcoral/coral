@@ -13,7 +13,7 @@ export const localRuntimeConfig: CoralWebRuntimeConfig = {
   auth: { mode: 'disabled' },
   endpoint: { authenticatedCleartextOrigin: null, baseUrl: DEFAULT_DEV_CORAL_ENDPOINT },
   upstreamOAuthCallbackUrl: '',
-  agentsWithAvailablePlugins: [],
+  clientsWithAvailablePlugins: [],
 }
 
 /** The context the root middleware gives every route: only the bootstrap configuration. */

@@ -221,9 +221,10 @@ AGENTS_WITH_AVAILABLE_PLUGINS='claude, chatgpt'
 
 The onboarding prompt then tells a client with one of these names that can find and
 install plugins to look for the plugin. If it finds the plugin and the person
-consents, it adds the MCP server through the plugin. Every other client, and every
-client when the variable is unset or empty, adds the server directly. The list only
-advertises a plugin; Reef does not check that it exists.
+consents, it adds the MCP server through the plugin. If it cannot find or install
+the plugin, or the person declines, it adds the server directly. Every other
+client, and every client when the variable is unset or empty, also adds the server
+directly. The list only advertises a plugin; Reef does not check that it exists.
 
 Reef reads the variable at server startup, so set it in the server environment
 rather than at image build time. It trims each name, lowercases it, collapses

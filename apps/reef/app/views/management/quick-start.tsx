@@ -14,28 +14,37 @@ export const CLIENTS = [
 
 export const KEY = '<AGENT_API_KEY>'
 
-export interface Step {
+interface StepText {
   /** What to do with the value, above it. */
   label: string
   /** The copy button's accessible name. */
   copy: string
+  /** What else to do, under the value. */
+  hint?: string
+}
+
+/** A command or setting, shown whole. */
+export interface CodeStep extends StepText {
   /** What the copy button copies. */
   snippet: string
   /** What the page shows: the snippet with a real key masked. */
   shown: string
-  /** What else to do, under the value. */
-  hint?: string
-  /** Whether the value is a prompt, shown as its first lines; the copy holds all of it. */
-  prose?: boolean
 }
+
+/** A prompt, shown as its first lines; the copy holds all of it. */
+interface PromptStep extends StepText {
+  prompt: string
+}
+
+type Step = CodeStep | PromptStep
 
 /**
  * Each client's setup for an agent, as values to copy. With the real key, they
  * carry it and nothing needs replacing.
  */
-export function agentSteps(client: Client, endpoint: string, key?: string): Step[] {
+export function agentSteps(client: Client, endpoint: string, key?: string): CodeStep[] {
   const k = key ?? KEY
-  const list: Omit<Step, 'shown'>[] = (() => {
+  const list: Omit<CodeStep, 'shown'>[] = (() => {
     switch (client) {
       case 'claude':
         return [
@@ -78,8 +87,8 @@ export function agentSteps(client: Client, endpoint: string, key?: string): Step
 }
 
 /** Each client's setup for a person, who signs in with Coral instead of sending a key. */
-export function personSteps(client: Client, endpoint: string): Step[] {
-  const list: Omit<Step, 'shown'>[] = (() => {
+export function personSteps(client: Client, endpoint: string): CodeStep[] {
+  const list: Omit<CodeStep, 'shown'>[] = (() => {
     switch (client) {
       case 'claude':
         return [
@@ -131,8 +140,8 @@ function StepValue({ step }: { step: Step }) {
         {step.label}
       </Typography.BodySmallStrong>
       <div role="group" aria-labelledby={label}>
-        {step.prose ? (
-          <PromptPreview prompt={step.snippet} copyLabel={step.copy} />
+        {'prompt' in step ? (
+          <PromptPreview prompt={step.prompt} copyLabel={step.copy} />
         ) : (
           <CodeBlock value={step.shown} copy={{ text: step.snippet, label: step.copy }} />
         )}
@@ -154,8 +163,9 @@ export function ClientSetup({
   steps,
   prompt,
 }: {
-  steps: (client: Client) => Step[]
-  prompt?: string
+  steps: (client: Client) => CodeStep[]
+  /** The prompt and what it gets your agent to do. */
+  prompt?: { text: string; hint: string }
 }) {
   return (
     <Tabs.Root className={styles.quickStartTabs} defaultValue="claude">
@@ -185,10 +195,8 @@ export function ClientSetup({
                 step={{
                   label: 'Paste this prompt into your MCP client',
                   copy: 'Copy prompt',
-                  snippet: prompt,
-                  shown: prompt,
-                  hint: 'Get your agent to connect to Coral and add a provider.',
-                  prose: true,
+                  prompt: prompt.text,
+                  hint: prompt.hint,
                 }}
               />
             </ol>
@@ -237,10 +245,13 @@ export function AgentQuickStart({
 export function WorkspaceQuickStart({
   endpoint,
   prompt,
+  owner,
 }: {
   endpoint: string
   /** The workspace's `onboardingPrompt`. */
   prompt: string
+  /** Whether the viewer owns the workspace, so the prompt adds a provider. */
+  owner: boolean
 }) {
   const heading = useId()
   return (
@@ -249,7 +260,15 @@ export function WorkspaceQuickStart({
         Connect your MCP client
       </Typography.HeadingSmall>
       <Typography.BodySmall as="p">Add this workspace to your MCP client.</Typography.BodySmall>
-      <ClientSetup steps={(client) => personSteps(client, endpoint)} prompt={prompt} />
+      <ClientSetup
+        steps={(client) => personSteps(client, endpoint)}
+        prompt={{
+          text: prompt,
+          hint: owner
+            ? 'Get your agent to connect to Coral and add a provider.'
+            : 'Get your agent to connect to Coral.',
+        }}
+      />
     </Card.Container>
   )
 }

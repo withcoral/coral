@@ -49,10 +49,12 @@ describe('Coral web startup configuration', () => {
     [' , ,', []],
     ['claude, chatgpt', ['claude', 'chatgpt']],
     ['  Claude ,claude,  ChatGPT  ,, Claude   Code ', ['claude', 'chatgpt', 'claude code']],
+    ['a'.repeat(32), ['a'.repeat(32)]],
+    ['a,b,c,d,e,f,g,h', ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']],
   ])('reads AGENTS_WITH_AVAILABLE_PLUGINS=%j as %j', (value, names) => {
     stubHostedEnv({ AGENTS_WITH_AVAILABLE_PLUGINS: value })
 
-    expect(readCoralWebRuntimeConfig().agentsWithAvailablePlugins).toEqual(names)
+    expect(readCoralWebRuntimeConfig().clientsWithAvailablePlugins).toEqual(names)
   })
 
   // The prompt quotes each name to an MCP client, so a name carries no instructions.

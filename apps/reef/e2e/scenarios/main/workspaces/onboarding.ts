@@ -1,7 +1,7 @@
 import { expect, type TestContext } from 'vitest'
 
 import { copiedBy } from '../../../support/clipboard.ts'
-import { breadcrumb, onboardingDialog } from '../../../support/providers.ts'
+import { breadcrumb, dismissOnboarding, onboardingDialog } from '../../../support/providers.ts'
 import { withOwner } from '../../../support/topology.ts'
 
 /**
@@ -44,8 +44,7 @@ export async function workspaceOnboarding(context: TestContext) {
       },
     )
     await step('Dismiss closes onboarding', async () => {
-      await dialog.getByRole('button', { name: 'Dismiss', exact: true }).click()
-      await dialog.waitFor({ state: 'detached' })
+      await dismissOnboarding(page)
       await breadcrumb(page, name).waitFor()
     })
     // A dialog over the overview would take the click, so Add provider opening proves none is.

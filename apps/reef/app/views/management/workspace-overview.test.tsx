@@ -59,7 +59,7 @@ function render(props: {
       ownMembership={null}
       form={{ csrf: 'test-csrf', requestId: 'test-request' }}
       recipes={[]}
-      agentsWithAvailablePlugins={[]}
+      clientsWithAvailablePlugins={[]}
     />,
     { entry: workspace.path },
   )
