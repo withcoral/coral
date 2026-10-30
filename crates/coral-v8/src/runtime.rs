@@ -607,7 +607,7 @@ fn program_emission_callback(
         None
     };
     let Some(encoded) = encoded else {
-        reject_output_promise(
+        reject_emission(
             scope,
             &mut return_value,
             ProgramOutputHostError::InvalidValue,
@@ -623,14 +623,16 @@ fn program_emission_callback(
         terminate_program_host(scope);
         return;
     };
-    let validated = host
-        .value_limits()
-        .validate_json(&encoded)
-        .map_err(|error| match error {
+    if let Err(error) = host.value_limits().validate_json(&encoded) {
+        let error = match error {
             coral_value::ValueError::Invalid => ProgramOutputHostError::InvalidValue,
             coral_value::ValueError::TooLarge => ProgramOutputHostError::LimitExceeded,
-        });
-    match validated.and_then(|_value| host.emit(&encoded, location)) {
+        };
+        reject_emission(scope, &mut return_value, error);
+        return;
+    }
+    // The host counts what it keeps and what it refuses.
+    match host.emit(&encoded, location) {
         Ok(()) => resolve_void_promise(scope, &mut return_value),
         Err(
             error @ (ProgramOutputHostError::InvalidValue | ProgramOutputHostError::LimitExceeded),
@@ -682,6 +684,16 @@ fn program_log_callback(
         ) => throw_output_error(scope, error),
         Err(ProgramOutputHostError::Fatal) => terminate_program_host(scope),
     }
+}
+
+/// Rejects an Emission before it reaches the host, and counts it.
+fn reject_emission(
+    scope: &mut v8::PinScope<'_, '_>,
+    return_value: &mut v8::ReturnValue,
+    error: ProgramOutputHostError,
+) {
+    coral_telemetry::metric::output_rejected(coral_telemetry::metric::OutputKind::Emission);
+    reject_output_promise(scope, return_value, error);
 }
 
 fn resolve_void_promise(scope: &mut v8::PinScope<'_, '_>, return_value: &mut v8::ReturnValue) {
@@ -988,20 +1000,18 @@ fn serialize_final_value(
     let mut try_catch = try_catch.init();
     let receiver = v8::undefined(&try_catch).into();
     let Some(encoded) = serializer.call(&try_catch, receiver, &[value]) else {
-        if let Some(exception) = try_catch.exception()
-            && let Some(error) = classify_output_exception(&mut try_catch, exception)
-        {
+        let Some(exception) = try_catch.exception() else {
+            return Err(rejected_final_value());
+        };
+        // An Emission or Log refused while serializing was counted where it
+        // was refused.
+        if let Some(error) = classify_output_exception(&mut try_catch, exception) {
             return Err(output_execution_error(error));
         }
-        return Err(try_catch
-            .exception()
-            .map_or_else(rejected_final_value, |exception| {
-                Error::ProgramOutputRejected(Box::new(crate::program_error::from_exception(
-                    &mut try_catch,
-                    exception,
-                    source_map,
-                )))
-            }));
+        coral_telemetry::metric::output_rejected(coral_telemetry::metric::OutputKind::FinalValue);
+        return Err(Error::ProgramOutputRejected(Box::new(
+            crate::program_error::from_exception(&mut try_catch, exception, source_map),
+        )));
     };
     if !encoded.is_string() {
         return Err(rejected_final_value());

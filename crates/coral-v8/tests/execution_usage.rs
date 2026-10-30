@@ -1,8 +1,12 @@
 //! What a Program execution uses, as its metrics record it.
 
+use std::sync::{Arc, Mutex};
+
 use coral_telemetry::testing::MetricCapture;
-use coral_v8::{Error, IsolateLimits, ProgramCompiler, ProgramExecutor};
-use coral_value as _;
+use coral_v8::{
+    AuthoredLocation, ConsoleLevel, Error, IsolateLimits, ProgramCompiler, ProgramExecutor,
+    ProgramHost, ProgramOutputHostError, ToolFuture, ToolHostError,
+};
 use deno_core_icudata as _;
 #[cfg(unix)]
 use rustix as _;
@@ -66,5 +70,93 @@ fn an_execution_records_its_cpu_time_and_heap_peak() {
             assert_eq!(cpu.count, 1);
             assert!(cpu.value > 0.0, "{cpu:?}");
         }
+    }
+}
+
+/// Keeps every Emission that reaches it, within a small host crossing.
+#[derive(Default)]
+struct KeepingHost {
+    emissions: Mutex<Vec<String>>,
+}
+
+impl ProgramHost for KeepingHost {
+    fn value_limits(&self) -> coral_value::ValueLimits {
+        coral_value::ValueLimits::new(64, 64, 64, 1024).expect("limits")
+    }
+
+    fn invoke(
+        self: Arc<Self>,
+        _call_path: String,
+        _arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> ToolFuture {
+        Box::pin(async { Err(ToolHostError::Fatal) })
+    }
+
+    fn emit(
+        &self,
+        value_json: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        self.emissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(value_json.to_string());
+        Ok(())
+    }
+
+    fn log(
+        &self,
+        _level: ConsoleLevel,
+        _message: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        Ok(())
+    }
+}
+
+/// An output the runtime refuses before the host sees it is counted once,
+/// by its kind.
+#[test]
+fn an_output_refused_before_the_host_is_counted() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let executor = ProgramExecutor::new(IsolateLimits::default());
+    for (source, rejected) in [
+        (
+            "try { await coral.emit(1n); } catch {} return null;",
+            "emission",
+        ),
+        (
+            "try { await coral.emit('x'.repeat(128)); } catch {} return null;",
+            "emission",
+        ),
+        ("return 1n;", "final_value"),
+        (
+            "const cycle = {}; cycle.self = cycle; return cycle;",
+            "final_value",
+        ),
+        ("return 'x'.repeat(128);", "final_value"),
+    ] {
+        let program = compiler
+            .compile(
+                std::time::Instant::now() + coral_v8::COMPILATION_TIMEOUT,
+                source,
+            )
+            .expect("compile");
+        let host = Arc::new(KeepingHost::default());
+        let capture = MetricCapture::default();
+        let _result = tracing::subscriber::with_default(capture.subscriber(), || {
+            executor.execute_with_host(&program, host.clone())
+        });
+        let counted: Vec<_> = capture
+            .named("coral.output.rejections")
+            .into_iter()
+            .map(|point| (point.attributes.get("output.kind").cloned(), point.value))
+            .collect();
+        assert_eq!(counted, [(Some(rejected.to_string()), 1.0)], "{source}");
+        assert!(
+            host.emissions.lock().expect("emissions").is_empty(),
+            "{source}"
+        );
     }
 }
