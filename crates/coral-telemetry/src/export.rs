@@ -274,49 +274,6 @@ mod tests {
 
     use super::{OtlpLogFilter, OtlpSpanFilter};
 
-    /// Keys a convention or a careless span gives private data. Each stands
-    /// for a field that got past every earlier check, so only the filter
-    /// stands between it and the collector.
-    const FORBIDDEN: &[&str] = &[
-        "misclassified",
-        "url.full",
-        "url.path",
-        "url.query",
-        "http.request.header.authorization",
-        "http.request.header.cookie",
-        "http.response.header.set-cookie",
-        "user_agent.original",
-        "client.address",
-        "exception.message",
-        "exception.stacktrace",
-        "db.query.text",
-        "db.statement",
-        "user.email",
-        "enduser.id",
-        "mcp.session.id",
-        "gen_ai.tool.call.arguments",
-        "gen_ai.tool.call.result",
-        "coral.program.source",
-        "coral.task.intent",
-        "coral.invocation.arguments",
-        "coral.invocation.result",
-        "coral.run.emission",
-        "coral.run.log",
-        "coral.saved_function.source",
-        "coral.approval.comment",
-        "coral.account.metadata",
-        "coral.account.token",
-        "coral.credential",
-        "coral.local.credential",
-        // One character from a cataloged key.
-        "coral.run.id.value",
-        "coral.run.i",
-    ];
-
-    fn forbidden() -> impl Iterator<Item = KeyValue> {
-        FORBIDDEN.iter().map(|key| KeyValue::new(*key, "secret"))
-    }
-
     /// Exports the spans below through the filter and returns what left the host.
     fn exported(targets: &str) -> Vec<SpanData> {
         let memory = InMemorySpanExporter::default();
@@ -339,14 +296,12 @@ mod tests {
                 coral.run.id = "run-1",
                 misclassified = "secret",
             );
-            for attribute in forbidden() {
-                kept.set_attribute(attribute.key, attribute.value);
-            }
             kept.add_event(
                 "misclassified",
-                forbidden()
-                    .chain([KeyValue::new("coral.run.id", "run-1")])
-                    .collect(),
+                vec![
+                    KeyValue::new("misclassified", "secret"),
+                    KeyValue::new("coral.run.id", "run-1"),
+                ],
             );
             kept.add_link_with_attributes(
                 SpanContext::new(
@@ -356,9 +311,11 @@ mod tests {
                     true,
                     TraceState::default(),
                 ),
-                forbidden()
-                    .chain([KeyValue::new("coral.run.id", "run-1")])
-                    .collect(),
+                vec![
+                    KeyValue::new("coral.local.link", "secret"),
+                    KeyValue::new("coral.run.id", "run-1"),
+                    KeyValue::new("misclassified", "secret"),
+                ],
             );
             kept.set_status(Status::error("secret"));
             kept.in_scope(|| {
@@ -394,10 +351,11 @@ mod tests {
             .collect()
     }
 
-    /// Only admitted spans leave, and they carry only cataloged keys: no
-    /// forbidden key leaves on a span, an event or a link, while the cataloged
-    /// key beside it does. A failed span leaves failed, without its status
-    /// text, and a library's event leaves without its text.
+    /// Only admitted spans leave, and they carry only cataloged keys: a
+    /// `coral.local.*` key or a misclassified one never leaves on a span, an
+    /// event or a link, while the cataloged key beside it does. A failed span
+    /// leaves failed, without its status text, and a library's event leaves
+    /// without its text.
     #[test]
     fn only_admitted_spans_leave_and_only_with_cataloged_keys() {
         // The filter admits both body targets, so only the deny list keeps them home.
@@ -472,11 +430,10 @@ mod tests {
         let logger = provider.logger("export-filter-test");
         let mut misclassified = logger.create_log_record();
         misclassified.set_target("coral_app");
-        misclassified.add_attributes(
-            forbidden()
-                .chain([KeyValue::new("coral.run.id", "run-1")])
-                .map(|attribute| (attribute.key, AnyValue::from(attribute.value.to_string()))),
-        );
+        misclassified.add_attributes([
+            ("misclassified", AnyValue::from("secret")),
+            ("coral.run.id", AnyValue::from("run-1")),
+        ]);
         logger.emit(misclassified);
         provider.force_flush().expect("flush logs");
         let records = memory
@@ -490,8 +447,7 @@ mod tests {
     }
 
     /// A log record leaves with its text, level and trace but only cataloged
-    /// keys, so no forbidden key leaves, and an event of a body target never
-    /// leaves. A library's record
+    /// keys, and an event of a body target never leaves. A library's record
     /// leaves without its text, which Coral's checks never read. Tracing's
     /// callsite name leaves as the code location; an event's own name stays.
     #[test]

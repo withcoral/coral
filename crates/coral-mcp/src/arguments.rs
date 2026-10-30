@@ -273,27 +273,36 @@ pub(crate) fn parse<T>(arguments: Option<Map<String, Value>>) -> Result<T, Error
 where
     T: ToolArguments,
 {
-    serde_json::from_value(Value::Object(arguments.unwrap_or_default())).map_err(|error| {
+    let arguments = Value::Object(arguments.unwrap_or_default());
+    T::deserialize(&arguments).ok().ok_or_else(|| {
         ErrorData::invalid_params(
             format!(
                 "invalid arguments for '{}': {}",
                 T::NAME,
-                argument_problem(&error)
+                argument_problem(T::NAME, &arguments)
             ),
             None,
         )
     })
 }
 
-/// What is wrong with arguments a caller can act on, without their text. A
-/// missing field is named by Coral's own schema. Every other message quotes
-/// the value or key it rejected, which can be private.
-fn argument_problem(error: &serde_json::Error) -> String {
-    let problem = error.to_string();
-    if problem.starts_with("missing field ") {
-        problem
-    } else {
-        "a value does not match the tool's input schema".to_owned()
+/// What is wrong with `arguments` to tool `name`, read from the schema Coral
+/// advertises. A deserializer's message quotes the value or key it rejected,
+/// which can be private, so none reaches the caller.
+fn argument_problem(name: &str, arguments: &Value) -> String {
+    let required = TOOLS
+        .iter()
+        .find(|tool| tool.name == name)
+        .and_then(|tool| tool.input_schema.get("required"))
+        .and_then(Value::as_array);
+    let missing = required
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .find(|field| arguments.get(field).is_none());
+    match missing {
+        Some(field) => format!("missing field `{field}`"),
+        None => "a value does not match the tool's input schema".to_owned(),
     }
 }
 
@@ -422,7 +431,10 @@ mod tests {
         for (arguments, problem) in [
             (json!({}), "missing field `task_id`"),
             (json!({"task_id": "t", "outcome": "value-canary"}), SCHEMA),
-            (json!({"task_id": ["value-canary"]}), SCHEMA),
+            (
+                json!({"task_id": ["value-canary"], "outcome": "success"}),
+                SCHEMA,
+            ),
             (
                 json!({"task_id": "t", "outcome": "success", "key-canary": 1}),
                 SCHEMA,

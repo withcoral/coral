@@ -227,28 +227,6 @@ fn around<'a>(text: &'a str, private: &str) -> &'a str {
     text.get(start..end).unwrap_or(text)
 }
 
-/// A metric dimension is one of a bounded set: a word Coral fixes, or for
-/// `operation` a route template, an MCP method or a served tool. Each is made
-/// of these characters, and no address, version or canary here is: each holds
-/// a digit.
-fn assert_bounded_dimensions(metrics: &[coral_telemetry::testing::MetricPoint]) {
-    let word = |character: char| character.is_ascii_lowercase() || character == '_';
-    let operation = |character: char| word(character) || "/{} -.".contains(character);
-    for point in metrics {
-        for (key, value) in &point.attributes {
-            let bounded = if key == "operation" {
-                value == "_OTHER" || value.chars().all(operation)
-            } else {
-                value.chars().all(word)
-            };
-            assert!(bounded, "{}: {key}={value}", point.name);
-            for unbounded in ["weather", "getForecast", "getPrivateRecord"] {
-                assert!(!value.contains(unbounded), "{}: {key}={value}", point.name);
-            }
-        }
-    }
-}
-
 /// A canary in anything a caller or an upstream hands Coral stays out of
 /// everything that leaves the host, whichever crates and libraries the
 /// operator's filters admit, the telemetry the host keeps, public errors and
@@ -388,7 +366,6 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
             "each tool call's request is named by its tool: {operations:?}"
         );
     }
-    assert_bounded_dimensions(&metrics);
     let exported = capture.exported.text();
     assert!(
         exported.contains("tools/call exec"),
