@@ -249,6 +249,7 @@ impl RunModule {
         .await?
         .ok_or_else(|| Error::CorruptData("started Run has no Program package".to_string()))?;
         transaction.commit().await?;
+        metric::run_claimed(ClaimKind::Start, ClaimOutcome::Won);
         Ok(Some(StartedExecution {
             package,
             head: run.chunk_sequence,

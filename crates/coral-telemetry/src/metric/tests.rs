@@ -200,19 +200,18 @@ fn every_instrument_exports_with_its_unit_and_only_its_attributes() {
             .filter(|point| point.name == *name)
             .collect::<Vec<_>>();
         assert!(!found.is_empty(), "{name} exports");
-        for point in found {
+        for point in &found {
             assert_eq!((point.kind, point.unit.as_str()), (*kind, *unit), "{name}");
-            let mut found_keys = point
-                .attributes
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            found_keys.sort_unstable();
-            assert!(
-                found_keys.iter().all(|key| keys.contains(key)),
-                "{name} carries only {keys:?}, not {found_keys:?}"
-            );
         }
+        let found_keys = found
+            .iter()
+            .flat_map(|point| point.attributes.keys().map(String::as_str))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            found_keys,
+            keys.iter().copied().collect(),
+            "{name} carries exactly its attributes"
+        );
     }
     assert_eq!(
         points
@@ -278,26 +277,19 @@ fn pools_are_read_at_collection_while_observed() {
     in_use.store(0, Ordering::Relaxed);
     assert_eq!(values(&capture, "coral.persistence.pool.in_use"), [0.0]);
     drop(observed);
-    assert!(
-        capture
-            .points()
-            .iter()
-            .all(|point| point.name != "coral.persistence.pool.in_use" || point.value == 0.0),
-        "a dropped pool reports nothing new"
+    assert_eq!(
+        values(&capture, "coral.persistence.pool.in_use"),
+        [] as [f64; 0],
+        "a dropped pool reports nothing"
     );
 }
 
 /// Without the layer, domain code records nothing and does not fail.
 #[test]
 fn nothing_records_without_the_layer() {
-    let capture = MetricCapture::default();
-    run_accepted(PrincipalKind::User);
-    drop(run_active());
-    assert!(
-        capture
-            .points()
-            .iter()
-            .all(|point| point.kind == "gauge" && point.value == 0.0),
-        "only the levels read, at zero"
-    );
+    tracing::subscriber::with_default(tracing_subscriber::registry(), || {
+        assert!(current().is_none(), "no catalog without the layer");
+        run_accepted(PrincipalKind::User);
+        drop(run_active());
+    });
 }

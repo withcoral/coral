@@ -450,15 +450,6 @@ const fn sdk_error_code(error: &OTelSdkError) -> &'static str {
 
 /// Flush any pending tracing, log, and metric exports before process exit.
 pub fn shutdown_tracing() {
-    if let Ok(mut guard) = METER_PROVIDER.lock()
-        && let Some(provider) = guard.take()
-        && let Err(error) = provider.shutdown()
-    {
-        tracing::warn!(
-            error.type = safe::kind(sdk_error_code(&error)),
-            "OTEL meter provider shutdown failed"
-        );
-    }
     if let Ok(mut guard) = PROVIDER.lock()
         && let Some(provider) = guard.take()
         && let Err(error) = provider.shutdown()
@@ -475,6 +466,16 @@ pub fn shutdown_tracing() {
         tracing::warn!(
             error.type = safe::kind(sdk_error_code(&error)),
             "OTEL logger provider shutdown failed"
+        );
+    }
+    // Last, so it exports the drops of the others' final exports.
+    if let Ok(mut guard) = METER_PROVIDER.lock()
+        && let Some(provider) = guard.take()
+        && let Err(error) = provider.shutdown()
+    {
+        tracing::warn!(
+            error.type = safe::kind(sdk_error_code(&error)),
+            "OTEL meter provider shutdown failed"
         );
     }
 }

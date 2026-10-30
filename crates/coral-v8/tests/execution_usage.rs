@@ -14,8 +14,8 @@ use v8 as _;
 
 const HEAP_LIMIT: usize = 16 * 1024 * 1024;
 
-/// Each execution records the CPU time its thread used and the most heap it
-/// held, whether it returns or runs out of memory; one that runs out held
+/// Each execution records the CPU time its thread used, where the platform
+/// measures it, and the most heap it held, whether it returns or runs out of memory; one that runs out held
 /// at least its limit.
 #[test]
 fn an_execution_records_its_cpu_time_and_heap_peak() {

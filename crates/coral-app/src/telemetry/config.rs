@@ -40,8 +40,8 @@ pub(crate) struct OtlpConfig {
 }
 
 /// The share of the roots Coral creates that it samples, from `0.0` to
-/// `1.0`: a request that brings no valid caller context, and every Run
-/// root. Metrics are never sampled.
+/// `1.0`: a request that brings no valid caller context, every Run root,
+/// and each search-index write and reconcile. Metrics are never sampled.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(try_from = "f64")]
 pub(crate) struct TraceSampleRatio(f64);

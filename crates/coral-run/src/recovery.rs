@@ -255,7 +255,7 @@ impl RunModule {
         }
         // A cancellation's Event comes after the steps': a decision applied
         // after it only closes its request, which writes no Event.
-        let ended = end_in_one_chunk(
+        let kind = end_in_one_chunk(
             &mut transaction,
             &run,
             recovery.recovered.termination.clone(),
@@ -276,7 +276,7 @@ impl RunModule {
             )
             .await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(&run, &crate::trace::RunEnd::Recovered(&ended), now);
+        crate::trace::record_run_end(&run, &crate::trace::RunEnd::Recovered(&kind.outcome()), now);
         Ok(())
     }
 }

@@ -203,7 +203,7 @@ attribute! {
     TransactionOutcome {
         Committed => "committed",
         RolledBack => "rolled_back",
-        /// The commit failed.
+        /// The commit failed or was abandoned before it answered.
         Failed => "failed",
     }
 }

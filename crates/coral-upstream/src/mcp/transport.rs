@@ -15,7 +15,7 @@ use rmcp::transport::streamable_http_client::{
 use serde_json::Value;
 
 use crate::Error;
-use crate::exchange::ExchangeMeasure;
+use crate::exchange::ExchangeBytes;
 
 type TransportError = StreamableHttpError<Error>;
 
@@ -92,7 +92,7 @@ pub(super) struct McpHttpClient {
     pub(super) span: tracing::Span,
     /// The dispatch the session's request and response bodies add to;
     /// `None` for a session that is no Provider Tool dispatch.
-    pub(super) measure: Option<Arc<ExchangeMeasure>>,
+    pub(super) bytes: Option<Arc<ExchangeBytes>>,
 }
 
 impl StreamableHttpClient for McpHttpClient {
@@ -117,8 +117,8 @@ impl StreamableHttpClient for McpHttpClient {
             return Err(TransportError::Client(Error::InputTooLarge));
         }
         let capture_request = result_request(&request_json);
-        if let Some(measure) = &self.measure {
-            measure.sent(request_bytes);
+        if let Some(bytes) = &self.bytes {
+            bytes.sent(request_bytes);
         }
         let mut request = self
             .client
@@ -182,8 +182,8 @@ impl StreamableHttpClient for McpHttpClient {
                         }
                         TransportError::Client(error)
                     })?;
-                if let Some(measure) = &self.measure {
-                    measure.received(body.len());
+                if let Some(bytes) = &self.bytes {
+                    bytes.received(body.len());
                 }
                 let mut value = serde_json::from_slice(&body)?;
                 capture(&self.result, capture_request.as_ref(), &mut value)
@@ -285,9 +285,9 @@ impl McpHttpClient {
                 response,
                 self.limit,
                 self.result.clone(),
-                self.measure.clone(),
+                self.bytes.clone(),
             ),
-            |(mut response, remaining, result, measure)| async move {
+            |(mut response, remaining, result, bytes)| async move {
                 let Some(chunk) = response.chunk().await.map_err(Error::Body)? else {
                     return Ok::<_, Error>(None);
                 };
@@ -297,10 +297,10 @@ impl McpHttpClient {
                     }
                     Error::ResultTooLarge
                 })?;
-                if let Some(measure) = &measure {
-                    measure.received(chunk.len());
+                if let Some(bytes) = &bytes {
+                    bytes.received(chunk.len());
                 }
-                Ok(Some((chunk, (response, remaining, result, measure))))
+                Ok(Some((chunk, (response, remaining, result, bytes))))
             },
         );
         let result = self.result.clone();

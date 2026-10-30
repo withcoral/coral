@@ -244,7 +244,7 @@ async fn discover(
             // Discovery is not a Provider Tool dispatch: it sends no trace
             // context, and its bytes are no upstream exchange.
             span: tracing::Span::none(),
-            measure: None,
+            bytes: None,
         },
         config,
     );

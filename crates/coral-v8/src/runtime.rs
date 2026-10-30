@@ -995,7 +995,7 @@ fn serialize_final_value(
         }
         return Err(try_catch
             .exception()
-            .map_or_else(invalid_final_value, |exception| {
+            .map_or_else(rejected_final_value, |exception| {
                 Error::ProgramOutputRejected(Box::new(crate::program_error::from_exception(
                     &mut try_catch,
                     exception,
@@ -1004,10 +1004,10 @@ fn serialize_final_value(
             }));
     };
     if !encoded.is_string() {
-        return Err(invalid_final_value());
+        return Err(rejected_final_value());
     }
     let encoded =
-        v8::Local::<v8::String>::try_from(encoded).map_err(|_error| invalid_final_value())?;
+        v8::Local::<v8::String>::try_from(encoded).map_err(|_error| rejected_final_value())?;
     let encoded = encoded.to_rust_string_lossy(&try_catch);
     let limits = try_catch
         .get_slot::<ProgramHostSlot>()
@@ -1017,13 +1017,20 @@ fn serialize_final_value(
     limits
         .validate_json(&encoded)
         .map_err(|error| match error {
-            coral_value::ValueError::Invalid => invalid_final_value(),
-            coral_value::ValueError::TooLarge => Error::ResourceLimitExceeded,
+            coral_value::ValueError::Invalid => rejected_final_value(),
+            coral_value::ValueError::TooLarge => {
+                coral_telemetry::metric::output_rejected(
+                    coral_telemetry::metric::OutputKind::FinalValue,
+                );
+                Error::ResourceLimitExceeded
+            }
         })?;
     Ok(encoded)
 }
 
-fn invalid_final_value() -> Error {
+/// Rejects a Final Value that is not a Program Value, and counts it.
+fn rejected_final_value() -> Error {
+    coral_telemetry::metric::output_rejected(coral_telemetry::metric::OutputKind::FinalValue);
     Error::InvalidProgramValue(INVALID_FINAL_VALUE_MESSAGE.to_string())
 }
 

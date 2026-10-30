@@ -215,19 +215,26 @@ impl HttpUpstream {
     /// Returns only when no complete response was received or the complete
     /// response crossed its finite size bound.
     pub async fn send(&self, dispatch: ReadyHttpDispatch) -> Result<HttpOutcome, Error> {
+        // A dispatch missing its credential sends nothing.
+        if dispatch.credential_contract != coral_catalog::ProviderCredentialContract::NONE
+            && dispatch.credentials.is_empty()
+            && dispatch.query_credentials.is_empty()
+        {
+            return Err(Error::CredentialRequired);
+        }
         let measure = crate::exchange::ExchangeMeasure::start(
             coral_telemetry::metric::ProviderProtocol::Http,
         );
         if let Some(body) = &dispatch.body {
-            measure.sent(body.len());
+            measure.bytes().sent(body.len());
         }
-        let sent = self.exchange(dispatch, &measure).await;
+        let sent = self.exchange(dispatch, measure.bytes()).await;
         measure.end(sent.as_ref().map(|_outcome| ()));
         sent
     }
 
     /// [`Self::send`], adding the body of the response it reads to
-    /// `measure`.
+    /// `bytes`.
     #[expect(
         clippy::too_many_lines,
         reason = "one bounded protocol-continuation loop owns credential stripping and complete response capture"
@@ -235,12 +242,12 @@ impl HttpUpstream {
     async fn exchange(
         &self,
         dispatch: ReadyHttpDispatch,
-        measure: &crate::exchange::ExchangeMeasure,
+        bytes: &crate::exchange::ExchangeBytes,
     ) -> Result<HttpOutcome, Error> {
         let ReadyHttpDispatch {
             mut credentials,
             mut query_credentials,
-            credential_contract,
+            credential_contract: _credential_contract,
             mut method,
             mut url,
             mut headers,
@@ -252,12 +259,6 @@ impl HttpUpstream {
             schema_graph,
             limits,
         } = dispatch;
-        if credential_contract != coral_catalog::ProviderCredentialContract::NONE
-            && credentials.is_empty()
-            && query_credentials.is_empty()
-        {
-            return Err(Error::CredentialRequired);
-        }
         // Kept past a cross-origin redirect: a later service may still echo them.
         let credential_names = CredentialNames::new(&credentials, &query_credentials);
         let mut redirects = Vec::new();
@@ -369,7 +370,7 @@ impl HttpUpstream {
             )
             .await?;
             span.record("http.response.body.size", safe::number(response_body.len()));
-            measure.received(response_body.len());
+            bytes.received(response_body.len());
             let content_type =
                 selected_decode_facts(&binding, status, !response_body.is_empty(), content_type);
             let (data, decode_diagnostics) = decode_response_body(

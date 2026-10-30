@@ -254,6 +254,9 @@ impl Transaction<'_> {
     /// Returns a backend commit error. The caller must not publish in-memory
     /// effects before this method succeeds.
     pub async fn commit(mut self) -> Result<(), Error> {
+        // A commit abandoned before it answers may still land, so it did
+        // not roll back.
+        self.measure.outcome = Some(TransactionOutcome::Failed);
         let committed = commit_backend(self.backend, self.changes, self.invalidated).await;
         self.measure.outcome = Some(if committed.is_ok() {
             TransactionOutcome::Committed

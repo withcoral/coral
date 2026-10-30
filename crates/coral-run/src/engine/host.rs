@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tracing::Instrument as _;
+use tracing::instrument::WithSubscriber as _;
 
 use crate::execution::ExecutionStop;
 use crate::invocation::{InvocationHostError, ToolInvoker};
@@ -152,7 +153,9 @@ impl coral_v8::ProgramHost for RunProgramHost {
                         }
                     })
             }
-            .instrument(span),
+            .instrument(span)
+            // Records its telemetry where the Program's thread does.
+            .with_current_subscriber(),
         );
         Box::pin(async move {
             invocation

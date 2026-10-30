@@ -47,7 +47,7 @@
 //! uses a pool for remote multi-worker topology and requires `verify-full` TLS
 //! for remote TCP connections.
 
-// The metric tests record under a tracing subscriber.
+// `tests/persistence_foundation.rs` uses `tracing`; the unit tests do not.
 #[cfg(test)]
 use tracing as _;
 

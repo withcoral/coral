@@ -133,6 +133,8 @@ struct RequestTimer {
     operation: String,
     /// The operation the request's handler named, which takes its place.
     named: RequestOperation,
+    /// A client error until a response arrives: a request dropped before
+    /// one was cut off by its caller.
     outcome: RequestOutcome,
 }
 
@@ -144,7 +146,7 @@ impl RequestTimer {
             started: Instant::now(),
             operation: OTHER.to_owned(),
             named: RequestOperation::default(),
-            outcome: RequestOutcome::Ok,
+            outcome: RequestOutcome::ClientError,
         }
     }
 }
@@ -195,12 +197,14 @@ async fn trace_http_request(mut request: Request, next: Next, interface: Interfa
     let response = next.run(request).instrument(span.clone()).await;
     let status = response.status();
     span.record("http.response.status_code", safe::number(status.as_u16()));
-    if status.is_server_error() {
+    timer.outcome = if status.is_server_error() {
         record_failure(&span, safe::http_status_code(status.as_u16()));
-        timer.outcome = RequestOutcome::ServerError;
+        RequestOutcome::ServerError
     } else if status.is_client_error() {
-        timer.outcome = RequestOutcome::ClientError;
-    }
+        RequestOutcome::ClientError
+    } else {
+        RequestOutcome::Ok
+    };
     response.map(|body| {
         Body::new(TracedBody {
             body,

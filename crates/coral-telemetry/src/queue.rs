@@ -6,7 +6,8 @@
 //! of signals admitted and not yet through export, and admits none past the
 //! queue's capacity. The queue itself holds no more than that count, so it is
 //! never full when the gate admits: the gate alone drops, and counts. A
-//! signal whose export fails is counted too.
+//! signal whose export fails is counted too. After shutdown the SDK rejects
+//! signals itself, uncounted, since no export follows.
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};

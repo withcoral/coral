@@ -169,17 +169,14 @@ async fn a_tool_invocation_records_its_gates_result_and_end() {
             1
         )])
     );
-    let gates = counts(&metrics, "coral.invocation.gate.duration")
-        .into_iter()
-        .map(|(gate, _count)| gate)
-        .collect::<Vec<_>>();
     assert_eq!(
-        gates,
-        [
-            "gate.kind=account",
-            "gate.kind=approval",
-            "gate.kind=authority"
-        ]
+        counts(&metrics, "coral.invocation.gate.duration"),
+        owned(&[
+            ("gate.kind=account", 1),
+            ("gate.kind=approval", 1),
+            ("gate.kind=authority", 2)
+        ]),
+        "authority is checked before the account gate and again before approval"
     );
     assert!(counts(&metrics, "coral.output.size").contains(&("output.kind=result".to_string(), 1)));
     assert_eq!(

@@ -23,7 +23,7 @@ mod runtime;
 mod source_map;
 mod v8_support;
 
-// The usage tests record under a tracing subscriber.
+// `tests/execution_usage.rs` uses `tracing`; the unit tests do not.
 #[cfg(test)]
 use tracing as _;
 
