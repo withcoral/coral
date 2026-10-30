@@ -6,7 +6,7 @@ use coral_telemetry::metric::Metrics;
 use coral_telemetry::testing::{ExportCapture, SpanCapture, attribute};
 use opentelemetry::trace::{SpanId, TraceContextExt as _};
 use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
-use opentelemetry_sdk::metrics::data::ResourceMetrics;
+use opentelemetry_sdk::metrics::data::{ResourceMetrics, ScopeMetrics};
 use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
 use opentelemetry_sdk::metrics::{SdkMeterProvider, Temporality};
 use opentelemetry_sdk::trace::SpanData;
@@ -70,19 +70,23 @@ impl Telemetry {
     }
 }
 
-/// Each signal's export attempts that [`FailingExporter`] refused.
-static REFUSED_SPANS: AtomicUsize = AtomicUsize::new(0);
-static REFUSED_LOGS: AtomicUsize = AtomicUsize::new(0);
-static REFUSED_METRICS: AtomicUsize = AtomicUsize::new(0);
+/// What [`FailingExporter`] refused of each signal: the `coral.run.id` of a
+/// span, the text of a log record, the name of a metric.
+static REFUSED_SPANS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static REFUSED_LOGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static REFUSED_METRICS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// An exporter whose collector is down: it refuses everything and counts it
-/// in the counter it holds. Every Run the capture sees exports through these.
+/// An exporter whose collector is down: it refuses everything and records it
+/// in the list it holds. Every Run the capture sees exports through these.
 #[derive(Debug)]
-struct FailingExporter(&'static AtomicUsize);
+struct FailingExporter(&'static Mutex<Vec<String>>);
 
 impl FailingExporter {
-    fn refuse(&self) -> OTelSdkResult {
-        self.0.fetch_add(1, Ordering::SeqCst);
+    fn refuse(&self, refused: impl IntoIterator<Item = String>) -> OTelSdkResult {
+        self.0
+            .lock()
+            .map_err(|_poisoned| OTelSdkError::InternalFailure("poisoned".into()))?
+            .extend(refused);
         Err(OTelSdkError::InternalFailure(
             "the collector is down".into(),
         ))
@@ -92,15 +96,23 @@ impl FailingExporter {
 impl opentelemetry_sdk::logs::LogExporter for FailingExporter {
     fn export(
         &self,
-        _batch: opentelemetry_sdk::logs::LogBatch<'_>,
+        batch: opentelemetry_sdk::logs::LogBatch<'_>,
     ) -> impl Future<Output = OTelSdkResult> + Send {
-        std::future::ready(self.refuse())
+        let bodies = batch
+            .iter()
+            .filter_map(|(record, _scope)| record.body())
+            .map(|body| format!("{body:?}"));
+        std::future::ready(self.refuse(bodies))
     }
 }
 
 impl PushMetricExporter for FailingExporter {
-    fn export(&self, _metrics: &ResourceMetrics) -> impl Future<Output = OTelSdkResult> + Send {
-        std::future::ready(self.refuse())
+    fn export(&self, metrics: &ResourceMetrics) -> impl Future<Output = OTelSdkResult> + Send {
+        let names = metrics
+            .scope_metrics()
+            .flat_map(ScopeMetrics::metrics)
+            .map(|metric| metric.name().to_owned());
+        std::future::ready(self.refuse(names))
     }
 
     fn force_flush(&self) -> OTelSdkResult {
@@ -117,8 +129,11 @@ impl PushMetricExporter for FailingExporter {
 }
 
 impl opentelemetry_sdk::trace::SpanExporter for FailingExporter {
-    fn export(&self, _batch: Vec<SpanData>) -> impl Future<Output = OTelSdkResult> + Send {
-        std::future::ready(self.refuse())
+    fn export(&self, batch: Vec<SpanData>) -> impl Future<Output = OTelSdkResult> + Send {
+        let runs = batch
+            .iter()
+            .filter_map(|span| attribute(span, "coral.run.id"));
+        std::future::ready(self.refuse(runs))
     }
 }
 
@@ -690,19 +705,42 @@ async fn requests_about_a_run_link_to_its_trace_only_when_authorized() {
     }
 }
 
+/// Answers as a scripted upstream does, and logs as it dispatches. A Run that
+/// succeeds logs nothing of its own, and what libraries log depends on how the
+/// test binary was built, so this gives the Run a log record to lose.
+struct LoggingUpstream(ScriptedUpstream);
+
+#[async_trait]
+impl UpstreamSender for LoggingUpstream {
+    async fn send(
+        &self,
+        dispatch: ReadyDispatch,
+        stop: Arc<ExecutionStop>,
+    ) -> Result<UpstreamOutcome, crate::invocation::UpstreamSendError> {
+        tracing::warn!("logged during the dispatch");
+        self.0.send(dispatch, stop).await
+    }
+}
+
+/// Whether [`FailingExporter`] refused a signal holding `text`.
+fn refused(signal: &Mutex<Vec<String>>, text: &str) -> bool {
+    signal
+        .lock()
+        .expect("refused signals")
+        .iter()
+        .any(|refused| refused.contains(text))
+}
+
 /// Telemetry is best effort: a Run whose every span, log record and metric
 /// fails to export ends as it would without telemetry, and its Events are all
 /// recorded.
 #[tokio::test]
 async fn a_run_ends_the_same_when_its_telemetry_fails_to_export() {
     capture();
-    let signals = [
-        ("spans", &REFUSED_SPANS),
-        ("logs", &REFUSED_LOGS),
-        ("metrics", &REFUSED_METRICS),
-    ];
-    let refused_before = signals.map(|(_signal, refused)| refused.load(Ordering::SeqCst));
-    let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({"t": 21})));
+    let upstream = Arc::new(LoggingUpstream(ScriptedUpstream::json(
+        200,
+        serde_json::json!({"t": 21}),
+    )));
     let fixture = TestModules::with_upstream(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
         upstream,
@@ -727,15 +765,17 @@ async fn a_run_ends_the_same_when_its_telemetry_fails_to_export() {
     .await;
 
     assert!(
-        refused_meters().0.force_flush().is_err(),
-        "the Run's metrics were refused"
+        refused(&REFUSED_LOGS, "logged during the dispatch"),
+        "the Run's log record was refused"
     );
-    for ((signal, refused), before) in signals.into_iter().zip(refused_before) {
-        assert!(
-            refused.load(Ordering::SeqCst) > before,
-            "the Run's {signal} were refused"
-        );
-    }
+    // A Run's spans close and its metrics record as it finishes, which can
+    // follow the moment it reads as ended. A metric names no Run, so its name
+    // is the closest it can be selected.
+    wait_until(|| refused(&REFUSED_SPANS, accepted.run_id().as_str())).await;
+    wait_until(|| {
+        refused_meters().0.force_flush().is_err() && refused(&REFUSED_METRICS, "coral.run.ended")
+    })
+    .await;
     assert!(matches!(
         ended.terminal_outcome(),
         Some(RunTerminalOutcome::Succeeded {
