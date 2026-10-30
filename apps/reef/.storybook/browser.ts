@@ -1,11 +1,11 @@
 /**
  * Drives the test browser from a story's `play`, for behavior that depends on the
- * viewport or on user media preferences.
+ * viewport, on user media preferences, on the real pointer, or on painted pixels.
  *
  * Under the Vitest story runner each call applies its change, checks the page sees
  * it, and throws if it cannot, so a play never passes without the change. Storybook's
- * own UI has no test browser: there each call resolves false and changes nothing, and
- * the play skips the steps that need it.
+ * own UI has no test browser: there each call resolves false (or null, for one that
+ * reads) and changes nothing, and the play skips the steps that need it.
  * `vitest.stories.config.ts` maps this import to `vitest/browser`, as addon-vitest does.
  */
 async function browser() {
@@ -70,6 +70,56 @@ export async function click(element: Element) {
   if (!context) return false
   await context.userEvent.click(element)
   return true
+}
+
+/** Moves the test browser's own mouse onto an element, so CSS `:hover` applies to it. */
+export async function hover(element: Element) {
+  const context = await browser()
+  if (!context) return false
+  await context.userEvent.hover(element)
+  await confirm('the pointer over the element', () => element.matches(':hover'))
+  return true
+}
+
+/** Moves the test browser's own mouse off an element. */
+export async function unhover(element: Element) {
+  const context = await browser()
+  if (!context) return false
+  await context.userEvent.unhover(element)
+  await confirm('the pointer off the element', () => !element.matches(':hover'))
+  return true
+}
+
+/**
+ * What the test browser paints inside each of `parts`, as RGBA bytes, from one
+ * screenshot of `area`, which holds them all.
+ */
+export async function paintedPixels(area: Element, parts: Element[]) {
+  const context = await browser()
+  if (!context) return null
+  const base64 = await context.page.screenshot({ element: area, save: false })
+  const image = await createImageBitmap(
+    await (await fetch(`data:image/png;base64,${base64}`)).blob(),
+  )
+  const canvas = new OffscreenCanvas(image.width, image.height)
+  const drawing = canvas.getContext('2d')!
+  drawing.drawImage(image, 0, 0)
+  const { data, width } = drawing.getImageData(0, 0, image.width, image.height)
+  const origin = area.getBoundingClientRect()
+  const scale = width / origin.width
+  return parts.map((part) => {
+    const box = part.getBoundingClientRect()
+    const left = Math.ceil((box.left - origin.left) * scale)
+    const right = Math.floor((box.right - origin.left) * scale)
+    const bytes: number[] = []
+    for (
+      let y = Math.ceil((box.top - origin.top) * scale);
+      y < Math.floor((box.bottom - origin.top) * scale);
+      y++
+    )
+      bytes.push(...data.slice((y * width + left) * 4, (y * width + right) * 4))
+    return bytes
+  })
 }
 
 /**
