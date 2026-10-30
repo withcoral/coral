@@ -176,7 +176,7 @@ async fn successful_terminal_preserves_absent_final_value_versus_explicit_null()
     reason = "one Run per Invocation gate projects the card, review, stale decision, and typed outcome"
 )]
 async fn cancellation_retains_pending_and_dispatched_invocation_distinctions_and_typed_actor() {
-    let capture = crate::capture();
+    let capture = coral_telemetry::testing::process_spans();
     let f = Fixture::new().await;
     f.sign_in_profiles(&[(&f.member, "name-canary", "email-canary@example.test", true)])
         .await;
@@ -755,6 +755,7 @@ async fn action_queue_pages_by_cursor_and_a_run_rejects_a_malformed_action_curso
     reason = "one exact review journey verifies Task intent and attribution before and after queue exclusion"
 )]
 async fn action_groups_keep_exec_intent_and_labels_after_selected_run_leaves_queue() {
+    let capture = coral_telemetry::testing::process_spans();
     let f = Fixture::new().await;
     let server = MockServer::start().await;
     publish_http(&f, &server.uri()).await;
@@ -823,7 +824,7 @@ async fn action_groups_keep_exec_intent_and_labels_after_selected_run_leaves_que
                 wire::DecideApprovalRequest {
                     name: name.clone(),
                     decision: "decline".into(),
-                    comment: Some("This exact call only".into()),
+                    comment: Some("live-comment-canary".into()),
                 },
                 &token,
                 "reef",
@@ -868,6 +869,9 @@ async fn action_groups_keep_exec_intent_and_labels_after_selected_run_leaves_que
         .into_inner();
     assert_eq!(refreshed.action_count, 0);
     assert!(refreshed.actions.is_empty());
+    let spans = format!("{:?}", capture.finished());
+    assert!(spans.contains("ActivityService/DecideApproval"), "{spans}");
+    assert!(!spans.contains("live-comment-canary"), "{spans}");
 }
 
 #[tokio::test]

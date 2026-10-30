@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use opentelemetry::logs::{LogRecord as _, Logger as _, LoggerProvider as _, Severity};
-use opentelemetry::trace::Status;
+use opentelemetry::trace::{SpanContext, Status, TraceState};
 use opentelemetry::{Context, InstrumentationScope, KeyValue, Value};
 use opentelemetry_sdk::error::OTelSdkResult;
 use opentelemetry_sdk::logs::{LogProcessor, SdkLogRecord, SdkLoggerProvider};
@@ -28,7 +28,8 @@ const LIBRARY_EVENT_NAME: &str = "event";
 /// queue. An event of a body target never leaves with its span, and a
 /// library's event leaves named `event`, without its text. Every
 /// exported span, event and link keeps only the keys the field catalog
-/// lists, and a failed span keeps its error status without its text.
+/// lists, and a failed span keeps its error status without its text. A span
+/// and its links leave without `tracestate`, which is text a caller chose.
 #[derive(Debug)]
 pub struct OtlpSpanFilter<E> {
     inner: E,
@@ -54,6 +55,7 @@ where
         if !span_matches_targets(&span, &self.targets) || span_has_denied_target(&span) {
             return;
         }
+        span.span_context = without_trace_state(&span.span_context);
         retain_exported(&mut span.attributes);
         if matches!(span.status, Status::Error { .. }) {
             span.status = Status::error("");
@@ -71,6 +73,7 @@ where
             retain_exported(&mut event.attributes);
         }
         for link in &mut span.links.links {
+            link.span_context = without_trace_state(&link.span_context);
             retain_exported(&mut link.attributes);
         }
         self.inner.on_end(span);
@@ -191,6 +194,16 @@ where
     }
 }
 
+fn without_trace_state(context: &SpanContext) -> SpanContext {
+    SpanContext::new(
+        context.trace_id(),
+        context.span_id(),
+        context.trace_flags(),
+        context.is_remote(),
+        TraceState::default(),
+    )
+}
+
 fn retain_exported(attributes: &mut Vec<KeyValue>) {
     attributes.retain(|attribute| field::is_exported(attribute.key.as_str()));
 }
@@ -274,6 +287,17 @@ mod tests {
 
     use super::{OtlpLogFilter, OtlpSpanFilter};
 
+    /// A trace a caller continues, with text of its own in `tracestate`.
+    fn caller_context() -> SpanContext {
+        SpanContext::new(
+            TraceId::from_hex("00000000000000000000000000000077").unwrap(),
+            SpanId::from_hex("0000000000000088").unwrap(),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::from_key_value([("vendor", "secret")]).unwrap(),
+        )
+    }
+
     /// Exports the spans below through the filter and returns what left the host.
     fn exported(targets: &str) -> Vec<SpanData> {
         let memory = InMemorySpanExporter::default();
@@ -296,6 +320,10 @@ mod tests {
                 coral.run.id = "run-1",
                 misclassified = "secret",
             );
+            kept.set_parent(
+                opentelemetry::Context::new().with_remote_span_context(caller_context()),
+            )
+            .unwrap();
             kept.add_event(
                 "misclassified",
                 vec![
@@ -304,13 +332,7 @@ mod tests {
                 ],
             );
             kept.add_link_with_attributes(
-                SpanContext::new(
-                    TraceId::from_hex("00000000000000000000000000000077").unwrap(),
-                    SpanId::from_hex("0000000000000088").unwrap(),
-                    TraceFlags::SAMPLED,
-                    true,
-                    TraceState::default(),
-                ),
+                caller_context(),
                 vec![
                     KeyValue::new("coral.local.link", "secret"),
                     KeyValue::new("coral.run.id", "run-1"),
@@ -354,8 +376,8 @@ mod tests {
     /// Only admitted spans leave, and they carry only cataloged keys: a
     /// `coral.local.*` key or a misclassified one never leaves on a span, an
     /// event or a link, while the cataloged key beside it does. A failed span
-    /// leaves failed, without its status text, and a library's event leaves
-    /// without its text.
+    /// leaves failed, without its status text, a library's event leaves without
+    /// its text, and a span and its links keep their trace but not `tracestate`.
     #[test]
     fn only_admitted_spans_leave_and_only_with_cataloged_keys() {
         // The filter admits both body targets, so only the deny list keeps them home.
@@ -367,6 +389,13 @@ mod tests {
         assert_eq!(names, ["kept"]);
         let kept = spans.first().expect("kept span");
 
+        assert_eq!(kept.span_context.trace_id(), caller_context().trace_id());
+        assert_eq!(kept.span_context.trace_state().header(), "");
+        let [link] = kept.links.links.as_slice() else {
+            panic!("one link: {:?}", kept.links);
+        };
+        assert_eq!(link.span_context.trace_id(), caller_context().trace_id());
+        assert_eq!(link.span_context.trace_state().header(), "");
         assert!(keys(&kept.attributes).contains(&"coral.run.id"));
         for bridged in ["target", "level", "busy_ns", "idle_ns"] {
             assert!(!keys(&kept.attributes).contains(&bridged), "{bridged}");

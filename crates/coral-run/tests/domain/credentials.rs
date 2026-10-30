@@ -264,6 +264,7 @@ struct PublicClientAccount {
     runs: RunModule,
     approvals: crate::approval::ApprovalModule,
     broken: Arc<AtomicBool>,
+    telemetry: super::trace::Telemetry,
 }
 
 impl PublicClientAccount {
@@ -271,7 +272,7 @@ impl PublicClientAccount {
 
     async fn new() -> Self {
         use coral_provider::account::SetupOAuthClient;
-        super::trace::capture();
+        let telemetry = super::trace::telemetry();
         let server = MockServer::start().await;
         let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
         let tool = fixture
@@ -353,6 +354,7 @@ impl PublicClientAccount {
             runs,
             approvals,
             broken,
+            telemetry,
         }
     }
 
@@ -544,7 +546,22 @@ impl PublicClientAccount {
             "one execution, invocation and emission"
         );
         assert!(!format!("{terminal:?}").contains("canary"));
-        super::trace::assert_out_of_telemetry([
+        let providers = self
+            .fixture
+            .providers
+            .list_lifecycle_events(&self.tool.user, owner)
+            .await
+            .unwrap();
+        let accounts = self
+            .accounts
+            .list_user_lifecycle_events(&self.context, owner)
+            .await
+            .unwrap();
+        assert!(!providers.is_empty(), "the Provider's setup is recorded");
+        assert!(!accounts.is_empty(), "the connection is recorded");
+        let lifecycle = format!("{providers:?}{accounts:?}");
+        assert!(!lifecycle.contains("canary"), "{lifecycle}");
+        self.telemetry.assert_holds_none_of([
             "code-canary",
             "initial-access-canary",
             "retained-refresh-canary",
@@ -818,7 +835,7 @@ impl CredentialScheme {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn shared_account_credentials_reach_the_upstream_but_never_run_history_or_traces() {
-    super::trace::capture();
+    let telemetry = super::trace::telemetry();
     for scheme in CredentialScheme::ALL {
         let server = MockServer::start().await;
         let mut expected = Mock::given(method("GET")).and(path("/forecast"));
@@ -868,10 +885,18 @@ async fn shared_account_credentials_reach_the_upstream_but_never_run_history_or_
             )
             .await
         );
+        let lifecycle = fixture
+            .providers
+            .list_lifecycle_events(&tool.user, &tool.workspace_id)
+            .await
+            .unwrap();
+        assert!(!lifecycle.is_empty(), "{scheme:?}: the setup is recorded");
+        let lifecycle = format!("{lifecycle:?}");
         for canary in scheme.canaries() {
             assert!(!history.contains(canary), "{scheme:?} leaked {canary}");
+            assert!(!lifecycle.contains(canary), "{scheme:?} leaked {canary}");
         }
-        super::trace::assert_out_of_telemetry(scheme.canaries());
+        telemetry.assert_holds_none_of(scheme.canaries());
     }
 }
 

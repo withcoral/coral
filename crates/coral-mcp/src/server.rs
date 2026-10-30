@@ -91,9 +91,9 @@ impl McpServer {
         if prompting.continued_run().is_some()
             && !matches!(name, ExecArguments::NAME | WaitArguments::NAME)
         {
-            return Err(invalid_input_message(format!(
-                "tool '{name}' does not accept requestState"
-            )));
+            return Err(invalid_input_message(
+                "tool does not accept requestState".to_owned(),
+            ));
         }
         let complete = match name {
             StartTaskArguments::NAME => {

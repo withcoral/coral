@@ -7,7 +7,7 @@
 )]
 
 use coral_mcp::SUPPORTED_PROTOCOL_VERSIONS;
-use coral_run::approval::ApprovalDecision;
+use coral_run::approval::{ApprovalDecision, ApprovalId};
 use coral_run::{RunId, RunInspection};
 use coral_telemetry::testing::attribute;
 use coral_workspace::{AuthenticatedPrincipal, TraceId};
@@ -20,9 +20,18 @@ use super::{RawSession, Tracer, capture, protocol_window_ends};
 /// Every planted value holds this text, so one search finds any of them.
 const CANARY: &str = "c0ral-private";
 
-/// Sent with each call: what a client says about itself, and what it would
-/// wrongly put in a header.
+/// A caller's `tracestate`. The request span keeps it, so this is not
+/// [`CANARY`], which no span may hold: it only must not leave the host.
+const TRACE_STATE: &str = "trace-state-from-the-caller";
+
+/// Sent with each call: what a client says about itself, what it would wrongly
+/// put in a header, and trace context that carries text it chose.
 const HEADERS: &[(&str, &str)] = &[
+    (
+        "traceparent",
+        "00-00000000000000000000000000000077-0000000000000088-01",
+    ),
+    ("tracestate", "vendor=trace-state-from-the-caller"),
     ("user-agent", "client-identifier-c0ral-private"),
     ("cookie", "session=cookie-c0ral-private"),
     ("x-api-key", "header-c0ral-private"),
@@ -39,6 +48,7 @@ const FAILING_PROGRAMS: &[&str] = &[
     "throw new TypeError('thrown-c0ral-private');",
     "return {toJSON() { throw new Error('serialized-c0ral-private'); }};",
     "throw Object.assign(new Error('authored'), {name:'ToolError', code:'account_required', credential:'attached-c0ral-private'});",
+    "throw Object.assign(new Error('authored'), {name:'name-c0ral-private', code:'code-c0ral-private'});",
 ];
 
 /// Tool calls Coral refuses, each with private text where an identifier, a
@@ -48,7 +58,7 @@ fn refused_calls(task: &Value) -> [(&'static str, Value, &'static str); 7] {
         (
             "search",
             json!({"task_id": "task-c0ral-private", "intent": "Search", "query": "weather"}),
-            "task id is invalid",
+            "invalid input: task id is invalid: identifier must be four or five lowercase words joined by hyphens, or a canonical lowercase UUID",
         ),
         (
             "describe",
@@ -58,25 +68,35 @@ fn refused_calls(task: &Value) -> [(&'static str, Value, &'static str); 7] {
         (
             "wait",
             json!({"run_id": "run-c0ral-private", "wait_ms": 0}),
-            "run id is invalid",
+            "invalid input: run id is invalid: identifier must be four or five lowercase words joined by hyphens, or a canonical lowercase UUID",
         ),
         (
             "cancel",
             json!({"run_id": "run-c0ral-private"}),
-            "run id is invalid",
+            "invalid input: run id is invalid: identifier must be four or five lowercase words joined by hyphens, or a canonical lowercase UUID",
         ),
         (
             "end_task",
             json!({"task_id": task, "outcome": "outcome-c0ral-private"}),
-            "invalid arguments for 'end_task'",
+            "invalid arguments for 'end_task': a value does not match the tool's input schema",
         ),
         (
             "start_task",
             json!({"intent": "Start", "key-c0ral-private": true}),
-            "invalid arguments for 'start_task'",
+            "invalid arguments for 'start_task': a value does not match the tool's input schema",
         ),
         ("no-such-tool-c0ral-private", json!({}), "tool not found"),
     ]
+}
+
+/// The text of `answer`, which refuses a call: a protocol error's or a
+/// rejected tool call's.
+fn refusal(answer: &Value) -> &str {
+    answer
+        .pointer("/error/message")
+        .or_else(|| answer.pointer("/result/structuredContent/message"))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("a refusal: {answer}"))
 }
 
 /// Starts a session on `endpoint` as a client that identifies itself with
@@ -138,8 +158,12 @@ async fn answers_to_private_sessions(tracer: &Tracer) -> String {
 
 /// Runs [`PROGRAM`] on a Run that waits for approval, then does what the Run
 /// Status Page does through its adapter: reads the Run and approves it with a
-/// comment.
-async fn approve_as_the_run_status_page_does(tracer: &Tracer, session: &RawSession, task: &Value) {
+/// comment. Returns the Approval Request it decided.
+async fn approve_as_the_run_status_page_does(
+    tracer: &Tracer,
+    session: &RawSession,
+    task: &Value,
+) -> ApprovalId {
     let update = session
         .tool(
             "exec",
@@ -181,6 +205,7 @@ async fn approve_as_the_run_status_page_does(tracer: &Tracer, session: &RawSessi
         .tool("wait", json!({"run_id": update["run_id"], "wait_ms": 5000}))
         .await;
     assert_eq!(ended["structuredContent"]["state"], "succeeded", "{ended}");
+    request.id.clone()
 }
 
 /// Approves a Run through an elicitation whose question is the Run's intent.
@@ -314,17 +339,16 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
     assert_ne!(searched["isError"], true, "{searched}");
 
     let mut public_errors = answers_to_private_sessions(&tracer).await;
-    for (tool, arguments, refusal) in refused_calls(&task) {
+    for (tool, arguments, expected) in refused_calls(&task) {
         let answer = session
-            .tool_answer(tool, arguments, HEADERS)
-            .await
-            .to_string();
-        assert!(answer.contains(refusal), "{tool}: {answer}");
-        public_errors.push_str(&answer);
+            .tool_answer(json!({"name": tool, "arguments": arguments}), HEADERS)
+            .await;
+        assert_eq!(refusal(&answer), expected, "{tool}: {answer}");
+        public_errors.push_str(&answer.to_string());
     }
 
     tracer.require_approval_of("getPrivateRecord").await;
-    approve_as_the_run_status_page_does(&tracer, &session, &task).await;
+    let decided = approve_as_the_run_status_page_does(&tracer, &session, &task).await;
     approve_through_elicitation(&tracer).await;
 
     let ended = session
@@ -338,12 +362,24 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
     tracer.server.shutdown().await.expect("stop MCP server");
 
     let owner = AuthenticatedPrincipal::user(tracer.local_user.clone());
-    let lifecycle = tracer
+    let functions = tracer
         .saved_functions
         .list_lifecycle_events(&owner, &tracer.workspace_a)
         .await
-        .expect("lifecycle events");
-    assert!(!lifecycle.is_empty(), "the save is recorded");
+        .expect("Saved Function lifecycle events");
+    let decisions = tracer
+        .approvals
+        .list_lifecycle_events(&owner, &tracer.workspace_a, &decided)
+        .await
+        .expect("Approval Request lifecycle events");
+    let policies = tracer
+        .policies
+        .list_lifecycle_events(&tracer.local_user, &tracer.workspace_a)
+        .await
+        .expect("Tool policy lifecycle events");
+    assert!(!functions.is_empty(), "the save is recorded");
+    assert!(!decisions.is_empty(), "the decision is recorded");
+    assert!(!policies.is_empty(), "the policy change is recorded");
 
     // A library's own fields never leave: only Coral's spans answer for
     // theirs before the export filter.
@@ -371,17 +407,29 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         exported.contains("tools/call exec"),
         "the export capture is active"
     );
+    assert!(
+        format!("{spans:?}").contains(TRACE_STATE),
+        "the request span keeps the caller's tracestate"
+    );
+    assert!(
+        !exported.contains(TRACE_STATE),
+        "tracestate leaves the host: {}",
+        around(&exported, TRACE_STATE)
+    );
     let logs = capture.logs.0.lock().expect("captured logs");
     let sinks = [
         ("what leaves the host", exported),
         ("traces", format!("{spans:?}")),
         ("metrics", format!("{metrics:?}")),
         (
-            "operational logs",
+            "Coral's events before the export filter",
             String::from_utf8_lossy(&logs).into_owned(),
         ),
         ("public errors", public_errors),
-        ("Administrative Lifecycle Events", format!("{lifecycle:?}")),
+        (
+            "Administrative Lifecycle Events",
+            format!("{functions:?}{decisions:?}{policies:?}"),
+        ),
     ];
     for (sink, text) in &sinks {
         for private in [CANARY, tracer.agent_credential.as_str()] {

@@ -1467,9 +1467,9 @@ async fn an_abandoned_exec_request_does_not_cancel_accepted_work() {
     .expect("accepted Run continues to its second Tool after request loss");
 }
 
-/// The process-wide capture of every span, the metrics, the operational logs
-/// of the production Adapter and domain targets, not the test client's wire
-/// dumps, and what leaves the host. It installs once per process.
+/// The process-wide capture of every span, the metrics, Coral's events before
+/// the export filter, not the test client's wire dumps or the body targets
+/// that stay home, and what leaves the host. It installs once per process.
 struct Capture {
     spans: SpanCapture,
     logs: LogCapture,
@@ -1497,10 +1497,9 @@ fn capture() -> &'static Capture {
                     .with_writer(move || log_writer.clone())
                     .with_filter(
                         tracing_subscriber::filter::Targets::new()
-                            .with_target(coral_telemetry::REQUEST_TARGET, tracing::Level::TRACE)
-                            .with_target("coral_mcp", tracing::Level::TRACE)
-                            .with_target("coral_run", tracing::Level::TRACE)
-                            .with_target("coral_v8", tracing::Level::TRACE),
+                            .with_target("coral", tracing::Level::TRACE)
+                            .with_target("coral.http.body", LevelFilter::OFF)
+                            .with_target("coral.mcp.body", LevelFilter::OFF),
                     ),
             )
             .try_init()
@@ -2338,15 +2337,14 @@ impl RawSession {
         arguments: Value,
         headers: &[(&str, &str)],
     ) -> Value {
-        let message = self.tool_answer(tool, arguments.clone(), headers).await;
         let params = json!({"name":tool, "arguments":arguments});
+        let message = self.tool_answer(params.clone(), headers).await;
         self.interpret("tools/call", &params, &message)
             .unwrap_or_else(|error| panic!("raw tool {tool} failed: {error}"))
     }
 
-    /// The whole JSON-RPC answer to one tool call, accepted or not.
-    async fn tool_answer(&self, tool: &str, arguments: Value, headers: &[(&str, &str)]) -> Value {
-        let params = json!({"name":tool, "arguments":arguments});
+    /// The whole JSON-RPC answer to one `tools/call`, accepted or not.
+    async fn tool_answer(&self, params: Value, headers: &[(&str, &str)]) -> Value {
         let mut request = self.request("tools/call", params, Some(2));
         for (name, value) in headers {
             request = request.header(*name, *value);

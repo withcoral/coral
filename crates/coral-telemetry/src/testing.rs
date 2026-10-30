@@ -2,7 +2,9 @@
 
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use opentelemetry_sdk::logs::{InMemoryLogExporter, SdkLoggerProvider, SimpleLogProcessor};
+use opentelemetry_sdk::logs::{
+    InMemoryLogExporter, LogExporter, LoggerProviderBuilder, SdkLoggerProvider, SimpleLogProcessor,
+};
 use opentelemetry_sdk::trace::{
     InMemorySpanExporter, SdkTracer, SdkTracerProvider, SimpleSpanProcessor, SpanData,
 };
@@ -99,6 +101,22 @@ impl SpanCapture {
     }
 }
 
+/// The [`SpanCapture`] of a whole test binary, installed once as
+/// [`SpanCapture`] says a binary with other tests needs.
+///
+/// # Panics
+///
+/// Panics when the process already has a global subscriber.
+pub fn process_spans() -> &'static SpanCapture {
+    static CAPTURE: std::sync::OnceLock<SpanCapture> = std::sync::OnceLock::new();
+    CAPTURE.get_or_init(|| {
+        let capture = SpanCapture::default();
+        tracing::subscriber::set_global_default(capture.subscriber())
+            .expect("install the span capture");
+        capture
+    })
+}
+
 /// Records what leaves the host: every span and log record the export filters
 /// let through, with an operator filter that admits every target and level.
 ///
@@ -117,8 +135,24 @@ pub struct ExportCapture {
 
 impl Default for ExportCapture {
     fn default() -> Self {
+        Self::over(SdkLoggerProvider::builder())
+    }
+}
+
+impl ExportCapture {
+    /// A capture whose log records also go to `other`, such as an exporter
+    /// that fails, so tests can show what export does not change.
+    #[must_use]
+    pub fn beside<E>(other: E) -> Self
+    where
+        E: LogExporter + 'static,
+    {
+        Self::over(SdkLoggerProvider::builder().with_simple_exporter(other))
+    }
+
+    fn over(logger: LoggerProviderBuilder) -> Self {
         let logs = InMemoryLogExporter::default();
-        let logger = SdkLoggerProvider::builder()
+        let logger = logger
             .with_log_processor(OtlpLogFilter::new(SimpleLogProcessor::new(logs.clone())))
             .build();
         Self {
@@ -127,9 +161,7 @@ impl Default for ExportCapture {
             logger,
         }
     }
-}
 
-impl ExportCapture {
     /// A layer that sends every event through the log export filter, as
     /// application bootstrap wires it.
     #[must_use]

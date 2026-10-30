@@ -99,7 +99,7 @@ async fn approval_waits_for_the_invoking_user_and_commits_one_decision() {
 
 #[tokio::test]
 async fn declining_commits_invocation_failure_with_the_winning_decision() {
-    super::trace::capture();
+    let telemetry = super::trace::telemetry();
     let fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
@@ -169,7 +169,7 @@ async fn declining_commits_invocation_failure_with_the_winning_decision() {
         .unwrap();
     assert_eq!(events.len(), 1);
     assert!(!format!("{events:?}").contains("canary"));
-    super::trace::assert_out_of_telemetry(["argument-canary", "comment-canary"]);
+    telemetry.assert_holds_none_of(["argument-canary", "comment-canary"]);
 }
 
 /// An approval-gated Workspace with every kind of Principal that might see an

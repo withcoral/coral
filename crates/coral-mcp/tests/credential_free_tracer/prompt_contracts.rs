@@ -594,6 +594,22 @@ async fn a_raw_retry_completes_the_call_that_asked(endpoint: &str, version: &Pro
         "{forged}"
     );
 
+    let misdirected = session
+        .result(
+            "tools/call",
+            json!({
+                "name":"no-such-tool-canary", "arguments":{},
+                "requestState":asked["requestState"],
+            }),
+        )
+        .await
+        .expect_err("only exec and wait continue a Run");
+    assert_eq!(misdirected["code"], -32602, "{misdirected}");
+    assert_eq!(
+        misdirected["message"], "tool does not accept requestState",
+        "{misdirected}"
+    );
+
     session.client_capabilities = json!({});
     let unnegotiated = session
         .result(

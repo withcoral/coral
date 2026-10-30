@@ -2,8 +2,13 @@
 //! accepted it, that every phase joins on any Coral Instance.
 use super::*;
 
+use coral_telemetry::metric::Metrics;
 use coral_telemetry::testing::{ExportCapture, SpanCapture, attribute};
 use opentelemetry::trace::{SpanId, TraceContextExt as _};
+use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
+use opentelemetry_sdk::metrics::data::ResourceMetrics;
+use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
+use opentelemetry_sdk::metrics::{SdkMeterProvider, Temporality};
 use opentelemetry_sdk::trace::SpanData;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
@@ -15,10 +20,11 @@ use tracing_subscriber::layer::SubscriberExt as _;
 pub(super) fn capture() -> &'static SpanCapture {
     static CAPTURE: std::sync::OnceLock<SpanCapture> = std::sync::OnceLock::new();
     CAPTURE.get_or_init(|| {
-        let capture = SpanCapture::beside(FailingExporter);
+        let capture = SpanCapture::beside(FailingExporter(&REFUSED_SPANS));
         let subscriber = tracing_subscriber::registry()
             .with(capture.layer())
-            .with(operational_logs().log_layer());
+            .with(operational_logs().log_layer())
+            .with(refused_meters().1.layer());
         tracing::subscriber::set_global_default(subscriber).expect("install the span capture");
         capture
     })
@@ -27,36 +33,92 @@ pub(super) fn capture() -> &'static SpanCapture {
 /// The operational logs of every test, as they leave the host.
 fn operational_logs() -> &'static ExportCapture {
     static LOGS: std::sync::OnceLock<ExportCapture> = std::sync::OnceLock::new();
-    LOGS.get_or_init(ExportCapture::default)
+    LOGS.get_or_init(|| ExportCapture::beside(FailingExporter(&REFUSED_LOGS)))
 }
 
-/// Asserts that no span, span event or operational log holds any of
-/// `canaries`. A test calls [`capture`] before its work, or this reads
-/// nothing of it.
-pub(super) fn assert_out_of_telemetry(canaries: impl IntoIterator<Item = &'static str>) {
-    let telemetry = format!("{:?}{}", capture().finished(), operational_logs().text());
-    for canary in canaries {
-        assert!(!telemetry.contains(canary), "telemetry holds {canary}");
+/// The meters of every test, through the production exporter wrapper, and
+/// their catalog. Nothing exports them until a test flushes them.
+fn refused_meters() -> &'static (SdkMeterProvider, Metrics) {
+    static METERS: std::sync::OnceLock<(SdkMeterProvider, Metrics)> = std::sync::OnceLock::new();
+    METERS.get_or_init(|| {
+        coral_telemetry::meter_provider(
+            SdkMeterProvider::builder(),
+            FailingExporter(&REFUSED_METRICS),
+            Duration::from_secs(3600),
+        )
+    })
+}
+
+/// The telemetry of every test, once its capture is installed. Only
+/// [`telemetry`] makes one, so a test takes it before its work.
+pub(super) struct Telemetry {
+    spans: &'static SpanCapture,
+}
+
+pub(super) fn telemetry() -> Telemetry {
+    Telemetry { spans: capture() }
+}
+
+impl Telemetry {
+    /// Asserts that no span, span event or operational log holds any of
+    /// `canaries`.
+    pub(super) fn assert_holds_none_of(&self, canaries: impl IntoIterator<Item = &'static str>) {
+        let telemetry = format!("{:?}{}", self.spans.finished(), operational_logs().text());
+        for canary in canaries {
+            assert!(!telemetry.contains(canary), "telemetry holds {canary}");
+        }
     }
 }
 
-/// Every span export attempt [`FailingExporter`] refused.
-static FAILED_EXPORTS: AtomicUsize = AtomicUsize::new(0);
+/// Each signal's export attempts that [`FailingExporter`] refused.
+static REFUSED_SPANS: AtomicUsize = AtomicUsize::new(0);
+static REFUSED_LOGS: AtomicUsize = AtomicUsize::new(0);
+static REFUSED_METRICS: AtomicUsize = AtomicUsize::new(0);
 
-/// An exporter whose collector is down: it refuses every span. Every Run
-/// the capture sees has its spans refused here.
+/// An exporter whose collector is down: it refuses everything and counts it
+/// in the counter it holds. Every Run the capture sees exports through these.
 #[derive(Debug)]
-struct FailingExporter;
+struct FailingExporter(&'static AtomicUsize);
 
-impl opentelemetry_sdk::trace::SpanExporter for FailingExporter {
+impl FailingExporter {
+    fn refuse(&self) -> OTelSdkResult {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err(OTelSdkError::InternalFailure(
+            "the collector is down".into(),
+        ))
+    }
+}
+
+impl opentelemetry_sdk::logs::LogExporter for FailingExporter {
     fn export(
         &self,
-        _batch: Vec<SpanData>,
-    ) -> impl Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send {
-        FAILED_EXPORTS.fetch_add(1, Ordering::SeqCst);
-        std::future::ready(Err(
-            opentelemetry_sdk::error::OTelSdkError::InternalFailure("the collector is down".into()),
-        ))
+        _batch: opentelemetry_sdk::logs::LogBatch<'_>,
+    ) -> impl Future<Output = OTelSdkResult> + Send {
+        std::future::ready(self.refuse())
+    }
+}
+
+impl PushMetricExporter for FailingExporter {
+    fn export(&self, _metrics: &ResourceMetrics) -> impl Future<Output = OTelSdkResult> + Send {
+        std::future::ready(self.refuse())
+    }
+
+    fn force_flush(&self) -> OTelSdkResult {
+        Ok(())
+    }
+
+    fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+        Ok(())
+    }
+
+    fn temporality(&self) -> Temporality {
+        Temporality::default()
+    }
+}
+
+impl opentelemetry_sdk::trace::SpanExporter for FailingExporter {
+    fn export(&self, _batch: Vec<SpanData>) -> impl Future<Output = OTelSdkResult> + Send {
+        std::future::ready(self.refuse())
     }
 }
 
@@ -628,12 +690,18 @@ async fn requests_about_a_run_link_to_its_trace_only_when_authorized() {
     }
 }
 
-/// Telemetry is best effort: a Run whose every span fails to export ends
-/// as it would without telemetry, and its Events are all recorded.
+/// Telemetry is best effort: a Run whose every span, log record and metric
+/// fails to export ends as it would without telemetry, and its Events are all
+/// recorded.
 #[tokio::test]
-async fn a_run_ends_the_same_when_its_spans_fail_to_export() {
+async fn a_run_ends_the_same_when_its_telemetry_fails_to_export() {
     capture();
-    let refused_before = FAILED_EXPORTS.load(Ordering::SeqCst);
+    let signals = [
+        ("spans", &REFUSED_SPANS),
+        ("logs", &REFUSED_LOGS),
+        ("metrics", &REFUSED_METRICS),
+    ];
+    let refused_before = signals.map(|(_signal, refused)| refused.load(Ordering::SeqCst));
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({"t": 21})));
     let fixture = TestModules::with_upstream(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
@@ -659,9 +727,15 @@ async fn a_run_ends_the_same_when_its_spans_fail_to_export() {
     .await;
 
     assert!(
-        FAILED_EXPORTS.load(Ordering::SeqCst) > refused_before,
-        "the Run's spans were refused"
+        refused_meters().0.force_flush().is_err(),
+        "the Run's metrics were refused"
     );
+    for ((signal, refused), before) in signals.into_iter().zip(refused_before) {
+        assert!(
+            refused.load(Ordering::SeqCst) > before,
+            "the Run's {signal} were refused"
+        );
+    }
     assert!(matches!(
         ended.terminal_outcome(),
         Some(RunTerminalOutcome::Succeeded {
