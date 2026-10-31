@@ -721,13 +721,14 @@ required account, required approval, or disabled Tool, but it does not reveal au
 Coral Program can reach Upstream Services only through host-mediated Tools. _Avoid_: Trusted local script,
 arbitrary Node process, ambient authority
 
-**Program Compiler**: The private host component that applies the Coral TypeScript Profile, resolves Saved Function
-source, emits JavaScript and source maps, and produces safe Program Diagnostics. It keeps an official `typescript.js`
-compiler warm in one or more compiler-only V8 isolates that receive only packaged compiler assets and virtual source
-files. Compiler isolates expose no Program host binding or ambient authority and are recycled after memory growth or
-replaced after a failure. Program execution never shares a compiler isolate; every accepted Run uses a fresh execution
-isolate containing only emitted JavaScript and the Program Runtime Surface. _Avoid_: Runtime compiler, Node compiler
-process, shared compiler and Program isolate
+**Program Compiler**: The component of a Run Executor that applies the Coral TypeScript Profile, links Saved Function
+source, emits JavaScript and source maps, and produces safe Program Diagnostics. Each Run Executor keeps an official
+`typescript.js` compiler warm in one compiler-only V8 isolate. That isolate receives only packaged compiler assets and
+the virtual source files that Coral sends. It exposes no Program host binding or ambient authority. It is recycled after
+memory growth and replaced after the compiler fails; diagnostics are not a failure. Program execution never shares a
+compiler isolate; every accepted Run uses a fresh execution isolate containing only emitted JavaScript and the Program
+Runtime Surface. The Coral process runs no compiler. _Avoid_: Runtime compiler, Node compiler process, compiler process,
+shared compiler and Program isolate
 
 **Program Runtime Surface**: The secret-free ECMAScript environment in which V8 executes an accepted Program package. It
 provides ordinary objects, arrays, classes, closures, generators, Promises, `async` and `await`, maps, sets, regular
@@ -789,16 +790,25 @@ Coral Instance that holds a Run's claim owns that Run. While the claim's lease i
 the Run over. Any Coral Instance may receive an outside Run Request for the Run. _Avoid_: replica, node, worker, pod,
 process
 
+**Run Executor**: The runtime outside the Coral process that executes accepted Coral Program packages for their Run
+Owners, each in a fresh V8 isolate, and compiles Programs with the Program Compiler. A Run starts when a Run Executor
+takes it, and its deadline runs from its start. It is identified by a random id it generates each time it starts. It
+receives no secret and no database connection. Its only connections are its link to Coral, which Coral opens, and any
+connection to a remote runtime that it drives. It reaches Coral only over its link, where its only requests are Run
+Requests for the Runs Coral placed on it. Its isolates run in its own process, or on a remote runtime that it drives.
+_Avoid_: worker, runner, sandbox host, Execution Host
+
 **Run Owner**: The single writer of one Coral Program Run while the Run is not terminal. It exists from Run acceptance
 until the Run ends, receives every Run Request, Invocation outcome, deadline and wake-up for that Run in one order, and
 alone appends Program Run Events and the Run-scoped records they describe. It decides the Run's lifecycle and keeps its
-record durable; it does not call upstream or handle credential material, which the Tool Invocations it starts do
-outside it. A requester outside the Run acts on an outcome only once its Run Request is Recorded; the Program may
-continue on an Applied one. A repeat of the same Run Request receives the recorded answer. Outside Run Requests reach
-it through the Run Inbox. Workspace- and Provider-scoped changes reach it only as wake-ups. When a Run's worker lease
-lapses and no Run Owner renews it, Coral recreates its Run Owner. The recreated owner records any deadline that
-passed, applies the requests in the Run's Run Inbox, records the interruption or the termination already decided, and
-retires. Coral never resumes a Run. _Avoid_: Run actor, claim holder, lock holder, sweeper, external writer
+record durable; it does not call upstream or handle credential material, which the Tool Invocations it starts do outside
+it. A requester outside the Run acts on an outcome only once its Run Request is Recorded; the Program may continue on an
+Applied one. A repeat of the same Run Request receives the recorded answer. Outside Run Requests reach it through the
+Run Inbox. Workspace- and Provider-scoped changes reach it only as wake-ups. When a Run's worker lease lapses and no Run
+Owner renews it, Coral recreates its Run Owner. The recreated owner records any deadline that passed, applies the
+requests in the Run's Run Inbox, records the interruption or the termination already decided, and retires. A Run that
+has not started on a Run Executor, with nothing to record, goes back in a queue instead of being interrupted. Coral
+never resumes a Run. _Avoid_: Run actor, claim holder, lock holder, sweeper, external writer
 
 **Run Ledger**: The durable record of one Coral Program Run that its Run Owner appends to in chunks: the Program Run
 Events, the Run-scoped records they describe, and the Run's head. Every chunk advances the head by one and commits only
@@ -807,14 +817,14 @@ whenever none is in flight and something is pending, so a chunk holds what arriv
 fixed size. An uncertain commit is resolved by reading the head again. _Avoid_: event log, stream, journal, checkpoint
 
 **Run Request**: A message that asks the Run Owner of one Coral Program Run to decide something about that Run: start an
-Tool Invocation, publish a Program Emission or Program Log, finish the Run, decide an Approval Request, or cancel.
-A Run Request passes through three stages: **Applied**, when the Run Owner has decided it in memory; **Recorded**, when
-that decision is durable; and **Settled**, when what it started has ended. The Program shares the Run Owner's fate and
+Tool Invocation, publish a Program Emission or Program Log, finish the Run, decide an Approval Request, or cancel. A Run
+Request passes through three stages: **Applied**, when the Run Owner has decided it in memory; **Recorded**, when that
+decision is durable; and **Settled**, when what it started has ended. The Program ends when its Run Owner ends, so it
 continues on an Applied answer; every later effect of the Run is recorded only after that answer is. A requester outside
 the Run acts on an answer only once it is Recorded. A Run Request that decides something is identified by the thing it
 decides (the Approval Request, the Run, the Invocation), so the first request wins and a repeat receives the recorded
-answer. An Emission or Log has no identity and no repeat: the Program shares the Run Owner's fate, so it never sends one
-twice. When the output the Run Owner has applied but not yet recorded exceeds the **Applied cap**, a Program request
+answer. An Emission or Log has no identity and no repeat: the Program ends when its Run Owner ends, so it never sends
+one twice. When the output the Run Owner has applied but not yet recorded exceeds the **Applied cap**, a Program request
 answers at Recorded instead, so the output a Run can lose or hold in memory stays bounded. Deadlines and changes outside
 the Run reach the Run Owner as wake-ups, not Run Requests. _Avoid_: command, signal, mailbox message, request token,
 idempotency key
@@ -834,6 +844,11 @@ applies the request, so a Run never exceeds its budget by a byte. A refused Emis
 Program observes the refusal; a refused Invocation result ends that Invocation with a Tool Error; a Final Value
 that does not fit fails the Run. Tool arguments do not count. _Avoid_: approximate budget, soft limit, output
 quota, bounded overshoot
+
+**Run CPU Budget**: The CPU time that one Coral Program Run may use while its Program executes. Time spent waiting for a
+Tool, an approval or an answer from the Run Owner does not count. A Run that exceeds its budget fails, and the other
+Runs on its Run Executor go on. By default the budget equals the Run's time limit, from its start to its deadline, so
+only a lower budget set by the operator ends a Run before its deadline. _Avoid_: CPU timeout, CPU quota
 
 **Program Emission**: A bounded, structured value that a Coral Program explicitly publishes during its Run. An Emission
 is durable caller-facing output, does not suspend execution, and remains observable if the Run later fails. _Avoid_:
