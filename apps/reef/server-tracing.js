@@ -114,9 +114,32 @@ export function createRequestTracing({
 
 function configuredSpanExporter(env) {
   if (env.OTEL_SDK_DISABLED?.trim().toLowerCase() === 'true') return undefined
-  const endpoint = env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || env.OTEL_EXPORTER_OTLP_ENDPOINT
+  if (env.OTEL_TRACES_EXPORTER?.trim().toLowerCase() === 'none') return undefined
+  const endpoint = firstSet(env, [
+    'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT',
+    'OTEL_EXPORTER_OTLP_ENDPOINT',
+  ])
+  if (!endpoint) return undefined
+  // The exporter would replace an endpoint it cannot parse with localhost. These
+  // errors name the variable alone, because an endpoint can hold a credential.
+  if (!isHttpUrl(env[endpoint])) throw new Error(`${endpoint} must be an http or https URL`)
+  const protocol = firstSet(env, [
+    'OTEL_EXPORTER_OTLP_TRACES_PROTOCOL',
+    'OTEL_EXPORTER_OTLP_PROTOCOL',
+  ])
+  if (protocol && env[protocol].trim() !== 'http/protobuf')
+    throw new Error(`${protocol} must be http/protobuf`)
   // The exporter reads its endpoint, headers and timeout from the environment.
-  return endpoint?.trim() ? new OTLPTraceExporter() : undefined
+  return new OTLPTraceExporter()
+}
+
+function firstSet(env, names) {
+  return names.find((name) => env[name]?.trim())
+}
+
+function isHttpUrl(text) {
+  const protocol = URL.parse(text)?.protocol
+  return protocol === 'http:' || protocol === 'https:'
 }
 
 function spanProvider(env, exporter) {

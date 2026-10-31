@@ -107,13 +107,15 @@ Reef spans carry the method, the route template, the status and the kind of a fa
 
 | Variable                                                              | Description                                                                                                                                        | Default                 |
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | OTLP over HTTP endpoint. Reef exports only when you set one of these.                                                                              | None                    |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | OTLP over HTTP endpoint. Reef exports only when you set one of these. Reef does not start if the value is not an `http` or `https` URL.            | None                    |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` or `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | Must be `http/protobuf`. Reef does not start with any other value.                                                                                 | `http/protobuf`         |
 | `OTEL_EXPORTER_OTLP_HEADERS`                                          | Additional headers, formatted as `name=value,name=value`                                                                                           | None                    |
 | `OTEL_SERVICE_NAME`                                                   | Name of the service when exporting                                                                                                                 | `reef`                  |
 | `OTEL_RESOURCE_ATTRIBUTES`                                            | Additional resource attributes, formatted as `name=value,name=value`                                                                               | None                    |
 | `OTEL_TRACES_SAMPLER`                                                 | `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off` or `parentbased_traceidratio`. Reef does not start with any other value. | `parentbased_always_on` |
 | `OTEL_TRACES_SAMPLER_ARG`                                             | The ratio for the `traceidratio` samplers, from `0` to `1`                                                                                         | `1`                     |
 | `OTEL_SDK_DISABLED`                                                   | Set to `true` to stop export                                                                                                                       | `false`                 |
+| `OTEL_TRACES_EXPORTER`                                                | Set to `none` to stop export                                                                                                                       | `otlp`                  |
 
 Coral follows the sampled flag on each Reef call, so `OTEL_TRACES_SAMPLER` decides which of these traces Coral exports. When Reef does not export, `trace_sample_ratio` decides, and each gRPC call that has no caller `traceparent` starts its own trace.
 

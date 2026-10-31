@@ -38,6 +38,13 @@ function outboundTraceparent() {
   return outboundHeaders().get('traceparent')
 }
 
+/** Finishes React Router's handler for the active request. */
+async function finishHandler(tracing, result, method = 'GET') {
+  let handle
+  tracing.instrumentation.handler({ instrument: (hooks) => (handle = hooks.request) })
+  await handle(async () => result, { request: { method } })
+}
+
 /** Runs `respond` through one traced request and returns the exported spans. */
 async function traced(incoming, respond, env = {}) {
   const spanExporter = collectingExporter()
@@ -182,11 +189,9 @@ test('names the span by route template and records the outcome with safe fields'
   ]
 
   for (const { name, method, path, result, span: expected } of cases) {
-    const [span] = await traced(request(path, { method }), async (tracing) => {
-      let instrumented
-      tracing.instrumentation.handler({ instrument: (hooks) => (instrumented = hooks.request) })
-      await instrumented(async () => result, { request: { method } })
-    })
+    const [span] = await traced(request(path, { method }), (tracing) =>
+      finishHandler(tracing, result, method),
+    )
 
     assert.equal(span.name, expected.name, name)
     assert.deepEqual({ ...span.attributes }, expected.attributes, name)
@@ -206,9 +211,7 @@ test('fails the span when the response breaks off, not when the caller left', as
   await assert.rejects(tracing.traceRequest(request('/handler'), secretFailure))
   await assert.rejects(
     tracing.traceRequest(request('/body'), async () => {
-      let instrumented
-      tracing.instrumentation.handler({ instrument: (hooks) => (instrumented = hooks.request) })
-      await instrumented(async () => ({ statusCode: 200 }), { request: { method: 'GET' } })
+      await finishHandler(tracing, { statusCode: 200 })
       await secretFailure()
     }),
   )
@@ -292,6 +295,14 @@ test('exports only when an operator configures it', async () => {
     [{ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318' }, true],
     [{ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'http://127.0.0.1:4318/v1/traces' }, true],
     [{ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318', OTEL_SDK_DISABLED: 'TRUE' }, false],
+    [{ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318', OTEL_TRACES_EXPORTER: 'none' }, false],
+    [
+      {
+        OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318',
+        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: '  ',
+      },
+      true,
+    ],
   ]) {
     // An unsampled span still names its trace, and leaves no span to send.
     const tracing = createRequestTracing({ env: { ...env, OTEL_TRACES_SAMPLER: 'always_off' } })
@@ -333,18 +344,34 @@ test('samples as OTEL_TRACES_SAMPLER says, and honors a sampled caller by defaul
   }
 })
 
-test('rejects sampler settings it cannot honor', () => {
+test('rejects export settings it cannot honor', () => {
+  const endpoint = { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318' }
   for (const [env, message] of [
-    [{ OTEL_TRACES_SAMPLER: 'jaeger_remote' }, /OTEL_TRACES_SAMPLER/],
+    [{ OTEL_EXPORTER_OTLP_ENDPOINT: 'not a url' }, /OTEL_EXPORTER_OTLP_ENDPOINT must/],
+    [{ OTEL_EXPORTER_OTLP_ENDPOINT: 'collector:4318' }, /OTEL_EXPORTER_OTLP_ENDPOINT must/],
     [
-      { OTEL_TRACES_SAMPLER: 'traceidratio', OTEL_TRACES_SAMPLER_ARG: '2' },
-      /OTEL_TRACES_SAMPLER_ARG/,
+      { ...endpoint, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'not a url' },
+      /OTEL_EXPORTER_OTLP_TRACES_ENDPOINT must/,
+    ],
+    [{ ...endpoint, OTEL_EXPORTER_OTLP_PROTOCOL: 'grpc' }, /OTEL_EXPORTER_OTLP_PROTOCOL must/],
+    [
+      {
+        ...endpoint,
+        OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
+        OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: 'grpc',
+      },
+      /OTEL_EXPORTER_OTLP_TRACES_PROTOCOL must/,
+    ],
+    [{ ...endpoint, OTEL_TRACES_SAMPLER: 'jaeger_remote' }, /OTEL_TRACES_SAMPLER must/],
+    [
+      { ...endpoint, OTEL_TRACES_SAMPLER: 'traceidratio', OTEL_TRACES_SAMPLER_ARG: '2' },
+      /OTEL_TRACES_SAMPLER_ARG must/,
     ],
     [
-      { OTEL_TRACES_SAMPLER: 'traceidratio', OTEL_TRACES_SAMPLER_ARG: 'x' },
-      /OTEL_TRACES_SAMPLER_ARG/,
+      { ...endpoint, OTEL_TRACES_SAMPLER: 'traceidratio', OTEL_TRACES_SAMPLER_ARG: 'x' },
+      /OTEL_TRACES_SAMPLER_ARG must/,
     ],
   ]) {
-    assert.throws(() => createRequestTracing({ env, spanExporter: collectingExporter() }), message)
+    assert.throws(() => createRequestTracing({ env }), message, JSON.stringify(env))
   }
 })

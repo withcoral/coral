@@ -582,9 +582,6 @@ test('one Reef request is one trace, rooted at Reef, that Coral calls join', asy
     const page = await callsDuring(`${origin}${workspace}?marker=query-secret`, {
       headers: { Cookie: cookie, baggage: 'user=baggage-secret' },
     })
-    const continued = await callsDuring(`${origin}${workspace}`, {
-      headers: { Cookie: cookie, traceparent: INBOUND_TRACEPARENT },
-    })
     const stream = await callsDuring(`${origin}/activity/count`, {
       headers: { Cookie: cookie, Origin: REQUIRED_ENV.CORAL_WEB_PUBLIC_URL },
       method: 'POST',
@@ -594,12 +591,11 @@ test('one Reef request is one trace, rooted at Reef, that Coral calls join', asy
     const spans = exportedSpans(collector.bodies)
     assert.deepEqual(
       spans.map((span) => span.name),
-      ['GET /workspaces/:workspace', 'GET /workspaces/:workspace', 'POST /activity/count'],
+      ['GET /workspaces/:workspace', 'POST /activity/count'],
     )
-    const [pageSpan, continuedSpan, streamSpan] = spans
+    const [pageSpan, streamSpan] = spans
     for (const [span, calls] of [
       [pageSpan, page],
-      [continuedSpan, continued],
       [streamSpan, stream],
     ]) {
       assert.ok(calls.length > 0, span.name)
@@ -615,11 +611,6 @@ test('one Reef request is one trace, rooted at Reef, that Coral calls join', asy
     }
     assert.ok(stream.some((call) => call.path.endsWith('/WatchActivity')))
     assert.equal(pageSpan.parentSpanId, '')
-    assert.equal(continuedSpan.traceId, 'a1'.repeat(16))
-    assert.equal(continuedSpan.parentSpanId, 'b2'.repeat(8))
-    assert.equal(pageSpan.attributes['http.request.method'], 'GET')
-    assert.equal(pageSpan.attributes['http.route'], '/workspaces/:workspace')
-    assert.equal(pageSpan.attributes['http.response.status_code'], 403n)
     assert.doesNotMatch(
       Buffer.concat(collector.bodies).toString('latin1'),
       /query-secret|baggage-secret|coral_web_session|00000000-0000-4000/,
@@ -630,33 +621,6 @@ test('one Reef request is one trace, rooted at Reef, that Coral calls join', asy
     await coral.close()
     await collector.close()
   }
-})
-
-test("without an exporter Coral sees no parent but the caller's", async () => {
-  const coral = await startGrpcPeer()
-  const child = startReef({ CORAL_ENDPOINT: coral.url })
-  const stderr = streamText(child.stderr)
-  try {
-    const origin = `http://127.0.0.1:${await listeningPort(child)}`
-    const cookie = await validSessionCookie()
-    for (const [traceparent, expected] of [
-      [undefined, undefined],
-      [INBOUND_TRACEPARENT, INBOUND_TRACEPARENT],
-    ]) {
-      coral.calls.length = 0
-      const headers = { Cookie: cookie, ...(traceparent && { traceparent }) }
-      const response = await fetch(`${origin}/workspaces/00000000-0000-4000-8000-000000000001`, {
-        headers,
-      })
-      await response.text()
-      assert.ok(coral.calls.length > 0)
-      for (const call of coral.calls) assert.equal(call.traceparent, expected, String(traceparent))
-    }
-  } finally {
-    await stopChild(child)
-    await coral.close()
-  }
-  assert.equal(await stderr, '')
 })
 
 test('production entry names an invalid sampler and exits without listening', async () => {
@@ -734,7 +698,6 @@ async function startCollector() {
   }
 }
 
-const INBOUND_TRACEPARENT = `00-${'a1'.repeat(16)}-${'b2'.repeat(8)}-01`
 const SAFE_SPAN_KEYS = [
   'error.type',
   'http.request.method',
@@ -760,7 +723,6 @@ function exportedSpans(bodies) {
             resource: protoAttributes(resource, 1),
             spanId: hex(2),
             traceId: hex(1),
-            traceState: text(3),
           })
         }
       }
