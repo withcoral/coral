@@ -266,7 +266,7 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
         40,
     )
     .await;
-    save(&user, &workspace_id, "reports.gone", "Soon deleted", 50).await;
+    let gone = save(&user, &workspace_id, "reports.gone", "Soon deleted", 50).await;
     fixture
         .saved_functions
         .delete(
@@ -293,6 +293,23 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
     let every_entry = crate::all_saved_function_entries_in_transaction(&mut transaction)
         .await
         .expect("read every Workspace's entries");
+    for (workspace, function, revision) in [
+        (&workspace_id, replaced.id(), Some(2)),
+        (&other_workspace_id, elsewhere.id(), Some(1)),
+        (&other_workspace_id, replaced.id(), None),
+        (&workspace_id, gone.id(), None),
+    ] {
+        assert_eq!(
+            crate::saved_function_index_revision_in_transaction(
+                &mut transaction,
+                workspace,
+                function,
+            )
+            .await
+            .expect("read one function's revision"),
+            revision
+        );
+    }
     transaction.rollback().await.expect("finish entry read");
 
     let summary = |entries: &[crate::SavedFunctionEntry]| {

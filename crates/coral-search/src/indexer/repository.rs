@@ -941,52 +941,76 @@ pub(super) async fn generation_visibility(
     Ok(row.map(|(state, visible, since)| recorded_visibility(&state, visible, since)))
 }
 
+/// Selects the Generation state rows [`RecordedGeneration::from_row`] reads.
+fn recorded_generation_rows() -> sea_query::SelectStatement {
+    Query::select()
+        .columns(with_retry_columns([
+            SearchIndexStates::WorkspaceId,
+            SearchIndexStates::ProviderGenerationId,
+            SearchIndexStates::State,
+            SearchIndexStates::ProviderDisplayName,
+            SearchIndexStates::IndexerRevision,
+            SearchIndexStates::EverVisible,
+            SearchIndexStates::UnavailableSinceUnixNanos,
+        ]))
+        .from(SearchIndexStates::Table)
+        .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
+        .to_owned()
+}
+
+impl RecordedGeneration {
+    fn from_row(row: RecordedGenerationRow) -> Result<Self, IndexError> {
+        // The state check admits only `complete` and `failed`.
+        let visibility = recorded_visibility(
+            &row.state,
+            row.ever_visible,
+            row.unavailable_since_unix_nanos,
+        );
+        let outcome = if row.state == COMPLETE {
+            RecordedOutcome::Complete {
+                display_name: row.provider_display_name,
+            }
+        } else {
+            RecordedOutcome::Failed {
+                retry: row.retry.into(),
+            }
+        };
+        Ok(Self {
+            generation: workspace_generation(&row.workspace_id, &row.provider_generation_id)?,
+            outcome,
+            indexer_revision: row.indexer_revision,
+            visibility,
+        })
+    }
+}
+
 /// Reads every Generation's state row in every Workspace.
 pub(super) async fn recorded_generations(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<RecordedGeneration>, IndexError> {
-    let rows: Vec<RecordedGenerationRow> = transaction
-        .fetch_all(
-            Query::select()
-                .columns(with_retry_columns([
-                    SearchIndexStates::WorkspaceId,
-                    SearchIndexStates::ProviderGenerationId,
-                    SearchIndexStates::State,
-                    SearchIndexStates::ProviderDisplayName,
-                    SearchIndexStates::IndexerRevision,
-                    SearchIndexStates::EverVisible,
-                    SearchIndexStates::UnavailableSinceUnixNanos,
-                ]))
-                .from(SearchIndexStates::Table)
-                .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
+    let rows: Vec<RecordedGenerationRow> =
+        transaction.fetch_all(recorded_generation_rows()).await?;
+    rows.into_iter().map(RecordedGeneration::from_row).collect()
+}
+
+/// Reads one Generation's state row, `None` when no attempt has reached it.
+pub(super) async fn recorded_generation(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    generation_id: &ProviderGenerationId,
+) -> Result<Option<RecordedGeneration>, IndexError> {
+    let row: Option<RecordedGenerationRow> = transaction
+        .fetch_optional(
+            recorded_generation_rows()
+                .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(
+                    Expr::col(SearchIndexStates::ProviderGenerationId)
+                        .eq(generation_id.to_string()),
+                )
                 .to_owned(),
         )
         .await?;
-    rows.into_iter()
-        .map(|row| {
-            // The state check admits only `complete` and `failed`.
-            let visibility = recorded_visibility(
-                &row.state,
-                row.ever_visible,
-                row.unavailable_since_unix_nanos,
-            );
-            let outcome = if row.state == COMPLETE {
-                RecordedOutcome::Complete {
-                    display_name: row.provider_display_name,
-                }
-            } else {
-                RecordedOutcome::Failed {
-                    retry: row.retry.into(),
-                }
-            };
-            Ok(RecordedGeneration {
-                generation: workspace_generation(&row.workspace_id, &row.provider_generation_id)?,
-                outcome,
-                indexer_revision: row.indexer_revision,
-                visibility,
-            })
-        })
-        .collect()
+    row.map(RecordedGeneration::from_row).transpose()
 }
 
 /// Reads the outcome each of a Workspace's Generation state rows records, or
@@ -1145,26 +1169,21 @@ pub(super) async fn generations_with_rows(
 /// Workspace. The caller refreshes the Workspace's statistics.
 pub(super) async fn delete_generation_in_workspace(
     transaction: &mut Transaction<'_>,
-    generation: &WorkspaceGeneration,
+    workspace_id: &WorkspaceId,
+    generation_id: &ProviderGenerationId,
 ) -> Result<(), Error> {
     transaction
-        .execute(generation_rows(
-            &generation.workspace_id,
-            &generation.generation_id,
-        ))
+        .execute(generation_rows(workspace_id, generation_id))
         .await?;
     transaction
         .execute(
             Query::delete()
                 .from_table(SearchIndexStates::Table)
-                .and_where(
-                    Expr::col(SearchIndexStates::WorkspaceId)
-                        .eq(generation.workspace_id.to_string()),
-                )
+                .and_where(Expr::col(SearchIndexStates::WorkspaceId).eq(workspace_id.to_string()))
                 .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
                 .and_where(
                     Expr::col(SearchIndexStates::ProviderGenerationId)
-                        .eq(generation.generation_id.to_string()),
+                        .eq(generation_id.to_string()),
                 )
                 .to_owned(),
         )
@@ -1211,6 +1230,27 @@ pub(super) async fn recorded_functions(
             })
         })
         .collect()
+}
+
+/// Reads the fingerprint of one Saved Function's row, `None` when it has no
+/// row.
+pub(super) async fn recorded_function_fingerprint(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    function_id: &SavedFunctionId,
+) -> Result<Option<String>, IndexError> {
+    let row: Option<(String,)> = transaction
+        .fetch_optional(
+            Query::select()
+                .column(SearchEntities::Fingerprint)
+                .from(SearchEntities::Table)
+                .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(SearchEntities::Kind).eq(SAVED_FUNCTION))
+                .and_where(Expr::col(SearchEntities::SavedFunctionId).eq(function_id.to_string()))
+                .to_owned(),
+        )
+        .await?;
+    Ok(row.map(|(fingerprint,)| fingerprint))
 }
 
 /// One Saved Function whose last attempt failed, as a reconcile pass

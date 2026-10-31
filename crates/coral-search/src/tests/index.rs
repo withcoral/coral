@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use coral_db::DatabaseSystem;
-use coral_provider::GenerationEntries;
+use coral_provider::{ActiveGeneration, GenerationEntries};
 use coral_telemetry::testing::{SpanCapture, attribute};
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
 use opentelemetry::trace::SpanId;
@@ -23,6 +23,7 @@ use wiremock::MockServer;
 use super::{TestModules, change, organization_user};
 use crate::SearchIndex;
 use crate::indexer::INDEXER_REVISION;
+use crate::indexer::tools::ToolIndexer;
 
 const USER: &str = "user:search-index";
 
@@ -549,6 +550,183 @@ async fn one_reconcile_pass_indexes_a_published_generation_and_a_second_changes_
         versions,
         "a second pass writes no row"
     );
+}
+
+/// `SQLite` writers queue in arrival order for one connection, so a pass that
+/// took the writer to find nothing would hold back every write in the process
+/// on each interval.
+#[tokio::test]
+async fn a_pass_that_finds_nothing_to_do_does_not_wait_for_the_writer() {
+    coral_test_support::database_only!(Sqlite);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world.index.reconcile().await;
+
+    let writer = world.modules.search.database.begin().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), world.index.reconcile())
+        .await
+        .expect("a pass with nothing to do reads and returns");
+    writer.rollback().await.unwrap();
+}
+
+/// A pass reads what is stale at its start, and under load the notifications
+/// for the same Generations arrive while it writes. Neither side may index a
+/// Generation the other just finished: the repeat would queue for the writer
+/// again and lengthen the backlog that made the two overlap.
+#[tokio::test]
+async fn a_pass_and_its_overlapping_notifications_index_each_generation_once() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let tracer_entries = world.stored_entries(&world.tracer).await;
+    let ledger_entries = world.stored_entries(&ledger).await;
+    let index = world
+        .index
+        .clone()
+        .with_stall_before_write(std::time::Duration::from_millis(50));
+
+    let spans = CapturedSpans::default();
+    {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(spans.clone()),
+        );
+        tokio::join!(index.reconcile(), async {
+            notify(&index, &tracer_entries);
+            notify(&index, &ledger_entries);
+        });
+        index.settled().await;
+    }
+
+    let writes = spans
+        .recorded()
+        .into_iter()
+        .filter(|span| span.fields.contains_key("coral.search.writer_wait_ms"))
+        .count();
+    assert_eq!(writes, 2, "one write per Generation");
+    assert_eq!(world.indexed_generations().await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_notice_for_an_indexed_generation_writes_nothing() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let entries = world.stored_entries(&world.tracer).await;
+    world.index.reconcile().await;
+
+    let write = world.traced_notice(|index| notify(index, &entries)).await;
+
+    assert_eq!(
+        attribute(&write, "coral.search.skipped").as_deref(),
+        Some("already_indexed")
+    );
+}
+
+/// A pass reads its stale functions once and releases the mutex between
+/// items, so a notified write of a newer revision can land first. Writing the
+/// pass's older copy after it would put the old text back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pass_leaves_a_function_that_a_notified_write_indexed_at_a_newer_revision() {
+    let upstream = MockServer::start().await;
+    let mut world = World::publish_tracer(&upstream).await;
+    world.index.reconcile().await;
+    let principal = AuthenticatedPrincipal::user(world.user.clone());
+    for (path, description, at) in [
+        ("internal.first", "First function", 60),
+        ("internal.second", "Older text", 61),
+    ] {
+        world
+            .modules
+            .save_function(&principal, &world.workspace, path, description, at)
+            .await;
+    }
+    let hold = world.index.hold_row_building();
+    let index = world.index.clone();
+    let pass = tokio::spawn(async move { index.reconcile().await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), hold.entered())
+        .await
+        .expect("the pass reaches its first function");
+
+    let newer = world
+        .modules
+        .save_function(
+            &principal,
+            &world.workspace,
+            "internal.second",
+            "Newer text",
+            70,
+        )
+        .await;
+    world
+        .index
+        .index_function(coral_functions::SavedFunctionEntry::from_saved(&newer));
+    // The notified write queues for the mutex ahead of the pass's next item.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    drop(hold);
+    pass.await.expect("the pass ends");
+    world.index.settled().await;
+
+    let descriptions: Vec<(String,)> = world
+        .modules
+        .search
+        .database
+        .fetch_all(
+            Query::select()
+                .column(Alias::new("description"))
+                .from(Alias::new("search_entities"))
+                .and_where(Expr::col(Alias::new("qualified_name")).eq("internal.second"))
+                .to_owned(),
+        )
+        .await
+        .expect("read the function's row");
+    assert_eq!(descriptions, [("Newer text".to_string(),)]);
+}
+
+#[tokio::test]
+async fn a_generation_replaced_after_a_pass_read_it_is_no_longer_stale() {
+    async fn active(world: &World, provider: &coral_provider::ProviderId) -> ActiveGeneration {
+        let database = &world.modules.search.database;
+        let mut transaction = database.begin_read_snapshot().await.unwrap();
+        coral_provider::workspace_active_generations_in_transaction(
+            &mut transaction,
+            &world.workspace,
+            Some(provider),
+        )
+        .await
+        .unwrap()
+        .pop()
+        .expect("the Provider's active Generation")
+    }
+    async fn stale(world: &World, generation: &ActiveGeneration) -> bool {
+        let database = &world.modules.search.database;
+        let mut transaction = database.begin_read_snapshot().await.unwrap();
+        ToolIndexer
+            .still_needs_indexing(
+                &mut transaction,
+                generation,
+                crate::unix_now_nanos().unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let read_by_the_pass = active(&world, &ledger).await;
+    assert!(stale(&world, &read_by_the_pass).await);
+
+    world
+        .modules
+        .regenerate_workspace_provider(
+            &change(world.user.clone(), 60, '6'),
+            &world.workspace,
+            &ledger,
+            &serde_json::from_str(&LEDGER.replace("List ledger entries", "List every entry"))
+                .unwrap(),
+        )
+        .await;
+
+    assert!(!stale(&world, &read_by_the_pass).await);
+    assert!(stale(&world, &active(&world, &ledger).await).await);
 }
 
 #[tokio::test]
@@ -1673,6 +1851,18 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
             notify(&world.index, &entries);
             world.index.settled().await;
             assert!(!world.tool_rows().await.is_empty());
+            // A rename is what rewrites an indexed Generation.
+            world
+                .modules
+                .providers
+                .rename_provider(
+                    &change(world.user.clone(), 70, '7'),
+                    &world.workspace,
+                    &world.tracer,
+                    coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
+                )
+                .await
+                .expect("rename the Provider");
         }
         world.reject_complete_states().await;
 
