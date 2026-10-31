@@ -680,10 +680,10 @@ async fn a_source_that_fails_to_answer_is_not_the_programs_input_to_correct() {
     );
 }
 
-// Catches: a namespace already in use reaching a fetch and a Setup before the
-// Publication finally fails on it.
+// Catches: a namespace already in use failing the call with anything but the
+// conflict the Program can act on.
 #[tokio::test]
-async fn a_namespace_in_use_fails_before_any_fetch_or_setup() {
+async fn a_namespace_in_use_is_a_conflict() {
     let scope = AdminScope::new("user:namespace-in-use").await;
     scope.set_access(ToolAccessState::Enabled).await;
     scope
@@ -698,16 +698,14 @@ async fn a_namespace_in_use_fails_before_any_fetch_or_setup() {
         )
         .await
         .expect("an earlier Provider takes the namespace");
-    let server = private_document_server().await;
-    let before = scope.created_setups().await;
     let run = scope
         .start(
             &scope.owner,
             add_provider(
                 &serde_json::json!({
                     "namespace": "weather",
-                    "source": url_source(&server),
-                    "credentialRoute": "fixed",
+                    "source": document_source(),
+                    "credentialRoute": "none",
                 }),
                 "error.code",
             ),
@@ -717,8 +715,6 @@ async fn a_namespace_in_use_fails_before_any_fetch_or_setup() {
         &scope.terminal(&scope.owner, &run).await,
         "provider_namespace_conflict",
     );
-    assert_eq!(fetches(&server).await, 0);
-    assert!(scope.setups_created_since(&before).await.is_empty());
 }
 
 /// Ends the Run just after addProvider prepares its Setup.

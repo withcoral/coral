@@ -643,9 +643,10 @@ impl AccountModule {
         inspected: &ProviderSetupInspection,
     ) -> Result<SetupConnectReadiness, Error> {
         let review = &inspected.configuration;
-        let Some(contract) = review.confirmed_contract().filter(|contract| {
-            review.configuration_confirmed && **contract != ProviderCredentialContract::NONE
-        }) else {
+        let Some(contract) = review
+            .confirmed_contract()
+            .filter(|contract| **contract != ProviderCredentialContract::NONE)
+        else {
             return Ok(SetupConnectReadiness {
                 now: false,
                 later: false,

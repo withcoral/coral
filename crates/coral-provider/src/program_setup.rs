@@ -195,10 +195,7 @@ impl ProviderModule {
                 diagnostic: confirmed.diagnostic,
             });
         }
-        let Some(contract) = confirmed
-            .confirmed_contract()
-            .filter(|_| confirmed.configuration_confirmed)
-        else {
+        let Some(contract) = confirmed.confirmed_contract() else {
             return Err(ProgramSetupError::Route(
                 PublishabilityRejection::NotConfigured,
             ));
