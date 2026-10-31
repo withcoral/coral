@@ -31,12 +31,11 @@ export function shouldRevalidate() {
 }
 
 async function resolveScope(
-  request: Request,
   context: Route.LoaderArgs['context'],
   workspace: string,
   options: { recovery?: boolean } = {},
 ) {
-  const { api, workspace: w } = await authorizedWorkspace(request, context, workspace, {
+  const { api, workspace: w } = await authorizedWorkspace(context, workspace, {
     ownerOnly: true,
   })
   if (w.state !== 'active' && !options.recovery)
@@ -61,7 +60,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       adHocSource(url.searchParams.get(SOURCE_PARAM), url.searchParams.get(URL_PARAM))
     const parsed = requestAttempt('workspace', url.searchParams)
     const { api, workspace, parent, basePath, cancelPath } = await resolveScope(
-      request,
       context,
       params.workspace,
       { recovery: parsed.state === 'frozen' },
@@ -107,7 +105,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const intent = field(form, 'intent')
   let resolved: Awaited<ReturnType<typeof resolveScope>>
   try {
-    resolved = await resolveScope(request, context, params.workspace, {
+    resolved = await resolveScope(context, params.workspace, {
       recovery: intent === 'publish',
     })
   } catch (error) {

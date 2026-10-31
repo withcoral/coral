@@ -99,6 +99,28 @@ Every request has a trace, even when you do not set `endpoint`. A failed MCP too
 | `service_name` | Name of the service when exporting OTEL data                                       | No       | `coral`                                                                                                                                 |
 | `trace_sample_ratio` | Share of the traces Coral starts that it exports, from `0.0` to `1.0`        | No       | `1.0`                                                                                                                                   |
 
+#### Trace UI requests
+
+The UI reads the standard OpenTelemetry environment variables at startup, not `config.toml`. Set them on the UI process. The UI then opens one server span for each page, data and resource request. Each Coral gRPC call the request makes joins that trace. Send the UI and Coral to the same backend to see one trace for each UI request.
+
+The UI also opens a span for each loader and action, and a client span for each Coral call. Coral's server span for a call is the child of its client span. UI spans carry the method, the route template, the status and the kind of a failure. They never carry headers, bodies, query strings, cookies or full URLs. A valid caller `traceparent` continues its trace, and an invalid one starts a new trace. The UI never reads or forwards `baggage` or `tracestate`. `/healthz` and `/readyz` open no span.
+
+| Variable                                                              | Description                                                                                                                                        | Default                 |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | OTLP over HTTP endpoint. The UI exports only when you set one of these. The UI does not start if the value is not an `http` or `https` URL.            | None                    |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` or `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | Must be `http/protobuf`. The UI does not start with any other value.                                                                                 | `http/protobuf`         |
+| `OTEL_EXPORTER_OTLP_HEADERS`                                          | Additional headers, formatted as `name=value,name=value`                                                                                           | None                    |
+| `OTEL_SERVICE_NAME`                                                   | Name of the service when exporting                                                                                                                 | `ui`                    |
+| `OTEL_RESOURCE_ATTRIBUTES`                                            | Additional resource attributes, formatted as `name=value,name=value`                                                                               | None                    |
+| `OTEL_TRACES_SAMPLER`                                                 | `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off` or `parentbased_traceidratio`. The UI does not start with any other value. | `parentbased_always_on` |
+| `OTEL_TRACES_SAMPLER_ARG`                                             | The ratio for the `traceidratio` samplers, from `0` to `1`                                                                                         | `1`                     |
+| `OTEL_SDK_DISABLED`                                                   | Set to `true` to stop export                                                                                                                       | `false`                 |
+| `OTEL_TRACES_EXPORTER`                                                | Set to `none` to stop export                                                                                                                       | `otlp`                  |
+
+Coral follows the sampled flag on each UI call, so `OTEL_TRACES_SAMPLER` decides which of these traces Coral exports. When the UI does not export, it forwards only a valid caller `traceparent`, and Coral follows that caller's sampled flag. A gRPC call with no `traceparent` starts its own trace, and `trace_sample_ratio` decides if Coral keeps it.
+
+The UI checks the endpoint, protocol and sampler values only when export is on.
+
 #### Metrics
 
 With `endpoint` set, you receive the `coral.*` metrics below. Their names, units and attributes are stable within a major version. No attribute holds an identifier, a provider name, a tool call path, a client or an endpoint. Durations are in seconds and sizes in bytes. Gauges show the value when Coral collects metrics, every 5 seconds.

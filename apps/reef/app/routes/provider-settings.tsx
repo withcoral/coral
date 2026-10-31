@@ -25,16 +25,16 @@ export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/man
  * connects through your account page. The form is parsed and checked once.
  */
 export async function action({ request, context, params }: Route.ActionArgs) {
-  return applyProviderChange(request, context, params, await mutationForm(request, context))
+  return applyProviderChange(context, params, await mutationForm(request, context))
 }
 
 /**
  * Settings show only what existing reads return. Opening or revalidating the
  * page never prepares an update: only an explicit edit creates a Setup.
  */
-export async function loader({ request, context, params }: Route.LoaderArgs) {
+export async function loader({ context, params }: Route.LoaderArgs) {
   try {
-    const { api, workspace } = await authorizedWorkspace(request, context, params.workspace)
+    const { api, workspace } = await authorizedWorkspace(context, params.workspace)
     const name = providerName(workspace.name, params.provider)
     const stored = await api.providers.getProvider({ name })
     const provider = providerSettingsView(stored, workspace.path)

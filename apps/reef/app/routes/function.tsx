@@ -24,10 +24,10 @@ import { FunctionDrawer, FunctionDrawerError } from '@/views/functions/function-
 import { FUNCTION_DELETED } from '@/views/functions/functions-page'
 import type { loader as functionsLoader } from './functions'
 
-export async function loader({ request, context, params }: Route.LoaderArgs) {
+export async function loader({ context, params }: Route.LoaderArgs) {
   const parent = workspaceName(params.workspace)
   try {
-    const savedFunction = await management(request, context).savedFunctions.getSavedFunction({
+    const savedFunction = await management(context).savedFunctions.getSavedFunction({
       parent,
       path: params.path,
     })
@@ -52,7 +52,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   if (field(form, 'intent') !== 'delete') throw new Response('Invalid action', { status: 400 })
   const parent = workspaceName(params.workspace)
   try {
-    await management(request, context).savedFunctions.deleteSavedFunction({
+    await management(context).savedFunctions.deleteSavedFunction({
       parent,
       path: params.path,
     })

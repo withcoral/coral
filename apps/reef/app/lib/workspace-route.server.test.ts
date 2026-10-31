@@ -27,12 +27,7 @@ function serveRole(effectiveRole: WorkspaceRole) {
 }
 
 const load = (options?: { ownerOnly?: boolean }) =>
-  authorizedWorkspace(
-    new Request(`http://reef.test/workspaces/${id}`),
-    authTestContext(null),
-    id,
-    options,
-  )
+  authorizedWorkspace(authTestContext(null), id, options)
 
 it('refuses an owner-only page to a member with 403', async () => {
   serveRole(WorkspaceRole.MEMBER)

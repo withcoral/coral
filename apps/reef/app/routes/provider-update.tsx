@@ -29,11 +29,10 @@ export function shouldRevalidate() {
 
 /** Resolve the exact Provider and reauthorize every navigation, including replay. */
 async function resolveTarget(
-  request: Request,
   context: Route.LoaderArgs['context'],
   params: Route.LoaderArgs['params'],
 ) {
-  const { api, workspace: w } = await authorizedWorkspace(request, context, params.workspace, {
+  const { api, workspace: w } = await authorizedWorkspace(context, params.workspace, {
     ownerOnly: true,
   })
   const name = providerName(w.name, params.provider)
@@ -55,7 +54,7 @@ async function resolveTarget(
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
     const { api, workspace, parent, provider, basePath, cancelPath, settingsPath } =
-      await resolveTarget(request, context, params)
+      await resolveTarget(context, params)
     const parsed = requestAttempt('update', new URL(request.url).searchParams, provider.etag)
     const { setup, attempt } = await loadAttempt(api, parent, parsed)
     const application = await api.providers.getProviderOAuthClient({ name: provider.name })
@@ -109,7 +108,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const form = await mutationForm(request, context)
   let target: Awaited<ReturnType<typeof resolveTarget>>
   try {
-    target = await resolveTarget(request, context, params)
+    target = await resolveTarget(context, params)
   } catch (error) {
     managementFailure(error)
   }

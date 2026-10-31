@@ -48,6 +48,17 @@ test('launch specifications isolate state, pass secrets only as environment, and
   assert.ok(!Object.values(specs.reef.env).includes(secret))
 })
 
+test('Reef takes Coral trace export settings unless the shell overrides them', () => {
+  const config = {
+    input: { TAILNET_HOST: 'developer.example.ts.net' },
+    otelEnv: { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://coral', OTEL_EXPORTER_OTLP_HEADERS: 'a=b' },
+    webEnv: {},
+  }
+  const { reef } = commands('/root', config, { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://shell' })
+  assert.equal(reef.env.OTEL_EXPORTER_OTLP_ENDPOINT, 'http://shell')
+  assert.equal(reef.env.OTEL_EXPORTER_OTLP_HEADERS, 'a=b')
+})
+
 test('busy ports fail without killing the existing listener', async (t) => {
   const server = createServer()
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))

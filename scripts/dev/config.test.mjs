@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createPrivateKey } from 'node:crypto'
 import {
+  appendFileSync,
   existsSync,
   lstatSync,
   mkdtempSync,
@@ -137,6 +138,39 @@ test('run refuses configuration generated for the earlier per-port layout', (t) 
   configure(root)
   assert.equal(readFileSync(webEnvPath, 'utf8'), current)
   assert.equal(load(root).urls.web, 'https://developer.example.ts.net:8443')
+})
+
+test('Reef exports traces where Coral exports them', (t) => {
+  const root = fixture(t)
+  initialize(root)
+  saveInputs(root)
+  configure(root)
+  assert.deepEqual(load(root).otelEnv, {})
+
+  appendFileSync(
+    join(root, '.dev/state/config.toml'),
+    '\n[otel]\nendpoint = "http://127.0.0.1:4318"\nheaders = "authorization=key"\n\n[later]\nendpoint = "no"\n',
+  )
+  assert.deepEqual(load(root).otelEnv, {
+    OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318',
+    OTEL_EXPORTER_OTLP_HEADERS: 'authorization=key',
+  })
+})
+
+test('Reef reads both TOML string forms from Coral trace settings', (t) => {
+  const root = fixture(t)
+  initialize(root)
+  saveInputs(root)
+  configure(root)
+
+  appendFileSync(
+    join(root, '.dev/state/config.toml'),
+    "\n[otel]\nendpoint = 'http://127.0.0.1:4318'\nheaders = 'authorization=key'\n",
+  )
+  assert.deepEqual(load(root).otelEnv, {
+    OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318',
+    OTEL_EXPORTER_OTLP_HEADERS: 'authorization=key',
+  })
 })
 
 test('run without setup has no filesystem side effects', (t) => {

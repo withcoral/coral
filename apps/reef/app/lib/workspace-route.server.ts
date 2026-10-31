@@ -10,12 +10,11 @@ import { management, privateHeaders, workspaceName } from './management.server'
  * would also swallow a denied mutation's status.
  */
 export async function authorizedWorkspace(
-  request: Request,
   context: Readonly<RouterContextProvider>,
   id: string,
   options: { ownerOnly?: boolean } = {},
 ) {
-  const api = management(request, context)
+  const api = management(context)
   const workspace = workspaceView(await api.workspaces.getWorkspace({ name: workspaceName(id) }))
   if (options.ownerOnly && workspace.effectiveRole !== 'owner')
     throw new Response('Forbidden', { status: 403, headers: privateHeaders })

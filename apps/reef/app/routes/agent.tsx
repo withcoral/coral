@@ -33,7 +33,7 @@ import { ACTIVITY_PAGE_SIZE } from '@/lib/activity-list'
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
-  const api = management(request, context)
+  const api = management(context)
   const name = agentName(params.workspace, params.agent)
   try {
     const history = await api.activity.inspectAgentHistory({ name })
@@ -58,7 +58,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const [workspace, agent, providers, activity] = await Promise.all([
       api.workspaces.getWorkspace({ name: workspaceName(params.workspace) }),
       api.agents.getAgent({ name }),
-      loadAgentProviders(request, context, name).catch(accountsUnavailable),
+      loadAgentProviders(context, name).catch(accountsUnavailable),
       loadActivity(request, api, {
         scope: { workspace: workspaceName(params.workspace), agent: name },
       }),
@@ -112,7 +112,7 @@ function accountsUnavailable(error: unknown): null {
 }
 export async function action({ request, context, params }: Route.ActionArgs) {
   const form = await mutationForm(request, context)
-  const api = management(request, context)
+  const api = management(context)
   if (field(form, 'intent') !== 'connectAccount')
     throw new Response('Invalid action', { status: 400 })
   const name = agentName(params.workspace, params.agent)

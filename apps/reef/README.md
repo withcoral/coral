@@ -210,6 +210,13 @@ npm test
 npm run build
 ```
 
+## Tracing
+
+Reef traces each request when an OTLP endpoint is configured.
+See [Trace UI requests](../docs/reference/configuration.mdx) for the variables.
+`./dev reef` uses the `[otel]` settings from `.dev/state/config.toml`, so Reef and
+Coral export to one backend. Set the `OTEL_*` variables in your shell to override them.
+
 ## Recorded browser scenarios
 
 See [Reel](e2e/README.md) for the disposable Coral + Reef stack,
