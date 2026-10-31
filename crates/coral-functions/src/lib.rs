@@ -136,6 +136,20 @@ pub async fn saved_function_index_revisions_in_transaction(
     repository::index_revisions(transaction).await
 }
 
+/// Reads one Saved Function's current revision, for a reconcile pass that
+/// read the function earlier. `None` when the Workspace holds no such
+/// function. The caller decides visibility; no declaration is read.
+///
+/// # Errors
+/// Returns a persistence or corrupt revision failure.
+pub async fn saved_function_index_revision_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    id: &SavedFunctionId,
+) -> Result<Option<u64>, Error> {
+    repository::index_revision(transaction, workspace_id, id).await
+}
+
 /// Hydrates one current ranked Saved Function without reading its source.
 ///
 /// # Errors

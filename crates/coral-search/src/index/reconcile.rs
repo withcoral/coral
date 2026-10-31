@@ -384,8 +384,8 @@ impl SearchIndex {
     }
 
     /// Whether `entry`, which the pass read as stale, still is. A failed read
-    /// answers `false`: `entry` may be an older copy, and the next pass tries
-    /// again.
+    /// is logged and answers `false`: `entry` may be an older copy, and the
+    /// next pass tries again.
     async fn function_still_stale(&self, entry: &SavedFunctionEntry, now_unix_nanos: i64) -> bool {
         let needed = self
             .within_limit(async {
@@ -397,7 +397,16 @@ impl SearchIndex {
                 Ok(needed)
             })
             .await;
-        matches!(needed, Ok(true))
+        needed.unwrap_or_else(|error: IndexError| {
+            // TODO: an error monitor for failed index writes is still to be set up.
+            tracing::error!(
+                coral.workspace.id = safe::id(&entry.workspace_id()),
+                coral.saved_function.id = safe::id(&entry.id()),
+                error.type = safe::kind(error.code()),
+                "failed to read a Saved Function again before indexing it"
+            );
+            false
+        })
     }
 
     /// Prepares the entries of the Provider's current active Generation from

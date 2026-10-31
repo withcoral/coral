@@ -137,14 +137,13 @@ impl SavedFunctionIndexer {
         entry: &SavedFunctionEntry,
         now_unix_nanos: i64,
     ) -> Result<bool, IndexError> {
-        let unchanged = coral_functions::saved_function_entries_in_transaction(
+        let current = coral_functions::saved_function_index_revision_in_transaction(
             transaction,
             entry.workspace_id(),
+            entry.id(),
         )
-        .await?
-        .iter()
-        .any(|current| current.id() == entry.id() && current.revision() == entry.revision());
-        if !unchanged {
+        .await?;
+        if current != Some(entry.revision()) {
             return Ok(false);
         }
         let failure =
