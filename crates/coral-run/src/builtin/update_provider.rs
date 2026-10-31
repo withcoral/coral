@@ -186,8 +186,7 @@ async fn rename(
         .rename_provider(&context, host.workspace_id, provider.id(), display_name)
         .await
         .map_err(|error| match error {
-            // An Owner changed the Provider since the call began, as a
-            // regeneration reports it.
+            // An Owner changed the Provider since the call began.
             coral_provider::Error::EtagMismatch => {
                 Error::InvocationRejected(CoralFailure::ProviderPublicationFailed.into())
             }

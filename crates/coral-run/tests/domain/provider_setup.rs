@@ -582,13 +582,12 @@ async fn add_provider_returns_the_reef_page_that_finishes_its_setup() {
     }
 }
 
-// Catches: a configuration the source cannot take leaving its Setup open after
-// the call fails, where nobody would ever finish it.
+// Catches: a route the source cannot take failing the call with anything but
+// an input the Program can correct.
 #[tokio::test]
-async fn a_configuration_the_source_cannot_take_leaves_no_setup_open() {
+async fn a_route_the_source_cannot_take_is_invalid_input() {
     let scope = AdminScope::new("user:route-mismatch").await;
     scope.set_access(ToolAccessState::Enabled).await;
-    let before = scope.created_setups().await;
     let run = scope
         .start(
             &scope.owner,
@@ -603,20 +602,6 @@ async fn a_configuration_the_source_cannot_take_leaves_no_setup_open() {
         )
         .await;
     assert_final_code(&scope.terminal(&scope.owner, &run).await, "invalid_input");
-    let created = scope.setups_created_since(&before).await;
-    let [setup] = created.as_slice() else {
-        panic!("one new Setup: {created:?}")
-    };
-    assert_eq!(
-        scope
-            .fixture
-            .providers
-            .get_setup(&scope.owner_user(), &scope.workspace_id, setup)
-            .await
-            .unwrap()
-            .state(),
-        ProviderSetupState::Canceled
-    );
 }
 
 // Catches: a source that fails to answer telling the Program to correct
@@ -1112,7 +1097,7 @@ async fn protected_mcp_server(challenge: &str, resource: Option<&str>) -> MockSe
     server
 }
 
-// Catches: an OAuth-protected MCP server that Coral publishes unread, or
+// Catches: an OAuth-protected MCP server that Coral links a person to unread, or
 // whose sign-in Coral cannot discover reaching the Program as anything but
 // the source to correct.
 #[tokio::test]

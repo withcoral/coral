@@ -245,7 +245,7 @@ fn configured_providers() -> impl Iterator<Item = GetProviderResult> {
 
 /// What each Tool that prepares a Provider Setup returns: the link where a
 /// person finishes it, or the Provider a rename changed.
-fn publication_results() -> Vec<(BuiltinTool, serde_json::Value)> {
+fn setup_tool_results() -> Vec<(BuiltinTool, serde_json::Value)> {
     let mut results = facts()
         .map(|facts| {
             (
@@ -313,7 +313,7 @@ fn policies() -> impl Iterator<Item = (BuiltinTool, Value)> {
 // Catches: a result that tells a typed Program something its declaration does not.
 #[test]
 fn each_result_meets_its_output_schema() {
-    let mut results = publication_results();
+    let mut results = setup_tool_results();
     results.push((
         BuiltinTool::ListProviders,
         ListProvidersResult {

@@ -1951,7 +1951,7 @@ async fn route_none_with_a_sealed_credential_fails_publication_and_scrubs_it() {
     ));
 }
 
-/// A credential-free source's Setup, or one under `route`, for a Program.
+/// A request to add a Provider from `document` under `route`.
 fn program_setup_request(
     document: &str,
     route: CredentialRoute,
@@ -2019,6 +2019,11 @@ impl Choices {
                 .suggested
                 .authentication
                 .map(|method| method.with_oauth_client(&application));
+            harness
+                .providers
+                .abandon_setup(scope, setup.id(), 10)
+                .await
+                .unwrap();
         }
         choices
     }
@@ -2079,12 +2084,12 @@ async fn a_program_setup_takes_only_a_route_that_suits_its_source() {
             .await;
         match (prepared, expected) {
             (Ok(prepared), None) => {
-                let open = open_program_setups(&harness, &owner, workspace.id()).await;
+                let open = open_setups(&harness, &owner, workspace.id()).await;
                 assert_eq!(open, [prepared.setup], "{route:?}");
             }
             (Err(crate::ProgramSetupError::Route(rejection)), Some(expected)) => {
                 assert_eq!(rejection, expected, "{route:?}");
-                let open = open_program_setups(&harness, &owner, workspace.id()).await;
+                let open = open_setups(&harness, &owner, workspace.id()).await;
                 assert!(open.is_empty(), "{route:?}: {open:?}");
             }
             (other, expected) => panic!("{route:?}: {other:?}, expected {expected:?}"),
@@ -2092,35 +2097,32 @@ async fn a_program_setup_takes_only_a_route_that_suits_its_source() {
     }
 }
 
-/// The Setups Programs prepared that a person can still finish.
-async fn open_program_setups(
+/// Every Setup in the Workspace still open, from its creation evidence.
+async fn open_setups(
     harness: &Harness,
     owner: &coral_workspace::AuthenticatedUser,
     scope: &coral_workspace::WorkspaceId,
 ) -> Vec<crate::ProviderSetupId> {
-    harness
+    let events = harness
         .providers
-        .open_requested_setups(
-            &coral_workspace::AuthenticatedPrincipal::user(owner.clone()),
-            scope,
-            11,
-        )
+        .list_lifecycle_events(owner, scope)
         .await
-        .unwrap()
-        .iter()
-        .map(|setup| setup.id().clone())
-        .collect()
-}
-
-/// A server that answers every read of its OpenAPI document with `document`.
-async fn serving(document: &str) -> MockServer {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/openapi.json"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(document))
-        .mount(&server)
-        .await;
-    server
+        .unwrap();
+    let mut open = Vec::new();
+    for event in events {
+        if event.action() == crate::LifecycleAction::SetupCreated {
+            let id = crate::ProviderSetupId::parse(event.target_id()).unwrap();
+            let setup = harness
+                .providers
+                .get_setup(owner, scope, &id)
+                .await
+                .unwrap();
+            if setup.state().is_open() {
+                open.push(id);
+            }
+        }
+    }
+    open
 }
 
 // Catches: a namespace in use or a Run that stops reaching a fetch or a Setup,
@@ -2130,7 +2132,14 @@ async fn a_program_setup_fails_before_any_fetch_or_setup() {
     let harness = harness().await;
     let (owner, workspace) = workspace_owner(&harness, "user:program-setup-early").await;
     let context = change_context(owner.clone(), 11, '1');
-    let server = serving(crate::tests::CREDENTIAL_FREE_OPENAPI).await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/openapi.json"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(crate::tests::CREDENTIAL_FREE_OPENAPI),
+        )
+        .mount(&server)
+        .await;
     let request = |namespace: &str| crate::ProgramSetupRequest {
         source: ProviderSetupSource::OpenApiUrl(format!("{}/openapi.json", server.uri())),
         purpose: crate::ProgramSetupPurpose::Add {
@@ -2195,32 +2204,54 @@ async fn a_program_setup_fails_before_any_fetch_or_setup() {
 
     assert!(server.received_requests().await.unwrap().is_empty());
     assert!(
-        open_program_setups(&harness, &owner, workspace.id())
+        open_setups(&harness, &owner, workspace.id())
             .await
             .is_empty()
     );
 }
 
+/// Why a Setup in [`a_program_setup_that_cannot_be_finished_ends`] ends.
+#[derive(Debug, Clone, Copy)]
+enum Ends {
+    /// The Program's choices do not suit the source.
+    Configuration,
+    /// Nobody can sign in, for want of an OAuth application.
+    OAuthApplicationMissing,
+}
+
 // Catches: a configuration the source cannot take, or a sign-in with no OAuth
-// application, leaving its Setup open though nobody will finish it.
+// application, leaving its Setup open though nobody will finish it, with or
+// without accounts to register an application.
 #[tokio::test]
 async fn a_program_setup_that_cannot_be_finished_ends() {
     let server = MockServer::start().await;
     let oauth = oauth_openapi(&server);
-    let invalid = coral_catalog::ConfigurationChoices {
+    let unnamed = coral_catalog::ConfigurationChoices {
         display_name: Some(" ".into()),
         ..coral_catalog::ConfigurationChoices::default()
     };
-    for (document, route, choices) in [
+    let suggested = coral_catalog::ConfigurationChoices::default;
+    for (document, route, choices, with_accounts, ends) in [
         (
             crate::tests::CREDENTIAL_FREE_OPENAPI,
             CredentialRoute::None,
-            invalid,
+            unnamed,
+            true,
+            Ends::Configuration,
         ),
         (
             oauth.as_str(),
             CredentialRoute::Fixed,
-            coral_catalog::ConfigurationChoices::default(),
+            suggested(),
+            true,
+            Ends::OAuthApplicationMissing,
+        ),
+        (
+            oauth.as_str(),
+            CredentialRoute::Fixed,
+            suggested(),
+            false,
+            Ends::OAuthApplicationMissing,
         ),
     ] {
         let harness = harness().await;
@@ -2230,17 +2261,13 @@ async fn a_program_setup_that_cannot_be_finished_ends() {
             .prepare_program_setup(
                 &change_context(owner.clone(), 11, '1'),
                 workspace.id(),
-                // Without accounts, Coral registers no OAuth application.
-                None,
+                with_accounts.then_some(&harness.accounts),
                 program_setup_request(document, route, choices),
                 std::future::pending(),
             )
             .await;
-        match (route, prepared) {
-            (
-                CredentialRoute::None,
-                Err(crate::ProgramSetupError::Configuration { errors, .. }),
-            ) => {
+        match (ends, prepared) {
+            (Ends::Configuration, Err(crate::ProgramSetupError::Configuration { errors, .. })) => {
                 assert_eq!(
                     errors
                         .iter()
@@ -2249,11 +2276,14 @@ async fn a_program_setup_that_cannot_be_finished_ends() {
                     ["display_name"]
                 );
             }
-            (CredentialRoute::Fixed, Err(crate::ProgramSetupError::OAuthApplicationMissing)) => {}
-            (route, other) => panic!("{route:?}: {other:?}"),
+            (
+                Ends::OAuthApplicationMissing,
+                Err(crate::ProgramSetupError::OAuthApplicationMissing),
+            ) => {}
+            (ends, other) => panic!("{ends:?}: {other:?}"),
         }
-        let open = open_program_setups(&harness, &owner, workspace.id()).await;
-        assert!(open.is_empty(), "{route:?}: {open:?}");
+        let open = open_setups(&harness, &owner, workspace.id()).await;
+        assert!(open.is_empty(), "{ends:?}: {open:?}");
     }
 }
 
@@ -2358,6 +2388,7 @@ async fn an_update_starts_from_the_saved_configuration() {
     assert_eq!(review.confirmed.unwrap().display_name, "Forecasts");
     assert!(!kept.interrupts_access);
 
+    let open = open_setups(&harness, &owner, workspace.id()).await;
     let unsuited = harness
         .providers
         .prepare_program_setup(
@@ -2381,6 +2412,16 @@ async fn an_update_starts_from_the_saved_configuration() {
             ))
         ),
         "{unsuited:?}"
+    );
+    assert_eq!(open_setups(&harness, &owner, workspace.id()).await, open);
+    assert_eq!(
+        harness
+            .providers
+            .inspect_provider(&owner, workspace.id(), provider.id())
+            .await
+            .unwrap()
+            .etag(),
+        provider.etag()
     );
 
     // A saved configuration that sends no credential cannot call a source
@@ -2438,6 +2479,11 @@ async fn an_update_of_an_absent_provider_prepares_nothing() {
             Err(crate::ProgramSetupError::Provider(Error::ProviderNotFound))
         ),
         "{prepared:?}"
+    );
+    assert!(
+        open_setups(&harness, &owner, workspace.id())
+            .await
+            .is_empty()
     );
 }
 

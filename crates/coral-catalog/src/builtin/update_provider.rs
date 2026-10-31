@@ -102,8 +102,7 @@ struct Arguments {
     #[serde(default, deserialize_with = "present")]
     #[schemars(
         with = "BuiltinCredentialRoute",
-        description = "Whose account Invocations use. A new route needs a person to confirm it \
-                       in the Coral UI."
+        description = "Whose account Invocations use."
     )]
     credential_route: Option<BuiltinCredentialRoute>,
     #[serde(default, deserialize_with = "present")]

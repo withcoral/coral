@@ -5,6 +5,7 @@ import { shownArguments } from '../../../support/arguments.ts'
 import { managementClients } from '../../../support/management.ts'
 import {
   acceptTools,
+  addAtLink,
   addedProviders,
   collectDataResponses,
   connectSharedAccount,
@@ -59,12 +60,7 @@ test("A workspace owner's Program adds a provider that needs no sign-in, and you
       expect(providers).toEqual([])
     })
     await step('Preview the tools, and add the provider', async () => {
-      await page.goto(link)
-      await acceptTools(page)
-      const add = page.getByRole('button', { name: 'Add provider', exact: true })
-      await add.waitFor()
-      await add.click()
-      await waitForPublication(page)
+      await addAtLink(page, link)
     })
     await step('Show the provider in the workspace', async () => {
       const providers = addedProviders(

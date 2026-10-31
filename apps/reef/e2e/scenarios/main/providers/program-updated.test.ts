@@ -11,6 +11,7 @@ import {
 } from '../../../support/provider-fixtures.ts'
 import {
   acceptTools,
+  addAtLink,
   addedProviders,
   checkRadio,
   configurationNext,
@@ -60,16 +61,6 @@ async function saveAtLink(page: Session['page'], link: string) {
   await page.goto(link)
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await page.waitForURL((url) => url.pathname.endsWith('/settings'))
-}
-
-/** Opens the link a Program got, previews the tools, and adds the provider. */
-async function addAtLink(page: Session['page'], link: string) {
-  await page.goto(link)
-  await acceptTools(page)
-  const add = page.getByRole('button', { name: 'Add provider', exact: true })
-  await add.waitFor()
-  await add.click()
-  await waitForPublication(page)
 }
 
 /**
@@ -385,7 +376,7 @@ test("A workspace owner's Program moves a provider from an OpenAPI document to a
         namespace: 'weather',
         source: { kind: 'mcp_url', url: mcpUrl },
       })
-      // The server drops getForecast, which only a person can confirm.
+      // The server drops getForecast, which you confirm at the link.
       expect(changed.status).toBe('needs_person')
       link = changed.url
     })
@@ -426,7 +417,7 @@ test("A workspace owner's Program moves a provider from an MCP server to an Open
           namespace: 'weather',
           source: credentialFree({ getForecast: {} }, service.origin),
         })
-        // The document drops the server's hello tool, which only a person can confirm.
+        // The document drops the server's hello tool, which you confirm at the link.
         expect(changed.status).toBe('needs_person')
         link = changed.url
       },
@@ -601,7 +592,7 @@ test("A workspace owner denies their Program's rename, then approves it, and the
       expect(update.final_value).toEqual({ kind: 'value', value: 'approval_declined' })
       expect(await api.providers.getProvider({ name: provider.name })).toEqual(provider)
     })
-    await step('Approve the same rename in a new Run, and Coral publishes it', async () => {
+    await step('Approve the same rename in a new Run, and Coral renames it', async () => {
       const paused = await pausedForApproval(program, rename)
       const review = await openReview(page, paused, 'updateProvider')
       await review.getByRole('button', { name: 'Approve this call', exact: true }).click()

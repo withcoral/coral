@@ -100,8 +100,7 @@ impl fmt::Display for BuiltinCatalogIdentity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinTool {
     /// Adds a Provider from an OpenAPI document or URL, or an MCP server URL.
-    /// Coral publishes it when nobody needs to sign in; otherwise a person
-    /// finishes it in Reef.
+    /// A person previews and publishes it in Reef.
     AddProvider,
     /// Lists every Provider in the Workspace, so a Program can see which
     /// namespaces are taken before it adds one.
@@ -115,9 +114,8 @@ pub enum BuiltinTool {
     /// Sets the exact state of 1–100 Tools of one Provider. It never
     /// reaches a Built-in Tool.
     UpdatePolicy,
-    /// Changes one Owner-created Provider's configuration or source. Coral
-    /// publishes the change when nobody needs to act; otherwise a person
-    /// finishes it in Reef.
+    /// Changes one Owner-created Provider's configuration or source. A person
+    /// reviews and publishes the change in Reef, except a rename alone.
     UpdateProvider,
 }
 

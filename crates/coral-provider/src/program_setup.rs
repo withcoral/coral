@@ -57,8 +57,9 @@ pub struct ProgramSetup {
     pub interrupts_access: bool,
 }
 
-/// Why Coral did not prepare a Setup for a person to finish. Each variant
-/// leaves no open Setup: a failure after the Setup exists ends it, best effort.
+/// Why Coral did not prepare a Setup for a person to finish. A failure after
+/// the Setup exists ends it, best effort, so a caller has no Setup to end. A
+/// stop that lands as the Setup commits leaves it to expire at its deadline.
 #[derive(Debug, thiserror::Error)]
 pub enum ProgramSetupError {
     /// The Run asked to stop before the Setup existed.
@@ -110,7 +111,7 @@ impl ProviderModule {
     ///
     /// # Errors
     ///
-    /// See [`ProgramSetupError`]. An `Err` leaves no open Setup.
+    /// See [`ProgramSetupError`].
     pub async fn prepare_program_setup(
         &self,
         context: &ChangeContext,
