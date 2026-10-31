@@ -885,10 +885,6 @@ async fn a_tool_this_version_does_not_perform_fails_before_approval() {
 // configuration step does, a link that opens the wrong account question, or
 // Coral publishing an application whose secret only a person can give.
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one table checks each sign-in method's configuration and the request it records"
-)]
 async fn the_program_configures_how_a_person_signs_in() {
     let scope = AdminScope::new("user:sign-in-configuration").await;
     scope.set_access(ToolAccessState::Enabled).await;

@@ -182,7 +182,7 @@ async fn rename(
         return Err(Error::ProgramHostTerminated);
     }
     let context = context.clone().with_etag(&provider.etag())?;
-    let renamed = renamer
+    let changed = renamer
         .rename_provider(&context, host.workspace_id, provider.id(), display_name)
         .await
         .map_err(|error| match error {
@@ -193,7 +193,7 @@ async fn rename(
             }
             other => update_error(other),
         })?;
-    renamed_result(host, renamed.id()).await
+    renamed_result(host, changed.id()).await
 }
 
 /// What the Program needs to call `provider`, which Coral renamed, read in one

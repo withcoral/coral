@@ -556,15 +556,16 @@ async fn a_lost_setup_call_settles_as_the_run_ending_first() {
             })
             .mount(&server)
             .await;
-        let mut arguments = serde_json::json!({
-            "namespace": "weather",
-            "source": url_source(&server),
-        });
-        if tool == "addProvider" {
-            arguments["credentialRoute"] = serde_json::json!("none");
+        let arguments = if tool == "addProvider" {
+            serde_json::json!({
+                "namespace": "weather",
+                "source": url_source(&server),
+                "credentialRoute": "none",
+            })
         } else {
             scope.publish_weather().await;
-        }
+            serde_json::json!({ "namespace": "weather", "source": url_source(&server) })
+        };
         let run = scope
             .start(&scope.owner, workspace_call(tool, &arguments.to_string()))
             .await;
