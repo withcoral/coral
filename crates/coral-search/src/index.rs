@@ -42,11 +42,12 @@ const WRITER_WAIT_LIMIT: Duration = Duration::from_mins(1);
 /// attempt leaves a `failed` state row, and the reconcile task converges what a notification
 /// missed. Each notified write is the root of a trace of its own, linked to
 /// the span that notified it, such as the request that saved a Saved
-/// Function, and a failed write marks its span. Notified writes run in the order of the notifications, one
-/// in-process mutex serializes every write, a reconcile pass's one at a time,
-/// and a write that runs past its limit is rolled back and counts as failed.
-/// Cloning is cheap; every clone shares the database handle, the order, the
-/// mutex, and the reconcile interval.
+/// Function, and a failed write marks its span. Notified writes run in the
+/// order of the notifications. One in-process mutex serializes every write,
+/// and a reconcile pass takes it for one item at a time. A write that runs
+/// past its limit is rolled back and counts as failed. Cloning is cheap; every
+/// clone shares the database handle, the order, the mutex, and the reconcile
+/// interval.
 #[derive(Clone)]
 pub struct SearchIndex {
     database: Arc<Database>,
@@ -158,7 +159,7 @@ impl SearchIndex {
     ///
     /// A Generation that another publication replaced before the write runs
     /// is skipped: the replacing publication's notification indexes its own.
-    /// So is one a reconcile pass already indexed.
+    /// A Generation that a reconcile pass has already indexed is skipped too.
     pub fn index_generation(
         &self,
         workspace_id: WorkspaceId,
@@ -232,7 +233,7 @@ impl SearchIndex {
     /// it is still `expected`, if one is named. Under load a pass reaches a
     /// Generation before its notification does, and rewriting it would spend
     /// the preparation and a turn at the writer on nothing. A failed read
-    /// answers `false`: the write that follows reports the failure.
+    /// answers `false`, so the write goes ahead.
     async fn holds_active_generation(
         &self,
         workspace_id: &WorkspaceId,

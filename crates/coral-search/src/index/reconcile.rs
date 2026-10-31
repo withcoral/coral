@@ -3,6 +3,7 @@
 
 use std::future::Future;
 
+use coral_functions::SavedFunctionEntry;
 use coral_provider::{GenerationEntries, ProviderId};
 use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
@@ -147,10 +148,11 @@ impl SearchIndex {
     /// transaction of its own, under the in-process mutex, which the pass
     /// holds for that one item. A pass under load waits for the writer once
     /// per item, and holding the mutex across those waits would hold back
-    /// every notified write. A notified write that lands between two items
-    /// may index what the pass read as stale, so the pass reads a Generation's
-    /// state again before it indexes it. A failed removal is logged and the
-    /// pass goes on without further removals; a failed write is logged and
+    /// every notified write. A notified write or a change that lands between
+    /// two items may index, replace or delete what the pass read as stale, so
+    /// the pass reads each Generation and function again under the mutex and
+    /// skips what changed. A failed removal is logged and the pass goes on
+    /// without further removals; a failed write is logged and
     /// recorded like a notified write's, and the pass goes on. Passes in two
     /// processes write the same idempotent rows.
     ///
@@ -361,7 +363,8 @@ impl SearchIndex {
     }
 
     /// Whether `generation`, which the pass read as stale, still is. A failed
-    /// read answers `true`: the write that follows reports the failure.
+    /// read answers `true`, so the write goes ahead: it indexes what the
+    /// catalog holds now.
     async fn still_stale(
         &self,
         generation: &coral_provider::ActiveGeneration,
@@ -378,6 +381,23 @@ impl SearchIndex {
             })
             .await;
         !matches!(needed, Ok(false))
+    }
+
+    /// Whether `entry`, which the pass read as stale, still is. A failed read
+    /// answers `false`: `entry` may be an older copy, and the next pass tries
+    /// again.
+    async fn function_still_stale(&self, entry: &SavedFunctionEntry, now_unix_nanos: i64) -> bool {
+        let needed = self
+            .within_limit(async {
+                let mut transaction = self.database.begin_read_snapshot().await?;
+                let needed = SavedFunctionIndexer
+                    .still_needs_indexing(&mut transaction, entry, now_unix_nanos)
+                    .await?;
+                transaction.rollback().await?;
+                Ok(needed)
+            })
+            .await;
+        matches!(needed, Ok(true))
     }
 
     /// Prepares the entries of the Provider's current active Generation from
@@ -427,6 +447,9 @@ impl SearchIndex {
                 let mut work = ItemWork::default();
                 for entry in &stale {
                     let _write = self.writes.lock().await;
+                    if !self.function_still_stale(entry, now_unix_nanos).await {
+                        continue;
+                    }
                     let indexed = in_write_span(
                         function_span(entry),
                         WriteTrigger::Reconcile,

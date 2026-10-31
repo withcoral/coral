@@ -222,21 +222,37 @@ pub(super) fn current_projection(
 
 impl ToolIndexer {
     /// Whether a pass that read `generation` as stale must still index it at
-    /// `now_unix_nanos`: a notified write may have indexed it since. The rule
-    /// of [`Self::reconcile`], for one Generation.
+    /// `now_unix_nanos`: a notified write may have indexed it since, and a
+    /// publication may have replaced it. A replaced Generation answers
+    /// `false`: its replacement's notification indexes the new one, or a
+    /// later pass does. The rule of [`Self::reconcile`], for one Generation
+    /// under the Provider's current display name. A Provider that is gone
+    /// answers `true`, so the pass's write records why it wrote nothing.
     pub(crate) async fn still_needs_indexing(
         &self,
         transaction: &mut Transaction<'_>,
         generation: &ActiveGeneration,
         now_unix_nanos: i64,
     ) -> Result<bool, IndexError> {
-        let state = repository::recorded_generation(
+        let active = coral_provider::workspace_active_generations_in_transaction(
             transaction,
             generation.workspace_id(),
-            generation.generation_id(),
+            Some(generation.provider_id()),
         )
         .await?;
-        Ok(needs_indexing(state.as_ref(), generation, now_unix_nanos))
+        let Some(active) = active.first() else {
+            return Ok(true);
+        };
+        if active.generation_id() != generation.generation_id() {
+            return Ok(false);
+        }
+        let state = repository::recorded_generation(
+            transaction,
+            active.workspace_id(),
+            active.generation_id(),
+        )
+        .await?;
+        Ok(needs_indexing(state.as_ref(), active, now_unix_nanos))
     }
 
     /// Whether the index holds `generation` as `complete`, as this indexer

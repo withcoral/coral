@@ -1232,6 +1232,27 @@ pub(super) async fn recorded_functions(
         .collect()
 }
 
+/// Reads the fingerprint of one Saved Function's row, `None` when it has no
+/// row.
+pub(super) async fn recorded_function_fingerprint(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    function_id: &SavedFunctionId,
+) -> Result<Option<String>, IndexError> {
+    let row: Option<(String,)> = transaction
+        .fetch_optional(
+            Query::select()
+                .column(SearchEntities::Fingerprint)
+                .from(SearchEntities::Table)
+                .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(SearchEntities::Kind).eq(SAVED_FUNCTION))
+                .and_where(Expr::col(SearchEntities::SavedFunctionId).eq(function_id.to_string()))
+                .to_owned(),
+        )
+        .await?;
+    Ok(row.map(|(fingerprint,)| fingerprint))
+}
+
 /// One Saved Function whose last attempt failed, as a reconcile pass
 /// compares it.
 pub(super) struct FailedFunction {

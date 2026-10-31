@@ -12,7 +12,9 @@ use coral_db::Transaction;
 use coral_functions::SavedFunctionEntry;
 use coral_workspace::WorkspaceId;
 
-use super::repository::{self, FailedFunctionState, FunctionRow, WorkspaceFunction};
+use super::repository::{
+    self, FailedFunctionState, FunctionFailure, FunctionRow, WorkspaceFunction,
+};
 use super::retry::RetryRule;
 use super::{DistinctWords, EntityIndexer, IndexError, compact_identifier_variant, now_unix_nanos};
 use crate::CallPath;
@@ -95,18 +97,70 @@ impl EntityIndexer for SavedFunctionIndexer {
                     workspace_id: entry.workspace_id().clone(),
                     function_id: entry.id().clone(),
                 };
-                match failures.get(&key) {
-                    Some(failure) => {
-                        failure.revision != Some(entry.revision())
-                            || failure.retry.is_due(now_unix_nanos)
-                    }
-                    None => {
-                        fingerprints.get(&key)
-                            != Some(&repository::function_fingerprint(entry.revision()))
-                    }
-                }
+                needs_indexing(
+                    failures.get(&key),
+                    fingerprints.get(&key).map(String::as_str),
+                    entry,
+                    now_unix_nanos,
+                )
             })
             .collect())
+    }
+}
+
+/// The rule of [`SavedFunctionIndexer::reconcile`] for one function, its
+/// failure, if any, and its row's fingerprint, if it has a row.
+fn needs_indexing(
+    failure: Option<&FunctionFailure>,
+    fingerprint: Option<&str>,
+    entry: &SavedFunctionEntry,
+    now_unix_nanos: i64,
+) -> bool {
+    match failure {
+        Some(failure) => {
+            failure.revision != Some(entry.revision()) || failure.retry.is_due(now_unix_nanos)
+        }
+        None => fingerprint != Some(repository::function_fingerprint(entry.revision()).as_str()),
+    }
+}
+
+impl SavedFunctionIndexer {
+    /// Whether a pass that read `entry` as stale must still write it at
+    /// `now_unix_nanos`. A function deleted or saved again since answers
+    /// `false`: `entry` is an older copy, and writing it could replace what a
+    /// notified write indexed. A later pass indexes the newer revision if its
+    /// notification was lost. The rule of [`Self::reconcile`], for one
+    /// function.
+    pub(crate) async fn still_needs_indexing(
+        &self,
+        transaction: &mut Transaction<'_>,
+        entry: &SavedFunctionEntry,
+        now_unix_nanos: i64,
+    ) -> Result<bool, IndexError> {
+        let unchanged = coral_functions::saved_function_entries_in_transaction(
+            transaction,
+            entry.workspace_id(),
+        )
+        .await?
+        .iter()
+        .any(|current| current.id() == entry.id() && current.revision() == entry.revision());
+        if !unchanged {
+            return Ok(false);
+        }
+        let failure =
+            repository::failed_function(transaction, entry.workspace_id(), entry.id()).await?;
+        let fingerprint = repository::recorded_function_fingerprint(
+            transaction,
+            entry.workspace_id(),
+            entry.id(),
+        )
+        .await?;
+        Ok(needs_indexing(
+            failure.as_ref(),
+            fingerprint.as_deref(),
+            entry,
+            now_unix_nanos,
+        ))
     }
 }
 
