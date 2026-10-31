@@ -56,7 +56,7 @@ attribute! {
         /// The Program did not compile or failed admission.
         Rejected => "rejected",
         TimedOut => "timed_out",
-        /// The compiler was busy or stopped.
+        /// The compiler was busy, stopped or failed, or the database did.
         Unavailable => "unavailable",
     }
 }

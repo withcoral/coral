@@ -144,6 +144,7 @@ async fn a_compile_failure_keeps_its_cause_for_the_caller_and_the_metric() {
                 Some("program_compilation_timed_out"),
             ),
             ("stopped", "program_worker_stopped", None),
+            ("failed", "program_runtime_unavailable", None),
         ] {
             let error = fixture
                 .runs
@@ -172,7 +173,7 @@ async fn a_compile_failure_keeps_its_cause_for_the_caller_and_the_metric() {
         owned(&[
             ("outcome=rejected", 2),
             ("outcome=timed_out", 2),
-            ("outcome=unavailable", 4)
+            ("outcome=unavailable", 6)
         ])
     );
 }

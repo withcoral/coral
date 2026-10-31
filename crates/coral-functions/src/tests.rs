@@ -719,6 +719,11 @@ async fn a_compile_failure_keeps_its_cause_and_saves_nothing() {
             Some("saved_function_compilation_timed_out"),
         ),
         (CompileFailure::Stopped, "compiler_worker_stopped", None),
+        (
+            CompileFailure::Failed("engine"),
+            "compiler_unavailable",
+            None,
+        ),
     ] {
         let module = SavedFunctionModule::with_compiler(
             fixture.database.clone(),

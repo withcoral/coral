@@ -192,7 +192,6 @@ impl ProgramEngine for ImmediateEngine {
 }
 
 /// Fails the compile stage a source names as `<stage>:<failure>`.
-#[derive(Clone, Default)]
 pub(crate) struct FailingCompileEngine;
 
 impl FailingCompileEngine {
@@ -207,6 +206,7 @@ impl FailingCompileEngine {
             "busy" => CompileFailure::Busy,
             "timed-out" => CompileFailure::TimedOut,
             "stopped" => CompileFailure::Stopped,
+            "failed" => CompileFailure::Failed("engine"),
             _ => CompileFailure::Rejected("scripted rejection".to_string()),
         })
     }

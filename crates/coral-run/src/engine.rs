@@ -150,11 +150,8 @@ impl ProgramEngine for V8ProgramEngine {
     }
 
     fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure> {
-        let compiled = self
-            .compiler
-            .compile(deadline, source)
-            .map_err(CompileFailure::from)?;
-        Ok(package_from_compiled(&compiled)?)
+        let compiled = self.compiler.compile(deadline, source)?;
+        package_from_compiled(&compiled)
     }
 
     fn compile_with_saved_functions(
@@ -177,9 +174,8 @@ impl ProgramEngine for V8ProgramEngine {
             .collect::<Vec<_>>();
         let compiled = self
             .compiler
-            .compile_with_saved_functions(deadline, source, &sources)
-            .map_err(CompileFailure::from)?;
-        Ok(package_from_compiled(&compiled)?)
+            .compile_with_saved_functions(deadline, source, &sources)?;
+        package_from_compiled(&compiled)
     }
 
     fn execute(
@@ -272,9 +268,11 @@ fn compile_failure_for_source(error: coral_v8::Error, source_name: &str) -> Comp
     }
 }
 
-fn package_from_compiled(compiled: &coral_v8::CompiledProgram) -> Result<ProgramPackage, String> {
+fn package_from_compiled(
+    compiled: &coral_v8::CompiledProgram,
+) -> Result<ProgramPackage, CompileFailure> {
     let diagnostics_json = serde_json::to_string(compiled.diagnostics())
-        .map_err(|error| format!("compiler diagnostics could not be encoded: {error}"))?;
+        .map_err(|_error| CompileFailure::Failed("compiler_diagnostics_encoding"))?;
     let profile = compiled.profile();
     Ok(ProgramPackage::new(
         compiled.javascript().to_string(),

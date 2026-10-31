@@ -100,8 +100,7 @@ impl SavedFunctionCompiler for V8SavedFunctionCompiler {
                     .prepare_typed_saved_function(deadline, source, declarations)
             }
             None => self.compiler.prepare_saved_function(deadline, source),
-        }
-        .map_err(CompileFailure::from)?;
+        }?;
         let declaration = SavedFunctionDeclaration::from_compiler(compiled.declaration())
             .map_err(|error| error.to_string())?;
         let declaration_field_projection =
@@ -624,6 +623,7 @@ impl SavedFunctionModule {
                 CompileFailure::Busy => Error::CompilerBusy,
                 CompileFailure::TimedOut => Error::SavedFunctionCompilationTimedOut,
                 CompileFailure::Stopped => Error::CompilerWorkerStopped,
+                CompileFailure::Failed(kind) => Error::CompilerUnavailable(kind.to_string()),
             })
         };
         timeout(COMPILATION_TIMEOUT, preparation)
