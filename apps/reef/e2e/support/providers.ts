@@ -742,12 +742,13 @@ export interface InputRequired {
 }
 
 /**
- * Owns one real MCP session. By default, acquire the browser User's genuine
+ * One real MCP client. By default, acquire the browser User's genuine
  * Workspace OAuth grant. Supply an Agent Registration bearer to act as an Agent.
  * Local checks use the implicit User. `wait` observes the original Run without replay.
  * Calling the helper directly retains the serialized result used by older scenarios.
- * On protocol 2026-07-28 it holds no session and accepts form prompts, so an
- * approval comes back as `InputRequired`, which `answer` answers.
+ * Coral keeps no session on either version. On protocol 2026-07-28 each request
+ * describes itself and accepts form prompts, so an approval comes back as
+ * `InputRequired`, which `answer` answers.
  */
 export function programRunner(
   page: Page,
@@ -762,20 +763,18 @@ export function programRunner(
 ) {
   let id = 0
   const calls: Record<string, number> = {}
-  let session = ''
   let taskId = ''
   let accessToken = options.accessToken
   const waitMs = options.waitMs ?? 8000
   const version = options.protocolVersion ?? '2025-11-25'
-  const stateless = version !== '2025-11-25'
+  const selfDescribing = version !== '2025-11-25'
   const headers = (method: string, params: object) => ({
     Accept: 'application/json, text/event-stream',
     'MCP-Protocol-Version': version,
-    ...(session ? { 'Mcp-Session-Id': session } : {}),
     ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
     // 2026-07-28 names each request's method and tool in its headers.
-    ...(stateless ? { 'Mcp-Method': method } : {}),
-    ...(stateless && 'name' in params ? { 'Mcp-Name': String(params.name) } : {}),
+    ...(selfDescribing ? { 'Mcp-Method': method } : {}),
+    ...(selfDescribing && 'name' in params ? { 'Mcp-Name': String(params.name) } : {}),
   })
   /** One JSON-RPC exchange; the body carries either a result or an error. */
   const post = async (method: string, params: object) => {
@@ -787,8 +786,8 @@ export function programRunner(
         jsonrpc: '2.0',
         id: ++id,
         method,
-        // Without a session, every 2026-07-28 request says who is asking.
-        params: stateless
+        // Every 2026-07-28 request says who is asking.
+        params: selfDescribing
           ? {
               ...params,
               _meta: {
@@ -803,7 +802,6 @@ export function programRunner(
       timeout: waitMs + 10_000,
     })
     expect(response.status(), `MCP ${method} HTTP status`).toBe(200)
-    session = response.headers()['mcp-session-id'] ?? session
     const text = await response.text()
     return text.startsWith('{')
       ? JSON.parse(text)
@@ -821,18 +819,19 @@ export function programRunner(
   }
   const initialize = async () => {
     if (!accessToken && target.authentication) accessToken = await mcpToken(page, workspace)
-    if (!session && !stateless) {
-      await rpc('initialize', {
-        protocolVersion: version,
-        capabilities: {},
-        clientInfo: { name: 'Reel', version: '1' },
-      })
-      await page.request.post(`${target.mcpURL}/workspaces/${workspace}/mcp`, {
-        headers: headers('notifications/initialized', {}),
-        data: { jsonrpc: '2.0', method: 'notifications/initialized' },
-      })
-    }
     if (!taskId) {
+      // Coral issues no session id; a legacy client's handshake is still answered.
+      if (!selfDescribing) {
+        await rpc('initialize', {
+          protocolVersion: version,
+          capabilities: {},
+          clientInfo: { name: 'Reel', version: '1' },
+        })
+        await page.request.post(`${target.mcpURL}/workspaces/${workspace}/mcp`, {
+          headers: headers('notifications/initialized', {}),
+          data: { jsonrpc: '2.0', method: 'notifications/initialized' },
+        })
+      }
       const task = await rpc('tools/call', {
         name: 'start_task',
         arguments: { intent: options.taskIntent ?? 'Recorded Provider scenario' },
@@ -919,7 +918,7 @@ export function programRunner(
         arguments: { task_id: taskId, intent: 'Inspect one Tool', path },
       })
     },
-    /** The tools this MCP session advertises, in order. */
+    /** The tools this MCP client is offered, in order. */
     async listTools(): Promise<{ name: string }[]> {
       await initialize()
       return (await rpc('tools/list', {})).tools
@@ -984,7 +983,7 @@ export async function observeRun(
   return { update, events, responses }
 }
 
-/** Replays retained authored output from its beginning through a fresh MCP session. */
+/** Replays retained authored output from its beginning through a fresh MCP client. */
 export async function observeRetainedRun(
   observer: Pick<ReturnType<typeof programRunner>, 'wait'>,
   original: Pick<Awaited<ReturnType<typeof observeRun>>, 'update' | 'events'>,

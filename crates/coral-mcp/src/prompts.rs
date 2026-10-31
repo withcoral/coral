@@ -3,24 +3,21 @@
 //! The Run domain decides who is prompted and what an answer does. This Adapter
 //! only negotiates how to ask. An approval is a form; an account connection is a
 //! URL to Reef's connect page, asked only of clients that declare URL mode. A
-//! 2025-11-25 session asks in-band while the tool call waits. A 2026-07-28
-//! client receives an `input_required` result and retries the same call with
-//! its answers and the echoed request state. One tool call asks about each
-//! action at most once, across retry rounds; a later call asks again while the
-//! action is still pending. An in-band prompt is withdrawn when its action ends
-//! or is resolved elsewhere; an opened in-band connection page is announced
-//! complete when its request stops waiting.
+//! 2026-07-28 client receives an `input_required` result and retries the same
+//! call with its answers and the echoed request state. Coral keeps no MCP
+//! session, so a pre-2026-07-28 client is never asked in-band: its Run Update
+//! names the required actions and the Run Status Page, where the User acts. One
+//! tool call asks about each action at most once, across retry rounds; a later
+//! call asks again while the action is still pending.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coral_run::{ActionPrompt, PromptAnswer, RequiredActionRequest, RunId};
 use rmcp::model::{
-    ClientResult, CustomNotification, ElicitRequest, ElicitRequestParams, ElicitResult,
-    ElicitationAction, ElicitationCapability, ElicitationSchema, InputRequest, InputRequiredResult,
-    InputResponses, ProtocolVersion, ServerNotification, ServerRequest,
+    ElicitRequest, ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationCapability,
+    ElicitationSchema, InputRequest, InputRequiredResult, InputResponses, ProtocolVersion,
 };
-use rmcp::service::{Peer, PeerRequestOptions, RequestContext, RoleServer};
+use rmcp::service::{RequestContext, RoleServer};
 use serde::{Deserialize, Serialize};
 
 use crate::HumanInterfaceUrl;
@@ -33,18 +30,33 @@ pub(crate) struct Modes {
 }
 
 impl Modes {
-    fn declared(elicitation: Option<&ElicitationCapability>) -> Self {
-        elicitation.map_or(
-            Self {
-                form: false,
-                url: false,
-            },
-            // An empty elicitation capability means form mode.
-            |elicitation| Self {
-                form: elicitation.form.is_some() || elicitation.url.is_none(),
-                url: elicitation.url.is_some(),
-            },
+    /// The modes a tool call can ask its client in, fixed when the call
+    /// arrives. Before 2026-07-28 the only way to ask is a server-initiated
+    /// request, which needs a session Coral does not keep, so those requests
+    /// are never asked.
+    pub(crate) fn negotiated(context: &RequestContext<RoleServer>) -> Option<Self> {
+        if context
+            .protocol_version()
+            .is_none_or(|version| version < ProtocolVersion::V_2026_07_28)
+        {
+            return None;
+        }
+        Self::declared(
+            context
+                .client_capabilities()
+                .and_then(|capabilities| capabilities.elicitation)
+                .as_ref(),
         )
+    }
+
+    /// `None` when the client declared no elicitation.
+    fn declared(elicitation: Option<&ElicitationCapability>) -> Option<Self> {
+        // An empty elicitation capability means form mode.
+        let modes = Self {
+            form: elicitation?.form.is_some() || elicitation?.url.is_none(),
+            url: elicitation?.url.is_some(),
+        };
+        (modes.form || modes.url).then_some(modes)
     }
 
     /// Approvals need a form. A connection needs a URL and a page to open.
@@ -54,44 +66,6 @@ impl Modes {
             RequiredActionRequest::AccountConnection(_) => {
                 self.url && prompt.connect_path.is_some()
             }
-        }
-    }
-}
-
-/// How this tool call can ask its client, fixed when the call arrives.
-pub(crate) enum Channel {
-    /// The client declared no elicitation.
-    Unavailable,
-    /// A pre-2026-07-28 client answers server requests during the call.
-    InBand(Peer<RoleServer>, Modes),
-    /// A 2026-07-28 client answers through a retried call.
-    InputRequired(Modes),
-}
-
-impl Channel {
-    pub(crate) fn negotiate(context: &RequestContext<RoleServer>) -> Self {
-        let modes = Modes::declared(
-            context
-                .client_capabilities()
-                .and_then(|capabilities| capabilities.elicitation)
-                .as_ref(),
-        );
-        if !modes.form && !modes.url {
-            Self::Unavailable
-        } else if context
-            .protocol_version()
-            .is_some_and(|version| version.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
-        {
-            Self::InputRequired(modes)
-        } else {
-            Self::InBand(context.peer.clone(), modes)
-        }
-    }
-
-    const fn modes(&self) -> Option<Modes> {
-        match self {
-            Self::Unavailable => None,
-            Self::InBand(_, modes) | Self::InputRequired(modes) => Some(*modes),
         }
     }
 }
@@ -108,20 +82,10 @@ struct RequestState {
 
 /// One tool call's prompting state, including answers carried by a retry.
 pub(crate) struct Prompting {
-    channel: Channel,
+    modes: Option<Modes>,
     continued: Option<RunId>,
     asked: BTreeSet<String>,
     answers: Vec<(RequiredActionRequest, PromptAnswer)>,
-}
-
-/// What asking produced for the current observation.
-pub(crate) enum Asked {
-    /// Nothing new to ask.
-    Nothing,
-    /// Ask each prompt in-band, then apply the answers and observe again.
-    InBand(Vec<InBandPrompt>),
-    /// Return this result; the client retries with its answers.
-    InputRequired(InputRequiredResult),
 }
 
 impl Prompting {
@@ -132,7 +96,7 @@ impl Prompting {
     /// retry, malformed state, answers without state, or answers to requests
     /// this call never asked.
     pub(crate) fn from_request(
-        channel: Channel,
+        modes: Option<Modes>,
         request_state: Option<String>,
         input_responses: Option<InputResponses>,
     ) -> Result<Self, String> {
@@ -141,13 +105,13 @@ impl Prompting {
                 return Err("inputResponses require requestState".into());
             }
             return Ok(Self {
-                channel,
+                modes,
                 continued: None,
                 asked: BTreeSet::new(),
                 answers: Vec::new(),
             });
         };
-        if !matches!(channel, Channel::InputRequired(_)) {
+        if modes.is_none() {
             return Err("requestState requires a negotiated input_required retry".into());
         }
         let invalid_state = || "invalid requestState".to_owned();
@@ -164,7 +128,7 @@ impl Prompting {
             answers.push((request, answer(&result)));
         }
         Ok(Self {
-            channel,
+            modes,
             continued: Some(continued),
             asked: state.asked,
             answers,
@@ -180,21 +144,23 @@ impl Prompting {
         std::mem::take(&mut self.answers)
     }
 
-    pub(crate) const fn available(&self) -> bool {
-        !matches!(self.channel, Channel::Unavailable)
+    /// Whether this client can be asked anything at all.
+    pub(crate) const fn can_ask(&self) -> bool {
+        self.modes.is_some()
     }
 
-    /// Asks about every prompt this call has not asked about yet. `intent` is
-    /// the agent's stated reason for the Run, when known.
+    /// Asks about every prompt this call has not asked about yet, as the
+    /// `input_required` result to return, or `None` when there is nothing new
+    /// to ask. `intent` is the agent's stated reason for the Run, when known.
     pub(crate) fn ask(
         &mut self,
         prompts: Vec<ActionPrompt>,
         run_id: &RunId,
         human_interface: &HumanInterfaceUrl,
         intent: Option<&str>,
-    ) -> Result<Asked, String> {
-        let Some(modes) = self.channel.modes() else {
-            return Ok(Asked::Nothing);
+    ) -> Result<Option<InputRequiredResult>, String> {
+        let Some(modes) = self.modes else {
+            return Ok(None);
         };
         let prompts = prompts
             .into_iter()
@@ -202,147 +168,28 @@ impl Prompting {
             .filter(|prompt| self.asked.insert(prompt.request.to_string()))
             .collect::<Vec<_>>();
         if prompts.is_empty() {
-            return Ok(Asked::Nothing);
+            return Ok(None);
         }
-        match &self.channel {
-            Channel::Unavailable => Ok(Asked::Nothing),
-            Channel::InputRequired(_) => {
-                let requests = prompts
-                    .iter()
-                    .map(|prompt| {
-                        (
-                            prompt.request.to_string(),
-                            InputRequest::Elicitation(ElicitRequest::new(elicitation(
-                                prompt,
-                                human_interface,
-                                intent,
-                            ))),
-                        )
-                    })
-                    .collect();
-                let state = serde_json::to_string(&RequestState {
-                    run_id: run_id.to_string(),
-                    asked: self.asked.clone(),
-                })
-                .map_err(|_error| "request state could not be encoded".to_owned())?;
-                Ok(Asked::InputRequired(InputRequiredResult::new(
-                    Some(requests),
-                    Some(state),
-                )))
-            }
-            Channel::InBand(peer, _) => Ok(Asked::InBand(
-                prompts
-                    .into_iter()
-                    .map(|prompt| InBandPrompt {
-                        peer: peer.clone(),
-                        params: elicitation(&prompt, human_interface, intent),
-                        deadline_at_unix_nanos: prompt.deadline_at_unix_nanos,
-                        request: prompt.request,
-                    })
-                    .collect(),
-            )),
-        }
+        let requests = prompts
+            .iter()
+            .map(|prompt| {
+                (
+                    prompt.request.to_string(),
+                    InputRequest::Elicitation(ElicitRequest::new(elicitation(
+                        prompt,
+                        human_interface,
+                        intent,
+                    ))),
+                )
+            })
+            .collect();
+        let state = serde_json::to_string(&RequestState {
+            run_id: run_id.to_string(),
+            asked: self.asked.clone(),
+        })
+        .map_err(|_error| "request state could not be encoded".to_owned())?;
+        Ok(Some(InputRequiredResult::new(Some(requests), Some(state))))
     }
-}
-
-/// One prompt asked while the tool call waits for its answer.
-pub(crate) struct InBandPrompt {
-    peer: Peer<RoleServer>,
-    request: RequiredActionRequest,
-    params: ElicitRequestParams,
-    deadline_at_unix_nanos: i64,
-}
-
-impl InBandPrompt {
-    pub(crate) const fn request(&self) -> &RequiredActionRequest {
-        &self.request
-    }
-
-    /// Waits for the answer. The client is told to close the prompt when
-    /// `withdrawn` completes or the action reaches its own deadline. After the
-    /// client opens a connect page, the call waits for the same end and
-    /// announces the elicitation complete when `connected` confirms it.
-    pub(crate) async fn ask(
-        self,
-        withdrawn: impl Future<Output = ()> + Unpin,
-        connected: impl Future<Output = bool>,
-    ) -> (RequiredActionRequest, PromptAnswer) {
-        let answer = ask_in_band(
-            &self.peer,
-            self.params,
-            self.deadline_at_unix_nanos,
-            withdrawn,
-            connected,
-        )
-        .await;
-        (self.request, answer)
-    }
-}
-
-async fn ask_in_band(
-    peer: &Peer<RoleServer>,
-    params: ElicitRequestParams,
-    deadline_at_unix_nanos: i64,
-    mut withdrawn: impl Future<Output = ()> + Unpin,
-    connected: impl Future<Output = bool>,
-) -> PromptAnswer {
-    let Some(remaining) = remaining(deadline_at_unix_nanos) else {
-        return PromptAnswer::Dismiss;
-    };
-    let completes = match &params {
-        ElicitRequestParams::UrlElicitationParams { elicitation_id, .. } => {
-            Some(elicitation_id.clone())
-        }
-        _ => None,
-    };
-    let Ok(mut handle) = peer
-        .send_request_with_option(
-            ServerRequest::ElicitRequest(ElicitRequest::new(params)),
-            PeerRequestOptions::no_options(),
-        )
-        .await
-    else {
-        return PromptAnswer::Dismiss;
-    };
-    let reason = tokio::select! {
-        response = &mut handle.rx => {
-            let answer = match response {
-                Ok(Ok(ClientResult::ElicitResult(result))) => answer(&result),
-                _ => PromptAnswer::Dismiss,
-            };
-            if let (PromptAnswer::Accept, Some(elicitation_id)) = (answer, completes) {
-                // The client opened the connect page. Hold the call until the
-                // request stops waiting; only a connection completes the page.
-                tokio::select! {
-                    () = &mut withdrawn => {}
-                    () = tokio::time::sleep(
-                        self::remaining(deadline_at_unix_nanos).unwrap_or_default()
-                    ) => {}
-                }
-                if !connected.await {
-                    return answer;
-                }
-                // Best effort: a client that missed it still sees the next Run Update.
-                let _sent = peer
-                    .send_notification(ServerNotification::CustomNotification(
-                        CustomNotification::new(
-                            "notifications/elicitation/complete",
-                            Some(serde_json::json!({ "elicitationId": elicitation_id })),
-                        ),
-                    ))
-                    .await;
-            }
-            return answer;
-        }
-        () = &mut withdrawn => "The action no longer needs an answer.",
-        // The prompt's own countdown ends at the deadline; what the action
-        // became is its owner's record (the Run's for an approval, the
-        // Account's for a connection), not the prompt's judgement.
-        () = tokio::time::sleep(remaining) => "The action's deadline passed.",
-    };
-    // Best effort: an unreachable client keeps a stale prompt that decides nothing.
-    let _cancelled = handle.cancel(Some(reason.to_owned())).await;
-    PromptAnswer::Dismiss
 }
 
 const fn answer(result: &ElicitResult) -> PromptAnswer {
@@ -352,18 +199,6 @@ const fn answer(result: &ElicitResult) -> PromptAnswer {
         // Cancel, and any future action, decides nothing.
         _ => PromptAnswer::Dismiss,
     }
-}
-
-fn remaining(deadline_at_unix_nanos: i64) -> Option<Duration> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_nanos();
-    let remaining = i128::from(deadline_at_unix_nanos) - i128::try_from(now).ok()?;
-    u64::try_from(remaining)
-        .ok()
-        .filter(|nanos| *nanos > 0)
-        .map(Duration::from_nanos)
 }
 
 // The form asks only for a decision. Harnesses label its buttons differently
@@ -454,7 +289,7 @@ mod tests {
 
     fn modes(capability: Value) -> Modes {
         let capability: ElicitationCapability = serde_json::from_value(capability).unwrap();
-        Modes::declared(Some(&capability))
+        Modes::declared(Some(&capability)).expect("a declared mode")
     }
 
     #[test]
@@ -527,25 +362,15 @@ mod tests {
             assert_eq!(modes.asks(&connection), asks_connection, "{capability}");
             assert!(!modes.asks(&removed), "no page to open: {capability}");
         }
-        assert_eq!(
-            Modes::declared(None),
-            Modes {
-                form: false,
-                url: false
-            }
-        );
+        assert_eq!(Modes::declared(None), None, "no capability, no prompt");
     }
 
     #[test]
-    fn a_retry_asks_only_the_actions_its_client_can_answer() {
+    fn a_call_asks_only_the_actions_its_client_can_answer() {
         let run = RunId::parse("01234567-89ab-4cde-8fab-0123456789ab").unwrap();
-        let mut prompting = Prompting::from_request(
-            Channel::InputRequired(modes(json!({"url": {}}))),
-            None,
-            None,
-        )
-        .unwrap();
-        let Asked::InputRequired(result) = prompting
+        let mut prompting =
+            Prompting::from_request(Some(modes(json!({"url": {}}))), None, None).unwrap();
+        let result = prompting
             .ask(
                 vec![
                     prompt(APPROVAL, "coral.providers.linear.listIssues"),
@@ -556,9 +381,7 @@ mod tests {
                 None,
             )
             .unwrap()
-        else {
-            panic!("input required")
-        };
+            .expect("input required");
         let asked = serde_json::to_value(&result).unwrap();
         let requests = asked
             .get("inputRequests")
@@ -581,14 +404,10 @@ mod tests {
     #[test]
     fn request_state_needs_a_negotiated_retry() {
         let state = json!({"run_id": "01234567-89ab-4cde-8fab-0123456789ab", "asked": []});
-        for channel in [
-            Channel::Unavailable,
-            Channel::InputRequired(modes(json!({}))),
-        ] {
-            let negotiated = matches!(channel, Channel::InputRequired(_));
+        for modes in [None, Some(modes(json!({})))] {
             assert_eq!(
-                Prompting::from_request(channel, Some(state.to_string()), None).is_ok(),
-                negotiated
+                Prompting::from_request(modes, Some(state.to_string()), None).is_ok(),
+                modes.is_some()
             );
         }
     }

@@ -21,7 +21,7 @@ use crate::arguments::{
     ToolArguments, WaitArguments,
 };
 use crate::projection::{self, ToolFailure};
-use crate::prompts::{Asked, Channel, Prompting};
+use crate::prompts::{Modes, Prompting};
 
 #[cfg(test)]
 mod tests;
@@ -79,10 +79,10 @@ impl McpServer {
     async fn dispatch(
         &self,
         mut request: CallToolRequestParams,
-        channel: Channel,
+        modes: Option<Modes>,
     ) -> Result<CallToolResponse, DispatchError> {
         let prompting = Prompting::from_request(
-            channel,
+            modes,
             request.request_state.take(),
             request.input_responses.take(),
         )
@@ -266,12 +266,10 @@ impl McpServer {
             .run_timeout_ms
             .unwrap_or(arguments::DEFAULT_RUN_TIMEOUT_MS);
         let wait_ms = validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_EXEC_WAIT_MS))?;
-        let reread = RunObservation::initial(Duration::ZERO).map_err(invalid_input)?;
         // A retry answers prompts about the Run this call already started.
         if let Some(run_id) = prompting.continued_run().cloned() {
-            return self
-                .observe_prompting(&run_id, &reread, &reread, prompting)
-                .await;
+            let immediate = RunObservation::initial(Duration::ZERO).map_err(invalid_input)?;
+            return self.observe_prompting(&run_id, &immediate, prompting).await;
         }
         let accepted = self
             .runtime
@@ -291,13 +289,8 @@ impl McpServer {
         let observation = RunObservation::initial(Duration::from_millis(wait_ms))
             .map_err(invalid_input)?
             .by_acceptor();
-        self.observe_prompting(
-            accepted.run_id(),
-            &observation,
-            &reread.by_acceptor(),
-            prompting,
-        )
-        .await
+        self.observe_prompting(accepted.run_id(), &observation, prompting)
+            .await
     }
 
     async fn wait(
@@ -313,7 +306,7 @@ impl McpServer {
             .transpose()
             .map_err(invalid_input)?;
         let wait_ms = validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_WAIT_MS))?;
-        let reread =
+        let immediate =
             RunObservation::immediate(cursor, RUN_EVENT_PAGE_MAX).map_err(invalid_input)?;
         // A retry has already waited; it answers and observes immediately.
         let observation = match prompting.continued_run() {
@@ -322,31 +315,28 @@ impl McpServer {
                     "requestState belongs to another Run".into(),
                 ));
             }
-            Some(_) => reread.clone(),
-            None => reread
-                .clone()
+            Some(_) => immediate,
+            None => immediate
                 .with_wait(Duration::from_millis(wait_ms))
                 .map_err(invalid_input)?,
         };
-        self.observe_prompting(&run_id, &observation, &reread, prompting)
+        self.observe_prompting(&run_id, &observation, prompting)
             .await
     }
 
-    /// Observes a Run and asks the client about each current action it can answer.
-    /// Answers go to the Run domain, which decides whether they change anything;
-    /// the returned update is reread after them.
+    /// Observes a Run and asks the client about each current action it can
+    /// answer. Answers go to the Run domain, which decides whether they change
+    /// anything; the returned update is read after them.
     async fn observe_prompting(
         &self,
         run_id: &RunId,
         observation: &RunObservation,
-        reread: &RunObservation,
         mut prompting: Prompting,
     ) -> Result<CallToolResponse, DispatchError> {
-        let trace = &TraceId::current_or_new();
-        self.answer_prompts(run_id, prompting.take_answers(), trace)
+        self.answer_prompts(run_id, prompting.take_answers())
             .await?;
-        let mut update = self.observe(run_id, observation).await?;
-        while prompting.available() && !update.required_actions().is_empty() {
+        let update = self.observe(run_id, observation).await?;
+        if prompting.can_ask() && !update.required_actions().is_empty() {
             let prompts = self
                 .runtime
                 .modules
@@ -364,7 +354,7 @@ impl McpServer {
                     .await
                     .map_err(task_failure)?
             };
-            match prompting
+            if let Some(result) = prompting
                 .ask(
                     prompts,
                     run_id,
@@ -373,64 +363,12 @@ impl McpServer {
                 )
                 .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))?
             {
-                Asked::Nothing => break,
-                Asked::InputRequired(result) => return Ok(result.into()),
-                Asked::InBand(prompts) => {
-                    for prompt in prompts {
-                        let request = prompt.request().clone();
-                        // Boxed: the watcher holds a whole Run observation.
-                        let withdrawn = Box::pin(self.until_withdrawn(
-                            run_id,
-                            &request,
-                            update.next_cursor().clone(),
-                        ));
-                        // Boxed: it reads the connection through the Account domain.
-                        let connected = Box::pin(self.runtime.modules.runs.connection_connected(
-                            &self.runtime.principal,
-                            &self.workspace_id,
-                            &request,
-                            trace,
-                        ));
-                        let answer = prompt.ask(withdrawn, connected).await;
-                        // Apply each answer at once: a later prompt may stay open.
-                        self.answer_prompts(run_id, vec![answer], trace).await?;
-                    }
-                    update = self.observe(run_id, reread).await?;
-                }
+                return Ok(result.into());
             }
         }
         self.run_update(&update)
             .map(Into::into)
             .map_err(DispatchError::Tool)
-    }
-
-    /// Completes once `request` is no longer a current action of the Run.
-    /// An unreadable Run never withdraws a prompt; its answer is checked anyway.
-    async fn until_withdrawn(
-        &self,
-        run_id: &RunId,
-        request: &coral_run::RequiredActionRequest,
-        mut cursor: RunCursor,
-    ) {
-        loop {
-            let observation = RunObservation::immediate(Some(cursor), RUN_EVENT_PAGE_MAX).and_then(
-                |observation| observation.with_wait(Duration::from_millis(arguments::MAX_WAIT_MS)),
-            );
-            let Ok(observation) = observation else {
-                return std::future::pending().await;
-            };
-            let Ok(update) = self.observe(run_id, &observation).await else {
-                return std::future::pending().await;
-            };
-            if !update
-                .required_actions()
-                .iter()
-                .any(|action| &action.request == request)
-            {
-                return;
-            }
-            cursor = update.next_cursor().clone();
-        }
     }
 
     async fn observe(
@@ -455,8 +393,11 @@ impl McpServer {
         &self,
         run_id: &RunId,
         answers: Vec<(coral_run::RequiredActionRequest, coral_run::PromptAnswer)>,
-        trace: &TraceId,
     ) -> Result<(), DispatchError> {
+        if answers.is_empty() {
+            return Ok(());
+        }
+        let trace = TraceId::current_or_new();
         for (request, answer) in answers {
             match self
                 .runtime
@@ -468,14 +409,14 @@ impl McpServer {
                     run_id,
                     &request,
                     answer,
-                    trace,
+                    &trace,
                 )
                 .await
             {
                 // The action ended or was resolved elsewhere while the User
                 // considered it, or the answer still waits in the Run Inbox
-                // for its Run Owner: the reread update shows what is recorded
-                // so far, which may still be the open action.
+                // for its Run Owner: the update read after the answers shows
+                // what is recorded so far, which may still be the open action.
                 Ok(())
                 | Err(
                     coral_run::Error::ApprovalNotFound | coral_run::Error::RunRequestNotYetRecorded,
@@ -613,7 +554,7 @@ impl ServerHandler for McpServer {
             &self.workspace_id,
             &self.runtime.principal,
         );
-        let dispatched = Box::pin(self.dispatch(request, Channel::negotiate(&context)));
+        let dispatched = Box::pin(self.dispatch(request, Modes::negotiated(&context)));
         call.run(dispatched).await
     }
 

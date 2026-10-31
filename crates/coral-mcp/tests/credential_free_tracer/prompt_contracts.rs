@@ -5,10 +5,6 @@
 )]
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use coral_run::approval::{ApprovalDecision, ApprovalModule, ApprovalState};
-use coral_workspace::{AuthenticatedPrincipal, TraceId, WorkspaceId};
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, ElicitRequestParams,
@@ -34,7 +30,6 @@ struct PromptingClient {
     version: ProtocolVersion,
     answers: Vec<Option<ElicitationAction>>,
     prompts: Arc<Mutex<Vec<ElicitRequestParams>>>,
-    prompted: tokio::sync::watch::Sender<usize>,
 }
 
 impl ClientHandler for PromptingClient {
@@ -59,7 +54,6 @@ impl ClientHandler for PromptingClient {
                 .cloned()
                 .flatten();
             prompts.push(request);
-            self.prompted.send_replace(prompts.len());
             answer
         };
         if let Some(answer) = answer {
@@ -73,7 +67,6 @@ impl ClientHandler for PromptingClient {
 pub(super) struct Session {
     service: RunningService<RoleClient, PromptingClient>,
     prompts: Arc<Mutex<Vec<ElicitRequestParams>>>,
-    prompted: tokio::sync::watch::Receiver<usize>,
     outputs: OutputContracts,
 }
 
@@ -85,12 +78,10 @@ impl Session {
         bearer: Option<&str>,
     ) -> Self {
         let prompts = Arc::new(Mutex::new(Vec::new()));
-        let (prompted_sender, prompted) = tokio::sync::watch::channel(0);
         let client = PromptingClient {
             version: version.clone(),
             answers,
             prompts: prompts.clone(),
-            prompted: prompted_sender,
         };
         let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.to_owned());
         if let Some(bearer) = bearer {
@@ -117,7 +108,6 @@ impl Session {
         Self {
             service,
             prompts,
-            prompted,
             outputs: OutputContracts::new(tools.as_array().expect("tools")),
         }
     }
@@ -176,16 +166,6 @@ impl Session {
     pub(super) fn prompts(&self) -> Vec<ElicitRequestParams> {
         self.prompts.lock().expect("prompts").clone()
     }
-
-    /// Waits until the client has received `count` prompts.
-    async fn prompted(&self, count: usize) -> Vec<ElicitRequestParams> {
-        self.prompted
-            .clone()
-            .wait_for(|received| *received >= count)
-            .await
-            .expect("prompting client");
-        self.prompts()
-    }
 }
 
 fn form_message(prompt: &ElicitRequestParams) -> &str {
@@ -216,14 +196,6 @@ fn run_status_url(endpoint: &str, run: &Value) -> String {
     )
 }
 
-/// Reef's side of the Workspace: the invoking User decides there directly.
-struct Reef<'a> {
-    approvals: &'a ApprovalModule,
-    runs: &'a coral_run::RunModule,
-    user: AuthenticatedPrincipal,
-    workspace: &'a WorkspaceId,
-}
-
 /// A tracer whose `getForecast` needs the invoking User's approval.
 async fn approval_tracer() -> Tracer {
     let tracer = Tracer::start().await;
@@ -231,17 +203,9 @@ async fn approval_tracer() -> Tracer {
     tracer
 }
 
-fn reef(tracer: &Tracer) -> Reef<'_> {
-    Reef {
-        approvals: &tracer.approvals,
-        runs: &tracer.runs,
-        user: AuthenticatedPrincipal::user(tracer.local_user.clone()),
-        workspace: &tracer.workspace_a,
-    }
-}
-
-/// Versions with the legacy `initialize` handshake keep a prompt open in band;
-/// newer versions return `input_required` instead.
+/// Versions with the legacy `initialize` handshake are never prompted, since
+/// Coral keeps no session to ask them over; newer versions return
+/// `input_required`.
 fn versions(legacy: bool) -> impl Iterator<Item = &'static ProtocolVersion> {
     SUPPORTED_PROTOCOL_VERSIONS
         .iter()
@@ -273,7 +237,7 @@ async fn required_actions_end_the_initial_wait_and_replay_on_every_version() {
 async fn each_answer_decides_only_the_prompted_invocation() {
     let tracer = approval_tracer().await;
     let endpoint = tracer.endpoint();
-    for version in SUPPORTED_PROTOCOL_VERSIONS {
+    for version in versions(false) {
         for (answer, terminal) in [
             (ElicitationAction::Accept, Some(("succeeded", None))),
             (
@@ -357,7 +321,7 @@ async fn each_answer_decides_only_the_prompted_invocation() {
 #[tokio::test(flavor = "multi_thread")]
 async fn each_concurrent_approval_is_prompted_once() {
     let tracer = approval_tracer().await;
-    for version in SUPPORTED_PROTOCOL_VERSIONS {
+    for version in versions(false) {
         let session = Session::open(
             &tracer.endpoint(),
             version,
@@ -383,24 +347,46 @@ async fn agent_sessions_learn_an_owner_must_act_and_are_never_prompted() {
     }
 }
 
+/// A client on a legacy version declares form mode, but Coral keeps no session
+/// to ask it over. The Run Update names the action and the Run Status Page,
+/// where the User decides; the call never waits on a prompt.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_prompt_decided_in_reef_is_withdrawn_in_band() {
+async fn a_legacy_client_is_never_prompted_and_learns_where_to_act() {
     let tracer = approval_tracer().await;
+    let endpoint = tracer.endpoint();
     for version in versions(true) {
-        a_prompt_decided_in_reef_is_withdrawn(&tracer.endpoint(), version, &reef(&tracer)).await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn an_in_band_answer_takes_effect_before_the_next_prompt_opens() {
-    let tracer = approval_tracer().await;
-    for version in versions(true) {
-        an_in_band_answer_takes_effect_before_the_next_prompt(
-            &tracer.endpoint(),
+        let session = Session::open(
+            &endpoint,
             version,
-            &reef(&tracer),
+            vec![Some(ElicitationAction::Accept)],
+            None,
         )
         .await;
+        let task = session.start_task().await;
+        let update = session.exec(&task).await;
+        assert_eq!(update["state"], "running", "{version:?}: {update}");
+        let [action] = update["required_actions"]
+            .as_array()
+            .expect("actions")
+            .as_slice()
+        else {
+            panic!("{version:?}: the approval stays pending for Reef: {update}")
+        };
+        assert_eq!(action["kind"], "invocation_approval");
+        assert_eq!(action["required_actor"], "invoking_user");
+        assert_eq!(
+            action["run_status_url"],
+            run_status_url(&endpoint, &update["run_id"]),
+            "{version:?}: the update links where the User acts"
+        );
+        assert!(
+            session.prompts().is_empty(),
+            "{version:?}: a legacy session is never asked in-band"
+        );
+        session
+            .call("cancel", json!({"run_id":update["run_id"]}))
+            .await;
+        session.service.cancel().await.expect("close session");
     }
 }
 
@@ -412,150 +398,7 @@ async fn a_raw_input_required_retry_completes_the_call_that_asked() {
     }
 }
 
-/// An in-band answer takes effect as soon as it is given. A later prompt that
-/// stays open never holds back an earlier decision.
-async fn an_in_band_answer_takes_effect_before_the_next_prompt(
-    endpoint: &str,
-    version: &ProtocolVersion,
-    reef: &Reef<'_>,
-) {
-    let session = Session::open(
-        endpoint,
-        version,
-        vec![Some(ElicitationAction::Accept), None],
-        None,
-    )
-    .await;
-    let task = session.start_task().await;
-    let accepted = session
-        .call(
-            "exec",
-            json!({"task_id":task, "intent":"Invoke two approval-gated Tools", "wait_ms":0, "program":PARALLEL}),
-        )
-        .await;
-    let run = coral_run::RunId::parse(accepted["run_id"].as_str().expect("Run")).expect("Run");
-    let approvals = || {
-        reef.approvals
-            .list_for_run(&reef.user, reef.workspace, &run)
-    };
-    // Let both approvals exist first, so one observation asks about both.
-    let mut cursor = None;
-    loop {
-        let update = reef
-            .runs
-            .observe(
-                &reef.user,
-                reef.workspace,
-                &run,
-                &coral_run::RunObservation::immediate(cursor, 100)
-                    .and_then(|observation| observation.with_wait(Duration::from_secs(5)))
-                    .expect("observation"),
-            )
-            .await
-            .expect("observe Run");
-        if update.required_actions().len() == 2 {
-            break;
-        }
-        assert!(
-            !update.state().is_terminal(),
-            "both Invocations wait for approval"
-        );
-        cursor = Some(update.next_cursor().clone());
-    }
-    // Boxed: an Approval decision future is large.
-    let decide_the_other_in_reef = Box::pin(async {
-        session.prompted(2).await;
-        let requests = approvals().await.expect("approvals");
-        assert!(
-            requests
-                .iter()
-                .any(|request| request.state == ApprovalState::Approved),
-            "the first answer is recorded before the second prompt opens"
-        );
-        let open = requests
-            .iter()
-            .find(|request| request.state == ApprovalState::Pending)
-            .expect("the second approval waits for its open prompt");
-        reef.approvals
-            .decide(
-                &reef.user,
-                reef.workspace,
-                &open.id,
-                ApprovalDecision::Decline,
-                None,
-                &TraceId::current_or_new(),
-            )
-            .await
-            .expect("decide in Reef");
-    });
-    let (observed, ()) = tokio::time::timeout(Duration::from_secs(15), async {
-        tokio::join!(
-            session.call(
-                "wait",
-                json!({"run_id":accepted["run_id"], "cursor":accepted["next_cursor"], "wait_ms":0}),
-            ),
-            decide_the_other_in_reef
-        )
-    })
-    .await
-    .expect("the call returns once the open prompt is withdrawn");
-    assert_eq!(observed["required_actions"], json!([]));
-    session.service.cancel().await.expect("close session");
-}
-
 const PARALLEL: &str = "return await Promise.all([coral.providers.weather.getForecast({}), coral.providers.weather.getForecast({})]);";
-
-/// A 2025-11-25 prompt stays open while the call waits. Deciding in Reef
-/// withdraws it, so the call returns without an answer from the client.
-/// RMCP routes the cancellation notice to the standalone stream, which this
-/// client does not read, so only the server side is asserted.
-async fn a_prompt_decided_in_reef_is_withdrawn(
-    endpoint: &str,
-    version: &ProtocolVersion,
-    reef: &Reef<'_>,
-) {
-    let session = Session::open(endpoint, version, vec![None], None).await;
-    let task = session.start_task().await;
-    // Boxed: an Approval decision future is large.
-    let decide_in_reef = Box::pin(async {
-        let prompts = session.prompted(1).await;
-        let message = form_message(prompts.first().expect("one prompt"));
-        let run = message
-            .split("/runs/")
-            .nth(1)
-            .and_then(|rest| rest.split_whitespace().next())
-            .expect("Run Status Page URL");
-        let run = coral_run::RunId::parse(run).expect("Run identity");
-        let requests = reef
-            .approvals
-            .list_for_run(&reef.user, reef.workspace, &run)
-            .await
-            .expect("approvals");
-        let [request] = requests.as_slice() else {
-            panic!("one approval")
-        };
-        reef.approvals
-            .decide(
-                &reef.user,
-                reef.workspace,
-                &request.id,
-                ApprovalDecision::Approve,
-                None,
-                &TraceId::current_or_new(),
-            )
-            .await
-            .expect("decide in Reef");
-    });
-    let (update, ()) = tokio::time::timeout(Duration::from_secs(10), async {
-        tokio::join!(session.exec(&task), decide_in_reef)
-    })
-    .await
-    .expect("the call returns once the prompt is withdrawn");
-    assert_eq!(update["required_actions"], json!([]));
-    let terminal = session.wait_terminal(update).await;
-    assert_eq!(terminal["state"], "succeeded", "{terminal}");
-    session.service.cancel().await.expect("close session");
-}
 
 /// The 2026-07-28 wire shape that strict clients validate: an `input_required`
 /// result carrying a form elicitation, then a retry that completes the same call.
@@ -658,7 +501,6 @@ async fn a_raw_retry_completes_the_call_that_asked(endpoint: &str, version: &Pro
     session
         .tool("cancel", json!({"run_id":update["run_id"]}))
         .await;
-    session.close().await;
 }
 
 async fn agents_are_never_prompted(endpoint: &str, version: &ProtocolVersion, credential: &str) {

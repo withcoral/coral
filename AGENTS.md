@@ -19,6 +19,11 @@
 
 - Keep transport and presentation adapters thin. Put domain behavior behind a
   transport-neutral interface.
+- Coral keeps no MCP session: every MCP request stands on its own credential,
+  so any Coral Instance serves it
+  ([ADR 0026](docs/adr/0026-mcp-requests-are-served-without-sessions.md)). Do
+  not hold state between a client's requests in the Adapter, and do not send a
+  client anything outside the response to its own request.
 - Read process environment only at process bootstrap. Pass explicit values to
   domain code.
 - Route untrusted outbound HTTP through `coral-outbound::Client`. Pass the

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -10,12 +9,11 @@ use axum::extract::State;
 use axum::http::{Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
-use coral_workspace::{Principal, WorkspaceId, WorkspaceState};
-use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
-use rmcp::transport::streamable_http_server::session::{SessionId, SessionManager as _};
+use coral_workspace::WorkspaceState;
+use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use tokio::net::TcpListener;
-use tokio::sync::{RwLock, oneshot};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tower::ServiceExt as _;
 
@@ -102,7 +100,7 @@ impl RunningMcpHttpServer {
         self.local_addr
     }
 
-    /// Stops accepting requests, closes sessions, and joins the listener.
+    /// Stops accepting requests and joins the listener.
     ///
     /// # Errors
     ///
@@ -198,13 +196,17 @@ async fn start_server(
             local_addr.ip().to_string(),
         ]
     });
+    // No MCP session: every request stands on its own credential, so any Coral
+    // Instance can serve it. A pre-2026-07-28 client still gets its
+    // `initialize` answer, without a session id, and asks about human actions
+    // through the Run Update instead of an in-band prompt (ADR 0026).
     let streamable_config = StreamableHttpServerConfig::default()
+        .with_legacy_session_mode(false)
         .with_allowed_hosts(allowed_hosts)
         .with_max_request_body_bytes(MAX_MCP_REQUEST_BODY_SIZE);
     let state = Arc::new(HttpState {
         modules,
         authentication,
-        sessions: RwLock::new(HashMap::new()),
         config: streamable_config,
     });
     let health_state = state.clone();
@@ -239,15 +241,12 @@ async fn start_server(
             )
             .with_state(state.clone());
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let task_state = state.clone();
     let task = tokio::spawn(async move {
-        let result = axum::serve(listener, router)
+        axum::serve(listener, router)
             .with_graceful_shutdown(async move {
                 let _shutdown_result = shutdown_rx.await;
             })
-            .await;
-        task_state.close_sessions().await;
-        result
+            .await
     });
     Ok(RunningMcpHttpServer {
         local_addr,
@@ -260,57 +259,15 @@ async fn start_server(
 struct HttpState {
     modules: McpModules,
     authentication: Arc<dyn WorkspaceAuthenticator>,
-    sessions: RwLock<HashMap<(WorkspaceId, Principal), Arc<LocalSessionManager>>>,
     config: StreamableHttpServerConfig,
-}
-
-impl HttpState {
-    async fn session_manager(
-        &self,
-        workspace_id: &WorkspaceId,
-        principal: &Principal,
-    ) -> Arc<LocalSessionManager> {
-        let key = (workspace_id.clone(), principal.clone());
-        if let Some(manager) = self.sessions.read().await.get(&key) {
-            return manager.clone();
-        }
-        self.sessions
-            .write()
-            .await
-            .entry(key)
-            .or_insert_with(|| Arc::new(LocalSessionManager::default()))
-            .clone()
-    }
-
-    async fn close_sessions(&self) {
-        let managers = self
-            .sessions
-            .write()
-            .await
-            .drain()
-            .map(|(_workspace_id, manager)| manager)
-            .collect::<Vec<_>>();
-        for manager in managers {
-            let session_ids = manager
-                .sessions
-                .read()
-                .await
-                .keys()
-                .cloned()
-                .collect::<Vec<SessionId>>();
-            for session_id in session_ids {
-                let _close_result = manager.close_session(&session_id).await;
-            }
-        }
-    }
 }
 
 /// The well-known prefix protected-resource metadata is served under (RFC 9728).
 const METADATA_ROOT: &str = "/.well-known/oauth-protected-resource";
 
 /// Authenticates at whichever MCP endpoint the request reached, checks
-/// current authority in the Workspace that fixed, and hands the request to
-/// that Workspace's and Principal's MCP sessions.
+/// current authority in the Workspace that fixed, and serves the request as
+/// that Principal. Nothing is kept between requests.
 async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) -> Response {
     if state.config.cancellation_token.is_cancelled() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -379,16 +336,13 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
         }
         handler = handler.naming_workspace(workspace.display_name().as_str());
     }
-    // Authentication is complete. RMCP/session extensions need no credential
-    // material; only the separately constructed canonical context reaches tools.
+    // Authentication is complete. RMCP extensions need no credential material;
+    // only the separately constructed canonical context reaches tools.
     request.headers_mut().remove(header::AUTHORIZATION);
-    let sessions = state
-        .session_manager(&workspace_id, principal.principal())
-        .await;
     let config = state.config.clone();
     let service = StreamableHttpService::new(
         move || Ok::<_, io::Error>(handler.clone()),
-        sessions,
+        Arc::new(NeverSessionManager::default()),
         config,
     );
     match service.oneshot(request).await {

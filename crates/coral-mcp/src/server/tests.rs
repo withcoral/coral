@@ -98,9 +98,7 @@ async fn wait(server: &McpServer, run_id: &RunId, wait_ms: Option<Value>) -> Val
     }
     let request =
         CallToolRequestParams::new("wait").with_arguments(arguments.as_object().unwrap().clone());
-    let Ok(CallToolResponse::Complete(result)) =
-        server.dispatch(request, Channel::Unavailable).await
-    else {
+    let Ok(CallToolResponse::Complete(result)) = server.dispatch(request, None).await else {
         panic!("wait without prompting completes")
     };
     assert_ne!(result.is_error, Some(true));

@@ -369,12 +369,6 @@ async fn a_connection_prompt_opens_reef_and_declining_it_declines_the_request() 
         prompts,
         "accepting a connection prompt only opens the page"
     );
-    assert!(
-        !runs
-            .connection_connected(user, workspace, &action.request, &trace())
-            .await,
-        "a waiting request is not complete"
-    );
     runs.answer_action_prompt(
         user,
         workspace,

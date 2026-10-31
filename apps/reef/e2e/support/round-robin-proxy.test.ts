@@ -19,7 +19,7 @@ async function backend(name: string) {
     stream.end(name)
   })
   const mcp = createHttpServer((incoming, response) => {
-    // initialize issues a session, as a 2025-11-25 MCP server does.
+    // A backend that still issues a session id: the proxy must not route by it.
     if (incoming.url === '/initialize') response.setHeader('mcp-session-id', `${name}-session`)
     response.end(`${name} ${incoming.headers.host}`)
   })
@@ -78,9 +78,10 @@ test('the proxy balances each request on one connection and records what each an
       })
     // The Host header stays the proxy's origin.
     assert.equal(await post('/initialize'), `second ${new URL(proxy.mcpURL).host}`)
-    // A session's later requests stay on the instance that issued it, pinned or not.
+    // The id the second instance just issued routes nothing: Coral keeps no
+    // MCP session, so a pin or the rotation decides, never the header.
     proxy.pin(0)
-    assert.match(await post('/mcp', { 'mcp-session-id': 'second-session' }), /^second /)
+    assert.match(await post('/mcp', { 'mcp-session-id': 'second-session' }), /^first /)
     assert.match(await post('/mcp'), /^first /)
     proxy.pin(undefined)
     const grpc = proxy.requests().filter(({ front }) => front === 'grpc')
@@ -102,7 +103,7 @@ test('the proxy balances each request on one connection and records what each an
         .map(({ instance, path, status }) => [instance, path, status]),
       [
         [1, '/initialize', 200],
-        [1, '/mcp', 200],
+        [0, '/mcp', 200],
         [0, '/mcp', 200],
       ],
     )

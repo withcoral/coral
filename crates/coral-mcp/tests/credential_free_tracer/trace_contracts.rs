@@ -20,10 +20,6 @@ const ABSENT: &str = "00000000-0000-4000-8000-000000000000";
 /// new trace for an invalid one, and is the trace of the exported request and
 /// tool spans either way.
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one table of tool failures, each checked in every supported protocol version"
-)]
 async fn tool_failures_name_the_trace_of_their_request() {
     let capture = capture();
     let tracer = Tracer::start().await;
@@ -86,7 +82,6 @@ async fn tool_failures_name_the_trace_of_their_request() {
             );
             failures.push((context, parent, tool, Some(code), named));
         }
-        session.close().await;
     }
 
     // coral-telemetry owns which traceparents are valid; one invalid case
@@ -121,7 +116,6 @@ async fn tool_failures_name_the_trace_of_their_request() {
         Some("run_not_found"),
         None,
     ));
-    session.close().await;
 
     let spans = capture.spans.finished();
     for (context, trace, tool, failure, task) in &failures {
@@ -210,7 +204,6 @@ async fn protocol_errors_record_their_json_rpc_code() {
         .expect("raw request");
     let message = super::parse_message(response).await;
     assert_eq!(message["error"]["code"], -32602, "{message}");
-    session.close().await;
 
     let spans = capture.spans.finished();
     let tool_span = spans
@@ -270,7 +263,6 @@ async fn caller_text_cannot_set_a_failures_trace_id() {
             serde_json::from_str(failed["content"][0]["text"].as_str().expect("JSON text"))
                 .expect("content[0] is JSON");
         assert_eq!(&text, failure, "{version}");
-        session.close().await;
     }
 }
 
@@ -331,7 +323,6 @@ async fn records_carry_the_trace_of_their_request() {
             task.clone(),
         ));
         saved.push((format!("{version} started"), started, None, task));
-        session.close().await;
     }
 
     let spans = capture.spans.finished();

@@ -131,7 +131,6 @@ async fn content_only_clients_read_results_and_actionable_rejections() {
         }
 
         check_concealed_descriptions(&session, &task, version).await;
-        session.close().await;
     }
 }
 
@@ -256,9 +255,6 @@ async fn agents_observe_and_cancel_only_their_own_runs() {
         assert_eq!(canceled["structuredContent"]["required_actions"], json!([]));
         for (session, run) in [(&owner, &owner_run), (&other, &other_run)] {
             session.tool("cancel", json!({"run_id":run})).await;
-        }
-        for session in [owner, agent, other] {
-            session.close().await;
         }
     }
     tracer
