@@ -22,7 +22,7 @@ import {
 import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_pb.ts'
 import { approvedProgramProvider, deniedProgramProvider } from './program-approval.ts'
 
-test("A workspace owner's Program adds a provider that needs no sign-in, and Coral publishes it with no Reef step", async (context) => {
+test("A workspace owner's Program adds a provider that needs no sign-in, and you preview and add it at its link", async (context) => {
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
     const workspace = await programWorkspace(api, step, ['addProvider'])
@@ -36,7 +36,8 @@ test("A workspace owner's Program adds a provider that needs no sign-in, and Cor
       accessToken: await mcpToken(page, id),
       taskIntent: 'Add the weather provider',
     })
-    await step('The Program gets the provider that Coral published', async () => {
+    let link = ''
+    await step('The Program gets a link, and adds nothing yet', async () => {
       const call = {
         namespace: 'weather',
         source: { kind: 'openapi_document', document: JSON.stringify(document) },
@@ -48,15 +49,22 @@ test("A workspace owner's Program adds a provider that needs no sign-in, and Cor
         await runner.exec(`return await coral.workspace.addProvider(${JSON.stringify(call)});`),
       )
       expect(update.required_actions).toEqual([])
-      expect(update.final_value).toMatchObject({
-        value: {
-          data: {
-            namespace: 'weather',
-            displayName: 'Forecasts',
-          },
-          metadata: { kind: 'builtin' },
-        },
-      })
+      const { data } = (update.final_value as { value: { data: { status: string; url: string } } })
+        .value
+      expect(data.status).toBe('needs_person')
+      link = data.url
+      const providers = addedProviders(
+        (await api.providers.listProviders({ parent: workspace.name })).providers,
+      )
+      expect(providers).toEqual([])
+    })
+    await step('Preview the tools, and add the provider', async () => {
+      await page.goto(link)
+      await acceptTools(page)
+      const add = page.getByRole('button', { name: 'Add provider', exact: true })
+      await add.waitFor()
+      await add.click()
+      await waitForPublication(page)
     })
     await step('Show the provider in the workspace', async () => {
       const providers = addedProviders(
@@ -102,7 +110,7 @@ test("A workspace owner's Program adds a provider with a shared account, and you
       expect(update.required_actions).toEqual([])
       const { data } = (update.final_value as { value: { data: { status: string; url: string } } })
         .value
-      expect(data.status).toBe('needs_sign_in')
+      expect(data.status).toBe('needs_person')
       link = data.url
       const url = new URL(link)
       expect(url.pathname).toBe(`/workspaces/${id}/providers/new`)
@@ -166,7 +174,7 @@ test("A workspace owner's Program prepares a confidential OAuth application, and
       run = `${workspace.name}/runs/${update.run_id}`
       const { data } = (update.final_value as { value: { data: { status: string; url: string } } })
         .value
-      expect(data.status).toBe('needs_sign_in')
+      expect(data.status).toBe('needs_person')
       link = data.url
     })
     await step('The stepper asks for the secret and names the one host it goes to', async () => {

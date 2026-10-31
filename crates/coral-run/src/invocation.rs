@@ -189,7 +189,7 @@ pub(crate) struct ToolInvoker {
     accounts: Option<coral_provider::account::AccountModule>,
     providers: coral_provider::ProviderModule,
     policies: coral_policy::ToolPolicyModule,
-    provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
+    provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
     human_interface: Option<crate::HumanInterfaceUrl>,
     database: Arc<coral_db::Database>,
     workspaces: WorkspaceModule,
@@ -223,7 +223,7 @@ impl ToolInvoker {
         accounts: Option<coral_provider::account::AccountModule>,
         providers: coral_provider::ProviderModule,
         policies: coral_policy::ToolPolicyModule,
-        provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
+        provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
         human_interface: Option<crate::HumanInterfaceUrl>,
         database: Arc<coral_db::Database>,
         workspaces: WorkspaceModule,
@@ -239,7 +239,7 @@ impl ToolInvoker {
             accounts,
             providers,
             policies,
-            provider_publisher,
+            provider_renamer,
             human_interface,
             database,
             workspaces,
@@ -681,20 +681,17 @@ impl ToolInvoker {
             )),
             None => None,
         };
-        let request_id = coral_provider::ManagementRequestId::parse(&admitted.id.to_string())
-            .map_err(Error::from)?;
         let host = crate::builtin::BuiltinHost {
             database: &self.database,
             providers: &self.providers,
             policies: &self.policies,
             accounts: self.accounts.as_ref(),
-            publisher: self.provider_publisher.as_deref(),
+            renamer: self.provider_renamer.as_deref(),
             actor: &self.actor,
             context: context.as_ref(),
             principal: &self.principal,
             workspace_id: &self.workspace_id,
             human_interface,
-            request_id: &request_id,
             run: self,
         };
         match call.perform(&host).await {
