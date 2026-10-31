@@ -116,7 +116,7 @@ impl CoralFailure {
             Self::ProviderUnavailable => "Provider is unavailable",
             Self::ProviderNamespaceConflict => "Provider namespace is already in use",
             Self::ProviderNotFound => "Provider was not found",
-            Self::ProviderPublicationFailed => "Coral could not publish the Provider",
+            Self::ProviderPublicationFailed => "Coral could not change the Provider",
             Self::CredentialRouteChanged => "Tool credential route changed",
             Self::AccountRequired => "Tool requires a Provider Account",
             Self::CredentialRefreshFailed => "Tool credential refresh failed",

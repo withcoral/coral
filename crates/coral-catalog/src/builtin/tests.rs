@@ -243,35 +243,25 @@ fn configured_providers() -> impl Iterator<Item = GetProviderResult> {
         })
 }
 
-/// What each Tool that publishes a Provider returns: the Provider, or
-/// the link where a person finishes it.
-fn publication_results() -> Vec<(BuiltinTool, serde_json::Value)> {
+/// What each Tool that prepares a Provider Setup returns: the link where a
+/// person finishes it, or the Provider a rename changed.
+fn setup_tool_results() -> Vec<(BuiltinTool, serde_json::Value)> {
     let mut results = facts()
-        .flat_map(|facts| {
-            [
-                (
-                    BuiltinTool::AddProvider,
-                    AddProviderResult::Published {
-                        namespace: "weather".to_owned(),
-                        facts: facts.clone(),
-                    }
-                    .into_tool_result(),
-                ),
-                (
-                    BuiltinTool::UpdateProvider,
-                    UpdateProviderResult::Published {
-                        namespace: "weather".to_owned(),
-                        facts,
-                    }
-                    .into_tool_result(),
-                ),
-            ]
+        .map(|facts| {
+            (
+                BuiltinTool::UpdateProvider,
+                UpdateProviderResult::Published {
+                    namespace: "weather".to_owned(),
+                    facts,
+                }
+                .into_tool_result(),
+            )
         })
         .collect::<Vec<_>>();
     results.extend([
         (
             BuiltinTool::AddProvider,
-            AddProviderResult::NeedsSignIn {
+            AddProviderResult::NeedsPerson {
                 url: "https://coral.example/workspaces/w/providers/new?setup=s".to_owned(),
                 namespace: "weather".to_owned(),
             }
@@ -279,7 +269,7 @@ fn publication_results() -> Vec<(BuiltinTool, serde_json::Value)> {
         ),
         (
             BuiltinTool::UpdateProvider,
-            UpdateProviderResult::NeedsSignIn {
+            UpdateProviderResult::NeedsPerson {
                 url: "https://coral.example/workspaces/w/providers/p/update?setup=s&task=refresh"
                     .to_owned(),
                 namespace: "weather".to_owned(),
@@ -323,7 +313,7 @@ fn policies() -> impl Iterator<Item = (BuiltinTool, Value)> {
 // Catches: a result that tells a typed Program something its declaration does not.
 #[test]
 fn each_result_meets_its_output_schema() {
-    let mut results = publication_results();
+    let mut results = setup_tool_results();
     results.push((
         BuiltinTool::ListProviders,
         ListProvidersResult {

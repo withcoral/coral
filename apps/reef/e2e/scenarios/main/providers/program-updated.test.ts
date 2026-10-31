@@ -11,6 +11,7 @@ import {
 } from '../../../support/provider-fixtures.ts'
 import {
   acceptTools,
+  addAtLink,
   addedProviders,
   checkRadio,
   configurationNext,
@@ -55,6 +56,13 @@ async function builtinCall(runner: ReturnType<typeof programRunner>, tool: strin
   return (update.final_value as { value: { data: { status: string; url: string } } }).value.data
 }
 
+/** Opens the link a Program got, saves the change it prepared, and waits for it to publish. */
+async function saveAtLink(page: Session['page'], link: string) {
+  await page.goto(link)
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await page.waitForURL((url) => url.pathname.endsWith('/settings'))
+}
+
 /**
  * A workspace with the credential-free `weather` provider that the owner's Program added from
  * `source` with the configuration `choices`, and a runner for their Programs. They call each
@@ -75,14 +83,15 @@ async function weatherProvider(
     accessToken: await mcpToken(page, id),
     taskIntent: 'Update the weather provider',
   })
-  await step('The Program adds a provider that needs no sign-in', async () => {
+  await step('The Program adds a provider that needs no sign-in, and you add it', async () => {
     const created = await builtinCall(program, 'addProvider', {
       namespace: 'weather',
       source,
       credentialRoute: 'none',
       ...choices,
     })
-    expect(created.status).toBe('published')
+    expect(created.status).toBe('needs_person')
+    await addAtLink(page, created.url)
   })
   const [provider] = addedProviders(
     (await api.providers.listProviders({ parent: workspace.name })).providers,
@@ -127,7 +136,7 @@ async function recordsProvider(
         credentialRoute: 'fixed',
         authentication: { ...oauth(upstream, scopes), client: { client_id: 'manual-client' } },
       })
-      expect(created.status).toBe('needs_sign_in')
+      expect(created.status).toBe('needs_person')
       await page.goto(created.url)
       await acceptTools(page)
       await signInAndShareAccount(page)
@@ -158,7 +167,7 @@ test("A workspace owner's Program replaces a source that drops a tool, and you r
         namespace: 'weather',
         source: credentialFree({ getForecast: {}, newReport: {} }),
       })
-      expect(changed.status).toBe('needs_sign_in')
+      expect(changed.status).toBe('needs_person')
       link = changed.url
       // Nothing changes until you save.
       expect(await api.providers.getProvider({ name: provider.name })).toEqual(provider)
@@ -202,7 +211,7 @@ test("A workspace owner's Program moves a provider to a shared account, and you 
           credentialRoute: 'fixed',
           authentication: { method: 'bearer' },
         })
-        expect(changed.status).toBe('needs_sign_in')
+        expect(changed.status).toBe('needs_person')
         link = changed.url
         expect(await api.providers.getProvider({ name: provider.name })).toEqual(provider)
       },
@@ -233,15 +242,16 @@ test("A workspace owner's Program moves a provider to a shared account, and you 
 test("A workspace owner's Program changes a header on an OAuth provider, and calls keep the shared account's sign-in", async (context) => {
   const upstream = await oauthApiServer(context, `account-${crypto.randomUUID()}`)
   await withOwnerSession(context, async (session) => {
-    const { step } = session
+    const { page, step } = session
     const { api, workspace, program, provider } = await recordsProvider(session, upstream, ['read'])
     const before = { ...upstream.counts }
-    await step('The Program changes a header, and Coral publishes it with no sign-in', async () => {
+    await step('The Program changes a header, and you save it with no sign-in', async () => {
       const changed = await builtinCall(program, 'updateProvider', {
         namespace: 'records',
         requestHeaders: { 'x-trace': 'on' },
       })
-      expect(changed.status).toBe('published')
+      expect(changed.status).toBe('needs_person')
+      await saveAtLink(page, changed.url)
       expect([upstream.counts.consents, upstream.counts.tokens]).toEqual([
         before.consents,
         before.tokens,
@@ -277,7 +287,7 @@ test("A workspace owner's Program adds a scope to an OAuth provider, and you sig
           namespace: 'records',
           authentication: oauth(upstream, ['read', 'write']),
         })
-        expect(changed.status).toBe('needs_sign_in')
+        expect(changed.status).toBe('needs_person')
         link = changed.url
         // Nothing changes until you save.
         expect(await api.providers.getProvider({ name: provider.name })).toEqual(provider)
@@ -366,8 +376,8 @@ test("A workspace owner's Program moves a provider from an OpenAPI document to a
         namespace: 'weather',
         source: { kind: 'mcp_url', url: mcpUrl },
       })
-      // The server drops getForecast, which only a person can confirm.
-      expect(changed.status).toBe('needs_sign_in')
+      // The server drops getForecast, which you confirm at the link.
+      expect(changed.status).toBe('needs_person')
       link = changed.url
     })
     await step('Review the tool the server adds and the tool it drops, and save', async () => {
@@ -407,8 +417,8 @@ test("A workspace owner's Program moves a provider from an MCP server to an Open
           namespace: 'weather',
           source: credentialFree({ getForecast: {} }, service.origin),
         })
-        // The document drops the server's hello tool, which only a person can confirm.
-        expect(changed.status).toBe('needs_sign_in')
+        // The document drops the server's hello tool, which you confirm at the link.
+        expect(changed.status).toBe('needs_person')
         link = changed.url
       },
     )
@@ -433,11 +443,11 @@ test("A workspace owner's Program moves a provider from an MCP server to an Open
   })
 })
 
-test("A workspace owner's Program renames a provider, moves it to another server and drops a header, and Coral publishes it with no Reef step", async (context) => {
+test("A workspace owner's Program renames a provider, moves it to another server and drops a header, and you save the change", async (context) => {
   const first = await weatherService(context)
   const second = await weatherService(context)
   await withOwnerSession(context, async (session) => {
-    const { step } = session
+    const { page, step } = session
     const { api, program, provider } = await weatherProvider(
       session,
       credentialFree({ getForecast: {} }, first.origin),
@@ -449,7 +459,7 @@ test("A workspace owner's Program renames a provider, moves it to another server
       expect(first.calls.map((call) => call.headers['x-trace'])).toEqual(['on'])
     })
     await step(
-      'The Program changes the name, the server and the header in one call, and Coral publishes it',
+      'The Program changes the name, the server and the header in one call, and you save it',
       async () => {
         const changed = await builtinCall(program, 'updateProvider', {
           namespace: 'weather',
@@ -458,7 +468,8 @@ test("A workspace owner's Program renames a provider, moves it to another server
           // null removes the saved header.
           requestHeaders: { 'x-trace': null },
         })
-        expect(changed.status).toBe('published')
+        expect(changed.status).toBe('needs_person')
+        await saveAtLink(page, changed.url)
         const updated = await api.providers.getProvider({ name: provider.name })
         expect([updated.callRoot, updated.displayName]).toEqual([
           'coral.providers.weather',
@@ -477,21 +488,21 @@ test("A workspace owner's Program renames a provider, moves it to another server
 test("A workspace owner's Program reads a provider's document URL again, and calls reach the tool it adds", async (context) => {
   const service = await weatherService(context)
   await withOwnerSession(context, async (session) => {
-    const { step } = session
+    const { page, step } = session
     const { api, program, provider } = await weatherProvider(session, {
       kind: 'openapi_url',
       url: `${service.origin}/openapi.json`,
     })
-    await step('The service adds a tool, and the Program reads the document again', async () => {
+    await step('The service adds a tool, the Program reads it, and you save it', async () => {
       service.tools = { getForecast: {}, getAlerts: {} }
       const reads = service.reads
       const changed = await builtinCall(program, 'updateProvider', {
         namespace: 'weather',
         refresh: true,
       })
-      // The new document keeps every tool, so nobody needs to act.
-      expect(changed.status).toBe('published')
+      expect(changed.status).toBe('needs_person')
       expect(service.reads).toBe(reads + 1)
+      await saveAtLink(page, changed.url)
     })
     await step('A Program calls the new tool', async () => {
       expect(
@@ -528,7 +539,7 @@ test("A workspace owner's Program asks for a shared API key in a header, and you
           },
           credentialFields: { key: { label: 'Weather key', sensitive: true } },
         })
-        expect(changed.status).toBe('needs_sign_in')
+        expect(changed.status).toBe('needs_person')
         link = changed.url
         expect(await api.providers.getProvider({ name: provider.name })).toEqual(provider)
       },
@@ -581,7 +592,7 @@ test("A workspace owner denies their Program's rename, then approves it, and the
       expect(update.final_value).toEqual({ kind: 'value', value: 'approval_declined' })
       expect(await api.providers.getProvider({ name: provider.name })).toEqual(provider)
     })
-    await step('Approve the same rename in a new Run, and Coral publishes it', async () => {
+    await step('Approve the same rename in a new Run, and Coral renames it', async () => {
       const paused = await pausedForApproval(program, rename)
       const review = await openReview(page, paused, 'updateProvider')
       await review.getByRole('button', { name: 'Approve this call', exact: true }).click()
@@ -631,19 +642,20 @@ test("Another owner finds nothing at an owner's update link, and the owner who g
         taskIntent: 'Update the weather provider',
       })
       await step(
-        "Alice's Program adds a provider, then replaces its source and gets a link",
+        "Alice adds her Program's provider, then the Program replaces its source and gets a link",
         async () => {
           const created = await builtinCall(program, 'addProvider', {
             namespace: 'weather',
             source: credentialFree({ getForecast: {}, oldReport: {} }),
             credentialRoute: 'none',
           })
-          expect(created.status).toBe('published')
+          expect(created.status).toBe('needs_person')
+          await addAtLink(page, created.url)
           const changed = await builtinCall(program, 'updateProvider', {
             namespace: 'weather',
             source: credentialFree({ getForecast: {}, newReport: {} }),
           })
-          expect(changed.status).toBe('needs_sign_in')
+          expect(changed.status).toBe('needs_person')
           link = changed.url
         },
       )

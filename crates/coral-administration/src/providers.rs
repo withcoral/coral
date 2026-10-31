@@ -15,8 +15,8 @@ use coral_db::Database;
 use coral_provider::{
     ActiveGeneration, Error, MaterializedPublication, PreparedPublication, Provider,
     ProviderDisplayName, ProviderId, ProviderModule, ProviderPublication,
-    ProviderRegenerationPublication, ProviderRegenerationRequest, PublicationEvidence, Published,
-    WorkspaceProviderPublicationRequest, WorkspaceProviderPublisher,
+    ProviderRegenerationPublication, ProviderRegenerationRequest, ProviderRenamer,
+    PublicationEvidence, Published, WorkspaceProviderPublicationRequest,
 };
 use coral_search::SearchIndex;
 use coral_telemetry::safe;
@@ -263,26 +263,10 @@ impl ProviderWorkflow {
     }
 }
 
-/// A Built-in Tool publishes through this workflow, so its Publication
-/// and its search notification are the ones Reef's gives.
+/// A Built-in Tool renames through this workflow, so its rename and its search
+/// notification are the ones Reef's gives.
 #[async_trait::async_trait]
-impl WorkspaceProviderPublisher for ProviderWorkflow {
-    async fn publish_workspace_provider(
-        &self,
-        context: &ChangeContext,
-        request: WorkspaceProviderPublicationRequest,
-    ) -> Result<ProviderPublication, Error> {
-        Self::publish_workspace_provider(self, context, request).await
-    }
-
-    async fn regenerate_workspace_provider(
-        &self,
-        context: &ChangeContext,
-        request: ProviderRegenerationRequest,
-    ) -> Result<ProviderRegenerationPublication, Error> {
-        Self::regenerate_provider(self, context, request).await
-    }
-
+impl ProviderRenamer for ProviderWorkflow {
     async fn rename_provider(
         &self,
         context: &ChangeContext,

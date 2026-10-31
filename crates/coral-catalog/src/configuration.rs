@@ -129,6 +129,15 @@ pub struct ProviderConfigurationReview {
     pub servers: Vec<ServerGroup>,
 }
 
+impl ProviderConfigurationReview {
+    /// Whether the source says nothing about credentials. That is not a
+    /// statement that it needs none, so Coral suggests no method for it.
+    #[must_use]
+    pub fn silent_on_credentials(&self) -> bool {
+        self.authentication_status == "missing"
+    }
+}
+
 /// Bounded diagnostic that contains a field address but no rejected value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigurationFieldError {

@@ -1,11 +1,10 @@
 //! `coral.workspace.updateProvider` changes an Owner-created Provider through
-//! an Update Setup and a regeneration Publication, as Reef's update page does.
-//! Coral publishes the change when nobody needs to act; otherwise the call
-//! returns Reef's update page, where a person finishes it. A rename alone keeps
+//! an Update Setup, as Reef's update page does. The call returns Reef's update
+//! page, where a person reviews and publishes the change. A rename alone keeps
 //! the Generation, as Reef's settings page does.
 use super::provider_setup::{
-    AdminScope, DOCUMENT, PRIVATE_DOCUMENT, SetupCanceledFirst, StallingPublisher, document_server,
-    document_source, fetches, final_value, url_source, workflow, workspace_call,
+    AdminScope, DOCUMENT, HeldDocument, PRIVATE_DOCUMENT, document_server, document_source,
+    fetches, final_value, url_source, workflow, workspace_call,
 };
 use super::*;
 
@@ -49,9 +48,9 @@ async fn publications_since(
 }
 
 // Catches: an update that resets a field the call omits, or that loses a kept
-// Tool's Call Path or Tool Access State.
+// Tool's Call Path or Tool Access State once the person publishes it.
 #[tokio::test]
-async fn coral_publishes_a_change_nobody_needs_to_act_on() {
+async fn a_published_change_keeps_what_the_call_omits() {
     let scope = AdminScope::new("user:update-provider").await;
     scope.publish_weather().await;
     let forecast = "coral.providers.weather.getForecast";
@@ -59,7 +58,6 @@ async fn coral_publishes_a_change_nobody_needs_to_act_on() {
         .set_access_to(forecast, ToolAccessState::Disabled)
         .await;
     let before = saved(&scope, "weather").await;
-    let events = scope.lifecycle_events().await;
 
     let run = scope
         .start(
@@ -73,40 +71,12 @@ async fn coral_publishes_a_change_nobody_needs_to_act_on() {
         .await;
     scope.approve(&scope.owner, &run).await;
     let result = final_value(&scope.terminal(&scope.owner, &run).await);
+    scope.person_publishes_update(&result).await;
 
-    assert_eq!(
-        result,
-        serde_json::json!({
-            "data": {
-                "status": "published",
-                "namespace": "weather",
-                "displayName": "Forecasts",
-                "credentialRoute": "none",
-                "authentication": "none",
-                // The kept Tool stays disabled, so the Program cannot call it.
-                "tools": 0,
-                "accountRequired": false,
-            },
-            "metadata": { "kind": "builtin" },
-        })
-    );
     let mut expected = before;
     *expected.pointer_mut("/data/displayName").unwrap() = serde_json::json!("Forecasts");
     *expected.pointer_mut("/data/requestHeaders").unwrap() = serde_json::json!({ "x-trace": "on" });
     assert_eq!(saved(&scope, "weather").await, expected);
-    // The Publication names the Owner whose Program asked for it.
-    let published = publications_since(&scope, &events).await;
-    let [published] = published.as_slice() else {
-        panic!("one Publication: {published:?}")
-    };
-    assert!(
-        matches!(
-            published.actor(),
-            coral_provider::LifecycleActor::User { user_id, .. }
-                if user_id == scope.owner_user().user_id()
-        ),
-        "{published:?}"
-    );
     // The kept Tool keeps its Call Path, so it resolves, and its policy.
     let decision = scope
         .fixture
@@ -138,7 +108,8 @@ async fn unattended(user: &str) -> AdminScope {
     scope
 }
 
-/// Creates the credential-free `weather` Provider from `source`.
+/// Creates the credential-free `weather` Provider from `source`: a Program
+/// adds it and a person publishes it.
 async fn create_weather(scope: &AdminScope, source: serde_json::Value) -> coral_provider::Provider {
     let created = call(
         scope,
@@ -146,20 +117,8 @@ async fn create_weather(scope: &AdminScope, source: serde_json::Value) -> coral_
         &serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "none" }),
     )
     .await;
-    assert_eq!(
-        created.pointer("/data/status"),
-        Some(&serde_json::json!("published")),
-        "{created}"
-    );
-    scope
-        .fixture
-        .providers
-        .inspect_providers(&scope.owner_user(), &scope.workspace_id)
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|provider| provider.call_root().as_str() == "coral.providers.weather")
-        .expect("the weather Provider")
+    scope.person_publishes(&created).await;
+    scope.weather().await.expect("the weather Provider")
 }
 
 // Catches: a call that changes only the display name opening an Update Setup
@@ -196,27 +155,24 @@ async fn a_rename_alone_keeps_the_generation() {
 }
 
 // Catches: a refresh that reads a URL other than the one saved when the call
-// runs, or a source that only adds Tools waiting for a person.
+// runs.
 #[tokio::test]
 async fn refresh_reads_the_source_url_saved_when_the_call_runs() {
     let scope = unattended("user:update-refresh").await;
     let first = document_server(DOCUMENT).await;
     let second = document_server(WITH_ALERTS).await;
     create_weather(&scope, url_source(&first)).await;
-
-    // A new source that only adds a Tool publishes at once.
     let replaced = call(
         &scope,
         "updateProvider",
         &serde_json::json!({ "namespace": "weather", "source": url_source(&second) }),
     )
     .await;
+    scope.person_publishes_update(&replaced).await;
     assert_eq!(
-        replaced.pointer("/data/status"),
-        Some(&serde_json::json!("published")),
-        "{replaced}"
+        saved(&scope, "weather").await.pointer("/data/source"),
+        Some(&url_source(&second))
     );
-    assert_eq!(replaced.pointer("/data/tools"), Some(&serde_json::json!(2)));
 
     let (first_before, second_before) = (fetches(&first).await, fetches(&second).await);
     let refreshed = call(
@@ -225,19 +181,11 @@ async fn refresh_reads_the_source_url_saved_when_the_call_runs() {
         &serde_json::json!({ "namespace": "weather", "refresh": true }),
     )
     .await;
-    assert_eq!(
-        refreshed.pointer("/data/status"),
-        Some(&serde_json::json!("published")),
-        "{refreshed}"
-    );
+    scope.person_publishes_update(&refreshed).await;
     assert_eq!(
         (fetches(&first).await, fetches(&second).await),
         (first_before, second_before + 1),
         "the refresh reads the saved URL, and only it"
-    );
-    assert_eq!(
-        saved(&scope, "weather").await.pointer("/data/source"),
-        Some(&url_source(&second))
     );
 }
 
@@ -254,17 +202,16 @@ enum Saved {
     PerCaller,
 }
 
-// Catches: Coral publishing a change only a person can confirm (a source that
-// drops or breaks a Tool Programs call now, a new way to sign in, a new Credential
-// Route, or an application's secret), or a link that confirms the change for
-// the person, opens another task than Reef starts for the same change, or
-// loses the route the Program asked for.
+// Catches: Coral publishing a change no person reviewed, even one that keeps
+// every Tool and the route, or a link that confirms the change for the person,
+// opens another task than Reef starts for the same change, or loses the route
+// the Program asked for.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one table checks the page each change that needs a person opens"
+    reason = "one table checks the page each change opens"
 )]
-async fn a_change_that_needs_a_person_returns_the_update_page() {
+async fn every_change_returns_the_update_page() {
     let confidential = serde_json::json!({
         "method": "oauth_authorization_code",
         "authorization_url": "https://weather.example/authorize",
@@ -274,6 +221,27 @@ async fn a_change_that_needs_a_person_returns_the_update_page() {
     });
     // Each link opens Reef's update page on `task`, followed by `then`.
     for (arranged, changes, task, then) in [
+        // A change that keeps the route, the contract and every Tool.
+        (
+            Saved::Document,
+            serde_json::json!({ "requestHeaders": { "x-trace": "on" } }),
+            "configuration",
+            "",
+        ),
+        // A source that only adds a Tool.
+        (
+            Saved::Document,
+            serde_json::json!({ "source": openapi_document(WITH_ALERTS) }),
+            "refresh",
+            "",
+        ),
+        // The route the Provider has.
+        (
+            Saved::Document,
+            serde_json::json!({ "credentialRoute": "none" }),
+            "accounts",
+            "&account=none",
+        ),
         (
             Saved::WithAlerts,
             serde_json::json!({ "source": document_source() }),
@@ -362,7 +330,7 @@ async fn a_change_that_needs_a_person_returns_the_update_page() {
         assert_eq!(
             result,
             serde_json::json!({
-                "data": { "status": "needs_sign_in", "url": url, "namespace": "weather" },
+                "data": { "status": "needs_person", "url": url, "namespace": "weather" },
                 "metadata": { "kind": "builtin" },
             }),
             "{changes}"
@@ -450,141 +418,195 @@ async fn each_rejection_names_its_cause_and_changes_nothing() {
     }
 }
 
-// Catches: a Publication that fails after Coral decided to publish, here one
-// whose Setup an Owner canceled first, ending the Run or changing the
-// Provider instead of failing the call with a code the Program can catch.
-#[tokio::test]
-async fn a_failed_publication_is_a_failure_the_program_catches() {
-    let mut scope = unattended("user:update-publication-failed").await;
-    create_weather(&scope, document_source()).await;
-    let (vault, accounts) = scope.fixture.accounts();
-    scope.fixture.runs =
-        scope
-            .fixture
-            .runs
-            .clone()
-            .with_provider_publisher(Arc::new(SetupCanceledFirst {
-                workflow: workflow(&scope.fixture),
-                accounts,
-                _vault: vault,
-            }));
-    let before = scope.lifecycle_events().await;
-    let saved_before = saved(&scope, "weather").await;
-    let arguments =
-        serde_json::json!({ "namespace": "weather", "requestHeaders": { "x-trace": "on" } });
+/// Renames the Provider first, as an Owner racing the call would, then forwards
+/// the rename under the etag that race made stale.
+struct RenamedFirst(coral_administration::ProviderWorkflow);
 
-    let mut result = call(&scope, "updateProvider", &arguments).await;
+#[async_trait]
+impl coral_provider::ProviderRenamer for RenamedFirst {
+    async fn rename_provider(
+        &self,
+        context: &coral_workspace::ChangeContext,
+        workspace: &coral_workspace::WorkspaceId,
+        provider: &coral_provider::ProviderId,
+        display_name: coral_provider::ProviderDisplayName,
+    ) -> Result<coral_provider::Provider, coral_provider::Error> {
+        self.0
+            .rename_provider(
+                context,
+                workspace,
+                provider,
+                coral_provider::ProviderDisplayName::parse("Raced").unwrap(),
+            )
+            .await?;
+        self.0
+            .rename_provider(context, workspace, provider, display_name)
+            .await
+    }
+}
+
+// Catches: a rename an Owner raced ending the Run instead of failing the call
+// with a code the Program can catch.
+#[tokio::test]
+async fn a_rename_an_owner_raced_is_a_failure_the_program_catches() {
+    let mut scope = unattended("user:update-rename-raced").await;
+    create_weather(&scope, document_source()).await;
+    scope.fixture.runs = scope
+        .fixture
+        .runs
+        .clone()
+        .with_provider_renamer(Arc::new(RenamedFirst(workflow(&scope.fixture))));
+
+    let mut result = call(
+        &scope,
+        "updateProvider",
+        &serde_json::json!({ "namespace": "weather", "displayName": "Forecasts" }),
+    )
+    .await;
 
     result.as_object_mut().unwrap().remove("message");
     assert_eq!(
         result,
         serde_json::json!({ "code": "provider_publication_failed" })
     );
-    scope
-        .assert_denial_changed_nothing(&before, &arguments.to_string())
-        .await;
-    assert_eq!(saved(&scope, "weather").await, saved_before);
+    assert_eq!(
+        saved(&scope, "weather").await.pointer("/data/displayName"),
+        Some(&serde_json::json!("Raced"))
+    );
 }
 
-// Catches: a worker lost while Coral publishes an update leaving the call
-// indeterminate, when Coral's own Publication shows what happened, a
-// Provider deleted since then failing the Run's termination, or a lost rename,
-// which nothing records, claiming the Run ended first.
-#[tokio::test]
-async fn recovery_settles_a_lost_update_from_its_publication() {
-    let regenerates =
-        serde_json::json!({ "namespace": "weather", "requestHeaders": { "x-trace": "on" } });
-    let renames = serde_json::json!({ "namespace": "weather", "displayName": "Forecasts" });
-    for (arguments, publishes_first, deleted_since, expected) in [
-        (
-            &regenerates,
-            true,
-            false,
-            crate::InvocationResultKind::UpstreamOutcome,
-        ),
-        (
-            &regenerates,
-            true,
-            true,
-            crate::InvocationResultKind::RunTerminated,
-        ),
-        (
-            &regenerates,
-            false,
-            false,
-            crate::InvocationResultKind::RunTerminated,
-        ),
-        (
-            &renames,
-            true,
-            false,
-            crate::InvocationResultKind::Indeterminate,
-        ),
-    ] {
-        let mut scope = unattended("user:lost-update").await;
-        let weather = scope.publish_weather().await;
-        let publisher = Arc::new(StallingPublisher {
-            workflow: workflow(&scope.fixture),
-            publishes_first,
-            entered: AtomicBool::new(false),
-            release: tokio::sync::Notify::new(),
-        });
-        scope.fixture.runs = scope
-            .fixture
-            .runs
-            .clone()
-            .with_provider_publisher(publisher.clone());
-        let run = scope.start(&scope.owner, update_provider(arguments)).await;
-        wait_until(|| publisher.entered.load(Ordering::SeqCst)).await;
-        if deleted_since {
-            scope
-                .fixture
-                .providers
-                .delete_provider(
-                    &change(scope.owner_user(), 13, '4'),
-                    &scope.workspace_id,
-                    weather.id(),
-                )
-                .await
-                .expect("an Owner deletes the Provider");
-        }
-        let accepted_at =
-            retained_events(&scope.fixture.runs, &scope.owner, &scope.workspace_id, &run)
-                .await
-                .first()
-                .expect("run.started")
-                .occurred_at_unix_nanos();
-        scope
-            .fixture
-            .expire_worker_claim(&scope.workspace_id, &run, accepted_at)
-            .await;
-        scope
-            .fixture
-            .clock
-            .next
-            .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
-        scope
-            .fixture
-            .next_process()
-            .sweep_expired_leases()
+/// Renames through the real workflow, but stalls first until released, as a
+/// worker that dies there would.
+struct StallingRenamer {
+    workflow: coral_administration::ProviderWorkflow,
+    entered: AtomicBool,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait]
+impl coral_provider::ProviderRenamer for StallingRenamer {
+    async fn rename_provider(
+        &self,
+        context: &coral_workspace::ChangeContext,
+        workspace: &coral_workspace::WorkspaceId,
+        provider: &coral_provider::ProviderId,
+        display_name: coral_provider::ProviderDisplayName,
+    ) -> Result<coral_provider::Provider, coral_provider::Error> {
+        self.entered.store(true, Ordering::SeqCst);
+        self.release.notified().await;
+        self.workflow
+            .rename_provider(context, workspace, provider, display_name)
             .await
-            .expect("sweep the lost worker's lapsed lease");
-        wait_for_terminal(&scope.fixture.runs, &scope.owner, &scope.workspace_id, &run).await;
-        let ended: Vec<_> =
-            retained_events(&scope.fixture.runs, &scope.owner, &scope.workspace_id, &run)
-                .await
-                .iter()
-                .filter_map(|event| match event.kind() {
-                    RunEventKind::InvocationEnded { result_kind, .. } => Some(*result_kind),
-                    _ => None,
-                })
-                .collect();
-        assert_eq!(
-            ended,
-            [expected],
-            "{arguments}, publishes first: {publishes_first}, deleted since: {deleted_since}"
-        );
-        publisher.release.notify_one();
+    }
+}
+
+/// Expires the worker claim on `run`, sweeps it as a lost worker, and returns
+/// how its one Invocation ended.
+async fn lose_worker(scope: &AdminScope, run: &crate::RunId) -> crate::InvocationResultKind {
+    let accepted_at = retained_events(&scope.fixture.runs, &scope.owner, &scope.workspace_id, run)
+        .await
+        .first()
+        .expect("run.started")
+        .occurred_at_unix_nanos();
+    scope
+        .fixture
+        .expire_worker_claim(&scope.workspace_id, run, accepted_at)
+        .await;
+    scope
+        .fixture
+        .clock
+        .next
+        .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
+    scope
+        .fixture
+        .next_process()
+        .sweep_expired_leases()
+        .await
+        .expect("sweep the lost worker's lapsed lease");
+    wait_for_terminal(&scope.fixture.runs, &scope.owner, &scope.workspace_id, run).await;
+    let ended: Vec<_> =
+        retained_events(&scope.fixture.runs, &scope.owner, &scope.workspace_id, run)
+            .await
+            .iter()
+            .filter_map(|event| match event.kind() {
+                RunEventKind::InvocationEnded { result_kind, .. } => Some(*result_kind),
+                _ => None,
+            })
+            .collect();
+    let [ended] = ended.as_slice() else {
+        panic!("one ended Invocation: {ended:?}")
+    };
+    *ended
+}
+
+// Catches: a worker lost while Coral prepares a Setup leaving the call
+// indeterminate, though it publishes nothing.
+#[tokio::test]
+async fn a_lost_setup_call_settles_as_the_run_ending_first() {
+    for tool in ["addProvider", "updateProvider"] {
+        let scope = unattended("user:lost-setup").await;
+        let server = MockServer::start().await;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let (release, released) = mpsc::channel();
+        Mock::given(method("GET"))
+            .and(path("/openapi.json"))
+            .respond_with(HeldDocument {
+                entered: entered.clone(),
+                release: Mutex::new(released),
+            })
+            .mount(&server)
+            .await;
+        let arguments = if tool == "addProvider" {
+            serde_json::json!({
+                "namespace": "weather",
+                "source": url_source(&server),
+                "credentialRoute": "none",
+            })
+        } else {
+            scope.publish_weather().await;
+            serde_json::json!({ "namespace": "weather", "source": url_source(&server) })
+        };
+        let run = scope
+            .start(&scope.owner, workspace_call(tool, &arguments.to_string()))
+            .await;
+        entered.notified().await;
+
+        let ended = lose_worker(&scope, &run).await;
+
+        assert_eq!(ended, crate::InvocationResultKind::RunTerminated, "{tool}");
+        release.send(()).unwrap();
         wait_until(|| !scope.fixture.runs.has_owner(&run)).await;
     }
+}
+
+// Catches: a lost rename, which nothing records, claiming the Run ended first.
+#[tokio::test]
+async fn a_lost_rename_is_indeterminate() {
+    let mut scope = unattended("user:lost-rename").await;
+    scope.publish_weather().await;
+    let renamer = Arc::new(StallingRenamer {
+        workflow: workflow(&scope.fixture),
+        entered: AtomicBool::new(false),
+        release: tokio::sync::Notify::new(),
+    });
+    scope.fixture.runs = scope
+        .fixture
+        .runs
+        .clone()
+        .with_provider_renamer(renamer.clone());
+    let run = scope
+        .start(
+            &scope.owner,
+            update_provider(
+                &serde_json::json!({ "namespace": "weather", "displayName": "Forecasts" }),
+            ),
+        )
+        .await;
+    wait_until(|| renamer.entered.load(Ordering::SeqCst)).await;
+
+    let ended = lose_worker(&scope, &run).await;
+
+    assert_eq!(ended, crate::InvocationResultKind::Indeterminate);
+    renamer.release.notify_one();
+    wait_until(|| !scope.fixture.runs.has_owner(&run)).await;
 }

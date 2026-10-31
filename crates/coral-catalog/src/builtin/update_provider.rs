@@ -40,9 +40,9 @@ pub(super) fn definition() -> Definition {
         summary: "Change a Provider's configuration or source",
         presentation: ToolPresentation::new(
             Some("Update provider".to_string()),
-            "Change the configuration or the source of one Provider in this Workspace. Coral \
-             publishes the change when nobody needs to act. Otherwise it returns a Coral UI \
-             link where a person reviews and publishes it."
+            "Change the configuration or the source of one Provider in this Workspace. It \
+             returns a Coral UI link where a person reviews and publishes the change. A \
+             change to displayName alone applies at once."
                 .to_string(),
             false,
             vec!["providers".to_string()],
@@ -61,10 +61,10 @@ pub(super) fn definition() -> Definition {
                  server unless you send them. Never pass a secret or a literal credential \
                  value. A namespace that no Provider holds fails with provider_not_found. \
                  When Coral cannot fetch the source, the call fails with \
-                 upstream_incomplete. When status is published, the change is live. When \
-                 status is needs_sign_in, show the person the returned url: a sign-in, a new \
-                 credential route, a new way to sign in, or a source that drops Tools \
-                 needs a person. To check later whether the person published it, call \
+                 upstream_incomplete. When status is published, the Provider has its new \
+                 displayName. When status is needs_person, show the person the returned \
+                 url. Calls keep the saved configuration until the person publishes the \
+                 change. To check later whether the person published it, call \
                  coral.workspace.getProvider."
                     .to_string(),
             ),
@@ -102,8 +102,7 @@ struct Arguments {
     #[serde(default, deserialize_with = "present")]
     #[schemars(
         with = "BuiltinCredentialRoute",
-        description = "Whose account Invocations use. A new route needs a person to confirm it \
-                       in the Coral UI."
+        description = "Whose account Invocations use."
     )]
     credential_route: Option<BuiltinCredentialRoute>,
     #[serde(default, deserialize_with = "present")]
@@ -226,6 +225,35 @@ impl ConfigurationPatch {
             request_headers: patched(saved.request_headers, &self.request_headers),
             credential_fields: patched(saved.credential_fields, &self.credential_fields),
         }
+    }
+
+    /// The configuration to confirm: each sent field over the configuration
+    /// saved when the call runs. An MCP server reports its own server and
+    /// OAuth endpoints, which Reef never keeps from the saved values either,
+    /// so `discovered`, the MCP server's suggestion, sets them unless sent.
+    /// An OAuth method sent without an application keeps the saved one, as
+    /// confirmation does.
+    #[must_use]
+    pub fn configuration(
+        &self,
+        saved: ProviderConfiguration,
+        discovered: Option<&ProviderConfiguration>,
+    ) -> ProviderConfiguration {
+        let application = saved
+            .authentication
+            .as_ref()
+            .and_then(AuthenticationConfiguration::oauth_client)
+            .cloned();
+        let mut configured = self.over(match discovered {
+            Some(discovered) => with_mcp_server_settings(saved, discovered),
+            None => saved,
+        });
+        if let Some(application) = &application {
+            configured.authentication = configured
+                .authentication
+                .map(|method| method.with_oauth_client(application));
+        }
+        configured
     }
 }
 
@@ -353,35 +381,6 @@ impl UpdateProviderArguments {
             && credential_fields.is_empty();
         display_name.as_deref().filter(|_name| keeps_the_rest)
     }
-
-    /// The configuration to confirm: each sent field over the configuration
-    /// saved when the call runs. An MCP server reports its own server and
-    /// OAuth endpoints, which Reef never keeps from the saved values either,
-    /// so `discovered`, the MCP server's suggestion, sets them unless sent.
-    /// An OAuth method sent without an application keeps the saved one, as
-    /// confirmation does.
-    #[must_use]
-    pub fn configuration(
-        &self,
-        saved: ProviderConfiguration,
-        discovered: Option<&ProviderConfiguration>,
-    ) -> ProviderConfiguration {
-        let application = saved
-            .authentication
-            .as_ref()
-            .and_then(AuthenticationConfiguration::oauth_client)
-            .cloned();
-        let mut configured = self.choices.over(match discovered {
-            Some(discovered) => with_mcp_server_settings(saved, discovered),
-            None => saved,
-        });
-        if let Some(application) = &application {
-            configured.authentication = configured
-                .authentication
-                .map(|method| method.with_oauth_client(application));
-        }
-        configured
-    }
 }
 
 /// `saved` with an MCP server's own server and OAuth endpoints.
@@ -415,8 +414,8 @@ fn with_mcp_server_settings(
 #[serde(tag = "status", rename_all = "snake_case")]
 #[schemars(deny_unknown_fields, description = "")]
 pub enum UpdateProviderResult {
-    /// Coral published the change, and the Program can call the Provider now.
-    #[schemars(description = "Coral published the change. Calls use it now.")]
+    /// Coral renamed the Provider, and the Program can call it now.
+    #[schemars(description = "Coral renamed the Provider. Calls use the new name now.")]
     Published {
         /// The Provider Namespace.
         #[schemars(description = "The Provider Namespace.")]
@@ -427,7 +426,7 @@ pub enum UpdateProviderResult {
     },
     /// A person finishes the change at `url`.
     #[schemars(description = "A person must finish the change in the Coral UI.")]
-    NeedsSignIn {
+    NeedsPerson {
         /// The Coral UI page where a person reviews and publishes the change.
         #[schemars(
             description = "The Coral UI page where a person reviews and publishes the change."

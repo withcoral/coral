@@ -51,7 +51,7 @@ mod setup_input_tests;
 #[cfg(test)]
 mod setup_oauth_tests;
 pub use program_setup::{
-    PublishabilityRejection, PublishedProvider, SetupPublishability,
+    ProgramSetup, ProgramSetupError, ProgramSetupPurpose, ProgramSetupRequest, PublishedProvider,
     published_provider_in_transaction,
 };
 #[cfg(test)]
@@ -85,9 +85,8 @@ pub mod history_repository;
 pub use publication::{
     ActivatedGeneration, MaterializedPublication, PreparedPublication, ProviderPublication,
     ProviderPublicationId, ProviderPublicationOutcome, ProviderRegenerationPublication,
-    ProviderRegenerationRequest, PublicationEvidence, Published,
-    WorkspaceProviderPublicationRequest, WorkspaceProviderPublisher,
-    publication_for_request_in_transaction, regeneration_for_request_in_transaction,
+    ProviderRegenerationRequest, ProviderRenamer, PublicationEvidence, Published,
+    WorkspaceProviderPublicationRequest,
 };
 pub use types::{
     AdministrativeLifecycleEvent, InvocationToolVerification, LifecycleAction, LifecycleActor,

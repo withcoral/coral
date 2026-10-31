@@ -63,7 +63,7 @@ impl ProviderModule {
     /// the Program, can read it back.
     /// # Errors
     /// As [`Self::prepare_setup`] for a new Provider.
-    pub async fn prepare_requested_setup(
+    pub(crate) async fn prepare_requested_setup(
         &self,
         context: &ChangeContext,
         owner: &WorkspaceId,
