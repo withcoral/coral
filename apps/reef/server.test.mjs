@@ -2,11 +2,12 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { access, readdir } from 'node:fs/promises'
 import { EventEmitter, once } from 'node:events'
-import { createServer } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
 import { connect } from 'node:net'
 import { test } from 'node:test'
 import { createServer as createHttp2Server } from 'node:http2'
 import { createCipheriv, createHash, randomBytes } from 'node:crypto'
+import { gunzipSync } from 'node:zlib'
 
 import { createCookie } from 'react-router'
 
@@ -147,6 +148,68 @@ test('local Reef answers only Host headers that name its own loopback listener',
         assert.deepEqual(reached, [], label)
       } else {
         assert.deepEqual(reached, [`http://${host(port).toLowerCase()}${path}`], label)
+      }
+    } finally {
+      await new Promise((resolve) => server.close(resolve))
+    }
+  }
+})
+
+// Catches: a large page sent whole to a remote reader, an event stream held
+// in a compressor's buffer, or a mutation's body compressed beside its secrets.
+test('compresses pages and data for a client that accepts it', async () => {
+  const page = 'x'.repeat(4096)
+  const respond = (type) => () =>
+    new Response(page, { headers: { 'Content-Type': type, 'Content-Length': '4096' } })
+  for (const [label, options, expected] of [
+    ['a page', { type: 'text/html; charset=utf-8' }, 'gzip'],
+    ['route data', { type: 'text/x-script' }, 'gzip'],
+    ['JSON', { type: 'application/json' }, 'gzip'],
+    ['an event stream', { type: 'text/event-stream' }, null],
+    ['an upload', { type: 'application/octet-stream' }, null],
+    ['a mutation', { type: 'text/html', method: 'POST' }, null],
+    ['a client without gzip', { type: 'text/html', accept: 'br' }, null],
+    ['a client that refuses gzip', { type: 'text/html', accept: 'gzip;q=0, br' }, null],
+    ['a weighted gzip', { type: 'text/html', accept: 'br;q=1, gzip;q=0.5' }, 'gzip'],
+    ['a local listener', { type: 'text/html', requireListenerHost: true }, null],
+  ]) {
+    const server = createServer(
+      createRequestListener({
+        handler: respond(options.type),
+        requireListenerHost: options.requireListenerHost,
+      }),
+    )
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const { port } = server.address()
+    try {
+      const response = await new Promise((resolve, reject) => {
+        const request = httpRequest(
+          {
+            port,
+            host: '127.0.0.1',
+            method: options.method ?? 'GET',
+            headers: {
+              'Accept-Encoding': options.accept ?? 'gzip',
+              Host: `127.0.0.1:${port}`,
+            },
+          },
+          resolve,
+        )
+        request.once('error', reject)
+        request.end()
+      })
+      const chunks = []
+      for await (const chunk of response) chunks.push(chunk)
+      const body = Buffer.concat(chunks)
+      assert.equal(response.headers['content-encoding'] ?? null, expected, label)
+      if (expected) {
+        assert.equal(gunzipSync(body).toString(), page, label)
+        assert.ok(body.length < page.length, label)
+        assert.equal(response.headers['content-length'], undefined, label)
+        assert.match(response.headers.vary, /Accept-Encoding/, label)
+      } else {
+        assert.equal(body.toString(), page, label)
       }
     } finally {
       await new Promise((resolve) => server.close(resolve))
@@ -384,7 +447,8 @@ test('rejected Coral sessions clear the cookie and offer sign in instead of a ge
         body:
           method === 'POST'
             ? new URLSearchParams({
-                csrf: csrf.token,
+                // Pages carry the token masked; a zero pad leaves it as it is.
+                csrf: `${Buffer.alloc(csrf.token.length).toString('base64url')}.${Buffer.from(csrf.token).toString('base64url')}`,
                 intent: 'createWorkspace',
                 displayName: 'Do not replay',
                 requestId: '00000000-0000-4000-8000-000000000002',

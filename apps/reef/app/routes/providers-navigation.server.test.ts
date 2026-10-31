@@ -19,8 +19,8 @@ let toolCount = TOOL_COUNT
 const mocks = vi.hoisted(() => ({
   workspace: vi.fn(),
   tools: vi.fn(),
+  tool: vi.fn(),
   providers: vi.fn(),
-  policies: vi.fn(),
   userAccounts: vi.fn(),
 }))
 vi.mock('@/lib/workspace-route.server', () => ({ authorizedWorkspace: mocks.workspace }))
@@ -33,8 +33,8 @@ const providerId = '11111111-1111-4111-8111-111111111111'
 const base = `/workspaces/${workspace}/providers/${providerId}`
 const provider = `workspaces/${workspace}/providers/11111111-1111-4111-8111-111111111111`
 const api = fakeManagement({
-  providers: { listProviders: mocks.providers, listTools: mocks.tools },
-  policies: { getToolPolicies: mocks.policies },
+  providers: { listProviders: mocks.providers, getTool: mocks.tool },
+  policies: { listToolAccess: mocks.tools },
   accounts: { listUserAccounts: mocks.userAccounts },
 })
 const routers: ReturnType<typeof createMemoryRouter>[] = []
@@ -66,20 +66,21 @@ beforeEach(() => {
     nextPageToken: '',
   })
   mocks.userAccounts.mockResolvedValue({ accounts: [] })
-  mocks.policies.mockImplementation(({ tools }: { tools: string[] }) => ({
-    policies: tools.map((tool) => ({ tool, accessState: 3, explicit: true })),
-  }))
-  // 1,229 tools span several pages of the loader's page size.
+  mocks.tool.mockImplementation(({ relativePath }: { relativePath: string }) =>
+    relativePath.startsWith('actions.tool')
+      ? { summary: `Tool ${relativePath}`, description: 'The prose.' }
+      : Promise.reject(new ConnectError('NOT_FOUND', Code.NotFound)),
+  )
+  // 1,229 tools span two pages of the loader's page size.
   mocks.tools.mockImplementation(
     ({ pageToken = '', pageSize }: { pageToken: string; pageSize: number }) => {
       const start = Number(pageToken)
       const end = Math.min(start + pageSize, toolCount)
       return Promise.resolve({
         tools: Array.from({ length: end - start }, (_, i) => ({
-          name: `${provider}/tools/tool${start + i}`,
+          tool: `${provider}/tools/tool${start + i}`,
           relativePath: `actions.tool${start + i}`,
-          summary: `Tool ${start + i}`,
-          effect: 3,
+          accessState: 3,
           available: true,
           diagnostics: [],
           tags: ['actions'],
@@ -132,62 +133,36 @@ async function makeRouter(entry = `${base}/tools/actions.tool0`) {
   return router
 }
 
-// Catches: initial loading serializing a second catalog-sized set of policy reads.
-it.each([101, TOOL_COUNT])(
-  'loads %i tools and saved policies within one paging pass plus one request',
-  async (count) => {
-    toolCount = count
-    vi.useFakeTimers()
-    const requestLatency = 50
-    for (const mock of [mocks.tools, mocks.policies]) {
-      const respond = mock.getMockImplementation()!
-      mock.mockImplementation(async (...args: unknown[]) => {
-        await new Promise((resolve) => setTimeout(resolve, requestLatency))
-        return respond(...args)
-      })
-    }
-    const start = Date.now()
-    const loading = providers.loader({
-      request: new Request(`https://reef.test/workspaces/${workspace}/providers`),
-      context: authTestContext(null),
-      params: { workspace },
-    } as never)
-    await vi.runAllTimersAsync()
-    const loaded = await loading
-    const tools = loaded!.data.providers[0]!.tools
-    expect(tools).toHaveLength(count)
-    expect(tools.every((tool: { policy: string }) => tool.policy === 'disabled')).toBe(true)
-    expect(Date.now() - start).toBeLessThanOrEqual((Math.ceil(count / 100) + 1) * requestLatency)
-  },
-)
-
-// Catches: a failed overlapping read displaying a partial catalog or policy defaults.
+// Catches: the load going back to one read per hundred tools, or to a second
+// catalog-sized set of policy reads.
 it.each([
-  ['catalog', Code.Unavailable, 503],
-  ['policy', Code.PermissionDenied, 403],
-  ['policy', Code.Unavailable, 503],
-] as const)(
-  'rejects the page when a later %s read fails with %s',
-  async (service, code, status) => {
-    const mock = service === 'catalog' ? mocks.tools : mocks.policies
-    const respond = mock.getMockImplementation()!
-    mock.mockImplementationOnce(respond).mockRejectedValueOnce(new ConnectError('failed', code))
-    const router = await makeRouter()
-    const [error] = Object.values(router.state.errors ?? {})
-    expect(isRouteErrorResponse(error) && error.status).toBe(status)
-    expect(router.state.loaderData.providers).toBeUndefined()
-  },
-)
+  [101, 1],
+  [TOOL_COUNT, 2],
+])('loads %i tools and their policies in %i reads', async (count, reads) => {
+  toolCount = count
+  const loaded = await providers.loader({
+    request: new Request(`https://reef.test/workspaces/${workspace}/providers`),
+    context: authTestContext(null),
+    params: { workspace },
+  } as never)
+  const tools = loaded!.data.providers[0]!.tools
+  expect(tools).toHaveLength(count)
+  expect(tools.every((tool: { policy: string }) => tool.policy === 'disabled')).toBe(true)
+  expect(mocks.tools).toHaveBeenCalledTimes(reads)
+})
 
-// Catches: a tool without a policy decision displaying a guessed default.
-it('rejects the page when Coral leaves a tool without a policy decision', async () => {
-  const respond = mocks.policies.getMockImplementation()!
-  mocks.policies.mockImplementation(async (request: { tools: string[] }) => {
-    const { policies } = await respond(request)
-    return { policies: policies.slice(1) }
-  })
+// Catches: a failed later page displaying a partial catalog.
+it.each([
+  [Code.Unavailable, 503],
+  [Code.PermissionDenied, 403],
+] as const)('rejects the page when a later read fails with %s', async (code, status) => {
+  const respond = mocks.tools.getMockImplementation()!
+  mocks.tools
+    .mockImplementationOnce(respond)
+    .mockRejectedValueOnce(new ConnectError('failed', code))
   const router = await makeRouter()
-  expect(Object.values(router.state.errors ?? {})).toHaveLength(1)
+  const [error] = Object.values(router.state.errors ?? {})
+  expect(isRouteErrorResponse(error) && error.status).toBe(status)
   expect(router.state.loaderData.providers).toBeUndefined()
 })
 
@@ -202,6 +177,15 @@ it('keeps the 1,229-tool tree out of tool navigation responses, but reauthorizes
   expect(router.state.loaderData.providers).toBe(tree)
   expect(mocks.workspace.mock.calls.length).toBeGreaterThan(initialAuthCalls)
   expect(JSON.stringify(router.state.loaderData['providers-tool']).length).toBeLessThan(2000)
+  expect(router.state.loaderData['providers-tool'].selectedToolDetail).toEqual({
+    relativePath: 'actions.tool1',
+    summary: 'Tool actions.tool1',
+    description: 'The prose.',
+  })
+  expect(mocks.tool.mock.lastCall?.[0]).toMatchObject({
+    parent: provider,
+    relativePath: 'actions.tool1',
+  })
 
   mocks.workspace.mockRejectedValueOnce(new Response('Forbidden', { status: 403 }))
   await router.navigate(`${base}/tools/actions.tool2`)
@@ -216,15 +200,42 @@ it('reloads the catalog on an explicit refresh', async () => {
   expect(router.state.loaderData.providers).not.toBe(tree)
 })
 
-it('never suppresses mutation-driven revalidation', () => {
+function policyForm() {
+  const form = new FormData()
+  form.set('intent', 'policy')
+  return form
+}
+const updated = { provider: providerId, tool: 'tool', status: 'updated' }
+
+// Catches: a policy toggle reloading the whole catalog, or a result the page
+// cannot apply leaving it to show what Coral did not save.
+it.each([
+  ['any other mutation', new FormData(), { error: null, message: 'Saved.' }, true],
+  ['a saved policy', policyForm(), { error: null, tools: [updated], blockers: {} }, false],
+  ['a policy without blockers', policyForm(), { error: null, tools: [updated] }, true],
+  [
+    'a policy partly saved',
+    policyForm(),
+    {
+      error: null,
+      blockers: {},
+      tools: [updated, { ...updated, status: 'failed', reason: 'denied' }],
+    },
+    true,
+  ],
+  ['a rejected policy', policyForm(), { error: 'Denied.' }, true],
+  ['a lost response', policyForm(), undefined, true],
+])('after %s, reloads the catalog: %#', (_label, formData, actionResult, reloads) => {
   expect(
     providers.shouldRevalidate({
       currentUrl: new URL(`https://reef.test${base}/tools/actions.tool0`),
       nextUrl: new URL(`https://reef.test${base}/tools/actions.tool1`),
       formMethod: 'POST',
+      formData,
+      actionResult,
       defaultShouldRevalidate: true,
     } as never),
-  ).toBe(true)
+  ).toBe(reloads)
 })
 
 function decide(from: string, to: string) {

@@ -3,10 +3,12 @@ import { ConnectError, Code } from '@connectrpc/connect'
 
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
+import { ProviderBlocker } from '@/generated/coral/management/v1/provider_pb'
 import { fakeManagement } from '@/lib/management.test-support'
 import { action } from './providers'
 
 const mocks = vi.hoisted(() => ({
+  getProvider: vi.fn(),
   updateToolPolicies: vi.fn(),
   workspace: vi.fn(),
 }))
@@ -20,10 +22,14 @@ const providerB = '22222222-2222-4222-8222-222222222222'
 beforeEach(() => {
   vi.resetAllMocks()
   mocks.workspace.mockResolvedValue({
-    api: fakeManagement({ policies: { updateToolPolicies: mocks.updateToolPolicies } }),
+    api: fakeManagement({
+      policies: { updateToolPolicies: mocks.updateToolPolicies },
+      providers: { getProvider: mocks.getProvider },
+    }),
     workspace: { name: `workspaces/${workspaceId}`, path: `/workspaces/${workspaceId}` },
   })
   mocks.updateToolPolicies.mockResolvedValue({})
+  mocks.getProvider.mockResolvedValue({ blockers: [] })
 })
 
 /** Submits `form` as a same-origin browser would. */
@@ -105,6 +111,32 @@ const policyForm = (targets: { provider: string; tool: string }[]) => {
   for (const target of targets) form.append('selectedTool', JSON.stringify(target))
   return form
 }
+
+// Catches: a provider whose last tool was disabled showing no blocker, as the
+// page no longer reloads the catalog after a saved policy.
+it('reports the blockers of each changed provider', async () => {
+  mocks.getProvider.mockImplementation(({ name }: { name: string }) => ({
+    blockers: name.endsWith(providerA) ? [ProviderBlocker.NO_TOOLS_READY] : [],
+  }))
+  const result = (await post(
+    policyForm([
+      { provider: providerA, tool: `providers/${providerA}/tools/a` },
+      { provider: providerB, tool: `providers/${providerB}/tools/b` },
+    ]),
+  )) as unknown as { data: { blockers: Record<string, string[]> } }
+  expect(result.data.blockers).toEqual({ [providerA]: ['No tools ready'], [providerB]: [] })
+})
+
+// Catches: a saved policy reported as failed because a read after it failed.
+it('leaves the blockers out when it cannot read them, and still reports the save', async () => {
+  mocks.getProvider.mockRejectedValue(new ConnectError('down', Code.Unavailable))
+  const result = (await post(
+    policyForm([{ provider: providerA, tool: `providers/${providerA}/tools/a` }]),
+  )) as unknown as { data: { error: null; blockers?: unknown; tools: { status: string }[] } }
+  expect(result.data.error).toBeNull()
+  expect(result.data.blockers).toBeUndefined()
+  expect(result.data.tools.map((tool) => tool.status)).toEqual(['updated'])
+})
 
 // Catches: one failed batch reported as a failure of every tool, so the
 // page keeps tools Coral already saved in the retry selection.

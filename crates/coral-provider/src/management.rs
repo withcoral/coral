@@ -338,6 +338,35 @@ impl ProviderModule {
         tx.rollback().await?;
         Ok(tools)
     }
+    /// Reads one Tool of the current catalog by its Tool-relative Call Path,
+    /// without exposing private execution bindings.
+    ///
+    /// # Errors
+    /// Returns current Workspace authority, a missing Provider, a Tool that
+    /// `actor` does not reach or that does not exist as [`Error::ToolNotFound`],
+    /// or catalog persistence failures.
+    pub async fn inspect_tool_summary(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+        provider: &ProviderId,
+        relative_path: &str,
+    ) -> Result<ToolSummary, Error> {
+        let mut tx = self.database.begin_read_snapshot().await?;
+        let (stored, role) = self
+            .inspected_provider(&mut tx, actor, workspace, provider)
+            .await?;
+        let tool = coral_catalog::tool_summary_by_relative_path_in_transaction(
+            &mut tx,
+            &stored.generation_id,
+            relative_path,
+        )
+        .await?
+        .filter(|tool| crate::reaches(stored.provider.call_root(), &tool.key, Some(role)))
+        .ok_or(Error::ToolNotFound)?;
+        tx.rollback().await?;
+        Ok(tool)
+    }
     pub(super) async fn management_authority(
         &self,
         tx: &mut coral_db::Transaction<'_>,
@@ -360,14 +389,8 @@ impl ProviderModule {
         provider: &ProviderId,
     ) -> Result<(repository::ProviderWithActiveGeneration, WorkspaceRole), Error> {
         let evidence = self.management_authority(tx, actor, workspace).await?;
-        let stored = repository::provider_in_transaction(&mut *tx, workspace, provider)
-            .await?
-            .ok_or(Error::ProviderNotFound)?;
-        if crate::inspects(tx, &evidence, &stored).await? {
-            Ok((stored, evidence.effective_role()))
-        } else {
-            Err(Error::ProviderNotFound)
-        }
+        let stored = crate::inspected_provider_in_transaction(tx, &evidence, provider).await?;
+        Ok((stored, evidence.effective_role()))
     }
 }
 

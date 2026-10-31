@@ -181,19 +181,61 @@ export function VirtualRows<T extends { index: number }>({
   rows: readonly T[]
   virtual: VirtualRowsHandle
 }) {
+  const spans = rows.map((row) => ({ row, start: row.index, end: row.index }))
+  return (
+    <VirtualSpans spans={spans} virtual={virtual}>
+      {({ row }) => children(row)}
+    </VirtualSpans>
+  )
+}
+
+/**
+ * The nested groups of a group, for a table with too many to mount. A group
+ * with a row in the mounted range renders through `children`, so its heading
+ * pins while any of its rows scroll under it. The rest collapse to a spacer
+ * before and one after, as `VirtualRows` does for rows, so a pinned heading
+ * costs layout only where it can pin. `index` is the group's heading and
+ * `end` its last row, in the caller's flat list. `groups` must be in index order.
+ */
+export function VirtualGroups<T extends { index: number; end: number }>({
+  children,
+  groups,
+  virtual,
+}: {
+  children: (group: T) => ReactNode
+  groups: readonly T[]
+  virtual: VirtualRowsHandle
+}) {
+  const spans = groups.map((group) => ({ group, start: group.index, end: group.end }))
+  return (
+    <VirtualSpans spans={spans} virtual={virtual}>
+      {({ group }) => children(group)}
+    </VirtualSpans>
+  )
+}
+
+function VirtualSpans<T extends { start: number; end: number }>({
+  children,
+  spans,
+  virtual,
+}: {
+  children: (span: T) => ReactNode
+  spans: readonly T[]
+  virtual: VirtualRowsHandle
+}) {
   const { first, last } = virtual.range
-  const before = rows.filter(({ index }) => index < first).length
-  const after = rows.filter(({ index }) => index > last).length
-  const mounted = rows.slice(before, rows.length - after)
+  const before = spans.filter(({ end }) => end < first).length
+  const after = spans.filter(({ start }) => start > last).length
+  const mounted = spans.slice(before, spans.length - after)
   return (
     <>
       {before > 0 && (
-        <VirtualSpacer height={virtual.extent(rows[0]!.index, rows[before - 1]!.index)} />
+        <VirtualSpacer height={virtual.extent(spans[0]!.start, spans[before - 1]!.end)} />
       )}
       {mounted.map(children)}
       {after > 0 && (
         <VirtualSpacer
-          height={virtual.extent(rows[rows.length - after]!.index, rows[rows.length - 1]!.index)}
+          height={virtual.extent(spans[spans.length - after]!.start, spans[spans.length - 1]!.end)}
         />
       )}
     </>

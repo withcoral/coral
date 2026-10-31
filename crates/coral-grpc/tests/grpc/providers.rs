@@ -1506,13 +1506,16 @@ async fn providers_screen_read_latency() {
             }
         }
         let catalog = start.elapsed();
-        let policy_start = std::time::Instant::now();
-        for batch in tools.chunks(100) {
-            let decisions = policies
-                .get_tool_policies(request(
-                    management::GetToolPoliciesRequest {
+        let access_start = std::time::Instant::now();
+        let mut page_token = String::new();
+        let mut listed = Vec::new();
+        loop {
+            let page = policies
+                .list_tool_access(request(
+                    management::ListToolAccessRequest {
                         parent: publication.provider.clone(),
-                        tools: batch.to_vec(),
+                        page_size: 1000,
+                        page_token,
                     },
                     &token,
                     "reef",
@@ -1520,13 +1523,108 @@ async fn providers_screen_read_latency() {
                 .await
                 .unwrap()
                 .into_inner();
-            assert_eq!(decisions.policies.len(), batch.len());
+            listed.extend(page.tools.into_iter().map(|tool| tool.tool));
+            page_token = page.next_page_token;
+            if page_token.is_empty() {
+                break;
+            }
         }
+        assert_eq!(listed, tools, "the policy table lists the same catalog");
         eprintln!(
-            "Provider reads: catalog={catalog:?}, policies={:?}",
-            policy_start.elapsed()
+            "Provider reads: catalog={catalog:?}, access={:?}",
+            access_start.elapsed()
         );
     }
+}
+
+/// coral-provider owns reach and coral-catalog owns the columns. This checks the
+/// projection and the page bound.
+#[tokio::test]
+async fn tool_reads_project_the_catalog_and_bound_their_pages() {
+    let f = Fixture::new().await;
+    let token = f.token(&f.owner, "reef");
+    let publication = publish_workspace_document(
+        &f,
+        &token,
+        openapi_document(false),
+        &format!("workspaces/{}", f.workspace.id()),
+        "b0000000-0000-4000-8000-000000000012",
+    )
+    .await;
+    let parent = publication.provider;
+    let tool = f
+        .providers()
+        .get_tool(request(
+            management::GetToolRequest {
+                parent: parent.clone(),
+                relative_path: "getForecast".into(),
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let tool_name = format!("{parent}/tools/Z2V0Rm9yZWNhc3Q");
+    assert_eq!(tool.name, tool_name);
+    assert!(!tool.summary.is_empty());
+    let missing = f
+        .providers()
+        .get_tool(request(
+            management::GetToolRequest {
+                parent: parent.clone(),
+                relative_path: "noSuchTool".into(),
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (missing.code(), error_reason(&missing).as_str()),
+        (tonic::Code::NotFound, "NOT_FOUND")
+    );
+
+    let access = |page_size: i32, page_token: String| {
+        request(
+            management::ListToolAccessRequest {
+                parent: parent.clone(),
+                page_size,
+                page_token,
+            },
+            &token,
+            "reef",
+        )
+    };
+    let page = f
+        .policies()
+        .list_tool_access(access(1000, String::new()))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(page.next_page_token, "");
+    assert_eq!(
+        page.tools,
+        vec![management::ToolAccess {
+            tool: tool_name,
+            relative_path: "getForecast".into(),
+            available: true,
+            diagnostics: Vec::new(),
+            tags: tool.tags,
+            hints: tool.hints,
+            access_state: management::ToolAccessState::Enabled.into(),
+            explicit: false,
+        }]
+    );
+    let oversized = f
+        .policies()
+        .list_tool_access(access(1001, String::new()))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (oversized.code(), error_reason(&oversized).as_str()),
+        (tonic::Code::InvalidArgument, "INVALID_ARGUMENT")
+    );
 }
 
 /// coral-policy owns defaults and explicit decisions
@@ -1577,10 +1675,11 @@ async fn policy_service_projects_tool_decisions_and_refuses_members() {
         .await
         .unwrap();
     let updated = policies
-        .get_tool_policies(request(
-            management::GetToolPoliciesRequest {
+        .list_tool_access(request(
+            management::ListToolAccessRequest {
                 parent: publication.provider.clone(),
-                tools: vec![tool.clone()],
+                page_size: 0,
+                page_token: String::new(),
             },
             &token,
             "reef",
@@ -1588,13 +1687,16 @@ async fn policy_service_projects_tool_decisions_and_refuses_members() {
         .await
         .unwrap()
         .into_inner();
+    let [listed] = updated.tools.as_slice() else {
+        panic!("the fixture has one Tool");
+    };
     assert_eq!(
-        updated.policies,
-        vec![management::ToolPolicy {
-            tool,
-            access_state: management::ToolAccessState::Enabled.into(),
-            explicit: true,
-        }]
+        (listed.tool.as_str(), listed.access_state, listed.explicit),
+        (
+            tool.as_str(),
+            i32::from(management::ToolAccessState::Enabled),
+            true
+        )
     );
 }
 

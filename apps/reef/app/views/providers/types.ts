@@ -21,6 +21,8 @@ export type ToolOutcome = SelectedTool &
 /** A bulk policy update's result: the shared shape plus one outcome per tool. */
 export interface PolicyActionResult extends ActionResult {
   tools?: ToolOutcome[]
+  /** Each changed provider's blockers after the update, which policy can move. */
+  blockers?: Record<string, string[]>
 }
 
 /**
@@ -49,16 +51,24 @@ export interface ToolHintsView {
   openWorld?: boolean
 }
 
-/** One Tool as the tree and its detail pane show it. */
-export interface ToolView extends ToolNodeView {
+/**
+ * One Tool as a row of the table shows it. A catalog can hold thousands, so
+ * this holds only what a row and its filters read; `ToolDetailView` has the rest.
+ */
+export interface ToolView extends Omit<ToolNodeView, 'summary' | 'path'> {
   /** Full management API resource name, used for policy writes. */
   name: string
-  /** The full call path Programs use; the relative path when not installed. */
-  callPath: string
-  /** Safe Provider-authored prose; may contain Markdown. */
-  description: string
   hints: ToolHintsView
   policy: PolicyState
+}
+
+/** The prose of the one Tool the drawer shows. */
+export interface ToolDetailView {
+  relativePath: string
+  /** Provider-authored summary; empty when the Provider gave none. */
+  summary: string
+  /** Safe Provider-authored prose; may contain Markdown. */
+  description: string
 }
 
 /** One tool the live provider has, as a refresh compares it. */
@@ -83,6 +93,8 @@ export interface ProviderView {
   id: string
   displayName: string
   namespace: string
+  /** The provider's complete Call Root, such as `coral.providers.github`. */
+  callRoot: string
   /** Coral defines and manages this provider. */
   builtin: boolean
   account: AccountLabel
@@ -153,6 +165,8 @@ export interface WorkspaceProvidersPageProps {
   providers: ProviderView[]
   selectedProvider: string | null
   selectedTool: string | null
+  /** The prose of `selectedTool`, which `providers` leaves out. */
+  selectedToolDetail?: ToolDetailView | null
   form: FormContext
   result?: ActionResult
   pending?: boolean

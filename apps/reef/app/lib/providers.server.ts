@@ -11,10 +11,11 @@ import {
   type Provider,
   type ProviderTool,
 } from '@/generated/coral/management/v1/provider_pb'
-import { ToolAccessState, type ToolPolicy } from '@/generated/coral/management/v1/policy_pb'
+import { ToolAccessState, type ToolAccess } from '@/generated/coral/management/v1/policy_pb'
 import type {
   AccountChoice,
   AccountLabel,
+  ToolDetailView,
   ToolHintsView,
   ToolView,
   ProviderSettingsView,
@@ -23,7 +24,6 @@ import type {
 } from '@/views/providers/types'
 import type { PersonalAccountState } from '@/views/accounts/types'
 import { accountLabels } from '@/views/providers/account-labels'
-import { toolCallPath } from './call-root'
 import { privateHeaders, type ManagementApi } from './management.server'
 import { OPENAPI_DOCUMENT_SIZE_LABEL } from './provider-input-limits'
 
@@ -174,35 +174,30 @@ export function toolGroup(o: { tags: readonly string[]; relativePath: string }) 
   return dot > 0 ? o.relativePath.slice(0, dot) : ''
 }
 
-export function toolView(
-  o: ProviderTool,
-  options: { callRoot: string; basePath: string; policy: ToolPolicy },
-): ToolView {
-  const hints = toolHints(o.hints)
+export function toolView(o: ToolAccess): ToolView {
   return {
-    name: o.name,
+    name: o.tool,
     relativePath: o.relativePath,
-    callPath: options.callRoot ? toolCallPath(options.callRoot, o.relativePath) : o.relativePath,
-    summary: o.summary,
-    description: o.description,
-    hints,
-    policy: accessState(options.policy.accessState),
+    hints: toolHints(o.hints),
+    policy: accessState(o.accessState),
     available: o.available,
     reasons: o.diagnostics.map((d) => d.message),
     group: toolGroup(o),
-    path: `${options.basePath}/tools/${encodeURIComponent(o.relativePath)}`,
   }
 }
 
-async function toolPolicies(api: ManagementApi, parent: string, tools: readonly ProviderTool[]) {
-  if (tools.length === 0) return []
-  return (
-    await api.policies.getToolPolicies({
-      parent,
-      tools: tools.map((o) => o.name),
-    })
-  ).policies
+/** Reads the prose of the one tool the drawer shows. */
+export async function toolDetail(
+  api: Pick<ManagementApi, 'providers'>,
+  provider: string,
+  relativePath: string,
+): Promise<ToolDetailView> {
+  const { summary, description } = await api.providers.getTool({ parent: provider, relativePath })
+  return { relativePath, summary, description }
 }
+
+// Coral bounds a page of tools with their decisions to this many.
+const TOOL_ACCESS_PAGE_SIZE = 1000
 
 function enabled(state: ProviderState) {
   switch (state) {
@@ -249,35 +244,24 @@ export async function providerView(
   personalAccounts: ReadonlyMap<string, PersonalAccountState>,
 ): Promise<ProviderView> {
   const path = providerPath(workspacePath, provider.name)
-  const tools: ProviderTool[] = []
-  const policies = new Map<string, ToolPolicy>()
-  const readPage = (pageToken: string) =>
-    api.providers.listTools({ parent: provider.name, pageSize: 100, pageToken })
-  let page = await readPage('')
-  while (page) {
-    // Keep at most one policy read and one catalog read in flight per provider.
-    // Both promises are observed together, so either failure rejects the load.
-    const [decisions, next] = await Promise.all([
-      toolPolicies(api, provider.name, page.tools),
-      page.nextPageToken ? readPage(page.nextPageToken) : undefined,
-    ])
-    tools.push(...page.tools)
-    for (const policy of decisions) policies.set(policy.tool, policy)
-    if (!next) break
-    page = next
-  }
-  const toolViews = tools.map((tool) => {
-    // Coral decides every requested tool, so a gap is a broken response.
-    const policy = policies.get(tool.name)
-    if (!policy) throw new Error(`Coral returned no policy for ${tool.name}`)
-    return toolView(tool, { callRoot: provider.callRoot, basePath: path, policy })
-  })
+  const toolViews: ToolView[] = []
+  let pageToken = ''
+  do {
+    const page = await api.policies.listToolAccess({
+      parent: provider.name,
+      pageSize: TOOL_ACCESS_PAGE_SIZE,
+      pageToken,
+    })
+    for (const tool of page.tools) toolViews.push(toolView(tool))
+    pageToken = page.nextPageToken
+  } while (pageToken)
   const id = provider.name.split('/').at(-1)!
   const isEnabled = enabled(provider.state)
   return {
     id,
     displayName: provider.displayName,
     namespace: provider.namespace,
+    callRoot: provider.callRoot,
     builtin: provider.builtin,
     account: accountLabel(provider.credentialRoute),
     blockers: provider.blockers.map(blockerLabel),

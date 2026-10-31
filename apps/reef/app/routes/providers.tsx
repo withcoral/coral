@@ -11,19 +11,35 @@ import { personalAccountStates } from '@/lib/accounts.server'
 import { applyProviderChange } from '@/lib/provider-changes.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
+import type { PolicyActionResult } from '@/views/providers/types'
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
+/** Whether a policy result carries all the tree needs, so the page patches itself. */
+function patchesTree(formData: FormData | undefined, result: PolicyActionResult | undefined) {
+  return (
+    formData?.get('intent') === 'policy' &&
+    result?.blockers !== undefined &&
+    !result.error &&
+    result.tools?.every((tool) => tool.status === 'updated') === true
+  )
+}
+
 // Selection changes on the page (provider, tool) reuse the
 // tree: they are one table, and the address only names what is revealed. A
-// child loader still checks Workspace authority on each. Refreshes, mutations,
+// child loader still checks Workspace authority on each. A saved policy change
+// also reuses it, as the whole catalog is a costly read to repeat for one
+// toggle; the page applies the action's result. Refreshes, other mutations,
 // query changes, and leaving the page reload it.
 export function shouldRevalidate({
   currentUrl,
   nextUrl,
   formMethod,
+  formData,
+  actionResult,
   actionStatus,
 }: ShouldRevalidateFunctionArgs) {
+  if (patchesTree(formData, actionResult as PolicyActionResult | undefined)) return false
   if ((formMethod && formMethod.toUpperCase() !== 'GET') || actionStatus !== undefined) return true
   if (currentUrl.search !== nextUrl.search || currentUrl.pathname === nextUrl.pathname) return true
   // `new` is the Add provider page, whose result must reload the catalog.

@@ -337,60 +337,83 @@ impl SearchableToolRow {
 }
 
 #[derive(Debug, FromRow)]
-struct ToolSummaryRow {
+struct ToolListingRow {
     tool_key: String,
     relative_path: String,
-    summary: String,
-    description: String,
     tags_json: String,
     #[sqlx(flatten)]
     hints: HintColumns,
+    method: Option<String>,
     availability: String,
     diagnostics_json: Option<String>,
 }
 
-impl ToolSummaryRow {
-    fn decode(self) -> Result<crate::ToolSummary, Error> {
+impl ToolListingRow {
+    fn decode(self) -> Result<crate::ToolListing, Error> {
         let key = ToolKey::parse(&self.tool_key)
-            .map_err(|_error| Error::CorruptData("Tool summary has invalid key".into()))?;
-        if !crate::paths::valid_relative_path(&self.relative_path) || self.summary.is_empty() {
-            return Err(Error::CorruptData(
-                "Tool summary has invalid path or summary".into(),
-            ));
-        }
-        if !crate::types::valid_presentation_text(&self.description) {
-            return Err(Error::CorruptData(
-                "Tool summary has invalid description".into(),
-            ));
+            .map_err(|_error| Error::CorruptData("Tool listing has invalid key".into()))?;
+        if !crate::paths::valid_relative_path(&self.relative_path) {
+            return Err(Error::CorruptData("Tool listing has invalid path".into()));
         }
         let tags: Vec<String> = serde_json::from_str(&self.tags_json)
-            .map_err(|_error| Error::CorruptData("Tool summary tags are invalid".into()))?;
+            .map_err(|_error| Error::CorruptData("Tool listing tags are invalid".into()))?;
         if tags.iter().any(|tag| tag.trim().is_empty()) {
-            return Err(Error::CorruptData("Tool summary has an empty tag".into()));
+            return Err(Error::CorruptData("Tool listing has an empty tag".into()));
         }
         let availability = ToolAvailability::from_storage_str(&self.availability)?;
         let diagnostics = CatalogDiagnostic::list_from_storage(
             self.diagnostics_json
                 .as_deref()
-                .ok_or_else(|| Error::CorruptData("Tool summary has no diagnostics".into()))?,
+                .ok_or_else(|| Error::CorruptData("Tool listing has no diagnostics".into()))?,
         )?;
         let unavailable = diagnostics
             .iter()
             .any(|d| d.severity() == crate::CatalogDiagnosticSeverity::Error);
         if unavailable != (availability == ToolAvailability::Unavailable) {
             return Err(Error::CorruptData(
-                "Tool summary has inconsistent availability".into(),
+                "Tool listing has inconsistent availability".into(),
             ));
         }
-        Ok(crate::ToolSummary {
+        Ok(crate::ToolListing {
             key,
             relative_path: self.relative_path,
-            summary: self.summary,
-            description: self.description,
             tags,
             hints: self.hints.decode(),
+            http_method: decode_http_method(self.method.as_deref())?,
             availability,
             diagnostics,
+        })
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct ToolSummaryRow {
+    summary: String,
+    description: String,
+    #[sqlx(flatten)]
+    listing: ToolListingRow,
+}
+
+impl ToolSummaryRow {
+    fn decode(self) -> Result<crate::ToolSummary, Error> {
+        if self.summary.is_empty() {
+            return Err(Error::CorruptData("Tool summary has no summary".into()));
+        }
+        if !crate::types::valid_presentation_text(&self.description) {
+            return Err(Error::CorruptData(
+                "Tool summary has invalid description".into(),
+            ));
+        }
+        let listing = self.listing.decode()?;
+        Ok(crate::ToolSummary {
+            key: listing.key,
+            relative_path: listing.relative_path,
+            summary: self.summary,
+            description: self.description,
+            tags: listing.tags,
+            hints: listing.hints,
+            availability: listing.availability,
+            diagnostics: listing.diagnostics,
         })
     }
 }
@@ -1101,35 +1124,38 @@ pub(super) async fn searchable_tools(
     rows.into_iter().map(SearchableToolRow::decode).collect()
 }
 
-pub(super) async fn load_tool_summaries(
-    transaction: &mut Transaction<'_>,
+/// The columns a [`ToolListingRow`] decodes.
+const TOOL_LISTING_COLUMNS: [MaterializedTools; 10] = [
+    MaterializedTools::ToolKey,
+    MaterializedTools::RelativePath,
+    MaterializedTools::TagsJson,
+    MaterializedTools::ReadOnlyHint,
+    MaterializedTools::DestructiveHint,
+    MaterializedTools::IdempotentHint,
+    MaterializedTools::OpenWorldHint,
+    MaterializedTools::Method,
+    MaterializedTools::Availability,
+    MaterializedTools::DiagnosticsJson,
+];
+
+/// One page of `columns` in Tool Key order, with one lookahead row.
+fn tool_page_query(
+    system: coral_db::DatabaseSystem,
+    columns: impl IntoIterator<Item = MaterializedTools>,
     generation_id: &ProviderGenerationId,
     after: Option<&ToolKey>,
     page_size: u32,
-) -> Result<Vec<crate::ToolSummary>, Error> {
-    require_generation(transaction, generation_id).await?;
+) -> sea_query::SelectStatement {
     // Match ToolKey's ordinal ordering regardless of the Postgres locale.
     // SQLite's TEXT columns use BINARY by default. This also keeps the exclusive
     // cursor predicate consistent with the transport's continuation ordering.
-    let key = match transaction.system() {
+    let key = match system {
         coral_db::DatabaseSystem::Sqlite => Expr::col(MaterializedTools::ToolKey),
         coral_db::DatabaseSystem::Postgres => Expr::cust("\"tool_key\" COLLATE \"C\""),
     };
     let mut query = Query::select();
     query
-        .columns([
-            MaterializedTools::ToolKey,
-            MaterializedTools::RelativePath,
-            MaterializedTools::Summary,
-            MaterializedTools::Description,
-            MaterializedTools::TagsJson,
-            MaterializedTools::ReadOnlyHint,
-            MaterializedTools::DestructiveHint,
-            MaterializedTools::IdempotentHint,
-            MaterializedTools::OpenWorldHint,
-            MaterializedTools::Availability,
-            MaterializedTools::DiagnosticsJson,
-        ])
+        .columns(columns)
         .from(MaterializedTools::Table)
         .and_where(Expr::col(MaterializedTools::ProviderGenerationId).eq(generation_id.to_string()))
         .order_by_expr(key.clone(), Order::Asc)
@@ -1137,8 +1163,68 @@ pub(super) async fn load_tool_summaries(
     if let Some(after) = after {
         query.and_where(key.gt(after.as_str()));
     }
+    query
+}
+
+pub(super) async fn load_tool_summaries(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    after: Option<&ToolKey>,
+    page_size: u32,
+) -> Result<Vec<crate::ToolSummary>, Error> {
+    require_generation(transaction, generation_id).await?;
+    let query = tool_page_query(
+        transaction.system(),
+        TOOL_LISTING_COLUMNS
+            .into_iter()
+            .chain([MaterializedTools::Summary, MaterializedTools::Description]),
+        generation_id,
+        after,
+        page_size,
+    );
     let rows: Vec<ToolSummaryRow> = transaction.fetch_all(query).await?;
     rows.into_iter().map(ToolSummaryRow::decode).collect()
+}
+
+pub(super) async fn load_tool_listings(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    after: Option<&ToolKey>,
+    page_size: u32,
+) -> Result<Vec<crate::ToolListing>, Error> {
+    require_generation(transaction, generation_id).await?;
+    let query = tool_page_query(
+        transaction.system(),
+        TOOL_LISTING_COLUMNS,
+        generation_id,
+        after,
+        page_size,
+    );
+    let rows: Vec<ToolListingRow> = transaction.fetch_all(query).await?;
+    rows.into_iter().map(ToolListingRow::decode).collect()
+}
+
+pub(super) async fn load_tool_summary_by_relative_path(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    relative_path: &str,
+) -> Result<Option<crate::ToolSummary>, Error> {
+    require_generation(transaction, generation_id).await?;
+    let row: Option<ToolSummaryRow> = transaction
+        .fetch_optional(
+            Query::select()
+                .columns(TOOL_LISTING_COLUMNS)
+                .columns([MaterializedTools::Summary, MaterializedTools::Description])
+                .from(MaterializedTools::Table)
+                .and_where(
+                    Expr::col(MaterializedTools::ProviderGenerationId)
+                        .eq(generation_id.to_string()),
+                )
+                .and_where(Expr::col(MaterializedTools::RelativePath).eq(relative_path))
+                .to_owned(),
+        )
+        .await?;
+    row.map(ToolSummaryRow::decode).transpose()
 }
 
 pub(super) async fn load_catalog_tools(

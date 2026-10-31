@@ -256,6 +256,67 @@ async fn summary_pages_are_bounded_and_do_not_load_tool_definitions() {
     tx.rollback().await.unwrap();
 }
 
+/// A listing page holds ten times a summary page and stays clear of executable
+/// material; one Tool's summary brings the prose it leaves out, by path.
+#[tokio::test]
+async fn listing_pages_and_a_summary_by_path_read_the_catalog() {
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let database = fixture.database();
+    let mut tx = database.begin().await.unwrap();
+    let (generation, expected) = summary_fixture(&mut tx).await;
+    let first = expected.first().unwrap();
+    let summary = crate::tool_summary_by_relative_path_in_transaction(
+        &mut tx,
+        &generation,
+        first.relative_path(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(&summary.key, first.key());
+    assert_eq!(summary.description, first.presentation().description());
+    assert!(
+        crate::tool_summary_by_relative_path_in_transaction(&mut tx, &generation, "no.such.tool")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    tx.execute(
+        Query::update()
+            .table(MaterializedTools::Table)
+            .value(MaterializedTools::DefinitionJson, "invalid")
+            .to_owned(),
+    )
+    .await
+    .unwrap();
+    // `summary_pages_are_bounded_and_do_not_load_tool_definitions` walks the
+    // pages both reads share. A listing holds the whole fixture in one.
+    let actual = crate::tool_listings_in_transaction(
+        &mut tx,
+        &generation,
+        None,
+        crate::MAX_TOOL_LISTING_PAGE,
+    )
+    .await
+    .unwrap();
+    assert_eq!(actual.len(), expected.len());
+    for (listing, tool) in actual.iter().zip(&expected) {
+        assert_eq!(&listing.key, tool.key());
+        assert_eq!(listing.relative_path, tool.relative_path());
+        assert_eq!(listing.tags, tool.presentation().tags());
+        assert_eq!(listing.hints, tool.hints());
+        assert_eq!(listing.availability, tool.availability());
+        assert_eq!(listing.diagnostics, tool.diagnostics());
+    }
+    for size in [0, crate::MAX_TOOL_LISTING_PAGE + 1] {
+        assert!(matches!(
+            crate::tool_listings_in_transaction(&mut tx, &generation, None, size).await,
+            Err(Error::InvalidInput(_))
+        ));
+    }
+    tx.rollback().await.unwrap();
+}
+
 #[tokio::test]
 async fn summary_pages_use_ordinal_keys_independently_of_database_locale() {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();

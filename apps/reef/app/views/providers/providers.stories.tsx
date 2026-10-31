@@ -7,7 +7,7 @@ import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import githubIcon from '../../../recipes/github/github.svg'
 import stripeIcon from '../../../recipes/stripe/stripe.svg'
 import { StepperPage } from './stepper-page'
-import type { ProviderView, ToolView, ReviewToolView, SetupView } from './types'
+import type { ProviderView, ToolDetailView, ToolView, ReviewToolView, SetupView } from './types'
 import { UpdatePage } from './update-page'
 import { EditConfigurationPage } from './edit-configuration-page'
 import { WorkspaceProvidersPage } from './workspace-providers-page'
@@ -35,9 +35,7 @@ const member = { ...workspace, effectiveRole: 'member' }
 
 function op(
   provider: string,
-  base: string,
   relativePath: string,
-  summary: string,
   group: string,
   extra: Partial<ToolView> = {},
 ): ToolView {
@@ -46,9 +44,6 @@ function op(
     // The management resource name is keyed by the provider id, not its namespace.
     name: `providers/${provider}/tools/${relativePath}`,
     relativePath,
-    callPath: base ? `coral.providers.${base}.${relativePath}` : relativePath,
-    summary,
-    description: '',
     // Mirrors the domain default for these fixtures, which carry no HTTP method:
     // read-only is enabled, anything else needs approval.
     hints: {},
@@ -56,34 +51,36 @@ function op(
     available: true,
     reasons: [],
     group,
-    path: `/workspaces/demo/providers/${provider}/tools/${relativePath}`,
     ...extra,
   }
 }
-const githubOps = (provider: string, base: string) => [
-  op(provider, base, 'issues.list', 'List issues in a repository', 'issues', {
-    description:
-      'List issues that you can access in the repository.\n\nUse `state` to include closed issues. Results include pull requests.',
+const githubOps = (provider: string) => [
+  op(provider, 'issues.list', 'issues', {
     hints: { readOnly: true, destructive: false, idempotent: true, openWorld: false },
   }),
-  op(provider, base, 'issues.create', 'Create an issue', 'issues', {
-    description:
-      'Create an issue in the selected repository.\n\n- Set `title` to name the issue.\n- Set `body` to describe the issue.\n\nYou need **write access** to add labels or assignees.',
+  op(provider, 'issues.create', 'issues', {
     hints: { readOnly: false, destructive: false, openWorld: true },
   }),
-  op(provider, base, 'issues.close', 'Close an issue', 'issues', {
+  op(provider, 'issues.close', 'issues', {
     hints: { readOnly: false, destructive: true, idempotent: true },
     available: false,
     reasons: ['The request body uses a content type Coral cannot send faithfully.'],
   }),
-  op(provider, base, 'repos.get', 'Get a repository', 'repos', {
+  op(provider, 'repos.get', 'repos', {
     hints: { readOnly: true },
   }),
 ]
+const createIssue: ToolDetailView = {
+  relativePath: 'issues.create',
+  summary: 'Create an issue',
+  description:
+    'Create an issue in the selected repository.\n\n- Set `title` to name the issue.\n- Set `body` to describe the issue.\n\nYou need **write access** to add labels or assignees.',
+}
 const github: ProviderView = {
   id: 'prov-github',
   displayName: 'GitHub',
   namespace: 'github',
+  callRoot: 'coral.providers.github',
   builtin: false,
   account: 'Individual accounts',
   blockers: [],
@@ -94,12 +91,13 @@ const github: ProviderView = {
   etag: 'prov-etag',
   path: '/workspaces/demo/providers/prov-github',
   enabled: true,
-  tools: githubOps('prov-github', 'github'),
+  tools: githubOps('prov-github'),
 }
 const weather: ProviderView = {
   id: 'prov-weather',
   displayName: 'Weather',
   namespace: 'weather',
+  callRoot: 'coral.providers.weather',
   builtin: false,
   account: 'No account',
   blockers: [],
@@ -114,15 +112,11 @@ const weather: ProviderView = {
     {
       name: 'providers/prov-weather/tools/getForecast',
       relativePath: 'getForecast',
-      callPath: 'coral.providers.weather.getForecast',
-      summary: '',
-      description: '',
       hints: {},
       policy: 'approval_required',
       available: true,
       reasons: [],
       group: '',
-      path: '/workspaces/demo/providers/prov-weather/tools/getForecast',
     },
   ],
 }
@@ -135,7 +129,7 @@ const blocked: ProviderView = {
   enabled: false,
   blockers: ['Provider disabled'],
   path: '/workspaces/demo/providers/prov-hr',
-  tools: githubOps('prov-hr', 'hr'),
+  tools: githubOps('prov-hr'),
 }
 // Coral's Built-in Provider, which leads the rail under Coral's mark.
 const coralTools = [
@@ -148,8 +142,6 @@ const coralTools = [
   ...weather.tools[0]!,
   name: `providers/prov-coral/tools/${key}`,
   relativePath: key,
-  callPath: `coral.workspace.${key}`,
-  path: `/workspaces/demo/providers/prov-coral/tools/${key}`,
   // Read-only, so they start enabled.
   ...(['listProviders', 'getProvider', 'getPolicy'].includes(key) && {
     hints: { readOnly: true, idempotent: true },
@@ -161,6 +153,7 @@ const coral: ProviderView = {
   id: 'prov-coral',
   displayName: 'Coral',
   namespace: '',
+  callRoot: 'coral.workspace',
   builtin: true,
   path: '/workspaces/demo/providers/prov-coral',
   readyCount: coralTools.length,
@@ -364,22 +357,15 @@ export const TreeWithBuiltinProvider: Story = {
 export const TreeProviderSelected: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} selectedProvider="prov-weather" />,
 }
-// A catalog large enough that the table virtualizes: only the tools near
-// the scroll position mount, while every provider and group heading does.
+// A catalog large enough that the table virtualizes: only the tools and tool
+// groups near the scroll position mount, while every provider heading does.
 const largeProviders: ProviderView[] = Array.from({ length: 6 }, (_, providerIndex) => {
   const id = `prov-large-${providerIndex + 1}`
   const groups = ['issues', 'pulls', 'repos', 'users']
   const tools = Array.from({ length: 200 }, (__, index) =>
-    op(
-      id,
-      `api${providerIndex + 1}`,
-      `${groups[index % 4]}.op${index + 1}`,
-      '',
-      groups[index % 4]!,
-      {
-        hints: index % 3 === 0 ? { readOnly: true } : { readOnly: false },
-      },
-    ),
+    op(id, `${groups[index % 4]}.op${index + 1}`, groups[index % 4]!, {
+      hints: index % 3 === 0 ? { readOnly: true } : { readOnly: false },
+    }),
   )
   return {
     ...github,
@@ -395,6 +381,47 @@ const largeProviders: ProviderView[] = Array.from({ length: 6 }, (_, providerInd
 export const TreeLargeCatalog: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} providers={largeProviders} />,
 }
+// Too many tool groups to mount: only those near the scroll position do, and
+// the one a reader scrolls through still pins, at the same scroll position.
+const manyGroups: ProviderView = {
+  ...github,
+  tools: Array.from({ length: 900 }, (_, index) => {
+    const group = `group${String(Math.floor(index / 3)).padStart(3, '0')}`
+    return op('prov-github', `${group}.op${index}`, group)
+  }),
+  readyCount: 900,
+  totalCount: 900,
+}
+export const TreeManyToolGroups: Story = {
+  render: () => <WorkspaceProvidersPage {...treeProps} providers={[manyGroups]} />,
+  play: async ({ canvasElement }) => {
+    const table = within(canvasElement).getByRole('table', { name: 'Tools' })
+    const headings = () => [
+      ...table.querySelectorAll<HTMLElement>('[data-pinned-heading][aria-level="2"]'),
+    ]
+    const height = table.scrollHeight
+    for (const top of [4000, 12000, 2000]) {
+      table.scrollTop = top
+      await waitFor(() => {
+        const provider = table.querySelector('[data-pinned-heading][aria-level="1"]')!
+        const slot = provider.getBoundingClientRect().bottom
+        // A mounted group always spans the slot, so no spacer shows under it.
+        const spanning = headings().find((heading) => {
+          const group = heading.parentElement!.getBoundingClientRect()
+          return group.top <= slot && group.bottom >= slot
+        })
+        expect(spanning).toBeDefined()
+        // Its heading pins there, until the end of its group pushes it out.
+        const heading = spanning!.getBoundingClientRect()
+        const end = spanning!.parentElement!.getBoundingClientRect().bottom
+        expect(Math.abs(heading.top - Math.min(slot, end - heading.height))).toBeLessThanOrEqual(1)
+      })
+      // Rows correct their estimates as they mount, by a pixel or so each.
+      await expect(Math.abs(table.scrollTop - top)).toBeLessThan(40)
+      await expect(Math.abs(table.scrollHeight - height)).toBeLessThan(400)
+    }
+  },
+}
 export const TreeAuthenticatedProviderSelected: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} selectedProvider="prov-github" />,
 }
@@ -406,6 +433,7 @@ export const TreeToolSelected: Story = {
       {...treeProps}
       selectedProvider="prov-github"
       selectedTool="issues.create"
+      selectedToolDetail={createIssue}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -458,14 +486,10 @@ export const TreeToolWithSummaryAsDescription: Story = {
   render: () => (
     <WorkspaceProvidersPage
       {...treeProps}
-      providers={[
-        {
-          ...github,
-          tools: github.tools.map((o) => ({ ...o, description: o.summary })),
-        },
-      ]}
+      providers={[github]}
       selectedProvider="prov-github"
       selectedTool="issues.create"
+      selectedToolDetail={{ ...createIssue, description: createIssue.summary }}
     />
   ),
 }
@@ -475,6 +499,11 @@ export const TreeUnavailableToolSelected: Story = {
       {...treeProps}
       selectedProvider="prov-github"
       selectedTool="issues.close"
+      selectedToolDetail={{
+        relativePath: 'issues.close',
+        summary: 'Close an issue',
+        description: '',
+      }}
     />
   ),
 }
@@ -490,6 +519,7 @@ export const TreeSearchIndexFailed: Story = {
       ]}
       selectedProvider="prov-github"
       selectedTool="issues.create"
+      selectedToolDetail={createIssue}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -527,6 +557,7 @@ export const TreeSearchIndexPending: Story = {
       providers={[{ ...github, searchIndex: { state: 'pending' } }, weather]}
       selectedProvider="prov-github"
       selectedTool="issues.create"
+      selectedToolDetail={createIssue}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -556,6 +587,7 @@ export const TreeAtPhoneWidthSelected: Story = {
       {...treeProps}
       selectedProvider="prov-github"
       selectedTool="issues.create"
+      selectedToolDetail={createIssue}
     />
   ),
   globals: { viewport: { value: 'mobile1', isRotated: false } },
