@@ -11,7 +11,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   const auth = context.get(requestAuthContext)
   return observeActivity(
     request,
-    management(request, context),
+    management(context),
     auth.mode === 'required' ? auth.session.expiresAt : Infinity,
   )
 }

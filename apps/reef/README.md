@@ -210,6 +210,12 @@ npm test
 npm run build
 ```
 
+## Tracing
+
+The production server traces each request when an OTLP endpoint is configured.
+See [Trace Reef requests](../docs/reference/configuration.mdx) for the variables.
+`npm run dev` opens no spans, because Vite's server does not run `server.js`.
+
 ## Recorded browser scenarios
 
 See [Reel](e2e/README.md) for the disposable Coral + Reef stack,

@@ -9,6 +9,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { createRequestHandler, RouterContextProvider } from 'react-router'
 
+import { createRequestTracing } from './server-tracing.js'
+
 const CLIENT_ROOT = resolve(fileURLToPath(new URL('./build/client/', import.meta.url)))
 const CONTENT_TYPES = {
   '.css': 'text/css; charset=utf-8',
@@ -167,13 +169,16 @@ async function sendWebResponse(request, response, webResponse) {
   }
 }
 
-async function handleNodeRequest(request, response, handler) {
+async function handleNodeRequest(request, response, handler, traceRequest) {
   let bridge
   try {
     if (await serveStatic(request, response)) return
     bridge = createWebRequest(request, response)
-    const webResponse = await handler(bridge.request, new RouterContextProvider())
-    await sendWebResponse(request, response, webResponse)
+    const webRequest = bridge.request
+    await traceRequest(webRequest, async () => {
+      const webResponse = await handler(webRequest, new RouterContextProvider())
+      await sendWebResponse(request, response, webResponse)
+    })
   } catch (error) {
     console.error('Coral web request failed:', error)
     if (response.headersSent) response.destroy()
@@ -187,13 +192,17 @@ async function handleNodeRequest(request, response, handler) {
 // React Router derives the request origin from Host, so a DNS-rebinding page
 // would pass its origin check. Answer only requests that name this listener, and
 // refuse absolute-form targets, which would replace Host in the request URL.
-export function createRequestListener({ handler, requireListenerHost }) {
+export function createRequestListener({
+  handler,
+  requireListenerHost,
+  traceRequest = (_request, respond) => respond(),
+}) {
   return (request, response) => {
     if (requireListenerHost && !namesLocalListener(request)) {
       response.writeHead(421, { 'Content-Length': 0 }).end()
       return
     }
-    void handleNodeRequest(request, response, handler)
+    void handleNodeRequest(request, response, handler, traceRequest)
   }
 }
 
@@ -207,13 +216,16 @@ function namesLocalListener(request) {
   )
 }
 
-function installShutdownHandlers(server) {
+function installShutdownHandlers(server, afterClose = () => undefined) {
   let closing = false
   const shutdown = () => {
     if (closing) return
     closing = true
-    server.close((error) => {
-      if (error) {
+    server.close(async (closeError) => {
+      try {
+        if (closeError) throw closeError
+        await afterClose()
+      } catch (error) {
         console.error('Coral web shutdown failed:', error)
         process.exitCode = 1
       }
@@ -225,19 +237,40 @@ function installShutdownHandlers(server) {
 
 async function main() {
   process.env.NODE_ENV = 'production'
+  let tracing
+  try {
+    tracing = createRequestTracing()
+  } catch (cause) {
+    throw new StartupFailure('trace export', cause)
+  }
   const build = await import('./build/server/index.js')
   const authMode = process.env.CORAL_WEB_AUTH_MODE?.trim().toLowerCase()
   // Use deployment configuration, never the build machine's public host or
   // untrusted forwarding headers, for React Router's action origin allowlist.
   const publicUrl = authMode === 'required' ? process.env.CORAL_WEB_PUBLIC_URL?.trim() : undefined
   const handler = createRequestHandler(
-    { ...build, allowedActionOrigins: publicUrl ? [new URL(publicUrl).host] : [] },
+    {
+      ...build,
+      allowedActionOrigins: publicUrl ? [new URL(publicUrl).host] : [],
+      entry: {
+        ...build.entry,
+        module: { ...build.entry.module, instrumentations: [tracing.instrumentation] },
+      },
+    },
     'production',
   )
   const server = createServer(
-    createRequestListener({ handler, requireListenerHost: authMode === 'disabled' }),
+    createRequestListener({
+      handler,
+      requireListenerHost: authMode === 'disabled',
+      traceRequest: tracing.traceRequest,
+    }),
   )
-  await startServer({ handler, server })
+  await startServer({
+    handler,
+    installShutdown: (listening) => installShutdownHandlers(listening, tracing.shutdown),
+    server,
+  })
   const address = server.address()
   const host = typeof address === 'object' && address ? address.address : process.env.HOST
   const port = typeof address === 'object' && address ? address.port : process.env.PORT

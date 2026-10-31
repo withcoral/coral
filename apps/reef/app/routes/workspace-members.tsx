@@ -30,7 +30,7 @@ export function shouldRevalidate() {
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   assertPeopleManagement(context)
   try {
-    const { api, workspace: w } = await authorizedWorkspace(request, context, params.workspace)
+    const { api, workspace: w } = await authorizedWorkspace(context, params.workspace)
     const owner = w.effectiveRole === 'owner'
     const query = new URL(request.url).searchParams
     const [members, owners, own, people] = await Promise.all([
@@ -69,7 +69,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 export async function action({ request, context, params }: Route.ActionArgs) {
   assertPeopleManagement(context)
   const form = await mutationForm(request, context)
-  const api = management(request, context)
+  const api = management(context)
   const name = workspaceName(params.workspace)
   const intent = field(form, 'intent')
   try {

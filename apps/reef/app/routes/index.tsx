@@ -18,7 +18,7 @@ export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/man
 export async function loader({ request, context }: Route.LoaderArgs) {
   let workspaces
   try {
-    workspaces = await activeWorkspaces(management(request, context), request.signal)
+    workspaces = await activeWorkspaces(management(context), request.signal)
   } catch (error) {
     managementFailure(error)
   }

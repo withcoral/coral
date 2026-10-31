@@ -1,9 +1,8 @@
-import { randomBytes } from 'node:crypto'
-
 import type { RequestAuth } from '@/auth/types'
 
 import { createClient } from '@connectrpc/connect'
 import { createGrpcTransport, Http2SessionManager } from '@connectrpc/connect-node'
+import { context, propagation, type TextMapSetter } from '@opentelemetry/api'
 
 import { Health } from '@/generated/grpc/health/v1/health_pb'
 
@@ -23,17 +22,11 @@ export function healthClient(endpoint: CoralEndpointPolicy) {
 
 /** Private first-party transport; used only by resource-specific server paths. */
 export function managementTransportForRequest(
-  request: Request,
   auth: RequestAuth,
   endpoint: CoralEndpointPolicy,
   defaultTimeoutMs = 10_000,
 ) {
   warnAuthenticatedCleartext(endpoint.authenticatedCleartextOrigin)
-  const incoming = request.headers.get('traceparent')
-  const traceparent =
-    incoming && /^00-[a-f0-9]{32}-[a-f0-9]{16}-0[01]$/.test(incoming)
-      ? incoming
-      : `00-${randomBytes(16).toString('hex')}-${randomBytes(8).toString('hex')}-01`
   return createGrpcTransport({
     baseUrl: endpoint.baseUrl,
     sessionManager: coralSessionManager(new URL(endpoint.baseUrl)),
@@ -41,12 +34,17 @@ export function managementTransportForRequest(
     interceptors: [
       (next) => (call) => {
         call.header.set('coral-audience', 'reef')
-        call.header.set('traceparent', traceparent)
+        // The request's span is Coral's parent; without one, Coral starts the trace.
+        propagation.inject(context.active(), call.header, headerSetter)
         if (auth.accessToken) call.header.set('authorization', `Bearer ${auth.accessToken}`)
         return next(call)
       },
     ],
   })
+}
+
+const headerSetter: TextMapSetter<Headers> = {
+  set: (headers, name, value) => headers.set(name, value),
 }
 
 const warnedCleartextOrigins = new Set<string>()

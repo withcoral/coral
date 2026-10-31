@@ -99,6 +99,24 @@ Every request has a trace, even when you do not set `endpoint`. A failed MCP too
 | `service_name` | Name of the service when exporting OTEL data                                       | No       | `coral`                                                                                                                                 |
 | `trace_sample_ratio` | Share of the traces Coral starts that it exports, from `0.0` to `1.0`        | No       | `1.0`                                                                                                                                   |
 
+#### Trace Reef requests
+
+Reef reads the standard OpenTelemetry environment variables at startup, not `config.toml`. Set them on the Reef process. Reef then opens one server span for each page, data and resource request. That span is the parent of each Coral gRPC call the request makes. Send Reef and Coral to the same backend to see one trace for each Reef request.
+
+Reef spans carry the method, the route template, the status and the kind of a failure. They never carry headers, bodies, query strings, cookies or full URLs. A valid caller `traceparent` continues its trace, and an invalid one starts a new trace. Reef never reads or forwards `baggage` or `tracestate`. `/healthz` and `/readyz` open no span.
+
+| Variable                                                              | Description                                                                                                                                        | Default                 |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | OTLP over HTTP endpoint. Reef exports only when you set one of these.                                                                              | None                    |
+| `OTEL_EXPORTER_OTLP_HEADERS`                                          | Additional headers, formatted as `name=value,name=value`                                                                                           | None                    |
+| `OTEL_SERVICE_NAME`                                                   | Name of the service when exporting                                                                                                                 | `reef`                  |
+| `OTEL_RESOURCE_ATTRIBUTES`                                            | Additional resource attributes, formatted as `name=value,name=value`                                                                               | None                    |
+| `OTEL_TRACES_SAMPLER`                                                 | `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off` or `parentbased_traceidratio`. Reef does not start with any other value. | `parentbased_always_on` |
+| `OTEL_TRACES_SAMPLER_ARG`                                             | The ratio for the `traceidratio` samplers, from `0` to `1`                                                                                         | `1`                     |
+| `OTEL_SDK_DISABLED`                                                   | Set to `true` to stop export                                                                                                                       | `false`                 |
+
+Coral follows the sampled flag on each Reef call, so `OTEL_TRACES_SAMPLER` decides which of these traces Coral exports. When Reef does not export, `trace_sample_ratio` decides, and each gRPC call that has no caller `traceparent` starts its own trace.
+
 #### Metrics
 
 With `endpoint` set, you receive the `coral.*` metrics below. Their names, units and attributes are stable within a major version. No attribute holds an identifier, a provider name, a tool call path, a client or an endpoint. Durations are in seconds and sizes in bytes. Gauges show the value when Coral collects metrics, every 5 seconds.

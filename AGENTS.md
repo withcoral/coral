@@ -146,6 +146,9 @@
 
 ### Reef and Desktop
 
+- `apps/reef/server-tracing.js` owns Reef's server spans. Keep their attributes
+  within the keys `coral-telemetry` exports (`crates/coral-telemetry/src/field.rs`);
+  no export filter runs in Reef, so a new attribute reaches the backend as written.
 - Wax (`apps/reef/app/wax`) owns reusable visual behavior and styling. Extend
   its primitives when a UI needs a missing capability; app-specific modules
   compose Wax and own layout, not a parallel set of controls or theme values.

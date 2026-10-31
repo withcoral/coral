@@ -453,6 +453,7 @@ describe('architecture', () => {
       'node:url',
       'react-router',
       './build/server/index.js',
+      './server-tracing.js',
     ])
 
     expect(importsFrom(server).filter((specifier) => !allowedImports.has(specifier))).toEqual([])

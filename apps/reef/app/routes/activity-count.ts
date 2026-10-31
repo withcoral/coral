@@ -9,7 +9,7 @@ export function action({ request, context }: Route.ActionArgs) {
   if (request.method !== 'POST')
     throw new Response('Method Not Allowed', { status: 405, headers: privateHeaders })
   assertManagementOrigin(request, context)
-  const api = management(request, context)
+  const api = management(context)
   const auth = context.get(requestAuthContext)
   return activityStream(
     request,

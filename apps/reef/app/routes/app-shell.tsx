@@ -28,7 +28,7 @@ import * as styles from './app-shell.css'
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   try {
-    const api = management(request, context)
+    const api = management(context)
     const [all, membership, release] = await Promise.all([
       memberWorkspaces(api).catch(() => []),
       api.organizationMemberships.getCurrentOrganizationMembership({}).catch(() => null),

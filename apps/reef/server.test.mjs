@@ -35,6 +35,9 @@ const REQUIRED_ENV = {
 }
 const CHILD_ENV = { ...process.env, ...REQUIRED_ENV }
 delete CHILD_ENV.FORCE_COLOR
+for (const name of Object.keys(CHILD_ENV)) {
+  if (name.startsWith('OTEL_')) delete CHILD_ENV[name]
+}
 
 test('probes valid runtime config immediately before listen with a fresh context', async () => {
   const events = []
@@ -557,6 +560,118 @@ test('production entry names fatal runtime config and exits without listening', 
   assert.match(error, /Coral web startup failed: CORAL_WEB_PUBLIC_URL/)
 })
 
+test('one Reef request is one trace, rooted at Reef, that Coral calls join', async () => {
+  const collector = await startCollector()
+  const coral = await startGrpcPeer()
+  const child = startReef({
+    CORAL_ENDPOINT: coral.url,
+    OTEL_EXPORTER_OTLP_ENDPOINT: collector.url,
+    OTEL_SERVICE_NAME: 'reef-under-test',
+  })
+  const stderr = streamText(child.stderr)
+  const workspace = '/workspaces/00000000-0000-4000-8000-000000000001'
+  try {
+    const origin = `http://127.0.0.1:${await listeningPort(child)}`
+    const cookie = await validSessionCookie()
+    const callsDuring = async (...fetchArgs) => {
+      coral.calls.length = 0
+      await (await fetch(...fetchArgs)).text()
+      return [...coral.calls]
+    }
+
+    const page = await callsDuring(`${origin}${workspace}?marker=query-secret`, {
+      headers: { Cookie: cookie, baggage: 'user=baggage-secret' },
+    })
+    const continued = await callsDuring(`${origin}${workspace}`, {
+      headers: { Cookie: cookie, traceparent: INBOUND_TRACEPARENT },
+    })
+    const stream = await callsDuring(`${origin}/activity/count`, {
+      headers: { Cookie: cookie, Origin: REQUIRED_ENV.CORAL_WEB_PUBLIC_URL },
+      method: 'POST',
+    })
+    await stopChild(child)
+
+    const spans = exportedSpans(collector.bodies)
+    assert.deepEqual(
+      spans.map((span) => span.name),
+      ['GET /workspaces/:workspace', 'GET /workspaces/:workspace', 'POST /activity/count'],
+    )
+    const [pageSpan, continuedSpan, streamSpan] = spans
+    for (const [span, calls] of [
+      [pageSpan, page],
+      [continuedSpan, continued],
+      [streamSpan, stream],
+    ]) {
+      assert.ok(calls.length > 0, span.name)
+      for (const call of calls) {
+        assert.equal(call.traceparent, `00-${span.traceId}-${span.spanId}-01`, call.path)
+      }
+      assert.equal(span.kind, 2, 'a server span')
+      assert.equal(span.resource['service.name'], 'reef-under-test')
+      assert.deepEqual(
+        Object.keys(span.attributes).filter((key) => !SAFE_SPAN_KEYS.includes(key)),
+        [],
+      )
+    }
+    assert.ok(stream.some((call) => call.path.endsWith('/WatchActivity')))
+    assert.equal(pageSpan.parentSpanId, '')
+    assert.equal(continuedSpan.traceId, 'a1'.repeat(16))
+    assert.equal(continuedSpan.parentSpanId, 'b2'.repeat(8))
+    assert.equal(pageSpan.attributes['http.request.method'], 'GET')
+    assert.equal(pageSpan.attributes['http.route'], '/workspaces/:workspace')
+    assert.equal(pageSpan.attributes['http.response.status_code'], 403n)
+    assert.doesNotMatch(
+      Buffer.concat(collector.bodies).toString('latin1'),
+      /query-secret|baggage-secret|coral_web_session|00000000-0000-4000/,
+    )
+    assert.equal(await stderr, '')
+  } finally {
+    await stopChild(child)
+    await coral.close()
+    await collector.close()
+  }
+})
+
+test("without an exporter Coral sees no parent but the caller's", async () => {
+  const coral = await startGrpcPeer()
+  const child = startReef({ CORAL_ENDPOINT: coral.url })
+  const stderr = streamText(child.stderr)
+  try {
+    const origin = `http://127.0.0.1:${await listeningPort(child)}`
+    const cookie = await validSessionCookie()
+    for (const [traceparent, expected] of [
+      [undefined, undefined],
+      [INBOUND_TRACEPARENT, INBOUND_TRACEPARENT],
+    ]) {
+      coral.calls.length = 0
+      const headers = { Cookie: cookie, ...(traceparent && { traceparent }) }
+      const response = await fetch(`${origin}/workspaces/00000000-0000-4000-8000-000000000001`, {
+        headers,
+      })
+      await response.text()
+      assert.ok(coral.calls.length > 0)
+      for (const call of coral.calls) assert.equal(call.traceparent, expected, String(traceparent))
+    }
+  } finally {
+    await stopChild(child)
+    await coral.close()
+  }
+  assert.equal(await stderr, '')
+})
+
+test('production entry names an invalid sampler and exits without listening', async () => {
+  const child = startReef({
+    OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:9',
+    OTEL_TRACES_SAMPLER: 'unknown',
+  })
+  const stdout = streamText(child.stdout)
+  const stderr = streamText(child.stderr)
+  const [code] = await once(child, 'exit')
+  assert.notEqual(code, 0)
+  assert.match(await stderr, /trace export: OTEL_TRACES_SAMPLER must be one of/)
+  assert.doesNotMatch(await stdout, /Coral web listening/)
+})
+
 test('stops waiting for a listening port when the child exits', async () => {
   const child = spawn(process.execPath, ['-e', 'process.exit(2)'], {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -564,6 +679,138 @@ test('stops waiting for a listening port when the child exits', async () => {
 
   await assert.rejects(listeningPort(child), /server exited before listening \(2\)/)
 })
+
+function startReef(env) {
+  return spawn(process.execPath, ['server.mjs'], {
+    cwd: import.meta.dirname,
+    env: { ...CHILD_ENV, ...env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+}
+
+/** A native gRPC peer that denies every call and records its trace headers. */
+async function startGrpcPeer() {
+  const calls = []
+  const sessions = new Set()
+  const peer = createHttp2Server()
+  peer.on('session', (session) => {
+    sessions.add(session)
+    session.on('close', () => sessions.delete(session))
+  })
+  peer.on('stream', (stream, headers) => {
+    calls.push({ path: headers[':path'], traceparent: headers.traceparent })
+    stream.on('error', () => undefined)
+    stream.resume()
+    stream.respond({ ':status': 200, 'content-type': 'application/grpc', 'grpc-status': '7' })
+    stream.end()
+  })
+  peer.listen(0, '127.0.0.1')
+  await once(peer, 'listening')
+  return {
+    calls,
+    url: `http://127.0.0.1:${peer.address().port}`,
+    async close() {
+      for (const session of sessions) session.destroy()
+      await new Promise((resolve) => peer.close(resolve))
+    },
+  }
+}
+
+/** An OTLP/HTTP endpoint that keeps each request body. */
+async function startCollector() {
+  const bodies = []
+  const collector = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    bodies.push(Buffer.concat(chunks))
+    response.writeHead(200).end()
+  })
+  collector.listen(0, '127.0.0.1')
+  await once(collector, 'listening')
+  return {
+    bodies,
+    url: `http://127.0.0.1:${collector.address().port}`,
+    close: () => new Promise((resolve) => collector.close(resolve)),
+  }
+}
+
+const INBOUND_TRACEPARENT = `00-${'a1'.repeat(16)}-${'b2'.repeat(8)}-01`
+const SAFE_SPAN_KEYS = [
+  'error.type',
+  'http.request.method',
+  'http.response.status_code',
+  'http.route',
+]
+
+/** Decodes the spans of OTLP `ExportTraceServiceRequest` bodies. */
+function exportedSpans(bodies) {
+  const spans = []
+  for (const body of bodies) {
+    for (const resourceSpans of protoFields(body, 1)) {
+      const [resource] = protoFields(resourceSpans, 1)
+      for (const scopeSpans of protoFields(resourceSpans, 2)) {
+        for (const span of protoFields(scopeSpans, 2)) {
+          const text = (field) => (protoFields(span, field)[0] ?? Buffer.alloc(0)).toString()
+          const hex = (field) => (protoFields(span, field)[0] ?? Buffer.alloc(0)).toString('hex')
+          spans.push({
+            attributes: protoAttributes(span, 9),
+            kind: Number(protoFields(span, 6)[0]),
+            name: text(5),
+            parentSpanId: hex(4),
+            resource: protoAttributes(resource, 1),
+            spanId: hex(2),
+            traceId: hex(1),
+            traceState: text(3),
+          })
+        }
+      }
+    }
+  }
+  return spans
+}
+
+function protoAttributes(message, field) {
+  return Object.fromEntries(
+    protoFields(message, field).map((attribute) => {
+      const [value] = protoFields(attribute, 2)
+      const [text] = protoFields(value, 1)
+      return [
+        protoFields(attribute, 1)[0].toString(),
+        text === undefined ? protoFields(value, 3)[0] : text.toString(),
+      ]
+    }),
+  )
+}
+
+/** The values of one field in a protobuf message: bytes, or a BigInt varint. */
+function protoFields(message, wanted) {
+  const values = []
+  let offset = 0
+  const varint = () => {
+    let value = 0n
+    let shift = 0n
+    let byte
+    do {
+      byte = message[offset++]
+      value |= BigInt(byte & 0x7f) << shift
+      shift += 7n
+    } while (byte & 0x80)
+    return value
+  }
+  const bytes = (length) => message.subarray(offset, (offset += length))
+  while (offset < message.length) {
+    const tag = Number(varint())
+    const readers = {
+      0: varint,
+      1: () => bytes(8),
+      2: () => bytes(Number(varint())),
+      5: () => bytes(4),
+    }
+    const value = readers[tag & 7]()
+    if (tag >> 3 === wanted) values.push(value)
+  }
+  return values
+}
 
 // fetch() always sends its own Host, and HTTP/1.1 requires one, so write the
 // request directly. HTTP/1.0 is the only way to omit Host.
