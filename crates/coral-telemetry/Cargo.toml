@@ -10,13 +10,14 @@ publish = false
 workspace = true
 
 [features]
-test-support = ["opentelemetry_sdk/testing"]
+test-support = ["dep:opentelemetry-appender-tracing", "opentelemetry_sdk/testing"]
 
 [dependencies]
 axum = { workspace = true, features = ["matched-path"] }
 http.workspace = true
 http-body.workspace = true
 opentelemetry.workspace = true
+opentelemetry-appender-tracing = { workspace = true, optional = true }
 opentelemetry_sdk.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true

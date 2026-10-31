@@ -560,6 +560,7 @@ async fn the_owner_arms_a_timer_at_a_connection_requests_deadline() {
 /// connects, but the request stays ended.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_declined_or_expired_request_does_not_bind_a_later_connection() {
+    let telemetry = super::trace::telemetry();
     for (loss, ended) in [
         (
             GateLoss::Decline,
@@ -604,6 +605,7 @@ async fn a_declined_or_expired_request_does_not_bind_a_later_connection() {
             .unwrap();
         assert!(!format!("{events:?}").contains("late-connection-canary"));
     }
+    telemetry.assert_holds_none_of(["late-connection-canary"]);
 }
 
 /// Disconnecting blocks a waiting request before its first credentials

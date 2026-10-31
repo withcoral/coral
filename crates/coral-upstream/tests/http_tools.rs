@@ -2206,7 +2206,7 @@ async fn an_http_dispatch_carries_only_its_client_span_trace_context() {
     use opentelemetry::trace::{SpanKind, Status};
     use tracing::Instrument as _;
 
-    let capture = capture();
+    let capture = coral_telemetry::testing::process_spans();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(404))
@@ -2303,26 +2303,13 @@ paths:
     assert!(headers.get("baggage").is_none());
 }
 
-/// The process-wide span capture: a subscriber set for one test thread
-/// misses callsites another test's thread registered first.
-fn capture() -> &'static coral_telemetry::testing::SpanCapture {
-    static CAPTURE: std::sync::OnceLock<coral_telemetry::testing::SpanCapture> =
-        std::sync::OnceLock::new();
-    CAPTURE.get_or_init(|| {
-        let capture = coral_telemetry::testing::SpanCapture::default();
-        tracing::subscriber::set_global_default(capture.subscriber())
-            .expect("install the span capture");
-        capture
-    })
-}
-
 /// An HTTP dispatch records one exchange by how it ended: a complete
 /// response, whatever its status, with its request and response body
 /// sizes, or a failure without a response.
 #[tokio::test]
 async fn an_http_dispatch_records_its_exchange() {
     // Installed before the scoped capture, so no thread keeps none.
-    capture();
+    coral_telemetry::testing::process_spans();
     let closed = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("bind")
         .local_addr()

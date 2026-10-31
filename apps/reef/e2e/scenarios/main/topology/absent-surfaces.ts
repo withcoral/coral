@@ -138,7 +138,7 @@ export async function absentSurfaces(context: TestContext) {
       for (const name of ['coral.providers.surfaces.lookup', 'surfaces.lookup', 'lookup']) {
         expect((await run.callTool(name, {})).error).toMatchObject({
           code: -32602,
-          message: `tool '${name}' not found`,
+          message: 'tool not found',
         })
       }
     })

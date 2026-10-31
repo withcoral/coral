@@ -70,7 +70,7 @@ impl ClientHandler for PromptingClient {
     }
 }
 
-struct Session {
+pub(super) struct Session {
     service: RunningService<RoleClient, PromptingClient>,
     prompts: Arc<Mutex<Vec<ElicitRequestParams>>>,
     prompted: tokio::sync::watch::Receiver<usize>,
@@ -78,7 +78,7 @@ struct Session {
 }
 
 impl Session {
-    async fn open(
+    pub(super) async fn open(
         endpoint: &str,
         version: &ProtocolVersion,
         answers: Vec<Option<ElicitationAction>>,
@@ -122,7 +122,7 @@ impl Session {
         }
     }
 
-    async fn call(&self, name: &'static str, arguments: Value) -> Value {
+    pub(super) async fn call(&self, name: &'static str, arguments: Value) -> Value {
         let result: CallToolResult = self
             .service
             .call_tool(
@@ -137,7 +137,7 @@ impl Session {
         result["structuredContent"].clone()
     }
 
-    async fn start_task(&self) -> String {
+    pub(super) async fn start_task(&self) -> String {
         self.call("start_task", json!({"intent":"Answer required actions"}))
             .await["task_id"]
             .as_str()
@@ -157,7 +157,7 @@ impl Session {
         .await
     }
 
-    async fn wait_terminal(&self, mut update: Value) -> Value {
+    pub(super) async fn wait_terminal(&self, mut update: Value) -> Value {
         while update["state"] == "running" {
             update = self
                 .call(
@@ -169,7 +169,11 @@ impl Session {
         update
     }
 
-    fn prompts(&self) -> Vec<ElicitRequestParams> {
+    pub(super) async fn close(self) {
+        self.service.cancel().await.expect("close MCP client");
+    }
+
+    pub(super) fn prompts(&self) -> Vec<ElicitRequestParams> {
         self.prompts.lock().expect("prompts").clone()
     }
 
@@ -588,6 +592,22 @@ async fn a_raw_retry_completes_the_call_that_asked(endpoint: &str, version: &Pro
     assert_eq!(
         forged["message"], "inputResponses answer a request that was not asked",
         "{forged}"
+    );
+
+    let misdirected = session
+        .result(
+            "tools/call",
+            json!({
+                "name":"no-such-tool-canary", "arguments":{},
+                "requestState":asked["requestState"],
+            }),
+        )
+        .await
+        .expect_err("only exec and wait continue a Run");
+    assert_eq!(misdirected["code"], -32602, "{misdirected}");
+    assert_eq!(
+        misdirected["message"], "tool does not accept requestState",
+        "{misdirected}"
     );
 
     session.client_capabilities = json!({});

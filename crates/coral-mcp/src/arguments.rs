@@ -273,12 +273,37 @@ pub(crate) fn parse<T>(arguments: Option<Map<String, Value>>) -> Result<T, Error
 where
     T: ToolArguments,
 {
-    serde_json::from_value(Value::Object(arguments.unwrap_or_default())).map_err(|error| {
+    let arguments = Value::Object(arguments.unwrap_or_default());
+    T::deserialize(&arguments).ok().ok_or_else(|| {
         ErrorData::invalid_params(
-            format!("invalid arguments for '{}': {error}", T::NAME),
+            format!(
+                "invalid arguments for '{}': {}",
+                T::NAME,
+                argument_problem(T::NAME, &arguments)
+            ),
             None,
         )
     })
+}
+
+/// What is wrong with `arguments` to tool `name`, read from the schema Coral
+/// advertises. A deserializer's message quotes the value or key it rejected,
+/// which can be private, so none reaches the caller.
+fn argument_problem(name: &str, arguments: &Value) -> String {
+    let required = TOOLS
+        .iter()
+        .find(|tool| tool.name == name)
+        .and_then(|tool| tool.input_schema.get("required"))
+        .and_then(Value::as_array);
+    let missing = required
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .find(|field| arguments.get(field).is_none());
+    match missing {
+        Some(field) => format!("missing field `{field}`"),
+        None => "a value does not match the tool's input schema".to_owned(),
+    }
 }
 
 /// Every tool this Adapter serves, as `tools/list` advertises them.
@@ -397,6 +422,36 @@ fn mutation_annotations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A caller learns which field is missing, but a rejected value or key
+    /// does not come back in the error.
+    #[test]
+    fn invalid_arguments_name_a_missing_field_and_never_quote_the_caller() {
+        const SCHEMA: &str = "a value does not match the tool's input schema";
+        for (arguments, problem) in [
+            (json!({}), "missing field `task_id`"),
+            (json!({"task_id": "t", "outcome": "value-canary"}), SCHEMA),
+            (
+                json!({"task_id": ["value-canary"], "outcome": "success"}),
+                SCHEMA,
+            ),
+            (
+                json!({"task_id": "t", "outcome": "success", "key-canary": 1}),
+                SCHEMA,
+            ),
+        ] {
+            let Value::Object(arguments) = arguments else {
+                panic!("object arguments");
+            };
+            let Err(error) = parse::<EndTaskArguments>(Some(arguments)) else {
+                panic!("rejected: {problem}");
+            };
+            assert_eq!(
+                error.message,
+                format!("invalid arguments for 'end_task': {problem}")
+            );
+        }
+    }
 
     /// The `types` schema caps the item count; the per-name byte limit is
     /// domain-validated and not advertised.

@@ -2,11 +2,17 @@
 //! accepted it, that every phase joins on any Coral Instance.
 use super::*;
 
-use coral_telemetry::testing::{SpanCapture, attribute};
+use coral_telemetry::metric::Metrics;
+use coral_telemetry::testing::{ExportCapture, SpanCapture, attribute};
 use opentelemetry::trace::{SpanId, TraceContextExt as _};
+use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
+use opentelemetry_sdk::metrics::data::{ResourceMetrics, ScopeMetrics};
+use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
+use opentelemetry_sdk::metrics::{SdkMeterProvider, Temporality};
 use opentelemetry_sdk::trace::SpanData;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+use tracing_subscriber::layer::SubscriberExt as _;
 
 /// The process-wide span capture. A subscriber set for one test's thread
 /// misses a callsite that another test's thread registered first, so every
@@ -14,30 +20,120 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 pub(super) fn capture() -> &'static SpanCapture {
     static CAPTURE: std::sync::OnceLock<SpanCapture> = std::sync::OnceLock::new();
     CAPTURE.get_or_init(|| {
-        let capture = SpanCapture::beside(FailingExporter);
-        tracing::subscriber::set_global_default(capture.subscriber())
-            .expect("install the span capture");
+        let capture = SpanCapture::beside(FailingExporter(&REFUSED_SPANS));
+        let subscriber = tracing_subscriber::registry()
+            .with(capture.layer())
+            .with(operational_logs().log_layer())
+            .with(refused_meters().1.layer());
+        tracing::subscriber::set_global_default(subscriber).expect("install the span capture");
         capture
     })
 }
 
-/// Every span export attempt [`FailingExporter`] refused.
-static FAILED_EXPORTS: AtomicUsize = AtomicUsize::new(0);
+/// The operational logs of every test, as they leave the host.
+fn operational_logs() -> &'static ExportCapture {
+    static LOGS: std::sync::OnceLock<ExportCapture> = std::sync::OnceLock::new();
+    LOGS.get_or_init(|| ExportCapture::beside(FailingExporter(&REFUSED_LOGS)))
+}
 
-/// An exporter whose collector is down: it refuses every span. Every Run
-/// the capture sees has its spans refused here.
+/// The meters of every test, through the production exporter wrapper, and
+/// their catalog. Nothing exports them until a test flushes them.
+fn refused_meters() -> &'static (SdkMeterProvider, Metrics) {
+    static METERS: std::sync::OnceLock<(SdkMeterProvider, Metrics)> = std::sync::OnceLock::new();
+    METERS.get_or_init(|| {
+        coral_telemetry::meter_provider(
+            SdkMeterProvider::builder(),
+            FailingExporter(&REFUSED_METRICS),
+            Duration::from_secs(3600),
+        )
+    })
+}
+
+/// The telemetry of every test, once its capture is installed. Only
+/// [`telemetry`] makes one, so a test takes it before its work.
+pub(super) struct Telemetry {
+    spans: &'static SpanCapture,
+}
+
+pub(super) fn telemetry() -> Telemetry {
+    Telemetry { spans: capture() }
+}
+
+impl Telemetry {
+    /// Asserts that no span, span event or operational log holds any of
+    /// `canaries`.
+    pub(super) fn assert_holds_none_of(&self, canaries: impl IntoIterator<Item = &'static str>) {
+        let telemetry = format!("{:?}{}", self.spans.finished(), operational_logs().text());
+        for canary in canaries {
+            assert!(!telemetry.contains(canary), "telemetry holds {canary}");
+        }
+    }
+}
+
+/// What [`FailingExporter`] refused of each signal: the `coral.run.id` of a
+/// span, the text of a log record, the name of a metric.
+static REFUSED_SPANS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static REFUSED_LOGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static REFUSED_METRICS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// An exporter whose collector is down: it refuses everything and records it
+/// in the list it holds. Every Run the capture sees exports through these.
 #[derive(Debug)]
-struct FailingExporter;
+struct FailingExporter(&'static Mutex<Vec<String>>);
 
-impl opentelemetry_sdk::trace::SpanExporter for FailingExporter {
+impl FailingExporter {
+    fn refuse(&self, refused: impl IntoIterator<Item = String>) -> OTelSdkResult {
+        self.0
+            .lock()
+            .map_err(|_poisoned| OTelSdkError::InternalFailure("poisoned".into()))?
+            .extend(refused);
+        Err(OTelSdkError::InternalFailure(
+            "the collector is down".into(),
+        ))
+    }
+}
+
+impl opentelemetry_sdk::logs::LogExporter for FailingExporter {
     fn export(
         &self,
-        _batch: Vec<SpanData>,
-    ) -> impl Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send {
-        FAILED_EXPORTS.fetch_add(1, Ordering::SeqCst);
-        std::future::ready(Err(
-            opentelemetry_sdk::error::OTelSdkError::InternalFailure("the collector is down".into()),
-        ))
+        batch: opentelemetry_sdk::logs::LogBatch<'_>,
+    ) -> impl Future<Output = OTelSdkResult> + Send {
+        let bodies = batch
+            .iter()
+            .filter_map(|(record, _scope)| record.body())
+            .map(|body| format!("{body:?}"));
+        std::future::ready(self.refuse(bodies))
+    }
+}
+
+impl PushMetricExporter for FailingExporter {
+    fn export(&self, metrics: &ResourceMetrics) -> impl Future<Output = OTelSdkResult> + Send {
+        let names = metrics
+            .scope_metrics()
+            .flat_map(ScopeMetrics::metrics)
+            .map(|metric| metric.name().to_owned());
+        std::future::ready(self.refuse(names))
+    }
+
+    fn force_flush(&self) -> OTelSdkResult {
+        Ok(())
+    }
+
+    fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+        Ok(())
+    }
+
+    fn temporality(&self) -> Temporality {
+        Temporality::default()
+    }
+}
+
+impl opentelemetry_sdk::trace::SpanExporter for FailingExporter {
+    fn export(&self, batch: Vec<SpanData>) -> impl Future<Output = OTelSdkResult> + Send {
+        let runs = batch
+            .iter()
+            .filter_map(|span| attribute(span, "coral.run.id"));
+        std::future::ready(self.refuse(runs))
     }
 }
 
@@ -609,13 +705,42 @@ async fn requests_about_a_run_link_to_its_trace_only_when_authorized() {
     }
 }
 
-/// Telemetry is best effort: a Run whose every span fails to export ends
-/// as it would without telemetry, and its Events are all recorded.
+/// Answers as a scripted upstream does, and logs as it dispatches. A Run that
+/// succeeds logs nothing of its own, and what libraries log depends on how the
+/// test binary was built, so this gives the Run a log record to lose.
+struct LoggingUpstream(ScriptedUpstream);
+
+#[async_trait]
+impl UpstreamSender for LoggingUpstream {
+    async fn send(
+        &self,
+        dispatch: ReadyDispatch,
+        stop: Arc<ExecutionStop>,
+    ) -> Result<UpstreamOutcome, crate::invocation::UpstreamSendError> {
+        tracing::warn!("logged during the dispatch");
+        self.0.send(dispatch, stop).await
+    }
+}
+
+/// Whether [`FailingExporter`] refused a signal holding `text`.
+fn refused(signal: &Mutex<Vec<String>>, text: &str) -> bool {
+    signal
+        .lock()
+        .expect("refused signals")
+        .iter()
+        .any(|refused| refused.contains(text))
+}
+
+/// Telemetry is best effort: a Run whose every span, log record and metric
+/// fails to export ends as it would without telemetry, and its Events are all
+/// recorded.
 #[tokio::test]
-async fn a_run_ends_the_same_when_its_spans_fail_to_export() {
+async fn a_run_ends_the_same_when_its_telemetry_fails_to_export() {
     capture();
-    let refused_before = FAILED_EXPORTS.load(Ordering::SeqCst);
-    let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({"t": 21})));
+    let upstream = Arc::new(LoggingUpstream(ScriptedUpstream::json(
+        200,
+        serde_json::json!({"t": 21}),
+    )));
     let fixture = TestModules::with_upstream(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
         upstream,
@@ -640,9 +765,17 @@ async fn a_run_ends_the_same_when_its_spans_fail_to_export() {
     .await;
 
     assert!(
-        FAILED_EXPORTS.load(Ordering::SeqCst) > refused_before,
-        "the Run's spans were refused"
+        refused(&REFUSED_LOGS, "logged during the dispatch"),
+        "the Run's log record was refused"
     );
+    // A Run's spans close and its metrics record as it finishes, which can
+    // follow the moment it reads as ended. A metric names no Run, so its name
+    // is the closest it can be selected.
+    wait_until(|| refused(&REFUSED_SPANS, accepted.run_id().as_str())).await;
+    wait_until(|| {
+        refused_meters().0.force_flush().is_err() && refused(&REFUSED_METRICS, "coral.run.ended")
+    })
+    .await;
     assert!(matches!(
         ended.terminal_outcome(),
         Some(RunTerminalOutcome::Succeeded {
