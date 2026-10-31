@@ -243,12 +243,26 @@ export function load(root) {
   ) {
     throw new Error('Development settings changed; run ./dev setup again')
   }
-  privateRead(join(root, '.dev/state/config.toml'))
+  const otel = otelEnv(privateRead(join(root, '.dev/state/config.toml')).toString())
   const webEnv = parseEnv(privateRead(join(root, '.dev/web.env')).toString())
   const publicUrls = urls(input.TAILNET_HOST)
   if (webEnv.CORAL_WEB_PUBLIC_URL !== publicUrls.web)
     throw new Error('Development URLs changed; run ./dev setup again')
-  return { input, webEnv, urls: publicUrls }
+  return { input, otelEnv: otel, webEnv, urls: publicUrls }
+}
+
+// Reef exports where Coral does, so a request's trace reaches one backend. Coral's
+// `headers` setting has the format of OTEL_EXPORTER_OTLP_HEADERS.
+function otelEnv(coralConfig) {
+  const section = /^\[otel\]\s*$([\s\S]*?)(?:^\[|(?![\s\S]))/m.exec(coralConfig)?.[1] ?? ''
+  const setting = (name) => new RegExp(`^${name}\\s*=\\s*"([^"]*)"`, 'm').exec(section)?.[1]
+  const endpoint = setting('endpoint')
+  if (!endpoint) return {}
+  const headers = setting('headers')
+  return {
+    OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+    ...(headers && { OTEL_EXPORTER_OTLP_HEADERS: headers }),
+  }
 }
 
 const loopback = (port, path = '') => `http://127.0.0.1:${port}${path}`

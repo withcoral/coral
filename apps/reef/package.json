@@ -12,7 +12,7 @@
     "typecheck": "npm run proto:gen && npm run e2e:proto:gen && react-router typegen && tsc",
     "test": "npm run proto:gen && vitest run && npm run test:stories",
     "test:stories": "vitest run --config vitest.stories.config.ts",
-    "test:server": "node --test server.test.mjs server-tracing.test.mjs scripts/bundle-server.test.mjs",
+    "test:server": "node --test server.test.mjs server-tracing.test.mjs dev-tracing.test.mjs scripts/bundle-server.test.mjs",
     "test:e2e": "node e2e/scripts/container.ts",
     "test:e2e:native": "node e2e/scripts/run.ts",
     "e2e:proto:gen": "buf generate --template e2e/buf.gen.yaml",

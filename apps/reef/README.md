@@ -212,9 +212,10 @@ npm run build
 
 ## Tracing
 
-The production server traces each request when an OTLP endpoint is configured.
-See [Trace Reef requests](../docs/reference/configuration.mdx) for the variables.
-`npm run dev` opens no spans, because Vite's server does not run `server.js`.
+Reef traces each request when an OTLP endpoint is configured.
+See [Trace UI requests](../docs/reference/configuration.mdx) for the variables.
+`./dev reef` uses the `[otel]` settings from `.dev/state/config.toml`, so Reef and
+Coral export to one backend. Set the `OTEL_*` variables in your shell to override them.
 
 ## Recorded browser scenarios
 

@@ -589,26 +589,35 @@ test('one Reef request is one trace, rooted at Reef, that Coral calls join', asy
     await stopChild(child)
 
     const spans = exportedSpans(collector.bodies)
+    const requests = spans.filter((span) => span.kind === SERVER_SPAN)
     assert.deepEqual(
-      spans.map((span) => span.name),
+      requests.map((span) => span.name),
       ['GET /workspaces/:workspace', 'POST /activity/count'],
     )
-    const [pageSpan, streamSpan] = spans
+    const [pageSpan, streamSpan] = requests
     for (const [span, calls] of [
       [pageSpan, page],
       [streamSpan, stream],
     ]) {
       assert.ok(calls.length > 0, span.name)
       for (const call of calls) {
-        assert.equal(call.traceparent, `00-${span.traceId}-${span.spanId}-01`, call.path)
+        const client = spans.find((candidate) => candidate.name === call.path.slice(1))
+        assert.equal(client.kind, CLIENT_SPAN, call.path)
+        assert.equal(call.traceparent, `00-${span.traceId}-${client.spanId}-01`, call.path)
       }
-      assert.equal(span.kind, 2, 'a server span')
       assert.equal(span.resource['service.name'], 'reef-under-test')
-      assert.deepEqual(
-        Object.keys(span.attributes).filter((key) => !SAFE_SPAN_KEYS.includes(key)),
-        [],
-      )
     }
+    assert.ok(
+      spans.some(
+        (span) => span.parentSpanId === pageSpan.spanId && span.name.startsWith('loader '),
+      ),
+    )
+    assert.deepEqual(
+      spans
+        .flatMap((span) => Object.keys(span.attributes))
+        .filter((key) => !SAFE_SPAN_KEYS.includes(key)),
+      [],
+    )
     assert.ok(stream.some((call) => call.path.endsWith('/WatchActivity')))
     assert.equal(pageSpan.parentSpanId, '')
     assert.doesNotMatch(
@@ -698,11 +707,16 @@ async function startCollector() {
   }
 }
 
+const SERVER_SPAN = 2
+const CLIENT_SPAN = 3
 const SAFE_SPAN_KEYS = [
   'error.type',
   'http.request.method',
   'http.response.status_code',
   'http.route',
+  'rpc.method',
+  'rpc.response.status_code',
+  'rpc.system.name',
 ]
 
 /** Decodes the spans of OTLP `ExportTraceServiceRequest` bodies. */

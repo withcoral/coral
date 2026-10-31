@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
+import { Code, ConnectError } from '@connectrpc/connect'
 import { context, propagation, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
 
-import { createRequestTracing } from './server-tracing.js'
+import { createRequestTracing, requestInstrumentation, traceCoralCall } from './server-tracing.js'
 
 const INBOUND_TRACE = '0af7651916cd43dd8448eb211c80319c'
 const INBOUND_SPAN = 'b7ad6b7169203331'
@@ -39,9 +40,9 @@ function outboundTraceparent() {
 }
 
 /** Finishes React Router's handler for the active request. */
-async function finishHandler(tracing, result, method = 'GET') {
+async function finishHandler(result, method = 'GET') {
   let handle
-  tracing.instrumentation.handler({ instrument: (hooks) => (handle = hooks.request) })
+  requestInstrumentation.handler({ instrument: (hooks) => (handle = hooks.request) })
   await handle(async () => result, { request: { method } })
 }
 
@@ -50,7 +51,7 @@ async function traced(incoming, respond, env = {}) {
   const spanExporter = collectingExporter()
   const tracing = createRequestTracing({ env, spanExporter })
   try {
-    await tracing.traceRequest(incoming, () => respond?.(tracing))
+    await tracing.traceRequest(incoming, () => respond?.())
   } finally {
     await tracing.shutdown()
   }
@@ -189,9 +190,7 @@ test('names the span by route template and records the outcome with safe fields'
   ]
 
   for (const { name, method, path, result, span: expected } of cases) {
-    const [span] = await traced(request(path, { method }), (tracing) =>
-      finishHandler(tracing, result, method),
-    )
+    const [span] = await traced(request(path, { method }), () => finishHandler(result, method))
 
     assert.equal(span.name, expected.name, name)
     assert.deepEqual({ ...span.attributes }, expected.attributes, name)
@@ -203,6 +202,175 @@ test('names the span by route template and records the outcome with safe fields'
 
 const secretFailure = () => Promise.reject(new Error('secret failure text'))
 
+/** Runs one route function through the instrumentation, as React Router does. */
+async function runRouteFunction(kind, id, result, during) {
+  let hooks
+  requestInstrumentation.route({ id, instrument: (given) => (hooks = given) })
+  await hooks[kind](async () => {
+    await during?.()
+    return result
+  })
+}
+
+/** Makes one Coral call through the interceptor and returns the call it sent. */
+async function coralCall(next = async () => ({ stream: false })) {
+  const call = {
+    header: new Headers(),
+    method: { name: 'ListWorkspaces' },
+    service: { typeName: 'coral.management.v1.WorkspaceService' },
+  }
+  const response = await traceCoralCall(next)(call)
+  return { call, response }
+}
+
+const CORAL_METHOD = 'coral.management.v1.WorkspaceService/ListWorkspaces'
+
+function spanNamed(spans, name) {
+  return spans.find((span) => span.name === name)
+}
+
+test('names a loader or action span by route and nests its Coral calls', async () => {
+  for (const [kind, name] of [
+    ['loader', 'loader routes/workspace'],
+    ['action', 'action routes/workspace'],
+  ]) {
+    const spans = await traced(request(), () =>
+      runRouteFunction(kind, 'routes/workspace', { status: 'success' }, coralCall),
+    )
+
+    const [routeSpan, client, root] = [
+      spanNamed(spans, name),
+      spanNamed(spans, CORAL_METHOD),
+      spans.at(-1),
+    ]
+    assert.equal(routeSpan.kind, SpanKind.INTERNAL, name)
+    assert.equal(routeSpan.parentSpanContext.spanId, root.spanContext().spanId, name)
+    assert.equal(client.parentSpanContext.spanId, routeSpan.spanContext().spanId, name)
+    assert.equal(routeSpan.status.code, SpanStatusCode.UNSET, name)
+  }
+})
+
+test('fails a route span only for a server failure, and keeps its text out', async () => {
+  for (const [result, errorType, status] of [
+    [{ status: 'error', error: new Response(null, { status: 302 }) }, undefined, 'UNSET'],
+    [{ status: 'error', error: new Response(null, { status: 404 }) }, undefined, 'UNSET'],
+    [{ status: 'error', error: new Response(null, { status: 503 }) }, '503', 'ERROR'],
+    [{ status: 'error', error: new Error('secret failure text') }, '_OTHER', 'ERROR'],
+  ]) {
+    const spans = await traced(request(), () => runRouteFunction('loader', 'routes/a', result))
+
+    const span = spanNamed(spans, 'loader routes/a')
+    assert.equal(span.attributes['error.type'], errorType)
+    assert.equal(span.status.code, SpanStatusCode[status])
+    assert.doesNotMatch(JSON.stringify(exportedFields(span)), /secret/)
+  }
+})
+
+test('makes a client span the parent of each Coral call', async () => {
+  let sent
+  const spans = await traced(request(), async () => {
+    sent = (await coralCall()).call
+  })
+
+  const client = spanNamed(spans, CORAL_METHOD)
+  assert.equal(client.kind, SpanKind.CLIENT)
+  assert.deepEqual(
+    { ...client.attributes },
+    {
+      'rpc.method': CORAL_METHOD,
+      'rpc.response.status_code': 'OK',
+      'rpc.system.name': 'grpc',
+    },
+  )
+  const { traceId, spanId } = client.spanContext()
+  assert.equal(sent.header.get('traceparent'), `00-${traceId}-${spanId}-01`)
+})
+
+test('records a Coral failure as Coral does, and keeps its text out', async () => {
+  for (const [code, statusName, errorType, status] of [
+    [Code.NotFound, 'NOT_FOUND', undefined, 'UNSET'],
+    [Code.Canceled, 'CANCELLED', undefined, 'UNSET'],
+    [Code.Unavailable, 'UNAVAILABLE', 'UNAVAILABLE', 'ERROR'],
+    [Code.Internal, 'INTERNAL', 'INTERNAL', 'ERROR'],
+  ]) {
+    const spans = await traced(request(), () =>
+      assert.rejects(
+        coralCall(async () => {
+          throw new ConnectError('secret failure text', code)
+        }),
+        ConnectError,
+      ),
+    )
+
+    const client = spanNamed(spans, CORAL_METHOD)
+    assert.equal(client.attributes['rpc.response.status_code'], statusName)
+    assert.equal(client.attributes['error.type'], errorType)
+    assert.equal(client.status.code, SpanStatusCode[status])
+    assert.doesNotMatch(JSON.stringify(exportedFields(client)), /secret/)
+  }
+})
+
+test('fails a client span for an error that is not a gRPC status', async () => {
+  const spans = await traced(request(), () => assert.rejects(coralCall(secretFailure)))
+
+  const client = spanNamed(spans, CORAL_METHOD)
+  assert.equal(client.attributes['error.type'], '_OTHER')
+  assert.equal(client.attributes['rpc.response.status_code'], undefined)
+  assert.equal(client.status.code, SpanStatusCode.ERROR)
+})
+
+test('keeps a streaming client span open until its stream ends', async () => {
+  for (const [messages, statusName] of [
+    [
+      async function* () {
+        yield 'first'
+      },
+      'OK',
+    ],
+    [
+      // oxlint-disable-next-line require-yield -- The stream fails before its first message.
+      async function* () {
+        throw new ConnectError('secret failure text', Code.Unavailable)
+      },
+      'UNAVAILABLE',
+    ],
+  ]) {
+    const spanExporter = collectingExporter()
+    const tracing = createRequestTracing({ env: {}, spanExporter })
+    await tracing.traceRequest(request(), async () => {
+      const { response } = await coralCall(async () => ({ message: messages(), stream: true }))
+      await tracing.flush()
+      assert.equal(spanNamed(spanExporter.spans, CORAL_METHOD), undefined, statusName)
+      await assert.doesNotReject(async () => {
+        try {
+          for await (const message of response.message) assert.equal(message, 'first')
+        } catch (error) {
+          assert.ok(error instanceof ConnectError)
+        }
+      })
+    })
+    await tracing.shutdown()
+
+    const client = spanNamed(spanExporter.spans, CORAL_METHOD)
+    assert.equal(client.attributes['rpc.response.status_code'], statusName)
+  }
+})
+
+test('opens no route or client span outside a traced request', async () => {
+  const spanExporter = collectingExporter()
+  const tracing = createRequestTracing({ env: {}, spanExporter })
+  let sent
+  await tracing.traceRequest(request('/readyz'), () =>
+    runRouteFunction('loader', 'routes/readyz', { status: 'success' }, async () => {
+      sent = (await coralCall()).call
+    }),
+  )
+  await tracing.shutdown()
+
+  assert.deepEqual(spanExporter.spans, [])
+  assert.equal(sent.header.get('traceparent'), null)
+})
+
 test('fails the span when the response breaks off, not when the caller left', async () => {
   const spanExporter = collectingExporter()
   const tracing = createRequestTracing({ env: {}, spanExporter })
@@ -211,7 +379,7 @@ test('fails the span when the response breaks off, not when the caller left', as
   await assert.rejects(tracing.traceRequest(request('/handler'), secretFailure))
   await assert.rejects(
     tracing.traceRequest(request('/body'), async () => {
-      await finishHandler(tracing, { statusCode: 200 })
+      await finishHandler({ statusCode: 200 })
       await secretFailure()
     }),
   )
@@ -246,6 +414,19 @@ test('keeps the span open until the response ends', async () => {
   assert.equal(spanExporter.spans.length, 1)
 })
 
+test('flush sends finished spans and tracing keeps working', async () => {
+  const spanExporter = collectingExporter()
+  const tracing = createRequestTracing({ env: {}, spanExporter })
+
+  await tracing.traceRequest(request('/first'), () => undefined)
+  await tracing.flush()
+  assert.equal(spanExporter.spans.length, 1)
+
+  await tracing.traceRequest(request('/second'), () => undefined)
+  await tracing.shutdown()
+  assert.equal(spanExporter.spans.length, 2)
+})
+
 test('a collector that refuses the last batch does not fail shutdown', async () => {
   const spanExporter = {
     ...collectingExporter(),
@@ -277,8 +458,8 @@ test('without an exporter, forwards only a valid inbound traceparent', async () 
   ]) {
     const tracing = createRequestTracing({ env: {} })
     let outbound
-    await tracing.traceRequest(request('/', { headers }), () => {
-      outbound = outboundHeaders()
+    await tracing.traceRequest(request('/', { headers }), async () => {
+      outbound = (await coralCall()).call.header
     })
     await tracing.shutdown()
 

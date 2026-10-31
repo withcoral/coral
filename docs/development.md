@@ -138,6 +138,10 @@ bacon coral
 checks, and process cleanup. It watches backend sources and dev scripts, not
 runtime state under `.dev/`.
 
+`./dev reef` exports request traces when `.dev/state/config.toml` has an `[otel]`
+endpoint, using the same endpoint and headers as Coral. Restart it after you
+change those settings.
+
 For left/right Herdr panes, start in **one ordinary shell pane in a fresh
 workspace**, not a coding-agent pane:
 

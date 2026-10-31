@@ -32,10 +32,17 @@ async function callHeaders(): Promise<Headers> {
     { mode: 'disabled', accessToken: null },
     hostedRuntimeConfig.endpoint,
   ) as unknown as GrpcTransportOptions
-  const [interceptor] = transport.interceptors as Interceptor[]
-  const call = { header: new Headers() } as UnaryRequest
-  const next = vi.fn(async () => undefined as never)
-  await interceptor!(next)(call)
+  const call = {
+    header: new Headers(),
+    method: { name: 'ListWorkspaces' },
+    service: { typeName: 'coral.management.v1.WorkspaceService' },
+  } as UnaryRequest
+  const next: Parameters<Interceptor>[0] = vi.fn(async () => ({ stream: false }) as never)
+  const send = (transport.interceptors as Interceptor[]).reduceRight(
+    (handler, interceptor) => interceptor(handler),
+    next,
+  )
+  await send(call)
   return call.header
 }
 

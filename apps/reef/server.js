@@ -252,10 +252,6 @@ async function main() {
     {
       ...build,
       allowedActionOrigins: publicUrl ? [new URL(publicUrl).host] : [],
-      entry: {
-        ...build.entry,
-        module: { ...build.entry.module, instrumentations: [tracing.instrumentation] },
-      },
     },
     'production',
   )

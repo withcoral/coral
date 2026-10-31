@@ -1,10 +1,13 @@
-// Server spans for Reef's incoming requests. The Coral gRPC transport injects
-// the active context into each call, so Coral's spans become their children.
+// Spans for Reef's incoming requests: one server span for each request, one
+// span for each loader and action it runs, and one client span for each Coral
+// call. Coral's server span for a call is the child of its client span, so a
+// gap between the two is time spent between the processes.
 //
 // This module sets the fields Coral's server spans carry (see
 // crates/coral-telemetry/src/field.rs): the method, the route template and the
 // status. A span never carries headers, bodies, query strings, cookies, full
 // URLs or error text, and `baggage` and `tracestate` are never read.
+import { ConnectError } from '@connectrpc/connect'
 import {
   context,
   diag,
@@ -44,8 +47,28 @@ const STANDARD_METHODS = new Set([
 // Probes poll every few seconds, so tracing them would bury real requests.
 // Coral's own health routes open no span either.
 const UNTRACED_PATHS = new Set(['/healthz', '/readyz'])
-// A failure after the handler answers is a body that broke off.
-const spansWithResponse = new WeakSet()
+const TRACER_NAME = 'ui'
+// These match Coral's server spans (crates/coral-telemetry/src/request.rs).
+const GRPC_STATUS_NAMES = [
+  'OK',
+  'CANCELLED',
+  'UNKNOWN',
+  'INVALID_ARGUMENT',
+  'DEADLINE_EXCEEDED',
+  'NOT_FOUND',
+  'ALREADY_EXISTS',
+  'PERMISSION_DENIED',
+  'RESOURCE_EXHAUSTED',
+  'FAILED_PRECONDITION',
+  'ABORTED',
+  'OUT_OF_RANGE',
+  'UNIMPLEMENTED',
+  'INTERNAL',
+  'UNAVAILABLE',
+  'DATA_LOSS',
+  'UNAUTHENTICATED',
+]
+const GRPC_SERVER_ERRORS = new Set([2, 4, 12, 13, 14, 15])
 
 /**
  * Builds the process's request tracing at bootstrap and registers the context
@@ -55,9 +78,9 @@ const spansWithResponse = new WeakSet()
  * no backend receives.
  *
  * Returns `traceRequest`, which runs `respond` in one request's span and ends
- * the span when `respond` settles; `instrumentation`, the React Router server
- * instrumentation that names the span; and `shutdown`, which flushes finished
- * spans.
+ * the span when `respond` settles; `flush`, which sends finished spans; and
+ * `shutdown`, which flushes and stops tracing. `requestInstrumentation` names
+ * the span.
  */
 export function createRequestTracing({
   env = process.env,
@@ -67,20 +90,17 @@ export function createRequestTracing({
   // Baggage stays unread because this is the only registered propagator.
   propagation.setGlobalPropagator(new W3CTraceContextPropagator())
   context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable())
-  if (provider) diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.WARN)
-  // Without a provider this tracer's spans record nothing and keep their parent.
-  const tracer = provider ? provider.getTracer('reef') : trace.getTracer('reef')
+  if (provider) {
+    diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.WARN)
+    trace.setGlobalTracerProvider(provider)
+  }
 
   return {
-    instrumentation: {
-      handler(handler) {
-        handler.instrument({ request: recordResponse })
-      },
-    },
     async traceRequest(request, respond) {
       if (UNTRACED_PATHS.has(new URL(request.url).pathname)) return respond()
       const parent = remoteParent(request)
-      const span = tracer.startSpan(
+      // Without a provider this tracer's spans record nothing and keep their parent.
+      const span = trace.getTracer(TRACER_NAME).startSpan(
         spanName(request.method),
         {
           attributes: { 'http.request.method': safeMethod(request.method) },
@@ -93,23 +113,31 @@ export function createRequestTracing({
       } catch (error) {
         // An aborted request's caller left, so the failure is theirs.
         if (!request.signal.aborted) {
-          failSpan(span, spansWithResponse.has(span) ? 'response_body' : '_OTHER')
+          // A failure after the handler answers is a body that broke off.
+          const answered = span.attributes?.['http.response.status_code'] !== undefined
+          failSpan(span, answered ? 'response_body' : '_OTHER')
         }
         throw error
       } finally {
         span.end()
       }
     },
+    async flush() {
+      await provider?.forceFlush().catch(warnFlushFailed)
+    },
     async shutdown() {
-      // A collector that refuses the last batch must not fail a clean exit.
-      await provider?.shutdown().catch((error) => {
-        diag.warn(`Reef could not flush its traces: ${error.message}`)
-      })
+      await provider?.shutdown().catch(warnFlushFailed)
       diag.disable()
+      trace.disable()
       context.disable()
       propagation.disable()
     },
   }
+}
+
+// A collector that refuses the last batch must not fail a clean exit.
+function warnFlushFailed(error) {
+  diag.warn(`Reef could not flush its traces: ${error.message}`)
 }
 
 function configuredSpanExporter(env) {
@@ -144,7 +172,7 @@ function isHttpUrl(text) {
 
 function spanProvider(env, exporter) {
   return new TracerProvider({
-    resource: resourceFromAttributes({ 'service.name': 'reef' }).merge(
+    resource: resourceFromAttributes({ 'service.name': 'ui' }).merge(
       detectResources({ detectors: [envDetector] }),
     ),
     sampler: configuredSampler(env),
@@ -191,12 +219,101 @@ function remoteParent(request) {
   })
 }
 
+/**
+ * The React Router server instrumentation. It names the active request's span
+ * and opens a span for each loader and action. It holds no state, so it works
+ * from the app build's own copy of this module.
+ */
+export const requestInstrumentation = {
+  handler(handler) {
+    handler.instrument({ request: recordResponse })
+  },
+  route(route) {
+    route.instrument({
+      action: (run) => traceRouteFunction(`action ${route.id}`, run),
+      loader: (run) => traceRouteFunction(`loader ${route.id}`, run),
+    })
+  },
+}
+
+/**
+ * The Connect interceptor that opens a client span for a Coral call and sends
+ * it as Coral's parent. A streaming call's span ends with its stream.
+ */
+export const traceCoralCall = (next) => async (call) => {
+  const method = `${call.service.typeName}/${call.method.name}`
+  const span = startChildSpan(method, {
+    attributes: { 'rpc.method': method, 'rpc.system.name': 'grpc' },
+    kind: SpanKind.CLIENT,
+  })
+  if (!span) return next(call)
+  propagation.inject(trace.setSpan(context.active(), span), call.header, headerSetter)
+  try {
+    const response = await next(call)
+    if (response.stream) return { ...response, message: endingWith(response.message, span) }
+    endCoralCall(span)
+    return response
+  } catch (error) {
+    endCoralCall(span, error)
+    throw error
+  }
+}
+
+const headerSetter = { set: (headers, name, value) => headers.set(name, value) }
+
+// A health probe has no request span, and it must not open a trace of its own.
+function startChildSpan(name, options) {
+  return trace.getActiveSpan() && trace.getTracer(TRACER_NAME).startSpan(name, options)
+}
+
+async function* endingWith(messages, span) {
+  let failure
+  try {
+    yield* messages
+  } catch (error) {
+    failure = error
+    throw error
+  } finally {
+    endCoralCall(span, failure)
+  }
+}
+
+function endCoralCall(span, error) {
+  if (error && !(error instanceof ConnectError)) failSpan(span, '_OTHER')
+  else {
+    const code = error?.code ?? 0
+    const status = GRPC_STATUS_NAMES[code] ?? 'UNKNOWN'
+    span.setAttribute('rpc.response.status_code', status)
+    if (GRPC_SERVER_ERRORS.has(code)) failSpan(span, status)
+  }
+  span.end()
+}
+
+async function traceRouteFunction(name, run) {
+  const span = startChildSpan(name)
+  if (!span) {
+    await run()
+    return
+  }
+  try {
+    const { error, status } = await context.with(trace.setSpan(context.active(), span), run)
+    if (status === 'error') recordRouteFailure(span, error)
+  } finally {
+    span.end()
+  }
+}
+
+// A thrown redirect or 404 is a route's normal answer.
+function recordRouteFailure(span, error) {
+  if (!(error instanceof Response)) failSpan(span, '_OTHER')
+  else if (error.status >= 500) failSpan(span, String(error.status))
+}
+
 // React Router has matched the request by the time its handler returns.
 async function recordResponse(handleRequest, { request }) {
   const { meta, statusCode } = await handleRequest()
   const span = trace.getActiveSpan()
   if (!span) return
-  spansWithResponse.add(span)
   span.setAttribute('http.response.status_code', statusCode)
   if (meta?.pattern) {
     // React Router leaves the leading slash off a route's pattern.

@@ -2,9 +2,10 @@ import type { RequestAuth } from '@/auth/types'
 
 import { createClient } from '@connectrpc/connect'
 import { createGrpcTransport, Http2SessionManager } from '@connectrpc/connect-node'
-import { context, propagation, type TextMapSetter } from '@opentelemetry/api'
 
 import { Health } from '@/generated/grpc/health/v1/health_pb'
+
+import { traceCoralCall } from '../../server-tracing.js'
 
 import type { CoralEndpointPolicy } from './coral-endpoint.server'
 
@@ -32,19 +33,14 @@ export function managementTransportForRequest(
     sessionManager: coralSessionManager(new URL(endpoint.baseUrl)),
     defaultTimeoutMs,
     interceptors: [
+      traceCoralCall,
       (next) => (call) => {
         call.header.set('coral-audience', 'reef')
-        // The request's span is Coral's parent; without one, Coral starts the trace.
-        propagation.inject(context.active(), call.header, headerSetter)
         if (auth.accessToken) call.header.set('authorization', `Bearer ${auth.accessToken}`)
         return next(call)
       },
     ],
   })
-}
-
-const headerSetter: TextMapSetter<Headers> = {
-  set: (headers, name, value) => headers.set(name, value),
 }
 
 const warnedCleartextOrigins = new Set<string>()
