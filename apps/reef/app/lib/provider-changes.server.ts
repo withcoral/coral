@@ -186,12 +186,17 @@ async function applyPolicyBatches(
  */
 async function currentBlockers(api: ManagementApi, workspace: string, providers: string[]) {
   try {
-    const entries = await Promise.all(
-      providers.map(async (id) => {
-        const provider = await api.providers.getProvider({ name: providerName(workspace, id) })
-        return [id, provider.blockers.map(blockerLabel)] as const
-      }),
-    )
+    const entries: (readonly [string, string[]])[] = []
+    for (const batch of chunk(providers, POLICY_BATCH_CONCURRENCY)) {
+      entries.push(
+        ...(await Promise.all(
+          batch.map(async (id) => {
+            const provider = await api.providers.getProvider({ name: providerName(workspace, id) })
+            return [id, provider.blockers.map(blockerLabel)] as const
+          }),
+        )),
+      )
+    }
     return Object.fromEntries(entries)
   } catch {
     return undefined

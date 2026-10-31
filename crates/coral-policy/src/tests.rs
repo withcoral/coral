@@ -644,6 +644,22 @@ paths:
             coral_workspace::Error::WorkspaceNotFound
         ))
     ));
+    // A live Provider of another Workspace reads as absent, like one that never was.
+    let other = workspaces
+        .create(
+            &change(owner.clone(), 40, '4'),
+            WorkspaceDisplayName::parse("Other").unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        policies
+            .listed_decisions(&owner, other.id(), &provider, None, 1000)
+            .await,
+        Err(crate::Error::Provider(
+            coral_provider::Error::ProviderNotFound
+        ))
+    ));
     let absent = coral_provider::ProviderId::parse("11111111-1111-4111-8111-111111111111").unwrap();
     assert!(matches!(
         policies

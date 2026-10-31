@@ -305,6 +305,7 @@ async fn listing_pages_and_a_summary_by_path_read_the_catalog() {
         assert_eq!(listing.relative_path, tool.relative_path());
         assert_eq!(listing.tags, tool.presentation().tags());
         assert_eq!(listing.hints, tool.hints());
+        assert_eq!(listing.http_method, tool.http_method());
         assert_eq!(listing.availability, tool.availability());
         assert_eq!(listing.diagnostics, tool.diagnostics());
     }

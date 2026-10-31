@@ -64,7 +64,10 @@ describe('Coral web CSRF tokens', () => {
 
     expect(rotated.setCookie).toContain(`${config.cookieName}_csrf=`)
     await expect(
-      validateCsrfToken(postRequest(created.setCookie!, rotated.token), config, otherSession),
+      validateCsrfToken(postRequest(rotated.setCookie!, rotated.token), config, otherSession),
+    ).resolves.toBe(true)
+    await expect(
+      validateCsrfToken(postRequest(rotated.setCookie!, created.token), config, otherSession),
     ).resolves.toBe(false)
   })
 

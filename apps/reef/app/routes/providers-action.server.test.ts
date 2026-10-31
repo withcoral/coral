@@ -127,6 +127,25 @@ it('reports the blockers of each changed provider', async () => {
   expect(result.data.blockers).toEqual({ [providerA]: ['No tools ready'], [providerB]: [] })
 })
 
+// Catches: a selection across many providers starting every read at once.
+it('reads blockers four at a time, as it writes', async () => {
+  const providers = Array.from(
+    { length: 9 },
+    (_, index) => `33333333-3333-4333-8333-${String(index).padStart(12, '0')}`,
+  )
+  let reading = 0
+  let most = 0
+  mocks.getProvider.mockImplementation(async () => {
+    most = Math.max(most, ++reading)
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    reading -= 1
+    return { blockers: [] }
+  })
+  await post(policyForm(providers.map((provider) => ({ provider, tool: `t-${provider}` }))))
+  expect(mocks.getProvider).toHaveBeenCalledTimes(9)
+  expect(most).toBe(4)
+})
+
 // Catches: a saved policy reported as failed because a read after it failed.
 it('leaves the blockers out when it cannot read them, and still reports the save', async () => {
   mocks.getProvider.mockRejectedValue(new ConnectError('down', Code.Unavailable))

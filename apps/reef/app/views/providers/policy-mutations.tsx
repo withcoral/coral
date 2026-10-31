@@ -12,6 +12,8 @@ import type { ProviderView, ToolOutcome, ToolView, PolicyActionResult } from './
 
 type Request = {
   id: string
+  /** Later submissions have higher numbers. */
+  sequence: number
   action: string
   data: FormData
   onConfirmed?: (confirmed: SelectionKey[]) => void
@@ -49,7 +51,8 @@ const Context = createContext<Mutations | null>(null)
 
 type SavedPolicies = ReadonlyMap<SelectionKey, ToolView['policy']>
 const NOTHING_SAVED: SavedPolicies = new Map()
-const NO_BLOCKERS: ReadonlyMap<string, string[]> = new Map()
+type SavedBlockers = ReadonlyMap<string, { sequence: number; blockers: string[] }>
+const NO_BLOCKERS: SavedBlockers = new Map()
 
 /** Own requests above filtered rows and the conditional bulk toolbar. Only active
  * requests mount a fetcher, rather than allocating one for every catalog row.
@@ -76,6 +79,7 @@ export function PolicyMutations({
   }
 
   const fetchers = useFetchers()
+  const submissions = useRef(0)
   const complete = useCallback((request: Request, result: PolicyActionResult | undefined) => {
     setRequests((current) => current.filter((item) => item.id !== request.id))
 
@@ -87,8 +91,16 @@ export function PolicyMutations({
         for (const key of settled.confirmed) next.set(key, access)
         return next
       })
-    const blockers = result?.blockers
-    if (blockers) setSavedBlockers((current) => new Map([...current, ...Object.entries(blockers)]))
+    const { blockers } = result ?? {}
+    if (blockers)
+      setSavedBlockers((current) => {
+        const next = new Map(current)
+        // Responses can arrive out of order, and the later submission read later.
+        for (const [provider, labels] of Object.entries(blockers))
+          if ((current.get(provider)?.sequence ?? -1) < request.sequence)
+            next.set(provider, { sequence: request.sequence, blockers: labels })
+        return next
+      })
     // Each row shows its own outcome.
     if (settled.failures.size > 0)
       setFailures((current) => new Map([...current, ...settled.failures]))
@@ -98,6 +110,7 @@ export function PolicyMutations({
     const targets = targetsOf(data)
     // Generated outside the updater, which StrictMode invokes twice.
     const id = crypto.randomUUID()
+    const sequence = ++submissions.current
     // A new attempt supersedes the outcome of the last.
     setFailures((current) => {
       const next = new Map(current)
@@ -114,7 +127,7 @@ export function PolicyMutations({
       )
       if (targets.some((target) => taken.has(selectionKey(target.provider, target.tool))))
         return current
-      return [...current, { id, action, data, onConfirmed, targets }]
+      return [...current, { id, sequence, action, data, onConfirmed, targets }]
     })
   }
   const pending = useMemo(() => {
@@ -153,7 +166,7 @@ export function PolicyMutations({
         submit,
         state,
         policies,
-        blockers: (provider) => savedBlockers.get(provider.id) ?? provider.blockers,
+        blockers: (provider) => savedBlockers.get(provider.id)?.blockers ?? provider.blockers,
       }}
     >
       {requests.map((request) => (

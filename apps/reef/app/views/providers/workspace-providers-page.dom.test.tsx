@@ -1123,3 +1123,36 @@ test('a rejected policy change falls back to the saved policy, not the loaded on
   expect(disabledRadio()).toBeChecked()
   expect(rowOf('only')).toHaveTextContent('Not saved')
 })
+
+// Catches: an older response overwriting the blockers of a later change, which
+// no reload would correct.
+test('blockers from an older policy change do not replace a later one', async () => {
+  const pair = provider('00000000-0000-4000-8000-000000000005', 'Pair', 'pair', ['one', 'two'])
+  const answers = new Map<string, (blockers: string[]) => void>()
+  renderPage({
+    providers: [pair],
+    action: async (request) => {
+      const data = await request.formData()
+      const target = JSON.parse(data.get('selectedTool') as string) as { tool: string }
+      const blockers = await new Promise<string[]>((resolve) => {
+        answers.set(target.tool.split('/').at(-1)!, resolve)
+      })
+      return {
+        error: null,
+        message: 'Saved.',
+        credential: null,
+        tools: [{ ...target, status: 'updated' }],
+        blockers: { [pair.id]: blockers },
+      }
+    },
+  })
+  await choosePolicy('one', 'Disabled')
+  await settle()
+  await choosePolicy('two', 'Disabled')
+  await settle()
+  answers.get('two')!(['No tools ready'])
+  await settle()
+  answers.get('one')!([])
+  await settle()
+  expect(screen.getByRole('img', { name: 'No tools ready' })).toBeInTheDocument()
+})
