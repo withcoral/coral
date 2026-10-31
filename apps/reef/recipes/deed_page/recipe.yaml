@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://deed.page/docs
+# The hosted MCP server publishes without a key; the first publish returns an
+# owner token, and sending it as a bearer token manages the sites it owns.
+schema_version: 1
+id: deed_page
+display_name: deed.page
+description: Public sites from HTML or a folder of files on deed.page.
+source:
+  mcp:
+    url: https://deed.page/mcp
+authentication:
+  default: anonymous
+  options:
+    anonymous:
+      method: none
+      label: Publish without a key
+      description: Publish without a key; the first publish returns an owner token to reuse.
+      documentation_url: https://deed.page/docs
+    api_key:
+      method: bearer
+      label: Owner token
+      documentation_url: https://deed.page/docs
+icons:
+  light: logo.svg
