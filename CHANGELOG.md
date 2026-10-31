@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.5.0](https://github.com/withcoral/coral/compare/v1.4.0...v1.5.0) (2026-10-31)
+
+
+### Features
+
+* **telemetry:** concurrent load metrics ([#2763](https://github.com/withcoral/coral/issues/2763)) ([0fe4ce7](https://github.com/withcoral/coral/commit/0fe4ce78dd6078141dc6ad8d1244b1e7276c2d66))
+* **telemetry:** export only allowlisted span and log fields ([#2728](https://github.com/withcoral/coral/issues/2728)) ([c2e5e73](https://github.com/withcoral/coral/commit/c2e5e7301406540fd4e50b774690668656eefdd7))
+* **telemetry:** record Coral's stable metric catalog and telemetry drops ([#2747](https://github.com/withcoral/coral/issues/2747)) ([da2539e](https://github.com/withcoral/coral/commit/da2539e194f326c85c8c372d7b4cd205301efaff))
+* **ui:** simplify Activity details and inspect large payloads ([#2726](https://github.com/withcoral/coral/issues/2726)) ([44f4310](https://github.com/withcoral/coral/commit/44f431023892095dd7a3f1584148062789a94842))
+* **ui:** trace server requests so Coral's gRPC spans have a real parent ([#2766](https://github.com/withcoral/coral/issues/2766)) ([826cc6b](https://github.com/withcoral/coral/commit/826cc6b21272d2cb48cd397fe145ee29db01687f))
+
+
+### Bug Fixes
+
+* **run:** report a busy or timed-out compiler accurately ([#2764](https://github.com/withcoral/coral/issues/2764)) ([1979efd](https://github.com/withcoral/coral/commit/1979efdc3136d1a7ae7eb8f8e1a219936faa6c4f))
+* **server:** set TCP_NODELAY on accepted gRPC, MCP and auth connections ([#2767](https://github.com/withcoral/coral/issues/2767)) ([e66b24e](https://github.com/withcoral/coral/commit/e66b24e2a958bdd61aca8b6025df09c197252382))
+* **telemetry:** keep caller text out of exports and protocol errors ([#2762](https://github.com/withcoral/coral/issues/2762)) ([aef6bf5](https://github.com/withcoral/coral/commit/aef6bf536aecad129a14809e42d125d9f4dd5564))
+* **ui:** follow newest activity with a minimum live record stay ([#2729](https://github.com/withcoral/coral/issues/2729)) ([feca0e7](https://github.com/withcoral/coral/commit/feca0e78165286560d93b7fd5469104ce8c9a312))
+* **ui:** keep huge payload lines and code Find marks bounded ([#2759](https://github.com/withcoral/coral/issues/2759)) ([75cdea9](https://github.com/withcoral/coral/commit/75cdea9d0c50f3dabdddbb3ec4c329234fc0ccce))
+
+
+### Performance Improvements
+
+* **search:** stop reconcile holding the writer and indexing Generations twice ([#2769](https://github.com/withcoral/coral/issues/2769)) ([bdeeae6](https://github.com/withcoral/coral/commit/bdeeae6af06dcc8ee66a3d4800bb521cb857ab6c))
+* **ui:** keep the providers page fast with large catalogs ([#2770](https://github.com/withcoral/coral/issues/2770)) ([6bebd65](https://github.com/withcoral/coral/commit/6bebd6571ebe572d6de72176e0473be48c7bbe88))
+
 ## [1.4.0](https://github.com/withcoral/coral/compare/v1.3.0...v1.4.0) (2026-10-29)
 
 
