@@ -62,6 +62,16 @@ async function saveAtLink(page: Session['page'], link: string) {
   await page.waitForURL((url) => url.pathname.endsWith('/settings'))
 }
 
+/** Opens the link a Program got, previews the tools, and adds the provider. */
+async function addAtLink(page: Session['page'], link: string) {
+  await page.goto(link)
+  await acceptTools(page)
+  const add = page.getByRole('button', { name: 'Add provider', exact: true })
+  await add.waitFor()
+  await add.click()
+  await waitForPublication(page)
+}
+
 /**
  * A workspace with the credential-free `weather` provider that the owner's Program added from
  * `source` with the configuration `choices`, and a runner for their Programs. They call each
@@ -90,12 +100,7 @@ async function weatherProvider(
       ...choices,
     })
     expect(created.status).toBe('needs_person')
-    await page.goto(created.url)
-    await acceptTools(page)
-    const add = page.getByRole('button', { name: 'Add provider', exact: true })
-    await add.waitFor()
-    await add.click()
-    await waitForPublication(page)
+    await addAtLink(page, created.url)
   })
   const [provider] = addedProviders(
     (await api.providers.listProviders({ parent: workspace.name })).providers,
@@ -646,14 +651,15 @@ test("Another owner finds nothing at an owner's update link, and the owner who g
         taskIntent: 'Update the weather provider',
       })
       await step(
-        "Alice's Program adds a provider, then replaces its source and gets a link",
+        "Alice adds her Program's provider, then the Program replaces its source and gets a link",
         async () => {
           const created = await builtinCall(program, 'addProvider', {
             namespace: 'weather',
             source: credentialFree({ getForecast: {}, oldReport: {} }),
             credentialRoute: 'none',
           })
-          expect(created.status).toBe('published')
+          expect(created.status).toBe('needs_person')
+          await addAtLink(page, created.url)
           const changed = await builtinCall(program, 'updateProvider', {
             namespace: 'weather',
             source: credentialFree({ getForecast: {}, newReport: {} }),
