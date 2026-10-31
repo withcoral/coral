@@ -2033,38 +2033,39 @@ impl Choices {
 // who finishes the Setup.
 #[tokio::test]
 async fn a_program_setup_takes_only_a_route_that_suits_its_source() {
-    use crate::PublishabilityRejection as R;
+    use crate::ProgramSetupError as E;
+    use crate::RouteFit as Fit;
     let server = MockServer::start().await;
     let open = crate::tests::CREDENTIAL_FREE_OPENAPI.to_string();
     let bearer = bearer_openapi(&server);
     let oauth = oauth_openapi(&server);
     for (document, choices, route, expected) in [
-        (&open, Choices::None, CredentialRoute::None, None),
+        (&open, Choices::None, CredentialRoute::None, Fit::Fits),
         (
             &open,
             Choices::None,
             CredentialRoute::Fixed,
-            Some(R::SourceNeedsNoCredential),
+            Fit::SourceNeedsNoCredential,
         ),
         (
             &open,
             Choices::None,
             CredentialRoute::Caller,
-            Some(R::SourceNeedsNoCredential),
+            Fit::SourceNeedsNoCredential,
         ),
         (
             &bearer,
             Choices::None,
             CredentialRoute::None,
-            Some(R::SourceNeedsCredential),
+            Fit::SourceNeedsCredential,
         ),
-        (&bearer, Choices::None, CredentialRoute::Fixed, None),
-        (&bearer, Choices::None, CredentialRoute::Caller, None),
+        (&bearer, Choices::None, CredentialRoute::Fixed, Fit::Fits),
+        (&bearer, Choices::None, CredentialRoute::Caller, Fit::Fits),
         (
             &oauth,
             Choices::ConfidentialApplication,
             CredentialRoute::Caller,
-            None,
+            Fit::Fits,
         ),
     ] {
         let harness = harness().await;
@@ -2083,17 +2084,18 @@ async fn a_program_setup_takes_only_a_route_that_suits_its_source() {
             )
             .await;
         match (prepared, expected) {
-            (Ok(prepared), None) => {
+            (Ok(prepared), Fit::Fits) => {
                 let open = open_setups(&harness, &owner, workspace.id()).await;
                 assert_eq!(open, [prepared.setup], "{route:?}");
             }
-            (Err(crate::ProgramSetupError::Route(rejection)), Some(expected)) => {
-                assert_eq!(rejection, expected, "{route:?}");
+            (Err(E::SourceNeedsCredential), Fit::SourceNeedsCredential)
+            | (Err(E::SourceNeedsNoCredential), Fit::SourceNeedsNoCredential) => {
                 let open = open_setups(&harness, &owner, workspace.id()).await;
                 assert!(open.is_empty(), "{route:?}: {open:?}");
             }
             (other, expected) => panic!("{route:?}: {other:?}, expected {expected:?}"),
         }
+        assert_eq!(publications(&harness, &owner, workspace.id()).await, 0);
     }
 }
 
@@ -2123,6 +2125,22 @@ async fn open_setups(
         }
     }
     open
+}
+
+/// How many Publications the Workspace's evidence records.
+async fn publications(
+    harness: &Harness,
+    owner: &coral_workspace::AuthenticatedUser,
+    scope: &coral_workspace::WorkspaceId,
+) -> usize {
+    harness
+        .providers
+        .list_lifecycle_events(owner, scope)
+        .await
+        .unwrap()
+        .iter()
+        .filter(|event| event.action() == crate::LifecycleAction::PublicationCompleted)
+        .count()
 }
 
 // Catches: a namespace in use or a Run that stops reaching a fetch or a Setup,
@@ -2171,6 +2189,7 @@ async fn a_program_setup_fails_before_any_fetch_or_setup() {
         )
         .await
         .unwrap();
+    let published = publications(&harness, &owner, workspace.id()).await;
 
     let in_use = harness
         .providers
@@ -2208,6 +2227,10 @@ async fn a_program_setup_fails_before_any_fetch_or_setup() {
             .await
             .is_empty()
     );
+    assert_eq!(
+        publications(&harness, &owner, workspace.id()).await,
+        published
+    );
 }
 
 /// Why a Setup in [`a_program_setup_that_cannot_be_finished_ends`] ends.
@@ -2215,17 +2238,30 @@ async fn a_program_setup_fails_before_any_fetch_or_setup() {
 enum Ends {
     /// The Program's choices do not suit the source.
     Configuration,
+    /// Coral cannot build a Provider from the source.
+    Source,
     /// Nobody can sign in, for want of an OAuth application.
     OAuthApplicationMissing,
 }
 
-// Catches: a configuration the source cannot take, or a sign-in with no OAuth
-// application, leaving its Setup open though nobody will finish it, with or
-// without accounts to register an application.
+// Catches: a configuration the source cannot take, a source that yields no
+// configuration, or a sign-in with no OAuth application leaving its Setup open
+// though nobody will finish it, with or without accounts to register an
+// application.
 #[tokio::test]
 async fn a_program_setup_that_cannot_be_finished_ends() {
     let server = MockServer::start().await;
     let oauth = oauth_openapi(&server);
+    let unbuildable = json!({
+        "openapi": "3.1.0",
+        "info": {"title": "Weather", "version": "1"},
+        "servers": [{"url": "https://weather.example"}],
+        "paths": {
+            "/a": {"get": {"operationId": "same", "responses": {"200": {"description": "A"}}}},
+            "/b": {"get": {"operationId": "same", "responses": {"200": {"description": "B"}}}},
+        },
+    })
+    .to_string();
     let unnamed = coral_catalog::ConfigurationChoices {
         display_name: Some(" ".into()),
         ..coral_catalog::ConfigurationChoices::default()
@@ -2238,6 +2274,13 @@ async fn a_program_setup_that_cannot_be_finished_ends() {
             unnamed,
             true,
             Ends::Configuration,
+        ),
+        (
+            unbuildable.as_str(),
+            CredentialRoute::None,
+            suggested(),
+            true,
+            Ends::Source,
         ),
         (
             oauth.as_str(),
@@ -2276,6 +2319,10 @@ async fn a_program_setup_that_cannot_be_finished_ends() {
                     ["display_name"]
                 );
             }
+            (Ends::Source, Err(crate::ProgramSetupError::Configuration { errors, diagnostic })) => {
+                assert!(errors.is_empty(), "{errors:?}");
+                assert_eq!(diagnostic.as_deref(), Some("duplicate_tool_key"));
+            }
             (
                 Ends::OAuthApplicationMissing,
                 Err(crate::ProgramSetupError::OAuthApplicationMissing),
@@ -2284,6 +2331,7 @@ async fn a_program_setup_that_cannot_be_finished_ends() {
         }
         let open = open_setups(&harness, &owner, workspace.id()).await;
         assert!(open.is_empty(), "{ends:?}: {open:?}");
+        assert_eq!(publications(&harness, &owner, workspace.id()).await, 0);
     }
 }
 
@@ -2407,9 +2455,7 @@ async fn an_update_starts_from_the_saved_configuration() {
     assert!(
         matches!(
             unsuited,
-            Err(crate::ProgramSetupError::Route(
-                crate::PublishabilityRejection::SourceNeedsNoCredential
-            ))
+            Err(crate::ProgramSetupError::SourceNeedsNoCredential)
         ),
         "{unsuited:?}"
     );
@@ -2484,6 +2530,155 @@ async fn an_update_of_an_absent_provider_prepares_nothing() {
         open_setups(&harness, &owner, workspace.id())
             .await
             .is_empty()
+    );
+}
+
+// Catches: a failure after the Setup exists leaving it open, or an update that
+// goes on without the configuration it starts from.
+#[tokio::test]
+async fn an_update_with_no_saved_configuration_ends_its_setup() {
+    let harness = harness().await;
+    let (owner, workspace) = workspace_owner(&harness, "user:program-update-corrupt").await;
+    let context = change_context(owner.clone(), 11, '1');
+    let document = crate::tests::CREDENTIAL_FREE_OPENAPI;
+    let provider = published_for_update(
+        &harness,
+        &context,
+        workspace.id(),
+        document,
+        CredentialRoute::None,
+    )
+    .await;
+    harness
+        .fixture
+        .execute_fixture_sql("UPDATE provider_generations SET configuration = NULL")
+        .await
+        .unwrap();
+
+    let prepared = harness
+        .providers
+        .prepare_program_setup(
+            &context,
+            workspace.id(),
+            None,
+            update_request(
+                provider.id(),
+                ProviderSetupSource::OpenApiDocument(
+                    crate::OpenApiDocument::parse(document).unwrap(),
+                ),
+                None,
+                coral_catalog::ConfigurationPatch::default(),
+            ),
+            std::future::pending(),
+        )
+        .await;
+
+    assert!(
+        matches!(
+            prepared,
+            Err(crate::ProgramSetupError::Provider(Error::CorruptData(_)))
+        ),
+        "{prepared:?}"
+    );
+    assert!(
+        open_setups(&harness, &owner, workspace.id())
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        harness
+            .providers
+            .inspect_provider(&owner, workspace.id(), provider.id())
+            .await
+            .unwrap()
+            .etag(),
+        provider.etag()
+    );
+}
+
+// Catches: an update of an MCP Provider that keeps the saved server when its
+// new source reports another.
+#[tokio::test]
+async fn an_mcp_update_takes_the_server_it_reads() {
+    let harness = harness().await;
+    let (owner, workspace) = workspace_owner(&harness, "user:program-update-mcp").await;
+    let context = change_context(owner.clone(), 11, '1');
+    let source = |server: &MockServer| ProviderSetupSource::McpUrl {
+        url: server.uri(),
+        request_headers: std::collections::BTreeMap::from([("x-tenant".into(), "one".into())]),
+    };
+    let saved = MockServer::start().await;
+    anonymous_catalog_for_tenant(&saved, "one").await;
+    let setup = harness
+        .providers
+        .prepare_setup(&context, workspace.id(), source(&saved), None)
+        .await
+        .unwrap();
+    let suggested = harness
+        .providers
+        .review_setup_configuration(&owner, workspace.id(), setup.id())
+        .await
+        .unwrap()
+        .document
+        .unwrap()
+        .suggested;
+    harness
+        .providers
+        .confirm_setup_configuration(&context, workspace.id(), setup.id(), 0, suggested)
+        .await
+        .unwrap();
+    let published = harness
+        .providers
+        .publish_workspace_provider(
+            &context,
+            publication_request(
+                workspace.id(),
+                setup.id(),
+                "anonymous",
+                CredentialRoute::None,
+                "00000000-0000-4000-8000-000000000004",
+            ),
+        )
+        .await
+        .unwrap();
+    let provider = published
+        .published_provider()
+        .expect("a published Provider");
+    let moved = MockServer::start().await;
+    anonymous_catalog_for_tenant(&moved, "one").await;
+
+    let prepared = harness
+        .providers
+        .prepare_program_setup(
+            &context,
+            workspace.id(),
+            None,
+            update_request(
+                provider.id(),
+                source(&moved),
+                None,
+                coral_catalog::ConfigurationPatch::default(),
+            ),
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+
+    let confirmed = harness
+        .providers
+        .review_setup_configuration(&owner, workspace.id(), &prepared.setup)
+        .await
+        .unwrap()
+        .confirmed
+        .unwrap();
+    assert_eq!(
+        confirmed.servers,
+        std::collections::BTreeMap::from([(
+            "#/servers".into(),
+            coral_catalog::ServerSelection::Custom {
+                url: format!("{}/", moved.uri()),
+            },
+        )])
     );
 }
 

@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 use coral_catalog::{ConfigurationChoices, ProviderSourceArgument};
 use coral_provider::{
     ProgramSetup, ProgramSetupError, ProgramSetupRequest, ProviderSetupId, ProviderSetupSource,
-    PublishabilityRejection,
 };
 use coral_workspace::ChangeContext;
 
@@ -65,16 +64,12 @@ fn program_setup_error(
             "Coral cannot register an OAuth application with this service; register \
              one with the service and give its `client_id`",
         ),
-        ProgramSetupError::Route(PublishabilityRejection::NotConfigured) => invalid(
-            "source",
-            "Coral could not tell whether the source needs a credential",
-        ),
         // The route must suit the source, as Reef offers it; no route falls back to another.
-        ProgramSetupError::Route(PublishabilityRejection::SourceNeedsCredential) => invalid(
+        ProgramSetupError::SourceNeedsCredential => invalid(
             "credentialRoute",
             "the source needs a credential; use `fixed` or `caller`",
         ),
-        ProgramSetupError::Route(PublishabilityRejection::SourceNeedsNoCredential) => invalid(
+        ProgramSetupError::SourceNeedsNoCredential => invalid(
             "credentialRoute",
             "the source declares no credential; use `none`, or give `authentication` \
              to say how a person signs in",

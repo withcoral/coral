@@ -78,9 +78,12 @@ pub enum ProgramSetupError {
         /// Why no catalog can be built from the source.
         diagnostic: Option<String>,
     },
-    /// Nobody can publish the Setup under the route.
-    #[error("the Credential Route cannot publish the Setup: {0:?}")]
-    Route(PublishabilityRejection),
+    /// The source needs a credential, and the route sends none.
+    #[error("the source needs a credential, and the Credential Route sends none")]
+    SourceNeedsCredential,
+    /// The source needs no credential, and the route sends one.
+    #[error("the source needs no credential, and the Credential Route sends one")]
+    SourceNeedsNoCredential,
     /// A person's sign-in could not start without an OAuth application, which
     /// the configuration does not name and Coral cannot register.
     #[error("the sign-in has no OAuth application")]
@@ -88,17 +91,6 @@ pub enum ProgramSetupError {
     /// Authority, a Setup's preparation, persistence or corrupt evidence.
     #[error(transparent)]
     Provider(#[from] Error),
-}
-
-/// Why nobody can publish a Setup under a Credential Route.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PublishabilityRejection {
-    /// The Setup has no confirmed configuration that yields a catalog.
-    NotConfigured,
-    /// The source needs a credential, and the route sends none.
-    SourceNeedsCredential,
-    /// The source needs no credential, and the route sends one.
-    SourceNeedsNoCredential,
 }
 
 impl ProviderModule {
@@ -190,19 +182,25 @@ impl ProviderModule {
         let confirmed = self
             .confirm_setup_configuration(context, owner, setup.id(), revision, configuration)
             .await?;
-        if !confirmed.errors.is_empty() || confirmed.diagnostic.is_some() {
-            return Err(ProgramSetupError::Configuration {
-                errors: confirmed.errors,
-                diagnostic: confirmed.diagnostic,
-            });
-        }
-        let Some(contract) = confirmed.confirmed_contract() else {
-            return Err(ProgramSetupError::Route(
-                PublishabilityRejection::NotConfigured,
-            ));
+        let contract = match confirmed.confirmed_contract() {
+            Some(contract) if confirmed.errors.is_empty() && confirmed.diagnostic.is_none() => {
+                contract
+            }
+            _ => {
+                return Err(ProgramSetupError::Configuration {
+                    errors: confirmed.errors,
+                    diagnostic: confirmed.diagnostic,
+                });
+            }
         };
-        if let Some(rejection) = route.and_then(|route| route_rejection(contract, route)) {
-            return Err(ProgramSetupError::Route(rejection));
+        match route.map_or(RouteFit::Fits, |route| route.fits(contract)) {
+            RouteFit::Fits => {}
+            RouteFit::SourceNeedsCredential => {
+                return Err(ProgramSetupError::SourceNeedsCredential);
+            }
+            RouteFit::SourceNeedsNoCredential => {
+                return Err(ProgramSetupError::SourceNeedsNoCredential);
+            }
         }
         let authentication = confirmed
             .confirmed
@@ -260,18 +258,6 @@ fn program_configuration(
             };
             Ok((patch.configuration(saved, discovered.as_ref()), route))
         }
-    }
-}
-
-/// Why `route` cannot carry the credentials `contract` asks for, if it cannot.
-fn route_rejection(
-    contract: &coral_catalog::ProviderCredentialContract,
-    route: CredentialRoute,
-) -> Option<PublishabilityRejection> {
-    match route.fits(contract) {
-        RouteFit::Fits => None,
-        RouteFit::SourceNeedsCredential => Some(PublishabilityRejection::SourceNeedsCredential),
-        RouteFit::SourceNeedsNoCredential => Some(PublishabilityRejection::SourceNeedsNoCredential),
     }
 }
 

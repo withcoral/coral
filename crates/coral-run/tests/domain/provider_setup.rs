@@ -582,28 +582,6 @@ async fn add_provider_returns_the_reef_page_that_finishes_its_setup() {
     }
 }
 
-// Catches: a route the source cannot take failing the call with anything but
-// an input the Program can correct.
-#[tokio::test]
-async fn a_route_the_source_cannot_take_is_invalid_input() {
-    let scope = AdminScope::new("user:route-mismatch").await;
-    scope.set_access(ToolAccessState::Enabled).await;
-    let run = scope
-        .start(
-            &scope.owner,
-            add_provider(
-                &serde_json::json!({
-                    "namespace": "weather",
-                    "source": { "kind": "openapi_document", "document": PRIVATE_DOCUMENT },
-                    "credentialRoute": "none",
-                }),
-                "error.code",
-            ),
-        )
-        .await;
-    assert_final_code(&scope.terminal(&scope.owner, &run).await, "invalid_input");
-}
-
 // Catches: a source that fails to answer telling the Program to correct
 // arguments that may be right, or leaving a Setup open behind the failure.
 #[tokio::test]
