@@ -687,6 +687,9 @@ pub enum Error {
     /// Saved Function source did not define one import-free default callable.
     #[error("Saved Function authoring failed: {0}")]
     InvalidSavedFunction(String),
+    /// Source nesting overflowed the compiler's stack.
+    #[error("TypeScript source is nested too deeply to compile")]
+    SourceTooDeeplyNested,
     /// Program or Saved Function source requested a forbidden authoring capability.
     #[error("TypeScript source uses a forbidden capability: {0}")]
     ForbiddenCapability(String),
@@ -749,6 +752,7 @@ impl Error {
             Self::Compilation { .. } => "compilation",
             Self::InvalidProgramBody { .. } => "invalid_program_body",
             Self::InvalidSavedFunction { .. } => "invalid_saved_function",
+            Self::SourceTooDeeplyNested { .. } => "source_too_deeply_nested",
             Self::ForbiddenCapability { .. } => "forbidden_capability",
             Self::InvalidSavedFunctionReference { .. } => "invalid_saved_function_reference",
             Self::CompilerProtocol { .. } => "compiler_protocol",
@@ -766,9 +770,51 @@ impl Error {
     }
 }
 
+/// Why a compile request returned no result.
+///
+/// Only [`Self::Rejected`] judges the source. The others say the compiler could
+/// not answer, so they give the source's author nothing to fix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompileFailure {
+    /// The source was rejected, with a safe bounded diagnostic for its author.
+    Rejected(String),
+    /// The bounded compiler queue had no room for the request.
+    Busy,
+    /// The compile deadline expired.
+    TimedOut,
+    /// The compiler worker stopped before it answered.
+    Stopped,
+    /// The compiler failed for a reason the source did not cause, with the
+    /// failure's bounded kind and none of its private text.
+    Failed(&'static str),
+}
+
+impl From<Error> for CompileFailure {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::CompilerBusy => Self::Busy,
+            Error::CompilationTimedOut => Self::TimedOut,
+            Error::CompilerUnavailable | Error::CompilerThread(_) => Self::Stopped,
+            authored @ (Error::Compilation { .. }
+            | Error::InvalidProgramBody
+            | Error::InvalidSavedFunction(_)
+            | Error::SourceTooDeeplyNested
+            | Error::ForbiddenCapability(_)
+            | Error::InvalidSavedFunctionReference { .. }
+            | Error::MemoryLimitExceeded) => Self::Rejected(format_compiler_error(authored)),
+            other => Self::Failed(other.code()),
+        }
+    }
+}
+
+impl From<String> for CompileFailure {
+    fn from(message: String) -> Self {
+        Self::Rejected(bounded_diagnostic_message(&message))
+    }
+}
+
 /// Formats safe compiler diagnostics with their authored line and column.
-#[must_use]
-pub fn format_compiler_error(error: Error) -> String {
+fn format_compiler_error(error: Error) -> String {
     let message = match error {
         Error::Compilation { diagnostics } => diagnostics
             .into_iter()

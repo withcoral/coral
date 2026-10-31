@@ -307,6 +307,9 @@ pub enum Error {
     /// Compilation exceeded the fixed authoring deadline.
     #[error("Program compilation exceeded the two-second deadline")]
     CompilationTimedOut,
+    /// The compiler queue was full, so the Program was not judged. Retryable.
+    #[error("Program compiler is busy; retry shortly")]
+    CompilerBusy,
     /// The emitted package exceeded a fixed authoring limit.
     #[error("Program package exceeds the {component} limit of {maximum_bytes} bytes")]
     PackageTooLarge {
@@ -410,6 +413,7 @@ impl Error {
             Self::Functions { .. } => "functions",
             Self::PermissionDenied { .. } => "permission_denied",
             Self::CompilationTimedOut { .. } => "compilation_timed_out",
+            Self::CompilerBusy { .. } => "compiler_busy",
             Self::PackageTooLarge { .. } => "package_too_large",
             Self::ProgramRuntimeUnavailable { .. } => "program_runtime_unavailable",
             Self::ProgramWorkerStopped { .. } => "program_worker_stopped",
@@ -504,6 +508,7 @@ impl Error {
             Self::InvalidInput(_) => "invalid_input",
             Self::ProgramAdmission(_) => "program_admission_failed",
             Self::CompilationTimedOut => "program_compilation_timed_out",
+            Self::CompilerBusy => "program_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",
             Self::Functions(error) => return error.safe_rejection(),
             Self::PermissionDenied(_) => "permission_denied",

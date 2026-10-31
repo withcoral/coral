@@ -47,6 +47,7 @@ use coral_provider::{
 };
 use coral_test_support::{TestDatabase, provision_user as organization_user};
 use coral_upstream::{HttpOutcome, ReadyDispatch, UpstreamOutcome};
+use coral_v8::CompileFailure;
 use coral_workspace::AuthenticatedPrincipal;
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, OrganizationRole, TraceId, UserId, WorkspaceDisplayName,

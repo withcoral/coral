@@ -4,6 +4,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 use coral_test_support::{TestDatabase, provision_user as organization_user};
+use coral_v8::CompileFailure;
 use coral_workspace::{
     AuthenticatedPrincipal, OrganizationRole, TraceId, WorkspaceDisplayName, WorkspaceModule,
     WorkspaceRole,
@@ -695,6 +696,67 @@ async fn saved_function_paths_cannot_overlap_virtual_namespaces() {
     ));
 }
 
+#[tokio::test]
+async fn a_compile_failure_keeps_its_cause_and_saves_nothing() {
+    let fixture = SavedFunctionTestModules::new().await;
+    let (workspace_id, principal) = fixture.user_workspace("user:compile-failures").await;
+    let path = SavedFunctionPath::parse("compile.failure").expect("path");
+
+    for (failure, kind, rejection) in [
+        (
+            CompileFailure::Rejected("scripted rejection".to_string()),
+            "saved_function_admission",
+            Some("saved_function_admission_failed"),
+        ),
+        (
+            CompileFailure::Busy,
+            "compiler_busy",
+            Some("saved_function_compiler_busy"),
+        ),
+        (
+            CompileFailure::TimedOut,
+            "saved_function_compilation_timed_out",
+            Some("saved_function_compilation_timed_out"),
+        ),
+        (CompileFailure::Stopped, "compiler_worker_stopped", None),
+        (
+            CompileFailure::Failed("engine"),
+            "compiler_unavailable",
+            None,
+        ),
+    ] {
+        let module = SavedFunctionModule::with_compiler(
+            fixture.database.clone(),
+            fixture.workspaces.clone(),
+            Arc::new(GatedSavedFunctionCompiler::failing(failure)),
+        );
+        let error = module
+            .save(
+                &saved_function_change(principal.clone(), 20, 'e'),
+                &workspace_id,
+                SavedFunctionSave::new(
+                    path.clone(),
+                    SavedFunctionDescription::parse("Fails to compile").expect("description"),
+                    SavedFunctionSource::parse("export default () => 1;").expect("source"),
+                ),
+            )
+            .await
+            .expect_err("the compile fails");
+        assert_eq!(error.code(), kind);
+        assert_eq!(
+            error.safe_rejection().map(|(code, _message)| code),
+            rejection
+        );
+        assert!(matches!(
+            fixture
+                .saved_functions
+                .get(&principal, &workspace_id, &path)
+                .await,
+            Err(Error::SavedFunctionNotFound)
+        ));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_first_saves_serialize_virtual_namespace_conflicts() {
     let fixture = SavedFunctionTestModules::new().await;
@@ -1185,7 +1247,7 @@ async fn one_users_functions_at_the_same_path_stay_scoped_to_each_workspace() {
 
 /// Compiles every source to one fixed declaration once its gate opens.
 struct GatedSavedFunctionCompiler {
-    gate: Box<dyn Fn() -> Result<(), String> + Send + Sync>,
+    gate: Box<dyn Fn() -> Result<(), CompileFailure> + Send + Sync>,
 }
 
 impl GatedSavedFunctionCompiler {
@@ -1213,10 +1275,18 @@ impl GatedSavedFunctionCompiler {
                     .lock()
                     .map_err(|error| error.to_string())?
                     .recv()
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string())?;
+                Ok(())
             }),
         };
         (compiler, compiling, release)
+    }
+
+    /// Compilation always ends in `failure`.
+    fn failing(failure: CompileFailure) -> Self {
+        Self {
+            gate: Box::new(move || Err(failure.clone())),
+        }
     }
 }
 
@@ -1234,7 +1304,7 @@ impl SavedFunctionCompiler for GatedSavedFunctionCompiler {
         _deadline: std::time::Instant,
         _source: &str,
         _declarations: Option<&coral_v8::CoralDeclarations>,
-    ) -> Result<PreparedSavedFunction, String> {
+    ) -> Result<PreparedSavedFunction, CompileFailure> {
         (self.gate)()?;
         Ok(PreparedSavedFunction {
             declaration: crate::SavedFunctionDeclaration::from_compiler(

@@ -7,6 +7,7 @@ use std::time::Instant;
 use coral_db::Transaction;
 use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
 use coral_telemetry::safe;
+use coral_v8::CompileFailure;
 use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -283,7 +284,12 @@ impl RunModule {
         let outcome = match &compiled {
             Ok(_) => CompileOutcome::Ok,
             Err(Error::CompilationTimedOut) => CompileOutcome::TimedOut,
-            Err(Error::ProgramWorkerStopped) => CompileOutcome::Unavailable,
+            Err(
+                Error::CompilerBusy
+                | Error::ProgramWorkerStopped
+                | Error::ProgramRuntimeUnavailable(_)
+                | Error::CorruptData(_),
+            ) => CompileOutcome::Unavailable,
             Err(error) if error.database_error().is_some() => CompileOutcome::Unavailable,
             Err(_) => CompileOutcome::Rejected,
         };
@@ -329,7 +335,7 @@ impl RunModule {
         let package = match timeout(remaining_compilation_time, compile).await {
             Err(_elapsed) => return Err(Error::CompilationTimedOut),
             Ok(Err(_join_error)) => return Err(Error::ProgramWorkerStopped),
-            Ok(Ok(Err(message))) => return Err(Error::ProgramAdmission(message)),
+            Ok(Ok(Err(failure))) => return Err(domain_error(failure)),
             Ok(Ok(Ok(package))) => package,
         };
         package.validate()?;
@@ -432,8 +438,25 @@ impl RunModule {
         match timeout(remaining_compilation_time, analyze).await {
             Err(_elapsed) => Err(Error::CompilationTimedOut),
             Ok(Err(_join_error)) => Err(Error::ProgramWorkerStopped),
-            Ok(Ok(Err(message))) => Err(Error::ProgramAdmission(message)),
+            Ok(Ok(Err(failure))) => Err(domain_error(failure)),
             Ok(Ok(Ok(paths))) => Ok(paths),
+        }
+    }
+}
+
+/// Only a rejection judges the Program; the others tell its author nothing to fix.
+fn domain_error(failure: CompileFailure) -> Error {
+    match failure {
+        CompileFailure::Rejected(message) => Error::ProgramAdmission(message),
+        CompileFailure::Busy => Error::CompilerBusy,
+        CompileFailure::TimedOut => Error::CompilationTimedOut,
+        CompileFailure::Stopped => Error::ProgramWorkerStopped,
+        CompileFailure::Failed(kind) => {
+            tracing::warn!(
+                error.type = safe::kind(kind),
+                "Program compiler failed; the caller sees an internal failure"
+            );
+            Error::ProgramRuntimeUnavailable(kind.to_string())
         }
     }
 }

@@ -119,6 +119,65 @@ async fn a_run_records_its_acceptance_claims_phases_and_end() {
     assert_eq!(level(&metrics, "coral.run.queue.depth").last(), Some(&0.0));
 }
 
+/// Each compile failure keeps its cause for the caller and the metric, at
+/// both compile stages, and a failed admission creates no Run.
+#[tokio::test]
+async fn a_compile_failure_keeps_its_cause_for_the_caller_and_the_metric() {
+    let (metrics, _guard) = measured();
+    let fixture = TestModules::new(Arc::new(FailingCompileEngine)).await;
+    let (workspace_id, principal) = fixture
+        .user_scope("user:compile-outcomes", "Classify compile failures")
+        .await;
+    let runs_before = fixture.runs.count_runs().await.expect("count Runs");
+
+    for stage in ["analysis", "compile"] {
+        for (failure, kind, rejection) in [
+            (
+                "rejected",
+                "program_admission",
+                Some("program_admission_failed"),
+            ),
+            ("busy", "compiler_busy", Some("program_compiler_busy")),
+            (
+                "timed-out",
+                "compilation_timed_out",
+                Some("program_compilation_timed_out"),
+            ),
+            ("stopped", "program_worker_stopped", None),
+            ("failed", "program_runtime_unavailable", None),
+        ] {
+            let error = fixture
+                .runs
+                .start(
+                    &principal,
+                    &workspace_id,
+                    submission(&format!("{stage}:{failure}")),
+                )
+                .await
+                .expect_err("the compile fails");
+            assert_eq!(error.code(), kind, "{stage}:{failure}");
+            assert_eq!(
+                error.safe_rejection().map(|(code, _message)| code),
+                rejection,
+                "{stage}:{failure}"
+            );
+        }
+    }
+
+    assert_eq!(
+        fixture.runs.count_runs().await.expect("count Runs"),
+        runs_before
+    );
+    assert_eq!(
+        counts(&metrics, "coral.program.compile.duration"),
+        owned(&[
+            ("outcome=rejected", 2),
+            ("outcome=timed_out", 2),
+            ("outcome=unavailable", 6)
+        ])
+    );
+}
+
 /// A Tool Invocation counts its start and end by protocol and effect, times
 /// each gate, records its result's size, and leaves none active.
 #[tokio::test]

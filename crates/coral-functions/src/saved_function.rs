@@ -11,8 +11,8 @@ use coral_workspace::{
 use tokio::time::{timeout, timeout_at};
 
 use coral_v8::{
-    COMPILATION_TIMEOUT, CallableDeclaration, CoralDeclarations, SavedFunctionCallPaths,
-    format_compiler_error,
+    COMPILATION_TIMEOUT, CallableDeclaration, CompileFailure, CoralDeclarations,
+    SavedFunctionCallPaths,
 };
 
 use crate::repository;
@@ -59,7 +59,7 @@ pub(crate) trait SavedFunctionCompiler: Send + Sync {
         deadline: Instant,
         source: &str,
         declarations: Option<&CoralDeclarations>,
-    ) -> Result<PreparedSavedFunction, String>;
+    ) -> Result<PreparedSavedFunction, CompileFailure>;
 }
 
 struct V8SavedFunctionCompiler {
@@ -93,15 +93,14 @@ impl SavedFunctionCompiler for V8SavedFunctionCompiler {
         deadline: Instant,
         source: &str,
         declarations: Option<&CoralDeclarations>,
-    ) -> Result<PreparedSavedFunction, String> {
+    ) -> Result<PreparedSavedFunction, CompileFailure> {
         let compiled = match declarations {
             Some(declarations) => {
                 self.compiler
                     .prepare_typed_saved_function(deadline, source, declarations)
             }
             None => self.compiler.prepare_saved_function(deadline, source),
-        }
-        .map_err(format_compiler_error)?;
+        }?;
         let declaration = SavedFunctionDeclaration::from_compiler(compiled.declaration())
             .map_err(|error| error.to_string())?;
         let declaration_field_projection =
@@ -617,7 +616,21 @@ impl SavedFunctionModule {
             })
             .await
             .map_err(|_join_error| Error::CompilerWorkerStopped)?
-            .map_err(|message| Error::SavedFunctionAdmission(format!("{source_name}: {message}")))
+            .map_err(|failure| match failure {
+                CompileFailure::Rejected(message) => {
+                    Error::SavedFunctionAdmission(format!("{source_name}: {message}"))
+                }
+                CompileFailure::Busy => Error::CompilerBusy,
+                CompileFailure::TimedOut => Error::SavedFunctionCompilationTimedOut,
+                CompileFailure::Stopped => Error::CompilerWorkerStopped,
+                CompileFailure::Failed(kind) => {
+                    tracing::warn!(
+                        error.type = safe::kind(kind),
+                        "Saved Function compiler failed; the caller sees an internal failure"
+                    );
+                    Error::CompilerUnavailable(kind.to_string())
+                }
+            })
         };
         timeout(COMPILATION_TIMEOUT, preparation)
             .await

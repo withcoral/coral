@@ -347,6 +347,7 @@ fn compiler_outcome<T>(result: &Result<T, Error>) -> CompilerOutcome {
             Error::Compilation { .. }
             | Error::InvalidProgramBody
             | Error::InvalidSavedFunction(_)
+            | Error::SourceTooDeeplyNested
             | Error::ForbiddenCapability(_)
             | Error::InvalidSavedFunctionReference { .. },
         ) => CompilerOutcome::Rejected,
@@ -636,7 +637,12 @@ impl CompilerIsolate {
                 .call(&try_catch, receiver, &arguments)
                 .ok_or_else(|| match try_catch.exception() {
                     Some(exception) => {
-                        Error::Engine(format_thrown_value(&mut try_catch, exception))
+                        let thrown = format_thrown_value(&mut try_catch, exception);
+                        if thrown.starts_with(STACK_OVERFLOW) {
+                            Error::SourceTooDeeplyNested
+                        } else {
+                            Error::Engine(thrown)
+                        }
                     }
                     None => Error::Engine("TypeScript compiler bridge failed".to_string()),
                 })?;
@@ -647,6 +653,9 @@ impl CompilerIsolate {
         })
     }
 }
+
+/// What V8 throws when the compiler's recursion over source overflows its stack.
+const STACK_OVERFLOW: &str = "RangeError: Maximum call stack size exceeded";
 
 fn invalid_saved_function_reference(error: SavedFunctionReferenceError) -> Error {
     Error::InvalidSavedFunctionReference {
@@ -824,6 +833,7 @@ mod tests {
         }
     }
     use super::*;
+    use crate::CompileFailure;
 
     fn script(compiler: &mut CompilerIsolate, source: &str) -> Result<(), Error> {
         v8::scope!(let scope, &mut compiler.isolate);
@@ -870,6 +880,80 @@ mod tests {
         compiler
             .compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;")
             .expect("live request after expired job");
+    }
+
+    #[test]
+    fn only_authored_faults_become_rejections() {
+        for (error, failure) in [
+            (Error::CompilerBusy, CompileFailure::Busy),
+            (Error::CompilationTimedOut, CompileFailure::TimedOut),
+            (Error::CompilerUnavailable, CompileFailure::Stopped),
+            (
+                Error::CompilerThread(std::io::Error::other("no thread")),
+                CompileFailure::Stopped,
+            ),
+            (
+                Error::InvalidProgramBody,
+                CompileFailure::Rejected("Program source is not one async-function body".into()),
+            ),
+            (
+                Error::SourceTooDeeplyNested,
+                CompileFailure::Rejected(
+                    "TypeScript source is nested too deeply to compile".into(),
+                ),
+            ),
+            (
+                Error::MemoryLimitExceeded,
+                CompileFailure::Rejected("V8 isolate memory limit exceeded".into()),
+            ),
+            (
+                Error::CompilerProtocol("private".into()),
+                CompileFailure::Failed("compiler_protocol"),
+            ),
+            (
+                Error::Engine("private".into()),
+                CompileFailure::Failed("engine"),
+            ),
+            (
+                Error::Initialization("private".into()),
+                CompileFailure::Failed("initialization"),
+            ),
+            (
+                Error::InvalidSourceMap("private".into()),
+                CompileFailure::Failed("invalid_source_map"),
+            ),
+        ] {
+            assert_eq!(CompileFailure::from(error), failure);
+        }
+    }
+
+    #[test]
+    fn deeply_nested_source_is_rejected_and_leaves_the_compiler_usable() {
+        let compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
+        let deadline = || Instant::now() + COMPILATION_TIMEOUT;
+        for source in [
+            format!("return 1{};", "+1".repeat(30_000)),
+            format!("return {}1{};", "(".repeat(30_000), ")".repeat(30_000)),
+        ] {
+            assert!(
+                matches!(
+                    compiler.compile(deadline(), &source),
+                    Err(Error::SourceTooDeeplyNested)
+                ),
+                "compile"
+            );
+            assert!(
+                matches!(
+                    compiler.saved_function_paths(deadline(), &source),
+                    Err(Error::SourceTooDeeplyNested)
+                ),
+                "analysis"
+            );
+        }
+        compiler
+            .compile(deadline(), "return 42;")
+            .expect("compiler usable after overflow");
     }
 
     #[test]
