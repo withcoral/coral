@@ -615,7 +615,7 @@ impl AccountModule {
     /// service. Device authorization takes only a named one.
     /// # Errors
     /// As [`Self::setup_automatic_client_available`].
-    pub async fn setup_oauth_application_available(
+    pub(crate) async fn setup_oauth_application_available(
         &self,
         actor: &AuthenticatedUser,
         owner: &WorkspaceId,
@@ -686,7 +686,9 @@ impl AccountModule {
     /// Only [`Self::setup_oauth_application_available`] can find one that
     /// Coral sets up.
     #[must_use]
-    pub fn names_oauth_application(authentication: Option<&AuthenticationConfiguration>) -> bool {
+    pub(crate) fn names_oauth_application(
+        authentication: Option<&AuthenticationConfiguration>,
+    ) -> bool {
         !authentication.is_some_and(super::oauth_client::oauth_application_missing)
     }
 

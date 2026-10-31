@@ -1,18 +1,16 @@
-//! The flow each Built-in Tool that prepares a Provider Setup for a
-//! Program follows: `addProvider` for a new Provider, `updateProvider` for
-//! a new Generation of one. Coral prepares and configures the Setup as the
-//! invoking User, then returns the Reef page where a person previews and
-//! publishes it. The call never waits for that person, and Coral ends a Setup
-//! it prepared that nobody will finish.
+//! What each Built-in Tool that prepares a Provider Setup for a Program
+//! shares: `addProvider` for a new Provider, `updateProvider` for a new
+//! Generation of one. coral-provider prepares and configures the Setup as the
+//! invoking User, and the Tool returns the Reef page where a person previews
+//! and publishes it. The call never waits for that person, and Coral ends a
+//! Setup it prepared that nobody will finish.
 
-use async_trait::async_trait;
 use std::collections::BTreeMap;
 
-use coral_catalog::{ConfigurationChoices, ProviderConfiguration, ProviderSourceArgument};
-use coral_provider::account::AccountModule;
+use coral_catalog::{ConfigurationChoices, ProviderSourceArgument};
 use coral_provider::{
-    ProviderSetup, ProviderSetupId, ProviderSetupSource, PublishabilityRejection,
-    SetupPublishability,
+    ProgramSetup, ProgramSetupError, ProgramSetupRequest, ProviderSetupId, ProviderSetupSource,
+    PublishabilityRejection,
 };
 use coral_workspace::ChangeContext;
 
@@ -20,111 +18,68 @@ use super::{BuiltinHost, authority_error};
 use crate::error::InputProblem;
 use crate::{CoralFailure, Error, Rejection};
 
-/// One Built-in Tool that prepares a Provider Setup. Each step is the
-/// Tool's own; [`perform`] runs them in order.
-#[async_trait]
-pub(super) trait SetupTool: Sync {
-    /// What configuring the Setup leaves for the page where a person
-    /// finishes it.
-    type Configured: Send;
-
-    /// Prepares the Setup as the User `context` names. Only this step waits
-    /// on the network, so only it stops with the Run.
-    async fn prepare(
-        &self,
-        host: &BuiltinHost<'_>,
-        context: &ChangeContext,
-    ) -> Result<ProviderSetup, Error>;
-
-    /// Confirms the Program's configuration, or fails with what to correct.
-    async fn configure(
-        &self,
-        host: &BuiltinHost<'_>,
-        context: &ChangeContext,
-        setup: &ProviderSetup,
-    ) -> Result<Self::Configured, Error>;
-
-    /// The Reef page where a person finishes the Setup.
-    fn needs_person(
-        &self,
-        host: &BuiltinHost<'_>,
-        setup: &ProviderSetupId,
-        configured: Self::Configured,
-    ) -> serde_json::Value;
-}
-
-/// Prepares and configures `tool`'s Setup as the User `context` names, then
-/// returns the Reef page where a person finishes it.
-pub(super) async fn perform(
-    tool: &impl SetupTool,
+/// Prepares the Setup `request` asks for as the User `context` names, for a
+/// person to finish. `provider_error` maps what is not the call's own failure.
+pub(super) async fn prepare(
     host: &BuiltinHost<'_>,
     context: &ChangeContext,
-) -> Result<serde_json::Value, Error> {
-    // Once a Setup exists, the call runs to an end that links a person to it
-    // or ends it.
-    let setup = tokio::select! {
-        biased;
-        () = host.run.stopped() => return Err(Error::ProgramHostTerminated),
-        setup = tool.prepare(host, context) => setup?,
-    };
+    request: ProgramSetupRequest,
+    provider_error: fn(coral_provider::Error) -> Error,
+) -> Result<ProgramSetup, Error> {
+    let prepared = host
+        .providers
+        .prepare_program_setup(
+            context,
+            host.workspace_id,
+            host.accounts,
+            request,
+            host.run.stopped(),
+        )
+        .await
+        .map_err(|error| program_setup_error(error, provider_error))?;
     #[cfg(test)]
     host.run.setup_prepared();
-    let configured = match tool.configure(host, context, &setup).await {
-        Ok(configured) => configured,
-        Err(error) => {
-            // Nobody will finish a Setup whose configuration failed.
-            end_setup(host, setup.id()).await;
-            return Err(error);
-        }
-    };
     // A Run that ended could no longer hand anyone the link.
-    require_current_run(host, setup.id()).await?;
-    Ok(tool.needs_person(host, setup.id(), configured))
+    require_current_run(host, &prepared.setup).await?;
+    Ok(prepared)
 }
 
-/// Fails unless a person can finish a Setup that `publishability` describes.
-/// A person's sign-in could not start without an OAuth application, as Reef
-/// offers it, so the Setup needs one.
-pub(super) async fn require_finishable(
-    host: &BuiltinHost<'_>,
-    context: &ChangeContext,
-    setup: &ProviderSetupId,
-    publishability: SetupPublishability,
-    configuration: Option<&ProviderConfiguration>,
-) -> Result<(), Error> {
+/// The failure a Program catches for a Setup Coral did not prepare.
+fn program_setup_error(
+    error: ProgramSetupError,
+    provider_error: fn(coral_provider::Error) -> Error,
+) -> Error {
     let invalid = |field: &str, reason: &str| {
         Error::InvocationRejected(Rejection::invalid_input(field, reason))
     };
-    match publishability {
-        SetupPublishability::Coral | SetupPublishability::Person => {
-            if has_oauth_application(host, context, setup, configuration).await? {
-                Ok(())
-            } else {
-                Err(invalid(
-                    "authentication.client",
-                    "Coral cannot register an OAuth application with this service; register \
-                     one with the service and give its `client_id`",
-                ))
-            }
+    match error {
+        ProgramSetupError::Stopped => Error::ProgramHostTerminated,
+        ProgramSetupError::NamespaceInUse => {
+            Error::InvocationRejected(CoralFailure::ProviderNamespaceConflict.into())
         }
-        SetupPublishability::Rejected(PublishabilityRejection::NotConfigured) => Err(invalid(
+        ProgramSetupError::Configuration { errors, diagnostic } => {
+            Error::InvocationRejected(configuration_rejection(&errors, diagnostic.as_deref()))
+        }
+        ProgramSetupError::OAuthApplicationMissing => invalid(
+            "authentication.client",
+            "Coral cannot register an OAuth application with this service; register \
+             one with the service and give its `client_id`",
+        ),
+        ProgramSetupError::Route(PublishabilityRejection::NotConfigured) => invalid(
             "source",
             "Coral could not tell whether the source needs a credential",
-        )),
+        ),
         // The route must suit the source, as Reef offers it; no route falls back to another.
-        SetupPublishability::Rejected(PublishabilityRejection::SourceNeedsCredential) => {
-            Err(invalid(
-                "credentialRoute",
-                "the source needs a credential; use `fixed` or `caller`",
-            ))
-        }
-        SetupPublishability::Rejected(PublishabilityRejection::SourceNeedsNoCredential) => {
-            Err(invalid(
-                "credentialRoute",
-                "the source declares no credential; use `none`, or give `authentication` \
-                 to say how a person signs in",
-            ))
-        }
+        ProgramSetupError::Route(PublishabilityRejection::SourceNeedsCredential) => invalid(
+            "credentialRoute",
+            "the source needs a credential; use `fixed` or `caller`",
+        ),
+        ProgramSetupError::Route(PublishabilityRejection::SourceNeedsNoCredential) => invalid(
+            "credentialRoute",
+            "the source declares no credential; use `none`, or give `authentication` \
+             to say how a person signs in",
+        ),
+        ProgramSetupError::Provider(error) => provider_error(error),
     }
 }
 
@@ -156,29 +111,6 @@ async fn require_current_run(host: &BuiltinHost<'_>, setup: &ProviderSetupId) ->
     }
     end_setup(host, setup).await;
     current.and(Err(Error::ProgramHostTerminated))
-}
-
-/// Whether a person's sign-in to `configuration` has an OAuth application, as
-/// Reef offers it. Without accounts, Coral sets none up.
-async fn has_oauth_application(
-    host: &BuiltinHost<'_>,
-    context: &ChangeContext,
-    setup: &ProviderSetupId,
-    configuration: Option<&ProviderConfiguration>,
-) -> Result<bool, Error> {
-    let authentication = configuration.and_then(|values| values.authentication.as_ref());
-    match host.accounts {
-        Some(accounts) => accounts
-            .setup_oauth_application_available(
-                context.actor(),
-                host.workspace_id,
-                setup,
-                authentication,
-            )
-            .await
-            .map_err(setup_error),
-        None => Ok(AccountModule::names_oauth_application(authentication)),
-    }
 }
 
 /// Ends, as Coral, a Setup that this call prepared but nobody will finish.
@@ -234,11 +166,11 @@ pub(super) fn setup_error(error: coral_provider::Error) -> Error {
 /// Every problem Coral found when it read or confirmed the configuration, as
 /// the arguments to correct. Coral writes these field errors and diagnostic
 /// codes without any submitted value.
-pub(super) fn configuration_rejection(
-    confirmed: &coral_provider::SetupConfigurationReview,
-) -> Option<Rejection> {
-    let problems: Vec<_> = confirmed
-        .errors
+fn configuration_rejection(
+    errors: &[coral_catalog::ConfigurationFieldError],
+    diagnostic: Option<&str>,
+) -> Rejection {
+    let problems: Vec<_> = errors
         .iter()
         .map(|error| {
             InputProblem::new(
@@ -246,12 +178,19 @@ pub(super) fn configuration_rejection(
                 error.message.clone(),
             )
         })
-        .chain(confirmed.diagnostic.iter().map(|diagnostic| {
+        .chain(diagnostic.iter().map(|diagnostic| {
             InputProblem::new(
                 "source",
                 format!("Coral cannot build a Provider from the source ({diagnostic})"),
             )
         }))
         .collect();
-    (!problems.is_empty()).then(|| Rejection::invalid_inputs(problems))
+    if problems.is_empty() {
+        Rejection::invalid_input(
+            "source",
+            "Coral could not read a configuration from the source",
+        )
+    } else {
+        Rejection::invalid_inputs(problems)
+    }
 }

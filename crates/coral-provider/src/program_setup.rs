@@ -1,26 +1,92 @@
 //! What the Built-in Provider needs from a Provider Setup that it prepares for
-//! a Program: who can publish it, for a new Provider or an update, what the
-//! Program learns about the Provider it published, and how Coral ends a Setup
-//! that nobody will finish.
-use coral_catalog::ToolAvailability;
+//! a Program: one call that prepares and configures it for a person to finish,
+//! what the Program learns about the Provider that person published, and how
+//! Coral ends a Setup that nobody will finish.
+use coral_catalog::{
+    ConfigurationChoices, ConfigurationFieldError, ConfigurationPatch, ProviderConfiguration,
+};
 use coral_db::Transaction;
-use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceAction, WorkspaceId};
+use coral_workspace::{AuthenticatedPrincipal, ChangeContext, WorkspaceAction, WorkspaceId};
 
+use crate::account::AccountModule;
 use crate::{
-    CredentialRoute, Error, Provider, ProviderId, ProviderModule, ProviderSetup, ProviderSetupId,
-    ProviderSetupState, RouteFit,
+    CredentialRoute, Error, Provider, ProviderId, ProviderModule, ProviderNamespace, ProviderSetup,
+    ProviderSetupId, ProviderSetupInputKind, ProviderSetupSource, ProviderSetupState, RouteFit,
+    SetupConfigurationReview, SetupRequest,
 };
 
-/// Who can publish a Setup under a Credential Route.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SetupPublishability {
-    /// Coral can publish it now, with no person.
-    Coral,
-    /// A person must finish it: the source needs a credential, which only a
-    /// person gives, or its Tools are known only after a sign-in.
-    Person,
-    /// Nobody can publish it under this route.
-    Rejected(PublishabilityRejection),
+/// A Setup a Program asks Coral to prepare.
+#[derive(Debug, Clone)]
+pub struct ProgramSetupRequest {
+    /// Where the Setup reads the Provider from.
+    pub source: ProviderSetupSource,
+    /// What the Setup is for.
+    pub purpose: ProgramSetupPurpose,
+}
+
+/// What a Setup a Program prepares is for.
+#[derive(Debug, Clone)]
+pub enum ProgramSetupPurpose {
+    /// A new Provider under `namespace`.
+    Add {
+        /// The namespace the Program asked for.
+        namespace: ProviderNamespace,
+        /// The route the Program asked for.
+        route: CredentialRoute,
+        /// The Program's choices, over what the source suggests.
+        choices: ConfigurationChoices,
+    },
+    /// A new Generation of `provider`.
+    Update {
+        /// The Provider to update.
+        provider: ProviderId,
+        /// The route the Program asked for. Without one, a person chooses it
+        /// in Reef.
+        route: Option<CredentialRoute>,
+        /// The Program's changes, over the configuration the Setup saved.
+        patch: ConfigurationPatch,
+    },
+}
+
+/// A Setup that a person can finish.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramSetup {
+    /// The Setup, configured as the Program asked.
+    pub setup: ProviderSetupId,
+    /// The confirmed configuration breaks access to the Provider it updates.
+    pub interrupts_access: bool,
+}
+
+/// Why Coral did not prepare a Setup for a person to finish. Each variant
+/// leaves no open Setup: a failure after the Setup exists ends it, best effort.
+#[derive(Debug, thiserror::Error)]
+pub enum ProgramSetupError {
+    /// The Run asked to stop before the Setup existed.
+    #[error("the Run stopped before Coral prepared the Setup")]
+    Stopped,
+    /// A Provider in the Workspace already uses the namespace.
+    #[error("the Provider Namespace is in use")]
+    NamespaceInUse,
+    /// The source yields no configuration, or the Program's choices do not
+    /// suit it. Both fields are empty when the source yields no suggestion
+    /// and no reason.
+    #[error("the configuration has problems to correct")]
+    Configuration {
+        /// The fields to correct, without any submitted value.
+        errors: Vec<ConfigurationFieldError>,
+        /// Why no catalog can be built from the source.
+        diagnostic: Option<String>,
+    },
+    /// Nobody can publish the Setup under the route.
+    #[error("the Credential Route cannot publish the Setup: {0:?}")]
+    Route(PublishabilityRejection),
+    /// A person's sign-in could not start without an OAuth application, which
+    /// the configuration does not name and Coral cannot register.
+    #[error("the sign-in has no OAuth application")]
+    OAuthApplicationMissing,
+    /// Authority, a Setup's preparation, persistence or corrupt evidence.
+    #[error(transparent)]
+    Provider(#[from] Error),
 }
 
 /// Why nobody can publish a Setup under a Credential Route.
@@ -35,51 +101,167 @@ pub enum PublishabilityRejection {
 }
 
 impl ProviderModule {
-    /// Says who can publish `setup` under `route`, by the same contract
-    /// Publication checks the route against.
+    /// Prepares and configures a Setup as the User `context` names, for a
+    /// person to finish. The call fails before any fetch for a namespace in
+    /// use, and `stop` ends it only until the Setup exists. After that, it runs
+    /// to an end that returns the Setup or ends it as Coral: nobody will
+    /// finish a Setup whose configuration failed. `accounts` says whether Coral
+    /// can register an OAuth application; without it, the Setup must name one.
     ///
     /// # Errors
     ///
-    /// Requires current Workspace Owner authority. Returns
-    /// [`Error::ProviderSetupNotFound`] for an absent Setup,
-    /// [`Error::ProviderSetupNotApplicable`] for one that is consumed, expired
-    /// or canceled, or a persistence or corrupt-evidence failure.
-    pub async fn setup_publishability(
+    /// See [`ProgramSetupError`]. An `Err` leaves no open Setup.
+    pub async fn prepare_program_setup(
         &self,
-        actor: &AuthenticatedUser,
+        context: &ChangeContext,
         owner: &WorkspaceId,
-        setup: &ProviderSetupId,
-        route: CredentialRoute,
-    ) -> Result<SetupPublishability, Error> {
-        let mut tx = self.database.begin_read_snapshot().await?;
-        let (loaded, review) = self
-            .reviewed_setup_in_transaction(&mut tx, actor, owner, setup)
-            .await?;
-        tx.rollback().await?;
-        // Nobody publishes an ended Setup, and a person cannot finish it.
-        if !loaded.setup.state().is_open() {
-            return Err(Error::ProviderSetupNotApplicable);
+        accounts: Option<&AccountModule>,
+        request: ProgramSetupRequest,
+        stop: impl Future<Output = ()> + Send,
+    ) -> Result<ProgramSetup, ProgramSetupError> {
+        let ProgramSetupRequest { source, purpose } = request;
+        if let ProgramSetupPurpose::Add { namespace, .. } = &purpose
+            && self
+                .namespace_in_use(context.actor(), owner, namespace)
+                .await?
+        {
+            return Err(ProgramSetupError::NamespaceInUse);
         }
-        let contract = match review.confirmed_contract() {
-            Some(contract) if review.configuration_confirmed => contract,
-            _ => {
-                return Ok(SetupPublishability::Rejected(
-                    PublishabilityRejection::NotConfigured,
-                ));
-            }
+        let setup = tokio::select! {
+            biased;
+            () = stop => return Err(ProgramSetupError::Stopped),
+            setup = self.prepare_for_program(context, owner, source, &purpose) => setup?,
         };
-        if let Some(rejection) = route_rejection(contract, route) {
-            return Ok(SetupPublishability::Rejected(rejection));
+        let configured = self
+            .configure_program_setup(context, owner, accounts, &setup, purpose)
+            .await;
+        if configured.is_err() {
+            // Best effort: the Setup still expires at its deadline.
+            let _ended = self
+                .abandon_setup(owner, setup.id(), context.occurred_at_unix_nanos())
+                .await;
         }
-        Ok(match route {
-            // Coral publishes nothing that needs an Account: a person signs in
-            // first, to the shared Account or to their own.
-            CredentialRoute::Fixed | CredentialRoute::Caller => SetupPublishability::Person,
-            CredentialRoute::None if loaded.setup.state().is_pre_ready() => {
-                SetupPublishability::Person
+        configured
+    }
+
+    /// Prepares the Setup. Only this step waits on the network.
+    async fn prepare_for_program(
+        &self,
+        context: &ChangeContext,
+        owner: &WorkspaceId,
+        source: ProviderSetupSource,
+        purpose: &ProgramSetupPurpose,
+    ) -> Result<ProviderSetup, Error> {
+        match purpose {
+            ProgramSetupPurpose::Add {
+                namespace, route, ..
+            } => {
+                let request = SetupRequest {
+                    namespace: namespace.clone(),
+                    route: *route,
+                };
+                self.prepare_requested_setup(context, owner, source, request)
+                    .await
             }
-            CredentialRoute::None => SetupPublishability::Coral,
+            ProgramSetupPurpose::Update { provider, .. } => {
+                self.prepare_setup(context, owner, source, Some(provider))
+                    .await
+            }
+        }
+    }
+
+    /// Confirms the Program's configuration, then checks that its route suits
+    /// the source and that a person's sign-in has an OAuth application.
+    async fn configure_program_setup(
+        &self,
+        context: &ChangeContext,
+        owner: &WorkspaceId,
+        accounts: Option<&AccountModule>,
+        setup: &ProviderSetup,
+        purpose: ProgramSetupPurpose,
+    ) -> Result<ProgramSetup, ProgramSetupError> {
+        let actor = context.actor();
+        let review = self
+            .review_setup_configuration(actor, owner, setup.id())
+            .await?;
+        let revision = review.revision;
+        let (configuration, route) = program_configuration(setup, review, purpose)?;
+        let confirmed = self
+            .confirm_setup_configuration(context, owner, setup.id(), revision, configuration)
+            .await?;
+        if !confirmed.errors.is_empty() || confirmed.diagnostic.is_some() {
+            return Err(ProgramSetupError::Configuration {
+                errors: confirmed.errors,
+                diagnostic: confirmed.diagnostic,
+            });
+        }
+        let Some(contract) = confirmed
+            .confirmed_contract()
+            .filter(|_| confirmed.configuration_confirmed)
+        else {
+            return Err(ProgramSetupError::Route(
+                PublishabilityRejection::NotConfigured,
+            ));
+        };
+        if let Some(rejection) = route.and_then(|route| route_rejection(contract, route)) {
+            return Err(ProgramSetupError::Route(rejection));
+        }
+        let authentication = confirmed
+            .confirmed
+            .as_ref()
+            .and_then(|values| values.authentication.as_ref());
+        let has_application = match accounts {
+            Some(accounts) => {
+                accounts
+                    .setup_oauth_application_available(actor, owner, setup.id(), authentication)
+                    .await?
+            }
+            // Without accounts, Coral sets none up.
+            None => AccountModule::names_oauth_application(authentication),
+        };
+        if !has_application {
+            return Err(ProgramSetupError::OAuthApplicationMissing);
+        }
+        Ok(ProgramSetup {
+            setup: setup.id().clone(),
+            interrupts_access: confirmed.interrupts_access == Some(true),
         })
+    }
+}
+
+/// The configuration to confirm and the route to check: the Program's choices
+/// over what the source suggests for a new Provider, or its changes over the
+/// configuration the Update Setup saved. An MCP server reports its own server
+/// and OAuth endpoints, so an update takes those from `review` unless sent.
+fn program_configuration(
+    setup: &ProviderSetup,
+    review: SetupConfigurationReview,
+    purpose: ProgramSetupPurpose,
+) -> Result<(ProviderConfiguration, Option<CredentialRoute>), ProgramSetupError> {
+    match purpose {
+        ProgramSetupPurpose::Add { route, choices, .. } => {
+            let Some(document) = review.document else {
+                return Err(ProgramSetupError::Configuration {
+                    errors: review.errors,
+                    diagnostic: review.diagnostic,
+                });
+            };
+            Ok((choices.over(document.suggested), Some(route)))
+        }
+        ProgramSetupPurpose::Update { route, patch, .. } => {
+            // An Update Setup starts from the Provider's saved configuration.
+            let Some(saved) = review.confirmed else {
+                return Err(Error::CorruptData(
+                    "an Update Setup has no saved configuration".into(),
+                )
+                .into());
+            };
+            let discovered = match setup.input_kind() {
+                ProviderSetupInputKind::Mcp => review.document.map(|document| document.suggested),
+                ProviderSetupInputKind::OpenApi => None,
+            };
+            Ok((patch.configuration(saved, discovered.as_ref()), route))
+        }
     }
 }
 
@@ -92,89 +274,6 @@ fn route_rejection(
         RouteFit::Fits => None,
         RouteFit::SourceNeedsCredential => Some(PublishabilityRejection::SourceNeedsCredential),
         RouteFit::SourceNeedsNoCredential => Some(PublishabilityRejection::SourceNeedsNoCredential),
-    }
-}
-
-impl ProviderModule {
-    /// Says who can publish the Update Setup `setup` under `route`, the
-    /// Credential Route a Program asked for, or the Provider's own for `None`.
-    /// A route the Program asks for must suit the source, as for a new
-    /// Provider. Coral publishes an update alone only when its Setup is ready
-    /// and the update keeps the route, the credential contract, and every
-    /// Tool Key of the active Generation, with each Tool that runs
-    /// now still able to run. A new route or contract needs a person to
-    /// confirm the incompatible configuration, and nobody can review dropped
-    /// or broken Tools before the source is read, so each of those needs
-    /// a person.
-    ///
-    /// # Errors
-    ///
-    /// Requires current Workspace Owner authority. Returns
-    /// [`Error::ProviderSetupNotFound`] for an absent Setup,
-    /// [`Error::ProviderSetupNotApplicable`] for one that is not an open
-    /// Update Setup, [`Error::ProviderNotFound`] for an absent target, or a
-    /// persistence or corrupt-evidence failure.
-    pub async fn update_publishability(
-        &self,
-        actor: &AuthenticatedUser,
-        owner: &WorkspaceId,
-        setup: &ProviderSetupId,
-        route: Option<CredentialRoute>,
-    ) -> Result<SetupPublishability, Error> {
-        let mut tx = self.database.begin_read_snapshot().await?;
-        let (loaded, review) = self
-            .reviewed_setup_in_transaction(&mut tx, actor, owner, setup)
-            .await?;
-        let Some(target) = &loaded.update_provider_id else {
-            return Err(Error::ProviderSetupNotApplicable);
-        };
-        let active = crate::repository::provider_in_transaction(&mut tx, owner, target)
-            .await?
-            .ok_or(Error::ProviderNotFound)?;
-        let kept = coral_catalog::tools_in_transaction(&mut tx, &active.generation_id).await?;
-        tx.rollback().await?;
-        if !loaded.setup.state().is_open() {
-            return Err(Error::ProviderSetupNotApplicable);
-        }
-        let contract = match review.confirmed_contract() {
-            Some(contract) if review.configuration_confirmed => contract,
-            _ => {
-                return Ok(SetupPublishability::Rejected(
-                    PublishabilityRejection::NotConfigured,
-                ));
-            }
-        };
-        // A route the Program asks for must suit the source, as for a new
-        // Provider. Without one, a person chooses the route in Reef.
-        if let Some(rejection) = route.and_then(|route| route_rejection(contract, route)) {
-            return Ok(SetupPublishability::Rejected(rejection));
-        }
-        let previewed = review
-            .tools
-            .iter()
-            .map(|tool| tool.key.as_str())
-            .collect::<std::collections::HashSet<_>>();
-        // A Tool that cannot run now breaks no Program when it still
-        // cannot.
-        let keeps_tools = kept.iter().all(|tool| {
-            let key = tool.key().as_str();
-            previewed.contains(key)
-                && (tool.availability() == ToolAvailability::Unavailable
-                    || !review.unavailable_tools.contains_key(key))
-        });
-        let keeps_route =
-            route.is_none_or(|route| route == active.provider.access().credential_route());
-        Ok(
-            if loaded.setup.state() == ProviderSetupState::Ready
-                && keeps_route
-                && review.interrupts_access == Some(false)
-                && keeps_tools
-            {
-                SetupPublishability::Coral
-            } else {
-                SetupPublishability::Person
-            },
-        )
     }
 }
 

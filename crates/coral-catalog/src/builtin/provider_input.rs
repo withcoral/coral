@@ -32,7 +32,7 @@ pub enum ProviderSourceArgument {
 
 /// The configuration fields the Program chose, each over the source's
 /// suggestion.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ConfigurationChoices {
     /// The Provider display name.
     pub display_name: Option<String>,

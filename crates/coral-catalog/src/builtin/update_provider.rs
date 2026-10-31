@@ -227,6 +227,35 @@ impl ConfigurationPatch {
             credential_fields: patched(saved.credential_fields, &self.credential_fields),
         }
     }
+
+    /// The configuration to confirm: each sent field over the configuration
+    /// saved when the call runs. An MCP server reports its own server and
+    /// OAuth endpoints, which Reef never keeps from the saved values either,
+    /// so `discovered`, the MCP server's suggestion, sets them unless sent.
+    /// An OAuth method sent without an application keeps the saved one, as
+    /// confirmation does.
+    #[must_use]
+    pub fn configuration(
+        &self,
+        saved: ProviderConfiguration,
+        discovered: Option<&ProviderConfiguration>,
+    ) -> ProviderConfiguration {
+        let application = saved
+            .authentication
+            .as_ref()
+            .and_then(AuthenticationConfiguration::oauth_client)
+            .cloned();
+        let mut configured = self.over(match discovered {
+            Some(discovered) => with_mcp_server_settings(saved, discovered),
+            None => saved,
+        });
+        if let Some(application) = &application {
+            configured.authentication = configured
+                .authentication
+                .map(|method| method.with_oauth_client(application));
+        }
+        configured
+    }
 }
 
 /// `saved` with each key of `changes` set, or removed for `None`.
@@ -352,35 +381,6 @@ impl UpdateProviderArguments {
             && request_headers.is_empty()
             && credential_fields.is_empty();
         display_name.as_deref().filter(|_name| keeps_the_rest)
-    }
-
-    /// The configuration to confirm: each sent field over the configuration
-    /// saved when the call runs. An MCP server reports its own server and
-    /// OAuth endpoints, which Reef never keeps from the saved values either,
-    /// so `discovered`, the MCP server's suggestion, sets them unless sent.
-    /// An OAuth method sent without an application keeps the saved one, as
-    /// confirmation does.
-    #[must_use]
-    pub fn configuration(
-        &self,
-        saved: ProviderConfiguration,
-        discovered: Option<&ProviderConfiguration>,
-    ) -> ProviderConfiguration {
-        let application = saved
-            .authentication
-            .as_ref()
-            .and_then(AuthenticationConfiguration::oauth_client)
-            .cloned();
-        let mut configured = self.choices.over(match discovered {
-            Some(discovered) => with_mcp_server_settings(saved, discovered),
-            None => saved,
-        });
-        if let Some(application) = &application {
-            configured.authentication = configured
-                .authentication
-                .map(|method| method.with_oauth_client(application));
-        }
-        configured
     }
 }
 

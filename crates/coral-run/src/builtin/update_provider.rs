@@ -8,17 +8,16 @@
 //! the display name takes the path of Reef's settings page instead: a rename
 //! that keeps the Provider's Generation.
 
-use super::setup_tool::{self, SetupTool, configuration_rejection, setup_error};
+use super::setup_tool::{self, setup_error};
 use super::{BuiltinHost, provider_facts};
 use crate::lifecycle::RunRecord;
 use crate::{CoralFailure, Error, InvocationId, InvocationResultKind, Rejection};
-use async_trait::async_trait;
 use coral_catalog::{SourceChange, UpdateProviderArguments, UpdateProviderResult};
 use coral_db::Transaction;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::{
-    Provider, ProviderDisplayName, ProviderId, ProviderSetup, ProviderSetupId,
-    ProviderSetupInputKind, ProviderSetupSource, ProviderWithConfiguration,
+    ProgramSetup, ProgramSetupPurpose, ProgramSetupRequest, Provider, ProviderDisplayName,
+    ProviderId, ProviderSetupInputKind, ProviderSetupSource, ProviderWithConfiguration,
 };
 use coral_workspace::ChangeContext;
 
@@ -27,22 +26,6 @@ use coral_workspace::ChangeContext;
 pub(crate) struct UpdateProvider {
     namespace: ProviderNamespace,
     arguments: UpdateProviderArguments,
-}
-
-/// One `updateProvider` call, aimed at the Provider saved when it began.
-struct TargetedUpdate<'a> {
-    call: &'a UpdateProvider,
-    /// The Provider as saved when the call began. Its etag fences a change an
-    /// Owner makes since.
-    provider: Provider,
-    source: ProviderSetupSource,
-}
-
-/// What configuring an Update Setup leaves for the page where a person
-/// finishes it.
-struct ConfiguredUpdate {
-    /// The confirmed configuration breaks access to the Provider.
-    interrupts_access: bool,
 }
 
 impl UpdateProvider {
@@ -77,13 +60,16 @@ impl UpdateProvider {
         if let Some(name) = self.arguments.rename() {
             return rename(host, context, &saved.provider, name).await;
         }
-        let source = self.source(&saved)?;
-        let update = TargetedUpdate {
-            call: self,
-            provider: saved.provider,
-            source,
+        let request = ProgramSetupRequest {
+            source: self.source(&saved)?,
+            purpose: ProgramSetupPurpose::Update {
+                provider: saved.provider.id().clone(),
+                route: self.arguments.credential_route.map(CredentialRoute::from),
+                patch: self.arguments.choices.clone(),
+            },
         };
-        setup_tool::perform(&update, host, context).await
+        let prepared = setup_tool::prepare(host, context, request, update_error).await?;
+        Ok(self.update_page(host, &saved.provider, &prepared))
     }
 
     /// Where the Update Setup reads the Provider from. A refresh reads the
@@ -119,92 +105,6 @@ impl UpdateProvider {
             }
         })
     }
-}
-
-#[async_trait]
-impl SetupTool for TargetedUpdate<'_> {
-    type Configured = ConfiguredUpdate;
-
-    async fn prepare(
-        &self,
-        host: &BuiltinHost<'_>,
-        context: &ChangeContext,
-    ) -> Result<ProviderSetup, Error> {
-        host.providers
-            .prepare_setup(
-                context,
-                host.workspace_id,
-                self.source.clone(),
-                Some(self.provider.id()),
-            )
-            .await
-            .map_err(update_error)
-    }
-
-    /// Confirms the sent fields over the configuration the Update Setup saved.
-    async fn configure(
-        &self,
-        host: &BuiltinHost<'_>,
-        context: &ChangeContext,
-        setup: &ProviderSetup,
-    ) -> Result<ConfiguredUpdate, Error> {
-        let review = host
-            .providers
-            .review_setup_configuration(context.actor(), host.workspace_id, setup.id())
-            .await
-            .map_err(update_error)?;
-        // An Update Setup starts from the Provider's saved configuration.
-        let Some(saved) = review.confirmed.clone() else {
-            return Err(coral_provider::Error::CorruptData(
-                "an Update Setup has no saved configuration".into(),
-            )
-            .into());
-        };
-        let discovered = match setup.input_kind() {
-            ProviderSetupInputKind::Mcp => review.document.map(|document| document.suggested),
-            ProviderSetupInputKind::OpenApi => None,
-        };
-        let confirmed = host
-            .providers
-            .confirm_setup_configuration(
-                context,
-                host.workspace_id,
-                setup.id(),
-                review.revision,
-                self.call
-                    .arguments
-                    .configuration(saved, discovered.as_ref()),
-            )
-            .await
-            .map_err(update_error)?;
-        if let Some(rejection) = configuration_rejection(&confirmed) {
-            return Err(Error::InvocationRejected(rejection));
-        }
-        let publishability = host
-            .providers
-            .update_publishability(
-                context.actor(),
-                host.workspace_id,
-                setup.id(),
-                self.call
-                    .arguments
-                    .credential_route
-                    .map(CredentialRoute::from),
-            )
-            .await
-            .map_err(update_error)?;
-        setup_tool::require_finishable(
-            host,
-            context,
-            setup.id(),
-            publishability,
-            confirmed.confirmed.as_ref(),
-        )
-        .await?;
-        Ok(ConfiguredUpdate {
-            interrupts_access: confirmed.interrupts_access == Some(true),
-        })
-    }
 
     /// Reef's update page for the Setup, on the task Reef starts for the same
     /// change from the Provider's settings: Check for updates or Replace source
@@ -214,25 +114,29 @@ impl SetupTool for TargetedUpdate<'_> {
     /// the saved values the change keeps. It names the Provider's etag, so a
     /// change made since fails there, and the route the Program asked for. It
     /// never confirms an incompatible configuration: the person does.
-    fn needs_person(
+    fn update_page(
         &self,
         host: &BuiltinHost<'_>,
-        setup: &ProviderSetupId,
-        configured: ConfiguredUpdate,
+        provider: &Provider,
+        prepared: &ProgramSetup,
     ) -> serde_json::Value {
-        let arguments = &self.call.arguments;
+        let arguments = &self.arguments;
         let (task, configure) = match arguments.source {
             SourceChange::Refresh | SourceChange::Replace(_) => {
-                ("refresh", configured.interrupts_access)
+                ("refresh", prepared.interrupts_access)
             }
             SourceChange::Keep if arguments.choices.is_empty() => {
-                ("accounts", configured.interrupts_access)
+                ("accounts", prepared.interrupts_access)
             }
             // Edit configuration opens on the configuration already.
             SourceChange::Keep => ("configuration", false),
         };
         // A Setup id and an etag need no URL encoding.
-        let mut query = format!("setup={setup}&task={task}&etag={}", self.provider.etag());
+        let mut query = format!(
+            "setup={}&task={task}&etag={}",
+            prepared.setup,
+            provider.etag()
+        );
         if configure {
             query.push_str("&configure=1");
         }
@@ -245,9 +149,9 @@ impl SetupTool for TargetedUpdate<'_> {
             url: host.human_interface.page_url(&format!(
                 "/workspaces/{}/providers/{}/update?{query}",
                 host.workspace_id,
-                self.provider.id()
+                provider.id()
             )),
-            namespace: self.call.namespace.as_str().to_owned(),
+            namespace: self.namespace.as_str().to_owned(),
         }
         .into_tool_result()
     }

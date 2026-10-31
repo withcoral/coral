@@ -257,7 +257,7 @@ impl ProviderModule {
     ///
     /// # Errors
     /// Returns current Workspace authority or persistence failures.
-    pub async fn namespace_in_use(
+    pub(crate) async fn namespace_in_use(
         &self,
         actor: &AuthenticatedUser,
         workspace: &WorkspaceId,

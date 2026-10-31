@@ -1951,47 +1951,56 @@ async fn route_none_with_a_sealed_credential_fails_publication_and_scrubs_it() {
     ));
 }
 
-/// How a Setup in [`publishability_says_who_can_publish_a_setup_under_a_route`]
-/// is configured.
-#[derive(Debug, Clone, Copy)]
-enum Configured {
-    /// Nothing is confirmed yet.
-    No,
-    /// The source's suggestion is confirmed.
-    AsSuggested,
-    /// A confidential OAuth application is confirmed, and nobody has entered
-    /// its secret.
-    WithConfidentialApplication,
+/// A credential-free source's Setup, or one under `route`, for a Program.
+fn program_setup_request(
+    document: &str,
+    route: CredentialRoute,
+    choices: coral_catalog::ConfigurationChoices,
+) -> crate::ProgramSetupRequest {
+    crate::ProgramSetupRequest {
+        source: ProviderSetupSource::OpenApiDocument(
+            crate::OpenApiDocument::parse(document).unwrap(),
+        ),
+        purpose: crate::ProgramSetupPurpose::Add {
+            namespace: ProviderNamespace::parse("weather").unwrap(),
+            route,
+            choices,
+        },
+    }
 }
 
-impl Configured {
-    /// Prepares a Setup from `document` and configures it this way.
-    async fn prepare(
+/// What the Program chooses for a Setup.
+#[derive(Debug, Clone, Copy)]
+enum Choices {
+    /// Nothing: Coral confirms what the source suggests.
+    None,
+    /// A confidential OAuth application, whose secret only a person can give.
+    ConfidentialApplication,
+}
+
+impl Choices {
+    /// The choices for a Setup of `document`.
+    async fn for_document(
         self,
         harness: &Harness,
         owner: &coral_workspace::AuthenticatedUser,
         scope: &coral_workspace::WorkspaceId,
-        document: crate::OpenApiDocument,
-    ) -> crate::ProviderSetup {
-        let context = change_context(owner.clone(), 10, '1');
-        if let Self::AsSuggested = self {
-            return harness
+        document: &str,
+    ) -> coral_catalog::ConfigurationChoices {
+        let mut choices = coral_catalog::ConfigurationChoices::default();
+        if let Self::ConfidentialApplication = self {
+            let setup = harness
                 .providers
-                .prepare_openapi_fixture(&context, scope, document)
+                .prepare_setup(
+                    &change_context(owner.clone(), 10, '1'),
+                    scope,
+                    ProviderSetupSource::OpenApiDocument(
+                        crate::OpenApiDocument::parse(document).unwrap(),
+                    ),
+                    None,
+                )
                 .await
                 .unwrap();
-        }
-        let setup = harness
-            .providers
-            .prepare_setup(
-                &context,
-                scope,
-                ProviderSetupSource::OpenApiDocument(document),
-                None,
-            )
-            .await
-            .unwrap();
-        if let Self::WithConfidentialApplication = self {
             let review = harness
                 .providers
                 .review_setup_configuration(owner, scope, setup.id())
@@ -2004,103 +2013,77 @@ impl Configured {
                 pkce: coral_catalog::OAuthPkcePolicy::S256,
                 authorization_parameters: std::collections::BTreeMap::new(),
             };
-            let mut configuration = review.document.unwrap().suggested;
-            configuration.authentication = configuration
+            choices.authentication = review
+                .document
+                .unwrap()
+                .suggested
                 .authentication
                 .map(|method| method.with_oauth_client(&application));
-            let confirmed = harness
-                .providers
-                .confirm_setup_configuration(
-                    &context,
-                    scope,
-                    setup.id(),
-                    review.revision,
-                    configuration,
-                )
-                .await
-                .unwrap();
-            assert!(confirmed.errors.is_empty(), "{:?}", confirmed.errors);
         }
-        setup
+        choices
     }
 }
 
-// Catches: callers each deciding for themselves whether a Setup needs a person,
-// a route that does not suit the source getting through to Publication, or
-// Coral publishing a Provider that needs an Account before anyone signs in.
+// Catches: a route that does not suit the source getting through to the person
+// who finishes the Setup.
 #[tokio::test]
-async fn publishability_says_who_can_publish_a_setup_under_a_route() {
-    use crate::{PublishabilityRejection as R, SetupPublishability as P};
+async fn a_program_setup_takes_only_a_route_that_suits_its_source() {
+    use crate::PublishabilityRejection as R;
     let server = MockServer::start().await;
     let open = crate::tests::CREDENTIAL_FREE_OPENAPI.to_string();
     let bearer = bearer_openapi(&server);
     let oauth = oauth_openapi(&server);
-    for (document, configured, route, expected) in [
+    for (document, choices, route, expected) in [
+        (&open, Choices::None, CredentialRoute::None, None),
         (
             &open,
-            Configured::AsSuggested,
-            CredentialRoute::None,
-            P::Coral,
-        ),
-        (
-            &open,
-            Configured::AsSuggested,
+            Choices::None,
             CredentialRoute::Fixed,
-            P::Rejected(R::SourceNeedsNoCredential),
+            Some(R::SourceNeedsNoCredential),
         ),
         (
             &open,
-            Configured::AsSuggested,
+            Choices::None,
             CredentialRoute::Caller,
-            P::Rejected(R::SourceNeedsNoCredential),
+            Some(R::SourceNeedsNoCredential),
         ),
         (
             &bearer,
-            Configured::AsSuggested,
+            Choices::None,
             CredentialRoute::None,
-            P::Rejected(R::SourceNeedsCredential),
+            Some(R::SourceNeedsCredential),
         ),
-        (
-            &bearer,
-            Configured::AsSuggested,
-            CredentialRoute::Fixed,
-            P::Person,
-        ),
-        // Each person's own Account still needs someone to sign in first.
-        (
-            &bearer,
-            Configured::AsSuggested,
-            CredentialRoute::Caller,
-            P::Person,
-        ),
+        (&bearer, Choices::None, CredentialRoute::Fixed, None),
+        (&bearer, Choices::None, CredentialRoute::Caller, None),
         (
             &oauth,
-            Configured::WithConfidentialApplication,
+            Choices::ConfidentialApplication,
             CredentialRoute::Caller,
-            P::Person,
-        ),
-        (
-            &open,
-            Configured::No,
-            CredentialRoute::None,
-            P::Rejected(R::NotConfigured),
+            None,
         ),
     ] {
         let harness = harness().await;
-        let (owner, workspace) = workspace_owner(&harness, "user:publishability").await;
-        let document = crate::OpenApiDocument::parse(document).unwrap();
-        let setup = configured
-            .prepare(&harness, &owner, workspace.id(), document)
+        let (owner, workspace) = workspace_owner(&harness, "user:program-setup").await;
+        let choices = choices
+            .for_document(&harness, &owner, workspace.id(), document)
             .await;
-        assert_eq!(
-            harness
-                .providers
-                .setup_publishability(&owner, workspace.id(), setup.id(), route)
-                .await
-                .unwrap(),
-            expected,
-            "{route:?} {configured:?}"
-        );
+        let prepared = harness
+            .providers
+            .prepare_program_setup(
+                &change_context(owner.clone(), 11, '1'),
+                workspace.id(),
+                Some(&harness.accounts),
+                program_setup_request(document, route, choices),
+                std::future::pending(),
+            )
+            .await;
+        match (prepared, expected) {
+            (Ok(_setup), None) => {}
+            (Err(crate::ProgramSetupError::Route(rejection)), Some(expected)) => {
+                assert_eq!(rejection, expected, "{route:?}");
+            }
+            (other, expected) => panic!("{route:?}: {other:?}, expected {expected:?}"),
+        }
     }
 }
 
@@ -2409,7 +2392,7 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
     let canary = || CredentialValues::token(Secret::new("other-canary".into()).unwrap());
     let client =
         || crate::SetupOAuthClient::new("https://reef.example/callback".into(), None).unwrap();
-    let refusals: [(&str, Result<(), Error>); 12] = [
+    let refusals: [(&str, Result<(), Error>); 11] = [
         (
             "get",
             harness
@@ -2431,14 +2414,6 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
             harness
                 .providers
                 .inspect_setup(&other, &scope, setup.id(), 13)
-                .await
-                .map(drop),
-        ),
-        (
-            "publishability",
-            harness
-                .providers
-                .setup_publishability(&other, &scope, setup.id(), CredentialRoute::Fixed)
                 .await
                 .map(drop),
         ),
