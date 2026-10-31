@@ -623,7 +623,13 @@ impl SavedFunctionModule {
                 CompileFailure::Busy => Error::CompilerBusy,
                 CompileFailure::TimedOut => Error::SavedFunctionCompilationTimedOut,
                 CompileFailure::Stopped => Error::CompilerWorkerStopped,
-                CompileFailure::Failed(kind) => Error::CompilerUnavailable(kind.to_string()),
+                CompileFailure::Failed(kind) => {
+                    tracing::warn!(
+                        error.type = safe::kind(kind),
+                        "Saved Function compiler failed; the caller sees an internal failure"
+                    );
+                    Error::CompilerUnavailable(kind.to_string())
+                }
             })
         };
         timeout(COMPILATION_TIMEOUT, preparation)

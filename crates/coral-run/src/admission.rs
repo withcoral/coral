@@ -451,7 +451,13 @@ fn domain_error(failure: CompileFailure) -> Error {
         CompileFailure::Busy => Error::CompilerBusy,
         CompileFailure::TimedOut => Error::CompilationTimedOut,
         CompileFailure::Stopped => Error::ProgramWorkerStopped,
-        CompileFailure::Failed(kind) => Error::ProgramRuntimeUnavailable(kind.to_string()),
+        CompileFailure::Failed(kind) => {
+            tracing::warn!(
+                error.type = safe::kind(kind),
+                "Program compiler failed; the caller sees an internal failure"
+            );
+            Error::ProgramRuntimeUnavailable(kind.to_string())
+        }
     }
 }
 
