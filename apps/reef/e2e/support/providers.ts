@@ -46,7 +46,20 @@ export async function createWorkspaceViaUi(page: Page, name: string) {
     .getByRole('button', { name: 'Create workspace', exact: true })
     .click()
   await page.waitForURL((url) => /^\/workspaces\/[0-9a-f-]{36}$/.test(url.pathname))
+  await dismissOnboarding(page)
   return new URL(page.url()).pathname.split('/')[2]
+}
+
+/** The dialog a new workspace's overview opens once for its creator. */
+export function onboardingDialog(page: Page) {
+  return page.getByRole('dialog', { name: 'Let’s set up this workspace', exact: true })
+}
+
+/** Closes the onboarding a workspace created through Reef opens on its overview. */
+export async function dismissOnboarding(page: Page) {
+  const dialog = onboardingDialog(page)
+  await dialog.getByRole('button', { name: 'Dismiss', exact: true }).click()
+  await dialog.waitFor({ state: 'detached' })
 }
 
 /** The breadcrumb trail, or the crumb that reads exactly `text`. */

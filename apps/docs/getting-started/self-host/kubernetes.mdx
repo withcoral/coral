@@ -441,3 +441,20 @@ kubectl apply -f coral.yaml
 ```
 
 4. Wait for the deployments to stabilize. You should be able to open the UI in your browser in `https://<coral-host>`. After you create your first workspace you can use the UI instructions to connect an MCP client via `https://mcp.<coral-host>`.
+
+## Offering a Coral plugin
+
+The onboarding prompt can tell some MCP clients to look for a Coral plugin. To offer one, list those clients in `AGENTS_WITH_AVAILABLE_PLUGINS` on `coral-web`, separated by commas:
+
+```yaml
+        - name: coral-web
+          env:
+            - name: AGENTS_WITH_AVAILABLE_PLUGINS
+              value: "claude, chatgpt"
+```
+
+- A listed client that can find and install plugins looks for the plugin. It installs the plugin only after your user confirms, then adds the MCP server through it.
+- A listed client adds the MCP server directly if it cannot find or install the plugin, or if your user declines. Every other client adds it directly too.
+- The list only advertises a plugin. Coral does not check that the plugin exists.
+- Leave the variable unset to offer no plugin.
+- `coral-web` reads the variable at startup. List at most 8 names. Each name has up to 32 letters, digits, and single spaces, dots, hyphens or underscores between them. Any other value stops `coral-web` from starting.

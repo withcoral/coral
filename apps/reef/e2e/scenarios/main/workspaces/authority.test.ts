@@ -4,7 +4,7 @@ import { createActors, loginActor, newUser } from '../../../support/actors.ts'
 import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_pb.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
 import { managementClients } from '../../../support/management.ts'
-import { breadcrumb } from '../../../support/providers.ts'
+import { breadcrumb, dismissOnboarding } from '../../../support/providers.ts'
 import { copyNewAgentKey } from '../../../support/agent-key.ts'
 import { organizationWorkspaceRow, pickPerson } from '../../../support/members.ts'
 
@@ -27,6 +27,7 @@ test('Organization Owner governance, eligible Memberships, and private server pa
           .getByRole('dialog')
           .getByRole('button', { name: 'Create workspace', exact: true })
           .click()
+        await dismissOnboarding(page)
         await breadcrumb(page, name).waitFor()
         path = new URL(page.url()).pathname
       })
