@@ -255,7 +255,10 @@ export function load(root) {
 // `headers` setting has the format of OTEL_EXPORTER_OTLP_HEADERS.
 function otelEnv(coralConfig) {
   const section = /^\[otel\]\s*$([\s\S]*?)(?:^\[|(?![\s\S]))/m.exec(coralConfig)?.[1] ?? ''
-  const setting = (name) => new RegExp(`^${name}\\s*=\\s*"([^"]*)"`, 'm').exec(section)?.[1]
+  const setting = (name) => {
+    const match = new RegExp(`^${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'm').exec(section)
+    return match?.[1] ?? match?.[2]
+  }
   const endpoint = setting('endpoint')
   if (!endpoint) return {}
   const headers = setting('headers')

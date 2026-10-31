@@ -101,9 +101,9 @@ Every request has a trace, even when you do not set `endpoint`. A failed MCP too
 
 #### Trace UI requests
 
-The UI reads the standard OpenTelemetry environment variables at startup, not `config.toml`. Set them on the UI process. The UI then opens one server span for each page, data and resource request. That span is the parent of each Coral gRPC call the request makes. Send the UI and Coral to the same backend to see one trace for each the UI request.
+The UI reads the standard OpenTelemetry environment variables at startup, not `config.toml`. Set them on the UI process. The UI then opens one server span for each page, data and resource request. Each Coral gRPC call the request makes joins that trace. Send the UI and Coral to the same backend to see one trace for each UI request.
 
-The UI also opens a span for each loader and action, and a client span for each Coral call. UI spans carry the method, the route template, the status and the kind of a failure. They never carry headers, bodies, query strings, cookies or full URLs. A valid caller `traceparent` continues its trace, and an invalid one starts a new trace. The UI never reads or forwards `baggage` or `tracestate`. `/healthz` and `/readyz` open no span.
+The UI also opens a span for each loader and action, and a client span for each Coral call. Coral's server span for a call is the child of its client span. UI spans carry the method, the route template, the status and the kind of a failure. They never carry headers, bodies, query strings, cookies or full URLs. A valid caller `traceparent` continues its trace, and an invalid one starts a new trace. The UI never reads or forwards `baggage` or `tracestate`. `/healthz` and `/readyz` open no span.
 
 | Variable                                                              | Description                                                                                                                                        | Default                 |
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
@@ -117,7 +117,9 @@ The UI also opens a span for each loader and action, and a client span for each 
 | `OTEL_SDK_DISABLED`                                                   | Set to `true` to stop export                                                                                                                       | `false`                 |
 | `OTEL_TRACES_EXPORTER`                                                | Set to `none` to stop export                                                                                                                       | `otlp`                  |
 
-Coral follows the sampled flag on each UI call, so `OTEL_TRACES_SAMPLER` decides which of these traces Coral exports. When the UI does not export, `trace_sample_ratio` decides, and each gRPC call that has no caller `traceparent` starts its own trace.
+Coral follows the sampled flag on each UI call, so `OTEL_TRACES_SAMPLER` decides which of these traces Coral exports. When the UI does not export, it forwards only a valid caller `traceparent`, and Coral follows that caller's sampled flag. A gRPC call with no `traceparent` starts its own trace, and `trace_sample_ratio` decides if Coral keeps it.
+
+The UI checks the endpoint, protocol and sampler values only when export is on.
 
 #### Metrics
 

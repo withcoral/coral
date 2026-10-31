@@ -7,7 +7,7 @@
 // crates/coral-telemetry/src/field.rs): the method, the route template and the
 // status. A span never carries headers, bodies, query strings, cookies, full
 // URLs or error text, and `baggage` and `tracestate` are never read.
-import { ConnectError } from '@connectrpc/connect'
+import { Code, ConnectError } from '@connectrpc/connect'
 import {
   context,
   diag,
@@ -115,6 +115,8 @@ export function createRequestTracing({
         if (!request.signal.aborted) {
           // A failure after the handler answers is a body that broke off.
           const answered = span.attributes?.['http.response.status_code'] !== undefined
+          // The server answers a handler that fails with a 500.
+          if (!answered) span.setAttribute('http.response.status_code', 500)
           failSpan(span, answered ? 'response_body' : '_OTHER')
         }
         throw error
@@ -267,14 +269,16 @@ function startChildSpan(name, options) {
 }
 
 async function* endingWith(messages, span) {
-  let failure
+  // A consumer that stops reading never reaches the end of `messages`.
+  let outcome = new ConnectError('stopped early', Code.Canceled)
   try {
     yield* messages
+    outcome = undefined
   } catch (error) {
-    failure = error
+    outcome = error
     throw error
   } finally {
-    endCoralCall(span, failure)
+    endCoralCall(span, outcome)
   }
 }
 

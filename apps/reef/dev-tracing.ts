@@ -24,7 +24,8 @@ export function devRequestTracing(): Plugin {
       }
     },
     // Vite awaits this when it restarts or stops on SIGTERM. Coral has already
-    // exported the children of these spans, so they must not be lost.
+    // exported the children of these spans, so send them now. Stopping through
+    // `./dev reef` can still lose the last few seconds of spans.
     async closeBundle() {
       await tracingHolder()[PROCESS_TRACING]?.flush()
     },
@@ -55,7 +56,7 @@ export function traceDevRequests(traceRequest: RequestTracing['traceRequest']) {
   ): void => {
     const controller = new AbortController()
     response.once('close', () => {
-      if (!response.writableFinished) controller.abort()
+      if (!response.writableEnded) controller.abort()
     })
     // The span reads no body and no header but `traceparent`.
     const { traceparent } = request.headers

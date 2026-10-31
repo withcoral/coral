@@ -356,6 +356,26 @@ test('keeps a streaming client span open until its stream ends', async () => {
   }
 })
 
+test('records a stream its consumer stops early as cancelled', async () => {
+  const spans = await traced(request(), async () => {
+    const { response } = await coralCall(async () => ({
+      message: (async function* () {
+        yield 'first'
+        yield 'second'
+      })(),
+      stream: true,
+    }))
+    for await (const message of response.message) {
+      assert.equal(message, 'first')
+      break
+    }
+  })
+
+  const client = spanNamed(spans, CORAL_METHOD)
+  assert.equal(client.attributes['rpc.response.status_code'], 'CANCELLED')
+  assert.equal(client.status.code, SpanStatusCode.UNSET)
+})
+
 test('opens no route or client span outside a traced request', async () => {
   const spanExporter = collectingExporter()
   const tracing = createRequestTracing({ env: {}, spanExporter })
@@ -394,11 +414,14 @@ test('fails the span when the response breaks off, not when the caller left', as
   const [handler, body, left] = spanExporter.spans
   assert.equal(handler.status.code, SpanStatusCode.ERROR)
   assert.equal(handler.attributes['error.type'], '_OTHER')
+  assert.equal(handler.attributes['http.response.status_code'], 500)
   assert.equal(body.status.code, SpanStatusCode.ERROR)
   assert.equal(body.attributes['error.type'], 'response_body')
+  assert.equal(body.attributes['http.response.status_code'], 200)
   assert.doesNotMatch(JSON.stringify(spanExporter.spans.map(exportedFields)), /secret/)
   assert.equal(left.status.code, SpanStatusCode.UNSET)
   assert.equal(left.attributes['error.type'], undefined)
+  assert.equal(left.attributes['http.response.status_code'], undefined)
 })
 
 test('keeps the span open until the response ends', async () => {

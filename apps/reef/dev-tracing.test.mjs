@@ -3,7 +3,7 @@ import { once } from 'node:events'
 import { createServer, request as httpRequest } from 'node:http'
 import { test } from 'node:test'
 
-import { context, propagation, SpanKind, SpanStatusCode } from '@opentelemetry/api'
+import { context, propagation, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
 
 import { traceDevRequests } from './dev-tracing.ts'
 import { createRequestTracing } from './server-tracing.js'
@@ -50,13 +50,18 @@ async function served(next, drive) {
 
 test('runs the next handler in a span that ends with the response', async () => {
   let outbound
+  let openWhenAnswered
   let finishResponse
   const responded = new Promise((resolve) => (finishResponse = resolve))
   const spans = await served(
     (response) => {
       outbound = outboundTraceparent()
+      const active = trace.getActiveSpan()
       // The answer comes later, outside the middleware's own turn.
-      responded.then(() => response.end('ok'))
+      responded.then(() => {
+        openWhenAnswered = active.isRecording()
+        response.end('ok')
+      })
     },
     async (origin) => {
       const answer = fetch(`${origin}/workspaces/42?marker=secret`, {
@@ -73,6 +78,7 @@ test('runs the next handler in a span that ends with the response', async () => 
   assert.equal(span.spanContext().traceId, INBOUND.split('-')[1])
   assert.equal(outbound, `00-${INBOUND.split('-')[1]}-${span.spanContext().spanId}-01`)
   assert.equal(span.status.code, SpanStatusCode.UNSET)
+  assert.equal(openWhenAnswered, true)
 })
 
 test('a caller that leaves does not fail the span', async () => {

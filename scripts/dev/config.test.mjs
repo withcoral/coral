@@ -157,6 +157,22 @@ test('Reef exports traces where Coral exports them', (t) => {
   })
 })
 
+test('Reef reads both TOML string forms from Coral trace settings', (t) => {
+  const root = fixture(t)
+  initialize(root)
+  saveInputs(root)
+  configure(root)
+
+  appendFileSync(
+    join(root, '.dev/state/config.toml'),
+    "\n[otel]\nendpoint = 'http://127.0.0.1:4318'\nheaders = 'authorization=key'\n",
+  )
+  assert.deepEqual(load(root).otelEnv, {
+    OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318',
+    OTEL_EXPORTER_OTLP_HEADERS: 'authorization=key',
+  })
+})
+
 test('run without setup has no filesystem side effects', (t) => {
   const root = fixture(t)
   assert.throws(() => load(root), /Run \.\/dev setup/)
