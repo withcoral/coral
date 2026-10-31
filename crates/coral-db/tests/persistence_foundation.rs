@@ -8,7 +8,8 @@
 use std::sync::LazyLock;
 
 use coral_db::{
-    Database, DatabaseOptions, DatabaseSystem, MigrationPlan, QueryExecutor, ReadOnlyDatabase,
+    Database, DatabaseOptions, DatabaseSystem, Error, MigrationPlan, QueryExecutor,
+    ReadOnlyDatabase,
 };
 use coral_test_support::TestDatabase;
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
@@ -985,4 +986,223 @@ async fn transactions_record_their_duration_by_outcome_and_return_their_connecti
         durations,
         [expected("committed", 1), expected("rolled_back", 2)]
     );
+    let acquisitions = metrics.named("coral.persistence.acquisition.duration");
+    for (mode, count) in [("begin_write", 2), ("begin_read_snapshot", 1)] {
+        let point = acquisitions
+            .iter()
+            .find(|point| point.attributes.get("operation").map(String::as_str) == Some(mode))
+            .expect("each transaction mode records acquisition separately");
+        assert_eq!(point.count, count);
+        assert_eq!(
+            point.attributes.get("outcome").map(String::as_str),
+            Some("ready")
+        );
+        assert_eq!(
+            point.attributes.get("db.system").map(String::as_str),
+            Some(system)
+        );
+    }
+}
+
+#[tokio::test]
+async fn canceling_queued_acquisitions_releases_waiters_without_open_transactions() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::Poll;
+    let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
+    let database = fixture.database();
+    database
+        .execute(insert_record("kept", "baseline"))
+        .await
+        .unwrap();
+    for operation in [
+        "begin_write",
+        "begin_read_snapshot",
+        "execute",
+        "fetch_optional",
+        "fetch_all",
+        "ping",
+    ] {
+        let write = matches!(operation, "begin_write" | "execute");
+        let capacity = match (database.system(), write) {
+            (DatabaseSystem::Sqlite, true) => 1,
+            (DatabaseSystem::Sqlite, false) => {
+                sqlx::sqlite::SqlitePoolOptions::new().get_max_connections()
+            }
+            (DatabaseSystem::Postgres, _) => {
+                sqlx::postgres::PgPoolOptions::new().get_max_connections()
+            }
+        };
+        let mut holders = Vec::new();
+        for _ in 0..capacity {
+            holders.push(if write {
+                database.begin().await.unwrap()
+            } else {
+                database.begin_read_snapshot().await.unwrap()
+            });
+        }
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let measured = tracing::subscriber::set_default(metrics.subscriber());
+        let query = records_query();
+        let mut waiting: Pin<Box<dyn Future<Output = Result<(), Error>> + '_>> = match operation {
+            "begin_write" => Box::pin(async { database.begin().await.map(drop) }),
+            "begin_read_snapshot" => {
+                Box::pin(async { database.begin_read_snapshot().await.map(drop) })
+            }
+            "execute" => Box::pin(async {
+                database
+                    .execute(Query::delete().from_table(Records::Table).to_owned())
+                    .await
+                    .map(drop)
+            }),
+            "fetch_optional" => {
+                Box::pin(async { database.fetch_optional::<Record>(query).await.map(drop) })
+            }
+            "fetch_all" => Box::pin(async { database.fetch_all::<Record>(query).await.map(drop) }),
+            "ping" => Box::pin(database.ping()),
+            _ => unreachable!(),
+        };
+        std::future::poll_fn(|context| {
+            assert!(
+                waiting.as_mut().poll(context).is_pending(),
+                "{operation} waits for a connection"
+            );
+            Poll::Ready(())
+        })
+        .await;
+        let waiters = || metrics.values("coral.persistence.acquisition.waiters");
+        assert_eq!(waiters(), [1.0]);
+        drop(waiting);
+        assert_eq!(waiters(), [0.0]);
+        let points = metrics.named("coral.persistence.acquisition.duration");
+        assert_eq!(points.len(), 1);
+        let point = points.first().expect("canceled acquisition");
+        assert_eq!(point.count, 1);
+        assert_eq!(
+            point.attributes.get("outcome").map(String::as_str),
+            Some("canceled")
+        );
+        assert_eq!(
+            point.attributes.get("operation").map(String::as_str),
+            Some(operation)
+        );
+        assert!(
+            metrics
+                .named("coral.persistence.transaction.duration")
+                .is_empty()
+        );
+        drop(measured);
+        for holder in holders {
+            holder.rollback().await.unwrap();
+        }
+        assert_eq!(
+            record(database.as_ref(), "kept")
+                .await
+                .expect("canceled DELETE preserves the record")
+                .value,
+            "baseline"
+        );
+    }
+}
+
+#[tokio::test]
+async fn direct_queries_record_acquisition_separately_from_execution_and_closed_pool_failures() {
+    let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
+    let database = fixture.database();
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    database
+        .execute(
+            Query::delete()
+                .from_table(Records::Table)
+                .and_where(Expr::col(Records::Id).eq("absent"))
+                .to_owned(),
+        )
+        .await
+        .unwrap();
+    let query = records_query();
+    let row: Option<Record> = database.fetch_optional(query.clone()).await.unwrap();
+    assert_eq!(row, None);
+    let rows: Vec<Record> = database.fetch_all(query.clone()).await.unwrap();
+    assert!(rows.is_empty());
+    database.ping().await.unwrap();
+    for operation in ["execute", "fetch_optional", "fetch_all", "ping"] {
+        let points = metrics.named("coral.persistence.acquisition.duration");
+        let point = points
+            .iter()
+            .find(|point| point.attributes.get("operation").map(String::as_str) == Some(operation))
+            .expect("each direct query records acquisition");
+        assert_eq!(point.count, 1);
+        assert_eq!(
+            point.attributes.get("outcome").map(String::as_str),
+            Some("ready")
+        );
+    }
+    let bad: Result<Vec<(i64,)>, Error> = database
+        .fetch_all(
+            Query::select()
+                .expr(Expr::val(1))
+                .from(sea_query::Alias::new("missing_table"))
+                .to_owned(),
+        )
+        .await;
+    assert!(matches!(bad, Err(Error::Sqlx(sqlx::Error::Database(_)))));
+    assert!(
+        metrics
+            .named("coral.persistence.acquisition.duration")
+            .iter()
+            .all(|point| point.attributes.get("outcome").map(String::as_str) == Some("ready")),
+        "a query failure after acquisition is not an acquisition failure"
+    );
+    database.close().await;
+    assert!(matches!(
+        database.begin().await,
+        Err(Error::Sqlx(sqlx::Error::PoolClosed))
+    ));
+    assert!(matches!(
+        database.begin_read_snapshot().await,
+        Err(Error::Sqlx(sqlx::Error::PoolClosed))
+    ));
+    assert!(matches!(
+        database
+            .execute(Query::delete().from_table(Records::Table).to_owned())
+            .await,
+        Err(Error::Sqlx(sqlx::Error::PoolClosed))
+    ));
+    assert!(matches!(
+        database.fetch_optional::<Record>(query.clone()).await,
+        Err(Error::Sqlx(sqlx::Error::PoolClosed))
+    ));
+    assert!(matches!(
+        database.fetch_all::<Record>(query).await,
+        Err(Error::Sqlx(sqlx::Error::PoolClosed))
+    ));
+    assert!(matches!(
+        database.ping().await,
+        Err(Error::Sqlx(sqlx::Error::PoolClosed))
+    ));
+    let failed = metrics
+        .named("coral.persistence.acquisition.duration")
+        .into_iter()
+        .filter(|point| point.attributes.get("outcome").map(String::as_str) == Some("failed"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        failed.len(),
+        6,
+        "each acquisition entry point reports the closed pool"
+    );
+    assert!(failed.iter().all(|point| point.count == 1));
+    assert!(
+        metrics
+            .values("coral.persistence.acquisition.waiters")
+            .iter()
+            .all(|value| value.abs() < f64::EPSILON)
+    );
+}
+
+fn records_query() -> sea_query::SelectStatement {
+    Query::select()
+        .columns([Records::Id, Records::Value])
+        .from(Records::Table)
+        .to_owned()
 }

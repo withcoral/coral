@@ -1,5 +1,6 @@
 //! What a Program execution uses, as its metrics record it.
 
+use coral_telemetry::metric::CompilerRole;
 use std::sync::{Arc, Mutex};
 
 use coral_telemetry::testing::MetricCapture;
@@ -23,7 +24,8 @@ const HEAP_LIMIT: usize = 16 * 1024 * 1024;
 /// at least its limit.
 #[test]
 fn an_execution_records_its_cpu_time_and_heap_peak() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let executor =
         ProgramExecutor::new(IsolateLimits::new(HEAP_LIMIT, 512 * 1024 * 1024).expect("limits"));
     for (source, exceeds) in [
@@ -119,7 +121,8 @@ impl ProgramHost for KeepingHost {
 /// by its kind.
 #[test]
 fn an_output_refused_before_the_host_is_counted() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let executor = ProgramExecutor::new(IsolateLimits::default());
     for (source, rejected) in [
         (

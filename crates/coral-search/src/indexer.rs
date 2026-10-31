@@ -115,6 +115,34 @@ impl IndexError {
     }
 }
 
+/// Evidence emitted only after the caller commits the index transaction.
+pub(crate) enum IndexEffect {
+    Updated,
+    FirstVisible {
+        target: IndexedCatalog,
+        published_at_unix_nanos: i64,
+        path: coral_telemetry::metric::VisibilityPath,
+    },
+    Recovered {
+        target: IndexedCatalog,
+        unavailable_since_unix_nanos: i64,
+    },
+}
+
+/// Owner identity used to verify an observation after the projection commits.
+pub(crate) struct IndexedCatalog {
+    pub provider_id: coral_provider::ProviderId,
+    pub generation_id: coral_catalog::ProviderGenerationId,
+}
+impl IndexEffect {
+    pub(crate) const fn catalog(&self) -> Option<&IndexedCatalog> {
+        match self {
+            Self::Updated => None,
+            Self::FirstVisible { target, .. } | Self::Recovered { target, .. } => Some(target),
+        }
+    }
+}
+
 /// Writes one Search Entity kind into the search-owned tables.
 #[async_trait]
 pub(crate) trait EntityIndexer: Send + Sync {
@@ -149,7 +177,7 @@ pub(crate) trait EntityIndexer: Send + Sync {
         transaction: &mut Transaction<'_>,
         entry: &Self::Entry,
         rows: &Self::Rows<'_>,
-    ) -> Result<(), IndexError>;
+    ) -> Result<IndexEffect, IndexError>;
 
     /// Removes the rows and state the removal names.
     async fn remove(
@@ -295,4 +323,66 @@ pub(crate) fn compact_identifier_variant(value: &str) -> Option<String> {
         .filter(|character| character.is_alphanumeric())
         .collect::<String>();
     (!compact.is_empty() && compact != normalized).then_some(compact)
+}
+
+/// A snapshot of all non-current projections, including catalogs awaiting first visibility.
+pub(crate) struct ProjectionBacklog {
+    pub catalogs: u64,
+    pub functions: u64,
+    /// None when a legacy failed row has unknown visibility history.
+    pub first_visibility: Option<Vec<coral_catalog::ProviderGenerationId>>,
+}
+
+pub(crate) async fn projection_backlog(
+    transaction: &mut Transaction<'_>,
+    providers: &[coral_provider::ActiveGeneration],
+    functions: &[coral_functions::SavedFunctionIndexRevision],
+) -> Result<ProjectionBacklog, IndexError> {
+    let generations = repository::recorded_generations(transaction)
+        .await?
+        .into_iter()
+        .map(|state| (state.generation.clone(), state))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut catalogs = 0;
+    let mut first_visibility = Some(Vec::new());
+    for provider in providers {
+        let key = repository::WorkspaceGeneration {
+            workspace_id: provider.workspace_id().clone(),
+            generation_id: provider.generation_id().clone(),
+        };
+        let state = generations.get(&key);
+        if state.is_some_and(|state| tools::current_projection(state, provider)) {
+            continue;
+        }
+        catalogs += 1;
+        match state.map(|state| state.visibility) {
+            None | Some(repository::RecordedVisibility::NeverVisible) => {
+                if let Some(missing) = &mut first_visibility {
+                    missing.push(provider.generation_id().clone());
+                }
+            }
+            Some(repository::RecordedVisibility::Unknown) => first_visibility = None,
+            Some(repository::RecordedVisibility::Visible { .. }) => {}
+        }
+    }
+    let recorded = repository::recorded_functions(transaction)
+        .await?
+        .into_iter()
+        .map(|row| (row.function, row.fingerprint))
+        .collect::<std::collections::HashMap<_, _>>();
+    let missing_functions = functions
+        .iter()
+        .filter(|entry| {
+            let key = repository::WorkspaceFunction {
+                workspace_id: entry.workspace_id().clone(),
+                function_id: entry.id().clone(),
+            };
+            recorded.get(&key) != Some(&repository::function_fingerprint(entry.revision()))
+        })
+        .count();
+    Ok(ProjectionBacklog {
+        catalogs,
+        functions: u64::try_from(missing_functions).unwrap_or(u64::MAX),
+        first_visibility,
+    })
 }

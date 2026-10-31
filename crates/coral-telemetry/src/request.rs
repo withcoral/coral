@@ -20,9 +20,12 @@ use opentelemetry::trace::TraceContextExt as _;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
+mod cpu;
+
 use crate::metric::{Interface, Metrics, RequestOutcome};
 use crate::safe::{self, Identifier};
 use crate::{record_failure, set_parent_from_http_headers};
+use cpu::CpuTime;
 
 /// The target of every request span, for `trace_filter`.
 pub const REQUEST_TARGET: &str = "coral.request";
@@ -127,6 +130,8 @@ pub fn name_request_operation(
 /// A request's duration, recorded when its response body drops.
 struct RequestTimer {
     metrics: Option<Metrics>,
+    cpu: CpuTime,
+    span: tracing::Span,
     interface: Interface,
     started: Instant,
     /// The route template or served method, else `_OTHER`.
@@ -140,8 +145,11 @@ struct RequestTimer {
 
 impl RequestTimer {
     fn start(interface: Interface) -> Self {
+        let metrics = crate::metric::current();
         Self {
-            metrics: crate::metric::current(),
+            cpu: CpuTime::new(false),
+            span: tracing::Span::none(),
+            metrics,
             interface,
             started: Instant::now(),
             operation: OTHER.to_owned(),
@@ -153,17 +161,28 @@ impl RequestTimer {
 
 impl Drop for RequestTimer {
     fn drop(&mut self) {
+        if let Some(cpu) = self.cpu.elapsed() {
+            self.span.record(
+                "coral.request.cpu_ns",
+                safe::number(u64::try_from(cpu.as_nanos()).unwrap_or(u64::MAX)),
+            );
+        }
         if let Some(metrics) = &self.metrics {
+            let operation = self
+                .named
+                .0
+                .get()
+                .cloned()
+                .unwrap_or_else(|| std::mem::take(&mut self.operation));
             metrics.request_duration(
                 self.interface,
-                self.named
-                    .0
-                    .get()
-                    .cloned()
-                    .unwrap_or_else(|| std::mem::take(&mut self.operation)),
+                operation.clone(),
                 self.outcome,
                 self.started.elapsed(),
             );
+            if let Some(cpu) = self.cpu.elapsed() {
+                metrics.request_cpu(self.interface, operation, self.outcome, cpu);
+            }
         }
     }
 }
@@ -187,14 +206,20 @@ async fn trace_http_request(mut request: Request, next: Next, interface: Interfa
         http.route = route.as_ref().map(safe::id),
         http.response.status_code = tracing::field::Empty,
         error.type = tracing::field::Empty,
+        coral.request.cpu_ns = tracing::field::Empty,
     );
     if let Some(route) = &route {
         route.0.clone_into(&mut timer.operation);
     }
+    timer.span = span.clone();
+    timer.cpu = CpuTime::new(timer.metrics.is_some() || !span.is_disabled());
     set_parent_from_http_headers(&span, request.headers());
     request.extensions_mut().insert(RequestSpan(span.clone()));
     request.extensions_mut().insert(timer.named.clone());
-    let response = next.run(request).instrument(span.clone()).await;
+    let response = timer
+        .cpu
+        .track(next.run(request).instrument(span.clone()))
+        .await;
     let status = response.status();
     span.record("http.response.status_code", safe::number(status.as_u16()));
     timer.outcome = if status.is_server_error() {
@@ -252,12 +277,18 @@ async fn trace_grpc_request(mut request: Request, next: Next) -> Response {
         rpc.method = tracing::field::Empty,
         rpc.response.status_code = tracing::field::Empty,
         error.type = tracing::field::Empty,
+        coral.request.cpu_ns = tracing::field::Empty,
     );
     // The parent must be set before the handler enters the span and so starts it.
+    timer.span = span.clone();
+    timer.cpu = CpuTime::new(timer.metrics.is_some() || !span.is_disabled());
     set_parent_from_http_headers(&span, request.headers());
     request.extensions_mut().insert(RequestSpan(span.clone()));
     let path = request.uri().path().to_owned();
-    let response = next.run(request).instrument(span.clone()).await;
+    let response = timer
+        .cpu
+        .track(next.run(request).instrument(span.clone()))
+        .await;
     let grpc_path = match grpc_status(response.headers()) {
         Some(code) => {
             record_grpc_status(&span, &mut timer, Some(&path), code);
@@ -356,7 +387,10 @@ impl http_body::Body for TracedBody {
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let this = self.get_mut();
         let _entered = this.span.enter();
-        let frame = Pin::new(&mut this.body).poll_frame(context);
+        let frame = this
+            .timer
+            .cpu
+            .measure(|| Pin::new(&mut this.body).poll_frame(context));
         match &frame {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(code) = frame.trailers_ref().and_then(grpc_status)

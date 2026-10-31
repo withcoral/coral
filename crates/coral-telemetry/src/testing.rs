@@ -246,6 +246,15 @@ pub struct MetricPoint {
     pub count: u64,
 }
 
+/// An exported floating-point histogram's explicit bucket layout.
+#[derive(Debug)]
+pub struct HistogramBuckets {
+    /// Upper bounds in the instrument's unit.
+    pub bounds: Vec<f64>,
+    /// Bucket counts, including the final overflow bucket.
+    pub counts: Vec<u64>,
+}
+
 impl MetricCapture {
     /// The catalog this capture records, for code that takes it explicitly.
     #[must_use]
@@ -333,6 +342,47 @@ impl MetricCapture {
             }
         }
         points
+    }
+
+    /// Explicit buckets for each floating-point histogram point named `name`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the in-memory exporter fails.
+    #[must_use]
+    pub fn histogram_buckets(&self, name: &str) -> Vec<HistogramBuckets> {
+        use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+        self.provider
+            .force_flush()
+            .expect("flush captured histograms");
+        let exported = self
+            .exporter
+            .get_finished_metrics()
+            .expect("read captured histograms");
+        let mut points = Vec::new();
+        if let Some(resource) = exported.last() {
+            for scope in resource.scope_metrics() {
+                for metric in scope.metrics().filter(|metric| metric.name() == name) {
+                    if let AggregatedMetrics::F64(MetricData::Histogram(histogram)) = metric.data()
+                    {
+                        points.extend(histogram.data_points().map(|point| HistogramBuckets {
+                            bounds: point.bounds().collect(),
+                            counts: point.bucket_counts().collect(),
+                        }));
+                    }
+                }
+            }
+        }
+        points
+    }
+
+    /// The captured values of the instrument `name`, in export order.
+    #[must_use]
+    pub fn values(&self, name: &str) -> Vec<f64> {
+        self.named(name)
+            .into_iter()
+            .map(|point| point.value)
+            .collect()
     }
 
     /// The points of the instrument `name`.

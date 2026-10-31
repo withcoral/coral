@@ -1,3 +1,4 @@
+use coral_telemetry::metric::CompilerRole;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -68,7 +69,7 @@ struct V8SavedFunctionCompiler {
 impl V8SavedFunctionCompiler {
     fn new(isolate_limits: coral_v8::IsolateLimits) -> Result<Self, Error> {
         Ok(Self {
-            compiler: coral_v8::ProgramCompiler::new(isolate_limits)
+            compiler: coral_v8::ProgramCompiler::new(isolate_limits, CompilerRole::Authoring)
                 .map_err(|error| Error::CompilerUnavailable(error.to_string()))?,
         })
     }

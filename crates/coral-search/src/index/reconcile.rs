@@ -6,7 +6,7 @@ use std::future::Future;
 use coral_provider::{GenerationEntries, ProviderId};
 use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
-use tokio::task::JoinHandle;
+use tokio::task::{Id, JoinHandle, JoinSet};
 use tokio::time::MissedTickBehavior;
 use tracing::Instrument as _;
 use tracing::field::Empty;
@@ -29,6 +29,23 @@ macro_rules! step_span {
     };
 }
 
+/// The two lanes share shutdown, not failure. A panic in telemetry must not
+/// retire the indexing worker, and a retired worker is restarted with backoff.
+#[derive(Clone, Copy)]
+enum BackgroundTask {
+    Observer,
+    Reconcile,
+}
+impl BackgroundTask {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Observer => "observer",
+            Self::Reconcile => "reconcile",
+        }
+    }
+}
+const RESTART_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl SearchIndex {
     /// Spawns the reconcile task: one pass at once, then one pass at the start
     /// of each interval. A pass that runs past the next start is followed by
@@ -41,18 +58,66 @@ impl SearchIndex {
     /// Panics when the reconcile interval is zero.
     #[must_use = "the caller aborts the reconcile task at shutdown"]
     pub fn spawn_reconcile_task(&self) -> JoinHandle<()> {
+        assert!(
+            !self.reconcile_interval.is_zero(),
+            "reconcile interval must be positive"
+        );
         let index = self.clone();
-        let mut starts = tokio::time::interval(self.reconcile_interval);
-        starts.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        tokio::spawn(
-            async move {
-                loop {
-                    starts.tick().await;
-                    index.reconcile().await;
+        let supervise = async move {
+            let mut tasks = JoinSet::new();
+            let mut observer = index.spawn_background_task(&mut tasks, BackgroundTask::Observer);
+            let mut reconcile = index.spawn_background_task(&mut tasks, BackgroundTask::Reconcile);
+            while let Some(result) = tasks.join_next_with_id().await {
+                let (id, reason) = match result {
+                    Ok((id, ())) => (id, "background_task_ended"),
+                    Err(error) => (
+                        error.id(),
+                        if error.is_panic() {
+                            "background_task_panicked"
+                        } else {
+                            "background_task_canceled"
+                        },
+                    ),
+                };
+                let role = if id == observer {
+                    BackgroundTask::Observer
+                } else {
+                    BackgroundTask::Reconcile
+                };
+                debug_assert!(id == observer || id == reconcile);
+                tracing::error!(coral.search.background.task = safe::kind(role.as_str()), error.type = safe::kind(reason), "search background task stopped; restarting");
+                tokio::time::sleep(RESTART_DELAY).await;
+                let restarted = index.spawn_background_task(&mut tasks, role);
+                match role {
+                    BackgroundTask::Observer => observer = restarted,
+                    BackgroundTask::Reconcile => reconcile = restarted,
                 }
             }
-            .with_current_subscriber(),
-        )
+            // Dropping the set aborts both children when the caller shuts down.
+        };
+        tokio::spawn(supervise.with_current_subscriber())
+    }
+
+    fn spawn_background_task(&self, tasks: &mut JoinSet<()>, role: BackgroundTask) -> Id {
+        let index = self.clone();
+        tasks
+            .spawn(
+                async move {
+                    match role {
+                        BackgroundTask::Observer => index.observe_backlog_loop().await,
+                        BackgroundTask::Reconcile => {
+                            let mut starts = tokio::time::interval(index.reconcile_interval);
+                            starts.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                            loop {
+                                starts.tick().await;
+                                index.reconcile().await;
+                            }
+                        }
+                    }
+                }
+                .with_current_subscriber(),
+            )
+            .id()
     }
 
     /// Runs one reconcile pass under the in-process mutex, so it converges

@@ -140,6 +140,38 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 
 At most 2048 spans and 2048 log records wait for export. When a queue is full, the next span or log record is dropped and counted in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans and log records with `export_failed`. Neither delays a request or a program run. Metrics are cumulative by default, so a failed export loses no metric points: the next export carries their totals. If you select delta temporality, the metric points of a failed export are counted too. If you see drops, check that your collector is reachable and keeps up.
 
+#### Concurrency bottlenecks
+
+Use these signals together to separate database admission, compiler saturation, search projection lag, and direct request CPU.
+
+| Metric                                         | Kind      | Attributes                              |
+| ---------------------------------------------- | --------- | --------------------------------------- |
+| `coral.persistence.acquisition.duration`       | Histogram | `db.system`, `operation`, `outcome`     |
+| `coral.persistence.acquisition.waiters`        | Gauge     | `db.system`, `operation`                |
+| `coral.compiler.request.duration`              | Histogram | `compiler.role`, `operation`, `outcome` |
+| `coral.compiler.queue.duration`                | Histogram | `compiler.role`, `operation`            |
+| `coral.compiler.work.duration`                 | Histogram | `compiler.role`, `operation`, `outcome` |
+| `coral.compiler.queue.depth`                   | Gauge     | `compiler.role`                         |
+| `coral.compiler.active`                        | Gauge     | `compiler.role`                         |
+| `coral.search.index.backlog`                   | Gauge     | `search.projection.kind`                |
+| `coral.search.index.backlog.sample.age`        | Gauge     | None                                    |
+| `coral.search.index.first_visibility.age`      | Gauge     | None                                    |
+| `coral.search.publication.visibility.duration` | Histogram | `outcome`                               |
+| `coral.search.index.recovery.duration`         | Histogram | None                                    |
+| `coral.request.cpu.duration`                   | Histogram | `interface`, `operation`, `outcome`     |
+
+**Database acquisition.** `operation` identifies `begin_write`, `begin_read_snapshot`, `execute`, `fetch_optional`, `fetch_all`, or `ping`. Acquisition duration covers the wait for a pooled connection. For transaction entry points, it also includes `BEGIN`. Direct-query execution is excluded. Outcomes are `ready`, `failed`, or `canceled`. A query failure after acquisition does not count as an acquisition failure. Transaction duration starts after acquisition. The waiter gauge counts callers awaiting acquisition; a detached Postgres `BEGIN` can finish after its caller cancels.
+
+**Compiler.** `compiler.role` distinguishes the Run compiler (`run`) from the Saved Function compiler (`authoring`). Each has one worker and 32 queue slots. Check depth, active work, waits, and outcomes by role. `operation` identifies `program`, `saved_function`, or `analysis`. Request duration includes queueing and ends when the caller receives an answer. Outcomes distinguish `queue_full`, `stopped`, `timed_out`, `rejected`, `failed`, and `ok`. Queue depth includes enqueue attempts until they succeed or fail. An accepted job remains queued after its caller times out until the worker dequeues it. Work duration starts at dequeue and includes expiry checks and isolate recovery. `coral.program.compile.duration` still covers Program admission only.
+
+**Search backlog.** `search.projection.kind` distinguishes Provider catalog projections (`provider_catalog`) from Saved Function projections (`saved_function`). These are units of indexing work, not counts of searchable Tools. Backlog includes missing or stale projections and failed retries that are not due yet. An observer runs in a separate supervised task, with shared shutdown, and takes read-only snapshots every 30 seconds. Each snapshot read has a 30-second limit. Failure logs identify the task and safe failure kind. A panicked task restarts after one second without stopping the other task. Check `sample.age` before trusting a count. A failed read reports no snapshot. A stopped observer removes its observation rather than reporting its last count.
+
+**First visibility and recovery.** `first_visibility.age` covers only published Provider catalogs that have never been searchable. Renames and index-version rebuilds do not reset first visibility. The age is zero when none are waiting and absent when visibility history or the clock is unknown. Legacy failed projections can have unknown history; no first-visibility latency is invented for them.
+
+`publication.visibility.duration` runs from the stored publication timestamp to the first successful index commit, including the publication transaction. `initial` identifies a first-attempt success; `retried` identifies success after failed initial attempts. Rewriting a complete projection records no visibility duration. If a previously searchable catalog becomes unavailable after a failed rebuild, `index.recovery.duration` measures from the first recorded failure to the recovery commit. Repeated failures preserve that start time. Visibility history survives restarts. Samples for replaced catalogs or failed visibility checks are omitted. Verification runs separately from index writes. The duration ends at the commit and excludes verification time. These signals exclude client setup time.
+
+**Request CPU.** On Linux and macOS, CPU samples bracket each poll of the request handler and response body. Synchronous work in inline-awaited futures is included. Pending wait time, spawned tasks, and dedicated compiler or Program execution threads are excluded. The metric uses the same operation and outcome as request duration. Traces carry `coral.request.cpu_ns`, including when a handler is canceled. Sum CPU seconds by operation to attribute direct request work; this is not total process CPU. CPU histogram boundaries start at 10 microseconds and include sub-millisecond ranges. Other platforms omit the CPU signal.
+
 ## Auth
 
 ### `[auth]`

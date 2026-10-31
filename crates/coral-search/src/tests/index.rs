@@ -33,6 +33,486 @@ const INJECTED_FAULT: &str = "injected index fault";
 const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(5);
 
 #[tokio::test]
+async fn indexing_reports_visibility_lag_once_and_backlog_includes_failed_retries() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    world.reject_complete_states().await;
+    world.reconcile_and_settle().await;
+    // Start sampling only after the failed attempt has committed its state.
+    let background = world.index.spawn_reconcile_task();
+    let backlog = || {
+        metrics
+            .named("coral.search.index.backlog")
+            .iter()
+            .map(|point| point.value)
+            .sum::<f64>()
+    };
+    wait_for_observation(|| backlog() >= 1.0).await;
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .is_empty(),
+        "a failed commit reports no visibility"
+    );
+    world.reconcile_and_settle().await;
+    assert!(backlog() >= 1.0, "a retry not yet due is still backlog");
+    world.allow_complete_states().await;
+    world.make_retries_due().await;
+    world.reconcile_and_settle().await;
+    wait_for_observation(|| {
+        !metrics.named("coral.search.index.backlog").is_empty() && backlog() < 1.0
+    })
+    .await;
+    let samples = || {
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .iter()
+            .map(|point| point.count)
+            .sum::<u64>()
+    };
+    let first = samples();
+    assert!(first > 0);
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .iter()
+            .all(|point| point.attributes.get("outcome").map(String::as_str) == Some("retried"))
+    );
+    world.reconcile_and_settle().await;
+    assert_eq!(
+        samples(),
+        first,
+        "an unchanged pass does not repeat publication latency"
+    );
+    background.abort();
+    let _stopped = background.await;
+}
+
+#[tokio::test]
+async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() {
+    for rename in [true, false] {
+        let upstream = MockServer::start().await;
+        let world = World::publish_tracer(&upstream).await;
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let _measured = tracing::subscriber::set_default(metrics.subscriber());
+        world.reconcile_and_settle().await;
+        let visibility = || metrics.named("coral.search.publication.visibility.duration");
+        let recovery = || metrics.named("coral.search.index.recovery.duration");
+        let samples = || visibility().iter().map(|point| point.count).sum::<u64>();
+        let first = samples();
+        assert!(first > 0);
+        assert!(
+        visibility()
+            .iter()
+            .all(|point| point.attributes.get("outcome").map(String::as_str) == Some("initial"))
+    );
+
+        // An older writer can complete a projection without clearing the new
+        // outage column. The current complete state must remain authoritative.
+        world.set_outage_start(1).await;
+        // Exercise a real complete rewrite, not a reconcile pass that skips it.
+        world
+            .index
+            .index_active_generation(world.workspace.clone(), world.tracer.clone());
+        world.index.settled().await;
+        assert_eq!(samples(), first);
+
+        assert!(recovery().is_empty());
+        world.set_outage_start(1).await;
+
+        if rename {
+            world
+                .modules
+                .providers
+                .rename_provider(
+                    &change(world.user.clone(), 70, '7'),
+                    &world.workspace,
+                    &world.tracer,
+                    coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
+                )
+                .await
+                .unwrap();
+        } else {
+            world
+                .modules
+                .fixture
+                .execute_fixture_sql(
+                    "UPDATE search_index_states SET indexer_revision = 0 WHERE kind = 'provider_tool'",
+                )
+                .await
+                .unwrap();
+        }
+        world.reject_complete_states().await;
+        world.reconcile_and_settle().await;
+        let states = world.search_index_states(Some(&world.tracer)).await;
+        assert!(
+            matches!(
+                states.get(&world.tracer),
+                Some(crate::SearchIndexState::Failed { .. })
+            ),
+            "rebuild failed: {states:?}"
+        );
+        let background = world.index.spawn_reconcile_task();
+        wait_for_observation(|| {
+            !metrics
+                .named("coral.search.index.first_visibility.age")
+                .is_empty()
+        })
+        .await;
+        assert!(
+            metrics
+                .values("coral.search.index.first_visibility.age")
+                .iter()
+                .all(|age| *age < 0.001),
+            "a previously visible catalog is not awaiting first visibility"
+        );
+        assert!(
+            metrics
+                .values("coral.search.index.backlog")
+                .iter()
+                .any(|count| *count >= 1.0),
+            "rebuild remains backlog (rename: {rename})"
+        );
+        background.abort();
+        let _stopped = background.await;
+
+        // Repeated failures retain the original outage clock.
+        let five_seconds_ago = crate::unix_now_nanos().unwrap() - 5_000_000_000;
+        world.set_outage_start(five_seconds_ago).await;
+        world.make_retries_due().await;
+        world.reconcile_and_settle().await;
+        // A fresh index handle reads the durable history on recovery.
+        world.allow_complete_states().await;
+        world.make_retries_due().await;
+        let restarted = SearchIndex::new(world.modules.search.database.clone(), RECONCILE_INTERVAL);
+        restarted.reconcile().await;
+        restarted.settled().await;
+        assert_eq!(samples(), first);
+        let recovery = recovery();
+        assert!(!recovery.is_empty());
+        assert!(
+            recovery
+                .iter()
+                .all(|point| point.value >= 5.0 && point.value < 60.0),
+            "recovery measures this outage rather than the original publication's age"
+        );
+    }
+}
+
+#[tokio::test]
+async fn upgrading_preserves_visibility_even_when_an_older_writer_later_records_failure() {
+    let upstream = MockServer::start().await;
+    let modules = TestModules::with_plan(&coral_test_support::migration_plan_before(48)).await;
+    let world = World::publish_with_modules(modules, &upstream).await;
+    world.modules.fixture.execute_fixture_sql(
+        "INSERT INTO search_index_states (workspace_id, target_id, kind, provider_id, provider_generation_id, provider_display_name, state, attempted_at_unix_nanos, indexer_revision) SELECT workspace_id, active_generation_id, 'provider_tool', id, active_generation_id, display_name, 'complete', 1, 1 FROM provider_records WHERE active_generation_id IS NOT NULL"
+    ).await.unwrap();
+    world
+        .modules
+        .search
+        .database
+        .migrate(coral_db::migration_plan())
+        .await
+        .unwrap();
+    // An older writer updates only columns it knows. Backfilled visibility
+    // survives, but no precise outage clock can be invented for that writer.
+    world.modules.fixture.execute_fixture_sql(&format!(
+        "UPDATE search_index_states SET state = 'failed', error = 'older writer', failed_attempts = 1, retry_after_unix_nanos = 9223372036854775807, failed_coral_version = '{}' WHERE kind = 'provider_tool'", env!("CARGO_PKG_VERSION")
+    )).await.unwrap();
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let background = world.index.spawn_reconcile_task();
+    wait_for_observation(|| {
+        !metrics
+            .named("coral.search.index.first_visibility.age")
+            .is_empty()
+    })
+    .await;
+    assert!(
+        metrics
+            .values("coral.search.index.first_visibility.age")
+            .iter()
+            .all(|value| value.abs() < f64::EPSILON)
+    );
+    assert!(
+        metrics
+            .values("coral.search.index.backlog")
+            .iter()
+            .any(|value| *value >= 1.0)
+    );
+    background.abort();
+    let _stopped = background.await;
+    world
+        .index
+        .index_active_generation(world.workspace.clone(), world.tracer.clone());
+    world.index.settled().await;
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .is_empty()
+    );
+    assert!(
+        metrics
+            .named("coral.search.index.recovery.duration")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn legacy_failed_projections_keep_visibility_unknown_until_a_successful_commit() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world.reject_complete_states().await;
+    world.reconcile_and_settle().await;
+    // Older releases left failed rows without first-visibility evidence.
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql(
+            "UPDATE search_index_states SET ever_visible = NULL WHERE state = 'failed'",
+        )
+        .await
+        .unwrap();
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let background = world.index.spawn_reconcile_task();
+    wait_for_observation(|| !metrics.named("coral.search.index.backlog").is_empty()).await;
+    assert!(
+        metrics
+            .values("coral.search.index.backlog")
+            .iter()
+            .any(|value| *value >= 1.0)
+    );
+    assert!(
+        metrics
+            .named("coral.search.index.first_visibility.age")
+            .is_empty()
+    );
+    background.abort();
+    let _stopped = background.await;
+    world.allow_complete_states().await;
+    world.make_retries_due().await;
+    world.reconcile_and_settle().await;
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .is_empty(),
+        "unknown history must not invent first visibility"
+    );
+    assert!(
+        metrics
+            .named("coral.search.index.recovery.duration")
+            .is_empty(),
+        "unknown history must not invent an outage start"
+    );
+    let restarted = SearchIndex::new(world.modules.search.database.clone(), RECONCILE_INTERVAL);
+    let background = restarted.spawn_reconcile_task();
+    wait_for_observation(|| {
+        !metrics
+            .named("coral.search.index.first_visibility.age")
+            .is_empty()
+    })
+    .await;
+    assert!(
+        metrics
+            .values("coral.search.index.first_visibility.age")
+            .iter()
+            .all(|value| value.abs() < f64::EPSILON)
+    );
+    background.abort();
+    let _stopped = background.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backlog_sampling_continues_while_synchronous_index_work_is_held() {
+    let upstream = MockServer::start().await;
+    let mut world = World::publish_tracer(&upstream).await;
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let hold = world.index.hold_row_building();
+    let background = world.index.spawn_reconcile_task();
+    tokio::time::timeout(std::time::Duration::from_secs(5), hold.entered())
+        .await
+        .expect("row work starts");
+    // Any snapshot taken before the hold is now too old to satisfy this.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let fresh = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if metrics
+                .values("coral.search.index.backlog.sample.age")
+                .iter()
+                .any(|age| *age < 0.15)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    drop(hold);
+    background.abort();
+    let _stopped = background.await;
+    fresh.expect("synchronous reconciliation cannot stop the observer from refreshing");
+}
+
+#[tokio::test]
+async fn an_observer_panic_does_not_stop_reconciliation_and_the_observer_restarts() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE search_index_states RENAME TO unavailable_index_states")
+        .await
+        .unwrap();
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let logs = CapturedLogs::default();
+    let armed = Arc::new(AtomicBool::new(true));
+    let _measured = tracing::subscriber::set_default(
+        tracing_subscriber::Registry::default()
+            .with(metrics.layer())
+            .with(logs.clone())
+            .with(PanicObserverOnce(armed.clone())),
+    );
+    let index = SearchIndex::new(
+        world.modules.search.database.clone(),
+        std::time::Duration::from_millis(20),
+    );
+    let background = index.spawn_reconcile_task();
+    wait_for_observation(|| !armed.load(Ordering::SeqCst)).await;
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE unavailable_index_states RENAME TO search_index_states")
+        .await
+        .unwrap();
+    let reconciled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let states = world.search_index_states(Some(&world.tracer)).await;
+            if matches!(
+                states.get(&world.tracer),
+                Some(crate::SearchIndexState::Indexed)
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if reconciled.is_ok() {
+        wait_for_observation(|| !metrics.named("coral.search.index.backlog").is_empty()).await;
+    }
+    background.abort();
+    let _stopped = background.await;
+    reconciled.expect("observer failure must not stop reconciliation");
+    assert!(
+        logs.events()
+            .iter()
+            .any(|event| event.fields.get("error.type").map(String::as_str)
+                == Some("\"background_task_panicked\"")
+                && event
+                    .fields
+                    .get("coral.search.background.task")
+                    .map(String::as_str)
+                    == Some("\"observer\"")),
+        "the supervisor identifies the task and safe failure kind"
+    );
+}
+
+/// Fault injection at the subscriber boundary, as an exporter or layer can
+/// panic while handling a real failed snapshot. No production panic hook.
+struct PanicObserverOnce(Arc<std::sync::atomic::AtomicBool>);
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for PanicObserverOnce {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _context: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if event.metadata().target().ends_with("index::telemetry")
+            && self.0.swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            panic!("injected observer subscriber failure");
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_unreadable_backlog_reports_unknown_and_recovers_after_the_next_snapshot() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let logs = CapturedLogs::default();
+    let _measured = tracing::subscriber::set_default(
+        tracing_subscriber::Registry::default()
+            .with(metrics.layer())
+            .with(logs.clone()),
+    );
+    let background = world.index.spawn_reconcile_task();
+    world.reconcile_and_settle().await;
+    wait_for_observation(|| !metrics.named("coral.search.index.backlog").is_empty()).await;
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE search_index_states RENAME TO unavailable_index_states")
+        .await
+        .unwrap();
+    world.reconcile_and_settle().await;
+    wait_for_observation(|| metrics.named("coral.search.index.backlog").is_empty()).await;
+    assert!(
+        metrics
+            .named("coral.search.index.first_visibility.age")
+            .is_empty()
+    );
+    assert!(
+        logs.events()
+            .iter()
+            .any(|event| event.target.ends_with("index::telemetry")
+                && event.fields.get("error.type").map(String::as_str) == Some("\"database\"")),
+        "the missing snapshot has a safe diagnostic reason"
+    );
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE unavailable_index_states RENAME TO search_index_states")
+        .await
+        .unwrap();
+    world.reconcile_and_settle().await;
+    wait_for_observation(|| !metrics.named("coral.search.index.backlog").is_empty()).await;
+    assert!(
+        metrics
+            .named("coral.search.index.backlog")
+            .iter()
+            .all(|point| point.value < 1.0)
+    );
+    assert!(
+        !metrics.named("coral.search.index.backlog").is_empty(),
+        "a successful empty snapshot is a known zero"
+    );
+    background.abort();
+    let _stopped = background.await;
+    wait_for_observation(|| metrics.named("coral.search.index.backlog").is_empty()).await;
+    assert!(
+        metrics
+            .named("coral.search.index.backlog.sample.age")
+            .is_empty(),
+        "a stopped observer must not keep publishing its last snapshot"
+    );
+}
+
+async fn wait_for_observation(ready: impl Fn() -> bool) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !ready() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background backlog observation converges");
+}
+
+#[tokio::test]
 async fn one_reconcile_pass_indexes_a_published_generation_and_a_second_changes_nothing() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
@@ -849,6 +1329,140 @@ async fn a_generation_without_tools_indexes_only_a_complete_state() {
             &entries.generation_id().to_string(),
             "Callbacks"
         )]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn visibility_read_pressure_does_not_hold_up_later_index_writes() {
+    // SQLite has distinct read and write pools: telemetry can wait for the
+    // former while a catalog-removal write must still use the latter.
+    coral_test_support::database_only!(Sqlite);
+    let upstream = MockServer::start().await;
+    let mut world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let old = world.stored_entries(&ledger).await;
+    notify(&world.index, &old);
+    world.index.settled().await;
+    world
+        .modules
+        .regenerate_workspace_provider(
+            &change(world.user.clone(), 60, '6'),
+            &world.workspace,
+            &ledger,
+            &serde_json::from_str(
+                &LEDGER.replace("List ledger entries", "List every ledger entry"),
+            )
+            .unwrap(),
+        )
+        .await;
+    let current = world.stored_entries(&ledger).await;
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let spans = SpanCapture::default();
+    let _measured = tracing::subscriber::set_default(
+        tracing_subscriber::Registry::default()
+            .with(metrics.layer())
+            .with(spans.layer()),
+    );
+    let hold = world.index.hold_row_building();
+    notify(&world.index, &current);
+    tokio::time::timeout(std::time::Duration::from_secs(5), hold.entered())
+        .await
+        .unwrap();
+    let mut readers = Vec::new();
+    for _ in 0..sqlx::sqlite::SqlitePoolOptions::new().get_max_connections() - 1 {
+        readers.push(
+            world
+                .modules
+                .search
+                .database
+                .begin_read_snapshot()
+                .await
+                .unwrap(),
+        );
+    }
+    // A rolled-back preparation connection may still be returning to its
+    // pool on the worker paused above. Queue the final reader before release.
+    let last = world.modules.search.database.begin_read_snapshot();
+    tokio::pin!(last);
+    let ready = tokio::time::timeout(std::time::Duration::from_millis(20), &mut last).await;
+    drop(hold);
+    readers.push(match ready {
+        Ok(reader) => reader.unwrap(),
+        Err(_) => last.await.unwrap(),
+    });
+    wait_for_observation(|| {
+        metrics
+            .named("coral.persistence.transaction.duration")
+            .iter()
+            .any(|point| point.attributes.get("outcome").map(String::as_str) == Some("committed"))
+    })
+    .await;
+    world.index.remove_generation(old.generation_id().clone());
+    let removed = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+        loop {
+            if spans
+                .finished()
+                .iter()
+                .any(|span| span.name == "coral.search.remove_generation")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    for reader in readers {
+        reader.rollback().await.unwrap();
+    }
+    world.index.settled().await;
+    removed.expect("the next write proceeds while a visibility read is queued");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_catalog_replaced_during_indexing_emits_no_visibility_sample() {
+    let upstream = MockServer::start().await;
+    let mut world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let old = world.stored_entries(&ledger).await;
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let hold = world.index.hold_row_building();
+    notify(&world.index, &old);
+    tokio::time::timeout(std::time::Duration::from_secs(5), hold.entered())
+        .await
+        .unwrap();
+    world
+        .modules
+        .regenerate_workspace_provider(
+            &change(world.user.clone(), 60, '6'),
+            &world.workspace,
+            &ledger,
+            &serde_json::from_str(
+                &LEDGER.replace("List ledger entries", "List every ledger entry"),
+            )
+            .unwrap(),
+        )
+        .await;
+    let current = world.stored_entries(&ledger).await;
+    assert_ne!(old.generation_id(), current.generation_id());
+    drop(hold);
+    world.index.settled().await;
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .is_empty(),
+        "a superseded projection never becomes searchable"
+    );
+    notify(&world.index, &current);
+    world.index.settled().await;
+    assert_eq!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .iter()
+            .map(|point| point.count)
+            .sum::<u64>(),
+        1,
+        "only the current catalog contributes first visibility"
     );
 }
 
@@ -1707,7 +2321,10 @@ struct World {
 
 impl World {
     async fn publish_tracer(upstream: &MockServer) -> Self {
-        let modules = TestModules::new().await;
+        Self::publish_with_modules(TestModules::new().await, upstream).await
+    }
+
+    async fn publish_with_modules(modules: TestModules, upstream: &MockServer) -> Self {
         let user = organization_user(modules.search.database.clone(), USER).await;
         let workspace = modules.create_workspace(&user).await;
         let tracer = modules
@@ -1722,6 +2339,11 @@ impl World {
             tracer,
             index,
         }
+    }
+
+    async fn reconcile_and_settle(&self) {
+        self.index.reconcile().await;
+        self.index.settled().await;
     }
 
     /// The active Generation's entries, prepared by the owner from what the
@@ -2024,6 +2646,14 @@ impl World {
         self.reject_complete_states().await;
         self.index.reconcile().await;
         self.allow_complete_states().await;
+    }
+
+    /// Injects a persisted outage clock, including stale data an older writer
+    /// can leave when it does not know the new columns.
+    async fn set_outage_start(&self, at: i64) {
+        self.modules.fixture.execute_fixture_sql(&format!(
+            "UPDATE search_index_states SET unavailable_since_unix_nanos = {at} WHERE ever_visible = TRUE"
+        )).await.unwrap();
     }
 
     /// Makes every `complete` state row fail to insert, so an attempt fails

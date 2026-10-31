@@ -1063,6 +1063,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry_sdk",
+ "rustix 1.1.5",
  "tokio",
  "tower",
  "tracing",

@@ -2,6 +2,7 @@
 //! supplied declarations.
 
 use coral_telemetry as _;
+use coral_telemetry::metric::CompilerRole;
 use coral_v8::{
     CallableDeclaration, CompilerDiagnostic, CoralDeclarations, IsolateLimits, ProgramCompiler,
     SavedFunctionCompilation,
@@ -99,7 +100,8 @@ fn errors(diagnostics: &[CompilerDiagnostic]) -> Vec<Located> {
 
 #[test]
 fn saved_function_diagnostics_check_calls_against_declarations() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let cases: &[(&str, &str, &[Located])] = &[
         (
             "a wrong input field",
@@ -178,7 +180,8 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
 /// Tool under the same root resolved.
 #[test]
 fn unknown_tool_diagnostic_names_the_call_path_only() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     for (name, tools) in [
         ("beside a resolved sibling", tools()),
         ("alone in its root", Vec::new()),
@@ -210,7 +213,8 @@ fn unknown_tool_diagnostic_names_the_call_path_only() {
 
 #[test]
 fn saved_function_declaration_inlines_a_tool_result_type() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let compilation = prepare(
         &compiler,
         "export default async function repo(owner: string) {\n  const r = await coral.providers.github.repos.get({ owner, repo: \"coral\" });\n  return r.data.owner;\n}",
@@ -232,7 +236,8 @@ fn saved_function_declaration_inlines_a_tool_result_type() {
 /// Each diagnostic names the Tool by its Call Path.
 #[test]
 fn an_uninlinable_result_type_saves_the_untyped_declaration() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     for (name, declaration_max_bytes, source, expected_codes, named) in [
         (
             "a recursive result type",
@@ -281,7 +286,8 @@ fn an_uninlinable_result_type_saves_the_untyped_declaration() {
 
 #[test]
 fn call_path_analysis_names_every_candidate_tool_call_path() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let named = compiler
         .saved_function_call_paths(
             deadline(),

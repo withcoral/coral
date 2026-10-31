@@ -5,7 +5,7 @@
 macro_rules! attribute {
     ($(#[$meta:meta])* $name:ident { $($(#[$variant_meta:meta])* $variant:ident => $value:literal,)* }) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
         pub enum $name {
             $(
                 #[doc = concat!("`", $value, "`")]
@@ -235,5 +235,62 @@ attribute! {
         QueueFull => "queue_full",
         /// The exporter failed to send it.
         ExportFailed => "export_failed",
+    }
+}
+
+attribute! {
+    /// The database entry point acquiring a connection, for `operation`.
+    AcquisitionOperation {
+        BeginWrite => "begin_write",
+        BeginReadSnapshot => "begin_read_snapshot",
+        Execute => "execute",
+        FetchOptional => "fetch_optional",
+        FetchAll => "fetch_all",
+        Ping => "ping",
+    }
+}
+
+attribute! {
+    /// How a database acquisition ended, for `outcome`.
+    AcquisitionOutcome {
+        Ready => "ready",
+        Failed => "failed",
+        Canceled => "canceled",
+    }
+}
+
+attribute! {
+    /// The bounded kind of work sent to the TypeScript compiler.
+    CompilerOperation {
+        Program => "program",
+        SavedFunction => "saved_function",
+        Analysis => "analysis",
+    }
+}
+attribute! {
+    /// A compiler request's outcome, including queue admission failures.
+    CompilerOutcome {
+        Ok => "ok",
+        Rejected => "rejected",
+        QueueFull => "queue_full",
+        TimedOut => "timed_out",
+        Stopped => "stopped",
+        Failed => "failed",
+    }
+}
+
+attribute! {
+    /// The path to a catalog's first successful search projection.
+    VisibilityPath {
+        Initial => "initial",
+        Retried => "retried",
+    }
+}
+
+attribute! {
+    /// The independently bounded worker queue's production purpose.
+    CompilerRole {
+        Run => "run",
+        Authoring => "authoring",
     }
 }

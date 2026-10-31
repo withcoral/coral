@@ -6,6 +6,7 @@ use sqlx::{FromRow, Postgres, Sqlite};
 
 use crate::backend::DatabaseBackend;
 use crate::{Database, Error};
+use coral_telemetry::metric;
 
 /// A column of an aliased table, for repository queries that join or nest tables.
 #[must_use]
@@ -33,19 +34,33 @@ impl Database {
     where
         S: SqlxBinder,
     {
+        self.observe_pools();
         match &self.backend {
             DatabaseBackend::Sqlite { writes, .. } => {
                 let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
+                let mut connection = acquire(
+                    writes,
+                    metric::DbSystem::Sqlite,
+                    metric::AcquisitionOperation::Execute,
+                )
+                .await
+                .map_err(crate::error::writer_busy)?;
                 let result = sqlx::query_with::<Sqlite, _>(sqlx::AssertSqlSafe(sql), values)
-                    .execute(writes)
+                    .execute(&mut *connection)
                     .await
                     .map_err(crate::error::writer_busy)?;
                 Ok(result.rows_affected())
             }
             DatabaseBackend::Postgres(pool) => {
                 let (sql, values) = statement.build_sqlx(sea_query::PostgresQueryBuilder);
+                let mut connection = acquire(
+                    pool,
+                    metric::DbSystem::Postgresql,
+                    metric::AcquisitionOperation::Execute,
+                )
+                .await?;
                 let result = sqlx::query_with::<Postgres, _>(sqlx::AssertSqlSafe(sql), values)
-                    .execute(pool)
+                    .execute(&mut *connection)
                     .await?;
                 Ok(result.rows_affected())
             }
@@ -68,18 +83,31 @@ impl<Access> Database<Access> {
         for<'row> T: FromRow<'row, SqliteRow>,
         for<'row> T: FromRow<'row, PgRow>,
     {
+        self.observe_pools();
         match &self.backend {
             DatabaseBackend::Sqlite { reads, .. } => {
                 let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
+                let mut connection = acquire(
+                    reads,
+                    metric::DbSystem::Sqlite,
+                    metric::AcquisitionOperation::FetchOptional,
+                )
+                .await?;
                 sqlx::query_as_with::<Sqlite, T, _>(sqlx::AssertSqlSafe(sql), values)
-                    .fetch_optional(reads)
+                    .fetch_optional(&mut *connection)
                     .await
                     .map_err(Into::into)
             }
             DatabaseBackend::Postgres(pool) => {
                 let (sql, values) = statement.build_sqlx(sea_query::PostgresQueryBuilder);
+                let mut connection = acquire(
+                    pool,
+                    metric::DbSystem::Postgresql,
+                    metric::AcquisitionOperation::FetchOptional,
+                )
+                .await?;
                 sqlx::query_as_with::<Postgres, T, _>(sqlx::AssertSqlSafe(sql), values)
-                    .fetch_optional(pool)
+                    .fetch_optional(&mut *connection)
                     .await
                     .map_err(Into::into)
             }
@@ -97,21 +125,45 @@ impl<Access> Database<Access> {
         for<'row> T: FromRow<'row, SqliteRow>,
         for<'row> T: FromRow<'row, PgRow>,
     {
+        self.observe_pools();
         match &self.backend {
             DatabaseBackend::Sqlite { reads, .. } => {
                 let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
+                let mut connection = acquire(
+                    reads,
+                    metric::DbSystem::Sqlite,
+                    metric::AcquisitionOperation::FetchAll,
+                )
+                .await?;
                 sqlx::query_as_with::<Sqlite, T, _>(sqlx::AssertSqlSafe(sql), values)
-                    .fetch_all(reads)
+                    .fetch_all(&mut *connection)
                     .await
                     .map_err(Into::into)
             }
             DatabaseBackend::Postgres(pool) => {
                 let (sql, values) = statement.build_sqlx(sea_query::PostgresQueryBuilder);
+                let mut connection = acquire(
+                    pool,
+                    metric::DbSystem::Postgresql,
+                    metric::AcquisitionOperation::FetchAll,
+                )
+                .await?;
                 sqlx::query_as_with::<Postgres, T, _>(sqlx::AssertSqlSafe(sql), values)
-                    .fetch_all(pool)
+                    .fetch_all(&mut *connection)
                     .await
                     .map_err(Into::into)
             }
         }
     }
+}
+
+pub(crate) async fn acquire<DB: sqlx::Database>(
+    pool: &sqlx::Pool<DB>,
+    system: metric::DbSystem,
+    operation: metric::AcquisitionOperation,
+) -> Result<sqlx::pool::PoolConnection<DB>, sqlx::Error> {
+    let acquisition = metric::database_acquiring(system, operation);
+    let result = pool.acquire().await;
+    acquisition.finish(&result);
+    result
 }

@@ -10,6 +10,8 @@
 
 /// Coral's own fields.
 const CORAL: &[&str] = &[
+    // Direct request-handler and body polling CPU, excluding pending wait time and child tasks.
+    "coral.request.cpu_ns",
     // The Workspace the work belongs to.
     "coral.workspace.id",
     // The authenticated Principal: only after authentication, and never as
@@ -62,6 +64,7 @@ const CORAL: &[&str] = &[
     // it, why it was skipped, how long it waited for the writer and took, in
     // milliseconds, how many rows a statistics refresh wrote, and the code of
     // a catalog warning it met.
+    "coral.search.background.task",
     "coral.search.generation.id",
     "coral.search.write.trigger",
     "coral.search.skipped",
