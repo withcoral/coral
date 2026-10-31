@@ -44,6 +44,7 @@ import { ActionNotice, Fields } from '@/views/management/forms'
 import { ArchivedBanner, trail } from '@/views/management/layout'
 
 import { AddProviderLauncher, needsSourceDetails, type AddProviderEntryProps } from './add-provider'
+import { toolCallPath } from '@/lib/call-root'
 import { countLabel } from '@/utils/count-label'
 import { catalogMatches } from './provider-catalog'
 import { PolicyMutations, usePolicyMutations } from './policy-mutations'
@@ -57,6 +58,7 @@ import {
 } from './selection'
 import type {
   FormContext,
+  ToolDetailView,
   ToolHintsView,
   ToolView,
   ProviderView,
@@ -149,7 +151,7 @@ function HintLabels({
 
 export function WorkspaceProvidersPage(props: WorkspaceProvidersPageProps) {
   return (
-    <PolicyMutations>
+    <PolicyMutations catalog={props.providers}>
       <WorkspaceProvidersContent {...props} />
     </PolicyMutations>
   )
@@ -161,6 +163,7 @@ function WorkspaceProvidersContent({
   recipes = [],
   selectedProvider: selectedProviderRoute,
   selectedTool,
+  selectedToolDetail = null,
   form,
   result,
   pending = false,
@@ -267,6 +270,9 @@ function WorkspaceProvidersContent({
           railFilter={railFilter}
           selectedProvider={selected ?? null}
           selectedTool={tool ?? null}
+          selectedToolDetail={
+            selectedToolDetail?.relativePath === tool?.relativePath ? selectedToolDetail : null
+          }
           setRailFilter={setRailFilter}
         />
       )}
@@ -505,6 +511,8 @@ type ProviderSection = {
   groups: {
     group: string
     index: number
+    /** Its last row's index in the flat row list: the heading, while collapsed. */
+    end: number
     key: string
     collapsed: boolean
     /** Every listed member, collapsed or not: the heading counts and selects these. */
@@ -514,16 +522,18 @@ type ProviderSection = {
   }[]
 }
 
-// Every heading mounts, so Wax's sticky groups work as they do without a
-// virtualizer; only the tool rows inside a group come and go. Each visible
-// tool costs a policy form, which is what made the full table slow.
+// Each mounted tool costs a policy form, and each mounted heading pins, so the
+// browser lays them all out again on any change. Only the tool groups with a
+// row in the mounted range come and go with their rows; provider headings all
+// mount, as `Table.Container` reports the one that is pinned.
 const DENSITY = 'comfortable'
 // Provider and group headings are prominent: they stand taller than the tool rows.
 const GROUP_HEADINGS = 'prominent'
 const HEADING_HEIGHT = groupHeadingHeightPx(DENSITY, GROUP_HEADINGS)
 // Until a row mounts and measures itself: a tool row is a cell's height
-// plus its border; a provider's status row is as tall as an ordinary row.
-const TOOL_ROW_HEIGHT = CELL_HEIGHT_PX[DENSITY] + 4
+// plus its padding and border; a provider's status row is as tall as an
+// ordinary row. Off by a pixel, each row that mounts moves the scroll position.
+const TOOL_ROW_HEIGHT = CELL_HEIGHT_PX[DENSITY] + 3
 const STATUS_ROW_HEIGHT = CELL_HEIGHT_PX[DENSITY]
 
 const tableRowHeight = (row: TableRowItem) => {
@@ -551,6 +561,7 @@ function ProvidersTableScreen({
   railFilter,
   selectedProvider,
   selectedTool,
+  selectedToolDetail,
   setRailFilter,
 }: {
   /** An info tip beside the title. */
@@ -571,6 +582,7 @@ function ProvidersTableScreen({
   /** The provider the URL names, if any. */
   selectedProvider: ProviderView | null
   selectedTool: ToolView | null
+  selectedToolDetail: ToolDetailView | null
   setRailFilter: (value: string) => void
 }) {
   const navigate = useNavigate()
@@ -620,15 +632,24 @@ function ProvidersTableScreen({
       provider.tools.some((o) => selectedView.has(selectionKey(provider.id, o.name))),
     )
   }, [policyFilter, searchable, selectedTool, selectedProvider?.id, selectedView, tab, tableQuery])
-  const visibleTools = visibleByProvider.flatMap(({ provider, matching }) =>
-    matching.map((tool) => ({ provider, tool })),
+  // A scroll re-renders the screen, so these hold still until the rows change.
+  const visibleTools = useMemo(
+    () =>
+      visibleByProvider.flatMap(({ provider, matching }) =>
+        matching.map((tool) => ({ provider, tool })),
+      ),
+    [visibleByProvider],
   )
-  const allVisibleSelected =
-    visibleTools.length > 0 &&
-    visibleTools.every(({ provider, tool }) => selected.has(selectionKey(provider.id, tool.name)))
-  const visibleSelectedCount = visibleTools.filter(({ provider, tool }) =>
-    selected.has(selectionKey(provider.id, tool.name)),
-  ).length
+  const visibleSelectedCount = useMemo(
+    () =>
+      selected.size === 0
+        ? 0
+        : visibleTools.filter(({ provider, tool }) =>
+            selected.has(selectionKey(provider.id, tool.name)),
+          ).length,
+    [selected, visibleTools],
+  )
+  const allVisibleSelected = visibleTools.length > 0 && visibleSelectedCount === visibleTools.length
   const { rows, sections } = useMemo(() => {
     const flat: TableRowItem[] = []
     const tree: ProviderSection[] = []
@@ -688,6 +709,7 @@ function ProvidersTableScreen({
         const groupSection: ProviderSection['groups'][number] = {
           group,
           index: flat.length,
+          end: flat.length,
           key: groupKey,
           collapsed: collapsed.has(groupKey) && !(linked && members.includes(linked)),
           members,
@@ -698,6 +720,7 @@ function ProvidersTableScreen({
         if (groupSection.collapsed) continue
         for (const tool of members) {
           groupSection.tools.push({ index: flat.length, tool })
+          groupSection.end = flat.length
           flat.push({
             kind: 'tool',
             key: `tool:${provider.id}:${tool.name}`,
@@ -798,7 +821,7 @@ function ProvidersTableScreen({
           if (
             value === 'unavailable'
               ? !tool.available
-              : effectivePolicy(inFlight, provider, tool) === value
+              : effectivePolicy(inFlight.policies, provider, tool) === value
           )
             keys.add(selectionKey(provider.id, tool.name))
       return { value, keys }
@@ -903,7 +926,10 @@ function ProvidersTableScreen({
       return [{ kind: 'heading', key: row.key, index, depth, collapsed: !!headings.get(row.key) }]
     })
   }, [rows, sections])
-  const activeStop = cursorOrder.find((stop) => stop.key === activeKey)
+  const activeStop = useMemo(
+    () => (activeKey ? cursorOrder.find((stop) => stop.key === activeKey) : undefined),
+    [activeKey, cursorOrder],
+  )
   useEffect(() => {
     if (!focusCursor.current) return
     const row = tableRef.current?.querySelector<HTMLElement>('[data-active]')
@@ -934,7 +960,7 @@ function ProvidersTableScreen({
       if (!fromFilter && !drawerKey) focusCursor.current = true
       if (drawerKey && next.kind === 'tool') {
         markRevealed(next.provider.id, next.tool.name)
-        navigate(next.tool.path, { replace: true, preventScrollReset: true })
+        navigate(toolPath(next.provider, next.tool), { replace: true, preventScrollReset: true })
       }
     }
   const toggleHeading = (stop: Extract<CursorStop, { kind: 'heading' }>) =>
@@ -968,7 +994,7 @@ function ProvidersTableScreen({
     event.preventDefault()
     if (activeStop.kind === 'heading') return toggleHeading(activeStop)
     markRevealed(activeStop.provider.id, activeStop.tool.name)
-    navigate(activeStop.tool.path, { preventScrollReset: true })
+    navigate(toolPath(activeStop.provider, activeStop.tool), { preventScrollReset: true })
   }
   // Space checks the cursor's tool, or collapses or expands its heading.
   const checkCursor = (event: KeyboardEvent) => {
@@ -1013,7 +1039,7 @@ function ProvidersTableScreen({
               leading={
                 <>
                   <StatusDot
-                    blockers={provider.blockers}
+                    blockers={mutations.blockers(provider)}
                     personalAccountAction={provider.personalAccountAction}
                   />
                   <Logo name={providerLabel(provider)} icons={providerIcons(provider)} size="20" />
@@ -1161,6 +1187,7 @@ function ProvidersTableScreen({
       <KeyboardShortcut shortcut="Space" handler={checkCursor} ignore={repeated} />
       <ToolDetailsDrawer
         tool={selectedTool}
+        detail={selectedToolDetail}
         provider={selectedProvider ?? undefined}
         canChange={canChange}
         form={form}
@@ -1314,59 +1341,67 @@ const TableSections = memo(function TableSections({
           )}
         </Table.Status>
       )}
-      {section.groups.map((group) => (
-        <Table.Group
-          key={group.group}
-          index={group.index}
-          active={activeKey === group.key}
-          label={group.group}
-          collapsed={group.collapsed}
-          heading={
-            <GroupHeading
-              bulkPending={bulkPending}
-              canChange={canChange}
-              className={styles.toolGroupLabel}
-              collapsed={group.collapsed}
-              onToggle={() => onToggleCollapsed(group.key, group.index, 1)}
-              count={group.members.length}
-              label={
-                <Typography.BodySmallStrong as="span">{group.group}</Typography.BodySmallStrong>
-              }
-              members={group.members}
-              name={group.group}
-              provider={section.provider}
-              selected={selected}
-              toggleTools={toggleTools}
-            />
-          }
-        >
-          <Table.VirtualRows rows={group.tools} virtual={virtual}>
-            {({ index, tool }) => (
-              <ToolRow
-                key={tool.name}
-                active={activeKey === selectionKey(section.provider.id, tool.name)}
-                drawerOpen={drawerOpen}
+      <Table.VirtualGroups groups={section.groups} virtual={virtual}>
+        {(group) => (
+          <Table.Group
+            key={group.group}
+            index={group.index}
+            active={activeKey === group.key}
+            label={group.group}
+            collapsed={group.collapsed}
+            heading={
+              <GroupHeading
+                bulkPending={bulkPending}
                 canChange={canChange}
-                checked={selected.has(selectionKey(section.provider.id, tool.name))}
-                disabled={bulkPending}
-                form={form}
-                index={index}
+                className={styles.toolGroupLabel}
+                collapsed={group.collapsed}
+                onToggle={() => onToggleCollapsed(group.key, group.index, 1)}
+                count={group.members.length}
+                label={
+                  <Typography.BodySmallStrong as="span">{group.group}</Typography.BodySmallStrong>
+                }
+                members={group.members}
+                name={group.group}
                 provider={section.provider}
-                measure={virtual.measureRow}
-                tool={tool}
-                query={query}
-                onOpen={markRevealed}
-                onCheck={(checked) => toggleTools([{ provider: section.provider, tool }], checked)}
+                selected={selected}
+                toggleTools={toggleTools}
               />
-            )}
-          </Table.VirtualRows>
-        </Table.Group>
-      ))}
+            }
+          >
+            <Table.VirtualRows rows={group.tools} virtual={virtual}>
+              {({ index, tool }) => (
+                <ToolRow
+                  key={tool.name}
+                  active={activeKey === selectionKey(section.provider.id, tool.name)}
+                  drawerOpen={drawerOpen}
+                  canChange={canChange}
+                  checked={selected.has(selectionKey(section.provider.id, tool.name))}
+                  disabled={bulkPending}
+                  form={form}
+                  index={index}
+                  provider={section.provider}
+                  measure={virtual.measureRow}
+                  tool={tool}
+                  query={query}
+                  onOpen={markRevealed}
+                  onCheck={(checked) =>
+                    toggleTools([{ provider: section.provider, tool }], checked)
+                  }
+                />
+              )}
+            </Table.VirtualRows>
+          </Table.Group>
+        )}
+      </Table.VirtualGroups>
     </Table.Group>
   ))
 })
 
 const TOOL_FILTER_ID = 'tool-filter'
+
+/** The address of a tool's drawer. */
+const toolPath = (provider: ProviderView, tool: ToolView) =>
+  `${provider.path}/tools/${encodeURIComponent(tool.relativePath)}`
 
 // A heading's key in the collapsed set and the cursor order.
 const providerHeadingKey = (providerId: string) => `provider:${providerId}`
@@ -1422,10 +1457,14 @@ function GroupHeading({
   summary?: ReactNode
   className: string
 }) {
-  const targets = members.map((tool) => ({ provider, tool }))
-  const selectedCount = members.filter((tool) =>
-    selected.has(selectionKey(provider.id, tool.name)),
-  ).length
+  // A provider heading stays mounted over all its tools, through every scroll.
+  const selectedCount = useMemo(
+    () =>
+      selected.size === 0
+        ? 0
+        : members.filter((tool) => selected.has(selectionKey(provider.id, tool.name))).length,
+    [members, provider.id, selected],
+  )
   const allSelected = members.length > 0 && selectedCount === members.length
   return (
     <>
@@ -1435,7 +1474,12 @@ function GroupHeading({
           checked={allSelected}
           indeterminate={selectedCount > 0 && !allSelected}
           disabled={!canChange || bulkPending || members.length === 0}
-          onCheckedChange={(checked) => toggleTools(targets, checked)}
+          onCheckedChange={(checked) =>
+            toggleTools(
+              members.map((tool) => ({ provider, tool })),
+              checked,
+            )
+          }
         >
           <span className={visuallyHidden}>{`Select ${name} tools`}</span>
         </Inputs.Checkbox>
@@ -1585,7 +1629,7 @@ const ToolRow = memo(function ToolRow({
     // The cursor row takes focus, so its own tabindex is not a control in it.
     if (control && control !== event.currentTarget && event.currentTarget.contains(control)) return
     onOpen(provider.id, tool.name)
-    navigate(tool.path, { preventScrollReset: true })
+    navigate(toolPath(provider, tool), { preventScrollReset: true })
   }
   return (
     <Table.Row
@@ -1611,7 +1655,7 @@ const ToolRow = memo(function ToolRow({
         {/* The row opens the drawer; the name stays a link for the keyboard. */}
         <Tooltip content={tool.relativePath} showOnlyWhenTruncated>
           <Link
-            to={tool.path}
+            to={toolPath(provider, tool)}
             prefetch="intent"
             preventScrollReset
             onClick={() => onOpen(provider.id, tool.name)}
@@ -1840,11 +1884,11 @@ function PolicyFilterMenu({
 }
 
 function effectivePolicy(
-  mutations: ReturnType<typeof usePolicyMutations>,
+  policies: ReturnType<typeof usePolicyMutations>['policies'],
   provider: ProviderView,
   tool: ToolView,
 ) {
-  return mutations.state(provider.id, tool.name).policy ?? tool.policy
+  return policies.get(selectionKey(provider.id, tool.name)) ?? tool.policy
 }
 
 /**
@@ -1863,11 +1907,16 @@ function PolicySummary({
   provider: ProviderView
 }) {
   const mutations = usePolicyMutations()
-  const counts = new Map<PolicyState, number>()
-  for (const tool of provider.tools) {
-    const policy = effectivePolicy(mutations, provider, tool)
-    counts.set(policy, (counts.get(policy) ?? 0) + 1)
-  }
+  const { policies } = mutations
+  // A provider heading stays mounted over all its tools, through every scroll.
+  const counts = useMemo(() => {
+    const tally = new Map<PolicyState, number>()
+    for (const tool of provider.tools) {
+      const policy = effectivePolicy(policies, provider, tool)
+      tally.set(policy, (tally.get(policy) ?? 0) + 1)
+    }
+    return tally
+  }, [policies, provider])
   const unavailable = provider.totalCount - provider.readyCount
   return (
     <>
@@ -1930,6 +1979,7 @@ function PolicySummary({
 function ToolDetailsDrawer({
   provider: routedProvider,
   canChange,
+  detail: routedDetail,
   form,
   tool: routed,
   onClose,
@@ -1937,6 +1987,8 @@ function ToolDetailsDrawer({
 }: {
   provider: ProviderView | undefined
   canChange: boolean
+  /** The prose of `tool`, which the table does not load. */
+  detail: ToolDetailView | null
   form: FormContext
   tool: ToolView | null
   /** Runs as the close starts, so the URL and the keys follow it at once. */
@@ -1945,11 +1997,21 @@ function ToolDetailsDrawer({
 }) {
   // The drawer lives on the page, so the URL can close it at once. Its exit
   // then plays with the tool it last showed.
-  const [shown, setShown] = useState({ tool: routed, provider: routedProvider })
-  if (routed && (routed !== shown.tool || routedProvider !== shown.provider)) {
-    setShown({ tool: routed, provider: routedProvider })
+  const [shown, setShown] = useState({
+    tool: routed,
+    provider: routedProvider,
+    detail: routedDetail,
+  })
+  if (
+    routed &&
+    (routed !== shown.tool || routedProvider !== shown.provider || routedDetail !== shown.detail)
+  ) {
+    setShown({ tool: routed, provider: routedProvider, detail: routedDetail })
   }
-  const { tool, provider } = shown
+  const { tool, provider, detail } = shown
+  const summary = detail?.summary.trim() ?? ''
+  const description = detail?.description.trim() ?? ''
+  const callPath = tool && provider ? toolCallPath(provider.callRoot, tool.relativePath) : ''
   // The drawer stays open from one tool to the next, so only its content
   // changes. The content mounts once per tool, which starts it at the top.
   const popup = useRef<HTMLDivElement>(null)
@@ -1974,17 +2036,17 @@ function ToolDetailsDrawer({
           <Dialog.Title>{tool?.relativePath ?? 'Tool details'}</Dialog.Title>
           {tool && (
             <div key={tool.name} ref={scrollToTop} className={styles.stack}>
-              {tool.description.trim() && tool.description.trim() !== tool.summary.trim() ? (
-                <Markdown>{tool.description}</Markdown>
+              {description && description !== summary ? (
+                <Markdown>{detail!.description}</Markdown>
               ) : (
                 <Typography.BodySmall as="p">
-                  {tool.summary || 'No description.'}
+                  {detail?.summary || 'No description.'}
                 </Typography.BodySmall>
               )}
               <div className={styles.callPath}>
-                <CodeChip>{tool.callPath}</CodeChip>
+                <CodeChip>{callPath}</CodeChip>
                 <Button.CopyButton
-                  textToCopy={tool.callPath}
+                  textToCopy={callPath}
                   ariaLabel="Copy call path"
                   size="22"
                   variant="bare"

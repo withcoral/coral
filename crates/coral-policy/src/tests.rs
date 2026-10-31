@@ -520,6 +520,158 @@ async fn policy_reads_batch_current_hints_without_loading_definitions() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one catalog fixture covers the decisions, the page bounds and each denial"
+)]
+async fn listed_decisions_page_the_catalog_with_each_tools_decision() {
+    const TWO_TOOLS: &str = r#"
+openapi: 3.1.0
+info: {title: Two, version: 1.0.0}
+servers: [{url: https://api.example.test}]
+paths:
+  /read:
+    get:
+      operationId: readOne
+      summary: Read one
+      responses: {"200": {description: Result}}
+  /write:
+    post:
+      operationId: writeOne
+      summary: Write one
+      responses: {"200": {description: Result}}
+"#;
+    let (fixture, workspaces, providers, policies) = test_modules().await;
+    let owner = organization_user(
+        fixture.database(),
+        "user:list-reader",
+        OrganizationRole::Member,
+    )
+    .await;
+    let stranger = organization_user(
+        fixture.database(),
+        "user:list-stranger",
+        OrganizationRole::Member,
+    )
+    .await;
+    let workspace = workspaces
+        .create(
+            &change(owner.clone(), 10, '1'),
+            WorkspaceDisplayName::parse("Listed decisions").unwrap(),
+        )
+        .await
+        .unwrap();
+    let read = publish_tool(
+        &providers,
+        &owner,
+        workspace.id(),
+        TWO_TOOLS,
+        "two",
+        "readOne",
+        20,
+    )
+    .await;
+    let provider = read.provider_id().clone();
+    let write = ToolPolicyTarget::new(
+        workspace.id().clone(),
+        provider.clone(),
+        ToolKey::parse("writeOne").unwrap(),
+    );
+    policies
+        .set_access_state(
+            &change(owner.clone(), 30, '3'),
+            write.clone(),
+            ToolAccessState::Disabled,
+        )
+        .await
+        .unwrap();
+
+    let listed = policies
+        .listed_decisions(&owner, workspace.id(), &provider, None, 1000)
+        .await
+        .unwrap();
+    let decisions = listed
+        .iter()
+        .map(|(tool, decision)| {
+            (
+                tool.key.as_str(),
+                decision.access_state(),
+                decision.is_explicit(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        decisions,
+        [
+            ("readOne", ToolAccessState::Enabled, false),
+            ("writeOne", ToolAccessState::Disabled, true),
+        ]
+    );
+    assert_eq!(
+        listed
+            .iter()
+            .map(|(_tool, decision)| decision.clone())
+            .collect::<Vec<_>>(),
+        [
+            policies.decision(&owner, &read).await.unwrap(),
+            policies.decision(&owner, &write).await.unwrap(),
+        ],
+        "a listed decision is the decision the Policy reads alone"
+    );
+
+    // A page of one still carries its lookahead row, and `after` is exclusive.
+    let first = policies
+        .listed_decisions(&owner, workspace.id(), &provider, None, 1)
+        .await
+        .unwrap();
+    let [(page, _decision), _lookahead] = first.as_slice() else {
+        panic!("a page of one and its lookahead row");
+    };
+    let last = policies
+        .listed_decisions(&owner, workspace.id(), &provider, Some(&page.key), 1)
+        .await
+        .unwrap();
+    let [(only, _decision)] = last.as_slice() else {
+        panic!("one Tool follows the first");
+    };
+    assert_eq!(only.key.as_str(), "writeOne");
+
+    assert!(matches!(
+        policies
+            .listed_decisions(&stranger, workspace.id(), &provider, None, 1000)
+            .await,
+        Err(crate::Error::Workspace(
+            coral_workspace::Error::WorkspaceNotFound
+        ))
+    ));
+    // A live Provider of another Workspace reads as absent, like one that never was.
+    let other = workspaces
+        .create(
+            &change(owner.clone(), 40, '4'),
+            WorkspaceDisplayName::parse("Other").unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        policies
+            .listed_decisions(&owner, other.id(), &provider, None, 1000)
+            .await,
+        Err(crate::Error::Provider(
+            coral_provider::Error::ProviderNotFound
+        ))
+    ));
+    let absent = coral_provider::ProviderId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+    assert!(matches!(
+        policies
+            .listed_decisions(&owner, workspace.id(), &absent, None, 1000)
+            .await,
+        Err(crate::Error::Provider(
+            coral_provider::Error::ProviderNotFound
+        ))
+    ));
+}
+
+#[tokio::test]
 async fn policy_reads_reject_invalid_selections_before_resolving_targets() {
     let (fixture, _, _, policies) = test_modules().await;
     let owner = organization_user(

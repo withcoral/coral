@@ -148,6 +148,16 @@ pub struct ListToolsRequest {
     #[prost(string, tag = "3")]
     pub page_token: ::prost::alloc::string::String,
 }
+/// Reads one Tool of the Provider's current administrative catalog.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetToolRequest {
+    /// Exact Provider resource.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    /// Tool path relative to the immutable Provider namespace.
+    #[prost(string, tag = "2")]
+    pub relative_path: ::prost::alloc::string::String,
+}
 /// Safe complete catalog metadata, including structurally unavailable Tools.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProviderTool {
@@ -2797,6 +2807,30 @@ pub mod provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Reads one current Tool by its path, with its full prose.
+        pub async fn get_tool(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetToolRequest>,
+        ) -> std::result::Result<tonic::Response<super::ProviderTool>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.ProviderService/GetTool",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("coral.management.v1.ProviderService", "GetTool"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -2881,6 +2915,11 @@ pub(crate) mod provider_service_server {
             tonic::Response<super::ListToolsResponse>,
             tonic::Status,
         >;
+        /// Reads one current Tool by its path, with its full prose.
+        async fn get_tool(
+            &self,
+            request: tonic::Request<super::GetToolRequest>,
+        ) -> std::result::Result<tonic::Response<super::ProviderTool>, tonic::Status>;
     }
     /// Workspace-owned Providers. Every mutation requires current Owner authority.
     #[derive(Debug)]
@@ -3459,6 +3498,51 @@ pub(crate) mod provider_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ListToolsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.ProviderService/GetTool" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetToolSvc<T: ProviderService>(pub Arc<T>);
+                    impl<
+                        T: ProviderService,
+                    > tonic::server::UnaryService<super::GetToolRequest>
+                    for GetToolSvc<T> {
+                        type Response = super::ProviderTool;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetToolRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ProviderService>::get_tool(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetToolSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -13035,22 +13119,57 @@ pub struct ToolPolicy {
     #[prost(bool, tag = "3")]
     pub explicit: bool,
 }
-/// Reads a bounded selection, including structurally unavailable Tools.
+/// Reads one page of a Provider's current administrative catalog.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetToolPoliciesRequest {
-    /// Exact Provider resource name.
+pub struct ListToolAccessRequest {
+    /// Exact Provider resource.
     #[prost(string, tag = "1")]
     pub parent: ::prost::alloc::string::String,
-    /// 1–100 distinct canonical Tool names for its Provider.
-    #[prost(string, repeated, tag = "2")]
-    pub tools: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Maximum results, bounded to 1000; zero selects the default.
+    #[prost(int32, tag = "2")]
+    pub page_size: i32,
+    /// Opaque continuation from the preceding page for this Provider.
+    #[prost(string, tag = "3")]
+    pub page_token: ::prost::alloc::string::String,
 }
-/// Effective decisions in request order.
+/// One Tool as a policy table lists it, including structurally unavailable Tools.
+/// `GetTool` reads its prose.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetToolPoliciesResponse {
-    /// Exact decisions.
+pub struct ToolAccess {
+    /// {provider}/tools/{encoded Tool Key}; not a separate entity identity.
+    #[prost(string, tag = "1")]
+    pub tool: ::prost::alloc::string::String,
+    /// Tool path relative to the immutable Provider namespace.
+    #[prost(string, tag = "2")]
+    pub relative_path: ::prost::alloc::string::String,
+    /// Structural invocability, independent of credentials and approval.
+    #[prost(bool, tag = "3")]
+    pub available: bool,
+    /// Safe structural diagnostics for unavailable Tools.
+    #[prost(message, repeated, tag = "4")]
+    pub diagnostics: ::prost::alloc::vec::Vec<ProviderDiagnostic>,
+    /// Safe upstream-authored grouping metadata.
+    #[prost(string, repeated, tag = "5")]
+    pub tags: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Declared effect hints.
+    #[prost(message, optional, tag = "6")]
+    pub hints: ::core::option::Option<ToolHints>,
+    /// Exact decision for the Tool.
+    #[prost(enumeration = "ToolAccessState", tag = "7")]
+    pub access_state: i32,
+    /// True when an exact stored rule, false when effect-based default.
+    #[prost(bool, tag = "8")]
+    pub explicit: bool,
+}
+/// One page of Tools and their decisions.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListToolAccessResponse {
+    /// Current Tools in canonical order.
     #[prost(message, repeated, tag = "1")]
-    pub policies: ::prost::alloc::vec::Vec<ToolPolicy>,
+    pub tools: ::prost::alloc::vec::Vec<ToolAccess>,
+    /// Empty when no further page remains.
+    #[prost(string, tag = "2")]
+    pub next_page_token: ::prost::alloc::string::String,
 }
 /// Atomic bounded update; any rejected target leaves all decisions unchanged.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -13198,12 +13317,12 @@ pub mod tool_policy_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        /// Reads 1–100 exact Tool decisions through one Provider.
-        pub async fn get_tool_policies(
+        /// Lists a Provider's Tools with their decisions, from one read per page.
+        pub async fn list_tool_access(
             &mut self,
-            request: impl tonic::IntoRequest<super::GetToolPoliciesRequest>,
+            request: impl tonic::IntoRequest<super::ListToolAccessRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::GetToolPoliciesResponse>,
+            tonic::Response<super::ListToolAccessResponse>,
             tonic::Status,
         > {
             self.inner
@@ -13216,14 +13335,14 @@ pub mod tool_policy_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.ToolPolicyService/GetToolPolicies",
+                "/coral.management.v1.ToolPolicyService/ListToolAccess",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new(
                         "coral.management.v1.ToolPolicyService",
-                        "GetToolPolicies",
+                        "ListToolAccess",
                     ),
                 );
             self.inner.unary(req, path, codec).await
@@ -13274,12 +13393,12 @@ pub(crate) mod tool_policy_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with ToolPolicyServiceServer.
     #[async_trait]
     pub trait ToolPolicyService: std::marker::Send + std::marker::Sync + 'static {
-        /// Reads 1–100 exact Tool decisions through one Provider.
-        async fn get_tool_policies(
+        /// Lists a Provider's Tools with their decisions, from one read per page.
+        async fn list_tool_access(
             &self,
-            request: tonic::Request<super::GetToolPoliciesRequest>,
+            request: tonic::Request<super::ListToolAccessRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::GetToolPoliciesResponse>,
+            tonic::Response<super::ListToolAccessResponse>,
             tonic::Status,
         >;
         /// Applies 1–100 distinct exact decisions atomically, including lifecycle evidence.
@@ -13368,25 +13487,25 @@ pub(crate) mod tool_policy_service_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/coral.management.v1.ToolPolicyService/GetToolPolicies" => {
+                "/coral.management.v1.ToolPolicyService/ListToolAccess" => {
                     #[allow(non_camel_case_types)]
-                    struct GetToolPoliciesSvc<T: ToolPolicyService>(pub Arc<T>);
+                    struct ListToolAccessSvc<T: ToolPolicyService>(pub Arc<T>);
                     impl<
                         T: ToolPolicyService,
-                    > tonic::server::UnaryService<super::GetToolPoliciesRequest>
-                    for GetToolPoliciesSvc<T> {
-                        type Response = super::GetToolPoliciesResponse;
+                    > tonic::server::UnaryService<super::ListToolAccessRequest>
+                    for ListToolAccessSvc<T> {
+                        type Response = super::ListToolAccessResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::GetToolPoliciesRequest>,
+                            request: tonic::Request<super::ListToolAccessRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ToolPolicyService>::get_tool_policies(&inner, request)
+                                <T as ToolPolicyService>::list_tool_access(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -13398,7 +13517,7 @@ pub(crate) mod tool_policy_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = GetToolPoliciesSvc(inner);
+                        let method = ListToolAccessSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

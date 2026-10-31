@@ -241,7 +241,17 @@ pub(super) fn safe_status(code: tonic::Code, reason: &str) -> Status {
 /// current visibility; binding to User, parent and collection prevents reuse elsewhere.
 /// Decodes a non-authorizing continuation before a bounded repository read.
 pub(super) fn page_start(size: i32, token: &str, scope: &str) -> Result<(u32, String), Status> {
-    if !(0..=100).contains(&size) || token.len() > 4096 {
+    page_start_within(100, size, token, scope)
+}
+
+/// [`page_start`] for a collection whose pages may hold up to `limit` items.
+pub(super) fn page_start_within(
+    limit: i32,
+    size: i32,
+    token: &str,
+    scope: &str,
+) -> Result<(u32, String), Status> {
+    if !(0..=limit).contains(&size) || token.len() > 4096 {
         return Err(invalid("invalid page request"));
     }
     let size = if size == 0 {
@@ -266,16 +276,27 @@ pub(super) fn page_start(size: i32, token: &str, scope: &str) -> Result<(u32, St
 }
 
 pub(super) fn page<T>(
-    mut values: Vec<T>,
+    values: Vec<T>,
     size: i32,
     token: &str,
     scope: &str,
     key: impl Fn(&T) -> String,
 ) -> Result<(Vec<T>, String), Status> {
     let (size, after) = page_start(size, token, scope)?;
+    page_of(values, size, &after, scope, key)
+}
+
+/// Cuts `values` to the page after `after`, whose size [`page_start_within`] decoded.
+pub(super) fn page_of<T>(
+    mut values: Vec<T>,
+    size: u32,
+    after: &str,
+    scope: &str,
+    key: impl Fn(&T) -> String,
+) -> Result<(Vec<T>, String), Status> {
     let size = usize::try_from(size).map_err(|_error| invalid("invalid page size"))?;
     values.sort_by_key(&key);
-    values.retain(|v| key(v) > after);
+    values.retain(|v| key(v).as_str() > after);
     let more = values.len() > size;
     values.truncate(size);
     let next = match values.last().filter(|_| more) {

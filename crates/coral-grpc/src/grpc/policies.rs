@@ -1,5 +1,5 @@
 //! Exact transport-safe Tool addresses, with atomic writes in the policy domain.
-use super::workspaces::{change, invalid};
+use super::workspaces::{change, invalid, page_of, page_start_within};
 use super::{GrpcServices, management as wire};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use coral_policy::{ToolAccessState, ToolPolicyTarget};
@@ -29,15 +29,37 @@ fn access(state: i32) -> Result<ToolAccessState, Status> {
         _ => Err(invalid("invalid access state")),
     }
 }
+fn access_state(state: ToolAccessState) -> wire::ToolAccessState {
+    match state {
+        ToolAccessState::Enabled => wire::ToolAccessState::Enabled,
+        ToolAccessState::ApprovalRequired => wire::ToolAccessState::ApprovalRequired,
+        ToolAccessState::Disabled => wire::ToolAccessState::Disabled,
+    }
+}
 fn view(tool: String, decision: &coral_policy::ToolPolicyDecision) -> wire::ToolPolicy {
     wire::ToolPolicy {
         tool,
-        access_state: match decision.access_state() {
-            ToolAccessState::Enabled => wire::ToolAccessState::Enabled,
-            ToolAccessState::ApprovalRequired => wire::ToolAccessState::ApprovalRequired,
-            ToolAccessState::Disabled => wire::ToolAccessState::Disabled,
-        }
-        .into(),
+        access_state: access_state(decision.access_state()).into(),
+        explicit: decision.is_explicit(),
+    }
+}
+fn tool_access(
+    parent: &str,
+    tool: &coral_catalog::ToolListing,
+    decision: &coral_policy::ToolPolicyDecision,
+) -> wire::ToolAccess {
+    wire::ToolAccess {
+        tool: super::providers::tool_name(parent, &tool.key),
+        relative_path: tool.relative_path.clone(),
+        available: tool.availability == coral_catalog::ToolAvailability::Available,
+        diagnostics: tool
+            .diagnostics
+            .iter()
+            .map(super::providers::diagnostic)
+            .collect(),
+        tags: tool.tags.clone(),
+        hints: Some(super::providers::tool_hints(tool.hints)),
+        access_state: access_state(decision.access_state()).into(),
         explicit: decision.is_explicit(),
     }
 }
@@ -90,26 +112,50 @@ impl GrpcServices {
 }
 #[tonic::async_trait]
 impl wire::tool_policy_service_server::ToolPolicyService for GrpcServices {
-    #[tracing::instrument(skip_all, name = "coral.private.get_tool_policies")]
-    async fn get_tool_policies(
+    #[tracing::instrument(skip_all, name = "coral.private.list_tool_access")]
+    async fn list_tool_access(
         &self,
-        request: Request<wire::GetToolPoliciesRequest>,
-    ) -> Result<Response<wire::GetToolPoliciesResponse>, Status> {
+        request: Request<wire::ListToolAccessRequest>,
+    ) -> Result<Response<wire::ListToolAccessResponse>, Status> {
         let actor = self.management_user(&request).await?;
         let req = request.into_inner();
-        let targets = self.policy_targets(&actor, &req.parent, &req.tools).await?;
-        let decisions = self
+        let (workspace, id) = super::resource(&req.parent, "providers")?;
+        let id = ProviderId::parse(id).map_err(super::providers::error)?;
+        let scope = format!("{}:{}:tool-access", actor.user_id(), req.parent);
+        let (page_size, after) = page_start_within(
+            i32::try_from(coral_catalog::MAX_TOOL_LISTING_PAGE)
+                .map_err(|_error| invalid("invalid page size"))?,
+            req.page_size,
+            &req.page_token,
+            &scope,
+        )?;
+        let after = if after.is_empty() {
+            None
+        } else {
+            Some(
+                coral_catalog::ToolKey::parse(&after)
+                    .map_err(|_error| invalid("invalid page token"))?,
+            )
+        };
+        let listed = self
             .policies
-            .decisions(&actor, &targets)
+            .listed_decisions(&actor, &workspace, &id, after.as_ref(), page_size)
             .await
             .map_err(error)?;
-        let policies = req
-            .tools
-            .into_iter()
-            .zip(decisions)
-            .map(|(name, decision)| view(name, &decision))
-            .collect();
-        Ok(Response::new(wire::GetToolPoliciesResponse { policies }))
+        let (tools, next_page_token) = page_of(
+            listed,
+            page_size,
+            after.as_ref().map_or("", coral_catalog::ToolKey::as_str),
+            &scope,
+            |(tool, _decision)| tool.key.as_str().to_owned(),
+        )?;
+        Ok(Response::new(wire::ListToolAccessResponse {
+            tools: tools
+                .iter()
+                .map(|(tool, decision)| tool_access(&req.parent, tool, decision))
+                .collect(),
+            next_page_token,
+        }))
     }
     #[tracing::instrument(skip_all, name = "coral.private.update_tool_policies")]
     async fn update_tool_policies(

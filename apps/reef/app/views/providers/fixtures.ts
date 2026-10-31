@@ -18,19 +18,14 @@ export const workspaceView: WorkspaceView = {
 
 /** An available tool of `owner` that needs approval, in `group`. */
 export function tool(owner: ProviderView, relativePath: string, group = ''): ToolView {
-  const callRoot = owner.builtin ? 'coral.workspace' : `coral.providers.${owner.namespace}`
   return {
     name: `workspaces/demo/providers/${owner.id}/tools/${relativePath}`,
     relativePath,
-    callPath: `${callRoot}.${relativePath}`,
-    summary: '',
-    description: '',
     hints: {},
     policy: 'approval_required',
     available: true,
     reasons: [],
     group,
-    path: `${owner.path}/tools/${relativePath}`,
   }
 }
 
@@ -49,6 +44,7 @@ export function provider(
     path: `/workspaces/demo/providers/${id}`,
     displayName,
     namespace,
+    callRoot: `coral.providers.${namespace}`,
     builtin: false,
     account: 'No account',
     blockers: [],
@@ -68,7 +64,11 @@ export function provider(
 
 /** Coral's Built-in Provider, with its tools under `coral.workspace`. */
 export function builtinProvider(id: string): ProviderView {
-  const view: ProviderView = { ...provider(id, 'Coral', ''), builtin: true }
+  const view: ProviderView = {
+    ...provider(id, 'Coral', ''),
+    builtin: true,
+    callRoot: 'coral.workspace',
+  }
   view.tools = [
     tool(view, 'addProvider'),
     { ...tool(view, 'updatePolicy'), hints: { idempotent: true } },

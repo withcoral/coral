@@ -6,6 +6,7 @@ import { extname, relative, resolve, sep } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { constants as zlibConstants, createGzip } from 'node:zlib'
 
 import { createRequestHandler, RouterContextProvider } from 'react-router'
 
@@ -154,7 +155,28 @@ export function createWebRequest(request, response) {
   }
 }
 
-async function sendWebResponse(request, response, webResponse) {
+// Pages and React Router's data responses. An event stream is not here: it
+// holds no size worth saving, and each event must reach the reader at once.
+const COMPRESSED_TYPES = /^(?:text\/html|text\/x-script|application\/json)\s*(?:;|$)/i
+
+function acceptsGzip(request) {
+  return /(?:^|,)\s*gzip\s*(?:;\s*q=(?!0(?:\.0*)?\s*(?:,|$))[\d.]+\s*)?(?:,|$)/i.test(
+    request.headers['accept-encoding'] ?? '',
+  )
+}
+
+// Only a GET: the body of a mutation can hold what is shown once, such as a
+// new credential, and compressing a secret beside reflected input leaks it.
+function compresses(request, webResponse) {
+  return (
+    request.method === 'GET' &&
+    webResponse.body !== null &&
+    !webResponse.headers.has('content-encoding') &&
+    COMPRESSED_TYPES.test(webResponse.headers.get('content-type') ?? '')
+  )
+}
+
+async function sendWebResponse(request, response, webResponse, compress) {
   response.statusCode = webResponse.status
   for (const [name, value] of webResponse.headers) {
     if (name !== 'set-cookie') response.setHeader(name, value)
@@ -164,12 +186,23 @@ async function sendWebResponse(request, response, webResponse) {
   if (!webResponse.body || request.method === 'HEAD') {
     await webResponse.body?.cancel()
     response.end()
+  } else if (compress && compresses(request, webResponse)) {
+    response.appendHeader('Vary', 'Accept-Encoding')
+    if (acceptsGzip(request)) {
+      response.setHeader('Content-Encoding', 'gzip')
+      response.removeHeader('Content-Length')
+      // A page streams its deferred data, so each write reaches the reader.
+      const gzip = createGzip({ flush: zlibConstants.Z_SYNC_FLUSH })
+      await pipeline(Readable.fromWeb(webResponse.body), gzip, response)
+    } else {
+      await pipeline(Readable.fromWeb(webResponse.body), response)
+    }
   } else {
     await pipeline(Readable.fromWeb(webResponse.body), response)
   }
 }
 
-async function handleNodeRequest(request, response, handler, traceRequest) {
+async function handleNodeRequest(request, response, handler, traceRequest, compress) {
   let bridge
   try {
     if (await serveStatic(request, response)) return
@@ -177,7 +210,7 @@ async function handleNodeRequest(request, response, handler, traceRequest) {
     const webRequest = bridge.request
     await traceRequest(webRequest, async () => {
       const webResponse = await handler(webRequest, new RouterContextProvider())
-      await sendWebResponse(request, response, webResponse)
+      await sendWebResponse(request, response, webResponse, compress)
     })
   } catch (error) {
     console.error('Coral web request failed:', error)
@@ -192,6 +225,8 @@ async function handleNodeRequest(request, response, handler, traceRequest) {
 // React Router derives the request origin from Host, so a DNS-rebinding page
 // would pass its origin check. Answer only requests that name this listener, and
 // refuse absolute-form targets, which would replace Host in the request URL.
+// A local listener serves the machine it runs on, where compressing a page
+// costs time and saves none.
 export function createRequestListener({
   handler,
   requireListenerHost,
@@ -202,7 +237,7 @@ export function createRequestListener({
       response.writeHead(421, { 'Content-Length': 0 }).end()
       return
     }
-    void handleNodeRequest(request, response, handler, traceRequest)
+    void handleNodeRequest(request, response, handler, traceRequest, !requireListenerHost)
   }
 }
 

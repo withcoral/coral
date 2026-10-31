@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useFetcher, useFetchers } from 'react-router'
 
@@ -8,10 +8,12 @@ import {
   type SelectedTool,
   type SelectionKey,
 } from './selection'
-import type { ToolOutcome, ToolView, PolicyActionResult } from './types'
+import type { ProviderView, ToolOutcome, ToolView, PolicyActionResult } from './types'
 
 type Request = {
   id: string
+  /** Later submissions have higher numbers. */
+  sequence: number
   action: string
   data: FormData
   onConfirmed?: (confirmed: SelectionKey[]) => void
@@ -38,22 +40,67 @@ type Mutations = {
     /** The last request on this tool did not settle it. Cleared by the next. */
     failure?: ToolFailure
   }
+  /** Every policy these requests changed or are changing. It keeps its identity until one moves. */
+  policies: ReadonlyMap<SelectionKey, ToolView['policy']>
+  /** A provider's blockers, after the policy changes saved here. */
+  blockers: (provider: ProviderView) => string[]
 }
 
 export type ToolFailure = { status: 'failed' | 'unconfirmed'; reason: string }
 const Context = createContext<Mutations | null>(null)
 
+type SavedPolicies = ReadonlyMap<SelectionKey, ToolView['policy']>
+const NOTHING_SAVED: SavedPolicies = new Map()
+type SavedBlockers = ReadonlyMap<string, { sequence: number; blockers: string[] }>
+const NO_BLOCKERS: SavedBlockers = new Map()
+
 /** Own requests above filtered rows and the conditional bulk toolbar. Only active
- * requests mount a fetcher, rather than allocating one for every catalog row. */
-export function PolicyMutations({ children }: { children: ReactNode }) {
+ * requests mount a fetcher, rather than allocating one for every catalog row.
+ *
+ * A saved change does not reload the catalog, so it stays here until `catalog`
+ * next changes, which is Coral's own word on every tool. */
+export function PolicyMutations({
+  catalog,
+  children,
+}: {
+  /** The loaded providers. */
+  catalog: readonly ProviderView[]
+  children: ReactNode
+}) {
   const [requests, setRequests] = useState<Request[]>([])
   const [failures, setFailures] = useState<ReadonlyMap<SelectionKey, ToolFailure>>(() => new Map())
+  const [saved, setSaved] = useState(NOTHING_SAVED)
+  const [savedBlockers, setSavedBlockers] = useState(NO_BLOCKERS)
+  const [loaded, setLoaded] = useState(catalog)
+  if (loaded !== catalog) {
+    setLoaded(catalog)
+    setSaved(NOTHING_SAVED)
+    setSavedBlockers(NO_BLOCKERS)
+  }
 
   const fetchers = useFetchers()
+  const submissions = useRef(0)
   const complete = useCallback((request: Request, result: PolicyActionResult | undefined) => {
     setRequests((current) => current.filter((item) => item.id !== request.id))
 
     const settled = settle(request.targets, result)
+    const access = requestedPolicy(request.data.get('access'))
+    if (access && settled.confirmed.length > 0)
+      setSaved((current) => {
+        const next = new Map(current)
+        for (const key of settled.confirmed) next.set(key, access)
+        return next
+      })
+    const { blockers } = result ?? {}
+    if (blockers)
+      setSavedBlockers((current) => {
+        const next = new Map(current)
+        // Responses can arrive out of order, and the later submission read later.
+        for (const [provider, labels] of Object.entries(blockers))
+          if ((current.get(provider)?.sequence ?? -1) < request.sequence)
+            next.set(provider, { sequence: request.sequence, blockers: labels })
+        return next
+      })
     // Each row shows its own outcome.
     if (settled.failures.size > 0)
       setFailures((current) => new Map([...current, ...settled.failures]))
@@ -63,6 +110,7 @@ export function PolicyMutations({ children }: { children: ReactNode }) {
     const targets = targetsOf(data)
     // Generated outside the updater, which StrictMode invokes twice.
     const id = crypto.randomUUID()
+    const sequence = ++submissions.current
     // A new attempt supersedes the outcome of the last.
     setFailures((current) => {
       const next = new Map(current)
@@ -79,28 +127,37 @@ export function PolicyMutations({ children }: { children: ReactNode }) {
       )
       if (targets.some((target) => taken.has(selectionKey(target.provider, target.tool))))
         return current
-      return [...current, { id, action, data, onConfirmed, targets }]
+      return [...current, { id, sequence, action, data, onConfirmed, targets }]
     })
   }
-  const pending = new Map<string, { pending: boolean; policy?: ToolView['policy'] }>()
-  const fetchersByKey = new Map(fetchers.map((fetcher) => [fetcher.key, fetcher]))
-  for (const request of requests) {
-    // A submitted request owns its tools immediately. Waiting for the
-    // fetcher to report busy leaves a render where every overlap guard reads
-    // "not pending", so a second change could target the same tool.
-    const fetcher = fetchersByKey.get(request.id)
-    const access = fetcher?.formData?.get('access') ?? request.data.get('access')
-    const failed = (fetcher?.data as PolicyActionResult | undefined)?.error
-    const policy =
-      !failed && (access === 'enabled' || access === 'approval_required' || access === 'disabled')
-        ? access
-        : undefined
-    for (const target of request.targets)
-      pending.set(selectionKey(target.provider, target.tool), { pending: true, policy })
-  }
+  const pending = useMemo(() => {
+    const inFlight = new Map<string, { pending: boolean; policy?: ToolView['policy'] }>()
+    const fetchersByKey = new Map(fetchers.map((fetcher) => [fetcher.key, fetcher]))
+    for (const request of requests) {
+      // A submitted request owns its tools immediately. Waiting for the
+      // fetcher to report busy leaves a render where every overlap guard reads
+      // "not pending", so a second change could target the same tool.
+      const fetcher = fetchersByKey.get(request.id)
+      const access = fetcher?.formData?.get('access') ?? request.data.get('access')
+      const failed = (fetcher?.data as PolicyActionResult | undefined)?.error
+      const policy = failed ? undefined : requestedPolicy(access)
+      for (const target of request.targets)
+        inFlight.set(selectionKey(target.provider, target.tool), { pending: true, policy })
+    }
+    return inFlight
+  }, [fetchers, requests])
+  // A pending change wins over a saved one, until it fails.
+  const policies = useMemo(() => {
+    const merged = new Map(saved)
+    for (const [key, { policy }] of pending) if (policy) merged.set(key as SelectionKey, policy)
+    return merged
+  }, [pending, saved])
   const state: Mutations['state'] = (provider, tool) => {
     const key = selectionKey(provider, tool)
-    return pending.get(key) ?? { pending: false, failure: failures.get(key) }
+    const policy = policies.get(key)
+    return pending.has(key)
+      ? { pending: true, policy }
+      : { pending: false, policy, failure: failures.get(key) }
   }
   return (
     <Context.Provider
@@ -108,6 +165,8 @@ export function PolicyMutations({ children }: { children: ReactNode }) {
         bulkPending: requests.some((request) => request.onConfirmed !== undefined),
         submit,
         state,
+        policies,
+        blockers: (provider) => savedBlockers.get(provider.id)?.blockers ?? provider.blockers,
       }}
     >
       {requests.map((request) => (
@@ -149,6 +208,12 @@ function PolicyRequest({
     complete(request, fetcher.data)
   }, [fetcher.state, fetcher.data, request, complete])
   return null
+}
+
+function requestedPolicy(access: FormDataEntryValue | null | undefined) {
+  return access === 'enabled' || access === 'approval_required' || access === 'disabled'
+    ? access
+    : undefined
 }
 
 const UNCONFIRMED = 'The response was lost. Verify the saved policy before you retry.'

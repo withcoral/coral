@@ -127,6 +127,19 @@ test('Workspace tools preserve deep links, settings, and independent filters', a
       await group('Second catalog').waitFor()
       expect(await group('Catalog').count()).toBe(1)
     })
+    await step('Open a tool from All providers and stay on All providers', async () => {
+      await page.setViewportSize({ width: 1440, height: 1000 })
+      await page.goto(providersPage)
+      await table.waitFor()
+      await table.getByRole('link', { name: 'works', exact: true }).click()
+      const drawer = page.getByRole('dialog', { name: 'works', exact: true })
+      await drawer.waitFor()
+      // Closing returns to the tab the drawer opened over, every provider's list.
+      await drawer.getByRole('button', { name: 'Close', exact: true }).click()
+      await page.waitForURL((url) => url.pathname === providersPage)
+      await table.getByRole('rowgroup', { name: 'Second catalog', exact: true }).waitFor()
+      await table.getByRole('rowgroup', { name: 'Catalog', exact: true }).waitFor()
+    })
     await step('A new tab opens at its top', async () => {
       // A short viewport lets the table scroll.
       await page.setViewportSize({ width: 1440, height: 600 })

@@ -697,6 +697,49 @@ pub async fn tool_hints_and_methods_batch_in_transaction(
     )
 }
 
+/// Reads one page of the catalog of a Provider that `evidence` may inspect, in
+/// Tool Key order, leaving out each Tool it does not reach. A full page still
+/// carries its one lookahead row. The caller owns the coherent read transaction.
+///
+/// # Errors
+/// Returns a Provider that `evidence` may not inspect as
+/// [`Error::ProviderNotFound`], or persistence or catalog corruption failures.
+pub async fn tool_listings_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    evidence: &WorkspaceEvidence,
+    provider_id: &ProviderId,
+    after: Option<&ToolKey>,
+    page_size: u32,
+) -> Result<Vec<coral_catalog::ToolListing>, Error> {
+    let stored = inspected_provider_in_transaction(transaction, evidence, provider_id).await?;
+    let call_root = stored.provider.call_root();
+    let role = Some(evidence.effective_role());
+    let lookahead = usize::try_from(page_size).unwrap_or(usize::MAX);
+    let mut tools = Vec::new();
+    let mut after = after.cloned();
+    // Read on past each Tool left out, so a full page keeps its lookahead row.
+    loop {
+        let page = coral_catalog::tool_listings_in_transaction(
+            transaction,
+            &stored.generation_id,
+            after.as_ref(),
+            page_size,
+        )
+        .await?;
+        let exhausted = page.len() <= lookahead;
+        after = page.last().map(|tool| tool.key.clone());
+        tools.extend(
+            page.into_iter()
+                .filter(|tool| reaches(call_root, &tool.key, role)),
+        );
+        if exhausted || tools.len() > lookahead {
+            break;
+        }
+    }
+    tools.truncate(lookahead.saturating_add(1));
+    Ok(tools)
+}
+
 /// Resolves the Provider under `coral.providers.<namespace>`, in any state,
 /// and the Tool-relative path of each Tool in its current catalog.
 /// Definitions and schemas stay lazy.
@@ -956,6 +999,26 @@ fn require_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
             coral_workspace::Error::PermissionDenied("Workspace Owner authority is required")
                 .into(),
         )
+    }
+}
+
+/// Loads one Provider that `evidence` may inspect; anything else is absent.
+async fn inspected_provider_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    evidence: &WorkspaceEvidence,
+    provider_id: &ProviderId,
+) -> Result<repository::ProviderWithActiveGeneration, Error> {
+    let stored = repository::provider_in_transaction(
+        &mut *transaction,
+        evidence.workspace().id(),
+        provider_id,
+    )
+    .await?
+    .ok_or(Error::ProviderNotFound)?;
+    if inspects(transaction, evidence, &stored).await? {
+        Ok(stored)
+    } else {
+        Err(Error::ProviderNotFound)
     }
 }
 
