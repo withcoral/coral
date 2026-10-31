@@ -45,9 +45,10 @@ pub(super) fn definition() -> Definition {
                  account. A route that does not match the source fails with invalid_input. \
                  Omit displayName, servers, authentication, credentialFields and \
                  requestHeaders to use what the source suggests, or give them to override \
-                 it. When the source declares no credential but the service needs one, \
-                 give authentication, such as { method: \"bearer\" }, with fixed or \
-                 caller. Never pass a secret or a literal credential value: Coral stores \
+                 it. When the source does not say whether it needs a credential, use none \
+                 if the service needs none. When the service needs a credential that the \
+                 source does not declare, give authentication, such as { method: \"bearer\" \
+                 }, with fixed or caller. Never pass a secret or a literal credential value: Coral stores \
                  your arguments, and Workspace Owners can see them. When Coral cannot \
                  fetch a source URL, the call fails with upstream_incomplete: check that \
                  the URL is reachable, then call again. When status is needs_person, show \

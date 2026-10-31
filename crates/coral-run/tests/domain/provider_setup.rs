@@ -1097,8 +1097,8 @@ async fn an_oauth_protected_mcp_server_needs_a_person_to_sign_in() {
             None,
             "fixed",
             Some(
-                " at `authentication`: Choose a supported method. MCP OAuth endpoints are \
-                 read-only."
+                " at `authentication`: The source does not say how to sign in. Give \
+                 `authentication`."
                     .to_owned(),
             ),
         ),

@@ -3,7 +3,8 @@
 //! what the Program learns about the Provider that person published, and how
 //! Coral ends a Setup that nobody will finish.
 use coral_catalog::{
-    ConfigurationChoices, ConfigurationFieldError, ConfigurationPatch, ProviderConfiguration,
+    AuthenticationConfiguration, ConfigurationChoices, ConfigurationFieldError, ConfigurationPatch,
+    ProviderConfiguration,
 };
 use coral_db::Transaction;
 use coral_workspace::{AuthenticatedPrincipal, ChangeContext, WorkspaceAction, WorkspaceId};
@@ -228,7 +229,9 @@ impl ProviderModule {
 /// The configuration to confirm and the route to check: the Program's choices
 /// over what the source suggests for a new Provider, or its changes over the
 /// configuration the Update Setup saved. An MCP server reports its own server
-/// and OAuth endpoints, so an update takes those from `review` unless sent.
+/// and OAuth endpoints, so an update takes those from `review` unless sent. For
+/// a source silent on credentials, the route `none` is the Program's word that
+/// it needs none, which the person who finishes the Setup can still change.
 fn program_configuration(
     setup: &ProviderSetup,
     review: SetupConfigurationReview,
@@ -242,7 +245,23 @@ fn program_configuration(
                     diagnostic: review.diagnostic,
                 });
             };
-            Ok((choices.over(document.suggested), Some(route)))
+            let silent = document.silent_on_credentials();
+            let mut configuration = choices.over(document.suggested);
+            if configuration.authentication.is_none() {
+                if !silent || route != CredentialRoute::None {
+                    return Err(ProgramSetupError::Configuration {
+                        errors: vec![ConfigurationFieldError {
+                            field: "authentication".into(),
+                            message: "The source does not say how to sign in. Give \
+                                      `authentication`."
+                                .into(),
+                        }],
+                        diagnostic: None,
+                    });
+                }
+                configuration.authentication = Some(AuthenticationConfiguration::None);
+            }
+            Ok((configuration, Some(route)))
         }
         ProgramSetupPurpose::Update { route, patch, .. } => {
             // An Update Setup starts from the Provider's saved configuration.

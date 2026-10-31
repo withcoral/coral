@@ -2099,6 +2099,95 @@ async fn a_program_setup_takes_only_a_route_that_suits_its_source() {
     }
 }
 
+// Catches: a source that does not say how to sign in failing a Program that said
+// it needs no credential, or a Setup that guesses a sign-in nobody chose.
+#[tokio::test]
+async fn a_source_that_does_not_say_how_to_sign_in_takes_the_programs_word() {
+    let mut document = json!({
+        "openapi": "3.1.0",
+        "info": {"title": "Weather", "version": "1"},
+        "servers": [{"url": "https://weather.example"}],
+        "paths": {
+            "/forecast": {"get": {
+                "operationId": "getForecast",
+                "responses": {"200": {"description": "Forecast"}},
+            }},
+        },
+    });
+    let silent = document.to_string();
+    document["components"] = json!({
+        "securitySchemes": {"bearer": {"type": "http", "scheme": "bearer"}},
+    });
+    let unused = document.to_string();
+    let suggested = coral_catalog::ConfigurationChoices::default;
+    let bearer = coral_catalog::ConfigurationChoices {
+        authentication: Some(AuthenticationConfiguration::Bearer),
+        ..suggested()
+    };
+    for (document, route, choices, expected) in [
+        (
+            &silent,
+            CredentialRoute::None,
+            suggested(),
+            Some(AuthenticationConfiguration::None),
+        ),
+        (
+            &silent,
+            CredentialRoute::Fixed,
+            bearer,
+            Some(AuthenticationConfiguration::Bearer),
+        ),
+        (&silent, CredentialRoute::Fixed, suggested(), None),
+        // The document names a sign-in, so "none" is likely a mistake.
+        (&unused, CredentialRoute::None, suggested(), None),
+    ] {
+        let harness = harness().await;
+        let (owner, workspace) = workspace_owner(&harness, "user:program-setup-silent").await;
+        let prepared = harness
+            .providers
+            .prepare_program_setup(
+                &change_context(owner.clone(), 11, '1'),
+                workspace.id(),
+                Some(&harness.accounts),
+                program_setup_request(document, route, choices),
+                std::future::pending(),
+            )
+            .await;
+        match (prepared, expected) {
+            (Ok(prepared), Some(expected)) => {
+                let confirmed = harness
+                    .providers
+                    .review_setup_configuration(&owner, workspace.id(), &prepared.setup)
+                    .await
+                    .unwrap()
+                    .confirmed
+                    .unwrap();
+                assert_eq!(confirmed.authentication, Some(expected), "{route:?}");
+            }
+            (
+                Err(crate::ProgramSetupError::Configuration {
+                    errors,
+                    diagnostic: None,
+                }),
+                None,
+            ) => {
+                let [error] = errors.as_slice() else {
+                    panic!("{route:?}: {errors:?}")
+                };
+                assert_eq!(error.field, "authentication", "{route:?}");
+                assert_eq!(
+                    error.message, "The source does not say how to sign in. Give `authentication`.",
+                    "{route:?}"
+                );
+                let open = open_setups(&harness, &owner, workspace.id()).await;
+                assert!(open.is_empty(), "{route:?}: {open:?}");
+            }
+            (other, expected) => panic!("{route:?}: {other:?}, expected {expected:?}"),
+        }
+        assert_eq!(publications(&harness, &owner, workspace.id()).await, 0);
+    }
+}
+
 /// Every Setup in the Workspace still open, from its creation evidence.
 async fn open_setups(
     harness: &Harness,
