@@ -99,6 +99,7 @@ async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() 
         let _measured = tracing::subscriber::set_default(metrics.subscriber());
         world.reconcile_and_settle().await;
         let visibility = || metrics.named("coral.search.publication.visibility.duration");
+        let recovery = || metrics.named("coral.search.index.recovery.duration");
         let samples = || visibility().iter().map(|point| point.count).sum::<u64>();
         let first = samples();
         assert!(first > 0);
@@ -118,11 +119,7 @@ async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() 
         world.index.settled().await;
         assert_eq!(samples(), first);
 
-        assert!(
-            metrics
-                .named("coral.search.index.recovery.duration")
-                .is_empty()
-        );
+        assert!(recovery().is_empty());
         world.set_outage_start(1).await;
 
         if rename {
@@ -193,7 +190,7 @@ async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() 
         restarted.reconcile().await;
         restarted.settled().await;
         assert_eq!(samples(), first);
-        let recovery = metrics.named("coral.search.index.recovery.duration");
+        let recovery = recovery();
         assert!(!recovery.is_empty());
         assert!(
             recovery
