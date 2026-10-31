@@ -32,6 +32,14 @@ pub(crate) enum ToolRemoval {
     },
     /// One Generation that stopped being active.
     Generation(ProviderGenerationId),
+    /// One Generation a reconcile pass found superseded, as
+    /// [`ToolIndexer::superseded`] describes. Unlike
+    /// [`Self::Generation`], it takes no Workspace lock and recounts no
+    /// statistics: the pass's statistics step does.
+    Superseded {
+        workspace_id: WorkspaceId,
+        generation_id: ProviderGenerationId,
+    },
 }
 
 #[async_trait]
@@ -133,6 +141,17 @@ impl EntityIndexer for ToolIndexer {
             ToolRemoval::Generation(generation_id) => {
                 repository::delete_generation(transaction, generation_id).await?;
             }
+            ToolRemoval::Superseded {
+                workspace_id,
+                generation_id,
+            } => {
+                repository::delete_generation_in_workspace(
+                    transaction,
+                    workspace_id,
+                    generation_id,
+                )
+                .await?;
+            }
         }
         Ok(())
     }
@@ -159,21 +178,35 @@ impl EntityIndexer for ToolIndexer {
         Ok(expected
             .iter()
             .filter(|generation| {
-                let Some(state) = states.get(generation.generation_id()) else {
-                    return true;
-                };
-                // `None` sorts before every revision.
-                if state.indexer_revision < Some(INDEXER_REVISION) {
-                    return true;
-                }
-                match &state.outcome {
-                    // A rename keeps the Generation, so the name is compared on
-                    // its own.
-                    RecordedOutcome::Complete { .. } => !current_projection(state, generation),
-                    RecordedOutcome::Failed { retry } => retry.is_due(now_unix_nanos),
-                }
+                needs_indexing(
+                    states.get(generation.generation_id()),
+                    generation,
+                    now_unix_nanos,
+                )
             })
             .collect())
+    }
+}
+
+/// The rule of [`ToolIndexer::reconcile`] for one Generation and its state
+/// row.
+fn needs_indexing(
+    state: Option<&repository::RecordedGeneration>,
+    generation: &ActiveGeneration,
+    now_unix_nanos: i64,
+) -> bool {
+    let Some(state) = state else {
+        return true;
+    };
+    // `None` sorts before every revision.
+    if state.indexer_revision < Some(INDEXER_REVISION) {
+        return true;
+    }
+    match &state.outcome {
+        // A rename keeps the Generation, so the name is compared on
+        // its own.
+        RecordedOutcome::Complete { .. } => !current_projection(state, generation),
+        RecordedOutcome::Failed { retry } => retry.is_due(now_unix_nanos),
     }
 }
 
@@ -188,22 +221,59 @@ pub(super) fn current_projection(
 }
 
 impl ToolIndexer {
-    /// Removes the rows and state rows of every Generation that is not in
-    /// `active`, every Provider's active Generation: superseded ones, and
-    /// those of a Provider deleted without a notification.
+    /// Whether a pass that read `generation` as stale must still index it at
+    /// `now_unix_nanos`: a notified write may have indexed it since. The rule
+    /// of [`Self::reconcile`], for one Generation.
+    pub(crate) async fn still_needs_indexing(
+        &self,
+        transaction: &mut Transaction<'_>,
+        generation: &ActiveGeneration,
+        now_unix_nanos: i64,
+    ) -> Result<bool, IndexError> {
+        let state = repository::recorded_generation(
+            transaction,
+            generation.workspace_id(),
+            generation.generation_id(),
+        )
+        .await?;
+        Ok(needs_indexing(state.as_ref(), generation, now_unix_nanos))
+    }
+
+    /// Whether the index holds `generation` as `complete`, as this indexer
+    /// revision writes it and under the Provider's current display name.
+    pub(crate) async fn holds_current(
+        &self,
+        transaction: &mut Transaction<'_>,
+        generation: &ActiveGeneration,
+    ) -> Result<bool, IndexError> {
+        let state = repository::recorded_generation(
+            transaction,
+            generation.workspace_id(),
+            generation.generation_id(),
+        )
+        .await?;
+        Ok(state.is_some_and(|state| current_projection(&state, generation)))
+    }
+
+    /// The removal of every Generation that is indexed and not in `active`,
+    /// every Provider's active Generation: superseded ones, and those of a
+    /// Provider deleted without a notification. Reads only, so a read
+    /// snapshot serves it and a pass that finds none never takes the writer.
     ///
-    /// Best effort across processes: a Generation another process activates
-    /// and indexes after `active` was read counts as superseded here. Its
-    /// rows and state row go, and the next pass indexes it again.
+    /// `transaction` must be the snapshot `active` was read from, so a
+    /// Generation activated later is invisible to both reads. The removals
+    /// run after that snapshot: a Generation made active again before its
+    /// removal would lose its rows and state row until the next pass indexes
+    /// it again.
     ///
-    /// Takes no Workspace lock and recounts no statistics: a delete lowers
-    /// the Workspace's row count, so the statistics step of the same pass
-    /// recounts the Workspace under its lock.
-    pub(crate) async fn remove_superseded(
+    /// A removal takes no Workspace lock and recounts no statistics: a delete
+    /// lowers the Workspace's row count, so the statistics step of the same
+    /// pass recounts the Workspace under its lock.
+    pub(crate) async fn superseded(
         &self,
         transaction: &mut Transaction<'_>,
         active: &[ActiveGeneration],
-    ) -> Result<(), IndexError> {
+    ) -> Result<Vec<ToolRemoval>, IndexError> {
         let active = active
             .iter()
             .map(ActiveGeneration::generation_id)
@@ -215,10 +285,13 @@ impl ToolIndexer {
             .chain(repository::generations_with_rows(transaction).await?)
             .filter(|generation| !active.contains(&generation.generation_id))
             .collect::<BTreeSet<_>>();
-        for generation in &superseded {
-            repository::delete_generation_in_workspace(transaction, generation).await?;
-        }
-        Ok(())
+        Ok(superseded
+            .into_iter()
+            .map(|generation| ToolRemoval::Superseded {
+                workspace_id: generation.workspace_id,
+                generation_id: generation.generation_id,
+            })
+            .collect())
     }
 }
 

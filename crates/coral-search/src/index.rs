@@ -43,10 +43,10 @@ const WRITER_WAIT_LIMIT: Duration = Duration::from_mins(1);
 /// missed. Each notified write is the root of a trace of its own, linked to
 /// the span that notified it, such as the request that saved a Saved
 /// Function, and a failed write marks its span. Notified writes run in the order of the notifications, one
-/// in-process mutex serializes every write and reconcile pass, and a write
-/// that runs past its limit is rolled back and counts as failed. Cloning is
-/// cheap; every clone shares the database handle, the order, the mutex, and
-/// the reconcile interval.
+/// in-process mutex serializes every write, a reconcile pass's one at a time,
+/// and a write that runs past its limit is rolled back and counts as failed.
+/// Cloning is cheap; every clone shares the database handle, the order, the
+/// mutex, and the reconcile interval.
 #[derive(Clone)]
 pub struct SearchIndex {
     database: Arc<Database>,
@@ -153,12 +153,12 @@ impl SearchIndex {
     /// entries from what the catalog stores, then writes the Generation's rows
     /// and its `complete` state row in one transaction. The committing
     /// workflow sends ids alone and never waits for the preparation (ADR
-    /// 0017). Writing an indexed Generation again rewrites its rows. A failed
-    /// preparation or write leaves a `failed` state row, and the reconcile
-    /// task retries the Generation when its retry rule is due.
+    /// 0017). A failed preparation or write leaves a `failed` state row, and
+    /// the reconcile task retries the Generation when its retry rule is due.
     ///
     /// A Generation that another publication replaced before the write runs
     /// is skipped: the replacing publication's notification indexes its own.
+    /// So is one a reconcile pass already indexed.
     pub fn index_generation(
         &self,
         workspace_id: WorkspaceId,
@@ -189,6 +189,13 @@ impl SearchIndex {
         let index = self.clone();
         self.spawn(span, async move {
             let _write = index.writes.lock().await;
+            if index
+                .holds_active_generation(&workspace_id, &provider_id, expected.as_ref())
+                .await
+            {
+                skipped("already_indexed");
+                return Ok(());
+            }
             match index
                 .prepare_stored_generation(&workspace_id, &provider_id)
                 .await
@@ -219,6 +226,40 @@ impl SearchIndex {
                 }
             }
         });
+    }
+
+    /// Whether the index already holds the Provider's active Generation, when
+    /// it is still `expected`, if one is named. Under load a pass reaches a
+    /// Generation before its notification does, and rewriting it would spend
+    /// the preparation and a turn at the writer on nothing. A failed read
+    /// answers `false`: the write that follows reports the failure.
+    async fn holds_active_generation(
+        &self,
+        workspace_id: &WorkspaceId,
+        provider_id: &ProviderId,
+        expected: Option<&ProviderGenerationId>,
+    ) -> bool {
+        let held = self
+            .within_limit(async {
+                let mut transaction = self.database.begin_read_snapshot().await?;
+                let active = coral_provider::workspace_active_generations_in_transaction(
+                    &mut transaction,
+                    workspace_id,
+                    Some(provider_id),
+                )
+                .await?;
+                let Some(active) = active.first() else {
+                    return Ok(false);
+                };
+                if expected.is_some_and(|expected| expected != active.generation_id()) {
+                    return Ok(false);
+                }
+                let held = ToolIndexer.holds_current(&mut transaction, active).await?;
+                transaction.rollback().await?;
+                Ok(held)
+            })
+            .await;
+        matches!(held, Ok(true))
     }
 
     /// Logs a failed preparation and records a `failed` state row for the

@@ -120,8 +120,8 @@ impl SearchIndex {
             .id()
     }
 
-    /// Runs one reconcile pass under the in-process mutex, so it converges
-    /// the index on what the owners hold without a notification:
+    /// Runs one reconcile pass, which converges the index on what the owners
+    /// hold without a notification:
     ///
     /// 1. Indexes every Provider whose active Generation has no `complete`
     ///    state row, one under another Provider display name, or a `failed`
@@ -139,16 +139,25 @@ impl SearchIndex {
     ///    Saved Function delete cascades to its row without an index write,
     ///    and step 3 removes rows without a count.
     ///
-    /// Removal runs first, in a transaction of its own that reads the active
-    /// Generations again; a failed removal is logged and the pass goes on.
-    /// Each Generation and each function is written in a transaction of its
-    /// own; a failure is logged and recorded like a notified write's, and the
-    /// pass goes on. Passes in two processes write the same idempotent rows.
+    /// Removal runs first. The pass reads what each step must do from a read
+    /// snapshot, so a pass that finds no change never takes the writer, which
+    /// every other write in the process would wait behind.
+    ///
+    /// Each removal, Generation, function and recount is written in a
+    /// transaction of its own, under the in-process mutex, which the pass
+    /// holds for that one item. A pass under load waits for the writer once
+    /// per item, and holding the mutex across those waits would hold back
+    /// every notified write. A notified write that lands between two items
+    /// may index what the pass read as stale, so the pass reads a Generation's
+    /// state again before it indexes it. A failed removal is logged and the
+    /// pass goes on without further removals; a failed write is logged and
+    /// recorded like a notified write's, and the pass goes on. Passes in two
+    /// processes write the same idempotent rows.
     ///
     /// The retry module's rule decides when a failure is due. A failure that
     /// repeats until something changes waits for a newer Coral version, or,
-    /// for a Saved Function, for another revision, so it does not hold the
-    /// mutex pass after pass.
+    /// for a Saved Function, for another revision, so a pass does not spend
+    /// its turn at the writer on it pass after pass.
     ///
     /// The pass runs in a root span, `coral.search.reconcile`, and each step
     /// in a child span, all at debug level: almost every pass finds nothing
@@ -163,7 +172,6 @@ impl SearchIndex {
     /// the statistics rows it wrote. A pass that finds no change writes no
     /// row.
     pub async fn reconcile(&self) {
-        let _write = self.writes.lock().await;
         let pass = tracing::debug_span!(
             parent: None,
             "coral.search.reconcile",
@@ -258,18 +266,24 @@ impl SearchIndex {
     /// Step 3 of a pass, run first: removes the rows and state rows of every
     /// Generation that is no Provider's active Generation. Best effort.
     async fn remove_superseded_generations(&self) -> Result<(), ()> {
-        let removed = self
-            .within_limit(async {
-                let mut transaction = self.database.begin().await?;
-                let active =
-                    coral_provider::active_generations_in_transaction(&mut transaction).await?;
-                ToolIndexer
-                    .remove_superseded(&mut transaction, &active)
-                    .await?;
-                transaction.commit().await?;
-                Ok(())
-            })
-            .await;
+        let removed = async {
+            let superseded = self
+                .within_limit(async {
+                    let mut transaction = self.database.begin_read_snapshot().await?;
+                    let active =
+                        coral_provider::active_generations_in_transaction(&mut transaction).await?;
+                    let superseded = ToolIndexer.superseded(&mut transaction, &active).await?;
+                    transaction.rollback().await?;
+                    Ok(superseded)
+                })
+                .await?;
+            for removal in &superseded {
+                let _write = self.writes.lock().await;
+                self.erase(&ToolIndexer, removal).await?;
+            }
+            Ok::<_, IndexError>(())
+        }
+        .await;
         if let Err(error) = removed {
             // TODO: an error monitor for failed index writes is still to be set up.
             tracing::error!(
@@ -313,6 +327,10 @@ impl SearchIndex {
         };
         let mut work = ItemWork::default();
         for generation in &stale {
+            let _write = self.writes.lock().await;
+            if !self.still_stale(generation, now_unix_nanos).await {
+                continue;
+            }
             let span = generation_span(
                 generation.workspace_id(),
                 generation.provider_id(),
@@ -340,6 +358,26 @@ impl SearchIndex {
             work.count(&indexed);
         }
         Ok(work)
+    }
+
+    /// Whether `generation`, which the pass read as stale, still is. A failed
+    /// read answers `true`: the write that follows reports the failure.
+    async fn still_stale(
+        &self,
+        generation: &coral_provider::ActiveGeneration,
+        now_unix_nanos: i64,
+    ) -> bool {
+        let needed = self
+            .within_limit(async {
+                let mut transaction = self.database.begin_read_snapshot().await?;
+                let needed = ToolIndexer
+                    .still_needs_indexing(&mut transaction, generation, now_unix_nanos)
+                    .await?;
+                transaction.rollback().await?;
+                Ok(needed)
+            })
+            .await;
+        !matches!(needed, Ok(false))
     }
 
     /// Prepares the entries of the Provider's current active Generation from
@@ -388,6 +426,7 @@ impl SearchIndex {
             Ok(stale) => {
                 let mut work = ItemWork::default();
                 for entry in &stale {
+                    let _write = self.writes.lock().await;
                     let indexed = in_write_span(
                         function_span(entry),
                         WriteTrigger::Reconcile,
@@ -438,6 +477,7 @@ impl SearchIndex {
             ..StatisticsWork::default()
         };
         for workspace_id in &check.stale {
+            let _write = self.writes.lock().await;
             let span = tracing::info_span!(
                 parent: None,
                 "coral.search.refresh_statistics",

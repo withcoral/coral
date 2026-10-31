@@ -551,6 +551,60 @@ async fn one_reconcile_pass_indexes_a_published_generation_and_a_second_changes_
     );
 }
 
+/// `SQLite` writers queue in arrival order for one connection, so a pass that
+/// took the writer to find nothing would hold back every write in the process
+/// on each interval.
+#[tokio::test]
+async fn a_pass_that_finds_nothing_to_do_does_not_wait_for_the_writer() {
+    coral_test_support::database_only!(Sqlite);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world.index.reconcile().await;
+
+    let writer = world.modules.search.database.begin().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), world.index.reconcile())
+        .await
+        .expect("a pass with nothing to do reads and returns");
+    writer.rollback().await.unwrap();
+}
+
+/// A pass reads what is stale at its start, and under load the notifications
+/// for the same Generations arrive while it writes. Neither side may index a
+/// Generation the other just finished: the repeat would queue for the writer
+/// again and lengthen the backlog that made the two overlap.
+#[tokio::test]
+async fn a_pass_and_its_overlapping_notifications_index_each_generation_once() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let tracer_entries = world.stored_entries(&world.tracer).await;
+    let ledger_entries = world.stored_entries(&ledger).await;
+    let index = world
+        .index
+        .clone()
+        .with_stall_before_write(std::time::Duration::from_millis(50));
+
+    let spans = CapturedSpans::default();
+    {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(spans.clone()),
+        );
+        tokio::join!(index.reconcile(), async {
+            notify(&index, &tracer_entries);
+            notify(&index, &ledger_entries);
+        });
+        index.settled().await;
+    }
+
+    let writes = spans
+        .recorded()
+        .into_iter()
+        .filter(|span| span.fields.contains_key("coral.search.writer_wait_ms"))
+        .count();
+    assert_eq!(writes, 2, "one write per Generation");
+    assert_eq!(world.indexed_generations().await.len(), 2);
+}
+
 #[tokio::test]
 async fn a_transient_failure_waits_twice_as_long_after_each_attempt() {
     let upstream = MockServer::start().await;
@@ -1673,6 +1727,18 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
             notify(&world.index, &entries);
             world.index.settled().await;
             assert!(!world.tool_rows().await.is_empty());
+            // A rename is what rewrites an indexed Generation.
+            world
+                .modules
+                .providers
+                .rename_provider(
+                    &change(world.user.clone(), 70, '7'),
+                    &world.workspace,
+                    &world.tracer,
+                    coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
+                )
+                .await
+                .expect("rename the Provider");
         }
         world.reject_complete_states().await;
 
