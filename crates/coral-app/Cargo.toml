@@ -31,7 +31,6 @@ sea-query.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-stream = { workspace = true, features = ["net"] }
 toml.workspace = true
 tonic.workspace = true
 tracing.workspace = true
@@ -67,5 +66,6 @@ rmcp.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tokio-stream.workspace = true
 uuid.workspace = true
 wiremock.workspace = true

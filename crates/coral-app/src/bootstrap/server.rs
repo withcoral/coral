@@ -8,9 +8,9 @@ use std::sync::Mutex;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
-use tokio_stream::wrappers::TcpListenerStream;
 use tonic::service::Routes;
 use tonic::transport::Server;
+use tonic::transport::server::TcpIncoming;
 use zeroize::Zeroizing;
 
 use super::env::AppEnvironment;
@@ -942,11 +942,13 @@ fn start_grpc_server(
     routes: Routes,
     task_finished: watch::Sender<bool>,
 ) -> JoinHandle<Result<(), tonic::transport::Error>> {
+    // `Server::tcp_nodelay` is ignored for a stream that the caller supplies.
+    let incoming = TcpIncoming::from(listener).with_nodelay(Some(true));
     tokio::spawn(async move {
         let result = Server::builder()
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_routes(routes)
-            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+            .serve_with_incoming_shutdown(incoming, async {
                 drop(shutdown_rx.await);
             })
             .await;
