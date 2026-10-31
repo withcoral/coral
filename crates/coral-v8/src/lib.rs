@@ -766,9 +766,41 @@ impl Error {
     }
 }
 
+/// Why a compile request returned no result.
+///
+/// Only [`Self::Rejected`] judges the source. The others say the compiler could
+/// not answer, so the same source can succeed on another attempt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompileFailure {
+    /// The source was rejected, with a safe bounded diagnostic for its author.
+    Rejected(String),
+    /// The bounded compiler queue had no room for the request.
+    Busy,
+    /// The compile deadline expired.
+    TimedOut,
+    /// The compiler worker stopped before it answered.
+    Stopped,
+}
+
+impl From<Error> for CompileFailure {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::CompilerBusy => Self::Busy,
+            Error::CompilationTimedOut => Self::TimedOut,
+            Error::CompilerUnavailable | Error::CompilerThread(_) => Self::Stopped,
+            other => Self::Rejected(format_compiler_error(other)),
+        }
+    }
+}
+
+impl From<String> for CompileFailure {
+    fn from(message: String) -> Self {
+        Self::Rejected(message)
+    }
+}
+
 /// Formats safe compiler diagnostics with their authored line and column.
-#[must_use]
-pub fn format_compiler_error(error: Error) -> String {
+fn format_compiler_error(error: Error) -> String {
     let message = match error {
         Error::Compilation { diagnostics } => diagnostics
             .into_iter()

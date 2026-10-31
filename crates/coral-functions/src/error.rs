@@ -13,6 +13,9 @@ pub enum Error {
     /// Compilation exceeded the fixed authoring deadline.
     #[error("Saved Function compilation exceeded the two-second deadline")]
     SavedFunctionCompilationTimedOut,
+    /// The compiler queue was full, so the source was not judged. Retryable.
+    #[error("Saved Function compiler is busy; retry shortly")]
+    CompilerBusy,
     /// Current Principal authority does not permit the operation.
     #[error("permission denied: {0}")]
     PermissionDenied(&'static str),
@@ -57,6 +60,7 @@ impl Error {
             Self::SavedFunctionNotFound { .. } => "saved_function_not_found",
             Self::SavedFunctionAdmission { .. } => "saved_function_admission",
             Self::SavedFunctionCompilationTimedOut { .. } => "saved_function_compilation_timed_out",
+            Self::CompilerBusy { .. } => "compiler_busy",
             Self::PermissionDenied { .. } => "permission_denied",
             Self::PackageTooLarge { .. } => "package_too_large",
             Self::CompilerUnavailable { .. } => "compiler_unavailable",
@@ -82,6 +86,7 @@ impl Error {
             Self::SavedFunctionNotFound => "saved_function_not_found",
             Self::SavedFunctionAdmission(_) => "saved_function_admission_failed",
             Self::SavedFunctionCompilationTimedOut => "saved_function_compilation_timed_out",
+            Self::CompilerBusy => "saved_function_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",
             Self::PermissionDenied(_) => "permission_denied",
             _ => return None,

@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
-use coral_v8::format_compiler_error;
+use coral_v8::CompileFailure;
 
 use crate::execution::ExecutionStop;
 use crate::{
@@ -52,7 +52,7 @@ pub(crate) trait ProgramEngine: Send + Sync {
         &self,
         _deadline: Instant,
         _source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, String> {
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         Ok(Vec::new())
     }
 
@@ -61,22 +61,24 @@ pub(crate) trait ProgramEngine: Send + Sync {
         _deadline: Instant,
         _path: &SavedFunctionPath,
         _source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, String> {
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         Ok(Vec::new())
     }
 
-    fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, String>;
+    fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure>;
 
     fn compile_with_saved_functions(
         &self,
         deadline: Instant,
         source: &str,
         linked: &[SavedFunctionSelection],
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         if linked.is_empty() {
             self.compile(deadline, source)
         } else {
-            Err("scripted Program compiler does not support Saved Functions".to_string())
+            Err(CompileFailure::Rejected(
+                "scripted Program compiler does not support Saved Functions".to_string(),
+            ))
         }
     }
 
@@ -124,12 +126,13 @@ impl ProgramEngine for V8ProgramEngine {
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, String> {
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         let source_name = "Program";
-        self.compiler
+        let references = self
+            .compiler
             .saved_function_paths(deadline, source)
-            .map_err(|error| format_compiler_error_for_source(error, source_name))
-            .and_then(|references| parse_saved_function_references(references, source_name))
+            .map_err(|error| compile_failure_for_source(error, source_name))?;
+        Ok(parse_saved_function_references(references, source_name)?)
     }
 
     fn saved_function_dependency_references(
@@ -137,20 +140,21 @@ impl ProgramEngine for V8ProgramEngine {
         deadline: Instant,
         path: &SavedFunctionPath,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, String> {
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         let source_name = format!("Saved Function coral.functions.{}", path.as_str());
-        self.compiler
+        let references = self
+            .compiler
             .saved_function_dependency_paths(deadline, source)
-            .map_err(|error| format_compiler_error_for_source(error, &source_name))
-            .and_then(|references| parse_saved_function_references(references, &source_name))
+            .map_err(|error| compile_failure_for_source(error, &source_name))?;
+        Ok(parse_saved_function_references(references, &source_name)?)
     }
 
-    fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, String> {
+    fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure> {
         let compiled = self
             .compiler
             .compile(deadline, source)
-            .map_err(format_compiler_error)?;
-        package_from_compiled(&compiled)
+            .map_err(CompileFailure::from)?;
+        Ok(package_from_compiled(&compiled)?)
     }
 
     fn compile_with_saved_functions(
@@ -158,7 +162,7 @@ impl ProgramEngine for V8ProgramEngine {
         deadline: Instant,
         source: &str,
         linked: &[SavedFunctionSelection],
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         if linked.is_empty() {
             return self.compile(deadline, source);
         }
@@ -174,8 +178,8 @@ impl ProgramEngine for V8ProgramEngine {
         let compiled = self
             .compiler
             .compile_with_saved_functions(deadline, source, &sources)
-            .map_err(format_compiler_error)?;
-        package_from_compiled(&compiled)
+            .map_err(CompileFailure::from)?;
+        Ok(package_from_compiled(&compiled)?)
     }
 
     fn execute(
@@ -257,14 +261,14 @@ fn parse_saved_function_references(
         .collect()
 }
 
-fn format_compiler_error_for_source(error: coral_v8::Error, source_name: &str) -> String {
+fn compile_failure_for_source(error: coral_v8::Error, source_name: &str) -> CompileFailure {
     match error {
         coral_v8::Error::InvalidSavedFunctionReference {
             message,
             line,
             column,
-        } => format!("{source_name}:{line}:{column}: {message}"),
-        other => format_compiler_error(other),
+        } => CompileFailure::Rejected(format!("{source_name}:{line}:{column}: {message}")),
+        other => other.into(),
     }
 }
 

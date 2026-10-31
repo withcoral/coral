@@ -20,6 +20,7 @@ fn error(error: coral_functions::Error) -> Status {
         // Reads and deletes never compile. Name every variant so a new one needs a wire decision.
         E::SavedFunctionAdmission(_)
         | E::SavedFunctionCompilationTimedOut
+        | E::CompilerBusy
         | E::PackageTooLarge { .. }
         | E::CompilerUnavailable(_)
         | E::CompilerWorkerStopped

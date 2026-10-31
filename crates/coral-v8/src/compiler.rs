@@ -824,6 +824,7 @@ mod tests {
         }
     }
     use super::*;
+    use crate::CompileFailure;
 
     fn script(compiler: &mut CompilerIsolate, source: &str) -> Result<(), Error> {
         v8::scope!(let scope, &mut compiler.isolate);
@@ -870,6 +871,25 @@ mod tests {
         compiler
             .compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;")
             .expect("live request after expired job");
+    }
+
+    #[test]
+    fn only_authored_faults_become_rejections() {
+        for (error, failure) in [
+            (Error::CompilerBusy, CompileFailure::Busy),
+            (Error::CompilationTimedOut, CompileFailure::TimedOut),
+            (Error::CompilerUnavailable, CompileFailure::Stopped),
+            (
+                Error::CompilerThread(std::io::Error::other("no thread")),
+                CompileFailure::Stopped,
+            ),
+            (
+                Error::InvalidProgramBody,
+                CompileFailure::Rejected("Program source is not one async-function body".into()),
+            ),
+        ] {
+            assert_eq!(CompileFailure::from(error), failure);
+        }
     }
 
     #[test]
