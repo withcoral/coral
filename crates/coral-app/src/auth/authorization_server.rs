@@ -17,6 +17,7 @@ use axum::extract::State;
 use axum::http::header;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use axum::serve::ListenerExt as _;
 use coral_auth::authorization_codes::AuthorizationCodes;
 use coral_auth::oauth_clients::OAuthClients;
 use coral_auth::{SessionTokenIssuer, UserDirectory};
@@ -293,6 +294,13 @@ async fn start_listener(
     let local_addr = listener.local_addr().map_err(AuthServerError::LocalAddr)?;
     let endpoint_uri = format!("http://{local_addr}");
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    // axum leaves Nagle's algorithm on, so a small write can wait for the
+    // client's delayed ACK.
+    let listener = listener.tap_io(|stream| {
+        if stream.set_nodelay(true).is_err() {
+            tracing::warn!("failed to set TCP_NODELAY on an accepted connection");
+        }
+    });
     let task = tokio::spawn(async move {
         axum::serve(listener, router)
             .with_graceful_shutdown(async {
