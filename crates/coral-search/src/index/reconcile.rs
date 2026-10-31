@@ -270,12 +270,10 @@ impl SearchIndex {
     async fn remove_superseded_generations(&self) -> Result<(), ()> {
         let removed = async {
             let superseded = self
-                .within_limit(async {
-                    let mut transaction = self.database.begin_read_snapshot().await?;
+                .read_snapshot(async |transaction| {
                     let active =
-                        coral_provider::active_generations_in_transaction(&mut transaction).await?;
-                    let superseded = ToolIndexer.superseded(&mut transaction, &active).await?;
-                    transaction.rollback().await?;
+                        coral_provider::active_generations_in_transaction(transaction).await?;
+                    let superseded = ToolIndexer.superseded(transaction, &active).await?;
                     Ok(superseded)
                 })
                 .await?;
@@ -302,17 +300,15 @@ impl SearchIndex {
     /// `now_unix_nanos`.
     async fn reconcile_generations(&self, now_unix_nanos: i64) -> Result<ItemWork, ()> {
         let stale = self
-            .within_limit(async {
-                let mut transaction = self.database.begin_read_snapshot().await?;
+            .read_snapshot(async |transaction| {
                 let expected =
-                    coral_provider::active_generations_in_transaction(&mut transaction).await?;
+                    coral_provider::active_generations_in_transaction(transaction).await?;
                 let stale = ToolIndexer
-                    .reconcile(&mut transaction, &expected, now_unix_nanos)
+                    .reconcile(transaction, &expected, now_unix_nanos)
                     .await?
                     .into_iter()
                     .cloned()
                     .collect::<Vec<_>>();
-                transaction.rollback().await?;
                 Ok(stale)
             })
             .await;
@@ -371,12 +367,10 @@ impl SearchIndex {
         now_unix_nanos: i64,
     ) -> bool {
         let needed = self
-            .within_limit(async {
-                let mut transaction = self.database.begin_read_snapshot().await?;
+            .read_snapshot(async |transaction| {
                 let needed = ToolIndexer
-                    .still_needs_indexing(&mut transaction, generation, now_unix_nanos)
+                    .still_needs_indexing(transaction, generation, now_unix_nanos)
                     .await?;
-                transaction.rollback().await?;
                 Ok(needed)
             })
             .await;
@@ -388,12 +382,10 @@ impl SearchIndex {
     /// next pass tries again.
     async fn function_still_stale(&self, entry: &SavedFunctionEntry, now_unix_nanos: i64) -> bool {
         let needed = self
-            .within_limit(async {
-                let mut transaction = self.database.begin_read_snapshot().await?;
+            .read_snapshot(async |transaction| {
                 let needed = SavedFunctionIndexer
-                    .still_needs_indexing(&mut transaction, entry, now_unix_nanos)
+                    .still_needs_indexing(transaction, entry, now_unix_nanos)
                     .await?;
-                transaction.rollback().await?;
                 Ok(needed)
             })
             .await;
@@ -416,15 +408,13 @@ impl SearchIndex {
         workspace_id: &WorkspaceId,
         provider_id: &ProviderId,
     ) -> Result<Option<GenerationEntries>, IndexError> {
-        self.within_limit(async {
-            let mut transaction = self.database.begin_read_snapshot().await?;
+        self.read_snapshot(async |transaction| {
             let entries = coral_provider::prepare_active_generation_entries_in_transaction(
-                &mut transaction,
+                transaction,
                 workspace_id,
                 provider_id,
             )
             .await?;
-            transaction.rollback().await?;
             Ok(entries)
         })
         .await
@@ -436,18 +426,15 @@ impl SearchIndex {
     /// A failure of the current revision not yet due waits.
     async fn reconcile_functions(&self, now_unix_nanos: i64) -> Result<ItemWork, ()> {
         let stale = self
-            .within_limit(async {
-                let mut transaction = self.database.begin_read_snapshot().await?;
+            .read_snapshot(async |transaction| {
                 let expected =
-                    coral_functions::all_saved_function_entries_in_transaction(&mut transaction)
-                        .await?;
+                    coral_functions::all_saved_function_entries_in_transaction(transaction).await?;
                 let stale = SavedFunctionIndexer
-                    .reconcile(&mut transaction, &expected, now_unix_nanos)
+                    .reconcile(transaction, &expected, now_unix_nanos)
                     .await?
                     .into_iter()
                     .cloned()
                     .collect::<Vec<_>>();
-                transaction.rollback().await?;
                 Ok(stale)
             })
             .await;
@@ -486,10 +473,8 @@ impl SearchIndex {
     /// transaction under its lock. Fails when the watermarks cannot be read.
     async fn refresh_stale_workspaces(&self) -> Result<StatisticsWork, ()> {
         let check = self
-            .within_limit(async {
-                let mut transaction = self.database.begin_read_snapshot().await?;
-                let check = indexer::check_statistics(&mut transaction).await?;
-                transaction.rollback().await?;
+            .read_snapshot(async |transaction| {
+                let check = indexer::check_statistics(transaction).await?;
                 Ok(check)
             })
             .await;

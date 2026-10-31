@@ -241,10 +241,9 @@ impl SearchIndex {
         expected: Option<&ProviderGenerationId>,
     ) -> bool {
         let held = self
-            .within_limit(async {
-                let mut transaction = self.database.begin_read_snapshot().await?;
+            .read_snapshot(async |transaction| {
                 let active = coral_provider::workspace_active_generations_in_transaction(
-                    &mut transaction,
+                    transaction,
                     workspace_id,
                     Some(provider_id),
                 )
@@ -255,8 +254,7 @@ impl SearchIndex {
                 if expected.is_some_and(|expected| expected != active.generation_id()) {
                     return Ok(false);
                 }
-                let held = ToolIndexer.holds_current(&mut transaction, active).await?;
-                transaction.rollback().await?;
+                let held = ToolIndexer.holds_current(transaction, active).await?;
                 Ok(held)
             })
             .await;
@@ -300,15 +298,13 @@ impl SearchIndex {
         workspace_id: &WorkspaceId,
         provider_id: &ProviderId,
     ) -> Result<Option<coral_provider::ActiveGeneration>, IndexError> {
-        self.within_limit(async {
-            let mut transaction = self.database.begin_read_snapshot().await?;
+        self.read_snapshot(async |transaction| {
             let active = coral_provider::workspace_active_generations_in_transaction(
-                &mut transaction,
+                transaction,
                 workspace_id,
                 Some(provider_id),
             )
             .await?;
-            transaction.rollback().await?;
             Ok(active.into_iter().next())
         })
         .await
@@ -556,6 +552,22 @@ impl SearchIndex {
         tokio::time::timeout(self.write_limit, write)
             .await
             .map_err(|_elapsed| IndexError::TimedOut(self.write_limit))?
+    }
+
+    /// Runs `read` in one read snapshot, within the write limit, and rolls
+    /// the snapshot back. A read takes no write lock, so it never queues for
+    /// the writer.
+    async fn read_snapshot<T>(
+        &self,
+        read: impl AsyncFnOnce(&mut Transaction<'_>) -> Result<T, IndexError>,
+    ) -> Result<T, IndexError> {
+        self.within_limit(async {
+            let mut transaction = self.database.begin_read_snapshot().await?;
+            let value = read(&mut transaction).await?;
+            transaction.rollback().await?;
+            Ok(value)
+        })
+        .await
     }
 
     /// Writes one entry under its Workspace's lock. It builds the entry's
