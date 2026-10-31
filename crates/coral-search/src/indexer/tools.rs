@@ -85,13 +85,19 @@ impl EntityIndexer for ToolIndexer {
         .await?;
         repository::refresh_generation_lengths(transaction, workspace_id, generation_id).await?;
         repository::refresh_workspace_statistics(transaction, workspace_id).await?;
+        let target = || super::IndexedCatalog {
+            provider_id: entries.provider_id().clone(),
+            generation_id: generation_id.clone(),
+        };
         Ok(match visibility {
             None => super::IndexEffect::FirstVisible {
+                target: target(),
                 published_at_unix_nanos: entries.published_at_unix_nanos(),
                 path: coral_telemetry::metric::VisibilityPath::Initial,
             },
             Some(repository::RecordedVisibility::NeverVisible) => {
                 super::IndexEffect::FirstVisible {
+                    target: target(),
                     published_at_unix_nanos: entries.published_at_unix_nanos(),
                     path: coral_telemetry::metric::VisibilityPath::Retried,
                 }
@@ -99,6 +105,7 @@ impl EntityIndexer for ToolIndexer {
             Some(repository::RecordedVisibility::Visible {
                 unavailable_since: Some(since),
             }) => super::IndexEffect::Recovered {
+                target: target(),
                 unavailable_since_unix_nanos: since,
             },
             Some(

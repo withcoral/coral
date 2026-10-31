@@ -128,10 +128,17 @@ impl SearchIndex {
             })
         };
         // A failed read is unknown, never a zero backlog or a stale successful sample.
-        let snapshot = tokio::time::timeout(READ_LIMIT, read)
-            .await
-            .ok()
-            .and_then(Result::ok);
+        let snapshot = match tokio::time::timeout(READ_LIMIT, read).await {
+            Ok(Ok(snapshot)) => Some(snapshot),
+            Ok(Err(error)) => {
+                tracing::warn!(error.type = coral_telemetry::safe::kind(error.code()), "search backlog snapshot read failed");
+                None
+            }
+            Err(_elapsed) => {
+                tracing::warn!(error.type = "timed_out", "search backlog snapshot read timed out");
+                None
+            }
+        };
         *self
             .telemetry
             .snapshot

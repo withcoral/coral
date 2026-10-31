@@ -767,9 +767,16 @@ mod tests {
             release.send(()).expect("release worker");
             blocker.join().unwrap().expect("blocking work ended");
         });
-        compiler
-            .compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;")
-            .expect("worker drains expired requests and recovers");
+        let deadline = Instant::now() + COMPILATION_TIMEOUT;
+        loop {
+            match compiler.compile(deadline, "return 42;") {
+                Ok(_) => break,
+                Err(Error::CompilerBusy) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                result => panic!("worker drains expired requests and recovers: {result:?}"),
+            }
+        }
         for name in ["coral.compiler.queue.depth", "coral.compiler.active"] {
             assert_eq!(metrics.values(name), [0.0, 0.0]);
         }
@@ -899,21 +906,55 @@ mod tests {
     }
 
     #[test]
-    fn compiler_recycles_after_failure() {
-        let compiler =
+    fn compiler_metrics_distinguish_rejected_failed_and_stopped_requests() {
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let _measured = tracing::subscriber::set_default(metrics.subscriber());
+        let mut compiler =
             ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
-        let failed = compiler.request(
-            CompilerOperation::Program,
-            Instant::now() + COMPILATION_TIMEOUT,
-            |compiler| {
-                script(compiler, "globalThis.__coralCompile = null;")?;
-                Err::<(), _>(Error::Engine("injected failure".to_string()))
-            },
-        );
-        assert!(failed.is_err());
+        assert!(matches!(
+            compiler.compile(Instant::now() + COMPILATION_TIMEOUT, "return ("),
+            Err(Error::Compilation { .. })
+        ));
+        // The existing compiler fault harness modifies the real isolate. The
+        // next public compile fails inside its bridge, rather than on source.
+        compiler
+            .request(
+                CompilerOperation::Analysis,
+                Instant::now() + COMPILATION_TIMEOUT,
+                |compiler| script(compiler, "globalThis.__coralCompile = null;"),
+            )
+            .unwrap();
+        assert!(matches!(
+            compiler.compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;"),
+            Err(Error::Engine(_))
+        ));
         compiler
             .compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;")
             .expect("fresh compiler after failure");
+        // Exercise the same stop protocol as Drop, then submit to the closed worker.
+        compiler.sender.send(None).unwrap();
+        compiler.worker.take().unwrap().join().unwrap();
+        assert!(matches!(
+            compiler.compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;"),
+            Err(Error::CompilerUnavailable)
+        ));
+        for (outcome, handled) in [("rejected", true), ("failed", true), ("stopped", false)] {
+            for (name, expected) in [
+                ("coral.compiler.request.duration", 1),
+                ("coral.compiler.work.duration", u64::from(handled)),
+            ] {
+                let count = metrics
+                    .named(name)
+                    .iter()
+                    .filter(|point| {
+                        point.attributes.get("operation").map(String::as_str) == Some("program")
+                            && point.attributes.get("outcome").map(String::as_str) == Some(outcome)
+                    })
+                    .map(|point| point.count)
+                    .sum::<u64>();
+                assert_eq!(count, expected, "{name}: {outcome}");
+            }
+        }
     }
 
     #[test]

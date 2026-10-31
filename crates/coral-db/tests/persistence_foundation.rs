@@ -1011,6 +1011,10 @@ async fn canceling_queued_acquisitions_releases_waiters_without_open_transaction
     use std::task::Poll;
     let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
     let database = fixture.database();
+    database
+        .execute(insert_record("kept", "baseline"))
+        .await
+        .unwrap();
     for operation in [
         "begin_write",
         "begin_read_snapshot",
@@ -1066,15 +1070,10 @@ async fn canceling_queued_acquisitions_releases_waiters_without_open_transaction
             Poll::Ready(())
         })
         .await;
-        assert_eq!(
-            metrics.values("coral.persistence.acquisition.waiters"),
-            [1.0]
-        );
+        let waiters = || metrics.values("coral.persistence.acquisition.waiters");
+        assert_eq!(waiters(), [1.0]);
         drop(waiting);
-        assert_eq!(
-            metrics.values("coral.persistence.acquisition.waiters"),
-            [0.0]
-        );
+        assert_eq!(waiters(), [0.0]);
         let points = metrics.named("coral.persistence.acquisition.duration");
         assert_eq!(points.len(), 1);
         let point = points.first().expect("canceled acquisition");
@@ -1096,12 +1095,12 @@ async fn canceling_queued_acquisitions_releases_waiters_without_open_transaction
         for holder in holders {
             holder.rollback().await.unwrap();
         }
-        assert!(
-            database
-                .fetch_all::<Record>(records_query())
+        assert_eq!(
+            record(database.as_ref(), "kept")
                 .await
-                .unwrap()
-                .is_empty()
+                .expect("canceled DELETE preserves the record")
+                .value,
+            "baseline"
         );
     }
 }

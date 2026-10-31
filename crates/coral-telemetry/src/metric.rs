@@ -38,6 +38,11 @@ const SECONDS: [f64; 18] = [
     1800.0, 3600.0,
 ];
 
+/// Fine request CPU boundaries extend the shared duration range below 5 ms.
+const CPU_FINE_SECONDS: [f64; 8] = [
+    0.000_01, 0.000_025, 0.000_05, 0.000_1, 0.000_25, 0.000_5, 0.001, 0.0025,
+];
+
 /// Histogram bounds for a size in bytes, from 256 B to 64 MiB.
 const BYTES: [f64; 10] = [
     256.0,
@@ -330,10 +335,11 @@ impl Metrics {
         let pools = Pools::default();
         let search_backlogs = SearchSources::default();
         Self(Arc::new(Catalog {
-            request_cpu_duration: seconds(
-                "coral.request.cpu.duration",
-                "CPU spent polling the request handler and response body, including inline-awaited work; excludes pending wait time, spawned tasks and dedicated workers. Omitted without a supported thread CPU clock.",
-            ),
+            request_cpu_duration: meter.f64_histogram("coral.request.cpu.duration")
+                .with_unit("s")
+                .with_description("CPU spent polling the request handler and response body, including inline-awaited work; excludes pending wait time, spawned tasks and dedicated workers. Omitted without a supported thread CPU clock.")
+                .with_boundaries([CPU_FINE_SECONDS.as_slice(), SECONDS.as_slice()].concat())
+                .build(),
             request_duration: seconds(
                 "coral.request.duration",
                 "How long an inbound request took, until its response ended.",
@@ -610,6 +616,13 @@ pub(crate) fn current() -> Option<Metrics> {
             .downcast_ref::<MetricsLayer>()
             .map(|layer| layer.0.clone())
     })
+}
+
+/// Whether the current dispatcher has a metric catalog. Domain code can avoid
+/// optional observation work when metrics are disabled.
+#[must_use]
+pub fn enabled() -> bool {
+    current().is_some()
 }
 
 fn with(record: impl FnOnce(&Catalog)) {

@@ -344,7 +344,7 @@ impl SearchIndex {
         });
     }
 
-    /// Waits until no spawned write is running or waiting to run.
+    /// Waits until notified writes and committed visibility observations finish.
     ///
     /// A caller that must observe the index after a notification, a test
     /// above all, awaits this first.
@@ -377,7 +377,7 @@ impl SearchIndex {
         // of its own and links back.
         coral_telemetry::link_to_current(&span);
         self.in_flight.send_modify(|writes| *writes += 1);
-        let in_flight = InFlightWrite(self.in_flight.clone());
+        let in_flight = InFlightWork(self.in_flight.clone());
         // No code panics while holding this lock, so a poisoned one still
         // holds a valid handle.
         let mut last_write = self
@@ -573,7 +573,7 @@ impl SearchIndex {
                 }
             };
             transaction.commit().await?;
-            Ok(effect)
+            Ok((effect, crate::unix_now_nanos()))
         })
         .await
         .unwrap_or_else(|_elapsed| Err(IndexError::Overran(self.write_limit)));
@@ -586,27 +586,81 @@ impl SearchIndex {
             "coral.search.write_ms",
             safe::number(millis(locked.elapsed())),
         );
-        written.map(|effect| {
+        let (effect, committed_at) = written?;
+        self.observe_committed_visibility(workspace_id.clone(), effect, committed_at);
+        Ok(rows)
+    }
+
+    /// Verification is best effort and independently scheduled. It neither
+    /// holds the write mutex nor becomes a predecessor of the next write.
+    fn observe_committed_visibility(
+        &self,
+        workspace: WorkspaceId,
+        effect: indexer::IndexEffect,
+        committed_at: Option<i64>,
+    ) {
+        if effect.catalog().is_none() || committed_at.is_none() || !metric::enabled() {
+            return;
+        }
+        let index = self.clone();
+        self.in_flight.send_modify(|work| *work += 1);
+        let work = InFlightWork(self.in_flight.clone());
+        let span = tracing::info_span!(parent: None, "coral.search.verify_visibility");
+        coral_telemetry::link_to_current(&span);
+        let observe = async move {
+            let _work = work;
+            let Some(target) = effect.catalog() else {
+                return;
+            };
+            let check = async {
+                let mut tx = index.database.begin_read_snapshot().await?;
+                let active = coral_provider::workspace_active_generations_in_transaction(
+                    &mut tx,
+                    &workspace,
+                    Some(&target.provider_id),
+                )
+                .await?;
+                tx.rollback().await?;
+                Ok::<_, IndexError>(
+                    active
+                        .iter()
+                        .any(|active| active.generation_id() == &target.generation_id),
+                )
+            };
+            match tokio::time::timeout(Duration::from_secs(1), check).await {
+                Ok(Ok(true)) => {}
+                Ok(Ok(false)) => return,
+                Ok(Err(error)) => {
+                    tracing::warn!(error.type = safe::kind(error.code()), "could not verify committed catalog visibility; sample omitted");
+                    return;
+                }
+                Err(_elapsed) => {
+                    tracing::warn!(error.type = "timed_out", "committed catalog visibility check timed out; sample omitted");
+                    return;
+                }
+            }
             match effect {
                 indexer::IndexEffect::FirstVisible {
                     published_at_unix_nanos,
                     path,
+                    ..
                 } => {
-                    if let Some(elapsed) = elapsed_since(published_at_unix_nanos) {
+                    if let Some(elapsed) = elapsed_at(published_at_unix_nanos, committed_at) {
                         metric::publication_visible(path, elapsed);
                     }
                 }
                 indexer::IndexEffect::Recovered {
                     unavailable_since_unix_nanos,
+                    ..
                 } => {
-                    if let Some(elapsed) = elapsed_since(unavailable_since_unix_nanos) {
+                    if let Some(elapsed) = elapsed_at(unavailable_since_unix_nanos, committed_at) {
                         metric::index_recovered(elapsed);
                     }
                 }
                 indexer::IndexEffect::Updated => {}
             }
-            rows
-        })
+        };
+        let _observation = tokio::spawn(observe.instrument(span).with_current_subscriber());
     }
 
     async fn erase<I: EntityIndexer>(
@@ -780,17 +834,17 @@ fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Counts one spawned write as in flight until dropped, so a write that
+/// Counts one write or visibility observation as in flight until dropped, so a write that
 /// panics still stops counting.
-struct InFlightWrite(Arc<watch::Sender<usize>>);
+struct InFlightWork(Arc<watch::Sender<usize>>);
 
-impl Drop for InFlightWrite {
+impl Drop for InFlightWork {
     fn drop(&mut self) {
         self.0.send_modify(|writes| *writes -= 1);
     }
 }
 
-fn elapsed_since(since_unix_nanos: i64) -> Option<Duration> {
-    let elapsed = crate::unix_now_nanos()?.checked_sub(since_unix_nanos)?;
+fn elapsed_at(since_unix_nanos: i64, committed_at: Option<i64>) -> Option<Duration> {
+    let elapsed = committed_at?.checked_sub(since_unix_nanos)?;
     Some(Duration::from_nanos(u64::try_from(elapsed).ok()?))
 }

@@ -119,12 +119,28 @@ impl IndexError {
 pub(crate) enum IndexEffect {
     Updated,
     FirstVisible {
+        target: IndexedCatalog,
         published_at_unix_nanos: i64,
         path: coral_telemetry::metric::VisibilityPath,
     },
     Recovered {
+        target: IndexedCatalog,
         unavailable_since_unix_nanos: i64,
     },
+}
+
+/// Owner identity used to verify an observation after the projection commits.
+pub(crate) struct IndexedCatalog {
+    pub provider_id: coral_provider::ProviderId,
+    pub generation_id: coral_catalog::ProviderGenerationId,
+}
+impl IndexEffect {
+    pub(crate) const fn catalog(&self) -> Option<&IndexedCatalog> {
+        match self {
+            Self::Updated => None,
+            Self::FirstVisible { target, .. } | Self::Recovered { target, .. } => Some(target),
+        }
+    }
 }
 
 /// Writes one Search Entity kind into the search-owned tables.
@@ -309,7 +325,7 @@ pub(crate) fn compact_identifier_variant(value: &str) -> Option<String> {
     (!compact.is_empty() && compact != normalized).then_some(compact)
 }
 
-/// A snapshot of projection work, distinct from catalogs awaiting first visibility.
+/// A snapshot of all non-current projections, including catalogs awaiting first visibility.
 pub(crate) struct ProjectionBacklog {
     pub catalogs: u64,
     pub functions: u64,

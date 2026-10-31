@@ -303,15 +303,32 @@ fn every_instrument_exports_with_its_unit_and_only_its_attributes() {
         assert!(!found.is_empty(), "{name} exports");
         for point in &found {
             assert_eq!((point.kind, point.unit.as_str()), (*kind, *unit), "{name}");
+            let found_keys = point
+                .attributes
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>();
+            let expected = keys
+                .iter()
+                .copied()
+                .filter(|key| {
+                    *key != "failure.code"
+                        || !matches!(*name, "coral.run.ended" | "coral.invocation.ended")
+                        || point.attributes.contains_key("failure.code")
+                })
+                .collect();
+            assert_eq!(
+                found_keys, expected,
+                "each {name} point carries exactly its required and present optional attributes"
+            );
         }
-        let found_keys = found
-            .iter()
-            .flat_map(|point| point.attributes.keys().map(String::as_str))
-            .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
-            found_keys,
+            found
+                .iter()
+                .flat_map(|point| point.attributes.keys().map(String::as_str))
+                .collect::<std::collections::BTreeSet<_>>(),
             keys.iter().copied().collect(),
-            "{name} carries exactly its attributes"
+            "{name} exercises every catalog attribute, including optional ones"
         );
     }
     assert_eq!(
@@ -385,11 +402,18 @@ fn partial_backlog_snapshots_report_unknown_until_every_live_source_is_readable(
         Some(SearchBacklog {
             generations: 0,
             functions: 0,
-            first_visibility: None,
+            first_visibility: Some(FirstVisibilityBacklog {
+                waiting: 0,
+                oldest_age: None,
+            }),
             sample_age: Duration::ZERO,
         })
     });
     assert_eq!(capture.values("coral.search.index.backlog"), [0.0, 0.0]);
+    assert_eq!(
+        capture.values("coral.search.index.first_visibility.age"),
+        [0.0]
+    );
     let unknown = observe_search_backlog(|| None);
     assert!(capture.values("coral.search.index.backlog").is_empty());
     assert!(
@@ -399,6 +423,10 @@ fn partial_backlog_snapshots_report_unknown_until_every_live_source_is_readable(
     );
     drop(unknown);
     assert_eq!(capture.values("coral.search.index.backlog"), [0.0, 0.0]);
+    assert_eq!(
+        capture.values("coral.search.index.first_visibility.age"),
+        [0.0]
+    );
     drop(known);
     assert!(capture.values("coral.search.index.backlog").is_empty());
 }
@@ -411,4 +439,36 @@ fn nothing_records_without_the_layer() {
         run_accepted(PrincipalKind::User);
         drop(run_active());
     });
+}
+
+#[test]
+fn request_cpu_histograms_distinguish_submillisecond_work_from_a_few_milliseconds() {
+    let capture = MetricCapture::default();
+    for micros in [200, 2000] {
+        capture.metrics().request_cpu(
+            Interface::Mcp,
+            "tools/call exec".to_owned(),
+            RequestOutcome::Ok,
+            Duration::from_micros(micros),
+        );
+    }
+    let histograms = capture.histogram_buckets("coral.request.cpu.duration");
+    let histogram = histograms.first().expect("CPU histogram exported");
+    assert!(
+        histogram
+            .bounds
+            .iter()
+            .any(|bound| *bound > 0.0 && *bound < 0.001),
+        "CPU needs submillisecond resolution"
+    );
+    assert_eq!(
+        histogram
+            .counts
+            .iter()
+            .copied()
+            .filter(|count| *count > 0)
+            .collect::<Vec<_>>(),
+        [1, 1],
+        "the two request samples occupy different buckets"
+    );
 }

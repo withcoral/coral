@@ -1,4 +1,4 @@
-//! Thread CPU samples bracket each synchronous poll, never an await: a
+//! Thread CPU samples bracket each synchronous poll, excluding pending time: a
 //! resumed future may run on a different thread. Unsupported clocks omit CPU.
 use std::future::Future;
 use std::sync::Mutex;
@@ -69,7 +69,7 @@ impl Drop for Sample<'_> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn thread_cpu_time() -> Option<Duration> {
     let time = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
     Some(Duration::new(
@@ -77,7 +77,7 @@ fn thread_cpu_time() -> Option<Duration> {
         u32::try_from(time.tv_nsec).ok()?,
     ))
 }
-#[cfg(not(unix))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const fn thread_cpu_time() -> Option<Duration> {
     None
 }

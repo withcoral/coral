@@ -22,7 +22,6 @@ use crate::testing::{MetricCapture, MetricPoint, SpanCapture, attribute};
 
 const ROUTE: &str = "/workspaces/{workspace_id}/mcp";
 
-#[cfg(unix)]
 #[tokio::test]
 async fn request_cpu_is_attributed_to_the_named_operation_without_counting_awaits() {
     let metrics = MetricCapture::default();
@@ -54,6 +53,11 @@ async fn request_cpu_is_attributed_to_the_named_operation_without_counting_await
         .await
         .unwrap();
     let cpu = metrics.named("coral.request.cpu.duration");
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        assert!(cpu.is_empty(), "unsupported CPU clocks omit the signal");
+        assert!(!metrics.named("coral.request.duration").is_empty());
+        return;
+    }
     assert_eq!(cpu.len(), 1, "one CPU measurement per completed request");
     let cpu = cpu.first().expect("CPU sample");
     assert_eq!(cpu.count, 1);
@@ -70,7 +74,7 @@ async fn request_cpu_is_attributed_to_the_named_operation_without_counting_await
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn canceled_handlers_keep_cpu_on_the_span_and_metric() {
     use std::future::Future as _;
