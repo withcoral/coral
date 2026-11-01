@@ -658,6 +658,26 @@ pub(super) async fn upsert_function_row(
     Ok(())
 }
 
+/// Deletes a Saved Function's row and state row. The caller leaves the
+/// Workspace's statistics to the next reconcile pass.
+pub(super) async fn delete_function_entry(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    function_id: &SavedFunctionId,
+) -> Result<(), Error> {
+    transaction
+        .execute(
+            Query::delete()
+                .from_table(SearchEntities::Table)
+                .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(SearchEntities::DocId).eq(function_id.to_string()))
+                .and_where(Expr::col(SearchEntities::Kind).eq(SAVED_FUNCTION))
+                .to_owned(),
+        )
+        .await?;
+    delete_function_state(transaction, workspace_id, function_id).await
+}
+
 /// Deletes a Saved Function's row, then refreshes the Workspace's statistics.
 pub(super) async fn delete_function_row(
     transaction: &mut Transaction<'_>,

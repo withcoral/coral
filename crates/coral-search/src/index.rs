@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use coral_catalog::ProviderGenerationId;
 use coral_db::{Database, Transaction};
-use coral_functions::SavedFunctionEntry;
+use coral_functions::{SavedFunctionEntry, SavedFunctionId};
 use coral_provider::{GenerationEntries, ProviderId};
 use coral_telemetry::{metric, safe};
 use coral_workspace::WorkspaceId;
@@ -18,7 +18,7 @@ use tracing::Instrument as _;
 use tracing::field::Empty;
 use tracing::instrument::WithSubscriber as _;
 
-use crate::indexer::functions::{self, SavedFunctionIndexer};
+use crate::indexer::functions::{self, FunctionSync, SavedFunctionIndexer};
 use crate::indexer::tools::{self, AttemptedGeneration, ToolIndexer, ToolRemoval};
 use crate::indexer::{self, EntityIndexer, IndexError};
 
@@ -369,17 +369,72 @@ impl SearchIndex {
         });
     }
 
-    /// A Saved Function was saved or saved over: upserts its row and removes
-    /// the `failed` state row an earlier attempt left. A failed attempt rolls
-    /// back, removes the function's row, and leaves a `failed` state row.
-    /// Removal needs no notification: the row cascades with the function.
-    pub fn index_function(&self, entry: SavedFunctionEntry) {
-        let span = function_span(&entry);
+    /// A Saved Function was saved, saved over or deleted: brings the index in
+    /// line with the function as it stands when the write runs. The committing
+    /// workflow sends ids alone, so a notification may run late, twice or out
+    /// of order, and may be lost: a reconcile pass finds the same difference.
+    ///
+    /// The write upserts the function's row and removes the `failed` state
+    /// row an earlier attempt left, or removes both when the function is gone.
+    /// A failed attempt rolls back, removes the function's row, and leaves a
+    /// `failed` state row.
+    pub fn sync_function(&self, workspace_id: WorkspaceId, function_id: SavedFunctionId) {
+        let span = function_span(&workspace_id, &function_id);
         let index = self.clone();
         self.spawn(span, async move {
             let _write = index.writes.lock().await;
-            index.write_function(&entry).await
+            index
+                .sync_function_held(&workspace_id, &function_id)
+                .await
+                .map(drop)
         });
+    }
+
+    /// Brings the index in line with one Saved Function. The caller holds the
+    /// mutex. Answers whether it indexed the function.
+    async fn sync_function_held(
+        &self,
+        workspace_id: &WorkspaceId,
+        function_id: &SavedFunctionId,
+    ) -> Result<bool, IndexError> {
+        let now = crate::unix_now_nanos().ok_or(IndexError::Clock)?;
+        let sync = self
+            .read_snapshot(async |transaction| {
+                SavedFunctionIndexer
+                    .sync(transaction, workspace_id, function_id, now)
+                    .await
+            })
+            .await;
+        let sync = sync.inspect_err(|error| {
+            // TODO: an error monitor for failed index writes is still to be set up.
+            tracing::error!(
+                coral.workspace.id = safe::id(&workspace_id),
+                coral.saved_function.id = safe::id(&function_id),
+                error.type = safe::kind(error.code()),
+                "failed to read a Saved Function before syncing it"
+            );
+        })?;
+        match sync {
+            FunctionSync::Index(entry) => self.write_function(&entry).await.map(|()| true),
+            FunctionSync::Remove(removal) => {
+                self.erase(&SavedFunctionIndexer, &removal)
+                    .await
+                    .inspect_err(|error| {
+                        // TODO: an error monitor for failed index writes is still to be set up.
+                        tracing::error!(
+                            coral.workspace.id = safe::id(&workspace_id),
+                            coral.saved_function.id = safe::id(&function_id),
+                            error.type = safe::kind(error.code()),
+                            "failed to remove a Saved Function from the search index"
+                        );
+                    })?;
+                Ok(false)
+            }
+            FunctionSync::Nothing => {
+                skipped("already_indexed");
+                Ok(false)
+            }
+        }
     }
 
     /// Waits until notified writes and committed visibility observations finish.
@@ -810,15 +865,16 @@ fn generation_span(
     )
 }
 
-/// The span of one Saved Function's index write, notified or made by a
-/// reconcile pass. The write records how long it waited for the writer and
-/// wrote.
-fn function_span(entry: &SavedFunctionEntry) -> tracing::Span {
+/// The span of one Saved Function's sync, notified or made by a reconcile
+/// pass. The sync records how long it waited for the writer and wrote, or why
+/// it wrote nothing.
+fn function_span(workspace_id: &WorkspaceId, function_id: &SavedFunctionId) -> tracing::Span {
     tracing::info_span!(
         parent: None,
-        "coral.search.index_function",
-        coral.workspace.id = safe::id(&entry.workspace_id()),
-        coral.saved_function.id = safe::id(&entry.id()),
+        "coral.search.sync_function",
+        coral.workspace.id = safe::id(&workspace_id),
+        coral.saved_function.id = safe::id(&function_id),
+        coral.search.skipped = Empty,
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,
         coral.search.write.trigger = Empty,

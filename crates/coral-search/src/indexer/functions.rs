@@ -1,15 +1,17 @@
 //! The Saved Function indexer: one saved function's entry in, one row out.
 //!
-//! Removal needs no write: the row and any state row cascade from the
-//! function, its Workspace, and, through the function, its Principal.
+//! A function's delete never touches these rows (ADR 0017). [`sync`] removes
+//! them once it finds the function gone, and a reconcile pass finds the rows
+//! whose notification never came, such as those of a removed Principal.
+//!
+//! [`sync`]: SavedFunctionIndexer::sync
 
-use std::collections::HashMap;
-use std::convert::Infallible;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use coral_db::Transaction;
-use coral_functions::SavedFunctionEntry;
+use coral_functions::{SavedFunctionEntry, SavedFunctionId, SavedFunctionIndexRevision};
 use coral_workspace::WorkspaceId;
 
 use super::repository::{
@@ -23,11 +25,29 @@ use crate::CallPath;
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct SavedFunctionIndexer;
 
+/// The search rows of one Saved Function that no longer exists.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct FunctionRemoval {
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) function_id: SavedFunctionId,
+}
+
+/// What it takes to bring the index in line with one Saved Function.
+pub(crate) enum FunctionSync {
+    /// The function exists and the index lacks it, holds another revision of
+    /// it, or holds a failure of it that is due again.
+    Index(Box<SavedFunctionEntry>),
+    /// The function is gone and the index still holds rows of it.
+    Remove(FunctionRemoval),
+    /// The index already agrees with the function.
+    Nothing,
+}
+
 #[async_trait]
 impl EntityIndexer for SavedFunctionIndexer {
     type Entry = SavedFunctionEntry;
     type Rows<'e> = FunctionRow<'e>;
-    type Removal = Infallible;
+    type Removal = FunctionRemoval;
     type Expected = SavedFunctionEntry;
 
     fn workspace_id<'e>(&self, entry: &'e SavedFunctionEntry) -> &'e WorkspaceId {
@@ -51,12 +71,18 @@ impl EntityIndexer for SavedFunctionIndexer {
         Ok(super::IndexEffect::Updated)
     }
 
+    /// Removes the function's row and state row. It takes no Workspace lock
+    /// and recounts no statistics: a delete lowers the Workspace's row count,
+    /// so the statistics step of the next pass recounts the Workspace. Many
+    /// removals in a row then cost one recount.
     async fn remove(
         &self,
-        _transaction: &mut Transaction<'_>,
-        removal: &Infallible,
+        transaction: &mut Transaction<'_>,
+        removal: &FunctionRemoval,
     ) -> Result<(), IndexError> {
-        match *removal {}
+        repository::delete_function_entry(transaction, &removal.workspace_id, &removal.function_id)
+            .await?;
+        Ok(())
     }
 
     /// Returns each current function to index again:
@@ -66,8 +92,8 @@ impl EntityIndexer for SavedFunctionIndexer {
     ///   not [`repository::function_fingerprint`] of its definition revision.
     ///
     /// A failure of the current definition revision that is not yet due
-    /// waits for a later pass, whatever the function's row holds. Nothing is
-    /// left to remove: a function's row and state row cascade with it.
+    /// waits for a later pass, whatever the function's row holds.
+    /// [`Self::orphaned`] finds what a pass must remove.
     ///
     /// The fingerprint holds the definition revision and the indexer
     /// revision, and is compared for equality only. So, unlike a Generation,
@@ -125,41 +151,78 @@ fn needs_indexing(
 }
 
 impl SavedFunctionIndexer {
-    /// Whether a pass that read `entry` as stale must still write it at
-    /// `now_unix_nanos`. A function deleted or saved again since answers
-    /// `false`: `entry` is an older copy, and writing it could replace what a
-    /// notified write indexed. A later pass indexes the newer revision if its
-    /// notification was lost. The rule of [`Self::reconcile`], for one
-    /// function.
-    pub(crate) async fn still_needs_indexing(
+    /// What it takes, read now, to bring the index in line with the function:
+    /// the one rule for a save, a delete and a reconcile pass, so each may
+    /// run late, twice or out of order. A notification names an id alone, so
+    /// a late one reads the function as it stands, never an older copy.
+    pub(crate) async fn sync(
         &self,
         transaction: &mut Transaction<'_>,
-        entry: &SavedFunctionEntry,
+        workspace_id: &WorkspaceId,
+        function_id: &SavedFunctionId,
         now_unix_nanos: i64,
-    ) -> Result<bool, IndexError> {
-        let current = coral_functions::saved_function_index_revision_in_transaction(
+    ) -> Result<FunctionSync, IndexError> {
+        let entry = coral_functions::saved_function_entry_in_transaction(
             transaction,
-            entry.workspace_id(),
-            entry.id(),
+            workspace_id,
+            function_id,
         )
         .await?;
-        if current != Some(entry.revision()) {
-            return Ok(false);
-        }
-        let failure =
-            repository::failed_function(transaction, entry.workspace_id(), entry.id()).await?;
-        let fingerprint = repository::recorded_function_fingerprint(
-            transaction,
-            entry.workspace_id(),
-            entry.id(),
-        )
-        .await?;
-        Ok(needs_indexing(
-            failure.as_ref(),
-            fingerprint.as_deref(),
-            entry,
-            now_unix_nanos,
-        ))
+        let failure = repository::failed_function(transaction, workspace_id, function_id).await?;
+        let fingerprint =
+            repository::recorded_function_fingerprint(transaction, workspace_id, function_id)
+                .await?;
+        Ok(match entry {
+            Some(entry)
+                if needs_indexing(
+                    failure.as_ref(),
+                    fingerprint.as_deref(),
+                    &entry,
+                    now_unix_nanos,
+                ) =>
+            {
+                FunctionSync::Index(Box::new(entry))
+            }
+            None if failure.is_some() || fingerprint.is_some() => {
+                FunctionSync::Remove(FunctionRemoval {
+                    workspace_id: workspace_id.clone(),
+                    function_id: function_id.clone(),
+                })
+            }
+            Some(_) | None => FunctionSync::Nothing,
+        })
+    }
+
+    /// The removal of every function the index holds and `current` does not:
+    /// every function that exists now. Reads only, so a read snapshot serves
+    /// it and a pass that finds none never takes the writer.
+    ///
+    /// `transaction` must be the snapshot `current` was read from, so a
+    /// function saved later is invisible to both reads. The pass then runs
+    /// [`Self::sync`] for each one, which reads the function again.
+    pub(crate) async fn orphaned(
+        &self,
+        transaction: &mut Transaction<'_>,
+        current: &[SavedFunctionIndexRevision],
+    ) -> Result<Vec<FunctionRemoval>, IndexError> {
+        let current = current
+            .iter()
+            .map(|function| (function.workspace_id(), function.id()))
+            .collect::<HashSet<_>>();
+        let recorded = repository::recorded_functions(transaction).await?;
+        let failed = repository::failed_functions(transaction).await?;
+        Ok(recorded
+            .into_iter()
+            .map(|row| row.function)
+            .chain(failed.into_iter().map(|failed| failed.function))
+            .filter(|held| !current.contains(&(&held.workspace_id, &held.function_id)))
+            .map(|held| FunctionRemoval {
+                workspace_id: held.workspace_id,
+                function_id: held.function_id,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect())
     }
 }
 

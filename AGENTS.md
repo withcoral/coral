@@ -116,6 +116,10 @@
   own bounds do (suspect after one lease without a commit, self-interrupt
   after three, constants in `crates/coral-run/src/execution.rs`), and the
   supervisor of a panicked owner task writes the same one Interrupted chunk.
+- A write to a source never touches the Universal Search tables, and they keep
+  no foreign key to a source but the Workspace. Notify `SearchIndex` after the
+  commit with ids alone; its reconcile pass repairs what a notification missed
+  ([ADR 0017](docs/adr/0017-universal-search-never-gates-the-catalog.md)).
 - Give each independently identified entity one stable ID as its sole primary
   key. Use a composite primary key only when the tuple is the domain identity.
 - For Workspace-owned data, every externally influenced read or write must
