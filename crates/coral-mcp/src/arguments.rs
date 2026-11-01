@@ -22,7 +22,7 @@ const EXEC_TOOL_DESCRIPTION: &str = r#"Start a new Program Run from one TypeScri
 
 Find tools and Saved Functions from a Program, usually your first exec:
 - `coral.workspace.search({ query?, provider?, limit?, cursor? })` returns `{ data: { hits, has_more, next_cursor?, retriever_statuses? } }`. A hit has `call_path`, `signature_line` and `description_snippet`. The top 3 hits also carry `declaration`: the inputs and the top of the result (an `HttpResult` is `{ status, data, metadata }`). Omit `query` to list a Provider's tools.
-- `coral.workspace.search({ paths, types? })` reads 1 to 10 exact Call Paths in full into `description`; unknown ones land in `data.missing`. With one path, `types` returns named types whole.
+- `coral.workspace.search({ paths, types?: string[] })` reads 1 to 10 exact Call Paths in full into `description`; unknown ones land in `data.missing`. With one path, `types` returns named types whole.
 
 `query` is capability keywords, never people, titles, IDs or dates. Pass `provider` (a namespace such as `github`, or `coral.workspace`) when you can tell which service holds the data. If `retriever_statuses` is present, results may be missing. Read the full declaration before a write, or for a result type you need that `declaration` only names.
 
