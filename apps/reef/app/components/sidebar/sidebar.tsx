@@ -17,9 +17,12 @@ import { ActionDialog, NameInput } from '@/views/management/forms'
 import { ArchiveWorkspaceButton } from '@/views/management/archive-workspace'
 import { RestoreWorkspaceButton } from '@/views/management/restore-workspace'
 import type { FormContext, WorkspaceView } from '@/views/management/types'
-import type { ActionCount, ActionCounts } from '@/lib/activity-live-types'
+import type { ActionCount } from '@/lib/activity-live-types'
 import * as styles from './sidebar.css'
 import { useSidebarState } from './use-sidebar-state'
+
+/** The numbers a badge shows. The sidebar has no use for revisions. */
+type WorkspaceCount = Omit<ActionCount, 'revisions'>
 
 export type SidebarWorkspace = Pick<
   WorkspaceView,
@@ -28,7 +31,7 @@ export type SidebarWorkspace = Pick<
 
 interface SidebarProps {
   /** Pending actions by Workspace path. Null or a null count shows no badge. */
-  actionCounts?: ActionCounts | null
+  actionCounts?: Record<string, WorkspaceCount | null> | null
   organizationOwner?: boolean
   /** A published Coral release newer than this one. The shell passes it only to organization owners. */
   newerRelease?: NewerRelease
@@ -108,7 +111,7 @@ function named(label: string, count?: Pending) {
 function workspaceDestinations(
   workspace: SidebarWorkspace,
   people: boolean,
-  count?: ActionCount | null,
+  count?: WorkspaceCount | null,
 ): Destination[] {
   const owner = workspace.effectiveRole === 'owner'
   const w = workspace.path

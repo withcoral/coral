@@ -1134,6 +1134,157 @@ async fn required_actions_reject_an_unknown_kind() {
     assert_eq!(status.code(), tonic::Code::InvalidArgument);
 }
 
+/// A revision follows the set of one kind of pending request: every way a
+/// request joins or leaves that set moves it, including one request ending as
+/// another starts at the same count, and the other kind's stays put. A read with
+/// nothing pending changed moves neither. Expiry is proved where the owner's
+/// timer can be shortened, in `coral-run`'s approval tests.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey moves one set of pending requests through every way it changes"
+)]
+async fn required_action_revisions_follow_each_kinds_pending_set() {
+    use wire::activity_request_reference::Request::{AccountConnection, Approval};
+    let f = Fixture::new().await;
+    let server = MockServer::start().await;
+    let evidence = publish_http(&f, &server.uri()).await;
+    publish_individual(&f, &server.uri()).await;
+    let token = f.token(&f.member, "reef");
+    let mut client = f.activity();
+    let mut accounts = f.accounts();
+    let count = async || {
+        f.activity()
+            .count_required_actions(request(
+                wire::CountRequiredActionsRequest::default(),
+                &f.token(&f.member, "reef"),
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+    };
+    let requests = async |wanted: i64| {
+        wait_for_action_page(&f, 100, |page| page.action_count == wanted)
+            .await
+            .actions
+            .into_iter()
+            .map(|action| action.action.unwrap().request.unwrap().request.unwrap())
+            .collect::<Vec<_>>()
+    };
+    let approvals = async |wanted| -> Vec<String> {
+        requests(wanted)
+            .await
+            .into_iter()
+            .filter_map(|request| match request {
+                Approval(name) => Some(name),
+                AccountConnection(_) => None,
+            })
+            .collect()
+    };
+    let idle = count().await;
+    let (approval, connection) = (&idle.approval_revision, &idle.connection_revision);
+    assert_eq!(
+        (idle.action_count, count().await),
+        (0, idle.clone()),
+        "nothing pending changed"
+    );
+
+    // Created.
+    let first_run = start(&f, "await coral.providers.evidence.read({body: {}});").await;
+    let first = approvals(1).await;
+    let one = count().await;
+    assert_ne!(&one.approval_revision, approval);
+    assert_eq!(&one.connection_revision, connection);
+
+    // Activity that creates no request moves neither revision.
+    let unrelated = start(&f, "return 1;").await;
+    terminal(&f, &unrelated).await;
+    assert_eq!(count().await, one, "nothing pending changed");
+
+    // An ended Run closes its request, and another request of the same count starts.
+    let swap_run = start(&f, "await coral.providers.evidence.read({body: {}});").await;
+    approvals(2).await;
+    assert_ne!(count().await.approval_revision, one.approval_revision);
+    cancel(&f, &first_run).await;
+    assert_ne!(approvals(1).await, first);
+    let swapped = count().await;
+    assert_eq!(swapped.approval_count, one.approval_count);
+    assert_ne!(swapped.approval_revision, one.approval_revision);
+    assert_eq!(&swapped.connection_revision, connection);
+
+    // Decided, while a third request keeps the count level.
+    let [decided]: [String; 1] = approvals(1).await.try_into().unwrap();
+    let closing_run = start(&f, "await coral.providers.evidence.read({body: {}});").await;
+    approvals(2).await;
+    client
+        .decide_approval(request(
+            wire::DecideApprovalRequest {
+                name: decided,
+                decision: "approve".into(),
+                comment: None,
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap();
+    approvals(1).await;
+    let after_decision = count().await;
+    assert_eq!(after_decision.approval_count, swapped.approval_count);
+    assert_ne!(after_decision.approval_revision, swapped.approval_revision);
+    terminal(&f, &swap_run).await;
+
+    // Closed by a policy that no longer asks.
+    policy(&f, &evidence, coral_policy::ToolAccessState::Enabled).await;
+    requests(0).await;
+    let after_policy = count().await;
+    assert_ne!(
+        after_policy.approval_revision,
+        after_decision.approval_revision
+    );
+    terminal(&f, &closing_run).await;
+
+    // A connection request moves its own kind's revision alone.
+    let waiting = start(&f, "await coral.providers.personal.read({});").await;
+    let [AccountConnection(name)]: [_; 1] = requests(1).await.try_into().unwrap() else {
+        panic!("connection request")
+    };
+    let waiting_count = count().await;
+    assert_ne!(&waiting_count.connection_revision, connection);
+    assert_eq!(
+        waiting_count.approval_revision,
+        after_policy.approval_revision
+    );
+    let joining = start(&f, "await coral.providers.personal.read({});").await;
+    wait_invocation(&f, &joining, true).await;
+    assert_eq!(
+        count().await,
+        waiting_count,
+        "a second Run waits on the same request"
+    );
+    accounts
+        .resolve_account_connection_request(request(
+            wire::ResolveAccountConnectionRequestRequest {
+                name,
+                decision: Some(
+                    wire::resolve_account_connection_request_request::Decision::Decline(()),
+                ),
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap();
+    requests(0).await;
+    assert_ne!(
+        count().await.connection_revision,
+        waiting_count.connection_revision
+    );
+    terminal(&f, &waiting).await;
+    terminal(&f, &joining).await;
+}
+
 /// Browses the member's action queue until `ready` accepts a page. Actions appear asynchronously.
 async fn wait_for_action_page(
     f: &Fixture,

@@ -805,13 +805,8 @@ async fn the_queue_counts_each_shared_request_once_across_waiters_runs_and_pages
         bounded.action_count, 3,
         "the shared connection counts once across Runs and pages"
     );
-    assert_eq!(
-        runs.required_action_counts(user, None).await.unwrap(),
-        crate::RequiredActionCounts {
-            approvals: 2,
-            connections: 1,
-        }
-    );
+    let counts = runs.required_action_counts(user, None).await.unwrap();
+    assert_eq!((counts.approvals, counts.connections), (2, 1));
     runs.cancel(user, scope, second.run_id(), &immediate(None, 1))
         .await
         .unwrap();

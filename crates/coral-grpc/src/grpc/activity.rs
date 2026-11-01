@@ -319,6 +319,8 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             action_count: counts.total(),
             approval_count: counts.approvals,
             connection_count: counts.connections,
+            approval_revision: counts.approval_revision.to_string(),
+            connection_revision: counts.connection_revision.to_string(),
         }))
     }
 

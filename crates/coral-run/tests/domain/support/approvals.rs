@@ -31,6 +31,16 @@ pub(crate) async fn wait_for_approval(
     .expect("Invocation waits on durable approval")
 }
 
+/// The caller's current approval revision in `workspace`.
+pub(crate) async fn approval_revision(
+    runs: &RunModule,
+    actor: &AuthenticatedPrincipal,
+    workspace: &coral_workspace::WorkspaceId,
+) -> crate::RequiredActionSetRevision {
+    let counts = runs.required_action_counts(actor, Some(workspace)).await;
+    counts.unwrap().approval_revision
+}
+
 pub(crate) async fn wait_for_actions(
     runs: &RunModule,
     actor: &AuthenticatedPrincipal,

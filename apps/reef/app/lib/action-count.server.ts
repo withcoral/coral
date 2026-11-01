@@ -19,6 +19,10 @@ export async function loadActionCounts(
             total: value.actionCount.toString(),
             approvals: value.approvalCount.toString(),
             connections: value.connectionCount.toString(),
+            revisions: {
+              approvals: value.approvalRevision,
+              connections: value.connectionRevision,
+            },
           }
           return [resourcePath(name), count] as const
         } catch (error) {

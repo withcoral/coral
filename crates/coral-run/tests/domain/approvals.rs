@@ -774,6 +774,10 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
 /// actionable), and a decision that arrives after the timer fired is
 /// answered with the recorded Expired; no Approved decision is written.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey follows the owner's expiry through every reader of the request"
+)]
 async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_reads_expired() {
     let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
@@ -808,10 +812,16 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     // The timer fires on the host clock; the test clock stays before the
     // deadline, so nothing but the owner's record can show the expiry.
     let read = || approvals.get(&tool.principal, &tool.workspace_id, &request.id);
+    let pending = approval_revision(&fixture.runs, &tool.principal, &tool.workspace_id).await;
     wait_until_async_within(Duration::from_secs(5), async || {
         read().await.unwrap().state != ApprovalState::Pending
     })
     .await;
+    assert_ne!(
+        approval_revision(&fixture.runs, &tool.principal, &tool.workspace_id).await,
+        pending,
+        "an expiry changes the pending set"
+    );
     let expired = read().await.unwrap();
     assert_eq!(expired.state, ApprovalState::Expired);
     assert_eq!(expired.approver, None);
@@ -832,8 +842,9 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
             .runs
             .required_action_counts(&tool.principal, None)
             .await
-            .unwrap(),
-        crate::RequiredActionCounts::default()
+            .unwrap()
+            .total(),
+        0
     );
     assert!(queue.actions.is_empty());
     let terminal = wait_for_terminal(

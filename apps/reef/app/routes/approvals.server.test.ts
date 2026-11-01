@@ -24,6 +24,7 @@ const queued = (request: string) => ({
 function fakeCoral(
   state: WorkspaceState,
   browse: (input: { after: string; kind: ActivityRequiredActionKind }) => object,
+  count: () => object = () => ({}),
 ) {
   coral.transport = fakeManagementTransport({
     workspaces: {
@@ -34,7 +35,7 @@ function fakeCoral(
         state,
       }),
     },
-    activity: { browseRequiredActions: browse },
+    activity: { browseRequiredActions: browse, countRequiredActions: count },
   })
 }
 
@@ -45,7 +46,11 @@ function load() {
 
 async function loaderData() {
   const result = await load()
-  return (result as unknown as { data: { approvals: { action: { name: string } }[] } }).data
+  return (
+    result as unknown as {
+      data: { approvals: { action: { name: string } }[]; revision?: string }
+    }
+  ).data
 }
 
 it('lists every pending approval in the order Coral returns them, across pages', async () => {
@@ -62,6 +67,37 @@ it('lists every pending approval in the order Coral returns them, across pages',
     `${workspace}/approvals/second`,
   ])
   expect(new Set(kinds)).toEqual(new Set([ActivityRequiredActionKind.APPROVAL]))
+})
+
+// The rows must be at least as new as the revision, or a change between them is never seen.
+it('reads the approval revision before the rows', async () => {
+  const reads: string[] = []
+  fakeCoral(
+    WorkspaceState.ACTIVE,
+    () => {
+      reads.push('rows')
+      return { actions: [] }
+    },
+    () => {
+      reads.push('revision')
+      return { approvalRevision: 'approvals', connectionRevision: 'connections' }
+    },
+  )
+  expect((await loaderData()).revision).toBe('approvals')
+  expect(reads).toEqual(['revision', 'rows'])
+})
+
+it('still lists the rows when the revision cannot be read', async () => {
+  fakeCoral(
+    WorkspaceState.ACTIVE,
+    () => ({ actions: [queued('first')], actionCount: 1n }),
+    () => {
+      throw new ConnectError('down', Code.Unavailable)
+    },
+  )
+  const { approvals, revision } = await loaderData()
+  expect(approvals).toHaveLength(1)
+  expect(revision).toBeUndefined()
 })
 
 it('has no page for an archived workspace', async () => {

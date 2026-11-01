@@ -1,8 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
+import { ActionSignalContext } from '@/lib/use-action-count'
 import { approval, run, workspace } from '../activity/fixtures'
 import { freezeStoryClock, minutesAfterStoryNow } from '../activity/story-clock'
 import { ApprovalsPage } from './approvals-page'
+
+const path = `/${workspace}`
 
 const meta = {
   title: 'Approvals/Page',
@@ -26,6 +29,7 @@ type Story = StoryObj<typeof meta>
 // An Agent's request, your own, and a Run with no intent, most urgent first.
 export const Pending: Story = {
   args: {
+    workspace: path,
     approvals: [
       { action: { ...approval, deadline: minutesAfterStoryNow(5) }, run },
       {
@@ -55,4 +59,16 @@ export const Pending: Story = {
   },
 }
 
-export const Empty: Story = { args: { approvals: [] } }
+export const Empty: Story = { args: { workspace: path, approvals: [] } }
+
+// The shell's stream dropped. The rows stay, marked as unavailable, and take no decision.
+export const Unavailable: Story = {
+  args: Pending.args,
+  decorators: [
+    (Story) => (
+      <ActionSignalContext value={{ counts: null, connected: false }}>
+        <Story />
+      </ActionSignalContext>
+    ),
+  ],
+}

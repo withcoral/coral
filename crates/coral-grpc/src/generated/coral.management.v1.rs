@@ -6070,7 +6070,7 @@ pub struct CountRequiredActionsRequest {
     pub workspace: ::prost::alloc::string::String,
 }
 /// Number of pending requests. A failed read is an error, never a zero count.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CountRequiredActionsResponse {
     /// Pending requests of every kind. A connection request shared by several Runs counts once.
     #[prost(int64, tag = "1")]
@@ -6081,6 +6081,14 @@ pub struct CountRequiredActionsResponse {
     /// Pending Account Connection Requests.
     #[prost(int64, tag = "3")]
     pub connection_count: i64,
+    /// Opaque. Changes whenever the caller's pending Approval Requests change, and only then.
+    /// Compare it for equality. It grants no authority.
+    #[prost(string, tag = "4")]
+    pub approval_revision: ::prost::alloc::string::String,
+    /// Opaque. Changes whenever the caller's pending Account Connection Requests change, and
+    /// only then. Compare it for equality. It grants no authority.
+    #[prost(string, tag = "5")]
+    pub connection_revision: ::prost::alloc::string::String,
 }
 /// Selects the Workspace and the window to summarize.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

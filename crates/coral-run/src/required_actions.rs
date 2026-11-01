@@ -4,7 +4,7 @@
 
 use crate::lifecycle::RunRecord;
 use coral_db::Transaction;
-use coral_workspace::{Principal, PrincipalKind};
+use coral_workspace::{Principal, PrincipalKind, WorkspaceId};
 use sha2::{Digest as _, Sha256};
 
 use crate::{Error, approval};
@@ -85,17 +85,54 @@ pub enum RequiredActionKind {
     AccountConnection,
 }
 
+/// Opaque fingerprint of one caller's current requests of one kind. Equal
+/// revisions mean the same requests, whatever their count. It covers identities
+/// the caller can already list, so it reveals nothing else and grants no authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequiredActionSetRevision([u8; 32]);
+
+impl std::fmt::Display for RequiredActionSetRevision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
+    }
+}
+
 /// Distinct current requests by kind. A connection request shared by several
 /// Runs counts once.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequiredActionCounts {
     /// Current Approval Requests.
     pub approvals: i64,
     /// Current Account Connection Requests.
     pub connections: i64,
+    /// Changes whenever the set of current Approval Requests changes.
+    pub approval_revision: RequiredActionSetRevision,
+    /// Changes whenever the set of current Account Connection Requests changes.
+    pub connection_revision: RequiredActionSetRevision,
 }
 
 impl RequiredActionCounts {
+    /// Folds current requests, each once and in a stable order.
+    pub(crate) fn of(requests: &[(WorkspaceId, RequiredActionRequest)]) -> Self {
+        let tally = |kind: &str| {
+            let mut digest = Sha256::new();
+            let mut count = 0;
+            for (workspace, request) in requests.iter().filter(|(_, r)| r.kind() == kind) {
+                digest.update(format!("{workspace}/{request}\n"));
+                count += 1;
+            }
+            (count, RequiredActionSetRevision(digest.finalize().into()))
+        };
+        let (approvals, approval_revision) = tally(RequiredActionRequest::APPROVAL);
+        let (connections, connection_revision) = tally(RequiredActionRequest::CONNECTION);
+        Self {
+            approvals,
+            connections,
+            approval_revision,
+            connection_revision,
+        }
+    }
+
     /// Current requests of every kind.
     #[must_use]
     pub const fn total(&self) -> i64 {
@@ -223,7 +260,8 @@ pub struct RequiredActions<R = crate::RunSummary> {
 }
 
 impl crate::RunModule {
-    /// Counts distinct requests by kind without loading Runs or exact evidence.
+    /// Counts distinct requests by kind, with each kind's revision, without
+    /// loading Runs or exact evidence.
     /// # Errors
     /// Rejects Agent callers and inaccessible scopes.
     pub async fn required_action_counts(
@@ -236,8 +274,7 @@ impl crate::RunModule {
             .workspaces
             .action_history_authority_in_transaction(&mut tx, actor, workspace)
             .await?;
-        let counts =
-            crate::required_actions_repository::counts(&mut tx, &authority, self.now()?).await?;
+        let counts = current_counts(&mut tx, &authority, self.now()?).await?;
         tx.commit().await?;
         Ok(counts)
     }
@@ -262,9 +299,7 @@ impl crate::RunModule {
             return Err(Error::InvalidInput("invalid action page size".into()));
         }
         let now = self.now()?;
-        let action_count = crate::required_actions_repository::counts(tx, authority, now)
-            .await?
-            .selected(kind);
+        let action_count = current_counts(tx, authority, now).await?.selected(kind);
         let (rows, has_more) = crate::required_actions_repository::queue(
             tx,
             authority,
@@ -298,6 +333,15 @@ impl crate::RunModule {
             next,
         })
     }
+}
+
+async fn current_counts(
+    tx: &mut Transaction<'_>,
+    authority: &coral_workspace::HistoryAuthority,
+    now: i64,
+) -> Result<RequiredActionCounts, Error> {
+    let requests = crate::required_actions_repository::current_requests(tx, authority, now).await?;
+    Ok(RequiredActionCounts::of(&requests))
 }
 
 fn summary(row: crate::required_actions_repository::ActionEvidence) -> ActionSummary {

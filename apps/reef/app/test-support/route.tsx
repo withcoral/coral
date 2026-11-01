@@ -3,7 +3,7 @@
 // so a test could neither drive navigation nor dispose it.
 
 import { act, render } from '@testing-library/react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ComponentType, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
   createMemoryRouter,
@@ -11,6 +11,7 @@ import {
   RouterProvider,
   useLocation,
   type ActionFunction,
+  type LoaderFunction,
   type Location,
   type RouteObject,
 } from 'react-router'
@@ -21,6 +22,12 @@ export interface RouteOptions {
   entry?: string
   /** Answers form submissions to the rendered route. */
   action?: ActionFunction
+  /** Supplies the rendered route's `useLoaderData`, and reruns on a refresh. */
+  loader?: LoaderFunction
+  /** Replaces the rendered route when its loader fails. */
+  ErrorBoundary?: ComponentType
+  /** Surrounds the router, for context that the route and its boundary share. */
+  wrapper?: ComponentType<{ children: ReactNode }>
   /** Routes beside the rendered one, such as a form's action or another page. */
   routes?: RouteObject[]
   /** The CSRF token the app shell hands its forms. */
@@ -37,7 +44,7 @@ export type RouteView = ReactNode | ((location: Location) => ReactNode)
 export function renderRoute(view: RouteView, options: RouteOptions = {}) {
   const router = memoryRouter(view, options)
   onTestFinished(() => router.dispose())
-  return { ...render(<RouterProvider router={router} />), router }
+  return { ...render(<RouterProvider router={router} />, { wrapper: options.wrapper }), router }
 }
 
 /**
@@ -73,14 +80,20 @@ export function markupRoute(view: ReactNode, entry = '/') {
   }
 }
 
-function memoryRouter(view: RouteView, { entry = '/', action, routes = [], csrf }: RouteOptions) {
+function memoryRouter(
+  view: RouteView,
+  { entry = '/', action, loader, ErrorBoundary, routes = [], csrf }: RouteOptions,
+) {
   function Route() {
     // The location is an argument, not only a trigger: the compiler memoizes
     // the view on what it reads, and would otherwise keep the first one.
     const location = useLocation()
     return typeof view === 'function' ? view(location) : view
   }
-  const page: RouteObject[] = [...routes, { path: '*', action, Component: Route }]
+  const page: RouteObject[] = [
+    ...routes,
+    { path: '*', action, loader, ErrorBoundary, Component: Route },
+  ]
   if (csrf === undefined) return createMemoryRouter(page, { initialEntries: [entry] })
   const shell = { form: { csrf } }
   return createMemoryRouter(

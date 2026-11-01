@@ -17,6 +17,8 @@ it('reads each workspace count by kind and keys it by workspace path', async () 
                 actionCount: 9007199254740993n,
                 approvalCount: 9007199254740992n,
                 connectionCount: 1n,
+                approvalRevision: 'approval-revision',
+                connectionRevision: 'connection-revision',
               }
             : {},
       })
@@ -27,8 +29,14 @@ it('reads each workspace count by kind and keys it by workspace path', async () 
       total: '9007199254740993',
       approvals: '9007199254740992',
       connections: '1',
+      revisions: { approvals: 'approval-revision', connections: 'connection-revision' },
     },
-    [`/${research}`]: { total: '0', approvals: '0', connections: '0' },
+    [`/${research}`]: {
+      total: '0',
+      approvals: '0',
+      connections: '0',
+      revisions: { approvals: '', connections: '' },
+    },
   })
 })
 function failing(code: Code) {
@@ -50,7 +58,12 @@ it.each([Code.NotFound, Code.PermissionDenied, Code.Unavailable])(
     const activity = failing(code)
     expect(await loadActionCounts({ activity }, [{ name: finance }, { name: research }])).toEqual({
       [`/${finance}`]: null,
-      [`/${research}`]: { total: '2', approvals: '2', connections: '0' },
+      [`/${research}`]: {
+        total: '2',
+        approvals: '2',
+        connections: '0',
+        revisions: { approvals: '', connections: '' },
+      },
     })
   },
 )

@@ -6,7 +6,12 @@ import { STREAM_LIFETIME_MS, activityStream } from './activity-stream.server'
 import { streamEvents } from './activity-stream'
 import { activityChanges } from './activity-stream.test-support'
 
-const counted = (total: string) => ({ total, approvals: total, connections: '0' })
+const counted = (total: string, approvals = `revision-${total}`) => ({
+  total,
+  approvals: total,
+  connections: '0',
+  revisions: { approvals, connections: '' },
+})
 
 afterEach(() => {
   vi.useRealTimers()
@@ -52,6 +57,35 @@ it('subscribes before the initial read and refreshes on changes, not heartbeats'
     changes.emit(false)
     expect((await events.next()).value).toEqual({ kind: 'heartbeat' })
     expect(reads).toBe(3)
+  } finally {
+    await events.return(undefined)
+  }
+})
+
+it('pushes a new revision at the same count', async () => {
+  const changes = activityChanges()
+  const activity = createClient(
+    ActivityService,
+    createRouterTransport(({ service }) => {
+      service(ActivityService, { watchActivity: changes.watch })
+    }),
+  )
+  const reads = [counted('1', 'first request'), counted('1', 'second request')]
+  const controller = new AbortController()
+  const response = activityStream(
+    new Request('http://reef.test/activity/count', { signal: controller.signal }),
+    { activity },
+    async () => ({ kind: 'count', counts: { '/workspaces/w': reads.shift()! } }),
+  )
+  const events = streamEvents(response)
+  try {
+    expect((await events.next()).value).toMatchObject({
+      counts: { '/workspaces/w': { revisions: { approvals: 'first request' } } },
+    })
+    changes.emit()
+    expect((await events.next()).value).toMatchObject({
+      counts: { '/workspaces/w': { revisions: { approvals: 'second request' } } },
+    })
   } finally {
     await events.return(undefined)
   }

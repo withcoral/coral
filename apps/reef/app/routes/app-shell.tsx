@@ -14,7 +14,7 @@ import { ContentContainer } from '@/components/content-container'
 import { Sidebar } from '@/components/sidebar'
 import { loadActionCounts } from '@/lib/action-count.server'
 import { LocalDeploymentContext } from '@/lib/deployment'
-import { useActionCounts } from '@/lib/use-action-count'
+import { ActionSignalContext, useActionSignal } from '@/lib/use-action-count'
 import { memberWorkspaces } from '@/lib/workspace-route.server'
 import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { ShellFormContext } from '@/views/management/forms'
@@ -81,7 +81,7 @@ function browserAuth(auth: RequestAuth): BrowserAuth {
     : { mode: 'disabled' }
 }
 export default function AppShell({ loaderData }: Route.ComponentProps) {
-  const actionCounts = useActionCounts(loaderData.actionCounts)
+  const actionSignal = useActionSignal(loaderData.actionCounts)
   const rootData = useRouteLoaderData('root') as { sidebarIsMinimized: boolean } | undefined
   const location = useLocation()
   const matches = useMatches()
@@ -94,7 +94,7 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
         <NavigationRoot>
           <div className={styles.layout}>
             <Sidebar
-              actionCounts={actionCounts}
+              actionCounts={actionSignal.counts}
               auth={loaderData.auth}
               organizationOwner={loaderData.organizationOwner}
               newerRelease={loaderData.newerRelease}
@@ -120,7 +120,9 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
                     : null
                 }
               >
-                <Outlet />
+                <ActionSignalContext value={actionSignal}>
+                  <Outlet />
+                </ActionSignalContext>
               </BreadcrumbRoot>
             </ContentContainer>
           </div>

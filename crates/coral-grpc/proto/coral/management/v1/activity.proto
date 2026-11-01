@@ -635,6 +635,12 @@ message CountRequiredActionsResponse {
   int64 approval_count = 2;
   // Pending Account Connection Requests.
   int64 connection_count = 3;
+  // Opaque. Changes whenever the caller's pending Approval Requests change, and only then.
+  // Compare it for equality. It grants no authority.
+  string approval_revision = 4;
+  // Opaque. Changes whenever the caller's pending Account Connection Requests change, and
+  // only then. Compare it for equality. It grants no authority.
+  string connection_revision = 5;
 }
 // Selects the Workspace and the window to summarize.
 message SummarizeActivityRequest {

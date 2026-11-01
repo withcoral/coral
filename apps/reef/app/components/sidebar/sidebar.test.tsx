@@ -6,7 +6,6 @@ import { useLocation } from 'react-router'
 import { expect, onTestFinished, test } from 'vitest'
 import { renderRoute } from '@/test-support/route'
 import type { BrowserAuth } from '@/auth/types'
-import type { ActionCounts } from '@/lib/activity-live-types'
 import { Sidebar, type SidebarWorkspace } from './sidebar'
 import { SIDEBAR_COOKIE_NAME } from './sidebar-state'
 
@@ -388,7 +387,7 @@ interface RenderOptions {
   /** The route's workspace when the shell could not list it. */
   extra?: SidebarWorkspace
   minimized?: boolean
-  actionCounts?: ActionCounts | null
+  actionCounts?: Parameters<typeof Sidebar>[0]['actionCounts']
   organizationOwner?: boolean
   auth?: BrowserAuth
 }

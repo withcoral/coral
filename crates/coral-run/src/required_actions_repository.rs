@@ -1,6 +1,6 @@
 //! Bounded summary-only request evidence. Call only after authorizing the exact Run
 //! in the same snapshot. Shared connection waiters collapse before the page limit.
-use crate::{Error, RequiredActionCounts, RequiredActionKind, RequiredActionRequest, RunId};
+use crate::{Error, RequiredActionKind, RequiredActionRequest, RunId};
 use coral_db::Transaction;
 use coral_db::{col, column};
 use coral_workspace::WorkspaceId;
@@ -160,38 +160,36 @@ pub(crate) async fn next_authority_deadline(
     Ok(actor)
 }
 
-/// Counts identities by kind through the same current-request relation as exact
-/// Run summaries. No exact payloads or per-Run enumeration leave this repository.
-pub(crate) async fn counts(
+/// Each current request once, in a stable order, through the same
+/// current-request relation as exact Run summaries. No exact payloads or per-Run
+/// enumeration leave this repository.
+pub(crate) async fn current_requests(
     tx: &mut Transaction<'_>,
     authority: &coral_workspace::HistoryAuthority,
     now: i64,
-) -> Result<RequiredActionCounts, Error> {
+) -> Result<Vec<(WorkspaceId, RequiredActionRequest)>, Error> {
     let candidates = authorized_candidates(authority, now);
-    let identities = Query::select()
-        .from_subquery(requests(&candidates), Alias::new("requests"))
-        .columns(["workspace", "kind", "request"].map(Alias::new))
-        .distinct()
-        .to_owned();
-    let rows: Vec<(String, i64)> = tx
+    let rows: Vec<(String, String, String)> = tx
         .fetch_all(
             Query::select()
-                .column(Alias::new("kind"))
-                .expr(Expr::col(Alias::new("request")).count())
-                .from_subquery(identities, Alias::new("identities"))
-                .group_by_col(Alias::new("kind"))
+                .from_subquery(requests(&candidates), Alias::new("requests"))
+                .columns(["workspace", "kind", "request"].map(Alias::new))
+                .distinct()
+                .order_by(Alias::new("workspace"), sea_query::Order::Asc)
+                .order_by(Alias::new("kind"), sea_query::Order::Asc)
+                .order_by(Alias::new("request"), sea_query::Order::Asc)
                 .to_owned(),
         )
         .await?;
-    let mut counts = RequiredActionCounts::default();
-    for (kind, count) in rows {
-        match kind.as_str() {
-            RequiredActionRequest::APPROVAL => counts.approvals = count,
-            RequiredActionRequest::CONNECTION => counts.connections = count,
-            _ => return Err(Error::CorruptData("invalid action request".into())),
-        }
-    }
-    Ok(counts)
+    rows.into_iter()
+        .map(|(workspace, kind, request)| {
+            Ok((
+                WorkspaceId::parse(&workspace)?,
+                RequiredActionRequest::from_parts(&kind, &request)
+                    .ok_or_else(|| Error::CorruptData("invalid action request".into()))?,
+            ))
+        })
+        .collect()
 }
 
 fn grouped_requests(workspace: &WorkspaceId, run: &RunId, now: i64) -> SelectStatement {
