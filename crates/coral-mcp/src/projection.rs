@@ -5,7 +5,7 @@ mod run;
 
 use coral_task::TaskOutcome;
 use coral_workspace::TraceId;
-use rmcp::model::CallToolResult;
+use rmcp::model::{CallToolResult, MetaObject};
 use schemars::{
     JsonSchema, Schema,
     generate::SchemaSettings,
@@ -17,6 +17,8 @@ use serde_json::{Map, Value};
 pub(crate) use discovery::{SavedFunctionResult, saved_function};
 pub(crate) use run::{RunUpdateResult, run_update};
 
+const END_TURN_META_KEY: &str = "claude/endTurn";
+
 /// Every Coral-owned result keeps the SDK's compact JSON text of
 /// `structuredContent` as `content[0]`, as both served MCP versions advise.
 /// Content-only clients, and clients that show tool errors from `content`,
@@ -24,6 +26,16 @@ pub(crate) use run::{RunUpdateResult, run_update};
 pub(crate) fn success(value: impl Serialize) -> Result<CallToolResult, ToolFailure> {
     let value = serde_json::to_value(value).map_err(|_error| ToolFailure::internal())?;
     Ok(CallToolResult::structured(value))
+}
+
+/// Asks the client to end the turn on `result` without another model call.
+/// Send it only when the reply is already with the user, since a client that
+/// honors the key gives the model no further response. Others ignore it.
+pub(crate) fn ending_turn(mut result: CallToolResult) -> CallToolResult {
+    let mut meta = MetaObject::new();
+    meta.0.insert(END_TURN_META_KEY.into(), Value::Bool(true));
+    result.meta = Some(meta);
+    result
 }
 
 /// A Coral-owned tool failure, named by the trace of the call that failed.
