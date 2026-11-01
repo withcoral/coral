@@ -113,7 +113,7 @@ struct Arguments {
     #[schemars(
         with = "String",
         description = "A namespace from coral.providers.<namespace>, as start_task lists them, \
-                       or coral.workspace. Omit unless the user names the service."
+                       or coral.workspace. Omit when you cannot tell which service holds the data."
     )]
     provider: Option<String>,
     #[serde(default, deserialize_with = "super::present")]
