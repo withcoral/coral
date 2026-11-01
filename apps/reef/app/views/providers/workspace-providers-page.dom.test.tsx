@@ -13,12 +13,12 @@ import { WorkspaceProvidersPage } from './workspace-providers-page'
 // happy-dom lays nothing out, so the virtualizer would mount no tool
 // rows. Give the scroll port a viewport; row heights come from estimates.
 const isTable = (element: HTMLElement) => element.getAttribute('aria-label') === 'Tools'
-Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
   get() {
     return isTable(this) ? 2000 : 0
   },
 })
-Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
   get() {
     return isTable(this) ? 1000 : 0
   },

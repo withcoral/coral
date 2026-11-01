@@ -11,7 +11,7 @@
     "check": "oxfmt --check && oxlint --deny-warnings && node scripts/check-compiler-bridge.mjs"
   },
   "devDependencies": {
-    "oxfmt": "^0.72.0",
-    "oxlint": "^1.87.0"
+    "oxfmt": "^0.75.0",
+    "oxlint": "^1.90.0"
   }
 }
