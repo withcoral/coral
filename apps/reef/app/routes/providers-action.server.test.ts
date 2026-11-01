@@ -57,7 +57,7 @@ it('batches one cross-provider policy selection per provider with 100-tool calls
       'selectedTool',
       JSON.stringify({
         provider: providerA,
-        tool: `providers/${providerA}/tools/a-${index}`,
+        tool: `a-${index}`,
       }),
     )
   }
@@ -66,7 +66,7 @@ it('batches one cross-provider policy selection per provider with 100-tool calls
       'selectedTool',
       JSON.stringify({
         provider: providerB,
-        tool: `providers/${providerB}/tools/b-${index}`,
+        tool: `b-${index}`,
       }),
     )
   }
@@ -85,7 +85,7 @@ it('batches one cross-provider policy selection per provider with 100-tool calls
     const provider = parent.split('/').at(-1)
     expect(parent).toBe(`workspaces/${workspaceId}/providers/${provider}`)
     for (const { tool, accessState } of policies) {
-      expect(tool).toMatch(new RegExp(`^providers/${provider}/`))
+      expect(tool).toMatch(new RegExp(`^${parent}/tools/[A-Za-z0-9_-]+$`))
       expect(accessState).toBe(ToolAccessState.ENABLED)
     }
   }
@@ -96,7 +96,10 @@ it('batches one cross-provider policy selection per provider with 100-tool calls
     )
     expect(partial.length).toBeLessThanOrEqual(1)
   }
-  const sent = calls.flatMap(({ policies }) => policies.map(({ tool }) => tool))
+  // The form carries Tool Keys; the API takes them encoded in a resource name.
+  const sent = calls.flatMap(({ policies }) =>
+    policies.map(({ tool }) => Buffer.from(tool.split('/').at(-1)!, 'base64url').toString()),
+  )
   expect(sent.toSorted()).toEqual(
     form
       .getAll('selectedTool')
@@ -120,8 +123,8 @@ it('reports the blockers of each changed provider', async () => {
   }))
   const result = (await post(
     policyForm([
-      { provider: providerA, tool: `providers/${providerA}/tools/a` },
-      { provider: providerB, tool: `providers/${providerB}/tools/b` },
+      { provider: providerA, tool: 'a' },
+      { provider: providerB, tool: 'b' },
     ]),
   )) as unknown as { data: { blockers: Record<string, string[]> } }
   expect(result.data.blockers).toEqual({ [providerA]: ['No tools ready'], [providerB]: [] })
@@ -149,9 +152,9 @@ it('reads blockers four at a time, as it writes', async () => {
 // Catches: a saved policy reported as failed because a read after it failed.
 it('leaves the blockers out when it cannot read them, and still reports the save', async () => {
   mocks.getProvider.mockRejectedValue(new ConnectError('down', Code.Unavailable))
-  const result = (await post(
-    policyForm([{ provider: providerA, tool: `providers/${providerA}/tools/a` }]),
-  )) as unknown as { data: { error: null; blockers?: unknown; tools: { status: string }[] } }
+  const result = (await post(policyForm([{ provider: providerA, tool: 'a' }]))) as unknown as {
+    data: { error: null; blockers?: unknown; tools: { status: string }[] }
+  }
   expect(result.data.error).toBeNull()
   expect(result.data.blockers).toBeUndefined()
   expect(result.data.tools.map((tool) => tool.status)).toEqual(['updated'])
@@ -161,8 +164,8 @@ it('leaves the blockers out when it cannot read them, and still reports the save
 // page keeps tools Coral already saved in the retry selection.
 it('reports each tool on its own when one provider batch fails', async () => {
   const form = policyForm([
-    { provider: providerA, tool: `providers/${providerA}/tools/a` },
-    { provider: providerB, tool: `providers/${providerB}/tools/b` },
+    { provider: providerA, tool: 'a' },
+    { provider: providerB, tool: 'b' },
   ])
   mocks.updateToolPolicies.mockImplementation(({ parent }: { parent: string }) =>
     parent.endsWith(providerB)
@@ -176,10 +179,10 @@ it('reports each tool on its own when one provider batch fails', async () => {
 
   expect(result.data.error).toBeNull()
   expect(result.data.tools).toEqual([
-    { provider: providerA, tool: `providers/${providerA}/tools/a`, status: 'updated' },
+    { provider: providerA, tool: 'a', status: 'updated' },
     {
       provider: providerB,
-      tool: `providers/${providerB}/tools/b`,
+      tool: 'b',
       status: 'failed',
       reason: expect.stringContaining('permission'),
     },
@@ -194,7 +197,7 @@ it('rejects a selection with a malformed or repeated tool', async () => {
   malformed.append('selectedTool', '{not json')
   await expect(post(malformed)).rejects.toMatchObject({ status: 400 })
 
-  const target = { provider: providerA, tool: `providers/${providerA}/tools/a` }
+  const target = { provider: providerA, tool: 'a' }
   await expect(post(policyForm([target, target]))).rejects.toMatchObject({ status: 400 })
   expect(mocks.updateToolPolicies).not.toHaveBeenCalled()
 })

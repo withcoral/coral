@@ -56,8 +56,8 @@ export interface ToolHintsView {
  * this holds only what a row and its filters read; `ToolDetailView` has the rest.
  */
 export interface ToolView extends Omit<ToolNodeView, 'summary' | 'path'> {
-  /** Full management API resource name, used for policy writes. */
-  name: string
+  /** Tool Key. Identifies the Tool in selections and policy writes. */
+  key: string
   hints: ToolHintsView
   policy: PolicyState
 }

@@ -19,7 +19,7 @@ export const workspaceView: WorkspaceView = {
 /** An available tool of `owner` that needs approval, in `group`. */
 export function tool(owner: ProviderView, relativePath: string, group = ''): ToolView {
   return {
-    name: `workspaces/demo/providers/${owner.id}/tools/${relativePath}`,
+    key: relativePath,
     relativePath,
     hints: {},
     policy: 'approval_required',

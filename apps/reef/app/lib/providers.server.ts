@@ -39,6 +39,14 @@ export function providerName(workspace: string, id: string) {
 export function providerPath(workspacePath: string, name: string) {
   return `${workspacePath}/providers/${name.split('/').at(-1)}`
 }
+/** The Tool Key a tool's resource name encodes. */
+function toolKey(name: string) {
+  return Buffer.from(name.split('/').at(-1)!, 'base64url').toString()
+}
+/** A tool's resource name, from a Provider's resource name and a Tool Key. */
+export function toolName(provider: string, key: string) {
+  return `${provider}/tools/${Buffer.from(key).toString('base64url')}`
+}
 
 /** Follows page tokens to the end; the tree shows every Provider. */
 export async function listAllProviders(api: Pick<ManagementApi, 'providers'>, parent: string) {
@@ -176,7 +184,7 @@ export function toolGroup(o: { tags: readonly string[]; relativePath: string }) 
 
 export function toolView(o: ToolAccess): ToolView {
   return {
-    name: o.tool,
+    key: toolKey(o.tool),
     relativePath: o.relativePath,
     hints: toolHints(o.hints),
     policy: accessState(o.accessState),

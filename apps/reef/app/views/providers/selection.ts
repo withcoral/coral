@@ -5,7 +5,7 @@
  */
 export type SelectedTool = { provider: string; tool: string }
 
-/** A stable string for one selected tool, keyed by provider and name. */
+/** A stable string for one selected tool, keyed by provider and Tool Key. */
 export type SelectionKey = string
 
 export const SELECTED_TOOL_FIELD = 'selectedTool'

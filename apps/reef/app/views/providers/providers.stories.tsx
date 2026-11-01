@@ -41,8 +41,7 @@ function op(
 ): ToolView {
   const readOnly = extra.hints?.readOnly === true
   return {
-    // The management resource name is keyed by the provider id, not its namespace.
-    name: `providers/${provider}/tools/${relativePath}`,
+    key: relativePath,
     relativePath,
     // Mirrors the domain default for these fixtures, which carry no HTTP method:
     // read-only is enabled, anything else needs approval.
@@ -110,7 +109,7 @@ const weather: ProviderView = {
   enabled: true,
   tools: [
     {
-      name: 'providers/prov-weather/tools/getForecast',
+      key: 'getForecast',
       relativePath: 'getForecast',
       hints: {},
       policy: 'approval_required',
@@ -140,7 +139,7 @@ const coralTools = [
   'updateProvider',
 ].map((key) => ({
   ...weather.tools[0]!,
-  name: `providers/prov-coral/tools/${key}`,
+  key,
   relativePath: key,
   // Read-only, so they start enabled.
   ...(['listProviders', 'getProvider', 'getPolicy'].includes(key) && {
