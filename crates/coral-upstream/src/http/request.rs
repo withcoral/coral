@@ -63,7 +63,12 @@ impl ReadyHttpDispatch {
             path,
             query,
             mut headers,
-        } = serialize_parameters(binding.path_template(), binding.parameters(), arguments)?;
+        } = serialize_parameters(
+            binding.path_template(),
+            binding.parameters(),
+            binding.request_body().is_some(),
+            arguments,
+        )?;
         let base_path = url.path().trim_end_matches('/');
         let tool_path = path.trim_start_matches('/');
         // URL parsing removes dot segments, which would send the request, and
@@ -373,6 +378,7 @@ struct SerializedParameters {
 fn serialize_parameters(
     path_template: &str,
     parameters: &[HttpParameterBinding],
+    declares_body: bool,
     arguments: &Map<String, Value>,
 ) -> Result<SerializedParameters, Error> {
     let mut path = path_template.to_string();
@@ -429,8 +435,10 @@ fn serialize_parameters(
             .iter()
             .any(|parameter| parameter.logical_name() == name)
         {
-            return Err(Error::InvalidArguments(format!(
-                "Tool argument `{name}` is not declared"
+            return Err(Error::InvalidArguments(undeclared_argument(
+                name,
+                parameters,
+                declares_body,
             )));
         }
     }
@@ -453,6 +461,42 @@ fn serialize_parameters(
         query,
         headers,
     })
+}
+
+/// The most bytes of declared names one rejection lists, which keeps a Tool
+/// with many parameters well inside the bound on a Program error's message.
+const DECLARED_NAMES_BYTES: usize = 512;
+
+/// Rejects `name`, listing what the Tool declares so the Program can correct
+/// the call without another read. The list holds catalog facts only, never a
+/// submitted value. `body` comes first so the cap cannot hide it.
+fn undeclared_argument(
+    name: &str,
+    parameters: &[HttpParameterBinding],
+    declares_body: bool,
+) -> String {
+    let declared = declares_body
+        .then_some("body")
+        .into_iter()
+        .chain(parameters.iter().map(HttpParameterBinding::logical_name))
+        .collect::<Vec<_>>();
+    let mut shown = Vec::new();
+    let mut bytes = 0;
+    for declared_name in &declared {
+        bytes += declared_name.len();
+        if bytes > DECLARED_NAMES_BYTES {
+            break;
+        }
+        shown.push(format!("`{declared_name}`"));
+    }
+    let more = declared.len() - shown.len();
+    let shown = shown.join(", ");
+    let correction = match more {
+        _ if declared.is_empty() => "This Tool declares no arguments.".to_string(),
+        0 => format!("It declares: {shown}."),
+        more => format!("It declares: {shown}, and {more} more."),
+    };
+    format!("Tool argument `{name}` is not declared. {correction}")
 }
 
 fn serialize_path_parameter(

@@ -702,6 +702,89 @@ fn a_path_argument_cannot_become_a_dot_segment() {
     );
 }
 
+/// One `POST` Tool with `parameters` query parameters, and optionally a body.
+fn query_tool(parameters: &[String], body: bool) -> PreparedProviderCatalog {
+    let parameters = parameters
+        .iter()
+        .map(|name| {
+            format!("        - {{ name: {name}, in: query, schema: {{ type: string }} }}\n")
+        })
+        .collect::<Vec<_>>()
+        .concat();
+    let parameters = if parameters.is_empty() {
+        String::new()
+    } else {
+        format!("      parameters:\n{parameters}")
+    };
+    let body = if body {
+        r#"      requestBody: { content: { "application/json": { schema: { type: object } } } }
+"#
+    } else {
+        ""
+    };
+    ready(&format!(
+        r#"openapi: 3.1.0
+info: {{ title: Query arguments, version: "1" }}
+servers: [{{ url: "https://api.example.test/v1" }}]
+paths:
+  /items:
+    post:
+      operationId: create
+{parameters}{body}      responses:
+        "204": {{ description: done }}
+"#
+    ))
+}
+
+fn undeclared_reason(prepared: &PreparedProviderCatalog) -> String {
+    let arguments = serde_json::json!({"query": "secret-canary"});
+    match try_plan(prepared, &arguments) {
+        Err(coral_upstream::Error::InvalidArguments(reason)) => reason,
+        Err(error) => panic!("{error}"),
+        Ok(_dispatch) => panic!("an undeclared argument must be rejected"),
+    }
+}
+
+#[test]
+fn an_undeclared_argument_lists_what_the_tool_declares() {
+    let names = ["cursor".to_string(), "limit".to_string()];
+    for (prepared, expected) in [
+        (
+            query_tool(&names, false),
+            "Tool argument `query` is not declared. It declares: `cursor`, `limit`.",
+        ),
+        (
+            query_tool(&names, true),
+            "Tool argument `query` is not declared. It declares: `body`, `cursor`, `limit`.",
+        ),
+        (
+            query_tool(&[], false),
+            "Tool argument `query` is not declared. This Tool declares no arguments.",
+        ),
+    ] {
+        assert_eq!(undeclared_reason(&prepared), expected);
+    }
+}
+
+#[test]
+fn the_declared_list_is_capped_and_keeps_the_request_body() {
+    let names = (0..200)
+        .map(|index| format!("parameter_{index:03}"))
+        .collect::<Vec<_>>();
+    let reason = undeclared_reason(&query_tool(&names, true));
+    // 512 bytes of 13-byte names, after `body`.
+    assert!(
+        reason.starts_with(
+            "Tool argument `query` is not declared. It declares: `body`, `parameter_000`,"
+        ),
+        "{reason}"
+    );
+    assert!(reason.ends_with(", and 161 more."), "{reason}");
+    assert!(reason.contains("`parameter_038`"), "{reason}");
+    assert!(!reason.contains("`parameter_039`"), "{reason}");
+    assert!(!reason.contains("secret-canary"), "{reason}");
+}
+
 #[tokio::test]
 async fn a_traversal_argument_never_reaches_an_undeclared_endpoint() {
     let server = MockServer::start().await;
