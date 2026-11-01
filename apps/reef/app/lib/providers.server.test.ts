@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest'
 import { create } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
+import { ToolAccessSchema } from '@/generated/coral/management/v1/policy_pb'
 import {
   CredentialRoute_Kind,
   ProviderSchema,
@@ -8,7 +9,13 @@ import {
   SearchIndexState,
 } from '@/generated/coral/management/v1/provider_pb'
 import type { PersonalAccountState } from '@/views/accounts/types'
-import { personalAccountAction, providerFailure, searchIndexView } from './providers.server'
+import {
+  personalAccountAction,
+  providerFailure,
+  searchIndexView,
+  toolName,
+  toolView,
+} from './providers.server'
 
 const name = 'workspaces/w/providers/p'
 
@@ -111,4 +118,17 @@ it.each([
     searchIndexFailureReason: reason,
   })
   expect(searchIndexView(provider)).toEqual(view)
+})
+
+// Catches: Reef encoding a Tool Key differently from Coral, which rejects any
+// name that is not unpadded URL-safe base64 only when a policy is saved.
+it.each([
+  ['admin.DeleteEdge', 'YWRtaW4uRGVsZXRlRWRnZQ'],
+  ['~~~', 'fn5-'],
+  ['???', 'Pz8_'],
+  ['café', 'Y2Fmw6k'],
+])('keeps the Tool Key %s through its resource name', (key, encoded) => {
+  const tool = toolName(name, key)
+  expect(tool).toBe(`${name}/tools/${encoded}`)
+  expect(toolView(create(ToolAccessSchema, { tool })).key).toBe(key)
 })

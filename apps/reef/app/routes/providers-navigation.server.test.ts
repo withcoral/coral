@@ -78,7 +78,7 @@ beforeEach(() => {
       const end = Math.min(start + pageSize, toolCount)
       return Promise.resolve({
         tools: Array.from({ length: end - start }, (_, i) => ({
-          tool: `${provider}/tools/tool${start + i}`,
+          tool: `${provider}/tools/${Buffer.from(`actions/tool${start + i}`).toString('base64url')}`,
           relativePath: `actions.tool${start + i}`,
           accessState: 3,
           available: true,

@@ -455,7 +455,7 @@ function matchingTools(
 ) {
   // The filter matches only the name the row shows, so every match is visible.
   return sorted.filter((tool) => {
-    const key = selectionKey(provider.id, tool.name)
+    const key = selectionKey(provider.id, tool.key)
     return (
       tableFilter.matches(tool.relativePath) &&
       (!policyFilter || policyFilter.keys.has(key)) &&
@@ -603,14 +603,14 @@ function ProvidersTableScreen({
   const tableRef = useRef<HTMLDivElement>(null)
   const searchable = useMemo(() => searchableProviders(providers), [providers])
   const selectedProviderId = selectedProvider?.id ?? null
-  const selectedToolName = selectedTool?.name ?? null
+  const selectedToolKey = selectedTool?.key ?? null
   // The rail is a set of tabs: the table shows one provider, or every one.
   // A provider route picks the tab. A tool route opens the drawer over
   // the tab the reader is on when that tab lists it, so the rows under it
   // stay; otherwise it opens its provider's tab. Selection is keyed, not
   // row-derived, so it survives a change of tab and counts as hidden there.
   const [lastTab, setLastTab] = useState(selectedProviderId)
-  const keepsTab = selectedToolName && (lastTab === null || lastTab === selectedProviderId)
+  const keepsTab = selectedToolKey && (lastTab === null || lastTab === selectedProviderId)
   const routeTab = keepsTab ? undefined : selectedProviderId
   if (routeTab !== undefined && routeTab !== lastTab) setLastTab(routeTab)
   const tab = routeTab === undefined ? lastTab : routeTab
@@ -629,7 +629,7 @@ function ProvidersTableScreen({
     // The selected view lists only the providers it covers.
     if (!selectedView) return entries
     return entries.filter(({ provider }) =>
-      provider.tools.some((o) => selectedView.has(selectionKey(provider.id, o.name))),
+      provider.tools.some((o) => selectedView.has(selectionKey(provider.id, o.key))),
     )
   }, [policyFilter, searchable, selectedTool, selectedProvider?.id, selectedView, tab, tableQuery])
   // A scroll re-renders the screen, so these hold still until the rows change.
@@ -645,7 +645,7 @@ function ProvidersTableScreen({
       selected.size === 0
         ? 0
         : visibleTools.filter(({ provider, tool }) =>
-            selected.has(selectionKey(provider.id, tool.name)),
+            selected.has(selectionKey(provider.id, tool.key)),
           ).length,
     [selected, visibleTools],
   )
@@ -723,7 +723,7 @@ function ProvidersTableScreen({
           groupSection.end = flat.length
           flat.push({
             kind: 'tool',
-            key: `tool:${provider.id}:${tool.name}`,
+            key: `tool:${provider.id}:${tool.key}`,
             provider,
             tool,
           })
@@ -743,7 +743,7 @@ function ProvidersTableScreen({
   const toolIndexes = useMemo(() => {
     const indexes = new Map<string, number>()
     rows.forEach((row, index) => {
-      if (row.kind === 'tool') indexes.set(selectionKey(row.provider.id, row.tool.name), index)
+      if (row.kind === 'tool') indexes.set(selectionKey(row.provider.id, row.tool.key), index)
     })
     return indexes
   }, [rows])
@@ -800,13 +800,13 @@ function ProvidersTableScreen({
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A change of tab, not anything the effect reads, owns this scroll.
   }, [tab])
   const revealIndex =
-    selectedProviderId && selectedToolName
-      ? toolIndexes.get(selectionKey(selectedProviderId, selectedToolName))
+    selectedProviderId && selectedToolKey
+      ? toolIndexes.get(selectionKey(selectedProviderId, selectedToolKey))
       : undefined
   const markRevealed = useRevealScroll(
     virtual,
-    selectedToolName ? selectedProviderId : null,
-    selectedToolName,
+    selectedToolKey ? selectedProviderId : null,
+    selectedToolKey,
     revealIndex,
   )
   const tabPath = (id: string | null) =>
@@ -823,7 +823,7 @@ function ProvidersTableScreen({
               ? !tool.available
               : effectivePolicy(inFlight.policies, provider, tool) === value
           )
-            keys.add(selectionKey(provider.id, tool.name))
+            keys.add(selectionKey(provider.id, tool.key))
       return { value, keys }
     },
     [providers],
@@ -855,7 +855,7 @@ function ProvidersTableScreen({
       setSelected((current) => {
         const next = new Set(current)
         for (const { provider, tool } of targets) {
-          const key = selectionKey(provider.id, tool.name)
+          const key = selectionKey(provider.id, tool.key)
           if (checked) next.add(key)
           else next.delete(key)
         }
@@ -884,9 +884,7 @@ function ProvidersTableScreen({
   // drawer holds it.
   const [cursor, setCursor] = useState<string | null>(null)
   const routedKey =
-    selectedProviderId && selectedToolName
-      ? selectionKey(selectedProviderId, selectedToolName)
-      : null
+    selectedProviderId && selectedToolKey ? selectionKey(selectedProviderId, selectedToolKey) : null
   // A drawer the reader closed while its route change is still pending. The
   // keys treat it as closed, so ↓ right after Escape does not open the next one.
   const [closedKey, setClosedKey] = useState<string | null>(null)
@@ -918,7 +916,7 @@ function ProvidersTableScreen({
     }
     return rows.flatMap((row, index): CursorStop[] => {
       if (row.kind === 'tool') {
-        const key = selectionKey(row.provider.id, row.tool.name)
+        const key = selectionKey(row.provider.id, row.tool.key)
         return [{ kind: 'tool', key, index, provider: row.provider, tool: row.tool }]
       }
       if (row.kind === 'status') return []
@@ -959,7 +957,7 @@ function ProvidersTableScreen({
       const fromFilter = event.target instanceof Element && event.target.id === TOOL_FILTER_ID
       if (!fromFilter && !drawerKey) focusCursor.current = true
       if (drawerKey && next.kind === 'tool') {
-        markRevealed(next.provider.id, next.tool.name)
+        markRevealed(next.provider.id, next.tool.key)
         navigate(toolPath(next.provider, next.tool), { replace: true, preventScrollReset: true })
       }
     }
@@ -981,7 +979,7 @@ function ProvidersTableScreen({
       if (!canChange) return
       event.preventDefault()
       const { provider, tool } = activeStop
-      const mutation = mutations.state(provider.id, tool.name)
+      const mutation = mutations.state(provider.id, tool.key)
       if (mutation.pending) return
       const order = policyOptions.map((option) => option.value)
       const next = order[order.indexOf(mutation.policy ?? tool.policy) + step]
@@ -993,7 +991,7 @@ function ProvidersTableScreen({
     if (!cursorKeyApplies(event, { fromFilter: true, overControls: false })) return
     event.preventDefault()
     if (activeStop.kind === 'heading') return toggleHeading(activeStop)
-    markRevealed(activeStop.provider.id, activeStop.tool.name)
+    markRevealed(activeStop.provider.id, activeStop.tool.key)
     navigate(toolPath(activeStop.provider, activeStop.tool), { preventScrollReset: true })
   }
   // Space checks the cursor's tool, or collapses or expands its heading.
@@ -1371,11 +1369,11 @@ const TableSections = memo(function TableSections({
             <Table.VirtualRows rows={group.tools} virtual={virtual}>
               {({ index, tool }) => (
                 <ToolRow
-                  key={tool.name}
-                  active={activeKey === selectionKey(section.provider.id, tool.name)}
+                  key={tool.key}
+                  active={activeKey === selectionKey(section.provider.id, tool.key)}
                   drawerOpen={drawerOpen}
                   canChange={canChange}
-                  checked={selected.has(selectionKey(section.provider.id, tool.name))}
+                  checked={selected.has(selectionKey(section.provider.id, tool.key))}
                   disabled={bulkPending}
                   form={form}
                   index={index}
@@ -1462,7 +1460,7 @@ function GroupHeading({
     () =>
       selected.size === 0
         ? 0
-        : members.filter((tool) => selected.has(selectionKey(provider.id, tool.name))).length,
+        : members.filter((tool) => selected.has(selectionKey(provider.id, tool.key))).length,
     [members, provider.id, selected],
   )
   const allSelected = members.length > 0 && selectedCount === members.length
@@ -1620,7 +1618,7 @@ const ToolRow = memo(function ToolRow({
   onOpen: (provider: string, tool: string) => void
 }) {
   const unavailableReason = tool.reasons.join(' ') || 'Coral did not provide a reason.'
-  const { pending } = usePolicyMutations().state(provider.id, tool.name)
+  const { pending } = usePolicyMutations().state(provider.id, tool.key)
   const navigate = useNavigate()
   // A click anywhere but a control opens the tool's drawer. The name's
   // link navigates itself, so the row leaves its clicks alone.
@@ -1628,7 +1626,7 @@ const ToolRow = memo(function ToolRow({
     const control = (event.target as Element).closest(ROW_CONTROLS + ', a')
     // The cursor row takes focus, so its own tabindex is not a control in it.
     if (control && control !== event.currentTarget && event.currentTarget.contains(control)) return
-    onOpen(provider.id, tool.name)
+    onOpen(provider.id, tool.key)
     navigate(toolPath(provider, tool), { preventScrollReset: true })
   }
   return (
@@ -1658,7 +1656,7 @@ const ToolRow = memo(function ToolRow({
             to={toolPath(provider, tool)}
             prefetch="intent"
             preventScrollReset
-            onClick={() => onOpen(provider.id, tool.name)}
+            onClick={() => onOpen(provider.id, tool.key)}
             className={styles.toolName}
           >
             <HighlightedMatches text={tool.relativePath} query={query} />
@@ -1705,7 +1703,7 @@ function policyFormData(
   data.set('requestId', form.requestId)
   data.set('intent', 'policy')
   data.set('provider', provider.id)
-  data.set(SELECTED_TOOL_FIELD, encodeSelectedTool({ provider: provider.id, tool: tool.name }))
+  data.set(SELECTED_TOOL_FIELD, encodeSelectedTool({ provider: provider.id, tool: tool.key }))
   data.set('access', access)
   return data
 }
@@ -1752,7 +1750,7 @@ const PolicySelect = memo(function PolicySelect({
   tool: ToolView
 }) {
   const mutations = usePolicyMutations()
-  const mutation = mutations.state(provider.id, tool.name)
+  const mutation = mutations.state(provider.id, tool.key)
   const policy = mutation.policy ?? tool.policy
   const ref = useRef<HTMLFormElement>(null)
   return (
@@ -1768,7 +1766,7 @@ const PolicySelect = memo(function PolicySelect({
       <input
         type="hidden"
         name={SELECTED_TOOL_FIELD}
-        value={encodeSelectedTool({ provider: provider.id, tool: tool.name })}
+        value={encodeSelectedTool({ provider: provider.id, tool: tool.key })}
       />
       <PolicyToggle
         size={compact ? 'small' : undefined}
@@ -1813,7 +1811,7 @@ function NoMatchStatus({
 }) {
   const { provider } = section
   const hidden = provider.tools.filter((tool) =>
-    selected.has(selectionKey(provider.id, tool.name)),
+    selected.has(selectionKey(provider.id, tool.key)),
   ).length
   if (hidden === 0) return section.status
   // The copy stays one text run, so its sentences keep their space; the gap
@@ -1888,7 +1886,7 @@ function effectivePolicy(
   provider: ProviderView,
   tool: ToolView,
 ) {
-  return policies.get(selectionKey(provider.id, tool.name)) ?? tool.policy
+  return policies.get(selectionKey(provider.id, tool.key)) ?? tool.policy
 }
 
 /**
@@ -2035,7 +2033,7 @@ function ToolDetailsDrawer({
         >
           <Dialog.Title>{tool?.relativePath ?? 'Tool details'}</Dialog.Title>
           {tool && (
-            <div key={tool.name} ref={scrollToTop} className={styles.stack}>
+            <div key={callPath} ref={scrollToTop} className={styles.stack}>
               {description && description !== summary ? (
                 <Markdown>{detail!.description}</Markdown>
               ) : (

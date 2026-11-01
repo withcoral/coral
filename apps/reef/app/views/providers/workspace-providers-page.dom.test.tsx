@@ -2,7 +2,7 @@
 
 import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import { renderRoute } from '@/test-support/route'
 
@@ -51,7 +51,7 @@ function renderPage({
   selectedToolDetail?: ToolDetailView | null
   workspace?: WorkspaceView
 } = {}) {
-  const page = (selected: ToolView | null, owner = providerOf(selected)) => (
+  const page = (selected: ToolView | null, owner = providerOf(selected, providers)) => (
     <WorkspaceProvidersPage
       workspace={workspace}
       providers={providers}
@@ -70,11 +70,11 @@ function renderPage({
     action: action ? ({ request }) => action(request) : undefined,
   })
   // The route re-renders the page with what the URL now selects.
-  const show = async (selected: ToolView | null, owner = providerOf(selected)) => {
+  const show = async (selected: ToolView | null, owner = providerOf(selected, providers)) => {
     element = page(selected, owner)
     await act(async () =>
       router.navigate(
-        (selected && pathOf(selected)) ??
+        (selected && pathOf(selected, providers)) ??
           (owner ? `/workspaces/demo/providers/${owner}` : '/workspaces/demo/providers'),
       ),
     )
@@ -88,11 +88,11 @@ function renderPage({
   return { show, router, rerenderProviders }
 }
 
-const pathOf = (tool: ToolView) =>
-  `${[github, weather].find((item) => item.tools.includes(tool))!.path}/tools/${encodeURIComponent(tool.relativePath)}`
+const pathOf = (tool: ToolView, providers = [github, weather]) =>
+  `${providers.find((item) => item.tools.includes(tool))!.path}/tools/${encodeURIComponent(tool.relativePath)}`
 
-function providerOf(selected: ToolView | null) {
-  return selected ? [github, weather].find((item) => item.tools.includes(selected))!.id : null
+function providerOf(selected: ToolView | null, providers = [github, weather]) {
+  return selected ? providers.find((item) => item.tools.includes(selected))!.id : null
 }
 
 // Catches: the drawer losing the prose the table no longer loads, or showing
@@ -110,6 +110,26 @@ test('the drawer shows the prose of the tool the route names', () => {
   const drawer = screen.getByRole('dialog')
   expect(within(drawer).getByText('every').tagName).toBe('STRONG')
   expect(within(drawer).getByText('coral.providers.github.issues.list')).toBeInTheDocument()
+})
+
+// Catches: the drawer staying scrolled between two providers' tools, as a
+// Tool Key is unique only within its provider.
+test('the drawer starts at the top for a tool with the same key in another provider', async () => {
+  const [first, second] = [github, weather].map((item) => ({
+    ...item,
+    tools: [{ ...item.tools[0]!, key: 'shared' }],
+  }))
+  const providers = [first!, second!]
+  const selectedTool = first!.tools[0]!
+  const { show } = renderPage({
+    entry: pathOf(selectedTool, providers),
+    providers,
+    selectedTool,
+  })
+  const scrollTo = vi.fn()
+  screen.getByRole('dialog').scrollTo = scrollTo
+  await show(second!.tools[0]!)
+  expect(scrollTo).toHaveBeenCalledWith({ top: 0 })
 })
 
 test('the drawer ignores prose that belongs to another tool', () => {
@@ -932,7 +952,7 @@ test('keys act on the cursor tool', async () => {
   await user.keyboard('{ArrowLeft}')
   await settle()
   expect(sent).toEqual([
-    `${JSON.stringify({ provider: github.id, tool: github.tools[1]!.name })} enabled`,
+    `${JSON.stringify({ provider: github.id, tool: github.tools[1]!.key })} enabled`,
   ])
 
   await user.click(screen.getByLabelText('Filter tools'))

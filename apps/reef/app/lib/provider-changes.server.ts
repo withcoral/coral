@@ -1,7 +1,13 @@
 import { data, redirect, type RouterContextProvider } from 'react-router'
 import { field, privateHeaders } from './management.server'
 import type { ManagementApi } from './management.server'
-import { blockerLabel, providerName, providerFailure, uuidOr404 } from './providers.server'
+import {
+  blockerLabel,
+  providerName,
+  providerFailure,
+  toolName,
+  uuidOr404,
+} from './providers.server'
 import { authorizedWorkspace } from './workspace-route.server'
 import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
 import { decodeSelectedTools, selectionKey, type SelectedTool } from '@/views/providers/selection'
@@ -162,9 +168,10 @@ async function applyPolicyBatches(
         tool,
       }))
       try {
+        const parent = providerName(workspace, batch.provider)
         await api.policies.updateToolPolicies({
-          parent: providerName(workspace, batch.provider),
-          policies: batch.tools.map((tool) => ({ tool, accessState })),
+          parent,
+          policies: batch.tools.map((key) => ({ tool: toolName(parent, key), accessState })),
         })
         for (const target of targets) outcomes.push({ ...target, status: 'updated' })
       } catch (error) {
