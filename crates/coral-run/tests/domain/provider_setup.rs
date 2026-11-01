@@ -1,6 +1,6 @@
-//! `coral.workspace.addProvider` prepares and configures a Provider Setup. Coral
-//! publishes it when nobody needs to sign in; otherwise the call returns the
-//! Reef page where a person finishes it. The call never waits for that person.
+//! `coral.workspace.addProvider` prepares and configures a Provider Setup. The
+//! call returns the Reef page where a person previews and publishes it, and
+//! never waits for that person.
 //! `coral.workspace.listProviders` lists the Providers a Program can check first.
 //! `coral.workspace.getProvider` reads one Provider's Provider Configuration.
 //! `coral.workspace.getPolicy` reads one Provider's exact Tool rules.
@@ -49,8 +49,8 @@ pub(super) fn document_source() -> serde_json::Value {
     serde_json::json!({ "kind": "openapi_document", "document": DOCUMENT })
 }
 
-/// The workflow Reef publishes with, Universal Search included, that Coral
-/// publishes through too.
+/// The workflow Reef publishes and renames with, Universal Search included,
+/// that Coral renames through too.
 pub(super) fn workflow(fixture: &TestModules) -> coral_administration::ProviderWorkflow {
     coral_administration::ProviderWorkflow::new(
         fixture.database.clone(),
@@ -86,7 +86,7 @@ impl AdminScope {
         fixture.runs = fixture
             .runs
             .clone()
-            .with_provider_publisher(Arc::new(workflow(&fixture)))
+            .with_provider_renamer(Arc::new(workflow(&fixture)))
             .with_accounts(accounts);
         let mut transaction = fixture.database.begin().await.unwrap();
         fixture
@@ -258,6 +258,81 @@ impl AdminScope {
             .expect("a confirmed configuration")
     }
 
+    /// The Provider that holds the `weather` namespace.
+    pub(super) async fn weather(&self) -> Option<coral_provider::Provider> {
+        self.fixture
+            .providers
+            .inspect_providers(&self.owner_user(), &self.workspace_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|provider| provider.call_root().as_str() == "coral.providers.weather")
+    }
+
+    /// Publishes the Setup that `result` links to, as the person does in Reef
+    /// under the namespace and route the Program asked for.
+    pub(super) async fn person_publishes(&self, result: &serde_json::Value) {
+        let setup = linked_setup(result);
+        let request = self
+            .fixture
+            .providers
+            .get_setup(&self.owner_user(), &self.workspace_id, &setup)
+            .await
+            .unwrap()
+            .request()
+            .cloned()
+            .expect("the Program's request");
+        workflow(&self.fixture)
+            .publish_workspace_provider(
+                &change(self.owner_user(), 20, '5'),
+                WorkspaceProviderPublicationRequest::new(
+                    ManagementRequestId::parse(&setup.to_string()).unwrap(),
+                    self.workspace_id.clone(),
+                    setup,
+                    request.namespace,
+                    request.route,
+                ),
+            )
+            .await
+            .unwrap()
+            .published_provider()
+            .expect("published Provider");
+    }
+
+    /// Publishes the Update Setup that `result` links to, as the person does on
+    /// Reef's update page.
+    pub(super) async fn person_publishes_update(&self, result: &serde_json::Value) {
+        let setup = linked_setup(result);
+        let provider = self.weather().await.expect("the weather Provider");
+        let revision = self
+            .fixture
+            .providers
+            .review_setup_configuration(&self.owner_user(), &self.workspace_id, &setup)
+            .await
+            .unwrap()
+            .revision;
+        let context = change(self.owner_user(), 21, '5')
+            .with_etag(&provider.etag())
+            .unwrap();
+        let publication = workflow(&self.fixture)
+            .regenerate_provider(
+                &context,
+                ProviderRegenerationRequest::new(
+                    ManagementRequestId::parse(&setup.to_string()).unwrap(),
+                    self.workspace_id.clone(),
+                    provider.id().clone(),
+                    setup,
+                    revision,
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            publication.outcome(),
+            coral_provider::ProviderPublicationOutcome::Succeeded
+        );
+    }
+
     /// Every Setup created so far, from its creation evidence.
     pub(super) async fn created_setups(&self) -> Vec<ProviderSetupId> {
         self.lifecycle_events()
@@ -391,6 +466,21 @@ pub(super) fn url_source(server: &MockServer) -> serde_json::Value {
     })
 }
 
+/// The Setup that a `needs_person` result links to.
+pub(super) fn linked_setup(result: &serde_json::Value) -> ProviderSetupId {
+    assert_eq!(
+        result.pointer("/data/status"),
+        Some(&serde_json::json!("needs_person")),
+        "{result}"
+    );
+    result
+        .pointer("/data/url")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|link| link.split_once("setup="))
+        .and_then(|(_page, query)| ProviderSetupId::parse(query.split('&').next()?).ok())
+        .unwrap_or_else(|| panic!("a link to one Setup: {result}"))
+}
+
 pub(super) async fn fetches(server: &MockServer) -> usize {
     server.received_requests().await.unwrap_or_default().len()
 }
@@ -405,18 +495,23 @@ pub(super) fn final_value(update: &crate::RunUpdate) -> serde_json::Value {
     value.as_json().clone()
 }
 
-// Catches: addProvider waiting on the person who finishes its Setup, or
-// returning anything but the Reef page for that Setup.
+// Catches: addProvider waiting on the person who finishes its Setup, Coral
+// publishing a Provider no person previewed, or a result other than the Reef
+// page for that Setup.
 #[tokio::test]
 async fn add_provider_returns_the_reef_page_that_finishes_its_setup() {
-    for access in [ToolAccessState::ApprovalRequired, ToolAccessState::Enabled] {
+    for (access, route, document) in [
+        (ToolAccessState::ApprovalRequired, "fixed", PRIVATE_DOCUMENT),
+        (ToolAccessState::Enabled, "fixed", PRIVATE_DOCUMENT),
+        (ToolAccessState::Enabled, "none", DOCUMENT),
+    ] {
         let scope = AdminScope::new("user:add-provider").await;
         scope.set_access(access).await;
-        let server = private_document_server().await;
+        let server = document_server(document).await;
         let source = url_source(&server);
         let before = scope.created_setups().await;
         let run = scope
-            .start(&scope.owner, add_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"))
+            .start(&scope.owner, add_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": route }), "error.code"))
             .await;
         if access == ToolAccessState::ApprovalRequired {
             wait_for_approval(
@@ -447,10 +542,14 @@ async fn add_provider_returns_the_reef_page_that_finishes_its_setup() {
         assert_eq!(
             final_value(&terminal),
             serde_json::json!({
-                "data": { "status": "needs_sign_in", "url": url, "namespace": "weather" },
+                "data": { "status": "needs_person", "url": url, "namespace": "weather" },
                 "metadata": { "kind": "builtin" },
             }),
             "{access:?}"
+        );
+        assert!(
+            scope.weather().await.is_none(),
+            "{access:?} {route}: nothing is published"
         );
         // A Program can find the Setup again while a person finishes it.
         let listed = scope
@@ -460,7 +559,7 @@ async fn add_provider_returns_the_reef_page_that_finishes_its_setup() {
             final_value(&scope.terminal(&scope.owner, &listed).await).pointer("/data/setups"),
             Some(&serde_json::json!([{
                 "callRoot": "coral.providers.weather",
-                "credentialRoute": "fixed",
+                "credentialRoute": route,
                 "state": "ready",
                 "url": url,
             }])),
@@ -481,241 +580,6 @@ async fn add_provider_returns_the_reef_page_that_finishes_its_setup() {
         assert_eq!(fetches(&server).await, 1, "{access:?}");
         assert_eq!(scope.upstream.sends.load(Ordering::SeqCst), 0);
     }
-}
-
-// Catches: Coral asking a person to finish a Provider that nobody needs to
-// sign in to, or a published result that leaves the Program guessing.
-#[tokio::test]
-async fn coral_publishes_a_provider_that_needs_nobody_to_sign_in() {
-    let scope = AdminScope::new("user:self-publish").await;
-    scope.set_access(ToolAccessState::Enabled).await;
-    let run = scope
-        .start(
-            &scope.owner,
-            add_provider(
-                &serde_json::json!({
-                    "namespace": "weather",
-                    "source": document_source(),
-                    "credentialRoute": "none",
-                }),
-                "error.code",
-            ),
-        )
-        .await;
-    let terminal = scope.terminal(&scope.owner, &run).await;
-    assert_eq!(
-        final_value(&terminal),
-        serde_json::json!({
-            "data": {
-                "status": "published",
-                "namespace": "weather",
-                "displayName": "Weather",
-                "credentialRoute": "none",
-                "authentication": "none",
-                "tools": 1,
-                "accountRequired": false,
-            },
-            "metadata": { "kind": "builtin" },
-        })
-    );
-    assert!(
-        scope
-            .fixture
-            .providers
-            .inspect_providers(&scope.owner_user(), &scope.workspace_id)
-            .await
-            .unwrap()
-            .iter()
-            .any(|provider| provider.call_root().as_str() == "coral.providers.weather")
-    );
-}
-
-/// Publishes through the real workflow, but under the `fixed` route with no
-/// shared credential, so the Publication fails as a real one does.
-struct FailingPublisher(coral_administration::ProviderWorkflow);
-
-#[async_trait]
-impl coral_provider::WorkspaceProviderPublisher for FailingPublisher {
-    async fn publish_workspace_provider(
-        &self,
-        context: &coral_workspace::ChangeContext,
-        request: WorkspaceProviderPublicationRequest,
-    ) -> Result<coral_provider::ProviderPublication, coral_provider::Error> {
-        self.0
-            .publish_workspace_provider(
-                context,
-                WorkspaceProviderPublicationRequest::new(
-                    request.request_id().clone(),
-                    request.workspace_id().clone(),
-                    request.setup_id().clone(),
-                    request.namespace().clone(),
-                    CredentialRoute::Fixed,
-                ),
-            )
-            .await
-    }
-    async fn regenerate_workspace_provider(
-        &self,
-        context: &coral_workspace::ChangeContext,
-        request: ProviderRegenerationRequest,
-    ) -> Result<coral_provider::ProviderRegenerationPublication, coral_provider::Error> {
-        self.0.regenerate_provider(context, request).await
-    }
-    async fn rename_provider(
-        &self,
-        context: &coral_workspace::ChangeContext,
-        workspace: &coral_workspace::WorkspaceId,
-        provider: &coral_provider::ProviderId,
-        display_name: coral_provider::ProviderDisplayName,
-    ) -> Result<coral_provider::Provider, coral_provider::Error> {
-        self.0
-            .rename_provider(context, workspace, provider, display_name)
-            .await
-    }
-}
-
-/// Cancels the Setup, as an Owner in Reef would, then forwards the request to
-/// the real workflow.
-pub(super) struct SetupCanceledFirst {
-    pub(super) workflow: coral_administration::ProviderWorkflow,
-    pub(super) accounts: coral_provider::account::AccountModule,
-    pub(super) _vault: tempfile::TempDir,
-}
-
-#[async_trait]
-impl coral_provider::WorkspaceProviderPublisher for SetupCanceledFirst {
-    async fn publish_workspace_provider(
-        &self,
-        context: &coral_workspace::ChangeContext,
-        request: WorkspaceProviderPublicationRequest,
-    ) -> Result<coral_provider::ProviderPublication, coral_provider::Error> {
-        self.accounts
-            .cancel_setup(context, request.workspace_id(), request.setup_id())
-            .await?;
-        self.workflow
-            .publish_workspace_provider(context, request)
-            .await
-    }
-    async fn regenerate_workspace_provider(
-        &self,
-        context: &coral_workspace::ChangeContext,
-        request: ProviderRegenerationRequest,
-    ) -> Result<coral_provider::ProviderRegenerationPublication, coral_provider::Error> {
-        self.accounts
-            .cancel_setup(context, request.owner(), request.setup_id())
-            .await?;
-        self.workflow.regenerate_provider(context, request).await
-    }
-    async fn rename_provider(
-        &self,
-        context: &coral_workspace::ChangeContext,
-        workspace: &coral_workspace::WorkspaceId,
-        provider: &coral_provider::ProviderId,
-        display_name: coral_provider::ProviderDisplayName,
-    ) -> Result<coral_provider::Provider, coral_provider::Error> {
-        self.workflow
-            .rename_provider(context, workspace, provider, display_name)
-            .await
-    }
-}
-
-/// How Coral's Publication fails.
-#[derive(Debug, Clone, Copy)]
-enum PublicationFault {
-    /// The Publication fails, as one under a route the source cannot take does.
-    Failed,
-    /// The Setup is canceled before Coral publishes it.
-    SetupCanceled,
-}
-
-// Catches: a Publication Coral attempts that fails cancelling the Run, instead
-// of failing the call with a code the Program can catch.
-#[tokio::test]
-async fn a_failed_publication_is_a_failure_the_program_catches() {
-    for fault in [PublicationFault::Failed, PublicationFault::SetupCanceled] {
-        let mut scope = AdminScope::new("user:failed-publication").await;
-        scope.set_access(ToolAccessState::Enabled).await;
-        let publisher: Arc<dyn coral_provider::WorkspaceProviderPublisher> = match fault {
-            PublicationFault::Failed => Arc::new(FailingPublisher(workflow(&scope.fixture))),
-            PublicationFault::SetupCanceled => {
-                let (vault, accounts) = scope.fixture.accounts();
-                Arc::new(SetupCanceledFirst {
-                    workflow: workflow(&scope.fixture),
-                    accounts,
-                    _vault: vault,
-                })
-            }
-        };
-        scope.fixture.runs = scope
-            .fixture
-            .runs
-            .clone()
-            .with_provider_publisher(publisher);
-        let run = scope
-            .start(
-                &scope.owner,
-                add_provider(
-                    &serde_json::json!({
-                        "namespace": "weather",
-                        "source": document_source(),
-                        "credentialRoute": "none",
-                    }),
-                    "error.code",
-                ),
-            )
-            .await;
-        let terminal = scope.terminal(&scope.owner, &run).await;
-        assert_eq!(terminal.state(), RunState::Succeeded, "{fault:?}");
-        assert_final_code(&terminal, "provider_publication_failed");
-        assert!(
-            !scope
-                .fixture
-                .providers
-                .inspect_providers(&scope.owner_user(), &scope.workspace_id)
-                .await
-                .unwrap()
-                .iter()
-                .any(|provider| provider.call_root().as_str() == "coral.providers.weather"),
-            "{fault:?}"
-        );
-    }
-}
-
-// Catches: a configuration the source cannot take leaving its Setup open after
-// the call fails, where nobody would ever finish it.
-#[tokio::test]
-async fn a_configuration_the_source_cannot_take_leaves_no_setup_open() {
-    let scope = AdminScope::new("user:route-mismatch").await;
-    scope.set_access(ToolAccessState::Enabled).await;
-    let before = scope.created_setups().await;
-    let run = scope
-        .start(
-            &scope.owner,
-            add_provider(
-                &serde_json::json!({
-                    "namespace": "weather",
-                    "source": { "kind": "openapi_document", "document": PRIVATE_DOCUMENT },
-                    "credentialRoute": "none",
-                }),
-                "error.code",
-            ),
-        )
-        .await;
-    assert_final_code(&scope.terminal(&scope.owner, &run).await, "invalid_input");
-    let created = scope.setups_created_since(&before).await;
-    let [setup] = created.as_slice() else {
-        panic!("one new Setup: {created:?}")
-    };
-    assert_eq!(
-        scope
-            .fixture
-            .providers
-            .get_setup(&scope.owner_user(), &scope.workspace_id, setup)
-            .await
-            .unwrap()
-            .state(),
-        ProviderSetupState::Canceled
-    );
 }
 
 // Catches: a source that fails to answer telling the Program to correct
@@ -779,10 +643,10 @@ async fn a_source_that_fails_to_answer_is_not_the_programs_input_to_correct() {
     );
 }
 
-// Catches: a namespace already in use reaching a fetch and a Setup before the
-// Publication finally fails on it.
+// Catches: a namespace already in use failing the call with anything but the
+// conflict the Program can act on.
 #[tokio::test]
-async fn a_namespace_in_use_fails_before_any_fetch_or_setup() {
+async fn a_namespace_in_use_is_a_conflict() {
     let scope = AdminScope::new("user:namespace-in-use").await;
     scope.set_access(ToolAccessState::Enabled).await;
     scope
@@ -797,86 +661,6 @@ async fn a_namespace_in_use_fails_before_any_fetch_or_setup() {
         )
         .await
         .expect("an earlier Provider takes the namespace");
-    let server = private_document_server().await;
-    let before = scope.created_setups().await;
-    let run = scope
-        .start(
-            &scope.owner,
-            add_provider(
-                &serde_json::json!({
-                    "namespace": "weather",
-                    "source": url_source(&server),
-                    "credentialRoute": "fixed",
-                }),
-                "error.code",
-            ),
-        )
-        .await;
-    assert_final_code(
-        &scope.terminal(&scope.owner, &run).await,
-        "provider_namespace_conflict",
-    );
-    assert_eq!(fetches(&server).await, 0);
-    assert!(scope.setups_created_since(&before).await.is_empty());
-}
-
-/// Publishes another Provider under the requested namespace, then forwards the
-/// request to the real workflow, as a second Owner racing the call would.
-struct NamespaceTakenFirst(coral_administration::ProviderWorkflow, ProviderModule);
-
-#[async_trait]
-impl coral_provider::WorkspaceProviderPublisher for NamespaceTakenFirst {
-    async fn publish_workspace_provider(
-        &self,
-        context: &coral_workspace::ChangeContext,
-        request: WorkspaceProviderPublicationRequest,
-    ) -> Result<coral_provider::ProviderPublication, coral_provider::Error> {
-        self.1
-            .publish_openapi_fixture(
-                context,
-                request.workspace_id(),
-                OpenApiDocument::parse(DOCUMENT).unwrap(),
-                request.namespace().as_str(),
-                CredentialRoute::None,
-            )
-            .await?;
-        self.0.publish_workspace_provider(context, request).await
-    }
-    async fn regenerate_workspace_provider(
-        &self,
-        context: &coral_workspace::ChangeContext,
-        request: ProviderRegenerationRequest,
-    ) -> Result<coral_provider::ProviderRegenerationPublication, coral_provider::Error> {
-        self.0.regenerate_provider(context, request).await
-    }
-    async fn rename_provider(
-        &self,
-        context: &coral_workspace::ChangeContext,
-        workspace: &coral_workspace::WorkspaceId,
-        provider: &coral_provider::ProviderId,
-        display_name: coral_provider::ProviderDisplayName,
-    ) -> Result<coral_provider::Provider, coral_provider::Error> {
-        self.0
-            .rename_provider(context, workspace, provider, display_name)
-            .await
-    }
-}
-
-// Catches: a namespace taken while Coral publishes failing the call as an
-// ordinary failed Publication, instead of the conflict the Program can act on.
-#[tokio::test]
-async fn a_namespace_taken_while_coral_publishes_is_a_conflict() {
-    let mut scope = AdminScope::new("user:namespace-race").await;
-    scope.set_access(ToolAccessState::Enabled).await;
-    scope.fixture.runs =
-        scope
-            .fixture
-            .runs
-            .clone()
-            .with_provider_publisher(Arc::new(NamespaceTakenFirst(
-                workflow(&scope.fixture),
-                scope.fixture.providers.clone(),
-            )));
     let run = scope
         .start(
             &scope.owner,
@@ -909,16 +693,10 @@ impl InvocationObserver for RunEndsAfterSetup {
     }
 }
 
-// Catches: Coral publishing a Provider, or linking a person to a Setup, for a
-// Run that can no longer return either, or leaving that Run's Setup open.
+// Catches: Coral linking a person to a Setup for a Run that can no longer
+// return the link, or leaving that Run's Setup open.
 #[tokio::test]
 async fn a_run_that_ends_before_the_call_returns_leaves_nothing_behind() {
-    for (route, document) in [("none", DOCUMENT), ("fixed", PRIVATE_DOCUMENT)] {
-        a_run_ends_before_the_call_returns(route, document).await;
-    }
-}
-
-async fn a_run_ends_before_the_call_returns(route: &str, document: &str) {
     let mut scope = AdminScope::new("user:ended-before-return").await;
     scope.fixture.runs.execution_policy =
         crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_mins(15));
@@ -933,8 +711,8 @@ async fn a_run_ends_before_the_call_returns(route: &str, document: &str) {
             add_provider(
                 &serde_json::json!({
                     "namespace": "weather",
-                    "source": { "kind": "openapi_document", "document": document },
-                    "credentialRoute": route,
+                    "source": document_source(),
+                    "credentialRoute": "none",
                 }),
                 "error.code",
             ),
@@ -944,19 +722,9 @@ async fn a_run_ends_before_the_call_returns(route: &str, document: &str) {
         scope.terminal(&scope.owner, &run).await.state(),
         RunState::TimedOut
     );
-    assert!(
-        !scope
-            .fixture
-            .providers
-            .inspect_providers(&scope.owner_user(), &scope.workspace_id)
-            .await
-            .unwrap()
-            .iter()
-            .any(|provider| provider.call_root().as_str() == "coral.providers.weather")
-    );
     let created = scope.setups_created_since(&before).await;
     let [setup] = created.as_slice() else {
-        panic!("{route}: the call prepares one Setup before the Run ends")
+        panic!("the call prepares one Setup before the Run ends")
     };
     let state = scope
         .fixture
@@ -965,170 +733,7 @@ async fn a_run_ends_before_the_call_returns(route: &str, document: &str) {
         .await
         .unwrap()
         .state();
-    assert!(!state.is_open(), "{route} {setup}: {state:?}");
-}
-
-/// Publishes through the real workflow, but stalls before or after the
-/// Publication until released, as a worker that dies there would.
-pub(super) struct StallingPublisher {
-    pub(super) workflow: coral_administration::ProviderWorkflow,
-    pub(super) publishes_first: bool,
-    pub(super) entered: AtomicBool,
-    pub(super) release: tokio::sync::Notify,
-}
-
-impl StallingPublisher {
-    /// Runs `attempt` before or after the stall, as `publishes_first` says.
-    async fn stalled<T, F: Future<Output = T>>(&self, attempt: impl Fn() -> F) -> T {
-        let first = if self.publishes_first {
-            Some(attempt().await)
-        } else {
-            None
-        };
-        self.entered.store(true, Ordering::SeqCst);
-        self.release.notified().await;
-        match first {
-            Some(result) => result,
-            None => attempt().await,
-        }
-    }
-}
-
-#[async_trait]
-impl coral_provider::WorkspaceProviderPublisher for StallingPublisher {
-    async fn publish_workspace_provider(
-        &self,
-        context: &ChangeContext,
-        request: WorkspaceProviderPublicationRequest,
-    ) -> Result<coral_provider::ProviderPublication, coral_provider::Error> {
-        self.stalled(|| {
-            self.workflow
-                .publish_workspace_provider(context, request.clone())
-        })
-        .await
-    }
-
-    async fn regenerate_workspace_provider(
-        &self,
-        context: &ChangeContext,
-        request: ProviderRegenerationRequest,
-    ) -> Result<coral_provider::ProviderRegenerationPublication, coral_provider::Error> {
-        self.stalled(|| self.workflow.regenerate_provider(context, request.clone()))
-            .await
-    }
-
-    async fn rename_provider(
-        &self,
-        context: &ChangeContext,
-        workspace: &coral_workspace::WorkspaceId,
-        provider: &coral_provider::ProviderId,
-        display_name: coral_provider::ProviderDisplayName,
-    ) -> Result<coral_provider::Provider, coral_provider::Error> {
-        self.stalled(|| {
-            self.workflow
-                .rename_provider(context, workspace, provider, display_name.clone())
-        })
-        .await
-    }
-}
-
-// Catches: a worker lost while Coral publishes leaving addProvider
-// indeterminate, when Coral's own Publication shows what happened, or a
-// Provider deleted since then failing the Run's termination.
-#[tokio::test]
-async fn recovery_settles_a_lost_publication_from_its_publication() {
-    for (publishes_first, deleted_since, expected) in [
-        (true, false, crate::InvocationResultKind::UpstreamOutcome),
-        (true, true, crate::InvocationResultKind::RunTerminated),
-        (false, false, crate::InvocationResultKind::RunTerminated),
-    ] {
-        let mut scope = AdminScope::new("user:lost-publication").await;
-        let publisher = Arc::new(StallingPublisher {
-            workflow: workflow(&scope.fixture),
-            publishes_first,
-            entered: AtomicBool::new(false),
-            release: tokio::sync::Notify::new(),
-        });
-        scope.fixture.runs = scope
-            .fixture
-            .runs
-            .clone()
-            .with_provider_publisher(publisher.clone());
-        scope.set_access(ToolAccessState::Enabled).await;
-        let run = scope
-            .start(
-                &scope.owner,
-                add_provider(
-                    &serde_json::json!({
-                        "namespace": "weather",
-                        "source": document_source(),
-                        "credentialRoute": "none",
-                    }),
-                    "error.code",
-                ),
-            )
-            .await;
-        wait_until(|| publisher.entered.load(Ordering::SeqCst)).await;
-        if deleted_since {
-            let provider = scope
-                .fixture
-                .providers
-                .inspect_providers(&scope.owner_user(), &scope.workspace_id)
-                .await
-                .unwrap()
-                .into_iter()
-                .find(|provider| provider.call_root().as_str() == "coral.providers.weather")
-                .expect("Coral published the Provider");
-            scope
-                .fixture
-                .providers
-                .delete_provider(
-                    &change(scope.owner_user(), 13, '4'),
-                    &scope.workspace_id,
-                    provider.id(),
-                )
-                .await
-                .expect("an Owner deletes the Provider");
-        }
-        let accepted_at =
-            retained_events(&scope.fixture.runs, &scope.owner, &scope.workspace_id, &run)
-                .await
-                .first()
-                .expect("run.started")
-                .occurred_at_unix_nanos();
-        scope
-            .fixture
-            .expire_worker_claim(&scope.workspace_id, &run, accepted_at)
-            .await;
-        scope
-            .fixture
-            .clock
-            .next
-            .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
-        scope
-            .fixture
-            .next_process()
-            .sweep_expired_leases()
-            .await
-            .expect("sweep the lost worker's lapsed lease");
-        wait_for_terminal(&scope.fixture.runs, &scope.owner, &scope.workspace_id, &run).await;
-        let ended: Vec<_> =
-            retained_events(&scope.fixture.runs, &scope.owner, &scope.workspace_id, &run)
-                .await
-                .iter()
-                .filter_map(|event| match event.kind() {
-                    RunEventKind::InvocationEnded { result_kind, .. } => Some(*result_kind),
-                    _ => None,
-                })
-                .collect();
-        assert_eq!(
-            ended,
-            [expected],
-            "publishes first: {publishes_first}, deleted since: {deleted_since}"
-        );
-        publisher.release.notify_one();
-        wait_until(|| !scope.fixture.runs.has_owner(&run)).await;
-    }
+    assert!(!state.is_open(), "{setup}: {state:?}");
 }
 
 // Catches: input the contract rejects being stored with the Invocation,
@@ -1243,10 +848,6 @@ async fn a_tool_this_version_does_not_perform_fails_before_approval() {
 // configuration step does, a link that opens the wrong account question, or
 // Coral publishing an application whose secret only a person can give.
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one table checks each sign-in method's configuration and the request it records"
-)]
 async fn the_program_configures_how_a_person_signs_in() {
     let scope = AdminScope::new("user:sign-in-configuration").await;
     scope.set_access(ToolAccessState::Enabled).await;
@@ -1273,7 +874,7 @@ async fn the_program_configures_how_a_person_signs_in() {
             "authentication": "client_secret_post",
         },
     } });
-    for (index, (route, choices, needs_sign_in)) in [
+    for (index, (route, choices, needs_person)) in [
         ("fixed", bot, true),
         // The source declares no field for the header to send.
         (
@@ -1303,22 +904,12 @@ async fn the_program_configures_how_a_person_signs_in() {
             .start(&scope.owner, add_provider(&arguments, "error.code"))
             .await;
         let value = final_value(&scope.terminal(&scope.owner, &run).await);
-        if !needs_sign_in {
+        if !needs_person {
             assert_eq!(value, serde_json::json!("invalid_input"), "{arguments}");
             continue;
         }
-        assert_eq!(
-            value.pointer("/data/status"),
-            Some(&serde_json::json!("needs_sign_in")),
-            "{arguments}: {value}"
-        );
         // Reef opens the account question from the route the Setup holds.
-        let setup = value
-            .pointer("/data/url")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|link| link.split_once("?setup="))
-            .and_then(|(_page, setup)| ProviderSetupId::parse(setup).ok())
-            .unwrap_or_else(|| panic!("{arguments}: a link to one Setup: {value}"));
+        let setup = linked_setup(&value);
         let request = scope
             .fixture
             .providers
@@ -1366,9 +957,9 @@ async fn the_program_configures_how_a_person_signs_in() {
 
 /// Serves the credential-free Weather document, but holds each response until
 /// released, so a test can change the Workspace while Coral fetches it.
-struct HeldDocument {
-    entered: Arc<tokio::sync::Notify>,
-    release: Mutex<mpsc::Receiver<()>>,
+pub(super) struct HeldDocument {
+    pub(super) entered: Arc<tokio::sync::Notify>,
+    pub(super) release: Mutex<mpsc::Receiver<()>>,
 }
 
 impl wiremock::Respond for HeldDocument {
@@ -1484,7 +1075,7 @@ async fn protected_mcp_server(challenge: &str, resource: Option<&str>) -> MockSe
     server
 }
 
-// Catches: an OAuth-protected MCP server that Coral publishes unread, or
+// Catches: an OAuth-protected MCP server that Coral links a person to unread, or
 // whose sign-in Coral cannot discover reaching the Program as anything but
 // the source to correct.
 #[tokio::test]
@@ -1506,8 +1097,8 @@ async fn an_oauth_protected_mcp_server_needs_a_person_to_sign_in() {
             None,
             "fixed",
             Some(
-                " at `authentication`: Choose a supported method. MCP OAuth endpoints are \
-                 read-only."
+                " at `authentication`: The source does not say how to sign in. Give \
+                 `authentication`."
                     .to_owned(),
             ),
         ),
@@ -1568,7 +1159,7 @@ async fn an_oauth_protected_mcp_server_needs_a_person_to_sign_in() {
         }
         assert_eq!(
             value.pointer("/data/status"),
-            Some(&serde_json::json!("needs_sign_in")),
+            Some(&serde_json::json!("needs_person")),
             "{arguments}: {value}"
         );
         let created = scope.setups_created_since(&setups).await;
@@ -2082,11 +1673,7 @@ async fn get_provider_reads_back_the_configuration_a_program_saved() {
             )
             .await;
         let created = final_value(&scope.terminal(&scope.owner, &created).await);
-        assert_eq!(
-            created.pointer("/data/status"),
-            Some(&serde_json::json!("published")),
-            "{namespace}: {created}"
-        );
+        scope.person_publishes(&created).await;
 
         let run = scope
             .start(

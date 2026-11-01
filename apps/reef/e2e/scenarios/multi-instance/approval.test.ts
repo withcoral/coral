@@ -39,7 +39,7 @@ test('Reef approves through one Coral Instance a call on a Run that the other ow
         expect(update.final_value).toEqual({
           kind: 'value',
           value: expect.objectContaining({
-            data: expect.objectContaining({ status: 'needs_sign_in' }),
+            data: expect.objectContaining({ status: 'needs_person' }),
           }),
         })
         expect(await instances.holder(waiting.run)).toBe(owner)

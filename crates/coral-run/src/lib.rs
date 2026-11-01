@@ -238,7 +238,7 @@ pub struct RunModule {
     accounts: Option<coral_provider::account::AccountModule>,
     providers: coral_provider::ProviderModule,
     policies: coral_policy::ToolPolicyModule,
-    provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
+    provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
     human_interface: Option<HumanInterfaceUrl>,
     database: Arc<Database>,
     workspaces: WorkspaceModule,
@@ -285,7 +285,7 @@ impl RunModule {
         Ok(Self {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
-            provider_publisher: None,
+            provider_renamer: None,
             human_interface: None,
             database,
             workspaces,
@@ -324,7 +324,7 @@ impl RunModule {
         Self {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
-            provider_publisher: None,
+            provider_renamer: None,
             human_interface: None,
             database,
             workspaces,
@@ -355,15 +355,15 @@ impl RunModule {
         self
     }
 
-    /// Lets `coral.workspace.addProvider` publish a Provider that needs nobody to
-    /// sign in, through the workflow Reef publishes with. Without it, such a
-    /// call fails with `tool_unavailable`.
+    /// Lets `coral.workspace.updateProvider` rename a Provider, through the
+    /// workflow Reef renames with. Without it, such a call fails with
+    /// `tool_unavailable`.
     #[must_use]
-    pub fn with_provider_publisher(
+    pub fn with_provider_renamer(
         mut self,
-        publisher: Arc<dyn coral_provider::WorkspaceProviderPublisher>,
+        renamer: Arc<dyn coral_provider::ProviderRenamer>,
     ) -> Self {
-        self.provider_publisher = Some(publisher);
+        self.provider_renamer = Some(renamer);
         self
     }
 

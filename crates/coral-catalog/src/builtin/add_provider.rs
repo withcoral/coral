@@ -16,7 +16,7 @@ use super::provider_input::{
 };
 use super::{
     ArgumentProblem, BuiltinCredentialRoute, BuiltinTool, Definition, NAMESPACE_REASON,
-    ProviderFacts, derived_schema, present, tool_result,
+    derived_schema, present, tool_result,
 };
 use crate::{ToolHints, ToolPresentation};
 
@@ -34,9 +34,8 @@ pub(super) fn definition() -> Definition {
         presentation: ToolPresentation::new(
             Some("Add provider".to_string()),
             "Add a Provider to this Workspace from an OpenAPI document, an OpenAPI \
-             document URL, or an MCP server URL. Coral publishes it when nobody needs to \
-             sign in. Otherwise it returns a Coral UI link where a person finishes \
-             and publishes it."
+             document URL, or an MCP server URL. It returns a Coral UI link where a \
+             person previews, finishes and publishes the Provider."
                 .to_string(),
             false,
             vec!["providers".to_string()],
@@ -46,18 +45,16 @@ pub(super) fn definition() -> Definition {
                  account. A route that does not match the source fails with invalid_input. \
                  Omit displayName, servers, authentication, credentialFields and \
                  requestHeaders to use what the source suggests, or give them to override \
-                 it. When the source declares no credential but the service needs one, \
-                 give authentication, such as { method: \"bearer\" }, with fixed or \
-                 caller. Never pass a secret or a literal credential value: Coral stores \
+                 it. When the source does not say whether it needs a credential, use none \
+                 if the service needs none. When the service needs a credential that the \
+                 source does not declare, give authentication, such as { method: \"bearer\" \
+                 }, with fixed or caller. Never pass a secret or a literal credential value: Coral stores \
                  your arguments, and Workspace Owners can see them. When Coral cannot \
                  fetch a source URL, the call fails with upstream_incomplete: check that \
-                 the URL is reachable, then call again. When credentialRoute is none and \
-                 Coral cannot publish the Provider, the call fails with \
-                 provider_publication_failed and adds nothing: call again. When status is \
-                 published, call the Provider's Tools under \
-                 coral.providers.<namespace>. When status is needs_sign_in, show the \
-                 person the returned url. To check later whether the person published it, \
-                 call coral.workspace.listProviders."
+                 the URL is reachable, then call again. When status is needs_person, show \
+                 the person the returned url. The Provider's Tools exist only after the \
+                 person publishes it. To check later whether the person published it, call \
+                 coral.workspace.listProviders."
                     .to_string(),
             ),
         ),
@@ -202,19 +199,9 @@ impl AddProviderArguments {
 #[serde(tag = "status", rename_all = "snake_case")]
 #[schemars(deny_unknown_fields, description = "")]
 pub enum AddProviderResult {
-    /// Coral published the Provider, and the Program can call it now.
-    #[schemars(description = "Coral published the Provider. You can call it now.")]
-    Published {
-        /// The published Provider Namespace.
-        #[schemars(description = "The published Provider Namespace.")]
-        namespace: String,
-        /// What the Program needs to call it.
-        #[serde(flatten)]
-        facts: ProviderFacts,
-    },
     /// A person finishes the Provider at `url`.
     #[schemars(description = "A person must finish the Provider in the Coral UI.")]
-    NeedsSignIn {
+    NeedsPerson {
         /// The Coral UI page where a person finishes and publishes it.
         #[schemars(
             description = "The Coral UI page where a person finishes and publishes the Provider."

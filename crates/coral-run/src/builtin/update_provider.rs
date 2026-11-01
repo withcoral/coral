@@ -3,27 +3,21 @@
 //!
 //! The call takes the path of Reef's update page: an Update Setup of the
 //! saved source or a new one, the sent fields confirmed over the configuration
-//! saved when the call runs, then a regeneration Publication. Coral publishes
-//! the change only when nobody needs to act; otherwise the result is Reef's
-//! update page for the Setup, where the Owner confirms what Coral cannot. A
-//! call that changes only the display name takes the path of Reef's settings
-//! page instead: a rename that keeps the Provider's Generation.
+//! saved when the call runs. The result is Reef's update page for the Setup,
+//! where a person reviews and publishes the change. A call that changes only
+//! the display name takes the path of Reef's settings page instead: a rename
+//! that keeps the Provider's Generation.
 
-use super::setup_tool::{
-    self, Publisher, SetupTool, configuration_rejection, recover_published, request_id, setup_error,
-};
+use super::setup_tool::{self, setup_error};
 use super::{BuiltinHost, provider_facts};
 use crate::lifecycle::RunRecord;
 use crate::{CoralFailure, Error, InvocationId, InvocationResultKind, Rejection};
-use async_trait::async_trait;
 use coral_catalog::{SourceChange, UpdateProviderArguments, UpdateProviderResult};
 use coral_db::Transaction;
-use coral_policy::ExactToolRules;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::{
-    Provider, ProviderDisplayName, ProviderPublicationOutcome, ProviderRegenerationPublication,
-    ProviderRegenerationRequest, ProviderSetup, ProviderSetupId, ProviderSetupInputKind,
-    ProviderSetupSource, ProviderWithConfiguration, PublishedProvider, WorkspaceProviderPublisher,
+    ProgramSetup, ProgramSetupPurpose, ProgramSetupRequest, Provider, ProviderDisplayName,
+    ProviderId, ProviderSetupInputKind, ProviderSetupSource, ProviderWithConfiguration,
 };
 use coral_workspace::ChangeContext;
 
@@ -32,23 +26,6 @@ use coral_workspace::ChangeContext;
 pub(crate) struct UpdateProvider {
     namespace: ProviderNamespace,
     arguments: UpdateProviderArguments,
-}
-
-/// One `updateProvider` call, aimed at the Provider saved when it began.
-struct TargetedUpdate<'a> {
-    call: &'a UpdateProvider,
-    /// The Provider as saved when the call began. Its etag fences a change an
-    /// Owner makes since.
-    provider: Provider,
-    source: ProviderSetupSource,
-}
-
-/// What configuring an Update Setup leaves for the rest of the call.
-struct ConfiguredUpdate {
-    /// The confirmed revision, which the Publication names.
-    revision: i64,
-    /// The confirmed configuration breaks access to the Provider.
-    interrupts_access: bool,
 }
 
 impl UpdateProvider {
@@ -66,9 +43,8 @@ impl UpdateProvider {
 
     /// Renames the Provider when the call changes only its display name.
     /// Otherwise prepares and configures an Update Setup as the invoking User.
-    /// Coral publishes it when nobody needs to act; otherwise the result is the
-    /// Reef page where a person finishes it. The call never waits for that
-    /// person.
+    /// The result is the Reef page where a person reviews and publishes it. The
+    /// call never waits for that person.
     pub(super) async fn perform(&self, host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
         // Only a User reaches updateProvider; an Agent changes no configuration.
         let Some(context) = host.context else {
@@ -84,13 +60,16 @@ impl UpdateProvider {
         if let Some(name) = self.arguments.rename() {
             return rename(host, context, &saved.provider, name).await;
         }
-        let source = self.source(&saved)?;
-        let update = TargetedUpdate {
-            call: self,
-            provider: saved.provider,
-            source,
+        let request = ProgramSetupRequest {
+            source: self.source(&saved)?,
+            purpose: ProgramSetupPurpose::Update {
+                provider: saved.provider.id().clone(),
+                route: self.arguments.credential_route.map(CredentialRoute::from),
+                patch: self.arguments.choices.clone(),
+            },
         };
-        setup_tool::perform(&update, host, context).await
+        let prepared = setup_tool::prepare(host, context, request, update_error).await?;
+        Ok(self.update_page(host, &saved.provider, &prepared))
     }
 
     /// Where the Update Setup reads the Provider from. A refresh reads the
@@ -126,98 +105,6 @@ impl UpdateProvider {
             }
         })
     }
-}
-
-#[async_trait]
-impl SetupTool for TargetedUpdate<'_> {
-    type Configured = ConfiguredUpdate;
-    type Publication = ProviderRegenerationPublication;
-
-    async fn prepare(
-        &self,
-        host: &BuiltinHost<'_>,
-        context: &ChangeContext,
-    ) -> Result<ProviderSetup, Error> {
-        host.providers
-            .prepare_setup(
-                context,
-                host.workspace_id,
-                self.source.clone(),
-                Some(self.provider.id()),
-            )
-            .await
-            .map_err(update_error)
-    }
-
-    /// Confirms the sent fields over the configuration the Update Setup
-    /// saved, and decides who publishes it.
-    async fn configure(
-        &self,
-        host: &BuiltinHost<'_>,
-        context: &ChangeContext,
-        setup: &ProviderSetup,
-    ) -> Result<(Publisher, ConfiguredUpdate), Error> {
-        let review = host
-            .providers
-            .review_setup_configuration(context.actor(), host.workspace_id, setup.id())
-            .await
-            .map_err(update_error)?;
-        // An Update Setup starts from the Provider's saved configuration.
-        let Some(saved) = review.confirmed.clone() else {
-            return Err(coral_provider::Error::CorruptData(
-                "an Update Setup has no saved configuration".into(),
-            )
-            .into());
-        };
-        let discovered = match setup.input_kind() {
-            ProviderSetupInputKind::Mcp => review.document.map(|document| document.suggested),
-            ProviderSetupInputKind::OpenApi => None,
-        };
-        let confirmed = host
-            .providers
-            .confirm_setup_configuration(
-                context,
-                host.workspace_id,
-                setup.id(),
-                review.revision,
-                self.call
-                    .arguments
-                    .configuration(saved, discovered.as_ref()),
-            )
-            .await
-            .map_err(update_error)?;
-        if let Some(rejection) = configuration_rejection(&confirmed) {
-            return Err(Error::InvocationRejected(rejection));
-        }
-        let publishability = host
-            .providers
-            .update_publishability(
-                context.actor(),
-                host.workspace_id,
-                setup.id(),
-                self.call
-                    .arguments
-                    .credential_route
-                    .map(CredentialRoute::from),
-            )
-            .await
-            .map_err(update_error)?;
-        let publisher = setup_tool::publisher(
-            host,
-            context,
-            setup.id(),
-            publishability,
-            confirmed.confirmed.as_ref(),
-        )
-        .await?;
-        Ok((
-            publisher,
-            ConfiguredUpdate {
-                revision: confirmed.revision,
-                interrupts_access: confirmed.interrupts_access == Some(true),
-            },
-        ))
-    }
 
     /// Reef's update page for the Setup, on the task Reef starts for the same
     /// change from the Provider's settings: Check for updates or Replace source
@@ -227,25 +114,29 @@ impl SetupTool for TargetedUpdate<'_> {
     /// the saved values the change keeps. It names the Provider's etag, so a
     /// change made since fails there, and the route the Program asked for. It
     /// never confirms an incompatible configuration: the person does.
-    fn needs_sign_in(
+    fn update_page(
         &self,
         host: &BuiltinHost<'_>,
-        setup: &ProviderSetupId,
-        configured: ConfiguredUpdate,
+        provider: &Provider,
+        prepared: &ProgramSetup,
     ) -> serde_json::Value {
-        let arguments = &self.call.arguments;
+        let arguments = &self.arguments;
         let (task, configure) = match arguments.source {
             SourceChange::Refresh | SourceChange::Replace(_) => {
-                ("refresh", configured.interrupts_access)
+                ("refresh", prepared.interrupts_access)
             }
             SourceChange::Keep if arguments.choices.is_empty() => {
-                ("accounts", configured.interrupts_access)
+                ("accounts", prepared.interrupts_access)
             }
             // Edit configuration opens on the configuration already.
             SourceChange::Keep => ("configuration", false),
         };
         // A Setup id and an etag need no URL encoding.
-        let mut query = format!("setup={setup}&task={task}&etag={}", self.provider.etag());
+        let mut query = format!(
+            "setup={}&task={task}&etag={}",
+            prepared.setup,
+            provider.etag()
+        );
         if configure {
             query.push_str("&configure=1");
         }
@@ -254,65 +145,15 @@ impl SetupTool for TargetedUpdate<'_> {
             query.push_str("&account=");
             query.push_str(route.name());
         }
-        UpdateProviderResult::NeedsSignIn {
+        UpdateProviderResult::NeedsPerson {
             url: host.human_interface.page_url(&format!(
                 "/workspaces/{}/providers/{}/update?{query}",
                 host.workspace_id,
-                self.provider.id()
+                provider.id()
             )),
-            namespace: self.call.namespace.as_str().to_owned(),
+            namespace: self.namespace.as_str().to_owned(),
         }
         .into_tool_result()
-    }
-
-    async fn publish(
-        &self,
-        host: &BuiltinHost<'_>,
-        context: &ChangeContext,
-        publisher: &dyn WorkspaceProviderPublisher,
-        setup: &ProviderSetupId,
-        configured: ConfiguredUpdate,
-    ) -> Result<ProviderRegenerationPublication, coral_provider::Error> {
-        let context = context.clone().with_etag(&self.provider.etag())?;
-        publisher
-            .regenerate_workspace_provider(
-                &context,
-                ProviderRegenerationRequest::new(
-                    host.request_id.clone(),
-                    host.workspace_id.clone(),
-                    self.provider.id().clone(),
-                    setup.clone(),
-                    configured.revision,
-                ),
-            )
-            .await
-    }
-
-    fn publication_error(&self, error: coral_provider::Error) -> Error {
-        match error {
-            coral_provider::Error::ProviderNotFound => update_error(error),
-            // The Provider changed since Coral decided nobody needs to act.
-            coral_provider::Error::IncompatibleConfigurationConfirmationRequired
-            | coral_provider::Error::AccountRequired => {
-                Error::InvocationRejected(CoralFailure::ProviderPublicationFailed.into())
-            }
-            other => setup_tool::publication_error(other),
-        }
-    }
-
-    async fn published(
-        &self,
-        host: &BuiltinHost<'_>,
-        publication: ProviderRegenerationPublication,
-    ) -> Result<serde_json::Value, Error> {
-        if publication.outcome() != ProviderPublicationOutcome::Succeeded {
-            return Err(Error::InvocationRejected(
-                CoralFailure::ProviderPublicationFailed.into(),
-            ));
-        }
-        setup_tool::published_result(host, self.provider.id(), published_result)
-            .await
-            .map_err(result_error)
     }
 }
 
@@ -331,7 +172,7 @@ async fn rename(
         }
         other => other.into(),
     })?;
-    let Some(publisher) = host.publisher else {
+    let Some(renamer) = host.renamer else {
         return Err(Error::InvocationRejected(
             CoralFailure::ToolUnavailable.into(),
         ));
@@ -341,28 +182,50 @@ async fn rename(
         return Err(Error::ProgramHostTerminated);
     }
     let context = context.clone().with_etag(&provider.etag())?;
-    let renamed = publisher
+    let changed = renamer
         .rename_provider(&context, host.workspace_id, provider.id(), display_name)
         .await
         .map_err(|error| match error {
-            // An Owner changed the Provider since the call began, as a
-            // regeneration reports it.
+            // An Owner changed the Provider since the call began.
             coral_provider::Error::EtagMismatch => {
                 Error::InvocationRejected(CoralFailure::ProviderPublicationFailed.into())
             }
             other => update_error(other),
         })?;
-    setup_tool::published_result(host, renamed.id(), published_result)
-        .await
-        .map_err(result_error)
+    renamed_result(host, changed.id()).await
 }
 
-/// Settles an `updateProvider` whose worker was lost after the policy
-/// enforcement point, from the regeneration Publication Coral attempted under
-/// the Invocation's identity. A published change becomes the Tool Result;
-/// otherwise the Run ended first. A Setup that was never published expires at
-/// its deadline. A rename leaves no record of the call that made it, so a lost
-/// rename is indeterminate.
+/// What the Program needs to call `provider`, which Coral renamed, read in one
+/// snapshot, so it need not guess whether its next call needs a person. A
+/// Provider deleted since is a failure the Program can catch, as when the call
+/// began.
+async fn renamed_result(
+    host: &BuiltinHost<'_>,
+    provider: &ProviderId,
+) -> Result<serde_json::Value, Error> {
+    let mut snapshot = host.database.begin_read_snapshot().await?;
+    let published = coral_provider::published_provider_in_transaction(
+        &mut snapshot,
+        host.workspace_id,
+        provider,
+        host.principal,
+    )
+    .await
+    .map_err(update_error)?;
+    let rules =
+        coral_policy::exact_tool_rules_in_transaction(&mut snapshot, host.workspace_id).await?;
+    snapshot.rollback().await?;
+    Ok(UpdateProviderResult::Published {
+        namespace: published.provider.call_root().name().to_owned(),
+        facts: provider_facts(&published, &rules),
+    }
+    .into_tool_result())
+}
+
+/// Settles an `updateProvider` whose worker was lost after the Policy
+/// Enforcement Point. A rename leaves no record of the call that made it, so a
+/// lost rename is indeterminate. Any other call publishes nothing, so the Run
+/// ended first; its Setup expires at its deadline.
 pub(super) async fn recover(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
@@ -379,35 +242,7 @@ pub(super) async fn recover(
     if UpdateProviderArguments::parse(&arguments).is_ok_and(|call| call.rename().is_some()) {
         return Ok((InvocationResultKind::Indeterminate, None));
     }
-    let publication = coral_provider::regeneration_for_request_in_transaction(
-        transaction,
-        &run.workspace_id,
-        &request_id(invocation)?,
-    )
-    .await?;
-    let provider = publication
-        .as_ref()
-        .filter(|publication| publication.outcome() == ProviderPublicationOutcome::Succeeded)
-        .map(|publication| publication.request().provider_id());
-    recover_published(transaction, run, provider, published_result).await
-}
-
-/// The Tool Result for a change Coral published.
-fn published_result(published: &PublishedProvider, rules: &ExactToolRules) -> serde_json::Value {
-    UpdateProviderResult::Published {
-        namespace: published.provider.call_root().name().to_owned(),
-        facts: provider_facts(published, rules),
-    }
-    .into_tool_result()
-}
-
-/// A Provider deleted since Coral changed it is a failure the Program can
-/// catch, as when the call began.
-fn result_error(error: Error) -> Error {
-    match error {
-        Error::Provider(error) => update_error(error),
-        other => other,
-    }
+    Ok((InvocationResultKind::RunTerminated, None))
 }
 
 /// A Provider that no longer holds the namespace is a failure the Program can

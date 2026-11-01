@@ -792,7 +792,7 @@ pub(crate) async fn start_server(
         .map_err(|error| {
             AppError::FailedPrecondition(format!("Built-in Provider update failed: {error}"))
         })?;
-    // addProvider publishes through the same workflow as Reef.
+    // updateProvider renames through the same workflow as Reef.
     let mut runs = coral_run::RunModule::new(
         policy,
         database.clone(),
@@ -803,7 +803,7 @@ pub(crate) async fn start_server(
         coral_run::RunInbox::table(database.clone()),
     )
     .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
-    .with_provider_publisher(Arc::new(provider_workflow.clone()));
+    .with_provider_renamer(Arc::new(provider_workflow.clone()));
     if let Some(accounts) = &accounts {
         runs = runs.with_accounts(accounts.clone());
     }

@@ -76,7 +76,7 @@ export async function approvedProgramProvider(context: TestContext) {
       const { update } = await observeRun(runner, await runner.wait(paused))
       const { data } = (update.final_value as { value: { data: { status: string; url: string } } })
         .value
-      expect(data.status).toBe('needs_sign_in')
+      expect(data.status).toBe('needs_person')
       link = data.url
       expect(new URL(link).origin).toBe(new URL(target.baseURL).origin)
       expect(new URL(link).pathname).toBe(`/workspaces/${id}/providers/new`)
