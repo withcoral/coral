@@ -118,7 +118,9 @@ fn replace_identifier(text: &str, name: &str, value: &str) -> String {
     let mut previous = None;
     while let Some(at) = rest.find(name) {
         let (before, after) = rest.split_at(at);
-        let tail = &after[name.len()..];
+        let Some(tail) = after.strip_prefix(name) else {
+            break;
+        };
         let starts = before.chars().next_back().or(previous);
         let whole = !starts.is_some_and(is_identifier_char)
             && !tail.chars().next().is_some_and(is_identifier_char);
