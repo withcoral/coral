@@ -138,14 +138,6 @@ impl RequiredActionCounts {
     pub const fn total(&self) -> i64 {
         self.approvals + self.connections
     }
-
-    const fn selected(&self, kind: Option<RequiredActionKind>) -> i64 {
-        match kind {
-            None => self.total(),
-            Some(RequiredActionKind::Approval) => self.approvals,
-            Some(RequiredActionKind::AccountConnection) => self.connections,
-        }
-    }
 }
 
 /// One visible Request, even if several Invocations wait on it.
@@ -274,7 +266,10 @@ impl crate::RunModule {
             .workspaces
             .action_history_authority_in_transaction(&mut tx, actor, workspace)
             .await?;
-        let counts = current_counts(&mut tx, &authority, self.now()?).await?;
+        let requests =
+            crate::required_actions_repository::current_requests(&mut tx, &authority, self.now()?)
+                .await?;
+        let counts = RequiredActionCounts::of(&requests);
         tx.commit().await?;
         Ok(counts)
     }
@@ -299,7 +294,8 @@ impl crate::RunModule {
             return Err(Error::InvalidInput("invalid action page size".into()));
         }
         let now = self.now()?;
-        let action_count = current_counts(tx, authority, now).await?.selected(kind);
+        let action_count =
+            crate::required_actions_repository::count(tx, authority, kind, now).await?;
         let (rows, has_more) = crate::required_actions_repository::queue(
             tx,
             authority,
@@ -333,15 +329,6 @@ impl crate::RunModule {
             next,
         })
     }
-}
-
-async fn current_counts(
-    tx: &mut Transaction<'_>,
-    authority: &coral_workspace::HistoryAuthority,
-    now: i64,
-) -> Result<RequiredActionCounts, Error> {
-    let requests = crate::required_actions_repository::current_requests(tx, authority, now).await?;
-    Ok(RequiredActionCounts::of(&requests))
 }
 
 fn summary(row: crate::required_actions_repository::ActionEvidence) -> ActionSummary {

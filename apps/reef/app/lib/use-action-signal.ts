@@ -83,7 +83,7 @@ export function useActionSignal(initial: ActionCounts | null) {
  * a change between that read and this mount still refreshes. An in-place refresh keeps
  * component state, and a newer one replaces any still in flight.
  */
-export function useLiveRequiredActions(
+export function useFollowRequiredActions(
   workspace: string,
   kind: ActionCountKind,
   loaded: string | undefined,
@@ -95,5 +95,6 @@ export function useLiveRequiredActions(
   useEffect(() => {
     if (revision !== undefined && revision !== loaded) void revalidate()
   }, [revision, loaded, revalidate])
-  return connected && count !== null
+  // A Workspace the stream no longer lists has no signal either, as when it was archived.
+  return connected && (counts === null || Boolean(count))
 }

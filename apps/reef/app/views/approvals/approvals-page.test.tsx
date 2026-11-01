@@ -5,7 +5,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useLoaderData } from 'react-router'
 import { expect, it, vi } from 'vitest'
 import type { ActionCount, ActionCounts } from '@/lib/activity-live-types'
-import { ActionSignalContext, type ActionSignal } from '@/lib/use-action-count'
+import { ActionSignalContext, type ActionSignal } from '@/lib/use-action-signal'
 import { renderRoute, type RouteOptions } from '@/test-support/route'
 import { approval, run, workspace } from '../activity/fixtures'
 import type { PendingAction } from '../activity/types'
@@ -20,7 +20,7 @@ const ownAction: PendingAction = {
 const path = `/${workspace}`
 
 function renderPage(approvals: PendingAction[]) {
-  return renderRoute(<ApprovalsPage approvals={approvals} workspace={path} />)
+  return renderRoute(<ApprovalsPage approvals={approvals} workspacePath={path} />)
 }
 
 const counted = (approvals: string, connections = 'connections'): ActionCount => ({
@@ -40,19 +40,22 @@ interface LoadedPage {
 }
 interface Coral {
   read: LoadedPage
-  down?: boolean
+  /** What the loader throws while Coral refuses or cannot answer. */
+  failure?: unknown
 }
+/** Coral with the one agent request pending at `revision`. */
+const pendingAt = (revision: string): Coral => ({ read: { approvals: [agentAction], revision } })
 
 function LoadedRoute() {
   const { approvals, revision } = useLoaderData<LoadedPage>()
-  return <ApprovalsPage approvals={approvals} workspace={path} revision={revision} />
+  return <ApprovalsPage approvals={approvals} workspacePath={path} revision={revision} />
 }
 
 /** The route as the app shell mounts it: its rows come from a loader that reads `coral`,
  * under a signal the test moves as the stream would. */
 async function renderLive(coral: Coral, first: ActionSignal, options: RouteOptions = {}) {
   const loader = vi.fn(() => {
-    if (coral.down) throw new Error('Coral is down')
+    if (coral.failure) throw coral.failure
     return coral.read
   })
   let send!: (signal: ActionSignal) => void
@@ -66,7 +69,7 @@ async function renderLive(coral: Coral, first: ActionSignal, options: RouteOptio
   renderRoute(<LoadedRoute />, {
     ...options,
     loader,
-    ErrorBoundary: () => <ApprovalsErrorBoundary workspace={path} />,
+    ErrorBoundary: ApprovalsErrorBoundary,
     wrapper: Shell,
   })
   await screen.findByRole('table', { name: 'Pending approvals' })
@@ -127,9 +130,9 @@ it('says there is nothing to approve when no request waits', () => {
 })
 
 it('refreshes in place when the approval revision changes, and keeps your place', async () => {
-  const coral = { read: { approvals: [agentAction], revision: 'one' } as LoadedPage }
+  const coral = pendingAt('one')
   const { loader, signal } = await renderLive(coral, signalOf('one'))
-  expect(loader).toHaveBeenCalledTimes(1)
+  const reads = loader.mock.calls.length
   await userEvent.keyboard('{ArrowDown}')
   const row = screen.getByRole('link', { name: 'Send invoice reminders?' })
   expect(row).toHaveFocus()
@@ -138,7 +141,7 @@ it('refreshes in place when the approval revision changes, and keeps your place'
   await signal(signalOf('two'))
 
   expect(await screen.findByRole('link', { name: 'Approve this tool call?' })).toBeInTheDocument()
-  expect(loader).toHaveBeenCalledTimes(2)
+  expect(loader.mock.calls.length - reads).toBe(1)
   // A remount would replace the row and lose its focus.
   expect(screen.getByRole('link', { name: 'Send invoice reminders?' })).toBe(row)
   expect(row).toHaveFocus()
@@ -150,34 +153,40 @@ it.each([
     'another workspace changes',
     { counts: { [path]: counted('one'), '/workspaces/other': counted('moved') } },
   ],
-  ['the stream reports no count for this workspace', { counts: {} }],
 ])('does not refresh when %s', async (_, change) => {
-  const coral = { read: { approvals: [agentAction], revision: 'one' } as LoadedPage }
+  const coral = pendingAt('one')
   const { loader, signal } = await renderLive(coral, signalOf('one'))
+  const reads = loader.mock.calls.length
   await signal({ ...change, connected: true })
   // The real change proves that the refresh would have shown by now.
   coral.read = { approvals: [], revision: 'two' }
   await signal(signalOf('two'))
   await screen.findByText('Nothing to approve.')
-  expect(loader).toHaveBeenCalledTimes(2)
+  expect(loader.mock.calls.length - reads).toBe(1)
 })
 
 it('refreshes once when the stream moved before the page mounted', async () => {
-  const coral = { read: { approvals: [agentAction], revision: 'old' } as LoadedPage }
-  const { loader } = await renderLive(coral, signalOf('new'))
-  await waitFor(() => expect(loader).toHaveBeenCalledTimes(2))
+  const reads = [pendingAt('old').read, { approvals: [ownAction], revision: 'new' }]
+  await renderLive(
+    {
+      get read() {
+        return reads.length > 1 ? reads.shift()! : reads[0]
+      },
+    },
+    signalOf('new'),
+  )
+  expect(await screen.findByRole('link', { name: 'Approve this tool call?' })).toBeInTheDocument()
 })
 
 it('stops at one extra read when the stream lags behind the page', async () => {
-  const coral = { read: { approvals: [agentAction], revision: 'new' } as LoadedPage }
-  const { loader, signal } = await renderLive(coral, signalOf('old'))
+  const { loader, signal } = await renderLive(pendingAt('new'), signalOf('old'))
   await waitFor(() => expect(loader).toHaveBeenCalledTimes(2))
   await signal(signalOf('new'))
   expect(loader).toHaveBeenCalledTimes(2)
 })
 
 it('removes a saving row when the decision is recorded', async () => {
-  const coral = { read: { approvals: [agentAction], revision: 'one' } as LoadedPage }
+  const coral = pendingAt('one')
   const { signal } = await renderLive(coral, signalOf('one'), {
     routes: [{ path: '/activity/resolve', action: () => ({ recording: true }) }],
   })
@@ -194,13 +203,15 @@ it('removes a saving row when the decision is recorded', async () => {
 it.each<[string, ActionSignal]>([
   ['the stream drops', { ...signalOf('one'), connected: false }],
   ['this workspace count cannot be read', { counts: { [path]: null }, connected: true }],
+  ['the stream no longer lists this workspace', { counts: {}, connected: true }],
 ])('says the page is unavailable and takes no decision when %s', async (_, down) => {
-  const coral = { read: { approvals: [agentAction], revision: 'one' } as LoadedPage }
-  const { signal } = await renderLive(coral, signalOf('one'))
+  const { signal } = await renderLive(pendingAt('one'), signalOf('one'))
   expect(screen.queryByText('Approvals are unavailable.')).not.toBeInTheDocument()
 
   await signal(down)
-  expect(screen.getByText('Approvals are unavailable.')).toHaveAttribute('role', 'status')
+  expect(screen.getAllByRole('status').map((status) => status.textContent)).toContain(
+    'Approvals are unavailable.',
+  )
   expect(screen.getByRole('button', { name: 'Approve: Send invoice reminders?' })).toBeDisabled()
 
   await signal(signalOf('one'))
@@ -208,27 +219,39 @@ it.each<[string, ActionSignal]>([
   expect(screen.getByRole('button', { name: 'Approve: Send invoice reminders?' })).toBeEnabled()
 })
 
-// The boundary replaces the page, so without its own subscription the page would stay on
-// the error until a manual reload.
-it('returns from a failed refresh on the next revision, with one retry between', async () => {
-  const coral: Coral = { read: { approvals: [agentAction], revision: 'one' } }
-  const { loader, signal } = await renderLive(coral, signalOf('one'))
+/** The boundary rereads on the timer and when you return to the tab. */
+const returnToTab = () => act(async () => window.dispatchEvent(new Event('focus')))
 
-  coral.down = true
+// The stream can recover at the same revision, so a retry that only follows the revision
+// would leave the page on the error until a manual reload.
+it('returns from a failed refresh once Coral answers, at the same revision', async () => {
+  const coral = pendingAt('one')
+  const { signal } = await renderLive(coral, signalOf('one'))
+
+  coral.failure = new Error('Coral is down')
   await signal(signalOf('two'))
   await screen.findByText('Coral is unavailable. Reload the page to try again.')
-  await waitFor(() => expect(loader).toHaveBeenCalledTimes(3))
 
-  coral.down = false
-  coral.read = { approvals: [ownAction], revision: 'three' }
-  await signal(signalOf('three'))
+  coral.failure = undefined
+  coral.read = { approvals: [ownAction], revision: 'two' }
+  await returnToTab()
   expect(await screen.findByRole('link', { name: 'Approve this tool call?' })).toBeInTheDocument()
-  expect(loader).toHaveBeenCalledTimes(4)
+})
+
+it('does not retry a refusal', async () => {
+  const coral = pendingAt('one')
+  const { loader, signal } = await renderLive(coral, signalOf('one'))
+
+  coral.failure = new Response('Not found', { status: 404 })
+  await signal(signalOf('two'))
+  await screen.findByText('This page does not exist.')
+  const reads = loader.mock.calls.length
+  await returnToTab()
+  expect(loader.mock.calls.length - reads).toBe(0)
 })
 
 it('does not say nothing waits while it cannot tell', async () => {
-  const coral = { read: { approvals: [], revision: 'one' } as LoadedPage }
-  const { signal } = await renderLive(coral, signalOf('one'))
+  const { signal } = await renderLive({ read: { approvals: [], revision: 'one' } }, signalOf('one'))
   expect(screen.getByText('Nothing to approve.')).toBeInTheDocument()
   await signal({ ...signalOf('one'), connected: false })
   expect(screen.queryByText('Nothing to approve.')).not.toBeInTheDocument()

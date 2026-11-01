@@ -1,7 +1,7 @@
 /** @vitest-environment happy-dom */
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { useActionSignal } from './use-action-count'
+import { useActionSignal } from './use-action-signal'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -55,44 +55,52 @@ it.each([
     'a streamed count',
     { kind: 'count', counts: { [w]: split, [x]: approvals('4') } },
     { [w]: split, [x]: approvals('4') },
+    true,
   ],
   [
     'a streamed zero',
     { kind: 'count', counts: { [w]: approvals('0'), [x]: approvals('4') } },
     { [w]: approvals('0'), [x]: approvals('4') },
+    true,
   ],
   [
     'no count for an unavailable workspace count',
     { kind: 'count', counts: { [w]: null, [x]: approvals('4') } },
     { [w]: null, [x]: approvals('4') },
+    true,
   ],
   [
     'the last counts for a kind that is not a digit string',
     { kind: 'count', counts: { [w]: { ...split, approvals: 3 } } },
     { [w]: approvals('1') },
+    false,
   ],
   [
     'the last counts for a count without its revisions',
     { kind: 'count', counts: { [w]: { total: '3', approvals: '3', connections: '0' } } },
     { [w]: approvals('1') },
+    false,
   ],
   [
     'the last counts for a count without its kinds',
     { kind: 'count', counts: { [w]: '3' } },
     { [w]: approvals('1') },
+    false,
   ],
   [
     'the last counts for counts that are not a map',
     { kind: 'count', counts: ['3'] },
     { [w]: approvals('1') },
+    false,
   ],
   [
     'the last counts while the stream is unavailable',
     { kind: 'unavailable' },
     { [w]: approvals('1') },
+    false,
   ],
-  ['nothing when the session expires', { kind: 'sessionExpired' }, null],
-])('shows %s', async (_, event, expected) => {
+  ['nothing when the session expires', { kind: 'sessionExpired' }, null, false],
+])('shows %s', async (_, event, expected, connected) => {
   const { fetch, emit } = countStream()
   const { result, unmount } = renderHook(() => useActionSignal({ [w]: approvals('1') }))
   expect(result.current.counts).toEqual({ [w]: approvals('1') })
@@ -101,6 +109,7 @@ it.each([
   act(() => emit(event))
   // A connection that ends aborts before it reports, so the report has run once it aborts.
   await waitFor(() => expect(signal.aborted || x in (result.current.counts ?? {})).toBe(true))
+  await waitFor(() => expect(result.current.connected).toBe(connected))
   expect(result.current.counts).toEqual(expected)
   unmount()
   expect(signal.aborted).toBe(true)
@@ -145,14 +154,5 @@ it('reports a drop at once, while the counts wait out their grace period', async
   act(() => emit({ kind: 'count', counts: { [w]: approvals('2') } }))
   await waitFor(() => expect(result.current.connected).toBe(true))
   expect(result.current.counts).toEqual({ [w]: approvals('2') })
-  unmount()
-})
-
-it('stays disconnected once the session expires', async () => {
-  const { fetch, emit } = countStream()
-  const { result, unmount } = renderHook(() => useActionSignal({ [w]: approvals('1') }))
-  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
-  act(() => emit({ kind: 'sessionExpired' }))
-  await waitFor(() => expect(result.current).toEqual({ counts: null, connected: false }))
   unmount()
 })

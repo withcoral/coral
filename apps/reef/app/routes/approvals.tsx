@@ -5,7 +5,8 @@ import { loadActionCounts } from '@/lib/action-count.server'
 import { pendingActions } from '@/lib/activity.server'
 import { managementFailure, privateHeaders } from '@/lib/management.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
-import { ApprovalsErrorBoundary, ApprovalsPage } from '@/views/approvals/approvals-page'
+import { ApprovalsPage } from '@/views/approvals/approvals-page'
+export { ApprovalsErrorBoundary as ErrorBoundary } from '@/views/approvals/approvals-page'
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
@@ -28,10 +29,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     managementFailure(error)
   }
 }
-export function ErrorBoundary({ params }: Route.ErrorBoundaryProps) {
-  return <ApprovalsErrorBoundary workspace={`/workspaces/${params.workspace}`} />
-}
 export default function ApprovalsRoute({ loaderData }: Route.ComponentProps) {
   const { approvals, workspace, revision } = loaderData
-  return <ApprovalsPage approvals={approvals} workspace={workspace.path} revision={revision} />
+  return <ApprovalsPage approvals={approvals} workspacePath={workspace.path} revision={revision} />
 }

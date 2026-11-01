@@ -1,5 +1,7 @@
+import { isRouteErrorResponse, useRouteError } from 'react-router'
 import { EmptyPage } from '@/components/empty-page'
-import { useLiveRequiredActions } from '@/lib/use-action-count'
+import { useFollowRequiredActions } from '@/lib/use-action-signal'
+import { useRevalidateWhileVisible } from '@/lib/use-revalidate-while-visible'
 import { Button, Table, Typography } from '@/wax/components'
 import { CodeChip } from '@/wax/components/code-chip'
 import { Deadline } from '@/wax/components/deadline'
@@ -12,22 +14,24 @@ import { ManagementLayout, trail } from '../management/layout'
 import { ManagementErrorBoundary } from '../management/management-error'
 import * as styles from './approvals.css'
 
+const RETRY_MS = 10_000
+
 /** One row per pending Approval Request, most urgent first. Arguments stay in the review.
  * The rows follow the shell's approval revision. While that signal is down, they may be stale,
  * so the page says so and takes no decision. */
 export function ApprovalsPage({
   approvals,
-  workspace,
+  workspacePath,
   revision,
 }: {
   approvals: PendingAction[]
-  /** The Workspace's path, which keys its revision. */
-  workspace: string
+  /** Keys the Workspace's revision. */
+  workspacePath: string
   /** The approval revision read before `approvals`, if it was readable. */
   revision?: string
 }) {
   const table = Table.useRowCursor()
-  const live = useLiveRequiredActions(workspace, 'approvals', revision)
+  const live = useFollowRequiredActions(workspacePath, 'approvals', revision)
   return (
     <ManagementLayout breadcrumbs={trail([], 'Approvals')}>
       {!live && (
@@ -63,11 +67,23 @@ export function ApprovalsPage({
   )
 }
 
-/** A failed refresh replaces the page, and with it the page's subscription. This keeps
- * following the signal, so the page returns without a manual reload. */
-export function ApprovalsErrorBoundary({ workspace }: { workspace: string }) {
-  useLiveRequiredActions(workspace, 'approvals', undefined)
-  return <ManagementErrorBoundary />
+function RetryWhileVisible() {
+  useRevalidateWhileVisible(RETRY_MS)
+  return null
+}
+
+/** A failed refresh replaces the page, and with it the page's subscription. An outage may
+ * end at the same revision, so this rereads on a timer until the page returns. A refusal
+ * (a 4xx) is an answer, so it is not retried. */
+export function ApprovalsErrorBoundary() {
+  const error = useRouteError()
+  const outage = !isRouteErrorResponse(error) || error.status >= 500
+  return (
+    <>
+      {outage && <RetryWhileVisible />}
+      <ManagementErrorBoundary />
+    </>
+  )
 }
 
 function ApprovalRow({ pending }: { pending: PendingAction }) {

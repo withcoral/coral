@@ -238,6 +238,13 @@ impl WaitingConnection {
     async fn terminal(&self) -> crate::RunUpdate {
         wait_for_terminal(&self.runs, &self.tool.principal, self.scope(), &self.run).await
     }
+
+    async fn revision(&self) -> crate::RequiredActionSetRevision {
+        let counts = self
+            .runs
+            .required_action_counts(&self.tool.principal, Some(self.scope()));
+        counts.await.unwrap().connection_revision
+    }
 }
 
 /// What ends a connection request while an Invocation waits on it.
@@ -441,8 +448,10 @@ async fn an_ended_request_records_one_terminal_event_and_replays_unchanged() {
         GateLoss::Disconnect,
     ] {
         let waiting = WaitingConnection::new().await;
+        let pending = waiting.revision().await;
         loss.apply(&waiting).await;
         waiting.terminal().await;
+        assert_ne!(waiting.revision().await, pending, "{loss:?}");
         let (accounts, context, scope) = (&waiting.accounts, &waiting.context, waiting.scope());
         // Reads settle expired or invalidated requests even after their last waiter ends.
         let ended = accounts
