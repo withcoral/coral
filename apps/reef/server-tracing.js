@@ -317,7 +317,8 @@ function recordRouteFailure(span, error) {
 async function recordResponse(handleRequest, { request }) {
   const { meta, statusCode } = await handleRequest()
   const span = trace.getActiveSpan()
-  if (!span) return
+  // In dev the span ends with the response, which closes when the client leaves.
+  if (!span?.isRecording()) return
   span.setAttribute('http.response.status_code', statusCode)
   if (meta?.pattern) {
     // React Router leaves the leading slash off a route's pattern.
