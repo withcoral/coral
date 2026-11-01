@@ -46,31 +46,32 @@ fn snippets_open_around_the_match_or_at_the_beginning() {
     let around = snippet(&long, Some(matched_at));
     let before = around.find("word150").expect("match kept");
     assert!(
-        (100..=200).contains(&before),
+        (40..=60).contains(&before),
         "the window opens about a third before the match: {before}"
     );
 }
 
 #[test]
 fn a_window_that_opens_at_a_word_start_keeps_that_word() {
-    // Eight-byte words, so a third of the window before a word start is a
-    // word start too.
+    // Seventeen bytes per word, so a third of the window before a word start
+    // is a word start too.
     let text = (0..200)
-        .map(|index| format!("w{index:06}"))
+        .map(|index| format!("w{index:015}"))
         .collect::<Vec<_>>()
         .join(" ");
-    let matched_at = text.find("w000100").expect("fixture word");
-    let first_kept = (matched_at - (SNIPPET_MAX_BYTES - 2 * CUT_MARKER.len()) / 3) / 8;
+    let matched_at = text.find("w000000000000100").expect("fixture word");
+    let opens_at = matched_at - (SNIPPET_MAX_BYTES - 2 * CUT_MARKER.len()) / 3;
     assert_eq!(
-        text.get(first_kept * 8 - 1..first_kept * 8),
+        text.get(opens_at - 1..opens_at),
         Some(" "),
         "the fixture opens the window at a word start"
     );
+    let first_kept = opens_at / 17;
 
     let snippet = snippet(&text, Some(matched_at));
 
     assert!(
-        snippet.starts_with(&format!("{CUT_MARKER}w{first_kept:06} ")),
+        snippet.starts_with(&format!("{CUT_MARKER}w{first_kept:015} ")),
         "{snippet}"
     );
 }

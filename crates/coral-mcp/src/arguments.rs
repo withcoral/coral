@@ -29,7 +29,7 @@ Find tools and Saved Functions from a Program, usually your first exec:
 ```ts
 const pages = await Promise.all(["list pull requests", "search issues"].map((query) =>
   coral.workspace.search({ query, limit: 3 })));
-return pages.flatMap(({ data }) => data.hits.map((hit) => [hit.call_path, hit.description_snippet, hit.declaration ?? hit.signature_line]));
+return pages.flatMap(({ data }) => data.hits.map((hit) => [hit.call_path, hit.declaration ?? hit.signature_line]));
 ```
 Then do the whole job in a later Program, by complete literal Call Path."#;
 

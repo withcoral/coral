@@ -11,7 +11,7 @@ use crate::hit::{CUT_MARKER, floor_char_boundary};
 mod tests;
 
 /// Largest snippet, in UTF-8 bytes, markers included.
-pub(crate) const SNIPPET_MAX_BYTES: usize = 512;
+pub(crate) const SNIPPET_MAX_BYTES: usize = 160;
 
 /// The snippet of `text` around the byte offset of the leftmost match.
 pub(crate) fn snippet(text: &str, matched_at: Option<usize>) -> String {

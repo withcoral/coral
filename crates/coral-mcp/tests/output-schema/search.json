@@ -55,7 +55,7 @@
         },
         "description_snippet": {
           "type": "string",
-          "description": "At most 512 UTF-8 bytes of the description, around the first matched\nterm; `…` marks cut text."
+          "description": "At most 160 UTF-8 bytes of the description, around the first matched\nterm; `…` marks cut text."
         },
         "guidance_snippet": {
           "type": [
