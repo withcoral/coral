@@ -271,25 +271,34 @@ fn property<'a>(tools: &'a [Value], name: &str, field: &str) -> &'a Value {
 }
 
 fn check_schema(tools: &[Value]) {
+    check_default(tools, "search", "limit", 10);
+    check_run_defaults(tools);
+}
+
+/// The waits and the timeout an `exec` or `wait` gets when it names none.
+pub(super) fn check_run_defaults(tools: &[Value]) {
     for (name, field, default) in [
-        ("search", "limit", 10),
         ("exec", "run_timeout_ms", 900_000),
         ("exec", "wait_ms", 30_000),
         ("wait", "wait_ms", 0),
     ] {
-        let property = property(tools, name, field);
-        assert_eq!(
-            property.get("default"),
-            Some(&json!(default)),
-            "{name}.{field}"
-        );
-        assert_eq!(property.get("type"), Some(&json!(["integer", "null"])));
-        let required = tools
-            .iter()
-            .find(|tool| tool.get("name") == Some(&json!(name)))
-            .and_then(|tool| tool.pointer("/inputSchema/required"))
-            .and_then(Value::as_array)
-            .expect("required parameters");
-        assert!(!required.contains(&json!(field)));
+        check_default(tools, name, field, default);
     }
+}
+
+fn check_default(tools: &[Value], name: &str, field: &str, default: u64) {
+    let property = property(tools, name, field);
+    assert_eq!(
+        property.get("default"),
+        Some(&json!(default)),
+        "{name}.{field}"
+    );
+    assert_eq!(property.get("type"), Some(&json!(["integer", "null"])));
+    let required = tools
+        .iter()
+        .find(|tool| tool.get("name") == Some(&json!(name)))
+        .and_then(|tool| tool.pointer("/inputSchema/required"))
+        .and_then(Value::as_array)
+        .expect("required parameters");
+    assert!(!required.contains(&json!(field)));
 }

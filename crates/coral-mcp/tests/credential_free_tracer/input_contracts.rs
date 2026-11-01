@@ -1,3 +1,8 @@
+#![expect(
+    clippy::indexing_slicing,
+    reason = "assert known tool result JSON members"
+)]
+
 use serde_json::{Value, json};
 
 use super::RawSession;
@@ -412,8 +417,22 @@ async fn check_cursors(session: &RawSession, task: &str, tools: &[Value]) {
     }
 }
 
-async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
-    let canonical = "abcdef12-1234-4123-8123-123456789abc";
+const CANONICAL_IDENTIFIER: &str = "abcdef12-1234-4123-8123-123456789abc";
+
+fn invalid_identifiers() -> [String; 8] {
+    [
+        "not-a-uuid".to_string(),
+        "ABCDEF12-1234-4123-8123-123456789ABC".to_string(),
+        "height-word-database".to_string(),
+        "Height-word-database-library".to_string(),
+        "height-word-database-library-power-table".to_string(),
+        "abcdefghijklmnopqrstu-word-database-library".to_string(),
+        "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx1".to_string(),
+        CANONICAL_IDENTIFIER.replace('-', ""),
+    ]
+}
+
+fn check_identifier_schemas(tools: &[Value]) {
     for tool in tools {
         let name = tool.get("name").and_then(Value::as_str).expect("tool name");
         for field in ["task_id", "run_id"] {
@@ -430,23 +449,19 @@ async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
             for valid in [
                 "height-word-database-library",
                 "small-title-work-image-power",
-                canonical,
+                CANONICAL_IDENTIFIER,
             ] {
                 assert!(validator.is_valid(&json!(valid)), "{name}.{field}: {valid}");
             }
             assert!(!validator.is_valid(&Value::Null));
         }
     }
-    for invalid in [
-        "not-a-uuid".to_string(),
-        "ABCDEF12-1234-4123-8123-123456789ABC".to_string(),
-        "height-word-database".to_string(),
-        "Height-word-database-library".to_string(),
-        "height-word-database-library-power-table".to_string(),
-        "abcdefghijklmnopqrstu-word-database-library".to_string(),
-        "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx1".to_string(),
-        canonical.replace('-', ""),
-    ] {
+}
+
+async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
+    let canonical = CANONICAL_IDENTIFIER;
+    check_identifier_schemas(tools);
+    for invalid in invalid_identifiers() {
         coral_task::TaskId::parse(&invalid).expect_err("invalid Task id");
         coral_run::RunId::parse(&invalid).expect_err("invalid Run id");
         for (name, arguments) in [
@@ -506,4 +521,111 @@ async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
         property(tools, "search", "provider")["type"],
         json!(["string", "null"])
     );
+}
+
+/// With the rules out of the schemas, the server is what refuses a bad
+/// identifier, and its message says what a good one looks like.
+async fn check_identifier_rejections(session: &RawSession) {
+    for invalid in invalid_identifiers() {
+        for (name, arguments) in [
+            (
+                "exec",
+                json!({"task_id": invalid, "intent": "Check Task identity", "program": "return 1;"}),
+            ),
+            ("wait", json!({"run_id": invalid})),
+            ("cancel", json!({"run_id": invalid})),
+            (
+                "end_task",
+                json!({"task_id": invalid, "outcome": "success"}),
+            ),
+            (
+                "save_function",
+                json!({
+                    "task_id": invalid, "intent": "Check Task identity", "path": "contracts.identity",
+                    "description": "Check identity", "source": "export default () => 1;",
+                }),
+            ),
+            (
+                "delete_function",
+                json!({"task_id": invalid, "intent": "Check Task identity", "path": "contracts.identity"}),
+            ),
+        ] {
+            let error = session
+                .result("tools/call", json!({"name":name, "arguments":arguments}))
+                .await
+                .expect_err("identity parsing remains a protocol rejection");
+            assert_eq!(error.get("code"), Some(&json!(-32602)), "{name}: {invalid}");
+            assert!(
+                error["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("four or five lowercase words")),
+                "{name}: {error}"
+            );
+        }
+    }
+}
+
+/// What `tools/list` advertises today, and what a first `exec` gets back with
+/// it: a default wait long enough to return the Final Value, and the Task
+/// that call started.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_served_tools_keep_their_contracts_on_every_version() {
+    let tracer = super::Tracer::start().await;
+    for version in coral_mcp::SUPPORTED_PROTOCOL_VERSIONS {
+        let session = RawSession::open(&tracer.endpoint(), version).await;
+        let listed = session
+            .result("tools/list", json!({}))
+            .await
+            .expect("tools/list");
+        let tools = listed["tools"].as_array().expect("tools");
+        let names = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("tool name"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "save_function",
+                "delete_function",
+                "exec",
+                "wait",
+                "cancel",
+                "end_task"
+            ]
+        );
+        for tool in tools {
+            super::strict_input_validator(tool);
+            assert_eq!(
+                tool.pointer("/inputSchema/$schema"),
+                None,
+                "{tool}: MCP already defaults to this dialect"
+            );
+        }
+        if session.standard_headers() {
+            assert_eq!(listed.get("ttlMs"), Some(&json!(0)));
+            assert_eq!(listed.get("cacheScope"), Some(&json!("private")));
+        }
+        super::default_contracts::check_run_defaults(tools);
+        check_identifier_schemas(tools);
+        check_identifier_rejections(&session).await;
+
+        let first = session
+            .tool(
+                "exec",
+                json!({"intent": "Check the first exec", "program": "return 1;"}),
+            )
+            .await;
+        let update = &first["structuredContent"];
+        assert_eq!(update["state"], "succeeded", "{first}");
+        assert_eq!(update["final_value"]["value"], 1, "{first}");
+        assert_eq!(update["providers"], json!(["weather"]), "{first}");
+        let ended = session
+            .tool(
+                "end_task",
+                json!({"task_id": update["task_id"], "outcome": "success"}),
+            )
+            .await;
+        assert_eq!(ended["structuredContent"]["outcome"], "success", "{ended}");
+        session.close().await;
+    }
 }

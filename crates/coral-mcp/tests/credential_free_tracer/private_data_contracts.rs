@@ -258,6 +258,67 @@ fn around<'a>(text: &'a str, private: &str) -> &'a str {
 /// Administrative Lifecycle Events. No metric dimension takes a value from any
 /// of them. The authorized readers still get it, so the journey did carry the
 /// private data.
+/// A crash after a Tool call shows its caller what that call returned. That
+/// is upstream data, so it goes to the Run's reader and to no telemetry sink.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_shows_the_last_tool_result_to_its_caller_only() {
+    const RESULT: &str = "result-c0ral-private";
+    let capture = capture();
+    let tracer = Tracer::start().await;
+    let session = RawSession::open(&tracer.endpoint(), &SUPPORTED_PROTOCOL_VERSIONS[0]).await;
+    let failed = session
+        .tool(
+            "exec",
+            json!({
+                "intent": "Crash after a Tool call",
+                "program": "const record = await coral.providers.weather.getPrivateRecord({token: 'argument'});
+                            for (const item of record.data.missing) { await coral.emit(item); }",
+            }),
+        )
+        .await;
+    let update = &failed["structuredContent"];
+    assert_eq!(update["state"], "failed", "{failed}");
+    let result = &update["failure"]["error"]["last_tool_result"];
+    assert_eq!(
+        result["call_path"], "coral.providers.weather.getPrivateRecord",
+        "{failed}"
+    );
+    assert!(result["data"].to_string().contains(RESULT), "{failed}");
+    session.close().await;
+    tracer.server.shutdown().await.expect("stop MCP server");
+
+    let exported = capture.exported.text();
+    assert!(
+        exported.contains("tools/call exec"),
+        "the export capture is active"
+    );
+    // A library's own fields never leave: only Coral's spans answer for
+    // theirs before the export filter.
+    let spans = capture
+        .spans
+        .finished()
+        .into_iter()
+        .filter(|span| attribute(span, "target").is_some_and(|target| target.starts_with("coral")))
+        .collect::<Vec<_>>();
+    assert!(!spans.is_empty(), "capture is active");
+    let logs = capture.logs.0.lock().expect("captured logs");
+    for (sink, text) in [
+        ("what leaves the host", exported),
+        ("traces", format!("{spans:?}")),
+        ("metrics", format!("{:?}", capture.metrics.points())),
+        (
+            "Coral's events before the export filter",
+            String::from_utf8_lossy(&logs).into_owned(),
+        ),
+    ] {
+        assert!(
+            !text.contains(RESULT),
+            "{sink} holds the Tool Result: {}",
+            around(&text, RESULT)
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::too_many_lines,
