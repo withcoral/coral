@@ -535,11 +535,19 @@ impl McpServer {
         let durable_outcome = task
             .outcome()
             .ok_or_else(|| DispatchError::Tool(ToolFailure::internal()))?;
-        projection::success(projection::EndedTask {
+        let result = projection::success(projection::EndedTask {
             task_id: task.id().to_string(),
             outcome: durable_outcome.into(),
         })
-        .map_err(DispatchError::Tool)
+        .map_err(DispatchError::Tool)?;
+        // The first call wins, so the outcome recorded decides, not the one
+        // requested. After a failure the model still gets to explain it.
+        let reply_given = arguments.reply_given.unwrap_or(false);
+        Ok(if reply_given && durable_outcome == TaskOutcome::Success {
+            projection::ending_turn(result)
+        } else {
+            result
+        })
     }
 
     fn run_update(&self, update: &coral_run::RunUpdate) -> Result<CallToolResult, ToolFailure> {

@@ -225,6 +225,7 @@ struct Tracer {
     provider_id: coral_provider::ProviderId,
     agent_credential: String,
     workspaces: WorkspaceModule,
+    tasks: TaskModule,
     runs: RunModule,
     policies: ToolPolicyModule,
     approvals: coral_run::approval::ApprovalModule,
@@ -341,6 +342,7 @@ impl Tracer {
             provider_id,
             agent_credential: agent.credential.expose().to_owned(),
             workspaces,
+            tasks,
             runs,
             policies,
             approvals,
@@ -624,6 +626,46 @@ async fn handshakes_carry_instructions_and_no_readable_resources_on_every_versio
             })),
             "{version}: an output URI is not a readable resource"
         );
+        session.close().await;
+    }
+}
+
+/// The end-of-turn key survives the transport on every served version and
+/// conforms to its result schema, on a success whose reply was given only.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_given_reply_ends_the_turn_on_every_version() {
+    let tracer = Tracer::start().await;
+    let principal = coral_workspace::AuthenticatedPrincipal::user(tracer.local_user.clone());
+    for version in SUPPORTED_PROTOCOL_VERSIONS {
+        let session = RawSession::open(&tracer.endpoint(), version).await;
+        let task = tracer
+            .tasks
+            .start(
+                &principal,
+                &tracer.workspace_a,
+                coral_task::TaskIntent::parse("End the turn").expect("Task intent"),
+                1,
+            )
+            .await
+            .expect("start Task")
+            .id()
+            .to_string();
+        let without = session
+            .tool("end_task", json!({"task_id":task, "outcome":"success"}))
+            .await;
+        assert_eq!(without.get("_meta"), None, "{version:?}");
+        let mut given = session
+            .tool(
+                "end_task",
+                json!({"task_id":task, "outcome":"success", "reply_given":true}),
+            )
+            .await;
+        assert_eq!(
+            given.as_object_mut().expect("result").remove("_meta"),
+            Some(json!({"claude/endTurn":true})),
+            "{version:?}"
+        );
+        assert_eq!(given, without, "{version:?}");
         session.close().await;
     }
 }

@@ -13,7 +13,14 @@ use coral_workspace::{
 use super::*;
 use serde_json::{Value, json};
 
-async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
+struct ServerFixture {
+    /// Keeps the database alive while the server uses it.
+    database: TestDatabase,
+    server: McpServer,
+    runs: RunModule,
+}
+
+async fn server_fixture() -> ServerFixture {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let user = local_organization_owner();
@@ -51,25 +58,6 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         coral_run::RunInbox::table(database.clone()),
     )
     .unwrap();
-    // Commit acceptance without launching execution. There can be no authored output,
-    // human actions, or terminal transition to wake the observation early.
-    let prepared = runs
-        .prepare(
-            &actor,
-            workspace.id(),
-            RunSubmission::new(
-                ProgramSource::parse("return 1;").unwrap(),
-                RunTimeout::from_millis(60_000).unwrap(),
-            ),
-        )
-        .await
-        .unwrap();
-    let mut transaction = database.begin().await.unwrap();
-    let staged = runs
-        .accept_in_transaction(&mut transaction, prepared)
-        .await
-        .unwrap();
-    transaction.commit().await.unwrap();
     let commands = TaskCommands::new(tasks.clone(), functions, search, index, runs.clone());
     let server = McpServer::new(
         McpRuntime {
@@ -77,13 +65,46 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
                 workspaces,
                 tasks,
                 commands,
-                runs,
+                runs.clone(),
                 crate::HumanInterfaceUrl::parse("https://reef.example.test").unwrap(),
             ),
             principal: actor,
         },
         workspace.id().clone(),
     );
+    ServerFixture {
+        database: fixture,
+        server,
+        runs,
+    }
+}
+
+async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
+    let ServerFixture {
+        database: fixture,
+        server,
+        runs,
+    } = server_fixture().await;
+    // Commit acceptance without launching execution. There can be no authored output,
+    // human actions, or terminal transition to wake the observation early.
+    let prepared = runs
+        .prepare(
+            &server.runtime.principal,
+            &server.workspace_id,
+            RunSubmission::new(
+                ProgramSource::parse("return 1;").unwrap(),
+                RunTimeout::from_millis(60_000).unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    let database = fixture.database();
+    let mut transaction = database.begin().await.unwrap();
+    let staged = runs
+        .accept_in_transaction(&mut transaction, prepared)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
     (fixture, server, staged.run_id().clone())
 }
 
@@ -147,6 +168,114 @@ async fn omitted_null_and_zero_wait_observe_immediately_but_positive_wait_waits(
             "observation does not change Run state or consume output"
         );
     }
+}
+
+/// Starts a Task directly, as `start_task` would.
+async fn started_task(server: &McpServer) -> String {
+    server
+        .runtime
+        .modules
+        .tasks
+        .start(
+            &server.runtime.principal,
+            &server.workspace_id,
+            TaskIntent::parse("End the turn").unwrap(),
+            now_unix_nanos().ok().unwrap(),
+        )
+        .await
+        .unwrap()
+        .id()
+        .to_string()
+}
+
+/// Calls `end_task` with `extra` fields beside `task_id`.
+async fn end_task(server: &McpServer, task: &str, extra: &Value) -> CallToolResult {
+    let mut arguments = json!({"task_id": task});
+    arguments
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    let request = CallToolRequestParams::new("end_task")
+        .with_arguments(arguments.as_object().unwrap().clone());
+    let Ok(CallToolResponse::Complete(result)) =
+        server.dispatch(request, Channel::Unavailable).await
+    else {
+        panic!("end_task completes")
+    };
+    assert_ne!(result.is_error, Some(true));
+    result
+}
+
+/// The result's `_meta` as a client reads it, if it has any.
+fn result_meta(result: &CallToolResult) -> Option<Value> {
+    serde_json::to_value(result).unwrap().get("_meta").cloned()
+}
+
+/// A success whose reply the agent says it gave ends the turn. Anything less
+/// sends the model one more call, because ending the turn then could leave
+/// the user with no reply at all.
+#[tokio::test]
+async fn only_a_durable_success_with_its_reply_given_ends_the_turn() {
+    let fixture = server_fixture().await;
+    let server = &fixture.server;
+    let end_turn = json!({"claude/endTurn": true});
+
+    let task = started_task(server).await;
+    let ended = end_task(
+        server,
+        &task,
+        &json!({"outcome": "success", "reply_given": true}),
+    )
+    .await;
+    assert_eq!(result_meta(&ended), Some(end_turn));
+
+    for extra in [
+        json!({"outcome": "success"}),
+        json!({"outcome": "success", "reply_given": false}),
+        json!({"outcome": "success", "reply_given": null}),
+        json!({"outcome": "failure", "reply_given": true}),
+    ] {
+        let task = started_task(server).await;
+        let ended = end_task(server, &task, &extra).await;
+        assert_eq!(result_meta(&ended), None, "{extra}");
+    }
+
+    // The first call wins, so asking for success again changes nothing and
+    // the recorded failure keeps the turn open.
+    let task = started_task(server).await;
+    end_task(server, &task, &json!({"outcome": "failure"})).await;
+    let repeated = end_task(
+        server,
+        &task,
+        &json!({"outcome": "success", "reply_given": true}),
+    )
+    .await;
+    assert_eq!(result_meta(&repeated), None);
+    assert_eq!(
+        repeated.structured_content.unwrap().get("outcome"),
+        Some(&json!("failure"))
+    );
+}
+
+/// The key sits beside the result: what the model and output schema read does
+/// not change with it.
+#[tokio::test]
+async fn ending_the_turn_keeps_the_same_content_and_structured_content() {
+    let fixture = server_fixture().await;
+    let server = &fixture.server;
+    let task = started_task(server).await;
+    let plain = end_task(server, &task, &json!({"outcome": "success"})).await;
+    let ending = end_task(
+        server,
+        &task,
+        &json!({"outcome": "success", "reply_given": true}),
+    )
+    .await;
+    assert!(result_meta(&ending).is_some());
+
+    let mut serialized = serde_json::to_value(&ending).unwrap();
+    serialized.as_object_mut().unwrap().remove("_meta");
+    assert_eq!(serialized, serde_json::to_value(&plain).unwrap());
 }
 
 /// A Run Owner that stopped before answering and a request not yet recorded
