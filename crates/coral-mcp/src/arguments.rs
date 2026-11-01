@@ -18,10 +18,10 @@ const RUN_ID_DESCRIPTION: &str = "The run_id from exec.";
 const CALL_INTENT_DESCRIPTION: &str = "Why this call is needed, in one short phrase.";
 const FUNCTION_PATH_DESCRIPTION: &str =
     "Dotted path under coral.functions, without that prefix, such as reports.summarize.";
-const EXEC_TOOL_DESCRIPTION: &str = r#"Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.
+const EXEC_TOOL_DESCRIPTION: &str = r#"Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Finish every read you can plan in one Program: follow cursors, filter by the request's words, then load details, replies and names for the matches. Stop only to judge a result you must read, and before a write. Return only what the answer needs, never a whole provider tool result. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.
 
 Find tools and Saved Functions from a Program, usually your first exec:
-- `coral.workspace.search({ query?, provider?, limit?, cursor?, declarations? })` returns `{ data: { hits, has_more, next_cursor?, retriever_statuses? } }`. A hit has `call_path`, `signature_line` and `description_snippet`. The top 3 hits also carry `declaration`: the inputs and the top of the result (an `HttpResult` is `{ status, data, metadata }`). `declarations: true` adds full `description`s instead, up to 32 KiB.
+- `coral.workspace.search({ query?, provider?, limit?, cursor? })` returns `{ data: { hits, has_more, next_cursor?, retriever_statuses? } }`. A hit has `call_path`, `signature_line` and `description_snippet`. The top 3 hits also carry `declaration`: the inputs and the top of the result (an `HttpResult` is `{ status, data, metadata }`).
 - `coral.workspace.search({ paths, types? })` reads 1 to 10 exact Call Paths in full into `description`; unknown ones land in `data.missing`. With one path, `types` returns named types whole.
 
 `query` is capability keywords, never people, titles, IDs or dates. Pass `provider` (a namespace such as `github`, or `coral.workspace`) only when the user names the service. If `retriever_statuses` is present, results may be missing. Read the full declaration before a write, or for a result type you need that `declaration` only names.
@@ -31,7 +31,7 @@ const pages = await Promise.all(["list pull requests", "search issues"].map((que
   coral.workspace.search({ query, limit: 3 })));
 return pages.flatMap(({ data }) => data.hits.map((hit) => [hit.call_path, hit.description_snippet, hit.declaration ?? hit.signature_line]));
 ```
-Then call tools in a later Program by complete literal Call Path."#;
+Then do the whole job in a later Program, by complete literal Call Path."#;
 
 // Claude Code 2.1.316 cuts a tool description past 4096 characters, or 16384
 // for a tool loaded through ToolSearch, so `exec`, which always loads, gets
