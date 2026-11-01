@@ -979,7 +979,7 @@ export const AnOppositeDecisionThatWonHolds: Story = {
     await reviews(context, first)
     const held = address().toString()
 
-    // Another reviewer denied the call first. Your approval lost, so the review stays
+    // Another reviewer declined the call first. Your approval lost, so the review stays
     // and shows the decision that won.
     world.decision = 'lost'
     await userEvent.click(within(rail()).getByRole('button', { name: 'Approve this call' }))

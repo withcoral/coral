@@ -64,8 +64,8 @@ it('reaches the rows with the arrow keys and opens the review with Enter', async
   expect(router.state.location.search).toContain('request=')
 })
 
-it('says nothing needs a decision when no request waits', () => {
+it('says there is nothing to approve when no request waits', () => {
   renderPage([])
-  expect(screen.getByText('Nothing needs your decision.')).toBeInTheDocument()
+  expect(screen.getByText('Nothing to approve.')).toBeInTheDocument()
   expect(screen.queryByRole('link', { name: /^Review/ })).not.toBeInTheDocument()
 })

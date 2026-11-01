@@ -55,7 +55,7 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
         'localActions',
       )
       const runner = programRunner(page, target, id, { waitMs: 1000 })
-      for (const decision of ['deny', 'queue', 'cancel']) {
+      for (const decision of ['decline', 'queue', 'cancel']) {
         const waiting = await runner.exec(
           'try { await coral.providers.localActions.read({}); } catch (error) { return error.code; }',
         )
@@ -85,7 +85,7 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
                 (await runner.wait(observed.structuredContent)).structuredContent.final_value,
             )
             .toEqual({ kind: 'value', value: 'approval_declined' })
-        } else if (decision === 'deny') {
+        } else if (decision === 'decline') {
           await page.getByRole('link', { name: /^Review .*localActions\.read$/ }).click()
           await page.getByRole('button', { name: 'Decline this call', exact: true }).click()
           await page.getByText('Declined', { exact: true }).waitFor()

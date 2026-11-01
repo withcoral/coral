@@ -15,7 +15,7 @@ import { ToolAccessState } from '../../../generated/coral/management/v1/policy_p
 const CALL =
   "try { await coral.providers.summaryFixture.read(); return 'sent'; } catch (error) { return error.code; }"
 
-test('The Overview summary counts a denied call as decided, not to fix, reads blocked and answered calls again when you return to it, opens a blocked tool to allow it, and keeps the period you choose in the URL', async (context) => {
+test('The Overview summary counts a declined call as decided, not to fix, reads blocked and answered calls again when you return to it, opens a blocked tool to allow it, and keeps the period you choose in the URL', async (context) => {
   const upstream = await listen(
     context,
     createServer((_request, response) => {

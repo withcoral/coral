@@ -210,16 +210,19 @@ export async function liveActions(context: TestContext) {
       )
     })
 
-    await step('Turn live mode off and deny the next approval: the review advances', async () => {
-      await toggle.click()
-      await following(false)
-      await rail.getByRole('button', { name: 'Decline this call', exact: true }).click()
-      await reviews(2)
-      await following(false)
-      expect((await api.activity.inspectApproval({ name: waits[1]!.approval })).state).toBe(
-        'declined',
-      )
-    })
+    await step(
+      'Turn live mode off and decline the next approval: the review advances',
+      async () => {
+        await toggle.click()
+        await following(false)
+        await rail.getByRole('button', { name: 'Decline this call', exact: true }).click()
+        await reviews(2)
+        await following(false)
+        expect((await api.activity.inspectApproval({ name: waits[1]!.approval })).state).toBe(
+          'declined',
+        )
+      },
+    )
 
     await step('Approve the last one: the review selects the newest record', async () => {
       await rail.getByRole('button', { name: 'Approve this call', exact: true }).click()

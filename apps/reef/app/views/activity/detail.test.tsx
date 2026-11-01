@@ -2577,7 +2577,7 @@ const approvalStates = [
     'Approved',
   ],
   [
-    'denied',
+    'declined',
     {
       state: 'declined',
       actionable: false,
@@ -2704,10 +2704,10 @@ it('keeps the pinned Decline and Approve inside the one named review region', ()
   expect(regions).toHaveLength(1)
   const [review] = regions
   const approve = within(review).getByRole('button', { name: 'Approve this call' })
-  const deny = within(review).getByRole('button', { name: 'Decline this call' })
+  const decline = within(review).getByRole('button', { name: 'Decline this call' })
   // Still the drawer's one pinned footer, at the review's end, after the call's outcome.
   const footer = approve.closest('footer')!
-  expect(footer).toContainElement(deny)
+  expect(footer).toContainElement(decline)
   expect(footer).toBe(review.lastElementChild)
   // The buttons submit the review's own form.
   const form = approve.getAttribute('form')!

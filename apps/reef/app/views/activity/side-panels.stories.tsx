@@ -2107,7 +2107,7 @@ const approvals = {
     'Checked the exact invoice recipient.',
   ),
   declined: approvalStory(
-    panel('Approval · denied, with comment', approvalPage(approval(settle('declined'))), {
+    panel('Approval · declined, with comment', approvalPage(approval(settle('declined'))), {
       evidence: 'This owner left the company.',
     }),
     'Declined',

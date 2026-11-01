@@ -99,7 +99,7 @@ export async function approvedProgramProvider(context: TestContext) {
   })
 }
 
-/** A denied call is a failure the Program catches, and it adds nothing. */
+/** A declined call is a failure the Program catches, and it adds nothing. */
 export async function deniedProgramProvider(context: TestContext) {
   await withOwner(context, async ({ page, target, accessToken, step }) => {
     const api = managementClients(accessToken)

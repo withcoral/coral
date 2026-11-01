@@ -27,8 +27,8 @@ export function ApprovalsPage({ approvals }: { approvals: PendingAction[] }) {
             <EmptyPage
               fullSize={false}
               iconName="ShieldCheck"
-              title="Nothing needs your decision."
-              description="Approval requests show here when a tool call needs your decision."
+              title="Nothing to approve."
+              description="Requests that need your approval appear here."
             />
           </Table.Status>
         )}
