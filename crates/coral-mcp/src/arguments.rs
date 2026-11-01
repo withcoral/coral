@@ -1,7 +1,7 @@
 use std::any::Any;
 
 use rmcp::ErrorData;
-use rmcp::model::{Tool, ToolAnnotations};
+use rmcp::model::{MetaObject, Tool, ToolAnnotations};
 use schemars::transform::{RestrictFormats, Transform as _};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::Deserialize;
@@ -40,6 +40,8 @@ pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
 pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 10_000;
 pub(crate) const DEFAULT_WAIT_MS: u64 = 0;
 pub(crate) const MAX_WAIT_MS: u64 = 30_000;
+
+const ALWAYS_LOAD_META_KEY: &str = "anthropic/alwaysLoad";
 
 pub(crate) trait ToolArguments: DeserializeOwned + JsonSchema + Any {
     const NAME: &'static str;
@@ -265,22 +267,26 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
             "Delete one Saved Function.",
             mutation_annotations("Delete Function", true, false),
         ),
-        tool::<ExecArguments, crate::projection::RunUpdateResult<'_>>(
-            EXEC_TOOL_DESCRIPTION,
-            mutation_annotations("Execute Program", true, true),
+        always_loaded(
+            tool::<ExecArguments, crate::projection::RunUpdateResult<'_>>(
+                EXEC_TOOL_DESCRIPTION,
+                mutation_annotations("Execute Program", true, true),
+            ),
         ),
-        tool::<WaitArguments, crate::projection::RunUpdateResult<'_>>(
-            "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Observing consumes nothing, so an earlier cursor reads the same output again.",
-            read_annotations("Wait for Run"),
+        always_loaded(
+            tool::<WaitArguments, crate::projection::RunUpdateResult<'_>>(
+                "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Observing consumes nothing, so an earlier cursor reads the same output again.",
+                read_annotations("Wait for Run"),
+            ),
         ),
         tool::<CancelArguments, crate::projection::RunUpdateResult<'_>>(
             "Request cancellation of one Program Run.",
             mutation_annotations("Cancel Run", true, false),
         ),
-        tool::<EndTaskArguments, crate::projection::EndedTask>(
+        always_loaded(tool::<EndTaskArguments, crate::projection::EndedTask>(
             "Record one Task's success or failure outcome. The first call wins.",
             mutation_annotations("End Task", false, false),
-        ),
+        )),
     ]
 });
 
@@ -300,6 +306,16 @@ where
         Output,
     >()));
     tool
+}
+
+/// Marks a tool every Coral session uses, so a client that defers tools behind
+/// a search step sends it in the first request instead of spending a model
+/// call to load it. Other clients ignore the key.
+fn always_loaded(tool: Tool) -> Tool {
+    let mut meta = MetaObject::new();
+    meta.0
+        .insert(ALWAYS_LOAD_META_KEY.into(), Value::Bool(true));
+    tool.with_meta(meta)
 }
 
 pub(crate) fn uuid_schema(generator: &mut SchemaGenerator) -> Schema {
@@ -369,6 +385,31 @@ mod tests {
             assert_eq!(
                 error.message,
                 format!("invalid arguments for 'end_task': {problem}")
+            );
+        }
+    }
+
+    /// Only the tools every session uses cost a first request their schema
+    /// text. The rest stay deferred behind the client's tool search.
+    #[test]
+    fn only_the_core_tools_ask_to_load_in_the_first_request() {
+        let advertised = tools()
+            .iter()
+            .map(|tool| serde_json::to_value(tool).expect("tool serializes"))
+            .collect::<Vec<_>>();
+        assert_eq!(advertised.len(), 6);
+        for tool in &advertised {
+            let name = tool["name"].as_str().expect("tool name");
+            let expected = match name {
+                "exec" | "wait" | "end_task" => Some(&Value::Bool(true)),
+                "save_function" | "delete_function" | "cancel" => None,
+                other => panic!("decide whether {other} loads in the first request"),
+            };
+            assert_eq!(
+                tool.get("_meta")
+                    .and_then(|meta| meta.get(ALWAYS_LOAD_META_KEY)),
+                expected,
+                "{name}"
             );
         }
     }
