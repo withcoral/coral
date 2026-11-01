@@ -97,13 +97,18 @@ it('batches one cross-provider policy selection per provider with 100-tool calls
     expect(partial.length).toBeLessThanOrEqual(1)
   }
   // The form carries Tool Keys; the API takes them encoded in a resource name.
-  const sent = calls.flatMap(({ policies }) =>
-    policies.map(({ tool }) => Buffer.from(tool.split('/').at(-1)!, 'base64url').toString()),
+  const sent = calls.flatMap(({ parent, policies }) =>
+    policies.map(({ tool }) =>
+      JSON.stringify({
+        provider: parent.split('/').at(-1),
+        tool: Buffer.from(tool.split('/').at(-1)!, 'base64url').toString(),
+      }),
+    ),
   )
   expect(sent.toSorted()).toEqual(
     form
       .getAll('selectedTool')
-      .map((value) => (JSON.parse(value as string) as { tool: string }).tool)
+      .map((value) => value as string)
       .toSorted(),
   )
 })

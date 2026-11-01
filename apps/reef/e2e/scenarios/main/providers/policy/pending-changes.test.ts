@@ -120,13 +120,7 @@ async function holdPolicies(page: Page, reject = false) {
       const last = JSON.parse(selected.pop()!) as { provider: string; tool: string }
       form.delete('selectedTool')
       for (const tool of selected) form.append('selectedTool', tool)
-      form.append(
-        'selectedTool',
-        JSON.stringify({
-          ...last,
-          tool: last.tool.replace(/\/tools\/[^/]+$/, '/tools/missingTool'),
-        }),
-      )
+      form.append('selectedTool', JSON.stringify({ ...last, tool: 'missingTool' }))
       return route.continue({ postData: form.toString() })
     }
     return route.continue()
