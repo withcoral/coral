@@ -1266,7 +1266,7 @@ pub(super) async fn recorded_function_fingerprint(
                 .from(SearchEntities::Table)
                 .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.to_string()))
                 .and_where(Expr::col(SearchEntities::Kind).eq(SAVED_FUNCTION))
-                .and_where(Expr::col(SearchEntities::SavedFunctionId).eq(function_id.to_string()))
+                .and_where(Expr::col(SearchEntities::DocId).eq(function_id.to_string()))
                 .to_owned(),
         )
         .await?;
