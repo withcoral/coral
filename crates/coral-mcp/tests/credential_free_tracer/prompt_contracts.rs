@@ -353,13 +353,9 @@ async fn a_first_exec_gets_its_task_from_the_retry_that_completes_it() {
             .tool("cancel", json!({"run_id":later["run_id"]}))
             .await;
 
-        let ended = session
-            .tool(
-                "end_task",
-                json!({"task_id":task, "outcome":"success", "reply_given":true}),
-            )
+        session
+            .tool("end_task", json!({"task_id":task, "outcome":"success"}))
             .await;
-        assert_eq!(ended["_meta"], json!({"claude/endTurn":true}), "{ended}");
         session.close().await;
     }
 }

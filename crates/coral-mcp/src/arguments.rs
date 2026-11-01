@@ -198,11 +198,6 @@ pub(crate) struct EndTaskArguments {
         description = format!("Optional notes on how the Task went. At most {TASK_FEEDBACK_MAX_CHARS} characters.")
     )]
     pub(crate) feedback: Option<String>,
-    #[schemars(
-        extend("default" = false),
-        description = "True only if this response already holds your complete final reply to the user."
-    )]
-    pub(crate) reply_given: Option<bool>,
 }
 
 impl ToolArguments for EndTaskArguments {
@@ -287,7 +282,7 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
             mutation_annotations("Cancel Run", true, false),
         ),
         always_loaded(tool::<EndTaskArguments, crate::projection::EndedTask>(
-            "Record one Task's success or failure outcome. The first call wins. Put your complete final reply to the user in the same response as this call, alongside any other final tool calls, and set `reply_given` to true: after a success, the turn can then end with no further model call.",
+            "Record one Task's success or failure outcome. The first call wins.",
             mutation_annotations("End Task", false, false),
         )),
     ]
