@@ -168,7 +168,7 @@ export const Large: Story = {
   args: {
     children: (
       <>
-        <Icon color="info" name="Star" size="16" />
+        <Icon color="info" name="Sparkles" size="16" />
         Featured
       </>
     ),

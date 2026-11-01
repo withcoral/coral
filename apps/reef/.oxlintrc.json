@@ -38,6 +38,15 @@
               {
                 "name": "@vanilla-extract/recipes",
                 "message": "Import from '@/wax/css' instead, so wax rules land in the wax cascade layer."
+              },
+              {
+                "name": "lucide-react",
+                "importNames": ["icons", "DynamicIcon"],
+                "message": "Import each icon by name in wax/components/icon/lucide-icons.ts, so the bundle holds only the icons Reef uses."
+              },
+              {
+                "name": "lucide-react/dynamic",
+                "message": "Import each icon by name in wax/components/icon/lucide-icons.ts, so the bundle holds only the icons Reef uses."
               }
             ]
           }
