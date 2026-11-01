@@ -629,8 +629,12 @@ message CountRequiredActionsRequest {
 }
 // Number of pending requests. A failed read is an error, never a zero count.
 message CountRequiredActionsResponse {
-  // Pending requests. A connection request shared by several Runs counts once.
+  // Pending requests of every kind. A connection request shared by several Runs counts once.
   int64 action_count = 1;
+  // Pending Approval Requests.
+  int64 approval_count = 2;
+  // Pending Account Connection Requests.
+  int64 connection_count = 3;
 }
 // Selects the Workspace and the window to summarize.
 message SummarizeActivityRequest {
@@ -730,6 +734,15 @@ message ActivityContextShare {
   // Net bytes. Negative means saved.
   int64 bytes = 3;
 }
+// One kind of pending request.
+enum ActivityRequiredActionKind {
+  // Every kind.
+  ACTIVITY_REQUIRED_ACTION_KIND_UNSPECIFIED = 0;
+  // Approval Requests.
+  ACTIVITY_REQUIRED_ACTION_KIND_APPROVAL = 1;
+  // Account Connection Requests.
+  ACTIVITY_REQUIRED_ACTION_KIND_ACCOUNT_CONNECTION = 2;
+}
 // Selects a page of pending requests that wait on the caller.
 message BrowseRequiredActionsRequest {
   // Optional workspaces/{workspace}. Empty lists every Workspace the caller can access.
@@ -738,11 +751,14 @@ message BrowseRequiredActionsRequest {
   string after = 2;
   // 1 to 100; zero means 50.
   uint32 page_size = 3;
+  // Lists only this kind. Unspecified lists every kind. A cursor continues only the
+  // read that returned it, with the same kind.
+  ActivityRequiredActionKind kind = 4;
 }
 // A page of pending requests, most urgent first. Never includes arguments, comments,
 // source or Account details.
 message BrowseRequiredActionsResponse {
-  // Pending requests across the whole scope, not just this page.
+  // Pending requests of the selected kind across the whole scope, not just this page.
   int64 action_count = 1;
   // This page, ordered by deadline.
   repeated ActivityRequiredAction actions = 2;

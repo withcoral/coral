@@ -6,6 +6,8 @@ import { STREAM_LIFETIME_MS, activityStream } from './activity-stream.server'
 import { streamEvents } from './activity-stream'
 import { activityChanges } from './activity-stream.test-support'
 
+const counted = (total: string) => ({ total, approvals: total, connections: '0' })
+
 afterEach(() => {
   vi.useRealTimers()
 })
@@ -29,7 +31,7 @@ it('subscribes before the initial read and refreshes on changes, not heartbeats'
       count = '2'
       changes.emit()
     } // Commit during the first read.
-    return { kind: 'count', counts: { '/workspaces/w': snapshot } }
+    return { kind: 'count', counts: { '/workspaces/w': counted(snapshot) } }
   })
   expect(response.headers.get('content-type')).toBe('text/event-stream')
   expect(response.headers.get('cache-control')).toContain('no-store')
@@ -37,11 +39,11 @@ it('subscribes before the initial read and refreshes on changes, not heartbeats'
   try {
     expect((await events.next()).value).toEqual({
       kind: 'count',
-      counts: { '/workspaces/w': '1' },
+      counts: { '/workspaces/w': counted('1') },
     })
     expect((await events.next()).value).toEqual({
       kind: 'count',
-      counts: { '/workspaces/w': '2' },
+      counts: { '/workspaces/w': counted('2') },
     })
     changes.emit(false)
     expect((await events.next()).value).toEqual({ kind: 'heartbeat' })
@@ -69,12 +71,12 @@ it('fails closed when a change cannot be reauthorized instead of retaining a cou
   const events = streamEvents(
     activityStream(new Request('http://reef/activity/count'), api, async () => {
       if (!available) throw new Error('authority lost')
-      return { kind: 'count', counts: { '/workspaces/w': '7' } }
+      return { kind: 'count', counts: { '/workspaces/w': counted('7') } }
     }),
   )
   expect((await events.next()).value).toEqual({
     kind: 'count',
-    counts: { '/workspaces/w': '7' },
+    counts: { '/workspaces/w': counted('7') },
   })
   available = false
   changes.emit()
@@ -98,13 +100,13 @@ it('keeps healthy observation open beyond the ordinary unary RPC deadline', asyn
   const events = streamEvents(
     activityStream(new Request('http://reef/activity/count'), api, async () => ({
       kind: 'count',
-      counts: { '/workspaces/w': '1' },
+      counts: { '/workspaces/w': counted('1') },
     })),
   )
   try {
     expect((await events.next()).value).toEqual({
       kind: 'count',
-      counts: { '/workspaces/w': '1' },
+      counts: { '/workspaces/w': counted('1') },
     })
     const heartbeat = events.next()
     await delay(100)
@@ -132,14 +134,14 @@ it('expires an idle session without reloading its count or waiting for a mutatio
       api,
       async () => {
         reads++
-        return { kind: 'count', counts: { '/workspaces/w': '1' } }
+        return { kind: 'count', counts: { '/workspaces/w': counted('1') } }
       },
       Date.now() / 1000 + 0.05,
     ),
   )
   expect((await events.next()).value).toEqual({
     kind: 'count',
-    counts: { '/workspaces/w': '1' },
+    counts: { '/workspaces/w': counted('1') },
   })
   expect((await events.next()).value).toEqual({ kind: 'sessionExpired' })
   expect(reads).toBe(1)
@@ -166,14 +168,14 @@ it('ends a healthy stream at its lifetime bound with a reconnect event', async (
       api,
       async () => {
         reads++
-        return { kind: 'count', counts: { '/workspaces/w': '1' } }
+        return { kind: 'count', counts: { '/workspaces/w': counted('1') } }
       },
       Date.now() / 1000 + 3600,
     ),
   )
   expect((await events.next()).value).toEqual({
     kind: 'count',
-    counts: { '/workspaces/w': '1' },
+    counts: { '/workspaces/w': counted('1') },
   })
   const next = events.next()
   await vi.advanceTimersByTimeAsync(STREAM_LIFETIME_MS - 1)
@@ -207,7 +209,7 @@ it('ends an already expired session before subscribing or reading', async () => 
     api,
     async () => {
       reads++
-      return { kind: 'count', counts: { '/workspaces/w': '1' } }
+      return { kind: 'count', counts: { '/workspaces/w': counted('1') } }
     },
     0,
   )
@@ -237,7 +239,7 @@ it('tells a session Coral rejects apart from an outage', async () => {
     const events = streamEvents(
       activityStream(new Request('http://reef/activity/count'), api, async () => ({
         kind: 'count',
-        counts: { '/workspaces/w': '1' },
+        counts: { '/workspaces/w': counted('1') },
       })),
     )
     expect((await events.next()).value).toEqual({ kind })

@@ -77,7 +77,7 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
           await page.goto(`/${workspace.name}/activity`)
           await page
             .locator('[aria-label="Pending actions"]')
-            .getByRole('button', { name: /^Deny: / })
+            .getByRole('button', { name: /^Decline: / })
             .click()
           await expect
             .poll(
@@ -87,8 +87,8 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
             .toEqual({ kind: 'value', value: 'approval_declined' })
         } else if (decision === 'deny') {
           await page.getByRole('link', { name: /^Review .*localActions\.read$/ }).click()
-          await page.getByRole('button', { name: 'Deny this call', exact: true }).click()
-          await page.getByText('Denied', { exact: true }).waitFor()
+          await page.getByRole('button', { name: 'Decline this call', exact: true }).click()
+          await page.getByText('Declined', { exact: true }).waitFor()
         } else {
           await page.getByRole('button', { name: 'Cancel run', exact: true }).click()
           await page

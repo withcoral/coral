@@ -1,6 +1,7 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { redirect } from 'react-router'
 import {
+  ActivityRequiredActionKind,
   ActivityRunState,
   ActivityInvocationState,
   ActivityInvocationOutcome,
@@ -1281,11 +1282,22 @@ async function requiredActions(
     shown.actions.length >= Number(shown.actionCount)
   )
     return shown.actions
+  return pendingActions(api, scope.workspace, signal)
+}
+
+/** Every pending request in `workspace` that waits on the caller, most urgent first, each
+ * with a Run that waits on it. A `kind` keeps only that kind. */
+export async function pendingActions(
+  api: Pick<ManagementApi, 'activity'>,
+  workspace: string,
+  signal: AbortSignal,
+  kind = ActivityRequiredActionKind.UNSPECIFIED,
+): Promise<PendingAction[]> {
   const actions: PendingAction[] = []
   let after = ''
   do {
     const value = await api.activity.browseRequiredActions(
-      { workspace: scope.workspace, after, pageSize: 100 },
+      { workspace, after, pageSize: 100, kind },
       { signal },
     )
     for (const { action, run } of value.actions)

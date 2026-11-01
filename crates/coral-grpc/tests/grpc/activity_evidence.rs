@@ -1006,6 +1006,134 @@ async fn submission_position_is_only_projected_for_activity_browsing_not_exact_e
     );
 }
 
+/// Over the wire, counts split by kind and add up to the total, a connection
+/// request two Runs share counts once, and the kind filter selects one list
+/// that pages, while a read with no filter still lists every kind.
+#[tokio::test]
+async fn required_actions_count_and_filter_by_kind() {
+    use wire::ActivityRequiredActionKind as Kind;
+    let f = Fixture::new().await;
+    let server = MockServer::start().await;
+    publish_http(&f, &server.uri()).await;
+    publish_individual(&f, &server.uri()).await;
+    let token = f.token(&f.member, "reef");
+    let mut client = f.activity();
+
+    let count = async |client: &mut wire::activity_service_client::ActivityServiceClient<_>| {
+        client
+            .count_required_actions(request(
+                wire::CountRequiredActionsRequest::default(),
+                &token,
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+    };
+    let before = count(&mut client).await;
+
+    start(
+        &f,
+        "await Promise.all([1, 2].map(() => coral.providers.evidence.read({body: {}})));",
+    )
+    .await;
+    for _ in 0..2 {
+        start(&f, "await coral.providers.personal.read({});").await;
+    }
+    wait_for_action_page(&f, 0, |page| page.action_count == before.action_count + 3).await;
+
+    let after = count(&mut client).await;
+    assert_eq!(after.approval_count - before.approval_count, 2);
+    assert_eq!(
+        after.connection_count - before.connection_count,
+        1,
+        "two Runs wait on one connection request"
+    );
+    assert_eq!(
+        after.action_count,
+        after.approval_count + after.connection_count
+    );
+
+    let browse = async |client: &mut wire::activity_service_client::ActivityServiceClient<_>,
+                        kind: Kind,
+                        after: String,
+                        page_size: u32| {
+        client
+            .browse_required_actions(request(
+                wire::BrowseRequiredActionsRequest {
+                    kind: kind.into(),
+                    after,
+                    page_size,
+                    ..Default::default()
+                },
+                &token,
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+    };
+    let is_approval = |action: &wire::ActivityRequiredAction| {
+        matches!(
+            action
+                .action
+                .as_ref()
+                .unwrap()
+                .request
+                .as_ref()
+                .unwrap()
+                .request,
+            Some(wire::activity_request_reference::Request::Approval(_))
+        )
+    };
+
+    let first = browse(&mut client, Kind::Approval, String::new(), 1).await;
+    assert_eq!(first.action_count, after.approval_count);
+    assert!(first.actions.iter().all(is_approval));
+    assert!(!first.next_after.is_empty());
+    let rest = browse(&mut client, Kind::Approval, first.next_after, 100).await;
+    assert_eq!(
+        i64::try_from(1 + rest.actions.len()).unwrap(),
+        after.approval_count,
+        "the filtered list pages to the filtered count"
+    );
+    assert!(rest.actions.iter().all(is_approval));
+
+    let connections = browse(&mut client, Kind::AccountConnection, String::new(), 100).await;
+    assert_eq!(connections.action_count, after.connection_count);
+    assert_eq!(
+        i64::try_from(connections.actions.len()).unwrap(),
+        after.connection_count
+    );
+    assert!(!connections.actions.iter().any(is_approval));
+
+    let unfiltered = browse(&mut client, Kind::Unspecified, String::new(), 100).await;
+    assert_eq!(unfiltered.action_count, after.action_count);
+    assert_eq!(
+        i64::try_from(unfiltered.actions.len()).unwrap(),
+        after.action_count
+    );
+}
+
+/// A filter this server does not know fails the read. It never lists every kind.
+#[tokio::test]
+async fn required_actions_reject_an_unknown_kind() {
+    let f = Fixture::new().await;
+    let status = f
+        .activity()
+        .browse_required_actions(request(
+            wire::BrowseRequiredActionsRequest {
+                kind: 99,
+                ..Default::default()
+            },
+            &f.token(&f.member, "reef"),
+            "reef",
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+}
+
 /// Browses the member's action queue until `ready` accepts a page. Actions appear asynchronously.
 async fn wait_for_action_page(
     f: &Fixture,
@@ -1073,6 +1201,45 @@ async fn terminal(f: &Fixture, id: &coral_run::RunId) -> wire::InspectRunRespons
 }
 
 async fn publish_http(f: &Fixture, url: &str) -> coral_provider::ProviderId {
+    publish_openapi(
+        f,
+        "evidence",
+        &json!({
+            "openapi": "3.1.0", "info": {"title": "Evidence", "version": "1"},
+            "servers": [{"url": url}], "paths": {"/result": {"post": {
+                "operationId": "read", "requestBody": {"content": {"application/json": {"schema": {"type": "object"}}}},
+                "responses": {"200": {"description": "Native result", "content": {"application/json": {"schema": {"type": "object"}}}}}
+            }}}
+        }),
+        coral_provider::CredentialRoute::None,
+    )
+    .await
+}
+
+/// Publishes a Provider whose Tools run with each User's own Account, so a call
+/// by a User with no Account waits on a connection request.
+async fn publish_individual(f: &Fixture, url: &str) -> coral_provider::ProviderId {
+    publish_openapi(
+        f,
+        "personal",
+        &json!({
+            "openapi": "3.1.0", "info": {"title": "Personal", "version": "1"},
+            "servers": [{"url": url}],
+            "components": {"securitySchemes": {"bearer": {"type": "http", "scheme": "bearer"}}},
+            "security": [{"bearer": []}],
+            "paths": {"/result": {"get": {"operationId": "read", "responses": {"200": {"description": "Native result"}}}}}
+        }),
+        coral_provider::CredentialRoute::Caller,
+    )
+    .await
+}
+
+async fn publish_openapi(
+    f: &Fixture,
+    namespace: &str,
+    document: &serde_json::Value,
+    route: coral_provider::CredentialRoute,
+) -> coral_provider::ProviderId {
     let providers = coral_provider::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
@@ -1080,15 +1247,14 @@ async fn publish_http(f: &Fixture, url: &str) -> coral_provider::ProviderId {
         f.workspaces.clone(),
     );
     let context = super::super::change(&f.owner);
-    let setup = providers.prepare_openapi_fixture(&context, f.workspace.id(),
-        coral_catalog::OpenApiDocument::parse(&json!({
-            "openapi": "3.1.0", "info": {"title": "Evidence", "version": "1"},
-            "servers": [{"url": url}], "paths": {"/result": {"post": {
-                "operationId": "read", "requestBody": {"content": {"application/json": {"schema": {"type": "object"}}}},
-                "responses": {"200": {"description": "Native result", "content": {"application/json": {"schema": {"type": "object"}}}}}
-            }}}
-        }).to_string()).unwrap()
-    ).await.unwrap();
+    let setup = providers
+        .prepare_openapi_fixture(
+            &context,
+            f.workspace.id(),
+            coral_catalog::OpenApiDocument::parse(&document.to_string()).unwrap(),
+        )
+        .await
+        .unwrap();
     providers
         .publish_workspace_provider(
             &context,
@@ -1097,8 +1263,8 @@ async fn publish_http(f: &Fixture, url: &str) -> coral_provider::ProviderId {
                     .unwrap(),
                 f.workspace.id().clone(),
                 setup.id().clone(),
-                coral_provider::ProviderNamespace::parse("evidence").unwrap(),
-                coral_provider::CredentialRoute::None,
+                coral_provider::ProviderNamespace::parse(namespace).unwrap(),
+                route,
             ),
         )
         .await

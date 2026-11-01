@@ -1,6 +1,6 @@
 //! Bounded summary-only request evidence. Call only after authorizing the exact Run
 //! in the same snapshot. Shared connection waiters collapse before the page limit.
-use crate::{Error, RequiredActionRequest, RunId};
+use crate::{Error, RequiredActionCounts, RequiredActionKind, RequiredActionRequest, RunId};
 use coral_db::Transaction;
 use coral_db::{col, column};
 use coral_workspace::WorkspaceId;
@@ -160,29 +160,38 @@ pub(crate) async fn next_authority_deadline(
     Ok(actor)
 }
 
-/// Counts identities through the same current-request relation as exact Run summaries.
-/// No exact payloads or per-Run enumeration leave this repository.
-pub(crate) async fn count(
+/// Counts identities by kind through the same current-request relation as exact
+/// Run summaries. No exact payloads or per-Run enumeration leave this repository.
+pub(crate) async fn counts(
     tx: &mut Transaction<'_>,
     authority: &coral_workspace::HistoryAuthority,
     now: i64,
-) -> Result<i64, Error> {
+) -> Result<RequiredActionCounts, Error> {
     let candidates = authorized_candidates(authority, now);
     let identities = Query::select()
         .from_subquery(requests(&candidates), Alias::new("requests"))
         .columns(["workspace", "kind", "request"].map(Alias::new))
         .distinct()
         .to_owned();
-    let (count,): (i64,) = tx
-        .fetch_optional(
+    let rows: Vec<(String, i64)> = tx
+        .fetch_all(
             Query::select()
+                .column(Alias::new("kind"))
                 .expr(Expr::col(Alias::new("request")).count())
                 .from_subquery(identities, Alias::new("identities"))
+                .group_by_col(Alias::new("kind"))
                 .to_owned(),
         )
-        .await?
-        .ok_or(Error::RunNotFound)?;
-    Ok(count)
+        .await?;
+    let mut counts = RequiredActionCounts::default();
+    for (kind, count) in rows {
+        match kind.as_str() {
+            RequiredActionRequest::APPROVAL => counts.approvals = count,
+            RequiredActionRequest::CONNECTION => counts.connections = count,
+            _ => return Err(Error::CorruptData("invalid action request".into())),
+        }
+    }
+    Ok(counts)
 }
 
 fn grouped_requests(workspace: &WorkspaceId, run: &RunId, now: i64) -> SelectStatement {
@@ -339,9 +348,11 @@ fn queued_requests(authority: &coral_workspace::HistoryAuthority, now: i64) -> S
 }
 
 /// A page of the queue, most urgent first, after `after` = (deadline, request).
+/// A `kind` keeps that kind alone.
 pub(crate) async fn queue(
     tx: &mut Transaction<'_>,
     authority: &coral_workspace::HistoryAuthority,
+    kind: Option<RequiredActionKind>,
     after: Option<(i64, &RequiredActionRequest)>,
     now: i64,
     limit: u16,
@@ -359,6 +370,12 @@ pub(crate) async fn queue(
         request_deadline: i64,
     }
     let mut window = queued_requests(authority, now);
+    if let Some(kind) = kind {
+        window.and_where(col("queue", "kind").eq(match kind {
+            RequiredActionKind::Approval => RequiredActionRequest::APPROVAL,
+            RequiredActionKind::AccountConnection => RequiredActionRequest::CONNECTION,
+        }));
+    }
     // Seek past the position, not the live row: resolving it cannot move the page.
     if let Some((deadline, request)) = after {
         let (kind, id) = (request.kind(), request.id());

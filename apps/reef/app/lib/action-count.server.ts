@@ -15,7 +15,12 @@ export async function loadActionCounts(
       workspaces.map(async ({ name }) => {
         try {
           const value = await api.activity.countRequiredActions({ workspace: name }, { signal })
-          return [resourcePath(name), value.actionCount.toString()] as const
+          const count = {
+            total: value.actionCount.toString(),
+            approvals: value.approvalCount.toString(),
+            connections: value.connectionCount.toString(),
+          }
+          return [resourcePath(name), count] as const
         } catch (error) {
           if (error instanceof ConnectError && error.code === Code.Unauthenticated) throw error
           return [resourcePath(name), null] as const

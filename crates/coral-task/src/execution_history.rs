@@ -52,6 +52,7 @@ impl TaskModule {
         runs: &RunModule,
         actor: &AuthenticatedPrincipal,
         workspace: Option<&WorkspaceId>,
+        kind: Option<coral_run::RequiredActionKind>,
         after: Option<&coral_run::QueueCursor>,
         limit: u16,
     ) -> Result<RequiredActions, Error> {
@@ -61,7 +62,7 @@ impl TaskModule {
             .action_history_authority_in_transaction(&mut tx, actor, workspace)
             .await?;
         let page = runs
-            .required_actions_in_transaction(&mut tx, &authority, after, limit)
+            .required_actions_in_transaction(&mut tx, &authority, kind, after, limit)
             .await?;
         let contexts = page
             .actions

@@ -108,10 +108,10 @@ export async function deniedProgramProvider(context: TestContext) {
       started = await pauseForApproval(page, target, accessToken, 'Denied provider')
     })
     const { workspace, runner, paused } = started
-    await step('Deny the call, and the Program catches the failure', async () => {
+    await step('Decline the call, and the Program catches the failure', async () => {
       const review = await openReview(page, paused, 'addProvider')
-      await review.getByRole('button', { name: 'Deny this call', exact: true }).click()
-      await page.getByText('Denied', { exact: true }).waitFor()
+      await review.getByRole('button', { name: 'Decline this call', exact: true }).click()
+      await page.getByText('Declined', { exact: true }).waitFor()
       const { update } = await observeRun(runner, await runner.wait(paused))
       expect(update.final_value).toEqual({ kind: 'value', value: 'approval_declined' })
     })

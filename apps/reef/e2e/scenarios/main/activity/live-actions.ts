@@ -213,7 +213,7 @@ export async function liveActions(context: TestContext) {
     await step('Turn live mode off and deny the next approval: the review advances', async () => {
       await toggle.click()
       await following(false)
-      await rail.getByRole('button', { name: 'Deny this call', exact: true }).click()
+      await rail.getByRole('button', { name: 'Decline this call', exact: true }).click()
       await reviews(2)
       await following(false)
       expect((await api.activity.inspectApproval({ name: waits[1]!.approval })).state).toBe(

@@ -6,20 +6,29 @@ import { loadActionCounts } from './action-count.server'
 const finance = 'workspaces/00000000-0000-4000-8000-000000000001'
 const research = 'workspaces/00000000-0000-4000-8000-000000000002'
 
-it('reads each workspace count separately and keys it by workspace path', async () => {
+it('reads each workspace count by kind and keys it by workspace path', async () => {
   const activity = createClient(
     ActivityService,
     createRouterTransport(({ service }) => {
       service(ActivityService, {
-        countRequiredActions: ({ workspace }) => ({
-          actionCount: workspace === finance ? 9007199254740993n : 0n,
-        }),
+        countRequiredActions: ({ workspace }) =>
+          workspace === finance
+            ? {
+                actionCount: 9007199254740993n,
+                approvalCount: 9007199254740992n,
+                connectionCount: 1n,
+              }
+            : {},
       })
     }),
   )
   expect(await loadActionCounts({ activity }, [{ name: finance }, { name: research }])).toEqual({
-    [`/${finance}`]: '9007199254740993',
-    [`/${research}`]: '0',
+    [`/${finance}`]: {
+      total: '9007199254740993',
+      approvals: '9007199254740992',
+      connections: '1',
+    },
+    [`/${research}`]: { total: '0', approvals: '0', connections: '0' },
   })
 })
 function failing(code: Code) {
@@ -29,7 +38,7 @@ function failing(code: Code) {
       service(ActivityService, {
         countRequiredActions: ({ workspace }) => {
           if (workspace === finance) throw new ConnectError('private error', code)
-          return { actionCount: 2n }
+          return { actionCount: 2n, approvalCount: 2n }
         },
       })
     }),
@@ -41,7 +50,7 @@ it.each([Code.NotFound, Code.PermissionDenied, Code.Unavailable])(
     const activity = failing(code)
     expect(await loadActionCounts({ activity }, [{ name: finance }, { name: research }])).toEqual({
       [`/${finance}`]: null,
-      [`/${research}`]: '2',
+      [`/${research}`]: { total: '2', approvals: '2', connections: '0' },
     })
   },
 )

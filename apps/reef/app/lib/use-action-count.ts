@@ -1,13 +1,20 @@
 import { useState } from 'react'
 import { atom, useAtomValue } from 'jotai'
-import type { ActionCounts } from './activity-live-types'
+import type { ActionCount, ActionCounts } from './activity-live-types'
 import { subscribeActivityStream } from './activity-stream'
+
+const digits = (value: unknown) => typeof value === 'string' && /^\d+$/.test(value)
+
+function isCount(value: unknown): value is ActionCount {
+  if (!value || typeof value !== 'object') return false
+  const { total, approvals, connections } = value as Partial<ActionCount>
+  return digits(total) && digits(approvals) && digits(connections)
+}
 
 function actionCounts(value: unknown): ActionCounts {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid counts')
   for (const count of Object.values(value))
-    if (count !== null && (typeof count !== 'string' || !/^\d+$/.test(count)))
-      throw new Error('Invalid count')
+    if (count !== null && !isCount(count)) throw new Error('Invalid count')
   return value as ActionCounts
 }
 

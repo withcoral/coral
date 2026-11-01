@@ -76,6 +76,41 @@ impl std::fmt::Display for RequiredActionRequest {
     }
 }
 
+/// One kind of current request, which a queue read can select.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequiredActionKind {
+    /// Approval of one exact Invocation.
+    Approval,
+    /// A User-private Account connection.
+    AccountConnection,
+}
+
+/// Distinct current requests by kind. A connection request shared by several
+/// Runs counts once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RequiredActionCounts {
+    /// Current Approval Requests.
+    pub approvals: i64,
+    /// Current Account Connection Requests.
+    pub connections: i64,
+}
+
+impl RequiredActionCounts {
+    /// Current requests of every kind.
+    #[must_use]
+    pub const fn total(&self) -> i64 {
+        self.approvals + self.connections
+    }
+
+    const fn selected(&self, kind: Option<RequiredActionKind>) -> i64 {
+        match kind {
+            None => self.total(),
+            Some(RequiredActionKind::Approval) => self.approvals,
+            Some(RequiredActionKind::AccountConnection) => self.connections,
+        }
+    }
+}
+
 /// One visible Request, even if several Invocations wait on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequiredAction {
@@ -178,7 +213,8 @@ impl std::fmt::Display for QueueCursor {
 /// Bounded human action queue: one entry per current request, most urgent first.
 #[derive(Debug)]
 pub struct RequiredActions<R = crate::RunSummary> {
-    /// Distinct current requests across the complete authorized scope, not this page.
+    /// Distinct current requests of the selected kind across the complete
+    /// authorized scope, not this page.
     pub action_count: i64,
     /// This page, ordered by deadline.
     pub actions: Vec<QueuedAction<R>>,
@@ -187,35 +223,38 @@ pub struct RequiredActions<R = crate::RunSummary> {
 }
 
 impl crate::RunModule {
-    /// Counts distinct requests without loading Runs or exact evidence.
+    /// Counts distinct requests by kind without loading Runs or exact evidence.
     /// # Errors
     /// Rejects Agent callers and inaccessible scopes.
-    pub async fn required_action_count(
+    pub async fn required_action_counts(
         &self,
         actor: &coral_workspace::AuthenticatedPrincipal,
         workspace: Option<&coral_workspace::WorkspaceId>,
-    ) -> Result<i64, Error> {
+    ) -> Result<RequiredActionCounts, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
         let authority = self
             .workspaces
             .action_history_authority_in_transaction(&mut tx, actor, workspace)
             .await?;
-        let count =
-            crate::required_actions_repository::count(&mut tx, &authority, self.now()?).await?;
+        let counts =
+            crate::required_actions_repository::counts(&mut tx, &authority, self.now()?).await?;
         tx.commit().await?;
-        Ok(count)
+        Ok(counts)
     }
 
     /// Lists own actions and Agent approvals across currently authorized Workspaces,
     /// one entry per request, most urgent first. Selection and count share the
     /// caller's snapshot, where `authority` came from
-    /// `action_history_authority_in_transaction`. No arguments are loaded.
+    /// `action_history_authority_in_transaction`. A `kind` selects that kind alone,
+    /// for the list and its count, and `after` continues only a read of the same
+    /// kind. No arguments are loaded.
     /// # Errors
     /// Rejects page sizes outside 1–100.
     pub async fn required_actions_in_transaction(
         &self,
         tx: &mut Transaction<'_>,
         authority: &coral_workspace::HistoryAuthority,
+        kind: Option<RequiredActionKind>,
         after: Option<&QueueCursor>,
         limit: u16,
     ) -> Result<RequiredActions, Error> {
@@ -223,10 +262,13 @@ impl crate::RunModule {
             return Err(Error::InvalidInput("invalid action page size".into()));
         }
         let now = self.now()?;
-        let action_count = crate::required_actions_repository::count(tx, authority, now).await?;
+        let action_count = crate::required_actions_repository::counts(tx, authority, now)
+            .await?
+            .selected(kind);
         let (rows, has_more) = crate::required_actions_repository::queue(
             tx,
             authority,
+            kind,
             after.map(|cursor| (cursor.deadline_at_unix_nanos, &cursor.request)),
             now,
             limit,

@@ -92,7 +92,7 @@ impl ActionQueue for RunModule {
             .action_history_authority_in_transaction(&mut tx, actor, workspace)
             .await?;
         let page = self
-            .required_actions_in_transaction(&mut tx, &authority, after, limit)
+            .required_actions_in_transaction(&mut tx, &authority, None, after, limit)
             .await?;
         tx.commit().await?;
         Ok(page)

@@ -18,8 +18,14 @@ export interface ActivityObservation {
   window: ActivityReadingWindow
 }
 export type ActivityPageValue = { kind: 'page'; page: ActivityPage }
+/** Pending requests in one Workspace. A connection request several Runs share counts once. */
+export interface ActionCount {
+  total: string
+  approvals: string
+  connections: string
+}
 /** Pending-action counts keyed by Workspace path. Null marks a count that is unavailable. */
-export type ActionCounts = Record<string, string | null>
+export type ActionCounts = Record<string, ActionCount | null>
 export type ActivityCountValue = { kind: 'count'; counts: ActionCounts }
 /** One stream's server-sent events. A stream carries only its own value kind. */
 export type ActivityStreamEvent<Value extends ActivityPageValue | ActivityCountValue> =

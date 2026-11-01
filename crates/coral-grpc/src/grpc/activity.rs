@@ -71,6 +71,19 @@ fn workspace_filter(name: &str) -> Result<Option<WorkspaceId>, Status> {
         .map_err(|_invalid| Status::invalid_argument("invalid Workspace name"))
 }
 
+fn required_action_kind(kind: i32) -> Result<Option<coral_run::RequiredActionKind>, Status> {
+    match wire::ActivityRequiredActionKind::try_from(kind) {
+        Ok(wire::ActivityRequiredActionKind::Unspecified) => Ok(None),
+        Ok(wire::ActivityRequiredActionKind::Approval) => {
+            Ok(Some(coral_run::RequiredActionKind::Approval))
+        }
+        Ok(wire::ActivityRequiredActionKind::AccountConnection) => {
+            Ok(Some(coral_run::RequiredActionKind::AccountConnection))
+        }
+        Err(_unknown) => Err(Status::invalid_argument("invalid required action kind")),
+    }
+}
+
 fn scope(scope: &wire::ActivityScope) -> Result<HistoryScope, Status> {
     let workspace = workspace_filter(&scope.workspace)?;
     if scope.agent.is_empty() {
@@ -297,13 +310,15 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             .principal(&request, None, PrivateAudience::Reef)
             .await?;
         let workspace = workspace_filter(&request.into_inner().workspace)?;
-        let action_count = self
+        let counts = self
             .runs
-            .required_action_count(&actor, workspace.as_ref())
+            .required_action_counts(&actor, workspace.as_ref())
             .await
             .map_err(execution::run_error)?;
         Ok(Response::new(wire::CountRequiredActionsResponse {
-            action_count,
+            action_count: counts.total(),
+            approval_count: counts.approvals,
+            connection_count: counts.connections,
         }))
     }
 
@@ -334,6 +349,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             .await?;
         let input = request.into_inner();
         let workspace = workspace_filter(&input.workspace)?;
+        let kind = required_action_kind(input.kind)?;
         let after = if input.after.is_empty() {
             None
         } else {
@@ -345,6 +361,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
                 &self.runs,
                 &actor,
                 workspace.as_ref(),
+                kind,
                 after.as_ref(),
                 limit(input.page_size)?,
             )

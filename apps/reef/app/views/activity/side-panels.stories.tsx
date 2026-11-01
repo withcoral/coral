@@ -2068,7 +2068,7 @@ export const ApprovalAddProviderOpenApi: Story = {
     await expect(review).not.toHaveTextContent('shown below')
     await expect(within(review).queryByRole('button', { name: /^Show / })).toBeNull()
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
-    for (const name of ['Deny this call', 'Approve this call'])
+    for (const name of ['Decline this call', 'Approve this call'])
       await expect(within(review).getByRole('button', { name })).toBeVisible()
   },
 }
@@ -2110,7 +2110,7 @@ const approvals = {
     panel('Approval · denied, with comment', approvalPage(approval(settle('declined'))), {
       evidence: 'This owner left the company.',
     }),
-    'Denied',
+    'Declined',
     'This owner left the company.',
   ),
   expired: approvalStory(
@@ -2173,7 +2173,7 @@ export const ApprovalWithoutNames: Story = {
     const requested = within(dialog).getByText('Requested by', { selector: 'dt' })
     await expect(requested.nextElementSibling!.textContent).toBe('Unknown agent')
     await expect(dialog).not.toHaveTextContent(/unavailable|Provider:|agents\//)
-    for (const name of ['Deny this call', 'Approve this call'])
+    for (const name of ['Decline this call', 'Approve this call'])
       await expect(within(dialog).getByRole('button', { name })).toBeVisible()
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
   },

@@ -64,7 +64,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           await page
             .getByRole('navigation', { name: 'Coral', exact: true })
             .getByRole('link', {
-              name: /^Activity(\. \d+ pending actions?)?$/,
+              name: /^Activity(\. \d+ pending connection requests?)?$/,
             })
             .getAttribute('aria-current'),
         ).toBe('page')

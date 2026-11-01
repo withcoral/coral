@@ -200,7 +200,8 @@ use invocation::{ProductionUpstream, UpstreamSender};
 use owner::Owners;
 pub use required_actions::{
     ActionCursor, ActionPage, ActionSummary, QueueCursor, QueuedAction, RequiredAction,
-    RequiredActionRequest, RequiredActions, RequiredActor,
+    RequiredActionCounts, RequiredActionKind, RequiredActionRequest, RequiredActions,
+    RequiredActor,
 };
 pub use summary::{
     ActivitySummary, ActorContext, ApprovalDecisions, CallOutcomes, CallerCalls, MAX_SUMMARY_DAYS,

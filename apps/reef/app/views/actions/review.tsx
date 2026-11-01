@@ -293,7 +293,7 @@ export function ApprovalReview({
             disabled={pending || recording || !connected || commentInvalid}
             busy={submitting === 'decline'}
           >
-            Deny this call
+            Decline this call
           </Button.TextButton>
           <Button.TextButton
             type="submit"
@@ -319,7 +319,7 @@ const plateIcons: Record<IconPlateTone, IconName> = {
   gray: 'Shield',
 }
 
-/** Approves or denies one exact request from the queue without opening its review.
+/** Approves or declines one exact request from the queue without opening its review.
  * After a decision the row keeps its controls, disabled, until the live read removes it. */
 export function QuickDecision({ name, label }: { name: string; label: string }) {
   const csrf = useShellCsrf()
@@ -344,10 +344,10 @@ export function QuickDecision({ name, label }: { name: string; label: string }) 
         value="decline"
         variant="destructive"
         disabled={decided || !connected}
-        ariaLabel={`Deny: ${label}`}
+        ariaLabel={`Decline: ${label}`}
         busy={submitting === 'decline'}
       >
-        Deny
+        Decline
       </Button.TextButton>
       <Button.TextButton
         type="submit"

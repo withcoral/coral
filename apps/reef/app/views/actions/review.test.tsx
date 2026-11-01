@@ -154,17 +154,17 @@ describe('exact approval review', () => {
     await enterComment(`${atLimit}a`)
 
     expect(button('Approve this call')).toBeDisabled()
-    expect(button('Deny this call')).toBeDisabled()
+    expect(button('Decline this call')).toBeDisabled()
     expect(comment()).toBeInvalid()
     expect(comment()).toHaveAccessibleDescription(correction)
     await click('Approve this call')
-    await click('Deny this call')
+    await click('Decline this call')
     expect(page.submissions).toHaveLength(0)
 
     await enterComment(atLimit)
     expect(comment()).toBeValid()
     expect(button('Approve this call')).toBeEnabled()
-    expect(button('Deny this call')).toBeEnabled()
+    expect(button('Decline this call')).toBeEnabled()
     await click('Approve this call')
     expect(page.submissions).toHaveLength(1)
     expect(Object.fromEntries(page.submissions[0].form)).toEqual({
@@ -181,19 +181,19 @@ describe('exact approval review', () => {
     await enterComment('Review\0note')
 
     expect(button('Approve this call')).toBeDisabled()
-    expect(button('Deny this call')).toBeDisabled()
+    expect(button('Decline this call')).toBeDisabled()
     expect(comment()).toBeInvalid()
     expect(comment()).toHaveAccessibleDescription(correction)
     await click('Approve this call')
-    await click('Deny this call')
+    await click('Decline this call')
     expect(page.submissions).toHaveLength(0)
 
     await enterComment('Review note')
     expect(button('Approve this call')).toBeEnabled()
-    expect(button('Deny this call')).toBeEnabled()
+    expect(button('Decline this call')).toBeEnabled()
     expect(comment()).toBeValid()
     expect(page.container).not.toHaveTextContent('Remove null characters.')
-    await click('Deny this call')
+    await click('Decline this call')
     expect(page.submissions).toHaveLength(1)
     expect(page.submissions[0].form.get('comment')).toBe('Review note')
     expect(page.submissions[0].form.get('intent')).toBe('decline')
@@ -201,8 +201,8 @@ describe('exact approval review', () => {
   })
 
   it.each([
-    ['Approve this call', 'Deny this call', 'approve'],
-    ['Deny this call', 'Approve this call', 'decline'],
+    ['Approve this call', 'Decline this call', 'approve'],
+    ['Decline this call', 'Approve this call', 'decline'],
   ])(
     'prevents duplicate or opposite decisions while %s is pending',
     async (label, other, intent) => {
@@ -238,7 +238,7 @@ describe('exact approval review', () => {
     expect(page.container).toHaveTextContent('Could not save your decision. Try again.')
     expect(comment()).toHaveValue('Original review note')
     expect(button('Approve this call')).toBeEnabled()
-    expect(button('Deny this call')).toBeEnabled()
+    expect(button('Decline this call')).toBeEnabled()
 
     await enterComment('Corrected review note')
     await click('Approve this call')
@@ -271,7 +271,7 @@ describe('exact approval review', () => {
 
     expect(statuses()).toContain('Saving your decision…')
     expect(button('Approve this call')).toBeDisabled()
-    expect(button('Deny this call')).toBeDisabled()
+    expect(button('Decline this call')).toBeDisabled()
     // The comment went with the decision, so it is no longer an unsent draft.
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
 
@@ -289,7 +289,7 @@ describe('exact approval review', () => {
 
     // An unchanged pending read must not overwrite the winning action response.
     await page.show({ ...approval })
-    expect(statuses()).toEqual(['Denied'])
+    expect(statuses()).toEqual(['Declined'])
     expect(page.container).not.toHaveTextContent('Approval needed')
     expect(page.container).not.toHaveTextContent('Approved')
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
@@ -501,7 +501,7 @@ describe('approval review layout', () => {
 
   it.each([
     ['approved', true, 'Approved'],
-    ['declined', true, 'Denied'],
+    ['declined', true, 'Declined'],
     ['expired', false, 'Expired'],
     ['pending', false, 'Approval unavailable'],
   ])('settles a %s review without decision controls', (state, decided, label) => {

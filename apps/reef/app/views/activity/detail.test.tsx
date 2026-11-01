@@ -192,7 +192,7 @@ it.each([true, false])(
     expect(html).not.toContain('Retained request detail')
     expect(html.indexOf(call.callPath)).toBeLessThan(html.indexOf('review-native'))
     expect(html.includes('Approve this call')).toBe(actionable)
-    expect(html.includes('Deny this call')).toBe(actionable)
+    expect(html.includes('Decline this call')).toBe(actionable)
     if (actionable)
       expect(html.indexOf('review-native')).toBeLessThan(html.indexOf('Approve this call'))
     else expect(html).toContain('Approval unavailable')
@@ -2314,7 +2314,7 @@ describe('an account connection the Run waits on', () => {
       within(runActions()).getByRole('heading', { level: 3, name: 'Connect your Linear account' }),
     ).toBeInTheDocument()
     expect(within(runActions()).getByText('account connection request')).toBeInTheDocument()
-    expect(within(runActions()).queryByText(/Approve|Deny/)).not.toBeInTheDocument()
+    expect(within(runActions()).queryByText(/Approve|Decline/)).not.toBeInTheDocument()
     const footer = screen.getByRole('button', { name: 'Decline' }).closest('footer')!
     expect(within(footer).getByRole('button', { name: 'Connect Linear' })).toBeInTheDocument()
   })
@@ -2357,7 +2357,7 @@ describe('an account connection the Run waits on', () => {
         expect(within(footer).getByRole('button', { name: 'Connect Linear' })).toBeInTheDocument()
         expect(footer.querySelector('time')).toBeNull()
       } else expect(within(runActions()).getByRole('status')).toBeInTheDocument()
-      expect(document.body.textContent).not.toMatch(/Approve|Deny|Arguments/)
+      expect(document.body.textContent).not.toMatch(/Approve|Decline this call|Arguments/)
     },
   )
 
@@ -2586,7 +2586,7 @@ const approvalStates = [
       decidedAt: '2026-09-22T09:01:00Z',
       comment: 'Wrong recipient.',
     },
-    'Denied',
+    'Declined',
   ],
   ['expired', { state: 'expired', actionable: false }, 'Expired'],
   ['closed', { state: 'closed', actionable: false }, 'Closed'],
@@ -2685,7 +2685,7 @@ it('says the run is canceling until the live read shows it ended', async () => {
 })
 
 // Catches: a pinned decision that leaves the named review, so navigating by region skips it.
-it('keeps the pinned Deny and Approve inside the one named review region', () => {
+it('keeps the pinned Decline and Approve inside the one named review region', () => {
   const pending = { ...run, state: 'running' as const, endedAt: null, requiresAction: true }
   renderRoute(
     <ActionReviewSession>
@@ -2704,7 +2704,7 @@ it('keeps the pinned Deny and Approve inside the one named review region', () =>
   expect(regions).toHaveLength(1)
   const [review] = regions
   const approve = within(review).getByRole('button', { name: 'Approve this call' })
-  const deny = within(review).getByRole('button', { name: 'Deny this call' })
+  const deny = within(review).getByRole('button', { name: 'Decline this call' })
   // Still the drawer's one pinned footer, at the review's end, after the call's outcome.
   const footer = approve.closest('footer')!
   expect(footer).toContainElement(deny)

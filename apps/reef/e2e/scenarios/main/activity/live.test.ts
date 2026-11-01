@@ -349,15 +349,15 @@ test('Current Run and tool actions settle live while exact review stays selected
       await addProviderFromFile(page, id, Buffer.from(JSON.stringify(document)), 'liveGate')
     ).slice(1)
     const activityUrl = `/workspaces/${id}/activity`
-    /** This Workspace's Activity destination, named with its pending-action count. A modal
+    /** This Workspace's Approvals destination, named with its pending-approval count. A modal
      * review hides the sidebar from the accessibility tree, so include hidden elements. */
-    const activityLink = (count: bigint) =>
+    const approvalsLink = (count: bigint) =>
       page
         .getByRole('navigation', { name: 'Coral', exact: true, includeHidden: true })
         .getByRole('link', {
           name: count
-            ? `Activity. ${count} pending ${count === 1n ? 'action' : 'actions'}`
-            : 'Activity',
+            ? `Approvals. ${count} pending ${count === 1n ? 'approval' : 'approvals'}`
+            : 'Approvals',
           exact: true,
           includeHidden: true,
         })
@@ -455,13 +455,16 @@ test('Current Run and tool actions settle live while exact review stays selected
                 .length,
           )
           .toBe(2)
-        // The badge counts this Workspace's actions on its own Activity destination.
+        // The badge counts this Workspace's approvals on its own Approvals destination.
         await page.goto(`/workspaces/${id}`)
         const workspaceCount = (
           await api.activity.countRequiredActions({ workspace: workspace.name })
-        ).actionCount
-        await activityLink(workspaceCount).waitFor()
-        await activityLink(workspaceCount).click()
+        ).approvalCount
+        await approvalsLink(workspaceCount).waitFor()
+        await page
+          .getByRole('navigation', { name: 'Coral', exact: true })
+          .getByRole('link', { name: 'Activity', exact: true })
+          .click()
         // The Overview embeds the activity reader, so wait for Activity's own breadcrumb.
         await breadcrumb(page, 'Activity').waitFor()
         expect(new URL(page.url()).pathname).toBe(activityUrl)
@@ -547,11 +550,11 @@ test('Current Run and tool actions settle live while exact review stays selected
         const arrival = await runner.exec(
           'return await coral.providers.liveGate.lookup({marker:"arrival"});',
         )
-        await activityLink(workspaceCount + 1n).waitFor()
+        await approvalsLink(workspaceCount + 1n).waitFor()
         await api.activity.cancelActivityRun({
           name: `${workspace.name}/runs/${arrival.structuredContent.run_id}`,
         })
-        await activityLink(workspaceCount).waitFor()
+        await approvalsLink(workspaceCount).waitFor()
         expect(await comment.inputValue()).toBe('Reviewed once')
         // The two approvals the Run waits on, read from Coral before you decide.
         const waiting = (
@@ -584,7 +587,7 @@ test('Current Run and tool actions settle live while exact review stays selected
         expect(approved.state).toBe('approved')
         expect(approved.comment).toBe('Reviewed once')
         await page.setViewportSize({ width: 1440, height: 900 })
-        await page.getByRole('button', { name: 'Deny this call', exact: true }).click()
+        await page.getByRole('button', { name: 'Decline this call', exact: true }).click()
         await expect
           .poll(async () => (await api.activity.inspectApproval({ name: remaining.name })).state)
           .toBe('declined')
@@ -605,7 +608,7 @@ test('Current Run and tool actions settle live while exact review stays selected
         // exact comment, once, as its Comment fact.
         for (const [approval, label, comments] of [
           [decided, 'Approved', 1],
-          [remaining, 'Denied', 0],
+          [remaining, 'Declined', 0],
         ] as const) {
           const review = new URLSearchParams({
             tree: '1',

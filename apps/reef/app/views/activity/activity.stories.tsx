@@ -1583,7 +1583,7 @@ export const PendingApproval: Story = {
     await expect(within(dialog).getByLabelText('Comment (optional)')).toBeVisible()
     // The Run's source shares the drawer, so the decision pins to the selected record's pane.
     const selected = within(dialog).getByRole('region', { name: 'Selected record' })
-    await expectPinnedFooter(selected, ['Deny this call', 'Approve this call'])
+    await expectPinnedFooter(selected, ['Decline this call', 'Approve this call'])
     // Above the decision, a fade marks the evidence still below, until the reader reaches it.
     const scroller = scrollerIn(selected)
     scroller.scrollTop = 0
@@ -1611,7 +1611,7 @@ export const ShortPendingApproval: Story = {
     const scroller = scrollerIn(selected)
     await waitFor(() => expect(scroller.scrollHeight).toBeLessThanOrEqual(scroller.clientHeight))
     await waitFor(() => expect(fadeBelow(scroller)).toBe(0))
-    await expectDecisionBelowEvidence(selected, ['Deny this call', 'Approve this call'])
+    await expectDecisionBelowEvidence(selected, ['Decline this call', 'Approve this call'])
   },
 }
 export const ResolvedApproval: Story = {

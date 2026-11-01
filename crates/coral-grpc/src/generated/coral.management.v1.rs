@@ -6072,9 +6072,15 @@ pub struct CountRequiredActionsRequest {
 /// Number of pending requests. A failed read is an error, never a zero count.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CountRequiredActionsResponse {
-    /// Pending requests. A connection request shared by several Runs counts once.
+    /// Pending requests of every kind. A connection request shared by several Runs counts once.
     #[prost(int64, tag = "1")]
     pub action_count: i64,
+    /// Pending Approval Requests.
+    #[prost(int64, tag = "2")]
+    pub approval_count: i64,
+    /// Pending Account Connection Requests.
+    #[prost(int64, tag = "3")]
+    pub connection_count: i64,
 }
 /// Selects the Workspace and the window to summarize.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6227,12 +6233,16 @@ pub struct BrowseRequiredActionsRequest {
     /// 1 to 100; zero means 50.
     #[prost(uint32, tag = "3")]
     pub page_size: u32,
+    /// Lists only this kind. Unspecified lists every kind. A cursor continues only the
+    /// read that returned it, with the same kind.
+    #[prost(enumeration = "ActivityRequiredActionKind", tag = "4")]
+    pub kind: i32,
 }
 /// A page of pending requests, most urgent first. Never includes arguments, comments,
 /// source or Account details.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BrowseRequiredActionsResponse {
-    /// Pending requests across the whole scope, not just this page.
+    /// Pending requests of the selected kind across the whole scope, not just this page.
     #[prost(int64, tag = "1")]
     pub action_count: i64,
     /// This page, ordered by deadline.
@@ -6869,6 +6879,41 @@ impl ActivityRunFailureCode {
             }
             "ACTIVITY_RUN_FAILURE_CODE_RUN_AUTHORITY_LOST" => {
                 Some(Self::RunAuthorityLost)
+            }
+            _ => None,
+        }
+    }
+}
+/// One kind of pending request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActivityRequiredActionKind {
+    /// Every kind.
+    Unspecified = 0,
+    /// Approval Requests.
+    Approval = 1,
+    /// Account Connection Requests.
+    AccountConnection = 2,
+}
+impl ActivityRequiredActionKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ACTIVITY_REQUIRED_ACTION_KIND_UNSPECIFIED",
+            Self::Approval => "ACTIVITY_REQUIRED_ACTION_KIND_APPROVAL",
+            Self::AccountConnection => "ACTIVITY_REQUIRED_ACTION_KIND_ACCOUNT_CONNECTION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACTIVITY_REQUIRED_ACTION_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "ACTIVITY_REQUIRED_ACTION_KIND_APPROVAL" => Some(Self::Approval),
+            "ACTIVITY_REQUIRED_ACTION_KIND_ACCOUNT_CONNECTION" => {
+                Some(Self::AccountConnection)
             }
             _ => None,
         }

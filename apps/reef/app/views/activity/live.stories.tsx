@@ -823,7 +823,7 @@ export const ActionsComeFirst: Story = {
     await expect(world.visited).toEqual([second.name])
 
     // Denying the last one follows the newest record again.
-    await userEvent.click(drawer().getByRole('button', { name: 'Deny this call' }))
+    await userEvent.click(drawer().getByRole('button', { name: 'Decline this call' }))
     await selects('console.info #6', 'log #6')
     await following(true)
     await expect(address().has('request')).toBe(false)
@@ -849,7 +849,7 @@ export const ADecisionAdvancesWithLiveModeOff: Story = {
     await expect(toggle()).toHaveAttribute('aria-pressed', 'false')
 
     // Denying reviews the next approval and leaves live mode off. The review rests there.
-    await userEvent.click(within(rail()).getByRole('button', { name: 'Deny this call' }))
+    await userEvent.click(within(rail()).getByRole('button', { name: 'Decline this call' }))
     await reviews(context, second)
     await idle()
     await settled()
@@ -983,7 +983,7 @@ export const AnOppositeDecisionThatWonHolds: Story = {
     // and shows the decision that won.
     world.decision = 'lost'
     await userEvent.click(within(rail()).getByRole('button', { name: 'Approve this call' }))
-    await expect(await within(rail()).findByText('Denied')).toBeVisible()
+    await expect(await within(rail()).findByText('Declined')).toBeVisible()
     await idle()
     await settled()
     await expect(address().toString()).toBe(held)

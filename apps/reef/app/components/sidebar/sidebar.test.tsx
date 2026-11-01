@@ -18,6 +18,7 @@ const listed: SidebarWorkspace[] = [
 
 const researchLinks = [
   '/workspaces/research',
+  '/workspaces/research/approvals',
   '/workspaces/research/activity',
   '/workspaces/research/providers',
   '/workspaces/research/accounts',
@@ -185,6 +186,7 @@ test('collapsed, every workspace is a tile and only the current one shows its de
   expect([...rail.querySelectorAll('a')].map((a) => a.getAttribute('href'))).toEqual([
     '/workspaces/ops',
     '/workspaces/ops',
+    '/workspaces/ops/approvals',
     '/workspaces/ops/activity',
     '/workspaces/ops/providers',
     '/workspaces/ops/accounts',
@@ -263,10 +265,16 @@ test('the account menu keeps the chosen appearance for the next load', async () 
   expect(localStorage.getItem('coral:theme')).toBe('"light"')
 })
 
-const counts = { '/workspaces/ops': '3', '/workspaces/research': '5' }
+const counts = {
+  '/workspaces/ops': { total: '5', approvals: '3', connections: '2' },
+  '/workspaces/research': { total: '5', approvals: '1', connections: '4' },
+}
 
 function activityLink() {
   return screen.getByRole('link', { name: /^Activity/ })
+}
+function approvalsLink() {
+  return screen.getByRole('link', { name: /^Approvals/ })
 }
 
 test.each(['/workspaces/ops/activity', '/workspaces/ops/runs/r'])(
@@ -277,42 +285,70 @@ test.each(['/workspaces/ops/activity', '/workspaces/ops/runs/r'])(
     expect(activityLink()).toHaveAttribute('aria-current', 'page')
   },
 )
-test('an open workspace shows its count on Activity, a closed one on its name', () => {
+test('Approvals sits directly under Overview and shows with nothing pending', () => {
+  render('/workspaces/ops/approvals')
+  const hrefs = screen.getAllByRole('link').map((link) => link.getAttribute('href'))
+  expect(hrefs.indexOf('/workspaces/ops/approvals')).toBe(hrefs.indexOf('/workspaces/ops') + 1)
+  expect(approvalsLink()).toHaveAccessibleName('Approvals')
+  expect(approvalsLink()).toHaveAttribute('aria-current', 'page')
+})
+test('an open workspace shows each count on its kind, a closed one the total on its name', () => {
   render('/workspaces/ops/providers', { actionCounts: counts })
-  expect(activityLink()).toHaveAccessibleName('Activity. 3 pending actions')
+  expect(approvalsLink()).toHaveAccessibleName('Approvals. 3 pending approvals')
+  expect(activityLink()).toHaveAccessibleName('Activity. 2 pending connection requests')
   expect(header('Operations')).toHaveAccessibleName('Operations')
   expect(header(/^Research/)).toHaveAccessibleName('Research. 5 pending actions')
-  // The label and the count are separate text, so neither reads as "Activity3".
-  expect(within(activityLink()).getByText('Activity')).toBeInTheDocument()
-  expect(within(activityLink()).getByText('3')).toBeInTheDocument()
+  // The label and the count are separate text, so neither reads as "Approvals3".
+  expect(within(approvalsLink()).getByText('Approvals')).toBeInTheDocument()
+  expect(within(approvalsLink()).getByText('3')).toBeInTheDocument()
+  expect(within(activityLink()).getByText('2')).toBeInTheDocument()
   expect(within(header(/^Research/)).getByText('5')).toBeInTheDocument()
 })
-test('collapsed, the current workspace shows its count on Activity and the others on their tile', () => {
+test('collapsed, the current workspace shows each kind and the others their total on the tile', () => {
   render('/workspaces/ops/providers', { minimized: true, actionCounts: counts })
   const rail = screen.getByRole('group', { name: 'Workspaces' })
   expect(within(rail).getByRole('link', { name: 'Operations' })).toBeInTheDocument()
-  expect(activityLink()).toHaveAccessibleName('Activity. 3 pending actions')
+  expect(approvalsLink()).toHaveAccessibleName('Approvals. 3 pending approvals')
+  expect(activityLink()).toHaveAccessibleName('Activity. 2 pending connection requests')
   expect(
     within(rail).getByRole('link', { name: 'Research. 5 pending actions' }),
   ).toBeInTheDocument()
 })
+test('a single request reads in the singular', () => {
+  render('/workspaces/ops', {
+    actionCounts: { '/workspaces/ops': { total: '2', approvals: '1', connections: '1' } },
+  })
+  expect(approvalsLink()).toHaveAccessibleName('Approvals. 1 pending approval')
+  expect(activityLink()).toHaveAccessibleName('Activity. 1 pending connection request')
+})
 test.each([
-  ['omits a zero count', { '/workspaces/ops': '0' }, 'Activity', undefined],
-  ['omits a workspace without a count', {}, 'Activity', undefined],
+  [
+    'omits a zero count',
+    { '/workspaces/ops': { total: '0', approvals: '0', connections: '0' } },
+    'Approvals',
+    undefined,
+  ],
+  ['omits a workspace without a count', {}, 'Approvals', undefined],
   [
     'bounds the visible badge and keeps the complete count in the accessible name',
-    { '/workspaces/ops': '9007199254740993' },
-    'Activity. 9007199254740993 pending actions',
+    {
+      '/workspaces/ops': {
+        total: '9007199254740993',
+        approvals: '9007199254740993',
+        connections: '0',
+      },
+    },
+    'Approvals. 9007199254740993 pending approvals',
     '999+',
   ],
-  // An unknown count leaves nothing for you to do; Activity reports it.
-  ['omits an unavailable count', { '/workspaces/ops': null }, 'Activity', undefined],
-  ['omits every count when none loaded', null, 'Activity', undefined],
+  // An unknown count is never a zero: it shows no badge and reports nothing.
+  ['omits an unavailable count', { '/workspaces/ops': null }, 'Approvals', undefined],
+  ['omits every count when none loaded', null, 'Approvals', undefined],
 ])('%s', (_, actionCounts, name, badge) => {
   render('/workspaces/ops', { actionCounts })
-  expect(activityLink()).toHaveAccessibleName(name)
-  if (badge) expect(within(activityLink()).getByText(badge)).toBeInTheDocument()
-  else expect(activityLink().textContent).toBe('Activity')
+  expect(approvalsLink()).toHaveAccessibleName(name)
+  if (badge) expect(within(approvalsLink()).getByText(badge)).toBeInTheDocument()
+  else expect(approvalsLink().textContent).toBe('Approvals')
 })
 
 function workspace(
@@ -335,6 +371,7 @@ function ownerLinks(id: string) {
   const w = `/workspaces/${id}`
   return [
     w,
+    `${w}/approvals`,
     `${w}/activity`,
     `${w}/providers`,
     `${w}/accounts`,

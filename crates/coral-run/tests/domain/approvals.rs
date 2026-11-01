@@ -830,10 +830,10 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     assert_eq!(
         fixture
             .runs
-            .required_action_count(&tool.principal, None)
+            .required_action_counts(&tool.principal, None)
             .await
             .unwrap(),
-        0
+        crate::RequiredActionCounts::default()
     );
     assert!(queue.actions.is_empty());
     let terminal = wait_for_terminal(

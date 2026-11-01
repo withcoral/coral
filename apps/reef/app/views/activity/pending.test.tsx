@@ -53,7 +53,7 @@ it('decides an approval from its row, bound to that exact request', () => {
   expect(html).toContain('action="/activity/resolve"')
   expect(html).toContain('name="name" value="workspaces/finance/approvals/one"')
   expect(html).toContain('aria-label="Approve: Send invoice reminders?"')
-  expect(html).toContain('aria-label="Deny: Send invoice reminders?"')
+  expect(html).toContain('aria-label="Decline: Send invoice reminders?"')
 })
 // Catches: an archived workspace offering decisions that Coral refuses.
 it('an archived workspace keeps the review link but drops the row decisions', () => {
@@ -67,7 +67,7 @@ it('an archived workspace keeps the review link but drops the row decisions', ()
   )
   const pending = screen.getByRole('region', { name: 'Needs your action' })
   expect(within(pending).getByRole('link', { name: 'Review' })).toBeInTheDocument()
-  expect(within(pending).queryByRole('button', { name: /^(Approve|Deny):/ })).toBeNull()
+  expect(within(pending).queryByRole('button', { name: /^(Approve|Decline):/ })).toBeNull()
 })
 it('lists parallel calls to one Tool as separate rows with separate decisions', () => {
   const second = { ...approval, name: 'workspaces/finance/approvals/two' }
@@ -167,7 +167,7 @@ it('says a row decision is saving until the live read removes the row', async ()
     'role',
     'status',
   )
-  for (const decision of ['Approve', 'Deny'])
+  for (const decision of ['Approve', 'Decline'])
     expect(
       within(pending).getByRole('button', { name: `${decision}: Send invoice reminders?` }),
     ).toBeDisabled()
