@@ -239,6 +239,7 @@ pub struct RunModule {
     providers: coral_provider::ProviderModule,
     policies: coral_policy::ToolPolicyModule,
     provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
+    search: Option<coral_search::UniversalSearchModule>,
     human_interface: Option<HumanInterfaceUrl>,
     database: Arc<Database>,
     workspaces: WorkspaceModule,
@@ -286,6 +287,7 @@ impl RunModule {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             provider_renamer: None,
+            search: None,
             human_interface: None,
             database,
             workspaces,
@@ -325,6 +327,7 @@ impl RunModule {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             provider_renamer: None,
+            search: None,
             human_interface: None,
             database,
             workspaces,
@@ -364,6 +367,14 @@ impl RunModule {
         renamer: Arc<dyn coral_provider::ProviderRenamer>,
     ) -> Self {
         self.provider_renamer = Some(renamer);
+        self
+    }
+
+    /// Lets `coral.workspace.search` read Universal Search. Without it, such
+    /// a call fails with `tool_unavailable`.
+    #[must_use]
+    pub fn with_search(mut self, search: coral_search::UniversalSearchModule) -> Self {
+        self.search = Some(search);
         self
     }
 

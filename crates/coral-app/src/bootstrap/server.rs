@@ -803,7 +803,11 @@ pub(crate) async fn start_server(
         coral_run::RunInbox::table(database.clone()),
     )
     .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
-    .with_provider_renamer(Arc::new(provider_workflow.clone()));
+    .with_provider_renamer(Arc::new(provider_workflow.clone()))
+    .with_search(coral_search::UniversalSearchModule::new(
+        database.clone(),
+        workspaces.clone(),
+    ));
     if let Some(accounts) = &accounts {
         runs = runs.with_accounts(accounts.clone());
     }

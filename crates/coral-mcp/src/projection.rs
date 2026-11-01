@@ -14,10 +14,7 @@ use schemars::{
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-pub(crate) use discovery::{
-    Description, SavedDetail, SavedFunctionResult, SearchResult, exact_description, saved_function,
-    search,
-};
+pub(crate) use discovery::{SavedFunctionResult, saved_function};
 pub(crate) use run::{RunUpdateResult, run_update};
 
 /// Every Coral-owned result keeps the SDK's compact JSON text of

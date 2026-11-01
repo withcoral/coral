@@ -30,6 +30,7 @@ mod add_provider;
 mod get_policy;
 mod get_provider;
 mod list_providers;
+mod search;
 mod setup_tool;
 mod update_policy;
 mod update_provider;
@@ -43,6 +44,7 @@ pub(crate) enum BuiltinCall {
     GetPolicy(get_policy::GetPolicy),
     UpdatePolicy(update_policy::UpdatePolicy),
     UpdateProvider(Box<update_provider::UpdateProvider>),
+    Search(Box<coral_catalog::SearchArguments>),
 }
 
 impl BuiltinCall {
@@ -81,6 +83,7 @@ impl BuiltinCall {
                         update_provider::UpdateProvider::new(*arguments)
                             .map(|call| Self::UpdateProvider(Box::new(call)))
                     }
+                    BuiltinArguments::Search(arguments) => Ok(Self::Search(arguments)),
                 }),
         )
     }
@@ -94,6 +97,7 @@ impl BuiltinCall {
             Self::GetPolicy(call) => call.perform(host).await,
             Self::UpdatePolicy(call) => call.perform(host).await,
             Self::UpdateProvider(call) => call.perform(host).await,
+            Self::Search(arguments) => search::perform(arguments, host).await,
         }
     }
 }
@@ -130,7 +134,8 @@ pub(crate) async fn recover(
             BuiltinTool::ListProviders
             | BuiltinTool::GetProvider
             | BuiltinTool::GetPolicy
-            | BuiltinTool::UpdatePolicy,
+            | BuiltinTool::UpdatePolicy
+            | BuiltinTool::Search,
         )
         | None => Ok(None),
     }
@@ -163,6 +168,8 @@ pub(crate) struct BuiltinHost<'a> {
     /// Where people sign in; without it, nobody can.
     pub(crate) accounts: Option<&'a AccountModule>,
     pub(crate) renamer: Option<&'a dyn ProviderRenamer>,
+    /// Where `search` reads; without it, that Tool is unavailable.
+    pub(crate) search: Option<&'a coral_search::UniversalSearchModule>,
     pub(crate) actor: &'a AuthenticatedPrincipal,
     /// The invoking User's change context; `None` for an Agent, which
     /// reaches no Tool that changes the Workspace.

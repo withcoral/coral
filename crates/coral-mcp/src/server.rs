@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coral_run::{RUN_EVENT_PAGE_MAX, RunCursor, RunId, RunObservation};
-use coral_search::SearchInput;
 use coral_task::{TaskId, TaskIntent, TaskOutcome};
 use coral_workspace::{TraceId, WorkspaceId};
 use rmcp::model::{
@@ -16,9 +15,8 @@ use rmcp::{ErrorData, ServerHandler};
 
 use crate::McpRuntime;
 use crate::arguments::{
-    self, CancelArguments, DeleteFunctionArguments, DescribeArguments, EndTaskArguments,
-    ExecArguments, SaveFunctionArguments, SearchArguments, StartTaskArguments, TaskOutcomeArgument,
-    ToolArguments, WaitArguments,
+    self, CancelArguments, DeleteFunctionArguments, EndTaskArguments, ExecArguments,
+    SaveFunctionArguments, StartTaskArguments, TaskOutcomeArgument, ToolArguments, WaitArguments,
 };
 use crate::projection::{self, ToolFailure};
 use crate::prompts::{Asked, Channel, Prompting};
@@ -100,14 +98,6 @@ impl McpServer {
                 let arguments = arguments::parse::<StartTaskArguments>(request.arguments)?;
                 self.start_task(arguments).await
             }
-            SearchArguments::NAME => {
-                let arguments = arguments::parse::<SearchArguments>(request.arguments)?;
-                self.search(arguments).await
-            }
-            DescribeArguments::NAME => {
-                let arguments = arguments::parse::<DescribeArguments>(request.arguments)?;
-                self.describe(arguments).await
-            }
             SaveFunctionArguments::NAME => {
                 let arguments = arguments::parse::<SaveFunctionArguments>(request.arguments)?;
                 self.save_function(arguments).await
@@ -174,47 +164,6 @@ impl McpServer {
                 .collect(),
         })
         .map_err(DispatchError::Tool)
-    }
-
-    async fn search(&self, arguments: SearchArguments) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
-        let request = SearchInput {
-            query: arguments.query,
-            provider: arguments.provider,
-            limit: arguments.limit,
-            cursor: arguments.cursor,
-        };
-        let results = self
-            .runtime
-            .modules
-            .commands
-            .search(&call, request)
-            .await
-            .map_err(task_failure)?;
-        projection::search(&results)
-            .and_then(projection::success)
-            .map_err(DispatchError::Tool)
-    }
-
-    async fn describe(
-        &self,
-        arguments: DescribeArguments,
-    ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
-        let result = self
-            .runtime
-            .modules
-            .commands
-            .describe(
-                &call,
-                &arguments.path,
-                arguments.types.as_deref().unwrap_or_default(),
-            )
-            .await
-            .map_err(task_failure)?;
-        projection::exact_description(&result)
-            .and_then(projection::success)
-            .map_err(DispatchError::Tool)
     }
 
     async fn save_function(

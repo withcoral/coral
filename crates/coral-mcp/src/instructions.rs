@@ -10,7 +10,7 @@ Coral runs TypeScript Programs that call the user's connected providers.
 
 ## Workflow
 1. Call `start_task` once per unit of user work. Pass its `task_id` to every later call.
-2. Call `search` to find provider tools and Saved Functions, and `describe` for a Call Path's declaration.
+2. To find provider tools and Saved Functions, call `coral.workspace.search` in a Program; see `exec`.
 3. Call `exec` with one TypeScript async-function body. Each `exec` starts a new Run and can repeat external effects.
 4. While `state` is `running` or `has_more` is true, call `wait` with the same `run_id` and the latest `next_cursor`. The last page carries the Final Value or failure.
 5. After the answering Run succeeds, call `save_function` unless its Program made one provider tool call. Use the request's values as inputs, a path like `github.pulls.listStale`, and search words in the description. Tell the user its path.

@@ -19,6 +19,7 @@ coral-functions.workspace = true
 coral-identifier.workspace = true
 coral-policy.workspace = true
 coral-provider.workspace = true
+coral-search.workspace = true
 coral-telemetry.workspace = true
 coral-upstream.workspace = true
 coral-v8.workspace = true
@@ -42,7 +43,6 @@ coral-provider = { workspace = true, features = ["test-fixtures"] }
 axum = { workspace = true, features = ["http1", "tokio"] }
 coral-administration.workspace = true
 tempfile.workspace = true
-coral-search.workspace = true
 coral-test-support.workspace = true
 coral-telemetry = { workspace = true, features = ["test-support"] }
 opentelemetry.workspace = true

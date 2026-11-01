@@ -37,6 +37,7 @@ mod get_policy;
 mod get_provider;
 mod list_providers;
 mod provider_input;
+mod search;
 mod update_policy;
 mod update_provider;
 
@@ -49,6 +50,7 @@ pub use list_providers::{
     ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
 };
 pub use provider_input::{ConfigurationChoices, ProviderSourceArgument};
+pub use search::{SEARCH_PATHS_MAX, SearchArguments, search_tool_result};
 pub use update_policy::{UpdatePolicyArguments, UpdatePolicyResult};
 pub use update_provider::{
     ConfigurationPatch, SourceChange, UpdateProviderArguments, UpdateProviderResult,
@@ -117,16 +119,20 @@ pub enum BuiltinTool {
     /// Changes one Owner-created Provider's configuration or source. A person
     /// reviews and publishes the change in Reef, except a rename alone.
     UpdateProvider,
+    /// Universal Search from inside a Program: a ranked page, or the full
+    /// description of exact Call Paths.
+    Search,
 }
 
 impl BuiltinTool {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::AddProvider,
         Self::ListProviders,
         Self::GetProvider,
         Self::GetPolicy,
         Self::UpdatePolicy,
         Self::UpdateProvider,
+        Self::Search,
     ];
 
     /// Returns the Tool Key, which is also its relative path.
@@ -139,6 +145,7 @@ impl BuiltinTool {
             Self::GetPolicy => "getPolicy",
             Self::UpdatePolicy => "updatePolicy",
             Self::UpdateProvider => "updateProvider",
+            Self::Search => "search",
         }
     }
 
@@ -160,6 +167,7 @@ impl BuiltinTool {
             Self::GetPolicy => get_policy::NEEDS,
             Self::UpdatePolicy => update_policy::NEEDS,
             Self::UpdateProvider => update_provider::NEEDS,
+            Self::Search => search::NEEDS,
         }
     }
 }
@@ -306,6 +314,8 @@ pub enum BuiltinArguments {
     UpdatePolicy(UpdatePolicyArguments),
     /// `updateProvider`'s arguments.
     UpdateProvider(Box<UpdateProviderArguments>),
+    /// `search`'s arguments.
+    Search(Box<SearchArguments>),
 }
 
 impl BuiltinArguments {
@@ -331,6 +341,9 @@ impl BuiltinArguments {
             }
             BuiltinTool::UpdateProvider => UpdateProviderArguments::parse(arguments)
                 .map(|arguments| Self::UpdateProvider(Box::new(arguments))),
+            BuiltinTool::Search => {
+                SearchArguments::parse(arguments).map(|arguments| Self::Search(Box::new(arguments)))
+            }
         }
     }
 }
@@ -604,6 +617,7 @@ fn definition(tool: BuiltinTool) -> Definition {
         BuiltinTool::GetPolicy => get_policy::definition(),
         BuiltinTool::UpdatePolicy => update_policy::definition(),
         BuiltinTool::UpdateProvider => update_provider::definition(),
+        BuiltinTool::Search => search::definition(),
     }
 }
 

@@ -23,6 +23,7 @@ fn valid_arguments(tool: BuiltinTool) -> Vec<Value> {
         BuiltinTool::GetPolicy => super::get_policy::valid_arguments(),
         BuiltinTool::UpdatePolicy => super::update_policy::valid_arguments(),
         BuiltinTool::UpdateProvider => super::update_provider::tests::valid_arguments(),
+        BuiltinTool::Search => super::search::valid_arguments(),
     }
 }
 

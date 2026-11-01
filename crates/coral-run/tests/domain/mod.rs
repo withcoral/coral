@@ -26,6 +26,7 @@ mod required_actions;
 mod resilience;
 mod run_inbox;
 mod scoping;
+mod search;
 mod summary;
 mod support;
 mod trace;
