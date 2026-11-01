@@ -274,7 +274,7 @@ fn check_schema(tools: &[Value]) {
     for (name, field, default) in [
         ("search", "limit", 10),
         ("exec", "run_timeout_ms", 900_000),
-        ("exec", "wait_ms", 10_000),
+        ("exec", "wait_ms", 30_000),
         ("wait", "wait_ms", 0),
     ] {
         let property = property(tools, name, field);

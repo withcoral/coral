@@ -325,6 +325,7 @@ impl McpServer {
             Some(_) => reread.clone(),
             None => reread
                 .clone()
+                .batching_output()
                 .with_wait(Duration::from_millis(wait_ms))
                 .map_err(invalid_input)?,
         };

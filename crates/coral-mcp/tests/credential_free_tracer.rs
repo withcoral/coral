@@ -1467,6 +1467,47 @@ async fn an_abandoned_exec_request_does_not_cancel_accepted_work() {
     .expect("accepted Run continues to its second Tool after request loss");
 }
 
+/// A Program that logs through a long read does not make the agent spend a
+/// turn on each Log: `wait` holds them until the Run ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_log_does_not_end_wait_and_the_end_of_the_run_does() {
+    let tracer = Tracer::start().await;
+    let client = tracer.sdk().await;
+    let task = start_task(&client, "Batch output through wait").await;
+    let accepted = call(
+        &client,
+        "exec",
+        json!({
+            "task_id":task, "intent":"Log, then read for a long time", "wait_ms":0,
+            "program":"console.log('before the read'); await coral.providers.weather.disconnectedFirst(); return 7;"
+        }),
+    )
+    .await;
+    let accepted = structured(&accepted);
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        tracer.upstream.signals.first_arrived.notified(),
+    )
+    .await
+    .expect("the Program logs and reaches the gated upstream");
+    let wait = call(
+        &client,
+        "wait",
+        json!({"run_id":accepted["run_id"], "cursor":accepted["next_cursor"], "wait_ms":30_000}),
+    );
+    tokio::pin!(wait);
+    tokio::time::timeout(Duration::from_millis(300), &mut wait)
+        .await
+        .expect_err("a Log alone does not end the wait");
+    tracer.upstream.signals.release.notify_one();
+    let finished = tokio::time::timeout(Duration::from_secs(10), wait)
+        .await
+        .expect("the end of the Run ends the wait");
+    let finished = structured(&finished);
+    assert_eq!(finished["state"], "succeeded");
+    assert_eq!(finished["events"].as_array().expect("output").len(), 1);
+}
+
 /// The process-wide capture of every span, the metrics, Coral's events before
 /// the export filter, not the test client's wire dumps or the body targets
 /// that stay home, and what leaves the host. It installs once per process.
