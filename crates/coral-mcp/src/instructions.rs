@@ -1,8 +1,8 @@
 //! Server `instructions`: the agent workflow every Coral session needs first.
 //!
-//! Claude Code keeps only the first 2048 characters of server instructions,
-//! so the text stays within that budget. Tool-specific detail belongs in the
-//! tool's own description.
+//! Claude Code 2.1.316 cuts server instructions past 4096 characters. The text
+//! stays within 2048 as a compatibility choice, since older clients were not
+//! checked. Tool-specific detail belongs in the tool's own description.
 
 /// Instructions sent in `InitializeResult` and `DiscoverResult`.
 pub(crate) const INSTRUCTIONS: &str = "\
@@ -34,5 +34,5 @@ A non-empty `required_actions` means a person must act before the Run goes on.
 - After the person acts, call `wait` for the same Run. Keep the Task open until it ends.
 ";
 
-// Clients add instructions to every turn; Claude Code drops what follows 2048.
+// Clients add instructions to every turn; 2048 is our compatibility budget.
 const _: () = assert!(INSTRUCTIONS.len() <= 2048);

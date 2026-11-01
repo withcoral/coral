@@ -33,8 +33,10 @@ return pages.flatMap(({ data }) => data.hits.map((hit) => [hit.call_path, hit.de
 ```
 Then call tools in a later Program by complete literal Call Path."#;
 
-// Claude Code also drops what follows 2048 in a tool description, which would
-// cut the example.
+// Claude Code 2.1.316 cuts a tool description past 4096 characters, or 16384
+// for a tool loaded through ToolSearch, so `exec`, which always loads, gets
+// 4096. The 2048 here is a compatibility choice: older clients were not
+// checked, and a cut would lose the example.
 const _: () = assert!(EXEC_TOOL_DESCRIPTION.len() <= 2048);
 const RUN_CURSOR_DESCRIPTION: &str =
     "The latest next_cursor of this Run. Omit to read its events from the start.";
