@@ -487,9 +487,24 @@ async fn a_run_reports_its_submission_intent_only_to_who_can_see_its_task() {
                 .map(|intent| intent.as_str().to_owned())
         }
     };
+    let task_of = |actor: AuthenticatedPrincipal, run: coral_run::RunId| {
+        let tasks = fixture.tasks.clone();
+        let workspace = fixture.workspace.clone();
+        async move {
+            tasks
+                .run_task(&actor, &workspace, &run)
+                .await
+                .unwrap()
+                .map(|task| task.id().clone())
+        }
+    };
     assert_eq!(
         intent(fixture.actor.clone(), accepted.run_id().clone()).await,
         Some("List assigned issues".to_owned())
+    );
+    assert_eq!(
+        task_of(fixture.actor.clone(), accepted.run_id().clone()).await,
+        Some(goal.id().clone())
     );
     let member = provision_user(
         fixture.tasks.database.clone(),
@@ -512,14 +527,16 @@ async fn a_run_reports_its_submission_intent_only_to_who_can_see_its_task() {
         )
         .await
         .unwrap();
+    let member = AuthenticatedPrincipal::user(member);
     assert_eq!(
-        intent(
-            AuthenticatedPrincipal::user(member),
-            accepted.run_id().clone()
-        )
-        .await,
+        intent(member.clone(), accepted.run_id().clone()).await,
         None,
         "another User's private Task conceals its intent"
+    );
+    assert_eq!(
+        task_of(member, accepted.run_id().clone()).await,
+        None,
+        "another User's private Task stays concealed"
     );
     let standalone = fixture
         .runs
@@ -537,6 +554,11 @@ async fn a_run_reports_its_submission_intent_only_to_who_can_see_its_task() {
         intent(fixture.actor.clone(), standalone.run_id().clone()).await,
         None,
         "a Run without a Task has no intent"
+    );
+    assert_eq!(
+        task_of(fixture.actor.clone(), standalone.run_id().clone()).await,
+        None,
+        "a Run without a Task has none to report"
     );
 }
 

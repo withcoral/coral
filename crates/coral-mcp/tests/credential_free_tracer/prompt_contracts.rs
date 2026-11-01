@@ -298,6 +298,72 @@ async fn a_required_action_ends_the_default_exec_wait_early() {
     assert_eq!(update["required_actions"][0]["kind"], "invocation_approval");
 }
 
+/// `input_required` has no place for a Run Update, so the retry that completes
+/// a first `exec` hands over the Task that call started. The agent can then
+/// attribute later work to that Task and end it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_first_exec_gets_its_task_from_the_retry_that_completes_it() {
+    let tracer = approval_tracer().await;
+    for version in versions(false) {
+        let mut session = super::RawSession::open(&tracer.endpoint(), version).await;
+        session.client_capabilities = json!({"elicitation": {"form": {}}});
+        let retry = async |arguments: &Value, action: &str| {
+            let asked = session.tool("exec", arguments.clone()).await;
+            assert_eq!(asked["resultType"], "input_required", "{asked}");
+            let key = asked["inputRequests"]
+                .as_object()
+                .and_then(|requests| requests.keys().next())
+                .expect("one approval is asked")
+                .clone();
+            session
+                .result(
+                    "tools/call",
+                    json!({
+                        "name":"exec", "arguments":arguments,
+                        "requestState":asked["requestState"],
+                        "inputResponses":{key:{"action":action}}
+                    }),
+                )
+                .await
+                .expect("retry completes")
+        };
+
+        let first = retry(
+            &json!({"intent":"Answer on the first call", "program":PROGRAM}),
+            "accept",
+        )
+        .await;
+        let update = &first["structuredContent"];
+        let task = update["task_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the retry names the Task: {first}"));
+        assert_eq!(update["providers"], json!(["weather"]), "{first}");
+
+        let later = retry(
+            &json!({
+                "task_id":task, "intent":"Keep working in the same Task", "program":PROGRAM
+            }),
+            "cancel",
+        )
+        .await;
+        let later = &later["structuredContent"];
+        assert_eq!(later.get("task_id"), None, "{later}");
+        assert_eq!(later.get("providers"), None, "{later}");
+        session
+            .tool("cancel", json!({"run_id":later["run_id"]}))
+            .await;
+
+        let ended = session
+            .tool(
+                "end_task",
+                json!({"task_id":task, "outcome":"success", "reply_given":true}),
+            )
+            .await;
+        assert_eq!(ended["_meta"], json!({"claude/endTurn":true}), "{ended}");
+        session.close().await;
+    }
+}
+
 /// One call prompts each current action once. Accepting approves the
 /// Invocation, declining rejects it, and cancelling leaves the action pending
 /// for a later prompt.

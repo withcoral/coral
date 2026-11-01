@@ -130,13 +130,7 @@ impl McpServer {
     async fn start_task(&self, intent: &str) -> Result<StartedTask, DispatchError> {
         let intent = TaskIntent::parse(intent).map_err(invalid_input)?;
         // Read before the Task starts, so a failed read leaves no Task behind.
-        let providers = self
-            .runtime
-            .modules
-            .commands
-            .searchable_providers(&self.runtime.principal, &self.workspace_id)
-            .await
-            .map_err(task_failure)?;
+        let providers = self.searchable_providers().await?;
         let task = self
             .runtime
             .modules
@@ -152,11 +146,43 @@ impl McpServer {
         tool_call::record_task(task.telemetry_id());
         Ok(StartedTask {
             task_id: task.id().to_string(),
-            providers: providers
-                .iter()
-                .map(|call_root| coral_search::provider_filter_value(call_root).to_string())
-                .collect(),
+            providers,
         })
+    }
+
+    /// The Task a first `exec` started, for the retry that completes that
+    /// call: its `input_required` result had no place to report it. This reads
+    /// the Task rather than echoing `requestState`, which is client input.
+    async fn task_started_for(&self, run_id: &RunId) -> Result<Option<StartedTask>, DispatchError> {
+        let Some(task) = self
+            .runtime
+            .modules
+            .tasks
+            .run_task(&self.runtime.principal, &self.workspace_id, run_id)
+            .await
+            .map_err(task_failure)?
+        else {
+            return Ok(None);
+        };
+        tool_call::record_task(task.telemetry_id());
+        Ok(Some(StartedTask {
+            task_id: task.id().to_string(),
+            providers: self.searchable_providers().await?,
+        }))
+    }
+
+    async fn searchable_providers(&self) -> Result<Vec<String>, DispatchError> {
+        let providers = self
+            .runtime
+            .modules
+            .commands
+            .searchable_providers(&self.runtime.principal, &self.workspace_id)
+            .await
+            .map_err(task_failure)?;
+        Ok(providers
+            .iter()
+            .map(|call_root| coral_search::provider_filter_value(call_root).to_string())
+            .collect())
     }
 
     async fn save_function(
@@ -210,9 +236,15 @@ impl McpServer {
         let reread = RunObservation::initial(Duration::ZERO).map_err(invalid_input)?;
         // A retry answers prompts about the Run this call already started.
         if let Some(run_id) = prompting.continued_run().cloned() {
+            // Read before the answers apply, so a failed read loses none.
+            let started = match arguments.task_id {
+                Some(_) => None,
+                None => self.task_started_for(&run_id).await?,
+            };
             return self
                 .observe_prompting(&run_id, &reread, &reread, prompting)
-                .await;
+                .await
+                .map(|response| started_in(response, started.as_ref()));
         }
         let started = match arguments.task_id {
             Some(_) => None,

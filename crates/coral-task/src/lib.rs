@@ -340,22 +340,46 @@ impl TaskModule {
         workspace: &WorkspaceId,
         run: &coral_run::RunId,
     ) -> Result<Option<TaskIntent>, Error> {
+        let interaction = self.run_interaction(actor, workspace, run).await?;
+        Ok(interaction.map(|(_task, intent)| intent))
+    }
+
+    /// Returns the Task a Run belongs to, for a caller that never got its id.
+    /// A Run without a Task, or whose Task the caller cannot see, has none.
+    /// # Errors
+    /// Returns persistence failures.
+    pub async fn run_task(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace: &WorkspaceId,
+        run: &coral_run::RunId,
+    ) -> Result<Option<Task>, Error> {
+        let interaction = self.run_interaction(actor, workspace, run).await?;
+        Ok(interaction.map(|(task, _intent)| task))
+    }
+
+    async fn run_interaction(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace: &WorkspaceId,
+        run: &coral_run::RunId,
+    ) -> Result<Option<(Task, TaskIntent)>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let Some((task, intent)) =
             interaction_repository::run_intent(&mut transaction, workspace, run).await?
         else {
             return Ok(None);
         };
-        match self
+        let task = match self
             .visible_in_transaction(&mut transaction, actor, workspace, &task)
             .await
         {
-            Ok(_task) => {}
+            Ok(task) => task,
             Err(Error::TaskNotFound) => return Ok(None),
             Err(error) => return Err(error),
-        }
+        };
         transaction.commit().await?;
-        Ok(Some(intent))
+        Ok(Some((task, intent)))
     }
 
     /// Reads exact retained evidence without consulting today's catalog.
