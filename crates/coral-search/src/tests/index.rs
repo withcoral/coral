@@ -1,11 +1,11 @@
-//! Indexing a Provider Generation through `SearchIndex`.
+//! Indexing Provider Generations and Saved Functions through `SearchIndex`.
 //!
 //! Every test publishes through the real Provider Module, then either notifies
 //! `SearchIndex` with the Generation's ids, as publication does after its
-//! commit, or lets a reconcile pass find the Generation. Until the read
-//! side lands, the tests observe the index
-//! through a test-only read of the search-owned tables: membership, text
-//! columns, and state, never counts, scores, or weights.
+//! commit, or lets a reconcile pass find the Generation. The tests observe the
+//! index through a test-only read of the search-owned tables: membership, text
+//! columns, and state, never scores or weights. A test of what a reader sees
+//! asks the real search.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

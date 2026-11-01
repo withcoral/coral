@@ -431,7 +431,7 @@ impl SearchIndex {
                 Ok(false)
             }
             FunctionSync::Nothing => {
-                skipped("already_indexed");
+                skipped("nothing_to_sync");
                 Ok(false)
             }
         }

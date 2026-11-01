@@ -584,6 +584,7 @@ async fn a_pass_removes_the_rows_of_the_functions_that_removing_access_deleted()
         ["automated", "membered", "owned"],
         "a source's delete leaves the search tables alone"
     );
+    assert_eq!(state_principals(&fixture).await, failed_principals);
     index.reconcile().await;
     assert_eq!(indexed_paths(&fixture).await, ["automated", "owned"]);
     let mut remaining = vec![owner_id.clone(), agent_id];
