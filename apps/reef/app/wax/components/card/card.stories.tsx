@@ -35,7 +35,7 @@ export const Default: Story = {
 export const WithIcon: Story = {
   args: {
     description: 'Sync issues, pull requests, and code from your repositories.',
-    icon: <Icon name="GitBranch" size="20" />,
+    icon: <Icon name="GitHub" size="20" />,
     title: 'GitHub',
   },
 }
@@ -84,7 +84,7 @@ export const NoIcon: Story = {
 export const Interactive: Story = {
   args: {
     description: 'Click this card — it renders as a button through the polymorphic as prop.',
-    icon: <Icon name="Database" size="20" />,
+    icon: <Icon name="Layers" size="20" />,
     title: 'Postgres',
   },
   render: (args) => (
@@ -98,7 +98,7 @@ export const AsReactRouterLink: Story = {
   args: {
     description: 'Navigate to the GitHub source details route using React Router Link.',
     headerPill: { label: 'Core' },
-    icon: <Icon name="GitBranch" size="20" />,
+    icon: <Icon name="GitHub" size="20" />,
     title: 'GitHub',
   },
   render: (args) => (
