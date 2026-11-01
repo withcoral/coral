@@ -98,6 +98,33 @@ async fn a_listing_adds_declarations_only_when_asked() {
     assert!(full.pointer("/data/hits/0/signature_line").is_some());
 }
 
+// Catches: a Program that cannot see what one Provider offers without guessing
+// a query that matches each of its tools.
+#[tokio::test]
+async fn a_provider_without_a_query_lists_that_providers_tools() {
+    let scope = scope().await;
+    let result = search(
+        &scope,
+        &json!({ "provider": "coral.workspace", "limit": 50 }),
+    )
+    .await;
+    let paths = result
+        .pointer("/data/hits")
+        .and_then(Value::as_array)
+        .expect("hits")
+        .iter()
+        .filter_map(|hit| hit.get("call_path").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&"coral.workspace.search"), "{result}");
+    assert!(paths.contains(&"coral.workspace.listProviders"), "{result}");
+    assert!(
+        paths
+            .iter()
+            .all(|path| path.starts_with("coral.workspace.")),
+        "{result}"
+    );
+}
+
 // Catches: compact declarations spreading past the best hits, which would
 // grow every page.
 #[tokio::test]
