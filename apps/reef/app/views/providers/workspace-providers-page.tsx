@@ -67,12 +67,10 @@ import type {
   WorkspaceProvidersPageProps,
 } from './types'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
-import coralMarkDark from './coral-mark-dark.svg'
-import coralMarkLight from './coral-mark-light.svg'
+import { CORAL_ICONS } from './coral-icons'
 import * as styles from './providers.css'
 
 /** Coral's own mark, which stands for the Built-in Provider. */
-const CORAL_ICONS: RecipeIcons = { light: coralMarkLight, dark: coralMarkDark }
 
 const bulkPolicyOptions = policyOptions.map(({ icon, ...option }) => ({
   ...option,

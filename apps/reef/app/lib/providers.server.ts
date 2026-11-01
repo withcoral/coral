@@ -1,3 +1,6 @@
+import { CORAL_ICONS } from '@/views/providers/coral-icons'
+import type { ProviderMark } from '@/views/approvals/types'
+import { recipeChoiceById } from './provider-recipes/library.server'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { data } from 'react-router'
 import {
@@ -63,6 +66,36 @@ export async function listAllProviders(api: Pick<ManagementApi, 'providers'>, pa
   } while (pageToken)
   return providers
 }
+/**
+ * Each provider of `workspace` with the logo that stands for it, as on the providers page:
+ * Coral's mark for the Built-in Provider, else the logo of the recipe whose id its namespace
+ * keeps. Logos only decorate, so none show while Coral cannot list the providers.
+ */
+export async function providerMarks(
+  api: Pick<ManagementApi, 'providers'>,
+  workspace: string,
+  signal: AbortSignal,
+): Promise<ProviderMark[]> {
+  try {
+    signal.throwIfAborted()
+    return (await listAllProviders(api, workspace)).map((provider) => {
+      const icons = provider.builtin ? CORAL_ICONS : recipeChoiceById(provider.namespace)?.icons
+      return {
+        callRoot: provider.callRoot,
+        displayName: provider.displayName,
+        ...(icons && { icons }),
+      }
+    })
+  } catch (error) {
+    if (
+      error instanceof ConnectError &&
+      (error.code === Code.Unavailable || error.code === Code.Internal)
+    )
+      return []
+    throw error
+  }
+}
+
 export async function listAllTools(api: Pick<ManagementApi, 'providers'>, parent: string) {
   const tools: ProviderTool[] = []
   let pageToken = ''

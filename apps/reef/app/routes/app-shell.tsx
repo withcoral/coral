@@ -73,6 +73,13 @@ export function shouldRevalidate({
   const next = providerPath.exec(nextUrl.pathname)
   if (current && next && current[1] === next[1] && currentUrl.search === nextUrl.search)
     return false
+  // The Approvals page's selection is URL state too; its own loader reads the review.
+  if (
+    currentUrl.pathname === nextUrl.pathname &&
+    currentUrl.search !== nextUrl.search &&
+    /^\/workspaces\/[^/]+\/approvals$/.test(nextUrl.pathname)
+  )
+    return false
   return defaultShouldRevalidate
 }
 function browserAuth(auth: RequestAuth): BrowserAuth {

@@ -219,6 +219,17 @@ export type RequestDetail =
       state: ConnectionState
       expiresAt: string | null
     }
+export type ApprovalDetail = Extract<RequestDetail, { kind: 'approval' }>
+/** What an approval review shows of the Run that waits on it. */
+export type ApprovalContext = Pick<RunDetail, 'run' | 'submission'>
+/** One exact Approval Request as its review reads it, outside any Activity selection. */
+export interface ApprovalReading {
+  detail: ApprovalDetail
+  /** The Run that waits on it, with the source that made the call. */
+  context: RunDetail
+  /** The call it decides, whose recorded location the source highlights. */
+  call: Extract<ActivityRow, { kind: 'invocation' }>
+}
 export interface InvocationDetail {
   kind: 'invocation'
   /** Independently authorized containing Run, for concurrent actions and Program context.

@@ -48,10 +48,13 @@ test('An open Approvals page shows a new request and drops a decided one without
     const rows = page
       .getByRole('table', { name: 'Pending approvals', exact: true })
       .getByRole('row')
-      .filter({ hasText: CALL_PATH })
+      // Each request's row, which shows the tool after its provider's logo, not its Call Path.
+      .filter({ has: page.getByRole('link', { name: /^Review: / }) })
     /** A reload clears this mark, so the page proves that it stayed mounted. */
     const stillLoaded = () =>
       page.evaluate(() => (window as { approvalsMark?: boolean }).approvalsMark)
+
+    let agent!: typeof runner
 
     await step('Open the page with nothing to approve', async () => {
       await page.goto(`/workspaces/${workspace}/approvals`)
@@ -71,7 +74,7 @@ test('An open Approvals page shows a new request and drops a decided one without
         displayName: 'Approvals worker',
         requestId: crypto.randomUUID(),
       })
-      const agent = programRunner(page, target, workspace, {
+      agent = programRunner(page, target, workspace, {
         accessToken: issued.credential,
         waitMs: 1,
         taskIntent: 'Agent goal',
@@ -98,6 +101,27 @@ test('An open Approvals page shows a new request and drops a decided one without
       await page.getByText('Nothing to approve.', { exact: true }).waitFor()
       await expect.poll(() => calls).toBe(before + 1)
       expect(await stillLoaded()).toBe(true)
+    })
+
+    await step('An owner reviews an Agent request and moves to the next request', async () => {
+      const before = calls
+      await agent.exec(CALL)
+      await runner.exec(CALL)
+      await expect.poll(() => rows.count()).toBe(2)
+      await rows.first().getByRole('link').first().click()
+      const panel = page.getByRole('region', { name: `Review ${CALL_PATH}`, exact: true })
+      await panel.getByText('This call has no arguments.').waitFor()
+
+      await page.reload()
+      await panel.getByText('This call has no arguments.').waitFor()
+
+      await panel.locator('summary').filter({ hasText: 'Add a comment' }).click()
+      await panel.getByRole('textbox', { name: 'Comment (optional)' }).fill('Reviewed here')
+      await page.getByRole('button', { name: 'Approve', exact: true }).click()
+      await expect.poll(() => rows.count()).toBe(1)
+      await expect.poll(() => calls).toBe(before + 1)
+      await page.getByRole('button', { name: 'Decline', exact: true }).click()
+      await page.getByText('Nothing to approve.', { exact: true }).waitFor()
     })
   })
 })

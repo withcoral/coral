@@ -1,7 +1,7 @@
 import { useActivityReader } from '@/lib/activity-observation'
 import { Activity } from '@/views/activity/activity'
 import { ActionReviewSession } from '@/views/actions/review'
-import { ActivityNavigationContext } from '@/views/activity/navigation'
+import { ActivityNavigationContext, leavesActivityReview } from '@/views/activity/navigation'
 import { ActivityArchivedContext } from '@/views/activity/live'
 import type { ActivityPage, ActivityViewProps } from '@/views/activity/types'
 
@@ -19,14 +19,12 @@ export function LiveActivity({
   more?: ActivityViewProps['more']
 }) {
   const { navigation, ...activity } = useActivityReader(initial)
+  const request =
+    activity.page.detail?.kind === 'run' || activity.page.detail?.kind === 'invocation'
+      ? activity.page.detail.request
+      : null
   return (
-    <ActionReviewSession
-      request={
-        activity.page.detail?.kind === 'run' || activity.page.detail?.kind === 'invocation'
-          ? activity.page.detail.request
-          : null
-      }
-    >
+    <ActionReviewSession request={request} leaves={leavesActivityReview(request)}>
       <ActivityNavigationContext value={navigation}>
         <ActivityArchivedContext value={archived ?? null}>
           <Activity {...activity} connect={connect} more={more} />

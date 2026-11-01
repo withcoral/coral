@@ -2,9 +2,11 @@ import { data } from 'react-router'
 import type { Route } from './+types/approvals'
 import { ActivityRequiredActionKind } from '@/generated/coral/management/v1/activity_pb'
 import { loadActionCounts } from '@/lib/action-count.server'
-import { pendingActions } from '@/lib/activity.server'
+import { approvalReading, pendingActions } from '@/lib/activity.server'
 import { managementFailure, privateHeaders } from '@/lib/management.server'
+import { providerMarks } from '@/lib/providers.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
+import { REVIEW_PARAM } from '@/views/actions/review'
 import { ApprovalsPage } from '@/views/approvals/approvals-page'
 export { ApprovalsErrorBoundary as ErrorBoundary } from '@/views/approvals/approvals-page'
 
@@ -18,18 +20,24 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     // the shell's stream then refreshes them, and no change falls between the two reads.
     const counts = await loadActionCounts(api, [workspace], request.signal)
     const revision = counts[workspace.path]?.revisions.approvals
-    const approvals = await pendingActions(
-      api,
-      workspace.name,
-      request.signal,
-      ActivityRequiredActionKind.APPROVAL,
+    const [approvals, providers] = await Promise.all([
+      pendingActions(api, workspace.name, request.signal, ActivityRequiredActionKind.APPROVAL),
+      providerMarks(api, workspace.name, request.signal),
+    ])
+    // After the revision too, so the open review follows it as the rows do.
+    const selected = new URL(request.url).searchParams.get(REVIEW_PARAM)
+    const review = selected
+      ? await approvalReading(api, workspace.name, selected, request.signal)
+      : null
+    return data(
+      { workspace, approvals, providers, revision, selected, review },
+      { headers: privateHeaders },
     )
-    return data({ workspace, approvals, revision }, { headers: privateHeaders })
   } catch (error) {
     managementFailure(error)
   }
 }
 export default function ApprovalsRoute({ loaderData }: Route.ComponentProps) {
-  const { approvals, workspace, revision } = loaderData
-  return <ApprovalsPage approvals={approvals} workspacePath={workspace.path} revision={revision} />
+  const { workspace, ...page } = loaderData
+  return <ApprovalsPage {...page} workspacePath={workspace.path} />
 }

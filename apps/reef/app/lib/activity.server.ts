@@ -18,6 +18,7 @@ import type {
   ActivityInvocation,
   ActivityProgramError,
   ActivityDiscovery,
+  InspectApprovalResponse,
   InspectInvocationResponse,
   ActivityRequestReference,
   ActivityRunEvent,
@@ -42,7 +43,8 @@ import type {
   InvocationState,
   InvocationOutcome,
   RequestReference,
-  RequestDetail,
+  ApprovalDetail,
+  ApprovalReading,
   RunEvent,
   RunTerminal,
   RunFailureCode,
@@ -629,6 +631,64 @@ function outputRow(
   }
 }
 
+/** A Run with its accepted source and outcome, and no request selected. */
+function runDetailView(value: InspectRunResponse, run: ExecutionRow): RunDetail {
+  return {
+    kind: 'run',
+    request: null,
+    requestUnavailable: false,
+    run,
+    source: value.submittedSource,
+    submission: value.submission ? interactionView(value.submission) : undefined,
+    linkedFunctions: value.linkedFunctions.map(({ savedFunction, path, source }) => ({
+      savedFunction,
+      path,
+      source,
+    })),
+    terminal: runTerminalView(value),
+  }
+}
+
+const APPROVAL_NAME = /^workspaces\/[^/]+\/approvals\/[^/]+$/
+
+function approvalView(request: InspectApprovalResponse): ApprovalDetail {
+  return {
+    kind: 'approval',
+    actionable: request.actionable,
+    name: request.name,
+    run: request.run,
+    invocation: request.invocation,
+    provider: request.provider,
+    providerLabel: request.providerLabel,
+    approverLabel: request.approverLabel,
+    callPath: request.callPath,
+    arguments: request.argumentsJson,
+    state: request.state,
+    deadline: timestamp(request.deadlineAtUnixNanos),
+    approver: request.approver,
+    decidedAt:
+      request.decidedAtUnixNanos === undefined ? null : timestamp(request.decidedAtUnixNanos),
+    comment: request.comment ?? null,
+  }
+}
+
+/** Adds why the Task started. The Run names its Task only when the caller can see it; an
+ * unavailable Task, or a passing fault on this optional read, leaves the intent out, not the
+ * review. */
+async function addTaskIntent(
+  review: ApprovalDetail,
+  api: Pick<ActivityApi, 'activity'>,
+  task: string,
+  signal: AbortSignal,
+) {
+  try {
+    const value = await api.activity.inspectTask({ name: task, pageSize: 1 }, { signal })
+    if (value.task?.intent) review.taskIntent = value.task.intent
+  } catch (error) {
+    if (!unavailable(error) && !transient(error)) throw error
+  }
+}
+
 async function selectedDetail(
   page: ActivityPage,
   query: URLSearchParams,
@@ -732,20 +792,7 @@ async function selectedDetail(
             page.initialRequest = first.name
           }
         }
-        page.detail = {
-          kind: 'run',
-          request: null,
-          requestUnavailable: false,
-          run: row,
-          source: value.submittedSource,
-          submission: value.submission ? interactionView(value.submission) : undefined,
-          linkedFunctions: value.linkedFunctions.map(({ savedFunction, path, source }) => ({
-            savedFunction,
-            path,
-            source,
-          })),
-          terminal,
-        }
+        page.detail = runDetailView(value, row)
         page.selected = run
         page.selectedRow = {
           ...row,
@@ -796,7 +843,7 @@ async function selectedDetail(
       try {
         if (
           reference?.kind === 'approval' ||
-          (detail.kind === 'run' && /^workspaces\/[^/]+\/approvals\/[^/]+$/.test(selectedRequest))
+          (detail.kind === 'run' && APPROVAL_NAME.test(selectedRequest))
         ) {
           const request = await api.activity.inspectApproval(
             {
@@ -809,26 +856,7 @@ async function selectedDetail(
             (detail.kind === 'invocation' && request.invocation !== detail.invocation.name)
           )
             throw new ConnectError('unavailable', Code.NotFound)
-          const review: Extract<RequestDetail, { kind: 'approval' }> = {
-            kind: 'approval',
-            actionable: request.actionable,
-            name: request.name,
-            run: request.run,
-            invocation: request.invocation,
-            provider: request.provider,
-            providerLabel: request.providerLabel,
-            approverLabel: request.approverLabel,
-            callPath: request.callPath,
-            arguments: request.argumentsJson,
-            state: request.state,
-            deadline: timestamp(request.deadlineAtUnixNanos),
-            approver: request.approver,
-            decidedAt:
-              request.decidedAtUnixNanos === undefined
-                ? null
-                : timestamp(request.decidedAtUnixNanos),
-            comment: request.comment ?? null,
-          }
+          const review = approvalView(request)
           if (detail.kind === 'run') {
             // Approval belongs to this exact tool, not its containing Run.
             // Resolve it in this response rather than redirecting and rereading history.
@@ -872,19 +900,10 @@ async function selectedDetail(
             detail.context = context.detail
             detail.request = review
           }
-          // Approval review shows why the Task started. The Run names its Task only when the
-          // caller can see it; an unavailable Task, or a passing fault on this optional read,
-          // leaves the intent out, not the review.
+          // Approval review shows why the Task started.
           const owner =
             page.detail?.kind === 'invocation' ? page.detail.context?.run.task : undefined
-          if (owner) {
-            try {
-              const value = await api.activity.inspectTask({ name: owner, pageSize: 1 }, { signal })
-              if (value.task?.intent) review.taskIntent = value.task.intent
-            } catch (error) {
-              if (!unavailable(error) && !transient(error)) throw error
-            }
-          }
+          if (owner) await addTaskIntent(review, api, owner, signal)
         } else if (
           reference?.kind === 'account_connection' ||
           selectedRequest === retainedConnection
@@ -1307,6 +1326,35 @@ export async function pendingActions(
     after = value.nextAfter
   } while (after)
   return actions
+}
+
+/**
+ * The review of `name`, read as the caller. Null when `name` is no approval of `workspace` or
+ * Coral conceals it or its Run: an address grants no authority. Coral keeps every state of a
+ * retained request readable, so a settled one still has its review.
+ */
+export async function approvalReading(
+  api: Pick<ManagementApi, 'activity'>,
+  workspace: string,
+  name: string,
+  signal: AbortSignal,
+): Promise<ApprovalReading | null> {
+  if (!APPROVAL_NAME.test(name) || !name.startsWith(`${workspace}/`)) return null
+  try {
+    const request = await api.activity.inspectApproval({ name }, { signal })
+    const [call, run] = await Promise.all([
+      api.activity.inspectInvocation({ name: request.invocation }, { signal }),
+      api.activity.inspectRun({ name: request.run, pageSize: 1, actionAfter: '' }, { signal }),
+    ])
+    if (!run.run || call.invocation?.run !== request.run) return null
+    const context = runDetailView(run, runView(run.run))
+    const detail = approvalView(request)
+    if (context.run.task) await addTaskIntent(detail, api, context.run.task, signal)
+    return { detail, context, call: { ...invocationView(call.invocation), kind: 'invocation' } }
+  } catch (error) {
+    if (unavailable(error)) return null
+    throw error
+  }
 }
 
 /**

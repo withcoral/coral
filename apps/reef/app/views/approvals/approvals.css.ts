@@ -1,5 +1,16 @@
 import { style } from '@vanilla-extract/css'
 
+/** The list beside its docked review. Each scrolls on its own. */
+export const page = style({ display: 'flex', height: '100%', minHeight: 0, minWidth: 0 })
+export const list = style({
+  display: 'flex',
+  flex: '1 1 0',
+  flexDirection: 'column',
+  gap: 16,
+  minWidth: 0,
+  overflowY: 'auto',
+})
+
 /** The request beside its actions, which wrap under it when the row has no room. */
 export const row = style({
   display: 'flex',
@@ -21,3 +32,11 @@ export const actions = style({
   alignItems: 'center',
   gap: 12,
 })
+/** The call's provider logo, tool and deadline on one line, which wraps between them. */
+export const meta = style({
+  display: 'inline-flex',
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  columnGap: 4,
+})
+export const logo = style({ display: 'inline-flex', flexShrink: 0, marginInlineEnd: 2 })

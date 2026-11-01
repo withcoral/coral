@@ -8,15 +8,16 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { useBeforeUnload, useBlocker, useFetcher } from 'react-router'
+import { useBeforeUnload, useBlocker, useFetcher, type Location } from 'react-router'
 import { Banner, Button, Inputs, Typography } from '@/wax/components'
 import * as Dialog from '@/wax/components/dialog'
 import { Disclosure } from '@/wax/components/disclosure'
 import { Deadline } from '@/wax/components/deadline'
 import * as DescriptionList from '@/wax/components/description-list'
 import type { IconName, IconPlateTone } from '@/wax/components/icon'
+import { Logo, type LogoIcons } from '@/wax/components/logo'
 import { Pill } from '@/wax/components/pill'
-import type { RequestDetail, RunDetail } from '../activity/types'
+import type { ApprovalContext, ApprovalDetail, RequestDetail } from '../activity/types'
 import { restoreFirst, useActivityArchived, useActivityConnected } from '../activity/live'
 import { settledApproval } from './approval-state'
 import { PanelFooter, PanelHeader, usePanelLabel } from '../activity/panel'
@@ -26,10 +27,17 @@ import { useShellCsrf } from '@/lib/use-shell-csrf'
 import type { action } from '@/routes/activity-resolve'
 import * as styles from './actions.css'
 
-type Approval = Extract<RequestDetail, { kind: 'approval' }>
-
 /** Coral holds the request but has not recorded it yet. The live read shows the outcome. */
 const isRecording = (data: object | undefined) => Boolean(data && 'recording' in data)
+
+/** The query key that names the request a review shows. */
+export const REVIEW_PARAM = 'request'
+
+/** A review ends when the path or the request it shows changes. Other query keys keep it. */
+function leavesReview(current: Location, next: Location) {
+  return current.pathname !== next.pathname || shownRequest(current) !== shownRequest(next)
+}
+const shownRequest = ({ search }: Location) => new URLSearchParams(search).get(REVIEW_PARAM)
 
 type Draft = { name: string; comment: string }
 const DraftContext = createContext<{
@@ -44,9 +52,12 @@ const DraftContext = createContext<{
 export function ActionReviewSession({
   children,
   request,
+  leaves = leavesReview,
 }: {
   children: ReactNode
   request?: RequestDetail | null
+  /** Whether a navigation leaves this review, for a page whose address says more. */
+  leaves?: (current: Location, next: Location) => boolean
 }) {
   const [draft, update] = useState<Draft>({ name: '', comment: '' })
   const settle = useCallback(
@@ -65,22 +76,9 @@ export function ActionReviewSession({
     update({ name: '', comment: '' })
   }
   const dirty = Boolean(draft.comment)
-  const blocker = useBlocker(({ currentLocation, nextLocation }) => {
-    if (!dirty) return false
-    const current = new URLSearchParams(currentLocation.search)
-    const next = new URLSearchParams(nextLocation.search)
-    const currentRecord = current.get('record') ?? currentLocation.pathname.slice(1)
-    return (
-      currentLocation.pathname !== nextLocation.pathname ||
-      (current.get('record') !== next.get('record') &&
-        !(
-          request?.kind === 'approval' &&
-          currentRecord === request.run &&
-          next.get('record') === request.invocation
-        )) ||
-      (current.get('request') ?? request?.name ?? null) !== next.get('request')
-    )
-  })
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) => dirty && leaves(currentLocation, nextLocation),
+  )
   // A navigation you discarded the comment for. The comment stays until it lands, so
   // nothing that waits on it, such as live mode, can start a navigation that cancels it.
   const [discarding, setDiscarding] = useState(false)
@@ -140,17 +138,74 @@ export function ActionReviewSession({
 export function useUnsentComment() {
   return useContext(DraftContext)?.dirty ?? false
 }
-/** One exact call, one draft, one durable decision in Activity. */
+
+/**
+ * Whether a navigation would still ask about a comment. The blocker lets go after the commit
+ * that cleared the comment, so this stays true until the next frame. A page that moves on its
+ * own waits for it, or it would ask you to discard a comment you already sent.
+ */
+export function useCommentGuard() {
+  const unsent = useUnsentComment()
+  const [guarded, setGuarded] = useState(unsent)
+  if (unsent && !guarded) setGuarded(true)
+  useEffect(() => {
+    if (unsent || !guarded) return
+    const frame = requestAnimationFrame(() => setGuarded(false))
+    return () => cancelAnimationFrame(frame)
+  }, [unsent, guarded])
+  return guarded
+}
+
+/** The state your decision sets. Until it is `recorded`, Coral only holds it, and it may lose. */
+export interface DecisionOutcome {
+  state: string
+  recorded: boolean
+}
+
+/**
+ * Reads the decision sent through the fetcher `key`, and reports its outcome once, when the
+ * read after it lands. It runs `onOutcome` while rendering, so that may only set this
+ * component's state. A decision already shown, another review's, or one that another
+ * reviewer's opposite decision beat, reports nothing.
+ */
+export function useDecisionOutcome(key: string, onOutcome: (outcome: DecisionOutcome) => void) {
+  const decision = useFetcher<typeof action>({ key })
+  const [seen, setSeen] = useState<{ key: string; data: unknown; intent?: string }>({
+    key,
+    data: decision.data,
+  })
+  const submitted = decision.formData?.get('intent')
+  if (seen.key !== key) setSeen({ key, data: decision.data })
+  else if (typeof submitted === 'string' && submitted !== seen.intent)
+    setSeen({ ...seen, intent: submitted })
+  else if (decision.state === 'idle' && seen.data !== decision.data) {
+    setSeen({ key, data: decision.data })
+    const state = decision.data && 'state' in decision.data ? decision.data.state : undefined
+    const won = { approve: 'approved', decline: 'declined' }[seen.intent ?? '']
+    if (won && isRecording(decision.data)) onOutcome({ state: won, recorded: false })
+    else if (state !== undefined && state === won) onOutcome({ state, recorded: true })
+  }
+  return decision
+}
+
+/** One exact call, one draft, one durable decision. */
 export function ApprovalReview({
   detail,
   context,
   callStartedAt,
+  variant = 'activity',
+  providerIcons,
 }: {
-  detail: Approval
-  context: RunDetail
+  detail: ApprovalDetail
+  context: ApprovalContext
   /** When the call this approval decides started, if that call is loaded. An approval records
    * no start of its own; the Run's start and the deadline are not this call's. */
   callStartedAt?: string
+  /** On the Approvals page, every review is an approval of one call and a pending one waits on
+   * you, so the review leaves that unsaid and shows the provider by its logo. */
+  variant?: 'activity' | 'approvals'
+  /** The provider's logo, on the Approvals page. Without one, its initial shows. */
+  providerIcons?: LogoIcons
 }) {
   const csrf = useShellCsrf()
   const connected = useActivityConnected()
@@ -187,6 +242,8 @@ export function ApprovalReview({
   // The pinned decision renders at the Panel's end. A Panel named for this review holds it
   // inside the region; one name, so there is one region to find.
   const label = `Review ${detail.callPath}`
+  const approvals = variant === 'approvals'
+  const provider = detail.providerLabel || 'Provider'
   const panelLabel = usePanelLabel()
   return (
     <section className={styles.review} aria-label={panelLabel === label ? undefined : label}>
@@ -194,11 +251,24 @@ export function ApprovalReview({
         icon={plateIcons[tone]}
         tone={tone}
         heading="h3"
-        title={detail.callPath}
+        title={
+          approvals ? (
+            <span className={styles.titleWithLogo}>
+              <span role="img" aria-label={provider} className={styles.logo}>
+                <Logo name={provider} icons={providerIcons} size="20" />
+              </span>
+              {detail.callPath}
+            </span>
+          ) : (
+            detail.callPath
+          )
+        }
         details={
           <>
-            <Typography.BodySmall variant="tertiary">approval request</Typography.BodySmall>
-            {detail.providerLabel && (
+            {!approvals && (
+              <Typography.BodySmall variant="tertiary">approval request</Typography.BodySmall>
+            )}
+            {!approvals && detail.providerLabel && (
               <Typography.BodySmall variant="tertiary">
                 Provider: {detail.providerLabel}
               </Typography.BodySmall>
@@ -208,7 +278,7 @@ export function ApprovalReview({
         }
         status={
           deciding ? (
-            <Pill color={tone}>Approval required</Pill>
+            !approvals && <Pill color={tone}>Approval required</Pill>
           ) : (
             <Pill color={tone} role="status">
               {settledApproval(state)?.label ?? 'Approval unavailable'}
@@ -293,7 +363,7 @@ export function ApprovalReview({
             disabled={pending || recording || !connected || commentInvalid}
             busy={submitting === 'decline'}
           >
-            Decline this call
+            {approvals ? 'Decline' : 'Decline this call'}
           </Button.TextButton>
           <Button.TextButton
             type="submit"
@@ -303,7 +373,7 @@ export function ApprovalReview({
             disabled={pending || recording || !connected || commentInvalid}
             busy={submitting === 'approve'}
           >
-            Approve this call
+            {approvals ? 'Approve' : 'Approve this call'}
           </Button.TextButton>
         </PanelFooter>
       )}

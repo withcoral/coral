@@ -17,7 +17,7 @@ import { AccountConnectionState } from '@/generated/coral/management/v1/account_
 import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { fakeManagement, type ManagementHandlers } from './management.test-support'
 import { ACTIVITY_CHILD_WINDOW } from './activity-live-types'
-import { loadActivity, loadRunActivity } from './activity.server'
+import { approvalReading, loadActivity, loadRunActivity } from './activity.server'
 
 const workspace = 'workspaces/00000000-0000-4000-8000-000000000001'
 const scope = { workspace }
@@ -3150,5 +3150,55 @@ describe('a request reviewed from a later page of the Run actions', () => {
       request: { kind: 'approval', name: approval },
       context: { run: { actionPage: { next: 'cursor-1', incomplete: true } } },
     })
+  })
+})
+
+const hidden = () => {
+  throw new ConnectError('hidden', Code.NotFound)
+}
+
+describe('approvalReading', () => {
+  const answers = (overrides: NonNullable<ManagementHandlers['activity']> = {}) => ({
+    activity: {
+      inspectApproval: ({ name }: { name: string }) => ({ name, run, invocation, callPath: 'a.b' }),
+      inspectInvocation: () => ({ invocation: { name: invocation, run } }),
+      inspectRun: () => ({ run: { name: run, workspace } }),
+      ...overrides,
+    },
+  })
+  const read = (name: string, handlers: ManagementHandlers = answers()) =>
+    approvalReading(fakeManagement(handlers), workspace, name, new AbortController().signal)
+
+  it('reads a request of the workspace', async () => {
+    expect((await read(approval))?.detail.name).toBe(approval)
+  })
+
+  // The address names a request but grants nothing: only Coral's answer shows one.
+  it.each([
+    ['names another workspace', `workspaces/other/approvals/one`, undefined],
+    ['names another kind of record', run, undefined],
+    ['reaches past a request', `${approval}/more`, undefined],
+    ['is concealed', approval, answers({ inspectApproval: hidden })],
+    [
+      'is refused',
+      approval,
+      answers({
+        inspectApproval: () => {
+          throw new ConnectError('refused', Code.PermissionDenied)
+        },
+      }),
+    ],
+    ['has a concealed call', approval, answers({ inspectInvocation: hidden })],
+    ['has a concealed run', approval, answers({ inspectRun: hidden })],
+    ['has no run in the answer', approval, answers({ inspectRun: () => ({}) })],
+    [
+      'has a call of another run',
+      approval,
+      answers({
+        inspectInvocation: () => ({ invocation: { name: invocation, run: `${run}-other` } }),
+      }),
+    ],
+  ])('shows no review for a request that %s', async (_, name, handlers) => {
+    expect(await read(name, handlers)).toBeNull()
   })
 })

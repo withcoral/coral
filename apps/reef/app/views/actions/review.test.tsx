@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { renderLivePage, renderRoute } from '@/test-support/route'
 import { approvalContext, approvalRequest as approval } from '../activity/fixtures'
 import { ActivityArchivedContext } from '../activity/live'
+import { leavesActivityReview } from '../activity/navigation'
 import { ActionReviewSession, ApprovalReview } from './review'
 
 type Approval = typeof approval
@@ -23,7 +24,7 @@ function renderReview() {
   }> = []
   const { container, router, update } = renderLivePage<Approval | null>(
     (request) => (
-      <ActionReviewSession request={request}>
+      <ActionReviewSession request={request} leaves={leavesActivityReview(request)}>
         {request ? (
           <ApprovalReview detail={request} context={approvalContext} />
         ) : (

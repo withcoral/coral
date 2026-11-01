@@ -1,14 +1,21 @@
 /** @vitest-environment happy-dom */
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useEffect, useState, type ReactNode } from 'react'
-import { useLoaderData } from 'react-router'
-import { expect, it, vi } from 'vitest'
+import { useLoaderData, type ActionFunctionArgs, type LoaderFunctionArgs } from 'react-router'
+import { describe, expect, it, vi } from 'vitest'
 import type { ActionCount, ActionCounts } from '@/lib/activity-live-types'
 import { ActionSignalContext, type ActionSignal } from '@/lib/use-action-signal'
 import { renderRoute, type RouteOptions } from '@/test-support/route'
-import { approval, run, workspace } from '../activity/fixtures'
-import type { PendingAction } from '../activity/types'
+import {
+  approval,
+  approvalContext,
+  approvalRequest,
+  invocationRow,
+  run,
+  workspace,
+} from '../activity/fixtures'
+import type { ApprovalReading, PendingAction } from '../activity/types'
 import { ApprovalsErrorBoundary, ApprovalsPage } from './approvals-page'
 
 const agentAction: PendingAction = { action: approval, run }
@@ -17,7 +24,46 @@ const ownAction: PendingAction = {
   run: { ...run, name: `${workspace}/runs/own`, agent: '', actorLabel: 'You', intent: '' },
 }
 
+const nextAction: PendingAction = {
+  action: {
+    ...approval,
+    name: `${workspace}/approvals/next`,
+    callPath: 'files.delete',
+    deadline: '2099-01-01T00:00:00Z',
+  },
+  run: { ...run, name: `${workspace}/runs/next`, intent: 'Delete old files' },
+}
+
 const path = `/${workspace}`
+
+/** The exact read of `pending`, as the loader supplies it for an open row. */
+const readingOf = (
+  { action, run: waiting }: PendingAction,
+  overrides: Partial<ApprovalReading['detail']> = {},
+): ApprovalReading => ({
+  detail: {
+    ...approvalRequest,
+    name: action.name,
+    callPath: action.callPath,
+    deadline: action.deadline,
+    arguments: `{"exact":"${action.callPath}"}`,
+    providerLabel: 'Mail',
+    ...overrides,
+  },
+  context: {
+    ...approvalContext,
+    run: waiting,
+    source: `return await coral.providers.${action.callPath}({})`,
+  },
+  call: invocationRow(waiting.name, `call-of-${action.name.split('/').at(-1)}`, {
+    agent: waiting.agent,
+    callPath: action.callPath,
+  }),
+})
+const addressOf = ({ action }: PendingAction) =>
+  `/approvals?${new URLSearchParams({ request: action.name })}`
+const openedRequest = (router: { state: { location: { search: string } } }) =>
+  new URLSearchParams(router.state.location.search).get('request')
 
 function renderPage(approvals: PendingAction[]) {
   return renderRoute(<ApprovalsPage approvals={approvals} workspacePath={path} />)
@@ -37,9 +83,13 @@ const signalOf = (revision: string, other: ActionCounts = {}): ActionSignal => (
 interface LoadedPage {
   approvals: PendingAction[]
   revision?: string
+  selected?: string | null
+  review?: ApprovalReading | null
 }
 interface Coral {
   read: LoadedPage
+  /** Each exact read Coral answers, by request name. */
+  reviews?: Record<string, ApprovalReading>
   /** What the loader throws while Coral refuses or cannot answer. */
   failure?: unknown
 }
@@ -47,16 +97,16 @@ interface Coral {
 const pendingAt = (revision: string): Coral => ({ read: { approvals: [agentAction], revision } })
 
 function LoadedRoute() {
-  const { approvals, revision } = useLoaderData<LoadedPage>()
-  return <ApprovalsPage approvals={approvals} workspacePath={path} revision={revision} />
+  return <ApprovalsPage {...useLoaderData<LoadedPage>()} workspacePath={path} />
 }
 
 /** The route as the app shell mounts it: its rows come from a loader that reads `coral`,
  * under a signal the test moves as the stream would. */
 async function renderLive(coral: Coral, first: ActionSignal, options: RouteOptions = {}) {
-  const loader = vi.fn(() => {
+  const loader = vi.fn(({ request }: LoaderFunctionArgs) => {
     if (coral.failure) throw coral.failure
-    return coral.read
+    const selected = new URL(request.url).searchParams.get('request')
+    return { ...coral.read, selected, review: (selected && coral.reviews?.[selected]) || null }
   })
   let send!: (signal: ActionSignal) => void
   function Shell({ children }: { children: ReactNode }) {
@@ -66,14 +116,14 @@ async function renderLive(coral: Coral, first: ActionSignal, options: RouteOptio
     }, [])
     return <ActionSignalContext value={signal}>{children}</ActionSignalContext>
   }
-  renderRoute(<LoadedRoute />, {
+  const { router } = renderRoute(<LoadedRoute />, {
     ...options,
     loader,
     ErrorBoundary: ApprovalsErrorBoundary,
     wrapper: Shell,
   })
   await screen.findByRole('table', { name: 'Pending approvals' })
-  return { loader, signal: (next: ActionSignal) => act(async () => send(next)) }
+  return { loader, router, signal: (next: ActionSignal) => act(async () => send(next)) }
 }
 
 it('asks each request as a question and names its tool, agent and deadline', () => {
@@ -85,6 +135,34 @@ it('asks each request as a question and names its tool, agent and deadline', () 
   expect(within(row).getByText('mail.send')).toBeInTheDocument()
   expect(row).toHaveTextContent('Collections agent')
   expect(row).toHaveTextContent(`Deadline: ${approval.deadline}`)
+})
+
+it('shows each call by its provider logo and tool, and the whole call path otherwise', () => {
+  const linear: PendingAction = {
+    ...ownAction,
+    action: { ...ownAction.action, callPath: 'coral.providers.linear.saveComment' },
+  }
+  renderRoute(
+    <ApprovalsPage
+      approvals={[linear, agentAction]}
+      workspacePath={path}
+      providers={[{ callRoot: 'coral.providers.linear', displayName: 'Linear' }]}
+    />,
+  )
+  const [, first, second] = within(
+    screen.getByRole('table', { name: 'Pending approvals' }),
+  ).getAllByRole('row')
+  expect(within(first).getByRole('img', { name: 'Linear' })).toBeInTheDocument()
+  expect(within(first).getByText('saveComment')).toBeInTheDocument()
+  expect(first).not.toHaveTextContent('coral.providers.linear')
+  // No provider of the workspace owns this call, so it shows whole.
+  expect(within(second).queryByRole('img')).not.toBeInTheDocument()
+  expect(within(second).getByText('mail.send')).toBeInTheDocument()
+})
+
+it('counts what waits on you in the heading', () => {
+  renderPage([agentAction, ownAction])
+  expect(screen.getByRole('columnheader', { name: 'Waiting on you · 2' })).toBeInTheDocument()
 })
 
 it('names no agent on your own run, and asks a plain question when the run has no intent', () => {
@@ -101,16 +179,17 @@ it('offers each decision on the row, named for the request it decides', () => {
     ).toBeEnabled()
 })
 
-it.each([
-  ['an agent run on its agent page', agentAction, 'Send invoice reminders?', `/${run.agent}?`],
-  ['your own run in activity', ownAction, 'Approve this tool call?', `/${workspace}/activity?`],
-])('reviews %s', (_, action, question, page) => {
-  renderPage([action])
-  const review = screen.getByRole('link', { name: `Review: ${question}` })
-  expect(review.getAttribute('href')).toContain(page)
-  expect(
-    new URL(review.getAttribute('href')!, 'http://reef.test').searchParams.get('request'),
-  ).toBe(action.action.name)
+it('opens each row in the panel here, for your own run and an agent run alike', () => {
+  renderPage([agentAction, ownAction])
+  for (const [action, question] of [
+    [agentAction, 'Send invoice reminders?'],
+    [ownAction, 'Approve this tool call?'],
+  ] as const) {
+    const href = screen.getByRole('link', { name: `Review: ${question}` }).getAttribute('href')!
+    const address = new URL(href, 'http://reef.test')
+    expect(address.pathname).toBe('/')
+    expect(address.searchParams.get('request')).toBe(action.action.name)
+  }
 })
 
 it('reaches the rows with the arrow keys and opens the review with Enter', async () => {
@@ -119,8 +198,7 @@ it('reaches the rows with the arrow keys and opens the review with Enter', async
   const second = screen.getByRole('link', { name: 'Approve this tool call?' })
   expect(second).toHaveFocus()
   await userEvent.keyboard('{Enter}')
-  expect(router.state.location.pathname).toBe(`/${workspace}/activity`)
-  expect(router.state.location.search).toContain('request=')
+  expect(openedRequest(router)).toBe(ownAction.action.name)
 })
 
 it('says there is nothing to approve when no request waits', () => {
@@ -255,4 +333,316 @@ it('does not say nothing waits while it cannot tell', async () => {
   expect(screen.getByText('Nothing to approve.')).toBeInTheDocument()
   await signal({ ...signalOf('one'), connected: false })
   expect(screen.queryByText('Nothing to approve.')).not.toBeInTheDocument()
+})
+
+const twoPending = (): Coral => ({
+  read: { approvals: [agentAction, nextAction], revision: 'one' },
+  reviews: {
+    [agentAction.action.name]: readingOf(agentAction),
+    [nextAction.action.name]: readingOf(nextAction),
+  },
+})
+const panel = (callPath: string) => screen.findByRole('region', { name: `Review ${callPath}` })
+const commentBox = () => screen.getByRole('textbox', { name: 'Comment (optional)' })
+const decisions = (answer: () => object | Promise<object>, forms: FormData[] = []) => ({
+  routes: [
+    {
+      path: '/activity/resolve',
+      action: async ({ request }: ActionFunctionArgs) => {
+        forms.push(await request.formData())
+        return answer()
+      },
+    },
+  ],
+})
+async function addComment(text: string) {
+  await userEvent.click(commentBox())
+  await userEvent.paste(text)
+}
+
+describe('the review panel', () => {
+  it('opens the exact arguments of a row, and a reload of its address opens them again', async () => {
+    const { router } = await renderLive(twoPending(), signalOf('one'))
+    expect(screen.queryByRole('region', { name: /^Review / })).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('link', { name: 'Send invoice reminders?' }))
+    expect(await panel('mail.send')).toHaveTextContent('"mail.send"')
+    const address = router.state.location
+
+    router.dispose()
+    cleanup()
+    await renderLive(twoPending(), signalOf('one'), {
+      entry: `${address.pathname}${address.search}`,
+    })
+    expect(await panel('mail.send')).toHaveTextContent('"mail.send"')
+  })
+
+  it('shows the source of the call beside the review, and opens the call in its activity', async () => {
+    await renderLive(twoPending(), signalOf('one'), { entry: addressOf(agentAction) })
+    await panel('mail.send')
+    expect(screen.getByRole('region', { name: 'Accepted source' })).toHaveTextContent(
+      'return await coral.providers.mail.send({})',
+    )
+    const href = screen.getByRole('link', { name: 'Open in activity' }).getAttribute('href')!
+    const address = new URL(href, 'http://reef.test')
+    // An Agent's call opens on its Agent's page, where an owner reads it.
+    expect(address.pathname).toBe(`/${run.agent}`)
+    expect(address.searchParams.get('record')).toBe(`${workspace}/invocations/call-of-one`)
+    expect(address.searchParams.get('request')).toBe(agentAction.action.name)
+  })
+
+  // The page lists only approvals, and a pending one shows its deadline and decision.
+  it('heads the review with the provider and the call, and no kind or pending status', async () => {
+    await renderLive(twoPending(), signalOf('one'), { entry: addressOf(agentAction) })
+    const open = await panel('mail.send')
+    const heading = within(open).getByRole('heading', { name: 'Mail mail.send' })
+    expect(within(heading).getByRole('img', { name: 'Mail' })).toBeInTheDocument()
+    expect(open).not.toHaveTextContent('approval request')
+    expect(open).not.toHaveTextContent('Approval required')
+    expect(open).not.toHaveTextContent('Provider:')
+  })
+
+  it('says a request is unavailable, and keeps the list, when Coral shows no review', async () => {
+    await renderLive({ read: { approvals: [agentAction] } }, signalOf('one'), {
+      entry: addressOf(nextAction),
+    })
+    expect(
+      await within(await screen.findByRole('dialog', { name: 'Review approval' })).findByRole(
+        'status',
+      ),
+    ).toHaveTextContent('This request is unavailable.')
+    expect(screen.getByRole('link', { name: 'Send invoice reminders?' })).toBeInTheDocument()
+  })
+
+  it('closes back to the list', async () => {
+    const { router } = await renderLive(twoPending(), signalOf('one'), {
+      entry: addressOf(agentAction),
+    })
+    await panel('mail.send')
+    await userEvent.click(screen.getByRole('button', { name: 'Close review' }))
+    await waitFor(() => expect(openedRequest(router)).toBeNull())
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: /^Review / })).not.toBeInTheDocument(),
+    )
+  })
+
+  // Catches: a move that starts before the blocker lets go of the sent comment, which asks you
+  // to discard a comment you already sent.
+  it('moves to the next request after your decision, without asking about the sent comment', async () => {
+    const coral = twoPending()
+    const { router } = await renderLive(coral, signalOf('one'), {
+      entry: addressOf(agentAction),
+      ...decisions(() => ({ state: 'approved' })),
+    })
+    await panel('mail.send')
+    await addComment('Looks right')
+    coral.read = { approvals: [nextAction], revision: 'two' }
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    const next = await panel('files.delete')
+    expect(next).toHaveTextContent('"files.delete"')
+    expect(openedRequest(router)).toBe(nextAction.action.name)
+    // The decided request's controls held focus. It stays in the panel for the next decision.
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body))
+    expect(screen.queryByRole('dialog', { name: 'Discard your comment?' })).not.toBeInTheDocument()
+  })
+
+  it.each<[string, PendingAction[], PendingAction[], string, object, string | null]>([
+    [
+      'back to an earlier request after the last one',
+      [agentAction, nextAction],
+      [agentAction],
+      'Decline',
+      { state: 'declined' },
+      agentAction.action.name,
+    ],
+    [
+      'out of the panel when nothing else waits',
+      [nextAction],
+      [],
+      'Approve',
+      { state: 'approved' },
+      null,
+    ],
+  ])('moves %s', async (_, before, after, control, answer, expected) => {
+    const coral: Coral = { ...twoPending(), read: { approvals: before, revision: 'one' } }
+    const opened = before.at(-1)!
+    const { router } = await renderLive(coral, signalOf('one'), {
+      entry: addressOf(opened),
+      ...decisions(() => answer),
+    })
+    await panel(opened.action.callPath)
+    coral.read = { approvals: after, revision: 'two' }
+    await userEvent.click(screen.getByRole('button', { name: control }))
+    await waitFor(() => expect(openedRequest(router)).toBe(expected))
+  })
+
+  it('leaves the open request to its review, which keeps your comment', async () => {
+    await renderLive(twoPending(), signalOf('one'), { entry: addressOf(agentAction) })
+    await panel('mail.send')
+    expect(
+      screen.queryByRole('button', { name: 'Approve: Send invoice reminders?' }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve: Delete old files?' })).toBeEnabled()
+  })
+
+  it('waits for the read when Coral only holds your decision, then moves on', async () => {
+    const coral = twoPending()
+    const { signal } = await renderLive(coral, signalOf('one'), {
+      entry: addressOf(agentAction),
+      ...decisions(() => ({ recording: true })),
+    })
+    const open = await panel('mail.send')
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    expect(await screen.findByText('Saving your decision…')).toBeInTheDocument()
+    expect(open).toBeInTheDocument()
+
+    coral.read = { approvals: [nextAction], revision: 'two' }
+    coral.reviews![agentAction.action.name] = readingOf(agentAction, {
+      state: 'approved',
+      actionable: false,
+    })
+    await signal(signalOf('two'))
+    await panel('files.delete')
+  })
+
+  it('stays and shows the winner when another decision beats one Coral only held', async () => {
+    const coral = twoPending()
+    const { router, signal } = await renderLive(coral, signalOf('one'), {
+      entry: addressOf(agentAction),
+      ...decisions(() => ({ recording: true })),
+    })
+    await panel('mail.send')
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    await screen.findByText('Saving your decision…')
+
+    coral.read = { approvals: [nextAction], revision: 'two' }
+    coral.reviews![agentAction.action.name] = readingOf(agentAction, {
+      state: 'declined',
+      actionable: false,
+    })
+    await signal(signalOf('two'))
+    expect(await within(await panel('mail.send')).findByText('Declined')).toBeInTheDocument()
+    expect(openedRequest(router)).toBe(agentAction.action.name)
+  })
+
+  // Catches: a remembered decision that sends you away again whenever you reopen the request.
+  it('stays on a request you decided when you open it again', async () => {
+    const coral = twoPending()
+    const { router } = await renderLive(coral, signalOf('one'), {
+      entry: addressOf(agentAction),
+      ...decisions(() => ({ state: 'approved' })),
+    })
+    await panel('mail.send')
+    coral.reviews![agentAction.action.name] = readingOf(agentAction, {
+      state: 'approved',
+      actionable: false,
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    await panel('files.delete')
+
+    await act(async () => {
+      await router.navigate(addressOf(agentAction))
+    })
+    await panel('mail.send')
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+    expect(openedRequest(router)).toBe(agentAction.action.name)
+  })
+
+  it('stays on the open request after a decision on another row', async () => {
+    const coral = twoPending()
+    const { router } = await renderLive(coral, signalOf('one'), {
+      entry: addressOf(agentAction),
+      ...decisions(() => ({ state: 'approved' })),
+    })
+    await panel('mail.send')
+    coral.read = { approvals: [agentAction], revision: 'two' }
+    await userEvent.click(screen.getByRole('button', { name: 'Approve: Delete old files?' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('link', { name: 'Delete old files?' })).not.toBeInTheDocument(),
+    )
+    expect(openedRequest(router)).toBe(agentAction.action.name)
+  })
+
+  it('stays and shows the winner when another decision beats yours', async () => {
+    const coral = twoPending()
+    const { router } = await renderLive(coral, signalOf('one'), {
+      entry: addressOf(agentAction),
+      ...decisions(() => ({ state: 'declined' })),
+    })
+    await panel('mail.send')
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    expect(await screen.findByText('Declined')).toBeInTheDocument()
+    expect(openedRequest(router)).toBe(agentAction.action.name)
+  })
+
+  it.each([
+    ['approves', 'approved', 'Approved'],
+    ['declines', 'declined', 'Declined'],
+    ['lets it expire', 'expired', 'Expired'],
+  ])('stays and shows the settled state when someone else %s it', async (_, state, label) => {
+    const coral = twoPending()
+    const { router, signal } = await renderLive(coral, signalOf('one'), {
+      entry: addressOf(agentAction),
+    })
+    await panel('mail.send')
+
+    coral.read = { approvals: [nextAction], revision: 'two' }
+    coral.reviews![agentAction.action.name] = readingOf(agentAction, {
+      state,
+      actionable: false,
+    })
+    await signal(signalOf('two'))
+
+    const open = await panel('mail.send')
+    expect(await within(open).findByText(label)).toBeInTheDocument()
+    expect(openedRequest(router)).toBe(agentAction.action.name)
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+  })
+
+  // Catches: a refresh that remounts the panel, which loses the comment and the panel's focus.
+  it('keeps your typing, focus and open panel across a refresh', async () => {
+    const coral = twoPending()
+    const { router, signal } = await renderLive(coral, signalOf('one'), {
+      entry: addressOf(agentAction),
+    })
+    await panel('mail.send')
+    await addComment('Half a thought')
+    const box = commentBox()
+
+    coral.read = { approvals: [agentAction, nextAction, ownAction], revision: 'two' }
+    await signal(signalOf('two'))
+
+    await screen.findByRole('link', { name: 'Approve this tool call?' })
+    expect(commentBox()).toBe(box)
+    expect(box).toHaveValue('Half a thought')
+    expect(box).toHaveFocus()
+    expect(openedRequest(router)).toBe(agentAction.action.name)
+    expect(screen.queryByRole('dialog', { name: 'Discard your comment?' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['closing the panel', () => screen.getByRole('button', { name: 'Close review' })],
+    ['opening another row', () => screen.getByRole('link', { name: 'Delete old files?' })],
+  ])('asks before %s drops an unsent comment', async (_, control) => {
+    const { router } = await renderLive(twoPending(), signalOf('one'), {
+      entry: addressOf(agentAction),
+    })
+    await panel('mail.send')
+    await addComment('Half a thought')
+    await userEvent.click(control())
+    expect(await screen.findByRole('dialog', { name: 'Discard your comment?' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
+    expect(commentBox()).toHaveValue('Half a thought')
+    expect(openedRequest(router)).toBe(agentAction.action.name)
+  })
+
+  it('takes no decision while the page is unavailable', async () => {
+    const { signal } = await renderLive(twoPending(), signalOf('one'), {
+      entry: addressOf(agentAction),
+    })
+    await panel('mail.send')
+    await signal({ ...signalOf('one'), connected: false })
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled()
+  })
 })

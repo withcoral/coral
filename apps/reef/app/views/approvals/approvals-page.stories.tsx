@@ -1,11 +1,19 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
 import { ActionSignalContext } from '@/lib/use-action-signal'
-import { approval, run, workspace } from '../activity/fixtures'
+import {
+  approval,
+  approvalContext,
+  approvalRequest,
+  invocationRow,
+  run,
+  workspace,
+} from '../activity/fixtures'
 import { freezeStoryClock, minutesAfterStoryNow } from '../activity/story-clock'
 import { ApprovalsPage } from './approvals-page'
 
 const path = `/${workspace}`
+const MAIL_SEND = 'coral.providers.mail.send'
 
 const meta = {
   title: 'Approvals/Page',
@@ -30,8 +38,15 @@ type Story = StoryObj<typeof meta>
 export const Pending: Story = {
   args: {
     workspacePath: path,
+    providers: [
+      { callRoot: 'coral.providers.mail', displayName: 'Mail' },
+      { callRoot: 'coral.providers.calendar', displayName: 'Calendar' },
+    ],
     approvals: [
-      { action: { ...approval, deadline: minutesAfterStoryNow(5) }, run },
+      {
+        action: { ...approval, callPath: MAIL_SEND, deadline: minutesAfterStoryNow(5) },
+        run,
+      },
       {
         action: {
           ...approval,
@@ -57,6 +72,49 @@ export const Pending: Story = {
       },
     ],
   },
+}
+
+const reading = {
+  detail: {
+    ...approvalRequest,
+    callPath: MAIL_SEND,
+    providerLabel: 'Mail',
+    deadline: minutesAfterStoryNow(5),
+  },
+  context: approvalContext,
+  call: invocationRow(run.name, 'one', {
+    agent: run.agent,
+    sourceLocation: { document: { kind: 'program' }, line: 1, column: 14 },
+  }),
+}
+
+// The review beside the list: a pending request, then one that someone else settled.
+export const Reviewing: Story = {
+  args: { ...Pending.args, selected: approval.name, review: reading },
+}
+
+export const SettledInReview: Story = {
+  args: {
+    ...Pending.args,
+    approvals: Pending.args.approvals.slice(1),
+    selected: approval.name,
+    review: {
+      ...reading,
+      detail: {
+        ...reading.detail,
+        state: 'declined',
+        actionable: false,
+        approver: 'someone',
+        approverLabel: 'Ada Lovelace',
+        decidedAt: minutesAfterStoryNow(-2),
+        comment: 'Wrong recipient.',
+      },
+    },
+  },
+}
+
+export const RequestUnavailable: Story = {
+  args: { ...Pending.args, selected: `${workspace}/approvals/hidden` },
 }
 
 export const Empty: Story = { args: { workspacePath: path, approvals: [] } }

@@ -11,7 +11,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { Link, useFetcher, useLocation, useNavigate, useNavigation } from 'react-router'
+import { Link, useLocation, useNavigate, useNavigation } from 'react-router'
 import { CopyMcpEndpoint } from '@/components/copy-mcp-endpoint'
 import { EmptyPage } from '@/components/empty-page'
 import { Button, Typography } from '@/wax/components'
@@ -59,8 +59,7 @@ import {
   useActivityArchived,
 } from './live'
 import { PendingActions } from './pending'
-import { useUnsentComment } from '../actions/review'
-import type { action as resolve } from '@/routes/activity-resolve'
+import { useCommentGuard, useDecisionOutcome, useUnsentComment } from '../actions/review'
 import { ContextImpact } from './context-impact'
 import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-types'
 import { activityDays, utcDay } from '@/lib/activity-list'
@@ -1010,47 +1009,20 @@ export function Activity({
     (expanded: boolean) => setInspecting((count) => count + (expanded ? 1 : -1)),
     [],
   )
-  // The review guards a comment until its blocker updates, after the commit that
-  // cleared it. Until the next frame, a step would prompt you to discard it.
-  const [guarded, setGuarded] = useState(unsent)
-  if (unsent && !guarded) setGuarded(true)
-  useEffect(() => {
-    if (unsent || !guarded) return
-    const frame = requestAnimationFrame(() => setGuarded(false))
-    return () => cancelAnimationFrame(frame)
-  }, [unsent, guarded])
+  const guarded = useCommentGuard()
   // Whether the review guarded an unsent comment when live mode last looked.
   const wasGuarded = useRef(guarded)
   // The request the rail reviews, and the decision its approval review submits.
   const reviewed =
     page.detail?.kind === 'invocation' || page.detail?.kind === 'run' ? page.detail.request : null
   const reviewedApproval = reviewed?.kind === 'approval' ? reviewed.name : undefined
-  const decision = useFetcher<typeof resolve>({
-    key: reviewedApproval ?? 'activity:no-review',
-  })
-  // A decision you make in the review advances it once, when your decision wins and the
-  // read after it lands. A decision already shown, another review's, or one that another
-  // reviewer's opposite decision beat, never does.
-  const [seen, setSeen] = useState<{
-    key?: string
-    data: unknown
-    intent?: string
-  }>({
-    key: reviewedApproval,
-    data: decision.data,
-  })
   // The location where the advance started, which also marks the reads it takes first.
   const [advance, setAdvance] = useState<string | null>(null)
-  const submitted = decision.formData?.get('intent')
-  if (seen.key !== reviewedApproval) setSeen({ key: reviewedApproval, data: decision.data })
-  else if (typeof submitted === 'string' && submitted !== seen.intent)
-    setSeen({ ...seen, intent: submitted })
-  else if (decision.state === 'idle' && seen.data !== decision.data) {
-    setSeen({ key: reviewedApproval, data: decision.data })
-    const state = decision.data && 'state' in decision.data ? decision.data.state : undefined
-    const won = { approve: 'approved', decline: 'declined' }[seen.intent ?? '']
-    if (state !== undefined && state === won) setAdvance(locationKey)
-  }
+  // A decision you make in the review advances it once, when your decision wins and the
+  // read after it lands.
+  const decision = useDecisionOutcome(reviewedApproval ?? 'activity:no-review', ({ recorded }) => {
+    if (recorded) setAdvance(locationKey)
+  })
   // It holds through the reads it takes first, and ends with its selection. Any other
   // navigation ends it, and Back or Forward to one of its reads never resumes it.
   const advancing =

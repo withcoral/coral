@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import { useLocation, useSearchParams } from 'react-router'
+import { useLocation, useSearchParams, type Location } from 'react-router'
 import {
   ACTIVITY_CHILD_WINDOW,
   activityRowIdentity,
@@ -16,6 +16,7 @@ import {
   type LiveAction,
   type LiveLatest,
   type LiveScope,
+  type RequestDetail,
   type RunRow,
   type TaskRow,
 } from './types'
@@ -79,6 +80,27 @@ export function revealHref(row: ActivityRow, options: { request?: string } = {})
   if (options.request) next.set('request', options.request)
   return `${path}?${next}`
 }
+
+/**
+ * Whether a navigation leaves the review of `request`. Moving between an approval's Run and
+ * its call keeps the review, and so does the address gaining the request the loader resolved.
+ */
+export const leavesActivityReview =
+  (request: RequestDetail | null | undefined) => (current: Location, next: Location) => {
+    const from = new URLSearchParams(current.search)
+    const to = new URLSearchParams(next.search)
+    const record = from.get('record') ?? current.pathname.slice(1)
+    return (
+      current.pathname !== next.pathname ||
+      (from.get('record') !== to.get('record') &&
+        !(
+          request?.kind === 'approval' &&
+          record === request.run &&
+          to.get('record') === request.invocation
+        )) ||
+      (from.get('request') ?? request?.name ?? null) !== to.get('request')
+    )
+  }
 
 /** Pin server-resolved review identity and its exact child window without another read. */
 export function activitySelection(page: ActivityPage, search: string): URLSearchParams {

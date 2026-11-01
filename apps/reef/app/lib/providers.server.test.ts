@@ -9,8 +9,12 @@ import {
   SearchIndexState,
 } from '@/generated/coral/management/v1/provider_pb'
 import type { PersonalAccountState } from '@/views/accounts/types'
+import { fakeManagement } from './management.test-support'
+import { RECIPE_CHOICES } from './provider-recipes/library.server'
+import { CORAL_ICONS } from '@/views/providers/coral-icons'
 import {
   personalAccountAction,
+  providerMarks,
   providerFailure,
   searchIndexView,
   toolName,
@@ -131,4 +135,43 @@ it.each([
   const tool = toolName(name, key)
   expect(tool).toBe(`${name}/tools/${encoded}`)
   expect(toolView(create(ToolAccessSchema, { tool })).key).toBe(key)
+})
+
+const withIcons = RECIPE_CHOICES.find((choice) => choice.icons)!
+const marksOf = (listProviders: () => object) =>
+  providerMarks(
+    fakeManagement({ providers: { listProviders } }),
+    'workspaces/w',
+    AbortSignal.any([]),
+  )
+
+// A provider usually keeps the id of the recipe it came from, so that recipe's logo stands for
+// it. Coral's mark stands for the Built-in Provider.
+it('marks each provider with the logo that stands for it', async () => {
+  const marks = await marksOf(() => ({
+    providers: [
+      {
+        callRoot: 'coral.workspace',
+        displayName: 'Workspace',
+        builtin: true,
+        namespace: 'workspace',
+      },
+      { callRoot: `coral.providers.${withIcons.id}`, displayName: 'Ours', namespace: withIcons.id },
+      { callRoot: 'coral.providers.handmade', displayName: 'Handmade', namespace: 'handmade' },
+    ],
+  }))
+  expect(marks).toEqual([
+    { callRoot: 'coral.workspace', displayName: 'Workspace', icons: CORAL_ICONS },
+    { callRoot: `coral.providers.${withIcons.id}`, displayName: 'Ours', icons: withIcons.icons },
+    { callRoot: 'coral.providers.handmade', displayName: 'Handmade' },
+  ])
+})
+
+// The marks only decorate rows that name their call, so an outage leaves the rows as they are.
+it('marks no provider while Coral cannot list them', async () => {
+  expect(
+    await marksOf(() => {
+      throw new ConnectError('down', Code.Unavailable)
+    }),
+  ).toEqual([])
 })

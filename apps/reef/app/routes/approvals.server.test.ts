@@ -3,7 +3,8 @@ import { expect, it, vi } from 'vitest'
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { ActivityRequiredActionKind } from '@/generated/coral/management/v1/activity_pb'
 import { WorkspaceRole, WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
-import { fakeManagementTransport } from '@/lib/management.test-support'
+import { fakeManagementTransport, type ManagementHandlers } from '@/lib/management.test-support'
+import type { ApprovalReading } from '@/views/activity/types'
 import { loader } from './approvals'
 
 const coral = vi.hoisted(() => ({ transport: undefined as unknown }))
@@ -25,6 +26,7 @@ function fakeCoral(
   state: WorkspaceState,
   browse: (input: { after: string; kind: ActivityRequiredActionKind }) => object,
   count: () => object = () => ({}),
+  review: ManagementHandlers['activity'] = {},
 ) {
   coral.transport = fakeManagementTransport({
     workspaces: {
@@ -35,20 +37,26 @@ function fakeCoral(
         state,
       }),
     },
-    activity: { browseRequiredActions: browse, countRequiredActions: count },
+    activity: { browseRequiredActions: browse, countRequiredActions: count, ...review },
+    providers: { listProviders: () => ({ providers: [] }) },
   })
 }
 
-function load() {
-  const request = new Request(`http://reef.test/workspaces/${id}/approvals`)
+function load(search = '') {
+  const request = new Request(`http://reef.test/workspaces/${id}/approvals${search}`)
   return loader({ ...authRouteTestArgs(request, {}), params: { workspace: id } } as never)
 }
 
-async function loaderData() {
-  const result = await load()
+async function loaderData(search = '') {
+  const result = await load(search)
   return (
     result as unknown as {
-      data: { approvals: { action: { name: string } }[]; revision?: string }
+      data: {
+        approvals: { action: { name: string } }[]
+        revision?: string
+        selected: string | null
+        review: ApprovalReading | null
+      }
     }
   ).data
 }
@@ -113,4 +121,105 @@ it('fails the page when the requests cannot be read', async () => {
     throw new ConnectError('down', Code.Unavailable)
   })
   await expect(load()).rejects.toMatchObject({ status: 503 })
+})
+
+const selected = `${workspace}/approvals/open`
+const selectedSearch = `?${new URLSearchParams({ request: selected })}`
+const invocation = `${workspace}/invocations/open`
+const openRun = `${workspace}/runs/open`
+const nanos = (iso: string) => BigInt(Date.parse(iso)) * 1_000_000n
+
+/** Coral's answers for the exact request, its call and its Run. `failure` conceals or fails. */
+function exactReads(failure?: ConnectError) {
+  const read = <Reply>(reply: Reply) =>
+    vi.fn(() => {
+      if (failure) throw failure
+      return reply
+    })
+  return {
+    inspectApproval: read({
+      name: selected,
+      run: openRun,
+      invocation,
+      callPath: 'mail.send',
+      argumentsJson: '{"to":"exact-recipient"}',
+      state: 'pending',
+      actionable: true,
+      deadlineAtUnixNanos: nanos('2026-09-22T10:00:00Z'),
+    }),
+    inspectInvocation: read({
+      invocation: {
+        name: invocation,
+        run: openRun,
+        startedAtUnixNanos: nanos('2026-09-22T09:30:00Z'),
+      },
+    }),
+    inspectRun: read({
+      run: { name: openRun, workspace, intent: 'Send reminders', task: 'task' },
+      submittedSource: 'return await coral.providers.mail.send({})',
+    }),
+    inspectTask: read({ task: { name: 'task', intent: 'Collect invoices' } }),
+  }
+}
+
+it('reads the exact arguments only for the request the address opens', async () => {
+  const reads = exactReads()
+  fakeCoral(WorkspaceState.ACTIVE, () => ({ actions: [] }), undefined, reads)
+
+  expect((await loaderData()).review).toBeNull()
+  expect(reads.inspectApproval).not.toHaveBeenCalled()
+
+  const { review } = await loaderData(selectedSearch)
+  expect(review).toMatchObject({
+    detail: {
+      name: selected,
+      arguments: '{"to":"exact-recipient"}',
+      taskIntent: 'Collect invoices',
+      actionable: true,
+    },
+    context: {
+      run: { name: openRun, intent: 'Send reminders' },
+      source: 'return await coral.providers.mail.send({})',
+    },
+    call: { kind: 'invocation', name: invocation, startedAt: '2026-09-22T09:30:00.000Z' },
+  })
+})
+
+// A concealed request leaves the list. `approvalReading` owns what counts as concealed.
+it('keeps the list when Coral shows no review', async () => {
+  const reads = exactReads(new ConnectError('hidden', Code.NotFound))
+  fakeCoral(WorkspaceState.ACTIVE, () => ({ actions: [queued('first')] }), undefined, reads)
+  const { approvals, review, selected: opened } = await loaderData(selectedSearch)
+  expect(review).toBeNull()
+  expect(opened).toBe(selected)
+  expect(approvals).toHaveLength(1)
+})
+
+it('fails the page when Coral cannot answer for the open request', async () => {
+  const reads = exactReads(new ConnectError('down', Code.Unavailable))
+  fakeCoral(WorkspaceState.ACTIVE, () => ({ actions: [] }), undefined, reads)
+  await expect(load(selectedSearch)).rejects.toMatchObject({ status: 503 })
+})
+
+// The panel follows the same revision as the rows, or a change between them is never seen.
+it('reads the open request after the revision', async () => {
+  const order: string[] = []
+  const reads = exactReads()
+  fakeCoral(
+    WorkspaceState.ACTIVE,
+    () => ({ actions: [] }),
+    () => {
+      order.push('revision')
+      return {}
+    },
+    {
+      ...reads,
+      inspectApproval: () => {
+        order.push('request')
+        return reads.inspectApproval()
+      },
+    },
+  )
+  await loaderData(selectedSearch)
+  expect(order).toEqual(['revision', 'request'])
 })
