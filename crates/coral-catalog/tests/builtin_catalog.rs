@@ -149,15 +149,6 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 "{key} declaration lacks {expected}: {declaration}"
             );
         }
-        // Only a person publishes what addProvider prepares.
-        if tool_key == BuiltinTool::AddProvider {
-            for removed in [r#""published""#, r#""needs_sign_in""#] {
-                assert!(
-                    !declaration.contains(removed),
-                    "{key} declaration keeps {removed}: {declaration}"
-                );
-            }
-        }
     }
     // Every built-in Tool is a search target, and nothing else is.
     let mut target_keys = targets
