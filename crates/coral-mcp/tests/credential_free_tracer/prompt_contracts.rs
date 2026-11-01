@@ -266,6 +266,38 @@ async fn required_actions_end_the_initial_wait_and_replay_on_every_version() {
     .await;
 }
 
+/// A Program parked on a person cannot finish by waiting, so the default wait
+/// returns the action as soon as it appears, not when the wait runs out.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_required_action_ends_the_default_exec_wait_early() {
+    let tracer = approval_tracer().await;
+    let client = tracer.sdk().await;
+    let tools = client.list_all_tools().await.expect("list MCP tools");
+    let default_wait_ms = tools
+        .iter()
+        .find(|tool| tool.name == "exec")
+        .and_then(|tool| tool.input_schema.get("properties"))
+        .and_then(|properties| properties.pointer("/wait_ms/default"))
+        .and_then(Value::as_u64)
+        .expect("advertised default wait");
+    assert_eq!(default_wait_ms, 30_000);
+
+    let parked = tokio::time::timeout(
+        Duration::from_millis(default_wait_ms / 2),
+        super::call(
+            &client,
+            "exec",
+            json!({"intent": "Park on an approval", "program": PROGRAM}),
+        ),
+    )
+    .await
+    .expect("a required action ends the wait before its default runs out");
+
+    let update = super::structured(&parked);
+    assert_eq!(update["state"], "running");
+    assert_eq!(update["required_actions"][0]["kind"], "invocation_approval");
+}
+
 /// One call prompts each current action once. Accepting approves the
 /// Invocation, declining rejects it, and cancelling leaves the action pending
 /// for a later prompt.

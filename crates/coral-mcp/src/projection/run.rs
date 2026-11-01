@@ -42,7 +42,7 @@ pub(crate) struct RunUpdateResult<'a> {
     /// The Task this `exec` started, when it passed no `task_id`. Pass it to
     /// every later call.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::arguments::identifier_schema")]
     task_id: Option<String>,
     /// With `task_id`: the namespaces `coral.workspace.search` can filter by.
     #[serde(skip_serializing_if = "Option::is_none")]

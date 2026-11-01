@@ -37,7 +37,7 @@ Then call tools in a later Program by complete literal Call Path."#;
 const _: () = assert!(EXEC_TOOL_DESCRIPTION.len() <= 2048);
 const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
-pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 10_000;
+pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 30_000;
 pub(crate) const DEFAULT_WAIT_MS: u64 = 0;
 pub(crate) const MAX_WAIT_MS: u64 = 30_000;
 
