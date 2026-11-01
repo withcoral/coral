@@ -12,12 +12,14 @@ type Issue = { "id": number; "user": User; "milestone": Milestone };"#;
 
 fn stub(name: &str, fields: &str) -> String {
     format!(
-        "// Stubbed to save space: field names only. For field types, describe this path with types: [\"{name}\"].\ntype {name} = {{ {fields} }};"
+        "// Stubbed to save space: field names only. For field types, search this path with types: [\"{name}\"].\ntype {name} = {{ {fields} }};"
     )
 }
 
 fn not_shown(names: &str) -> String {
-    format!("// Not shown, to save space. To see them, describe this path with types: [{names}].")
+    format!(
+        "// Not shown, to save space. To see them, call coral.workspace.search({{ paths: [this path], types: [{names}] }})."
+    )
 }
 
 /// Each row is one rule. The remaining types of `issues.list` are placed in
@@ -174,7 +176,7 @@ fn more_skipped_types_than_types_accepts_are_requested_some_at_a_time() {
     );
     assert!(
         line.ends_with(
-            ", \"T32\". To see them, describe this path with up to 32 of these names in types."
+            ", \"T32\". To see them, call coral.workspace.search({ paths: [this path], types }) with up to 32 of these names."
         ),
         "{line}"
     );

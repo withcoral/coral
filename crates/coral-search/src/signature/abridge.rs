@@ -280,11 +280,11 @@ impl<'d> Parts<'d> {
         let skipped = match skipped.len() {
             0 => None,
             count if count <= crate::DESCRIBE_TYPES_MAX => Some(format!(
-                "// Not shown, to save space. To see them, describe this path with types: [{}].",
+                "// Not shown, to save space. To see them, call coral.workspace.search({{ paths: [this path], types: [{}] }}).",
                 skipped.join(", ")
             )),
             _ => Some(format!(
-                "// Not shown, to save space: {}. To see them, describe this path with up to {} of these names in types.",
+                "// Not shown, to save space: {}. To see them, call coral.workspace.search({{ paths: [this path], types }}) with up to {} of these names.",
                 skipped.join(", "),
                 crate::DESCRIBE_TYPES_MAX
             )),
@@ -449,8 +449,10 @@ impl<'d> TypeGraph<'d> {
         self.field_names(name, &mut HashSet::new(), &mut fields);
         let declared = statement.declares.as_ref();
         let parameters = declared.map_or("", |declared| declared.parameters.as_str());
+        // Each stub's comment spends the compact budget, so this stays short.
+        // The line naming skipped types is outside it and spells out the call.
         let stub = format!(
-            "// Stubbed to save space: field names only. For field types, describe this path with types: [\"{name}\"].\ntype {name}{parameters} = {{ {} }};",
+            "// Stubbed to save space: field names only. For field types, search this path with types: [\"{name}\"].\ntype {name}{parameters} = {{ {} }};",
             fields.join("; ")
         );
         let shorter = !fields.is_empty() && stub.len() < full.len();

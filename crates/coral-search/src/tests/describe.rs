@@ -83,7 +83,7 @@ async fn describe_returns_the_fitted_declaration_or_the_named_types_of_the_same_
     };
     assert!(fitted.contains("export default function ("), "{fitted}");
     assert!(
-        fitted.contains(r#"describe this path with types: ["Repository"]"#),
+        fitted.contains(r#"search this path with types: ["Repository"]"#),
         "{fitted}"
     );
     // The stub names fields; the full type quotes and types them.
