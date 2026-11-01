@@ -3,7 +3,6 @@
 
 use std::future::Future;
 
-use coral_functions::SavedFunctionEntry;
 use coral_provider::{GenerationEntries, ProviderId};
 use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
@@ -133,12 +132,13 @@ impl SearchIndex {
     ///    failure of the current revision not yet due waits, whatever the
     ///    row holds.
     /// 3. Removes the rows and state rows of every Generation that is no
-    ///    Provider's active Generation. Best effort. Saved Function rows never
-    ///    outlive their function.
+    ///    Provider's active Generation, and of every Saved Function that no
+    ///    longer exists. Best effort. A source's delete never touches these
+    ///    tables, so this step is what guarantees the rows go.
     /// 4. On Postgres, recounts the statistics of every Workspace whose rows
-    ///    changed after its last count, not only those this pass wrote: a
-    ///    Saved Function delete cascades to its row without an index write,
-    ///    and step 3 removes rows without a count.
+    ///    changed after its last count, not only those this pass wrote: step
+    ///    3 and a notified Saved Function removal both remove rows without a
+    ///    count.
     ///
     /// Removal runs first. The pass reads what each step must do from a read
     /// snapshot, so a pass that finds no change never takes the writer, which
@@ -151,7 +151,8 @@ impl SearchIndex {
     /// every notified write. A notified write or a change that lands between
     /// two items may index, replace or delete what the pass read as stale, so
     /// the pass reads each Generation and function again under the mutex and
-    /// skips what changed. A failed removal is logged and the pass goes on
+    /// skips what changed; a function goes through
+    /// [`SearchIndex::sync_function`]'s one rule. A failed removal is logged and the pass goes on
     /// without further removals; a failed write is logged and
     /// recorded like a notified write's, and the pass goes on. Passes in two
     /// processes write the same idempotent rows.
@@ -166,7 +167,7 @@ impl SearchIndex {
     /// to do, so the default trace filter exports none of them. Each write
     /// the pass makes runs in an info root span of its own, which the
     /// default filter exports, linked to its step's span when that is traced:
-    /// `coral.search.index_generation` and `coral.search.index_function`, as
+    /// `coral.search.index_generation` and `coral.search.sync_function`, as
     /// a notified write's, and `coral.search.refresh_statistics`.
     /// A failed write or step marks its span and the pass's span as failed.
     /// The pass's span records what it indexed and what failed, and the
@@ -228,6 +229,12 @@ impl SearchIndex {
         work.step_failed |= step(
             step_span!("coral.search.reconcile.remove_superseded"),
             self.remove_superseded_generations(),
+        )
+        .await
+        .is_err();
+        work.step_failed |= step(
+            step_span!("coral.search.reconcile.remove_orphaned"),
+            self.remove_orphaned_functions(),
         )
         .await
         .is_err();
@@ -295,6 +302,41 @@ impl SearchIndex {
         Ok(())
     }
 
+    /// Step 3 of a pass, run first: syncs every Saved Function the index
+    /// holds that no longer exists, in one transaction each. Best effort.
+    async fn remove_orphaned_functions(&self) -> Result<(), ()> {
+        let removed = async {
+            let orphaned = self
+                .read_snapshot(async |transaction| {
+                    let current =
+                        coral_functions::saved_function_index_revisions_in_transaction(transaction)
+                            .await?;
+                    SavedFunctionIndexer.orphaned(transaction, &current).await
+                })
+                .await?;
+            for orphan in &orphaned {
+                let _write = self.writes.lock().await;
+                in_write_span(
+                    function_span(&orphan.workspace_id, &orphan.function_id),
+                    WriteTrigger::Reconcile,
+                    self.sync_function_held(&orphan.workspace_id, &orphan.function_id),
+                )
+                .await?;
+            }
+            Ok::<_, IndexError>(())
+        }
+        .await;
+        if let Err(error) = removed {
+            // TODO: an error monitor for failed index writes is still to be set up.
+            tracing::error!(
+                error.type = safe::kind(error.code()),
+                "failed to remove orphaned Saved Functions from the search index"
+            );
+            return Err(());
+        }
+        Ok(())
+    }
+
     /// Step 1 of a pass: indexes each active Generation the index lacks,
     /// holds under an old name, or holds as failed with a retry due at
     /// `now_unix_nanos`.
@@ -340,8 +382,8 @@ impl SearchIndex {
                     .await
                 {
                     Ok(Some(entries)) => self.write_generation(&entries).await.map(|()| true),
-                    // The Provider was deleted after the pass read it; its rows
-                    // cascaded with its Generations.
+                    // The Provider was deleted after the pass read it; its
+                    // removal, or a later pass, takes its rows.
                     Ok(None) => {
                         skipped("provider_deleted");
                         Ok(false)
@@ -375,30 +417,6 @@ impl SearchIndex {
             })
             .await;
         !matches!(needed, Ok(false))
-    }
-
-    /// Whether `entry`, which the pass read as stale, still is. A failed read
-    /// is logged and answers `false`: `entry` may be an older copy, and the
-    /// next pass tries again.
-    async fn function_still_stale(&self, entry: &SavedFunctionEntry, now_unix_nanos: i64) -> bool {
-        let needed = self
-            .read_snapshot(async |transaction| {
-                let needed = SavedFunctionIndexer
-                    .still_needs_indexing(transaction, entry, now_unix_nanos)
-                    .await?;
-                Ok(needed)
-            })
-            .await;
-        needed.unwrap_or_else(|error: IndexError| {
-            // TODO: an error monitor for failed index writes is still to be set up.
-            tracing::error!(
-                coral.workspace.id = safe::id(&entry.workspace_id()),
-                coral.saved_function.id = safe::id(&entry.id()),
-                error.type = safe::kind(error.code()),
-                "failed to read a Saved Function again before indexing it"
-            );
-            false
-        })
     }
 
     /// Prepares the entries of the Provider's current active Generation from
@@ -443,16 +461,12 @@ impl SearchIndex {
                 let mut work = ItemWork::default();
                 for entry in &stale {
                     let _write = self.writes.lock().await;
-                    if !self.function_still_stale(entry, now_unix_nanos).await {
-                        continue;
-                    }
                     let indexed = in_write_span(
-                        function_span(entry),
+                        function_span(entry.workspace_id(), entry.id()),
                         WriteTrigger::Reconcile,
-                        self.write_function(entry),
+                        self.sync_function_held(entry.workspace_id(), entry.id()),
                     )
-                    .await
-                    .map(|()| true);
+                    .await;
                     work.count(&indexed);
                 }
                 Ok(work)

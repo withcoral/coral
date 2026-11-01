@@ -1,11 +1,11 @@
-//! Indexing a Provider Generation through `SearchIndex`.
+//! Indexing Provider Generations and Saved Functions through `SearchIndex`.
 //!
 //! Every test publishes through the real Provider Module, then either notifies
 //! `SearchIndex` with the Generation's ids, as publication does after its
-//! commit, or lets a reconcile pass find the Generation. Until the read
-//! side lands, the tests observe the index
-//! through a test-only read of the search-owned tables: membership, text
-//! columns, and state, never counts, scores, or weights.
+//! commit, or lets a reconcile pass find the Generation. The tests observe the
+//! index through a test-only read of the search-owned tables: membership, text
+//! columns, and state, never scores or weights. A test of what a reader sees
+//! asks the real search.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -21,9 +21,9 @@ use tracing_subscriber::layer::SubscriberExt as _;
 use wiremock::MockServer;
 
 use super::{TestModules, change, organization_user};
-use crate::SearchIndex;
 use crate::indexer::INDEXER_REVISION;
 use crate::indexer::tools::ToolIndexer;
+use crate::{SearchIndex, SearchQuery, SearchRequest};
 
 const USER: &str = "user:search-index";
 
@@ -658,7 +658,7 @@ async fn a_pass_leaves_a_function_that_a_notified_write_indexed_at_a_newer_revis
         .await;
     world
         .index
-        .index_function(coral_functions::SavedFunctionEntry::from_saved(&newer));
+        .sync_function(newer.workspace_id().clone(), newer.id().clone());
     // The notified write queues for the mutex ahead of the pass's next item.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     drop(hold);
@@ -1186,7 +1186,7 @@ async fn a_pass_corrects_the_statistics_a_saved_function_delete_leaves() {
     assert!(world.has_term("tides").await);
     world.assert_exact_statistics().await;
 
-    // The function's row cascades with it, and no index write follows.
+    // The delete leaves the function's row and notifies nothing.
     world
         .modules
         .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
@@ -1196,6 +1196,53 @@ async fn a_pass_corrects_the_statistics_a_saved_function_delete_leaves() {
 
     assert!(!world.has_term("tides").await);
     world.assert_exact_statistics().await;
+}
+
+#[tokio::test]
+async fn a_deleted_function_leaves_search_before_its_row_leaves_the_index() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let principal = AuthenticatedPrincipal::user(world.user.clone());
+    world
+        .modules
+        .save_function(
+            &principal,
+            &world.workspace,
+            "internal.summarizeTides",
+            "Summarize the tides",
+            60,
+        )
+        .await;
+    world.index.reconcile().await;
+    let hits = async || {
+        world
+            .modules
+            .search
+            .search(
+                &principal,
+                &world.workspace,
+                &SearchRequest::query(SearchQuery::parse("tides").expect("query")),
+            )
+            .await
+            .expect("search the Workspace")
+            .hits()
+            .len()
+    };
+    assert_eq!(hits().await, 1);
+
+    world
+        .modules
+        .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
+        .await;
+
+    assert_eq!(
+        world.function_rows().await,
+        1,
+        "the row outlives the function"
+    );
+    assert_eq!(hits().await, 0);
+    world.index.reconcile().await;
+    assert_eq!(world.function_rows().await, 0);
 }
 
 #[tokio::test]
@@ -1220,6 +1267,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
         [
             "coral.search.reconcile",
             "coral.search.reconcile.remove_superseded",
+            "coral.search.reconcile.remove_orphaned",
             "coral.search.reconcile.generations",
             "coral.search.reconcile.functions",
             "coral.search.reconcile.statistics",
@@ -1245,7 +1293,7 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
         write_names(&writes),
         [
             "coral.search.index_generation",
-            "coral.search.index_function"
+            "coral.search.sync_function"
         ],
         "the first pass indexes the Provider and the function"
     );
@@ -1270,12 +1318,12 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
     assert_eq!(
         statistics_work(&pass),
         (checked, checked, checked > 0),
-        "the pass after a cascade counts the Workspace again"
+        "the pass that removes a row counts the Workspace again"
     );
     assert_eq!(
         write_names(&writes).len(),
-        usize::try_from(checked).expect("a count"),
-        "a recount is a write of its own: {writes:?}"
+        1 + usize::try_from(checked).expect("a count"),
+        "a removal and a recount are writes of their own: {writes:?}"
     );
     let (pass, writes) = split_pass(world.traced_pass().await);
     assert_eq!(
@@ -2604,6 +2652,25 @@ impl World {
             )
             .await
             .expect("read the statistics")
+    }
+
+    /// How many Saved Function rows the index holds in the Workspace.
+    async fn function_rows(&self) -> usize {
+        let rows: Vec<(String,)> = self
+            .modules
+            .search
+            .database
+            .fetch_all(
+                Query::select()
+                    .column(Alias::new("doc_id"))
+                    .from(Alias::new("search_entities"))
+                    .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
+                    .and_where(Expr::col(Alias::new("kind")).eq("saved_function"))
+                    .to_owned(),
+            )
+            .await
+            .expect("read the function rows");
+        rows.len()
     }
 
     /// Whether the Workspace's Postgres term statistics hold `term`.

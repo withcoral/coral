@@ -658,24 +658,38 @@ pub(super) async fn upsert_function_row(
     Ok(())
 }
 
+/// Deletes a Saved Function's row and state row. The caller leaves the
+/// Workspace's statistics to the next reconcile pass.
+pub(super) async fn delete_function_entry(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    function_id: &SavedFunctionId,
+) -> Result<(), Error> {
+    transaction
+        .execute(function_row(workspace_id, function_id))
+        .await?;
+    delete_function_state(transaction, workspace_id, function_id).await
+}
+
+fn function_row(workspace_id: &WorkspaceId, function_id: &SavedFunctionId) -> DeleteStatement {
+    Query::delete()
+        .from_table(SearchEntities::Table)
+        .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SearchEntities::DocId).eq(function_id.to_string()))
+        .and_where(Expr::col(SearchEntities::Kind).eq(SAVED_FUNCTION))
+        .to_owned()
+}
+
 /// Deletes a Saved Function's row, then refreshes the Workspace's statistics.
 pub(super) async fn delete_function_row(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     function_id: &SavedFunctionId,
 ) -> Result<(), Error> {
-    let workspace_id = workspace_id.to_string();
     transaction
-        .execute(
-            Query::delete()
-                .from_table(SearchEntities::Table)
-                .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.as_str()))
-                .and_where(Expr::col(SearchEntities::DocId).eq(function_id.to_string()))
-                .and_where(Expr::col(SearchEntities::Kind).eq(SAVED_FUNCTION))
-                .to_owned(),
-        )
+        .execute(function_row(workspace_id, function_id))
         .await?;
-    refresh_statistics(transaction, &workspace_id).await?;
+    refresh_statistics(transaction, &workspace_id.to_string()).await?;
     Ok(())
 }
 
@@ -1246,7 +1260,7 @@ pub(super) async fn recorded_function_fingerprint(
                 .from(SearchEntities::Table)
                 .and_where(Expr::col(SearchEntities::WorkspaceId).eq(workspace_id.to_string()))
                 .and_where(Expr::col(SearchEntities::Kind).eq(SAVED_FUNCTION))
-                .and_where(Expr::col(SearchEntities::SavedFunctionId).eq(function_id.to_string()))
+                .and_where(Expr::col(SearchEntities::DocId).eq(function_id.to_string()))
                 .to_owned(),
         )
         .await?;

@@ -3838,8 +3838,8 @@ impl TestModules {
             .expect("save Saved Function")
     }
 
-    /// Deletes the Saved Function at `path`. Its row in the index cascades
-    /// with it, and no index write follows.
+    /// Deletes the Saved Function at `path`. Its row stays in the index, and
+    /// no index write follows: a reconcile pass removes it.
     async fn delete_function(
         &self,
         principal: &AuthenticatedPrincipal,

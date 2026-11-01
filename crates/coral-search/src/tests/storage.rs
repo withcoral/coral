@@ -57,7 +57,7 @@ async fn sqlite_triggers_keep_the_text_index_in_step_with_search_entities() {
 }
 
 #[tokio::test]
-async fn sqlite_text_index_follows_a_saved_function_delete_cascade() {
+async fn sqlite_text_index_follows_a_saved_function_removal() {
     coral_test_support::database_only!(Sqlite);
     let upstream = MockServer::start().await;
     let tracer = Tracer::publish(&upstream).await;
@@ -92,6 +92,11 @@ async fn sqlite_text_index_follows_a_saved_function_delete_cascade() {
         )
         .await
         .expect("delete the Saved Function");
+    tracer
+        .modules
+        .index
+        .sync_function(tracer.workspace.clone(), saved.id().clone());
+    tracer.modules.index.settled().await;
 
     assert!(
         text_matches(&database, &tracer.workspace, "forecast")

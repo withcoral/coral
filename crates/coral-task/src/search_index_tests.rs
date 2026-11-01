@@ -50,29 +50,28 @@ async fn one_reconcile_pass_indexes_a_function_a_notification_missed_and_a_secon
 
 #[tokio::test]
 async fn a_pass_reindexes_a_function_whose_fingerprint_differs_from_its_revision() {
-    // Notifications that land out of order leave revision 9 indexed over
-    // revision 10. As text, "9" sorts after "10", so only a comparison for
-    // inequality finds the row stale.
+    // Two processes can leave revision 9 indexed over revision 10. As text,
+    // "9" sorts after "10", so only a comparison for inequality finds the row
+    // stale.
     let fixture = Fixture::new().await;
     let index = &fixture.index;
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Save a function");
-    let mut entries = Vec::new();
     for revision in 1..=10 {
-        let saved = fixture
+        fixture
             .commands
             .save_function(&call, "answer", &format!("Revision {revision}"), SOURCE)
             .await
             .unwrap();
-        entries.push(coral_functions::SavedFunctionEntry::from_saved(&saved));
     }
-    let [.., ninth, tenth] = entries.as_slice() else {
-        panic!("ten revisions");
-    };
-    assert_eq!((ninth.revision(), tenth.revision()), (9, 10));
-    index.index_function(tenth.clone());
-    index.index_function(ninth.clone());
     index.settled().await;
+    fixture
+        .test_database
+        .execute_fixture_sql(
+            "UPDATE search_entities SET fingerprint = '9.1', description = 'Revision 9'",
+        )
+        .await
+        .expect("leave the older revision indexed");
 
     index.reconcile().await;
 
@@ -189,7 +188,8 @@ async fn a_function_whose_write_overran_its_limit_waits_for_a_change() {
             .clone()
             .with_write_limit(std::time::Duration::from_millis(100))
             .with_stall_after_lock(std::time::Duration::from_hours(1));
-        stalled.index_function(coral_functions::SavedFunctionEntry::from_saved(&saved));
+        lose_function_rows(&fixture).await;
+        stalled.sync_function(saved.workspace_id().clone(), saved.id().clone());
         stalled.settled().await;
         let failed = function_states(&fixture).await;
         let [state] = failed.as_slice() else {
@@ -413,12 +413,87 @@ async fn deleting_a_function_through_the_task_command_removes_its_row() {
         .delete_function(&call, "answer")
         .await
         .unwrap();
+    index.settled().await;
 
     assert_eq!(indexed_paths(&fixture).await, ["kept"]);
 }
 
 #[tokio::test]
-async fn removing_access_removes_the_principals_rows_with_their_functions() {
+async fn a_notification_reads_the_function_as_it_stands() {
+    let fixture = Fixture::new().await;
+    let index = &fixture.index;
+    let goal = fixture.goal().await;
+    let call = fixture.call(&goal, "Save and delete");
+    let saved = fixture
+        .commands
+        .save_function(&call, "answer", "Answer", SOURCE)
+        .await
+        .unwrap();
+    index.settled().await;
+    let stamps = indexed_at(&fixture).await;
+
+    index.sync_function(saved.workspace_id().clone(), saved.id().clone());
+    index.settled().await;
+    assert_eq!(
+        indexed_at(&fixture).await,
+        stamps,
+        "a repeat of a current function writes nothing"
+    );
+
+    fixture
+        .commands
+        .delete_function(&call, "answer")
+        .await
+        .unwrap();
+    index.settled().await;
+    index.sync_function(saved.workspace_id().clone(), saved.id().clone());
+    index.settled().await;
+    assert_eq!(
+        indexed_paths(&fixture).await,
+        Vec::<String>::new(),
+        "a late notification of a deleted function restores nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_delete_commits_while_an_index_write_holds_the_functions_search_row() {
+    // A cascade from the function to its search rows made this delete wait
+    // for the index write. When that write then re-checked its foreign key,
+    // Postgres ended one of the two with `40P01` (#2684).
+    coral_test_support::database_only!(Postgres);
+    let fixture = Fixture::new().await;
+    let goal = fixture.goal().await;
+    let call = fixture.call(&goal, "Save and delete");
+    let saved = fixture
+        .commands
+        .save_function(&call, "answer", "Answer", SOURCE)
+        .await
+        .unwrap();
+    fixture.index.settled().await;
+
+    let mut index_write = fixture.tasks.database.begin().await.unwrap();
+    index_write
+        .execute_sql(
+            "UPDATE search_entities SET description = description WHERE saved_function_id = $1",
+            sea_query::Values(vec![saved.id().to_string().into()]),
+        )
+        .await
+        .unwrap();
+
+    let deleted = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        fixture.commands.delete_function(&call, "answer"),
+    )
+    .await
+    .expect("the delete does not wait for search")
+    .unwrap();
+
+    assert_eq!(&deleted, saved.id());
+    index_write.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_pass_removes_the_rows_of_the_functions_that_removing_access_deleted() {
     let fixture = Fixture::new().await;
     let index = &fixture.index;
     let owner = fixture.actor.authenticated_user().unwrap().clone();
@@ -504,6 +579,13 @@ async fn removing_access_removes_the_principals_rows_with_their_functions() {
         .remove_workspace_member(&change, &fixture.workspace, member.user_id())
         .await
         .unwrap();
+    assert_eq!(
+        indexed_paths(&fixture).await,
+        ["automated", "membered", "owned"],
+        "a source's delete leaves the search tables alone"
+    );
+    assert_eq!(state_principals(&fixture).await, failed_principals);
+    index.reconcile().await;
     assert_eq!(indexed_paths(&fixture).await, ["automated", "owned"]);
     let mut remaining = vec![owner_id.clone(), agent_id];
     remaining.sort();
@@ -513,6 +595,7 @@ async fn removing_access_removes_the_principals_rows_with_their_functions() {
         .delete_agent(&change, &fixture.workspace, agent.principal().id())
         .await
         .unwrap();
+    index.reconcile().await;
     assert_eq!(indexed_paths(&fixture).await, ["owned"]);
     assert_eq!(state_principals(&fixture).await, [owner_id]);
 }

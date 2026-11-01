@@ -152,7 +152,7 @@ pub(crate) trait EntityIndexer: Send + Sync {
     type Rows<'e>: Send + Sync
     where
         Self: 'e;
-    /// What a removal names; `Infallible` when a database cascade removes.
+    /// What a removal names.
     type Removal: Send + Sync;
     /// What the reconcile task compares the index against.
     type Expected: Send + Sync;

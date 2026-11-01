@@ -194,7 +194,7 @@ impl TaskCommands {
         // Outside the rejection path: indexing never undoes or rejects a
         // committed save.
         self.index
-            .index_function(coral_functions::SavedFunctionEntry::from_saved(&function));
+            .sync_function(function.workspace_id().clone(), function.id().clone());
         Ok(function)
     }
 
@@ -241,7 +241,13 @@ impl TaskCommands {
         }
         .await;
         match result {
-            Ok(value) => Ok(value),
+            Ok(deleted) => {
+                // The delete never touches the search tables. This only
+                // removes the function's rows sooner than a reconcile pass.
+                self.index
+                    .sync_function(call.workspace_id.clone(), deleted.clone());
+                Ok(deleted)
+            }
             Err(error) => Err(self.reject(call, &id, error).await),
         }
     }

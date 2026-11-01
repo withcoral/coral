@@ -585,6 +585,24 @@ pub(crate) async fn list_every_entry_in_transaction(
         .collect()
 }
 
+pub(crate) async fn entry_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    id: &SavedFunctionId,
+) -> Result<Option<SavedFunctionEntry>, Error> {
+    let row: Option<SavedFunctionEntryRow> = transaction
+        .fetch_optional(
+            entries_statement()
+                .and_where(
+                    Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()),
+                )
+                .and_where(Expr::col(SavedFunctionRecords::Id).eq(id.to_string()))
+                .to_owned(),
+        )
+        .await?;
+    row.map(SavedFunctionEntryRow::decode).transpose()
+}
+
 pub(crate) async fn index_revisions(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<crate::SavedFunctionIndexRevision>, Error> {
@@ -615,31 +633,6 @@ pub(crate) async fn index_revisions(
             })
         })
         .collect()
-}
-
-pub(crate) async fn index_revision(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    id: &SavedFunctionId,
-) -> Result<Option<u64>, Error> {
-    let row: Option<(i64,)> = transaction
-        .fetch_optional(
-            Query::select()
-                .column(SavedFunctionRecords::DefinitionRevision)
-                .from(SavedFunctionRecords::Table)
-                .and_where(
-                    Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()),
-                )
-                .and_where(Expr::col(SavedFunctionRecords::Id).eq(id.to_string()))
-                .to_owned(),
-        )
-        .await?;
-    row.map(|(revision,)| {
-        u64::try_from(revision).map_err(|_error| {
-            Error::CorruptData("invalid Saved Function index revision".to_string())
-        })
-    })
-    .transpose()
 }
 
 fn entries_statement() -> sea_query::SelectStatement {

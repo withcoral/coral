@@ -300,13 +300,10 @@ async fn entry_reads_return_current_functions_with_revision_and_declaration_fiel
         (&workspace_id, gone.id(), None),
     ] {
         assert_eq!(
-            crate::saved_function_index_revision_in_transaction(
-                &mut transaction,
-                workspace,
-                function,
-            )
-            .await
-            .expect("read one function's revision"),
+            crate::saved_function_entry_in_transaction(&mut transaction, workspace, function)
+                .await
+                .expect("read one function's entry")
+                .map(|entry| entry.revision()),
             revision
         );
     }
