@@ -20,7 +20,7 @@ use super::{ToolFailure, success};
     {"if":{"properties":{"state":{"not":{"const":"running"}}},"required":["state"]},"then":{"properties":{"required_actions":{"type":"array","maxItems":0}}}}
 ]))]
 pub(crate) struct RunUpdateResult<'a> {
-    #[schemars(schema_with = "crate::arguments::identifier_schema")]
+    #[schemars(schema_with = "super::identifier_schema")]
     run_id: String,
     state: State,
     required_actions: Vec<Action>,
@@ -42,7 +42,7 @@ pub(crate) struct RunUpdateResult<'a> {
     /// The Task this `exec` started, when it passed no `task_id`. Pass it to
     /// every later call.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "crate::arguments::identifier_schema")]
+    #[schemars(schema_with = "super::identifier_schema")]
     task_id: Option<String>,
     /// With `task_id`: the namespaces `coral.workspace.search` can filter by.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -278,6 +278,51 @@ async fn ending_the_turn_keeps_the_same_content_and_structured_content() {
     assert_eq!(serialized, serde_json::to_value(&plain).unwrap());
 }
 
+/// Input schemas no longer spell out identifiers, so a malformed one reaches
+/// the server, which rejects it as invalid input before acting on it.
+#[tokio::test]
+async fn the_server_rejects_a_malformed_identifier_on_every_tool() {
+    const MALFORMED: &str = "not-a-task";
+    let fixture = server_fixture().await;
+    for (tool, arguments) in [
+        (
+            "end_task",
+            json!({"task_id": MALFORMED, "outcome": "success"}),
+        ),
+        (
+            "exec",
+            json!({"task_id": MALFORMED, "intent": "Run", "program": "return 1;"}),
+        ),
+        (
+            "save_function",
+            json!({
+                "task_id": MALFORMED, "intent": "Save", "path": "a.b",
+                "description": "Saves.", "source": "export default () => 1;"
+            }),
+        ),
+        (
+            "delete_function",
+            json!({"task_id": MALFORMED, "intent": "Delete", "path": "a.b"}),
+        ),
+        ("wait", json!({"run_id": MALFORMED})),
+        ("cancel", json!({"run_id": MALFORMED})),
+    ] {
+        let request =
+            CallToolRequestParams::new(tool).with_arguments(arguments.as_object().unwrap().clone());
+        let Err(DispatchError::Protocol(error)) =
+            fixture.server.dispatch(request, Channel::Unavailable).await
+        else {
+            panic!("{tool} rejects the identifier as invalid input")
+        };
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{tool}");
+        assert!(
+            error.message.contains("identifier must be"),
+            "{tool} says what a valid identifier looks like: {}",
+            error.message
+        );
+    }
+}
+
 /// A Run Owner that stopped before answering and a request not yet recorded
 /// by its owner each project one stable code; neither is an internal error.
 #[test]

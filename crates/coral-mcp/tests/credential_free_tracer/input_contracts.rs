@@ -420,11 +420,10 @@ async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
             let Some(schema) = tool.pointer(&format!("/inputSchema/properties/{field}")) else {
                 continue;
             };
-            assert_eq!(
-                schema["pattern"],
-                coral_identifier::SCHEMA_PATTERN,
-                "{name}.{field}"
-            );
+            // The server parses identifiers. Input schemas leave the rules out
+            // because every tool definition reaches the model on every request.
+            assert_eq!(schema.get("pattern"), None, "{name}.{field}");
+            assert_eq!(schema.get("maxLength"), None, "{name}.{field}");
             let validator = validator(schema);
             // Four or five words, the shapes Coral accepts, or the UUID of an
             // identifier issued before Coral used words.
@@ -436,25 +435,20 @@ async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
                 assert!(validator.is_valid(&json!(valid)), "{name}.{field}: {valid}");
             }
             assert!(!validator.is_valid(&Value::Null));
-            for invalid in [
-                "height-word-database".to_string(),
-                "Height-word-database-library".to_string(),
-                "height-word-database-library-power-table".to_string(),
-                "abcdefghijklmnopqrstu-word-database-library".to_string(),
-                "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx1".to_string(),
-                canonical.to_uppercase(),
-                canonical.replace('-', ""),
-            ] {
-                assert!(
-                    !validator.is_valid(&json!(invalid)),
-                    "{name}.{field}: {invalid}"
-                );
-            }
         }
     }
-    for invalid in ["not-a-uuid", "ABCDEF12-1234-4123-8123-123456789ABC"] {
-        coral_task::TaskId::parse(invalid).expect_err("invalid Task id");
-        coral_run::RunId::parse(invalid).expect_err("invalid Run id");
+    for invalid in [
+        "not-a-uuid".to_string(),
+        "ABCDEF12-1234-4123-8123-123456789ABC".to_string(),
+        "height-word-database".to_string(),
+        "Height-word-database-library".to_string(),
+        "height-word-database-library-power-table".to_string(),
+        "abcdefghijklmnopqrstu-word-database-library".to_string(),
+        "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx1".to_string(),
+        canonical.replace('-', ""),
+    ] {
+        coral_task::TaskId::parse(&invalid).expect_err("invalid Task id");
+        coral_run::RunId::parse(&invalid).expect_err("invalid Run id");
         for (name, arguments) in [
             (
                 "search",

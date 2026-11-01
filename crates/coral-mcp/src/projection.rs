@@ -7,12 +7,12 @@ use coral_task::TaskOutcome;
 use coral_workspace::TraceId;
 use rmcp::model::{CallToolResult, MetaObject};
 use schemars::{
-    JsonSchema, Schema,
+    JsonSchema, Schema, SchemaGenerator,
     generate::SchemaSettings,
     transform::{RestrictFormats, Transform as _},
 };
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 pub(crate) use discovery::{SavedFunctionResult, saved_function};
 pub(crate) use run::{RunUpdateResult, run_update};
@@ -100,6 +100,15 @@ fn bounded_message(message: &str) -> String {
         .to_string()
 }
 
+/// A Task or Run identifier in a result: four or five lowercase words joined by
+/// hyphens, or the UUID of one issued before Coral used words.
+fn identifier_schema(generator: &mut SchemaGenerator) -> Schema {
+    let mut schema = String::json_schema(generator);
+    schema.insert("pattern".into(), json!(coral_identifier::SCHEMA_PATTERN));
+    schema.insert("maxLength".into(), json!(coral_identifier::MAX_LENGTH));
+    schema
+}
+
 #[derive(Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DeletedFunction {
@@ -109,7 +118,7 @@ pub(crate) struct DeletedFunction {
 #[derive(Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EndedTask {
-    #[schemars(schema_with = "crate::arguments::identifier_schema")]
+    #[schemars(schema_with = "identifier_schema")]
     pub(crate) task_id: String,
     pub(crate) outcome: Outcome,
 }

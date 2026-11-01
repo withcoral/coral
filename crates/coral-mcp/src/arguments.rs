@@ -12,7 +12,8 @@ use coral_run::RUN_TIMEOUT_MAX_MS;
 use coral_task::{TASK_FEEDBACK_MAX_CHARS, TASK_INTENT_MAX_CHARS};
 
 const TASK_ID_DESCRIPTION: &str = "The task_id from your first exec.";
-const EXEC_TASK_ID_DESCRIPTION: &str = "Omit it on the first exec of a unit of user work, and Coral starts a Task and returns its task_id. Pass that task_id on every later exec.";
+const EXEC_TASK_ID_DESCRIPTION: &str =
+    "Omit on the first exec of a unit of user work. Pass the returned task_id on later execs.";
 const RUN_ID_DESCRIPTION: &str = "The run_id from exec.";
 const CALL_INTENT_DESCRIPTION: &str = "Why this call is needed, in one short phrase.";
 const FUNCTION_PATH_DESCRIPTION: &str =
@@ -35,7 +36,8 @@ Then call tools in a later Program by complete literal Call Path."#;
 // Claude Code also drops what follows 2048 in a tool description, which would
 // cut the example.
 const _: () = assert!(EXEC_TOOL_DESCRIPTION.len() <= 2048);
-const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
+const RUN_CURSOR_DESCRIPTION: &str =
+    "The latest next_cursor of this Run. Omit to read its events from the start.";
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
 pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 30_000;
 pub(crate) const DEFAULT_WAIT_MS: u64 = 0;
@@ -51,7 +53,7 @@ pub(crate) trait ToolArguments: DeserializeOwned + JsonSchema + Any {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct SaveFunctionArguments {
-    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
+    #[schemars(description = TASK_ID_DESCRIPTION)]
     pub(crate) task_id: String,
     #[schemars(
         length(min = 1, max = TASK_INTENT_MAX_CHARS),
@@ -83,7 +85,7 @@ impl ToolArguments for SaveFunctionArguments {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct DeleteFunctionArguments {
-    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
+    #[schemars(description = TASK_ID_DESCRIPTION)]
     pub(crate) task_id: String,
     #[schemars(
         length(min = 1, max = TASK_INTENT_MAX_CHARS),
@@ -106,7 +108,7 @@ impl ToolArguments for DeleteFunctionArguments {
 #[schemars(deny_unknown_fields)]
 pub(crate) struct ExecArguments {
     #[serde(default)]
-    #[schemars(schema_with = "identifier_schema", description = EXEC_TASK_ID_DESCRIPTION)]
+    #[schemars(with = "String", description = EXEC_TASK_ID_DESCRIPTION)]
     pub(crate) task_id: Option<String>,
     #[schemars(
         length(min = 1, max = TASK_INTENT_MAX_CHARS),
@@ -124,7 +126,7 @@ pub(crate) struct ExecArguments {
     #[schemars(
         range(min = 0, max = MAX_WAIT_MS),
         extend("default" = DEFAULT_EXEC_WAIT_MS),
-        description = format!("How long this call waits for output before returning, in milliseconds. Default {DEFAULT_EXEC_WAIT_MS}. 0 returns at once.")
+        description = format!("Milliseconds to wait for a required action or the Run's end. Default {DEFAULT_EXEC_WAIT_MS}. 0 returns at once.")
     )]
     pub(crate) wait_ms: Option<u64>,
 }
@@ -137,10 +139,7 @@ impl ToolArguments for ExecArguments {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct WaitArguments {
-    #[schemars(
-        schema_with = "identifier_schema",
-        description = RUN_ID_DESCRIPTION
-    )]
+    #[schemars(description = RUN_ID_DESCRIPTION)]
     pub(crate) run_id: String,
     #[schemars(
         length(min = 1),
@@ -150,7 +149,7 @@ pub(crate) struct WaitArguments {
     #[schemars(
         range(min = 0, max = MAX_WAIT_MS),
         extend("default" = DEFAULT_WAIT_MS),
-        description = format!("How long to wait for a required action or the end of the Run, in milliseconds. Output that arrives by then comes with it. Default {DEFAULT_WAIT_MS}.")
+        description = format!("Milliseconds to wait for a required action or the Run's end. Default {DEFAULT_WAIT_MS}.")
     )]
     pub(crate) wait_ms: Option<u64>,
 }
@@ -163,10 +162,7 @@ impl ToolArguments for WaitArguments {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct CancelArguments {
-    #[schemars(
-        schema_with = "identifier_schema",
-        description = RUN_ID_DESCRIPTION
-    )]
+    #[schemars(description = RUN_ID_DESCRIPTION)]
     pub(crate) run_id: String,
     #[schemars(
         length(min = 1),
@@ -191,7 +187,7 @@ pub(crate) enum TaskOutcomeArgument {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct EndTaskArguments {
-    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
+    #[schemars(description = TASK_ID_DESCRIPTION)]
     pub(crate) task_id: String,
     #[schemars(description = "Terminal Task outcome.")]
     pub(crate) outcome: TaskOutcomeArgument,
@@ -280,7 +276,7 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
         ),
         always_loaded(
             tool::<WaitArguments, crate::projection::RunUpdateResult<'_>>(
-                "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Observing consumes nothing, so an earlier cursor reads the same output again.",
+                "Read one Program Run's Emissions, Logs, `required_actions` and `state`. An earlier cursor rereads the same output.",
                 read_annotations("Wait for Run"),
             ),
         ),
@@ -305,6 +301,10 @@ where
     // This visits schema positions (including $defs), not example/default JSON data.
     let mut input_schema = Schema::from(input_schema.as_ref().clone());
     RestrictFormats::default().transform(&mut input_schema);
+    // Tool definitions reach the model on every request. MCP already defaults
+    // to this dialect, and each identifier's rules live in its parser, whose
+    // error says what a valid one looks like.
+    input_schema.remove("$schema");
     let mut tool = Tool::new(T::NAME, description, input_schema.ensure_object().clone())
         .with_annotations(annotations);
     tool.output_schema = Some(std::sync::Arc::new(crate::projection::output_schema::<
@@ -328,15 +328,6 @@ pub(crate) fn uuid_schema(generator: &mut SchemaGenerator) -> Schema {
     schema.insert("format".into(), json!("uuid"));
     schema.insert("minLength".into(), json!(36));
     schema.insert("maxLength".into(), json!(36));
-    schema
-}
-
-/// A Task or Run identifier: four or five lowercase words joined by hyphens,
-/// or the UUID of one issued before Coral used words.
-pub(crate) fn identifier_schema(generator: &mut SchemaGenerator) -> Schema {
-    let mut schema = String::json_schema(generator);
-    schema.insert("pattern".into(), json!(coral_identifier::SCHEMA_PATTERN));
-    schema.insert("maxLength".into(), json!(coral_identifier::MAX_LENGTH));
     schema
 }
 
@@ -419,6 +410,28 @@ mod tests {
         }
     }
 
+    /// Every byte here is resent to the model on every request, so input
+    /// schemas leave the dialect and identifier rules to MCP and the server.
+    #[test]
+    fn input_schemas_omit_the_dialect_and_identifier_rules() {
+        for tool in tools() {
+            let name = &tool.name;
+            let schema = &tool.input_schema;
+            assert!(!schema.contains_key("$schema"), "{name}");
+            for field in ["task_id", "run_id"] {
+                let Some(identifier) = schema
+                    .get("properties")
+                    .and_then(|properties| properties.get(field))
+                else {
+                    continue;
+                };
+                assert_eq!(identifier.get("type"), Some(&json!("string")), "{name}");
+                assert_eq!(identifier.get("pattern"), None, "{name}");
+                assert_eq!(identifier.get("maxLength"), None, "{name}");
+            }
+        }
+    }
+
     #[derive(Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     #[expect(dead_code, reason = "schema-generation fixture")]
@@ -463,7 +476,8 @@ mod tests {
                 .as_ref()
                 .clone(),
         );
-        // The only permitted changes are these generated numeric annotations.
+        expected.as_object_mut().unwrap().remove("$schema");
+        // The only other permitted changes are these generated numeric annotations.
         // In particular, keep UUID, local references, required fields and bounds.
         for (path, format) in [
             ("/properties/count", "uint16"),

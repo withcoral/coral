@@ -12,6 +12,7 @@ use axum::http::header;
 use axum::routing::get;
 use coral_catalog::{OpenApiDocument, ToolKey};
 use coral_functions::SavedFunctionModule;
+use coral_identifier as _;
 use coral_mcp::{McpHttpConfig, McpModules, SUPPORTED_PROTOCOL_VERSIONS, start_local};
 use coral_policy::{ToolAccessState, ToolPolicyModule, ToolPolicyTarget};
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
