@@ -198,12 +198,12 @@ impl ProgramError {
                 > maximum_bytes
         }) {
             self.truncated = true;
-            if self.errors.pop().is_some() {
+            if self.last_tool_result.take().is_some() {
+                // Context gives way before the Program's own error does.
+            } else if self.errors.pop().is_some() {
                 self.omitted_errors += 1;
             } else if self.cause.take().is_some() {
                 self.cause_omitted = true;
-            } else if self.last_tool_result.take().is_some() {
-                // Context gives way before the Program's own error does.
             } else if self.frames.pop().is_some() {
                 // Keep the original message even when no frame fits.
             } else if !self.message.is_empty() {
@@ -503,6 +503,28 @@ mod tests {
         error.fit(900);
         assert_eq!(error.last_tool_result, None);
         assert_eq!((error.frames.len(), error.message.len()), (1, 600));
+        assert!(error.truncated);
+    }
+
+    /// The cause chain and `AggregateError` members are the Program's own
+    /// failure. The excerpt is context, so it is the first thing to go.
+    #[test]
+    fn the_excerpt_gives_way_before_a_cause_or_an_aggregate_member() {
+        let member = ProgramError::unavailable("member");
+        let mut error = ProgramError::unavailable("outer");
+        error.cause = Some(Box::new(ProgramError::unavailable(&"c".repeat(500))));
+        error.errors = vec![member.clone()];
+        let fits = serde_json::to_vec(&error).expect("error JSON").len() + 64;
+        let result = serde_json::json!({"data": "v".repeat(200)}).to_string();
+        error.last_tool_result = ProgramToolResult::excerpt("path", &result).map(Box::new);
+        error.fit(fits);
+        assert_eq!(error.last_tool_result, None);
+        assert_eq!(error.errors, [member]);
+        assert_eq!(
+            error.cause.map(|cause| cause.message),
+            Some("c".repeat(500))
+        );
+        assert_eq!((error.cause_omitted, error.omitted_errors), (false, 0));
         assert!(error.truncated);
     }
 }
