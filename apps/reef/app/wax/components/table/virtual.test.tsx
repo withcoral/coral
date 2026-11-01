@@ -18,9 +18,9 @@ const VIEWPORT = 200
 /** A row's top in the scroll port: the head above the list, plus the rows above it. */
 const top = (index: number) => HEADING_HEIGHT_PX.default + index * ROW
 
-// happy-dom lays nothing out. TanStack Virtual reads the scroll port and each
-// mounted row through `offsetHeight`, so the port is as tall as the viewport
-// here and every row measures `ROW`.
+// happy-dom lays nothing out. TanStack Virtual reads the scroll port through
+// `clientHeight` and each mounted row through `offsetHeight`, so the port is as
+// tall as the viewport here and every row measures `ROW`.
 function Catalog({
   groups,
   perGroup,
@@ -110,17 +110,22 @@ function NestedCatalog({ groups, perGroup }: { groups: number; perGroup: number 
 
 describe('Table virtual rows', () => {
   beforeEach(() => {
-    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
       configurable: true,
       get() {
-        if (this.getAttribute('role') === 'table') return VIEWPORT
-        return this.hasAttribute('data-index') ? ROW : 0
+        return this.getAttribute('role') === 'table' ? VIEWPORT : 0
       },
     })
-    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
       configurable: true,
       get() {
         return 600
+      },
+    })
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get() {
+        return this.hasAttribute('data-index') ? ROW : 0
       },
     })
   })
@@ -206,7 +211,6 @@ describe('Table virtual rows', () => {
       scrolls.push(options.top!)) as typeof table.scrollTo
     // happy-dom reports no scroll height; the virtualizer clamps to it.
     Object.defineProperty(table, 'scrollHeight', { get: () => 21 * ROW })
-    Object.defineProperty(table, 'clientHeight', { get: () => VIEWPORT })
     // row-1-2 is index 10: 10 rows above it.
     await act(async () => handle!.scrollToIndex(10, { depth: 1 }))
     expect(scrolls).toEqual([top(10) - HEADING_HEIGHT_PX.default - GROUP_HEADING_HEIGHT_PX.default])
