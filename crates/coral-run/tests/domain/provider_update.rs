@@ -211,7 +211,7 @@ enum Saved {
     clippy::too_many_lines,
     reason = "one table checks the page each change opens"
 )]
-async fn every_change_returns_the_update_page() {
+async fn every_change_but_a_rename_returns_the_update_page() {
     let confidential = serde_json::json!({
         "method": "oauth_authorization_code",
         "authorization_url": "https://weather.example/authorize",

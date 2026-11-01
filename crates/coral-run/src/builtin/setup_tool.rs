@@ -2,8 +2,8 @@
 //! shares: `addProvider` for a new Provider, `updateProvider` for a new
 //! Generation of one. coral-provider prepares and configures the Setup as the
 //! invoking User, and the Tool returns the Reef page where a person previews
-//! and publishes it. The call never waits for that person, and Coral ends a
-//! Setup it prepared that nobody will finish.
+//! and publishes it. The call never waits for that person, and Coral ends,
+//! best effort, a Setup it prepared that nobody will finish.
 
 use std::collections::BTreeMap;
 

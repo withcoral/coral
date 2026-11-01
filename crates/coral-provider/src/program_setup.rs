@@ -63,7 +63,7 @@ pub struct ProgramSetup {
 /// stop that lands as the Setup commits leaves it to expire at its deadline.
 #[derive(Debug, thiserror::Error)]
 pub enum ProgramSetupError {
-    /// The Run asked to stop before the Setup existed.
+    /// The Run asked to stop while Coral prepared the Setup.
     #[error("the Run stopped before Coral prepared the Setup")]
     Stopped,
     /// A Provider in the Workspace already uses the namespace.
@@ -97,7 +97,7 @@ pub enum ProgramSetupError {
 impl ProviderModule {
     /// Prepares and configures a Setup as the User `context` names, for a
     /// person to finish. The call fails before any fetch for a namespace in
-    /// use, and `stop` ends it only until the Setup exists. After that, it runs
+    /// use, and `stop` ends it only while Coral prepares the Setup. After that, it runs
     /// to an end that returns the Setup or ends it as Coral: nobody will
     /// finish a Setup whose configuration failed. `accounts` says whether Coral
     /// can register an OAuth application; without it, the Setup must name one.
