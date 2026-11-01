@@ -761,6 +761,47 @@ async fn rejecting_forecast_server() -> MockServer {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_failed_run_keeps_its_last_tool_result_out_of_telemetry() {
+    let telemetry = super::trace::telemetry();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/forecast"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ok": false,
+            "error": "last-result-canary",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (outcome, _detail) = run_real_forecast(
+        "user:last-result",
+        &server,
+        "const result = await coral.providers.weather.getForecast({ city: 'London' });
+         for (const item of result.data.items) { await coral.emit(item); }",
+    )
+    .await;
+
+    let RunTerminalOutcome::Failed(failure) = &outcome else {
+        panic!("the Program crashes on the shape it read: {outcome:?}");
+    };
+    assert_eq!(failure.code(), crate::RunFailureCode::ProgramRejected);
+    assert!(!failure.message().contains("last-result-canary"));
+    // This outcome was read back from the Run's row.
+    let result = failure
+        .error()
+        .and_then(|error| error.last_tool_result.as_ref())
+        .expect("last Tool Result");
+    assert_eq!(result.call_path, "coral.providers.weather.getForecast");
+    assert_eq!(result.status, Some(200));
+    assert_eq!(
+        result.data.as_deref(),
+        Some(r#"{"ok":false,"error":"last-result-canary"}"#)
+    );
+    telemetry.assert_holds_none_of(["last-result-canary"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_non_success_http_outcome_rejects_the_call_and_is_retained() {
     let server = rejecting_forecast_server().await;
 

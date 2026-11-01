@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use sourcemap::SourceMap;
 
 const MESSAGE_BYTES: usize = 1024;
@@ -8,6 +11,7 @@ const NAME_BYTES: usize = 64;
 const STACK_BYTES: usize = 16 * 1024;
 const ERROR_JSON_BYTES: usize = 8 * 1024;
 const TOOL_BODY_BYTES: usize = 1024;
+const TOOL_RESULT_BYTES: usize = 256;
 
 /// An authored location in the existing Program error's stack.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +73,75 @@ pub(crate) fn tool_outcome_excerpt(outcome_json: &str) -> (Option<u16>, Option<S
     (status, Some(excerpt.to_string()), truncated)
 }
 
+/// What the Program received from its last Tool Result before it failed.
+///
+/// This is context, not the failure's cause: the Run failed in the Program's
+/// own code, after this Tool call succeeded. The host records it where a
+/// Program cannot reach, and every field repeats data or a Call Path the
+/// Program already held.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProgramToolResult {
+    /// Complete Call Path of the Tool, at most 256 bytes.
+    pub call_path: String,
+    /// HTTP status, absent on a Tool Result that has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// The result's encoded `data`, when it is at most 256 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    /// Sorted top-level keys of an object `data` too long to show, at most
+    /// 256 bytes of names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
+    /// `data` was too long to show; `keys` may leave some out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+}
+
+impl ProgramToolResult {
+    /// Bounds one encoded Tool Result. `None` when it is not a Tool Result
+    /// object, which nothing the host sends should be.
+    pub(crate) fn excerpt(call_path: &str, result_json: &str) -> Option<Self> {
+        #[derive(Deserialize)]
+        struct Encoded<'a> {
+            #[serde(default)]
+            status: Option<u16>,
+            #[serde(borrow, default)]
+            data: Option<&'a RawValue>,
+        }
+        let Encoded { status, data } = serde_json::from_str(result_json).ok()?;
+        let data = data.map(RawValue::get);
+        let oversized = data.filter(|data| data.len() > TOOL_RESULT_BYTES);
+        Some(Self {
+            call_path: prefix(call_path, TOOL_RESULT_BYTES).to_string(),
+            status,
+            data: data.filter(|_data| oversized.is_none()).map(str::to_string),
+            keys: oversized.map_or_else(Vec::new, bounded_keys),
+            truncated: oversized.is_some(),
+        })
+    }
+}
+
+/// The top-level keys of an object, skipping each value unparsed.
+#[expect(
+    clippy::zero_sized_map_values,
+    reason = "a JSON object deserializes to a map, and `IgnoredAny` skips each value"
+)]
+fn bounded_keys(data: &str) -> Vec<String> {
+    let Ok(object) = serde_json::from_str::<BTreeMap<String, IgnoredAny>>(data) else {
+        return Vec::new();
+    };
+    let mut bytes = 0;
+    object
+        .into_keys()
+        .take_while(|key| {
+            bytes += key.len();
+            bytes <= TOOL_RESULT_BYTES
+        })
+        .collect()
+}
+
 /// Bounded isolate-visible error retained for authorized Run readers, never telemetry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,6 +155,10 @@ pub struct ProgramError {
     /// Existing fields available only on a privately marked `ToolError`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<ProgramToolError>,
+    /// The last Tool Result before a failure that no `ToolError` explains.
+    /// Host-recorded context, not the cause, and absent from every summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool_result: Option<Box<ProgramToolResult>>,
     /// Existing cause, independently bounded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cause: Option<Box<Self>>,
@@ -125,6 +202,8 @@ impl ProgramError {
                 self.omitted_errors += 1;
             } else if self.cause.take().is_some() {
                 self.cause_omitted = true;
+            } else if self.last_tool_result.take().is_some() {
+                // Context gives way before the Program's own error does.
             } else if self.frames.pop().is_some() {
                 // Keep the original message even when no frame fits.
             } else if !self.message.is_empty() {
@@ -135,12 +214,21 @@ impl ProgramError {
         }
     }
 
+    /// Whether this error or anything it wraps is a host-created `ToolError`,
+    /// which already carries its own evidence.
+    fn holds_tool_error(&self) -> bool {
+        self.tool.is_some()
+            || self.cause.as_deref().is_some_and(Self::holds_tool_error)
+            || self.errors.iter().any(Self::holds_tool_error)
+    }
+
     pub(crate) fn unavailable(message: &str) -> Self {
         Self {
             name: "Error".to_string(),
             message: message.to_string(),
             frames: Vec::new(),
             tool: None,
+            last_tool_result: None,
             cause: None,
             errors: Vec::new(),
             truncated: false,
@@ -222,6 +310,9 @@ pub(crate) fn from_exception<'s>(
     source_map: &SourceMap,
 ) -> ProgramError {
     let mut error = read_error(scope, value, source_map, &mut Vec::new(), &mut 16);
+    if !error.holds_tool_error() {
+        error.last_tool_result = crate::runtime::last_tool_result(scope).map(Box::new);
+    }
     error.fit(ERROR_JSON_BYTES);
     error
 }
@@ -384,4 +475,34 @@ fn prefix(value: &str, maximum: usize) -> &str {
         end -= 1;
     }
     value.get(..end).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProgramError, ProgramToolResult};
+
+    #[test]
+    fn the_excerpt_bounds_its_call_path_and_ignores_a_non_result() {
+        let path = "é".repeat(200);
+        let excerpt = ProgramToolResult::excerpt(&path, r#"{"data":1}"#).expect("excerpt");
+        assert!(excerpt.call_path.len() <= 256);
+        assert!(excerpt.call_path.is_char_boundary(excerpt.call_path.len()));
+        assert_eq!(ProgramToolResult::excerpt("path", "1"), None);
+    }
+
+    #[test]
+    fn the_excerpt_gives_way_before_the_programs_own_error() {
+        let mut error = ProgramError::unavailable(&"m".repeat(600));
+        error.frames = vec![super::ProgramErrorFrame {
+            source: "program".to_string(),
+            line: 1,
+            column: 1,
+        }];
+        let result = serde_json::json!({"data": "v".repeat(200)}).to_string();
+        error.last_tool_result = ProgramToolResult::excerpt("path", &result).map(Box::new);
+        error.fit(900);
+        assert_eq!(error.last_tool_result, None);
+        assert_eq!((error.frames.len(), error.message.len()), (1, 600));
+        assert!(error.truncated);
+    }
 }

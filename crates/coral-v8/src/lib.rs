@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 pub use compiler::{COMPILATION_TIMEOUT, ProgramCompiler};
 pub use memory::IsolateLimits;
 pub use profile::{TYPESCRIPT_PROFILE, TYPESCRIPT_PROFILE_ID, TypeScriptProfile};
-pub use program_error::{ProgramError, ProgramErrorFrame, ProgramToolError};
+pub use program_error::{ProgramError, ProgramErrorFrame, ProgramToolError, ProgramToolResult};
 pub use runtime::ProgramExecutor;
 
 /// Validates one retained authored source map against the pinned profile rules.

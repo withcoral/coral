@@ -81,6 +81,9 @@ pub(super) struct ProgramError<'a> {
     #[schemars(with = "ToolError<'a>")]
     tool: Option<ToolError<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "LastToolResult<'a>")]
+    last_tool_result: Option<LastToolResult<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Self")]
     cause: Option<Box<Self>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -125,6 +128,25 @@ struct ToolError<'a> {
     body_truncated: bool,
 }
 
+/// The last Tool Result before the failure: context, not necessarily its cause.
+#[derive(Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct LastToolResult<'a> {
+    call_path: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u16")]
+    status: Option<u16>,
+    /// The result's encoded data, when it is at most 256 bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "str")]
+    data: Option<&'a str>,
+    /// Top-level keys of an object too long to show.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    keys: &'a [String],
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    truncated: bool,
+}
+
 impl<'a> TryFrom<&'a coral_run::ProgramError> for ProgramError<'a> {
     type Error = ToolFailure;
 
@@ -148,6 +170,16 @@ impl<'a> TryFrom<&'a coral_run::ProgramError> for ProgramError<'a> {
                 body: tool.body.as_deref(),
                 body_truncated: tool.body_truncated,
             }),
+            last_tool_result: error
+                .last_tool_result
+                .as_ref()
+                .map(|result| LastToolResult {
+                    call_path: &result.call_path,
+                    status: result.status,
+                    data: result.data.as_deref(),
+                    keys: &result.keys,
+                    truncated: result.truncated,
+                }),
             cause: error
                 .cause
                 .as_deref()
@@ -184,6 +216,7 @@ mod tests {
             message: "The upstream service returned an error".to_string(),
             frames: Vec::new(),
             tool: Some(tool),
+            last_tool_result: None,
             cause: None,
             errors: Vec::new(),
             truncated: false,
@@ -191,14 +224,72 @@ mod tests {
             omitted_errors: 0,
             circular: false,
         };
-        let Ok(projected) = ProgramError::try_from(&error) else {
+        project(&error).get("tool").cloned().unwrap_or_default()
+    }
+
+    fn project(error: &coral_run::ProgramError) -> serde_json::Value {
+        let Ok(projected) = ProgramError::try_from(error) else {
             panic!("projection");
         };
-        serde_json::to_value(projected)
-            .expect("JSON")
-            .get("tool")
-            .cloned()
-            .unwrap_or_default()
+        serde_json::to_value(projected).expect("JSON")
+    }
+
+    #[test]
+    fn the_last_tool_result_projects_within_the_output_schema() {
+        let mut error = coral_run::ProgramError {
+            name: "TypeError".to_string(),
+            message: "messages is not iterable".to_string(),
+            frames: Vec::new(),
+            tool: None,
+            last_tool_result: Some(Box::new(coral_run::ProgramToolResult {
+                call_path: "coral.providers.widgets.list".to_string(),
+                status: Some(200),
+                data: Some(r#"{"ok":false}"#.to_string()),
+                keys: Vec::new(),
+                truncated: false,
+            })),
+            cause: None,
+            errors: Vec::new(),
+            truncated: false,
+            cause_omitted: false,
+            omitted_errors: 0,
+            circular: false,
+        };
+        let schema = serde_json::Value::Object(crate::projection::output_schema::<ProgramError>());
+        let validator = jsonschema::draft202012::new(&schema).expect("schema");
+        let projected = project(&error);
+        assert_eq!(
+            projected.get("last_tool_result"),
+            Some(&serde_json::json!({
+                "call_path": "coral.providers.widgets.list",
+                "status": 200,
+                "data": r#"{"ok":false}"#,
+            }))
+        );
+        assert!(validator.is_valid(&projected));
+
+        // Too long to show, and from a Tool with no status.
+        error.last_tool_result = Some(Box::new(coral_run::ProgramToolResult {
+            call_path: "coral.providers.widgets.list".to_string(),
+            status: None,
+            data: None,
+            keys: vec!["items".to_string()],
+            truncated: true,
+        }));
+        let projected = project(&error);
+        assert_eq!(
+            projected.get("last_tool_result"),
+            Some(&serde_json::json!({
+                "call_path": "coral.providers.widgets.list",
+                "keys": ["items"],
+                "truncated": true,
+            }))
+        );
+        assert!(validator.is_valid(&projected));
+
+        error.last_tool_result = None;
+        let projected = project(&error);
+        assert_eq!(projected.get("last_tool_result"), None);
     }
 
     #[test]

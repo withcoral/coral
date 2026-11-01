@@ -14,7 +14,7 @@ coral-telemetry.workspace = true
 coral-value.workspace = true
 deno_core_icudata.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 sourcemap.workspace = true
 thiserror.workspace = true
 v8.workspace = true

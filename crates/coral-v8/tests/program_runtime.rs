@@ -1446,6 +1446,234 @@ fn an_uncaught_error_response_retains_its_status_and_a_bounded_body() {
     assert!(body.starts_with("\"é"));
 }
 
+/// Answers each Tool call with the next scripted result.
+struct ScriptedToolHost {
+    results: Mutex<std::collections::VecDeque<Result<String, ToolHostError>>>,
+}
+
+impl ProgramHost for ScriptedToolHost {
+    fn invoke(
+        self: Arc<Self>,
+        _call_path: String,
+        _arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::ToolFuture {
+        let result = self
+            .results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop_front()
+            .unwrap_or(Err(ToolHostError::Fatal));
+        Box::pin(async move { result })
+    }
+
+    fn emit(
+        &self,
+        _value_json: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+
+    fn log(
+        &self,
+        _level: ConsoleLevel,
+        _message: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+}
+
+fn http_result(data: &serde_json::Value) -> String {
+    serde_json::json!({"status": 200, "data": data, "metadata": {"kind": "http"}}).to_string()
+}
+
+fn upstream_error() -> Result<String, ToolHostError> {
+    Err(ToolHostError::Upstream {
+        code: "error_response",
+        message: "The upstream service returned an error",
+        outcome_json: r#"{"status":404,"data":{"message":"missing"},"metadata":{"kind":"http"}}"#
+            .to_string(),
+    })
+}
+
+/// Runs `source` against `results` and returns the error that failed it.
+fn program_failure(
+    results: Vec<Result<String, ToolHostError>>,
+    source: &str,
+) -> coral_v8::ProgramError {
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
+        .expect("start compiler")
+        .compile(compilation_deadline(), source)
+        .expect("compile");
+    let host = Arc::new(ScriptedToolHost {
+        results: Mutex::new(results.into()),
+    });
+    let error = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, host)
+        .expect_err("the Program fails");
+    let Error::ProgramRejected(error) = error else {
+        panic!("{error}");
+    };
+    *error
+}
+
+const READ_AND_CRASH: &str = "
+    const result = await coral.providers.widgets.list();
+    for (const widget of result.data.widgets) { await coral.emit(widget); }
+";
+
+#[test]
+fn a_program_crash_carries_the_tool_result_it_was_reading() {
+    let error = program_failure(
+        vec![Ok(http_result(
+            &serde_json::json!({"ok": false, "error": "not_in_channel"}),
+        ))],
+        READ_AND_CRASH,
+    );
+    assert_eq!(error.name, "TypeError");
+    assert_eq!(
+        error.last_tool_result,
+        Some(Box::new(coral_v8::ProgramToolResult {
+            call_path: "coral.providers.widgets.list".to_string(),
+            status: Some(200),
+            data: Some(r#"{"ok":false,"error":"not_in_channel"}"#.to_string()),
+            keys: Vec::new(),
+            truncated: false,
+        }))
+    );
+
+    // An MCP Tool Result has no status.
+    let error = program_failure(
+        vec![Ok(r#"{"data":[],"metadata":{"kind":"mcp"}}"#.to_string())],
+        READ_AND_CRASH,
+    );
+    let result = error.last_tool_result.expect("last Tool Result");
+    assert_eq!(result.status, None);
+    assert_eq!(result.data.as_deref(), Some("[]"));
+}
+
+#[test]
+fn a_long_tool_result_shows_only_its_top_level_keys() {
+    let long = "secret-canary ".repeat(32);
+    let error = program_failure(
+        vec![Ok(http_result(
+            &serde_json::json!({"text": long, "items": [long], "ok": true}),
+        ))],
+        READ_AND_CRASH,
+    );
+    let serialized = serde_json::to_string(&error).expect("JSON");
+    assert!(!serialized.contains("secret-canary"), "{serialized}");
+    let result = error.last_tool_result.expect("last Tool Result");
+    assert_eq!(result.data, None);
+    assert_eq!(result.keys, ["items", "ok", "text"]);
+    assert!(result.truncated);
+
+    // Exactly at the bound is still verbatim, and one byte past it is not.
+    for (padding, verbatim) in [(254, true), (255, false)] {
+        let data = serde_json::json!("x".repeat(padding));
+        let error = program_failure(vec![Ok(http_result(&data))], READ_AND_CRASH);
+        let result = error.last_tool_result.expect("last Tool Result");
+        assert_eq!(result.data.is_some(), verbatim, "{padding}");
+        assert_eq!(result.truncated, !verbatim, "{padding}");
+    }
+
+    // Keys are bounded too, whole, and a value with no keys shows none.
+    let many: serde_json::Map<_, _> = (0..1000)
+        .map(|index| (format!("key_{index:04}"), serde_json::json!(index)))
+        .collect();
+    let error = program_failure(
+        vec![Ok(http_result(&serde_json::Value::Object(many)))],
+        READ_AND_CRASH,
+    );
+    let result = error.last_tool_result.expect("last Tool Result");
+    assert_eq!(result.keys.len(), 32);
+    assert_eq!(result.keys.last().map(String::as_str), Some("key_0031"));
+    assert!(result.truncated);
+    let error = program_failure(
+        vec![Ok(http_result(&serde_json::json!([long])))],
+        READ_AND_CRASH,
+    );
+    let result = error.last_tool_result.expect("last Tool Result");
+    assert_eq!((result.data, result.keys.len()), (None, 0));
+    assert!(result.truncated);
+}
+
+#[test]
+fn a_tool_error_failure_carries_no_last_tool_result() {
+    let results = || {
+        vec![
+            Ok(http_result(&serde_json::json!({"ok": true}))),
+            upstream_error(),
+        ]
+    };
+    for source in [
+        // Uncaught, even after a Tool Result.
+        "await coral.providers.widgets.list();
+         await coral.providers.widgets.get();",
+        // Rethrown, and wrapped by the Program.
+        r"await coral.providers.widgets.list();
+          try { await coral.providers.widgets.get(); }
+          catch (error) { throw error; }",
+        r#"await coral.providers.widgets.list();
+           try { await coral.providers.widgets.get(); }
+           catch (error) { throw new Error("read failed", {cause: error}); }"#,
+        r#"await coral.providers.widgets.list();
+           try { await coral.providers.widgets.get(); }
+           catch (error) { throw new AggregateError([error], "read failed"); }"#,
+    ] {
+        let error = program_failure(results(), source);
+        assert_eq!(error.last_tool_result, None, "{source}");
+    }
+    let error = program_failure(
+        vec![upstream_error()],
+        "await coral.providers.widgets.get();",
+    );
+    assert_eq!(error.tool.expect("Tool fields").code, "error_response");
+    assert_eq!(error.last_tool_result, None);
+}
+
+#[test]
+fn the_last_tool_result_is_the_latest_and_outside_the_programs_reach() {
+    let error = program_failure(
+        vec![
+            Ok(http_result(&serde_json::json!({"first": true}))),
+            Ok(http_result(&serde_json::json!({"second": "received"}))),
+        ],
+        r#"await coral.providers.widgets.list();
+           const result = await coral.providers.widgets.get();
+           result.data.second = "forged";
+           const failure = new TypeError("gave up");
+           failure.last_tool_result = "forged";
+           throw failure;"#,
+    );
+    let result = error.last_tool_result.clone().expect("last Tool Result");
+    assert_eq!(result.call_path, "coral.providers.widgets.get");
+    assert_eq!(result.data.as_deref(), Some(r#"{"second":"received"}"#));
+
+    // Run summaries and logs read these, so neither holds the excerpt.
+    assert_eq!(error.summary(), "TypeError: gave up");
+    assert!(!error.to_string().contains("received"));
+
+    // A rejected call settles no Tool Result, so the one before it stays.
+    let error = program_failure(
+        vec![
+            Ok(http_result(&serde_json::json!({"ok": true}))),
+            upstream_error(),
+        ],
+        r#"await coral.providers.widgets.list();
+           await coral.providers.widgets.get().catch(() => {});
+           throw new TypeError("gave up");"#,
+    );
+    let result = error.last_tool_result.expect("last Tool Result");
+    assert_eq!(result.call_path, "coral.providers.widgets.list");
+
+    // A Program that read nothing has nothing to show.
+    let error = program_failure(Vec::new(), r#"throw new TypeError("gave up");"#);
+    assert_eq!(error.last_tool_result, None);
+}
+
 struct FatalToolHost;
 
 impl ProgramHost for FatalToolHost {

@@ -137,6 +137,7 @@ impl ProgramExecutor {
                 unhandled_output_limits: Cell::new(0),
                 unhandled_tool_errors: Cell::new(0),
                 unhandled_tool_reasons: RefCell::new(HashMap::new()),
+                last_tool_result: RefCell::new(None),
                 pending_tools: Vec::new(),
                 tool_error_factory: None,
             });
@@ -236,8 +237,17 @@ struct ProgramHostSlot {
     unhandled_output_limits: Cell<usize>,
     unhandled_tool_errors: Cell<usize>,
     unhandled_tool_reasons: RefCell<HashMap<v8::Global<v8::Object>, v8::Global<v8::Value>>>,
-    pending_tools: Vec<(v8::Global<v8::PromiseResolver>, ToolFuture, String)>,
+    last_tool_result: RefCell<Option<crate::ProgramToolResult>>,
+    pending_tools: Vec<PendingTool>,
     tool_error_factory: Option<v8::Global<v8::Function>>,
+}
+
+/// One Tool call waiting on the host.
+struct PendingTool {
+    resolver: v8::Global<v8::PromiseResolver>,
+    tool: ToolFuture,
+    call_path: String,
+    call_stack: String,
 }
 
 #[derive(Clone, Copy)]
@@ -276,18 +286,24 @@ fn drain_program_work(
         // measured large-fanout workloads make this scan material.
         let pending = std::mem::take(&mut slot.pending_tools);
         let mut completed = false;
-        for (resolver, mut tool, call_stack) in pending {
-            match tool.as_mut().poll(&mut context) {
+        for mut pending in pending {
+            match pending.tool.as_mut().poll(&mut context) {
                 Poll::Pending => scope
                     .get_slot_mut::<ProgramHostSlot>()
                     .expect("host installed")
                     .pending_tools
-                    .push((resolver, tool, call_stack)),
+                    .push(pending),
                 Poll::Ready(result) => {
                     completed = true;
+                    let PendingTool {
+                        resolver,
+                        call_path,
+                        call_stack,
+                        ..
+                    } = pending;
                     let resolver = v8::Local::new(scope, resolver);
                     match result {
-                        Ok(json) => resolve_tool_promise(scope, resolver, &json),
+                        Ok(json) => resolve_tool_promise(scope, resolver, &call_path, &json),
                         Err(ToolHostError::Rejected {
                             code,
                             message,
@@ -533,12 +549,17 @@ fn tool_callback(
         );
         return;
     }
-    let tool = host.invoke(path, arguments_json, location);
+    let tool = host.invoke(path.clone(), arguments_json, location);
     scope
         .get_slot_mut::<ProgramHostSlot>()
         .expect("host installed")
         .pending_tools
-        .push((resolver, tool, call_stack));
+        .push(PendingTool {
+            resolver,
+            tool,
+            call_path: path,
+            call_stack,
+        });
 }
 
 /// Captures the private emitted script's frames, innermost first, while the
@@ -859,13 +880,28 @@ fn terminate_program_host(scope: &mut v8::PinScope<'_, '_>) {
 fn resolve_tool_promise(
     scope: &mut v8::PinScope<'_, '_>,
     resolver: v8::Local<'_, v8::PromiseResolver>,
+    call_path: &str,
     result_json: &str,
 ) {
     let Some(value) = parse_tool_result(scope, result_json) else {
         terminate_program_host(scope);
         return;
     };
+    if let Some(slot) = scope.get_slot::<ProgramHostSlot>() {
+        slot.last_tool_result
+            .replace(crate::ProgramToolResult::excerpt(call_path, result_json));
+    }
     let _settled = resolver.resolve(scope, value);
+}
+
+/// The excerpt of the last Tool Result the Program received, held outside the
+/// isolate so that no Program code can change it.
+pub(crate) fn last_tool_result(scope: &v8::PinScope<'_, '_>) -> Option<crate::ProgramToolResult> {
+    scope
+        .get_slot::<ProgramHostSlot>()?
+        .last_tool_result
+        .borrow()
+        .clone()
 }
 
 /// Parses an encoded Tool Result within the Run's value limits.
