@@ -90,16 +90,6 @@ fn bounded_message(message: &str) -> String {
 
 #[derive(Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct StartedTask {
-    #[schemars(schema_with = "crate::arguments::identifier_schema")]
-    pub(crate) task_id: String,
-    /// The namespaces of the Providers you can search, and coral.workspace for
-    /// the Built-in Provider's tools: the values `search` accepts as `provider`.
-    pub(crate) providers: Vec<String>,
-}
-
-#[derive(Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct DeletedFunction {
     pub(crate) call_path: String,
 }

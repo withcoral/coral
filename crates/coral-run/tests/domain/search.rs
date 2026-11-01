@@ -79,6 +79,11 @@ async fn a_listing_adds_declarations_only_when_asked() {
     );
     assert!(summaries.pointer("/data/hits/0/description").is_none());
     assert!(summaries.pointer("/data/hits/0/signature_line").is_some());
+    // The best hits carry a compact declaration, so one call can be enough.
+    assert!(
+        summaries.pointer("/data/hits/0/declaration").is_some(),
+        "{summaries}"
+    );
 
     let full = search(
         &scope,
@@ -91,6 +96,28 @@ async fn a_listing_adds_declarations_only_when_asked() {
         "{full}"
     );
     assert!(full.pointer("/data/hits/0/signature_line").is_some());
+}
+
+// Catches: compact declarations spreading past the best hits, which would
+// grow every page.
+#[tokio::test]
+async fn only_the_top_hits_carry_a_compact_declaration() {
+    let scope = scope().await;
+    let result = search(
+        &scope,
+        &json!({ "provider": "coral.workspace", "limit": 7 }),
+    )
+    .await;
+    let hits = result
+        .pointer("/data/hits")
+        .and_then(Value::as_array)
+        .expect("hits");
+    assert!(hits.len() > 3, "{result}");
+    let carrying = hits
+        .iter()
+        .filter(|hit| hit.get("declaration").is_some())
+        .count();
+    assert_eq!(carrying, 3, "{result}");
 }
 
 // Catches: a page of declarations that can flood the agent's context if a

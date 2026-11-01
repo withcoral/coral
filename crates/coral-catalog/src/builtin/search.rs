@@ -32,8 +32,8 @@ pub(super) fn definition() -> Definition {
             false,
             vec!["discovery".to_string()],
             Some(
-                "Pass query to rank results, and declarations: true to add each top hit's \
-                 full description. Or pass paths to read exact Call Paths; a path nobody can \
+                "Pass query to rank results: the top 3 hits carry a compact declaration, and \
+                 declarations: true adds full descriptions instead. Or pass paths to read exact Call Paths; a path nobody can \
                  reach comes back in missing."
                     .to_string(),
             ),
@@ -59,6 +59,11 @@ fn output_schema() -> Value {
                         "call_path": { "type": "string" },
                         "signature_line": { "type": "string" },
                         "description_snippet": { "type": "string" },
+                        "declaration": {
+                            "type": "string",
+                            "description": "The inputs and the top of the result. Present on a \
+                                            query's top 3 hits."
+                        },
                         "description": {
                             "type": "object",
                             "description": "The full description, with typescript_declaration. \
@@ -128,7 +133,7 @@ struct Arguments {
     #[schemars(
         with = "bool",
         description = "Add the full description to each hit, best first, until the page reaches \
-                       32 KiB. Later hits stay summaries."
+                       32 KiB, instead of the compact declaration on the top 3 hits."
     )]
     declarations: Option<bool>,
     #[serde(default, deserialize_with = "super::present")]

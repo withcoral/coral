@@ -16,7 +16,7 @@ use rmcp::{ErrorData, ServerHandler};
 use crate::McpRuntime;
 use crate::arguments::{
     self, CancelArguments, DeleteFunctionArguments, EndTaskArguments, ExecArguments,
-    SaveFunctionArguments, StartTaskArguments, TaskOutcomeArgument, ToolArguments, WaitArguments,
+    SaveFunctionArguments, TaskOutcomeArgument, ToolArguments, WaitArguments,
 };
 use crate::projection::{self, ToolFailure};
 use crate::prompts::{Asked, Channel, Prompting};
@@ -94,10 +94,6 @@ impl McpServer {
             ));
         }
         let complete = match name {
-            StartTaskArguments::NAME => {
-                let arguments = arguments::parse::<StartTaskArguments>(request.arguments)?;
-                self.start_task(arguments).await
-            }
             SaveFunctionArguments::NAME => {
                 let arguments = arguments::parse::<SaveFunctionArguments>(request.arguments)?;
                 self.save_function(arguments).await
@@ -130,11 +126,9 @@ impl McpServer {
         complete.map(Into::into)
     }
 
-    async fn start_task(
-        &self,
-        arguments: StartTaskArguments,
-    ) -> Result<CallToolResult, DispatchError> {
-        let intent = TaskIntent::parse(&arguments.intent).map_err(invalid_input)?;
+    /// Starts the Task an `exec` without a `task_id` belongs to.
+    async fn start_task(&self, intent: &str) -> Result<StartedTask, DispatchError> {
+        let intent = TaskIntent::parse(intent).map_err(invalid_input)?;
         // Read before the Task starts, so a failed read leaves no Task behind.
         let providers = self
             .runtime
@@ -156,14 +150,13 @@ impl McpServer {
             .await
             .map_err(task_failure)?;
         tool_call::record_task(task.telemetry_id());
-        projection::success(projection::StartedTask {
+        Ok(StartedTask {
             task_id: task.id().to_string(),
             providers: providers
                 .iter()
                 .map(|call_root| coral_search::provider_filter_value(call_root).to_string())
                 .collect(),
         })
-        .map_err(DispatchError::Tool)
     }
 
     async fn save_function(
@@ -210,7 +203,6 @@ impl McpServer {
         arguments: ExecArguments,
         prompting: Prompting,
     ) -> Result<CallToolResponse, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
         let timeout = arguments
             .run_timeout_ms
             .unwrap_or(arguments::DEFAULT_RUN_TIMEOUT_MS);
@@ -222,6 +214,16 @@ impl McpServer {
                 .observe_prompting(&run_id, &reread, &reread, prompting)
                 .await;
         }
+        let started = match arguments.task_id {
+            Some(_) => None,
+            None => Some(self.start_task(&arguments.intent).await?),
+        };
+        let task_id = started
+            .as_ref()
+            .map_or(arguments.task_id.as_deref().unwrap_or_default(), |task| {
+                task.task_id.as_str()
+            });
+        let call = self.attributed_command(task_id, &arguments.intent)?;
         let accepted = self
             .runtime
             .modules
@@ -232,7 +234,7 @@ impl McpServer {
         if wait_ms == 0 {
             return self
                 .run_update(&accepted)
-                .map(Into::into)
+                .map(|result| started_in(result.into(), started.as_ref()))
                 .map_err(DispatchError::Tool);
         }
         // This request accepted the Run, so acceptance already linked it to
@@ -247,6 +249,7 @@ impl McpServer {
             prompting,
         )
         .await
+        .map(|response| started_in(response, started.as_ref()))
     }
 
     async fn wait(
@@ -274,6 +277,7 @@ impl McpServer {
             Some(_) => reread.clone(),
             None => reread
                 .clone()
+                .batching_output()
                 .with_wait(Duration::from_millis(wait_ms))
                 .map_err(invalid_input)?,
         };
@@ -611,6 +615,31 @@ impl ServerHandler for McpServer {
             .with_ttl_ms(0)
             .with_cache_scope(CacheScope::Private)))
     }
+}
+
+/// The Task an `exec` started, and the namespaces it can search.
+struct StartedTask {
+    task_id: String,
+    providers: Vec<String>,
+}
+
+/// Adds the Task an `exec` started to its result, so the agent has the
+/// `task_id` for later calls.
+fn started_in(response: CallToolResponse, started: Option<&StartedTask>) -> CallToolResponse {
+    let (Some(started), CallToolResponse::Complete(mut result)) = (started, response.clone())
+    else {
+        return response;
+    };
+    let Some(serde_json::Value::Object(mut fields)) = result.structured_content.take() else {
+        return response;
+    };
+    fields.insert("task_id".into(), started.task_id.clone().into());
+    fields.insert("providers".into(), started.providers.clone().into());
+    // Rebuilt so `content[0]` keeps the JSON text of `structuredContent`.
+    let rich = result.content.split_off(1.min(result.content.len()));
+    let mut rebuilt = CallToolResult::structured(fields.into());
+    rebuilt.content.extend(rich);
+    CallToolResponse::Complete(rebuilt)
 }
 
 fn validated_wait(wait_ms: u64) -> Result<u64, DispatchError> {

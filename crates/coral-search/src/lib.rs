@@ -402,6 +402,35 @@ impl UniversalSearchModule {
         {
             return Err(Error::TypesLimit);
         }
+        self.exact_description(actor, workspace_id, call_path)
+            .await?
+            .abridge(types)
+    }
+
+    /// The compact declaration of one exact Call Path, as a query's top hit
+    /// carries it: the inputs and the top of the result whole, with little
+    /// of the types nested below.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::describe`].
+    pub async fn compact_declaration(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        call_path: &CallPath,
+    ) -> Result<String, Error> {
+        self.exact_description(actor, workspace_id, call_path)
+            .await?
+            .compact_declaration()
+    }
+
+    async fn exact_description(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        call_path: &CallPath,
+    ) -> Result<ExactAuthoringDescription, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
             .authorize(&mut transaction, actor, workspace_id)
@@ -413,7 +442,7 @@ impl UniversalSearchModule {
             .map_err(conceal_description_error)?
             .ok_or(Error::AuthoringDescriptionNotFound)?;
         transaction.commit().await?;
-        exact.abridge(types)
+        Ok(exact)
     }
 
     /// Checks exact owning-resource visibility before an attributed attempt begins.

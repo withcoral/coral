@@ -80,6 +80,54 @@ async fn internal_invocations_do_not_end_waits_and_initial_wait_batches_authored
     );
 }
 
+// Catches: a `wait` that returns on every Log, which costs an agent a turn per
+// line while a long Program runs. The upstream holds the call, so the Run
+// logs and then stays running past the wait.
+#[tokio::test]
+async fn a_batching_wait_does_not_end_on_a_log() {
+    let upstream = SequencedUpstream::new(HttpOutcome::new(200, serde_json::json!({})));
+    let fixture = TestModules::with_upstream(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        upstream.clone(),
+    )
+    .await;
+    let tool = fixture
+        .user_tool("user:batched-wait", "Batched waits")
+        .await;
+    let actor = &tool.principal;
+    let workspace = &tool.workspace_id;
+    let accepted = fixture
+        .runs
+        .start(
+            actor,
+            workspace,
+            submission(
+                "console.log('first'); console.log('second'); await coral.providers.weather.getForecast({}); return 7;",
+            ),
+        )
+        .await
+        .unwrap();
+    upstream.until_sent(1).await;
+    let wait = Duration::from_millis(300);
+    let started = tokio::time::Instant::now();
+    let update = fixture
+        .runs
+        .observe(
+            actor,
+            workspace,
+            accepted.run_id(),
+            &immediate(Some(accepted.next_cursor().clone()), 100)
+                .batching_output()
+                .with_wait(wait)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(started.elapsed() >= wait, "{:?}", started.elapsed());
+    assert!(!update.state().is_terminal());
+    assert_eq!(update.events().len(), 2);
+}
+
 /// An agent that omits the cursor gets the earlier output back, but only later output ends its wait.
 #[tokio::test(flavor = "multi_thread")]
 async fn cursorless_wait_replays_earlier_output_and_ends_only_on_later_output() {

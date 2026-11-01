@@ -862,6 +862,14 @@ impl RunObservation {
                     .map_or([0; 32], RunCursor::required_action_revision)
     }
 
+    /// Waits for changed actions or the Run's end, not for each Emission or Log,
+    /// and returns the output that arrived by then, as `exec` does.
+    #[must_use]
+    pub const fn batching_output(mut self) -> Self {
+        self.batch_output = true;
+        self
+    }
+
     /// Waits until new authored Emissions/Logs, changed actions, or terminal data are available.
     /// Without a cursor, output that exists when the wait begins is replayed, not new.
     /// A zero duration keeps the observation immediate.

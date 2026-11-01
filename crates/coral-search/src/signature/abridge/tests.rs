@@ -179,3 +179,14 @@ fn more_skipped_types_than_types_accepts_are_requested_some_at_a_time() {
         "{line}"
     );
 }
+
+// Catches: a compact declaration that keeps saying `OwnerInput` where an agent
+// needs `string`, or that breaks a name holding an alias, or a list of a union.
+#[test]
+fn compact_text_inlines_one_line_aliases_as_whole_identifiers() {
+    let text = "type OwnerInput = string;\ntype Owner = OwnerInput;\ntype Sort = \"asc\" | \"desc\";\ntype Kept = { a: string };\nexport default function (input: { \"owner\": Owner; \"sort\": Sort[]; \"long\": OwnerInputs }): Promise<Kept>;";
+    assert_eq!(
+        super::inline_simple_aliases(text),
+        "type Kept = { a: string };\nexport default function (input: { \"owner\": string; \"sort\": (\"asc\" | \"desc\")[]; \"long\": OwnerInputs }): Promise<Kept>;"
+    );
+}

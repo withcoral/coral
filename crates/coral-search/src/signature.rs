@@ -33,7 +33,7 @@ mod syntax;
 mod tests;
 mod tree;
 
-pub(crate) use abridge::abridge;
+pub(crate) use abridge::{abridge, compact};
 
 use crate::hit::{CUT_MARKER, floor_char_boundary};
 

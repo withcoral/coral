@@ -994,6 +994,16 @@ impl ExactAuthoringDescription {
         Ok(self)
     }
 
+    /// The declaration a query's top hit carries.
+    pub(crate) fn compact_declaration(&self) -> Result<String, crate::Error> {
+        let kind = self.authoring.kind();
+        let declaration = match &self.authoring {
+            AuthoringDescription::Tool(description) => &description.typescript_declaration,
+            AuthoringDescription::SavedFunction(description) => &description.typescript_declaration,
+        };
+        crate::signature::compact(declaration, kind)
+    }
+
     /// Returns the current callable contract.
     #[must_use]
     pub const fn authoring(&self) -> &AuthoringDescription {

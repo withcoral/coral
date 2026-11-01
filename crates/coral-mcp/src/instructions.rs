@@ -9,7 +9,7 @@ pub(crate) const INSTRUCTIONS: &str = "\
 Coral runs TypeScript Programs that call the user's connected providers.
 
 ## Workflow
-1. Call `start_task` once per unit of user work. Pass its `task_id` to every later call.
+1. Omit `task_id` on the first `exec` of each unit of work, then pass the one it returns.
 2. To find provider tools and Saved Functions, call `coral.workspace.search` in a Program; see `exec`.
 3. Call `exec` with one TypeScript async-function body. Each `exec` starts a new Run and can repeat external effects.
 4. While `state` is `running` or `has_more` is true, call `wait` with the same `run_id` and the latest `next_cursor`. The last page carries the Final Value or failure.

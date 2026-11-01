@@ -11,23 +11,24 @@ use serde_json::{Map, Value, json};
 use coral_run::RUN_TIMEOUT_MAX_MS;
 use coral_task::{TASK_FEEDBACK_MAX_CHARS, TASK_INTENT_MAX_CHARS};
 
-const TASK_ID_DESCRIPTION: &str = "The task_id from start_task.";
+const TASK_ID_DESCRIPTION: &str = "The task_id from your first exec.";
+const EXEC_TASK_ID_DESCRIPTION: &str = "Omit it on the first exec of a unit of user work, and Coral starts a Task and returns its task_id. Pass that task_id on every later exec.";
 const RUN_ID_DESCRIPTION: &str = "The run_id from exec.";
 const CALL_INTENT_DESCRIPTION: &str = "Why this call is needed, in one short phrase.";
 const FUNCTION_PATH_DESCRIPTION: &str =
     "Dotted path under coral.functions, without that prefix, such as reports.summarize.";
 const EXEC_TOOL_DESCRIPTION: &str = r#"Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.
 
-Find tools and Saved Functions from a Program:
-- `coral.workspace.search({ query?, provider?, limit?, cursor?, declarations? })` returns `{ data: { hits, has_more, next_cursor?, retriever_statuses? } }`. A hit has `call_path`, `signature_line` and `description_snippet`. With `declarations: true`, top hits add `description.typescript_declaration`, up to 32 KiB.
-- `coral.workspace.search({ paths, types? })` reads 1 to 10 exact Call Paths into `description`; unknown ones land in `data.missing`. With one path, `types` returns named types the description cut.
+Find tools and Saved Functions from a Program, usually your first exec:
+- `coral.workspace.search({ query?, provider?, limit?, cursor?, declarations? })` returns `{ data: { hits, has_more, next_cursor?, retriever_statuses? } }`. A hit has `call_path`, `signature_line` and `description_snippet`. The top 3 hits also carry `declaration`: the inputs and the top of the result (an `HttpResult` is `{ status, data, metadata }`). `declarations: true` adds full `description`s instead, up to 32 KiB.
+- `coral.workspace.search({ paths, types? })` reads 1 to 10 exact Call Paths in full into `description`; unknown ones land in `data.missing`. With one path, `types` returns named types whole.
 
-`query` is capability keywords, never people, titles, IDs or dates. Pass `provider` (a namespace from `start_task`, or `coral.workspace`) only when the user names the service. If `retriever_statuses` is present, results may be missing. Read a declaration before a write, or when a signature line is cut or names an unseen type.
+`query` is capability keywords, never people, titles, IDs or dates. Pass `provider` (a namespace such as `github`, or `coral.workspace`) only when the user names the service. If `retriever_statuses` is present, results may be missing. Read the full declaration before a write, or for a result type you need that `declaration` only names.
 
 ```ts
 const pages = await Promise.all(["list pull requests", "search issues"].map((query) =>
-  coral.workspace.search({ query, limit: 3, declarations: true })));
-return pages.flatMap(({ data }) => data.hits.map((hit) => [hit.call_path, hit.description?.typescript_declaration ?? hit.signature_line]));
+  coral.workspace.search({ query, limit: 3 })));
+return pages.flatMap(({ data }) => data.hits.map((hit) => [hit.call_path, hit.description_snippet, hit.declaration ?? hit.signature_line]));
 ```
 Then call tools in a later Program by complete literal Call Path."#;
 
@@ -42,21 +43,6 @@ pub(crate) const MAX_WAIT_MS: u64 = 30_000;
 
 pub(crate) trait ToolArguments: DeserializeOwned + JsonSchema + Any {
     const NAME: &'static str;
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(deny_unknown_fields)]
-pub(crate) struct StartTaskArguments {
-    #[schemars(
-        length(min = 1, max = TASK_INTENT_MAX_CHARS),
-        description = "What the user asked for, in one short phrase."
-    )]
-    pub(crate) intent: String,
-}
-
-impl ToolArguments for StartTaskArguments {
-    const NAME: &'static str = "start_task";
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -117,8 +103,9 @@ impl ToolArguments for DeleteFunctionArguments {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct ExecArguments {
-    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
-    pub(crate) task_id: String,
+    #[serde(default)]
+    #[schemars(schema_with = "identifier_schema", description = EXEC_TASK_ID_DESCRIPTION)]
+    pub(crate) task_id: Option<String>,
     #[schemars(
         length(min = 1, max = TASK_INTENT_MAX_CHARS),
         description = CALL_INTENT_DESCRIPTION
@@ -161,7 +148,7 @@ pub(crate) struct WaitArguments {
     #[schemars(
         range(min = 0, max = MAX_WAIT_MS),
         extend("default" = DEFAULT_WAIT_MS),
-        description = format!("How long to wait for new output, a required action, or the end of the Run, in milliseconds. Default {DEFAULT_WAIT_MS}.")
+        description = format!("How long to wait for a required action or the end of the Run, in milliseconds. Output that arrives by then comes with it. Default {DEFAULT_WAIT_MS}.")
     )]
     pub(crate) wait_ms: Option<u64>,
 }
@@ -270,10 +257,6 @@ pub(crate) fn served_name(name: &str) -> Option<&'static str> {
 
 static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
     vec![
-        tool::<StartTaskArguments, crate::projection::StartedTask>(
-            "Start one Coral Task for one unit of user work.",
-            mutation_annotations("Start Task", false, false),
-        ),
         tool::<SaveFunctionArguments, crate::projection::SavedFunctionResult<'_>>(
             "Atomically create or replace one Saved Function. Programs call it as `coral.functions.<path>(...)`.",
             mutation_annotations("Save Function", true, false),
@@ -418,7 +401,7 @@ mod tests {
 
     #[test]
     fn generated_nested_inputs_remove_only_nonstandard_formats() {
-        let advertised = tool::<NumericArguments, crate::projection::StartedTask>(
+        let advertised = tool::<NumericArguments, crate::projection::EndedTask>(
             "Numeric fixture",
             read_annotations("Fixture"),
         );

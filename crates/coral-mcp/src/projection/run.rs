@@ -39,6 +39,15 @@ pub(crate) struct RunUpdateResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     trace_id: Option<String>,
+    /// The Task this `exec` started, when it passed no `task_id`. Pass it to
+    /// every later call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    task_id: Option<String>,
+    /// With `task_id`: the namespaces `coral.workspace.search` can filter by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    providers: Option<Vec<String>>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -244,6 +253,8 @@ fn project_run_update(
             .trace_id()
             .filter(|_| !update.has_more())
             .map(|trace| trace.as_str().to_string()),
+        task_id: None,
+        providers: None,
     })?;
     result.content.extend(rich);
     Ok(result)

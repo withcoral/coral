@@ -33,6 +33,11 @@ use crate::{EntityKind, Error};
 /// Bytes, in UTF-8, that `describe` spends on result types beyond the parts
 /// it always returns whole.
 pub(crate) const DESCRIBE_EXTRA_BYTES: usize = 2048;
+/// Bytes a query's top hits spend on those types: enough to name the fields
+/// of the first nested types, and little enough to fit several hits on a page.
+pub(crate) const COMPACT_EXTRA_BYTES: usize = 256;
+/// The longest alias value [`compact`] moves into its uses.
+const SIMPLE_ALIAS_MAX_BYTES: usize = 120;
 
 /// The abridged text `describe` returns for a callable's declaration, or
 /// for the `types` of it that the caller names.
@@ -47,6 +52,83 @@ pub(crate) fn abridge(
     types: &[String],
 ) -> Result<String, Error> {
     fit(declaration, kind, types, DESCRIBE_EXTRA_BYTES)
+}
+
+/// The text a query's top hit carries: [`abridge`], with a smaller budget.
+///
+/// # Errors
+///
+/// As [`abridge`].
+pub(crate) fn compact(declaration: &str, kind: EntityKind) -> Result<String, Error> {
+    fit(declaration, kind, &[], COMPACT_EXTRA_BYTES).map(|text| inline_simple_aliases(&text))
+}
+
+/// Moves each one-line `type Name = value;` into the places that use it, so
+/// `"owner": OwnerParameterInput` reads `"owner": string`. Generated OpenAPI
+/// declarations hold many of these, and they say nothing the use does not.
+fn inline_simple_aliases(text: &str) -> String {
+    let mut aliases = Vec::new();
+    let mut kept = Vec::new();
+    // Every HTTP declaration repeats this wrapper; `exec`'s description states it once.
+    for line in text
+        .lines()
+        .filter(|line| !line.starts_with("type HttpResult<"))
+    {
+        match simple_alias(line) {
+            Some(alias) => aliases.push(alias),
+            None => kept.push(line),
+        }
+    }
+    let mut inlined = kept.join("\n");
+    // Twice, so an alias of an alias lands too.
+    for _pass in 0..2 {
+        for (name, value) in &aliases {
+            inlined = replace_identifier(&inlined, name, value);
+        }
+    }
+    inlined
+}
+
+fn simple_alias(line: &str) -> Option<(&str, String)> {
+    let (name, value) = line.strip_prefix("type ")?.split_once(" = ")?;
+    let value = value.strip_suffix(';')?;
+    let simple = name.chars().all(is_identifier_char)
+        && !value.contains('{')
+        && value.len() <= SIMPLE_ALIAS_MAX_BYTES;
+    simple.then(|| {
+        (
+            name,
+            if value.contains(" | ") {
+                format!("({value})")
+            } else {
+                value.to_string()
+            },
+        )
+    })
+}
+
+const fn is_identifier_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_' || character == '$'
+}
+
+/// Replaces `name` where it stands as a whole identifier.
+fn replace_identifier(text: &str, name: &str, value: &str) -> String {
+    let mut replaced = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut previous = None;
+    while let Some(at) = rest.find(name) {
+        let (before, after) = rest.split_at(at);
+        let tail = &after[name.len()..];
+        let starts = before.chars().next_back().or(previous);
+        let whole = !starts.is_some_and(is_identifier_char)
+            && !tail.chars().next().is_some_and(is_identifier_char);
+        replaced.push_str(before);
+        replaced.push_str(if whole { value } else { name });
+        previous = name.chars().next_back();
+        rest = tail;
+    }
+    replaced.push_str(rest);
+    replaced
 }
 
 fn fit(

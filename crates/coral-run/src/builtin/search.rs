@@ -12,6 +12,8 @@ use crate::{CoralFailure, Error, Rejection};
 /// How many bytes of descriptions a query with `declarations` adds to a page.
 /// The top hit always gets one, so one call can always read the best match.
 const DECLARATIONS_MAX_BYTES: usize = 32 * 1024;
+/// How many of a query's best hits carry a compact declaration by default.
+const COMPACT_DECLARATION_HITS: usize = 3;
 
 pub(super) async fn perform(
     arguments: &SearchArguments,
@@ -44,12 +46,44 @@ pub(super) async fn perform(
             let mut data = projection::search(&page);
             if *declarations {
                 add_descriptions(search, host, &mut data).await?;
+            } else {
+                add_compact_declarations(search, host, &mut data).await?;
             }
             data
         }
         SearchArguments::Exact { paths, types } => exact(search, host, paths, types).await?,
     };
     Ok(search_tool_result(&data))
+}
+
+/// Adds a compact declaration to the [`COMPACT_DECLARATION_HITS`] best hits, so
+/// a Program can usually call what it found without a second read.
+async fn add_compact_declarations(
+    search: &UniversalSearchModule,
+    host: &BuiltinHost<'_>,
+    data: &mut Value,
+) -> Result<(), Error> {
+    let Some(hits) = data.get_mut("hits").and_then(Value::as_array_mut) else {
+        return Ok(());
+    };
+    for hit in hits.iter_mut().take(COMPACT_DECLARATION_HITS) {
+        let Some(path) = hit
+            .get("call_path")
+            .and_then(Value::as_str)
+            .and_then(|path| CallPath::parse(path).ok())
+        else {
+            continue;
+        };
+        match search
+            .compact_declaration(host.actor, host.workspace_id, &path)
+            .await
+        {
+            Ok(declaration) => hit["declaration"] = Value::String(declaration),
+            Err(coral_search::Error::AuthoringDescriptionNotFound) => {}
+            Err(error) => return Err(failure(error)),
+        }
+    }
+    Ok(())
 }
 
 /// Adds each hit's description, best first, until the next one would pass
