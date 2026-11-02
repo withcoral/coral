@@ -155,8 +155,8 @@ a history of attributed attempts, and an independently declared terminal success
 to new attempts without canceling work already underway. A User can inspect that User's Tasks and a Workspace
 Owner can inspect Tasks attributed to Workspace-owned Agents, but ownership or ordinary Workspace membership grants no
 access to another User's private Task, intent, or history. Optional completion feedback belongs to the Task and shares its
-visibility and retention; it is not a separate report or interaction. An agent starts a Task with its first Program,
-which states the goal, and one MCP session holds one open Task unless the agent asks for another.
+visibility and retention; it is not a separate report or interaction. An agent starts a Task with a Program that states
+the goal instead of naming a Task, and Coral never infers which Task a call belongs to.
 
 _Avoid_: Single call, synthetic Run wrapper, Principal-owned Task, Workspace-shared Task, using Episode or session as
 aliases for Task
@@ -169,9 +169,8 @@ Reef and in logs. It grants no authority: a Principal who guesses it sees nothin
 exist. _Avoid_: task id, task key, task handle, task alias, short identifier, agent identifier
 
 **Task Interaction**: An individually identified, Workspace-owned child record in a Task's history of one authorized
-attempt to use Coral, retaining the participating Principal, separate per-call intent, timing, attempt outcome, and any
-search page or exact description as returned at that time, including a search a Program makes through
-`coral.workspace.search`. A User can inspect that User's interactions and a Workspace Owner can inspect Workspace-owned
+attempt to use Coral, retaining the participating Principal, separate per-call intent, timing, and attempt outcome. A
+search a Program makes is part of that Program's Run, not a separate interaction. A User can inspect that User's interactions and a Workspace Owner can inspect Workspace-owned
 Agent interactions, without gaining another User's private work or giving
 Agents general history access.
 _Avoid_: Task, independent goal, Program Run, Tool Invocation, Program Run Event, Administrative Lifecycle Event,

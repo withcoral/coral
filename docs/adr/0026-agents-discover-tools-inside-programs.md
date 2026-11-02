@@ -20,8 +20,8 @@ dynamic `coral.call(path, args)`, which invites calls to Tools whose declaration
 
 ## Consequences
 
-- A search a Program makes is recorded on its Task as a search, with the page it returned, as well as being a Tool
-  Invocation of its Run. Task history and discovery metrics keep reading searches the same way.
+- A search a Program makes is part of that Program's Run, a Tool Invocation like any other, not a separate record in
+  its Task's history.
 - Agents learn the interface from its TypeScript types, one example in `exec`'s description, and errors that say what
   to do next. Behaviour changes through types, errors and ranking, measured in Duel, not through more guidance prose.
 - Program Admission rejects a literal Call Path that names no Tool the Principal can call, and `tool_not_found` names

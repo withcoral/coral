@@ -17,9 +17,9 @@ belongs to the goal, and Task must not absorb compilation, execution or policy t
 
 - A Task is an MCP concept. Human work in Reef has no goal and creates no synthetic Task; it starts ordinary standalone
   Runs through the same admission and execution.
-- An agent starts a Task with its first Program, which states the goal; there is no separate start call, because it
-  cost every Task a model turn. One MCP session holds one open Task: a Program without a Task while one is open is
-  refused and told that Task, unless the agent asks for a new one.
+- An agent starts a Task with a Program that states the goal instead of naming a Task; there is no separate start call,
+  because it cost every Task a model turn. Coral never infers which Task a call belongs to: each call names its Task or
+  a new goal, and a call with neither is refused.
 - Ending a Task rejects new attempts and cancels nothing already accepted. The first completion wins. Goal success is
   never inferred from a Run's result.
 - Completion feedback is part of ending a Task, not a separately submitted report, and shares the Task's visibility.
