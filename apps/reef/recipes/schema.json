@@ -13,6 +13,11 @@
       "description": "The id of the recipe that describes the same service from another source, such as github for github_mcp. Without one, the recipe is its own service. Reef offers the recipes of one service together.",
       "$ref": "#/$defs/__schema0"
     },
+    "source_label": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9 .-]{0,11}$",
+      "description": "The word on this recipe's button beside the other recipes of its service, such as V1 and V2 for two API versions. Without one, the button reads MCP or API."
+    },
     "display_name": {
       "$ref": "#/$defs/__schema1"
     },

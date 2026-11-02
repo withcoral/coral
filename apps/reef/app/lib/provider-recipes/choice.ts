@@ -31,6 +31,8 @@ export type SourceChoice = SourceLocation & {
    * namespace; the recipe's own id when absent.
    */
   service?: string
+  /** The word on this recipe's button; MCP or API by its kind when absent. */
+  sourceLabel?: string
   displayName: string
   /** One line on the catalog row. */
   description: string
@@ -47,9 +49,23 @@ function serviceOf(choice: SourceChoice): string {
   return choice.service ?? choice.id
 }
 
-/** The namespace Configuration first offers for a recipe: its service. */
+/**
+ * The namespace Configuration first offers for a recipe: its service. A recipe
+ * with its own source label reads another API of the service, which a
+ * workspace may add beside the rest, so it offers its own id.
+ */
 export function recipeNamespace(choice: SourceChoice): string {
-  return serviceOf(choice)
+  return choice.sourceLabel ? choice.id : serviceOf(choice)
+}
+
+/** The word that tells a recipe's button apart from the other sources of its service. */
+export function sourceLabel(choice: SourceChoice): string {
+  return choice.sourceLabel ?? (choice.kind === 'mcp' ? 'MCP' : 'API')
+}
+
+/** A service's recipes in button order: MCP first, then the rest in library order. */
+export function sourcesInOrder(choices: readonly SourceChoice[]): SourceChoice[] {
+  return choices.toSorted((a, b) => Number(b.kind === 'mcp') - Number(a.kind === 'mcp'))
 }
 
 /** The recipes of one service, which the catalog offers as one card. */

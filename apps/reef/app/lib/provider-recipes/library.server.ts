@@ -93,6 +93,7 @@ export function recipeChoice(recipe: Recipe): SourceChoice | null {
   return {
     id: recipe.id,
     ...(recipe.service === undefined ? {} : { service: recipe.service }),
+    ...(recipe.source_label === undefined ? {} : { sourceLabel: recipe.source_label }),
     displayName: recipe.display_name,
     description: recipe.description ?? '',
     ...source,

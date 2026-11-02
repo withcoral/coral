@@ -36,7 +36,9 @@ import {
 } from '@/components/policy-toggle'
 import {
   byService,
+  sourceLabel,
   sourceSearch,
+  sourcesInOrder,
   type RecipeIcons,
   type ServiceChoices,
 } from '@/lib/provider-recipes/choice'
@@ -343,7 +345,7 @@ function railEmptyState({
 
 /**
  * The one catalog service a rail filter found: a button for each of its
- * sources, MCP before API, as the catalog orders them. A source that needs
+ * sources, MCP first, as the catalog orders them. A source that needs
  * details opens the add page on it; any other is read at once, as the catalog
  * reads it.
  */
@@ -358,13 +360,13 @@ function CatalogMatch({
 }) {
   const navigate = useNavigate()
   const { read, reading } = useReadRecipe(form, newPath)
-  const sources = choices.toSorted((a, b) => Number(b.kind === 'mcp') - Number(a.kind === 'mcp'))
+  const sources = sourcesInOrder(choices)
   return (
     <div className={styles.railSources}>
       {sources.map((choice) => {
         const label =
           sources.length > 1
-            ? `Add ${shown.displayName} ${choice.kind === 'mcp' ? 'MCP' : 'API'}`
+            ? `Add ${shown.displayName} ${sourceLabel(choice)}`
             : `Add ${shown.displayName}`
         const busy = reading?.id === choice.id
         return (

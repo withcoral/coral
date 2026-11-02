@@ -5,9 +5,35 @@ id: datadog_mcp
 service: datadog_v1
 display_name: Datadog
 description: Logs, metrics, traces, incidents and monitors from Datadog.
+
+inputs:
+  site:
+    type: hostname
+    label: Datadog site
+    default: datadoghq.com
+    # Datadog runs one MCP server for each site. The US1-FED and US2-FED sites
+    # (ddog-gov.com) have none, so they are not offered.
+    enum:
+      - datadoghq.com
+      - us3.datadoghq.com
+      - us5.datadoghq.com
+      - ap1.datadoghq.com
+      - ap2.datadoghq.com
+      - uk1.datadoghq.com
+      - datadoghq.eu
+  # Without toolsets, Datadog offers only its core tools. The default asks for
+  # every generally available toolset and leaves narrowing them to tool policy.
+  # Preview toolsets, such as apm, are not in all and must be named.
+  toolsets:
+    type: string
+    label: Toolsets
+    description: Enter toolset names separated by commas, such as all,apm. Do not use spaces.
+    documentation_url: https://docs.datadoghq.com/mcp_server/setup/#available-toolsets
+    default: all
+
 source:
   mcp:
-    url: https://mcp.datadoghq.com/v1/mcp
+    url: https://mcp.{{input.site}}/v1/mcp?toolsets={{input.toolsets}}
 authentication:
   options:
     oauth:

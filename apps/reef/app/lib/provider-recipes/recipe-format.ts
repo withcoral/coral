@@ -499,6 +499,13 @@ export const recipeSchema = z.strictObject({
       'The id of the recipe that describes the same service from another source, such as github for github_mcp. Without one, the recipe is its own service. Reef offers the recipes of one service together.',
     )
     .optional(),
+  source_label: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9 .-]{0,11}$/, 'must be a short word such as V2')
+    .describe(
+      "The word on this recipe's button beside the other recipes of its service, such as V1 and V2 for two API versions. Without one, the button reads MCP or API.",
+    )
+    .optional(),
   display_name: label,
   description: description.optional(),
   // `light` serves both themes unless `dark` names a logo that reads on a dark surface.

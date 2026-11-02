@@ -1,0 +1,103 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: datadog_v2
+service: datadog_v1
+source_label: V2
+display_name: Datadog
+description: >-
+  Spans, traces, APM services, incidents, log search, RUM, CI Visibility,
+  security signals, On-Call and teams from Datadog's v2 API.
+icons:
+  light: logo.png
+
+inputs:
+  site:
+    type: hostname
+    label: Datadog site
+    default: datadoghq.com
+    # A closed set, so Coral can offer a dropdown rather than free text.
+    enum:
+      - datadoghq.com
+      - us3.datadoghq.com
+      - us5.datadoghq.com
+      - ap1.datadoghq.com
+      - ap2.datadoghq.com
+      - uk1.datadoghq.com
+      - datadoghq.eu
+      - ddog-gov.com
+      - us2.ddog-gov.com
+
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/DataDog/datadog-api-client-typescript/master/.generator/schemas/v2/openapi.yaml
+
+authentication:
+  default: api_keys
+  options:
+    pat:
+      method: bearer
+      label: Paste a personal access token
+      documentation_url: https://docs.datadoghq.com/account_management/personal-access-tokens/
+    api_keys:
+      # Two credentials in two headers, collected as one credential record.
+      method: header_credentials
+      label: API and application keys
+      documentation_url: https://docs.datadoghq.com/account_management/api-app-keys/
+      fields:
+        api_key:
+          label: API key
+        application_key:
+          label: Application key
+      headers:
+        dd-api-key: { field: api_key }
+        dd-application-key: { field: application_key }
+
+servers:
+  # Datadog serves some Operations from other hosts. Each server declaration is
+  # configured where the document makes it, not flattened onto one base URL.
+  '#/servers':
+    base_url: https://api.{{input.site}}
+  '#/paths/~1api~1v2~1cilogs/post/servers':
+    base_url: https://http-intake.logs.{{input.site}}
+  '#/paths/~1api~1v2~1events/post/servers':
+    base_url: https://event-management-intake.{{input.site}}
+  '#/paths/~1api~1v2~1logs/post/servers':
+    base_url: https://http-intake.logs.{{input.site}}
+  '#/paths/~1api~1v2~1oauth2~1.well-known~1openid-configuration/get/servers':
+    base_url: https://app.{{input.site}}
+  # On-Call paging has one host for each site, named by colour rather than
+  # site. The map follows https://docs.datadoghq.com/api/latest/on-call-paging/.
+  '#/paths/~1api~1v2~1on-call~1pages/post/servers': &on_call
+    declared_url: https://{site}
+    variables:
+      site:
+        input: site
+        values:
+          datadoghq.com: navy.oncall.datadoghq.com
+          us3.datadoghq.com: teal.oncall.datadoghq.com
+          us5.datadoghq.com: coral.oncall.datadoghq.com
+          ap1.datadoghq.com: saffron.oncall.datadoghq.com
+          ap2.datadoghq.com: lava.oncall.datadoghq.com
+          uk1.datadoghq.com: scarlet.oncall.datadoghq.com
+          datadoghq.eu: beige.oncall.datadoghq.eu
+          ddog-gov.com: navy.oncall.datadoghq.com
+          us2.ddog-gov.com: navy.oncall.datadoghq.com
+  '#/paths/~1api~1v2~1on-call~1pages~1{page_id}~1acknowledge/post/servers': *on_call
+  '#/paths/~1api~1v2~1on-call~1pages~1{page_id}~1escalate/post/servers': *on_call
+  '#/paths/~1api~1v2~1on-call~1pages~1{page_id}~1reroute/post/servers': *on_call
+  '#/paths/~1api~1v2~1on-call~1pages~1{page_id}~1resolve/post/servers': *on_call
+  # Product Analytics intake has no host for the ddog-gov.com sites, so they
+  # keep the document's default.
+  '#/paths/~1api~1v2~1prodlytics/post/servers':
+    declared_url: https://{site}
+    variables:
+      site:
+        input: site
+        values:
+          datadoghq.com: browser-intake-datadoghq.com
+          us3.datadoghq.com: browser-intake-us3-datadoghq.com
+          us5.datadoghq.com: browser-intake-us5-datadoghq.com
+          ap1.datadoghq.com: browser-intake-ap1-datadoghq.com
+          ap2.datadoghq.com: browser-intake-ap2-datadoghq.com
+          uk1.datadoghq.com: browser-intake-uk1-datadoghq.com
+          datadoghq.eu: browser-intake-datadoghq.eu
