@@ -272,6 +272,39 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
     );
 }
 
+// Catches: Program Admission refusing a literal call that runs, because a
+// literal segment with a dot names several segments of the Call Path the
+// running Program calls.
+#[test]
+fn a_literal_segment_with_a_dot_names_the_path_the_program_calls() {
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+    let source = "await coral.providers.github.users.getAuthenticated();\n\
+        return await coral.providers.github[\"repos.get\"]({ owner: \"a\", repo: \"b\" });";
+    let named = compiler
+        .program_call_paths(deadline(), source)
+        .expect("analyze the Program body");
+    assert!(
+        named
+            .tools()
+            .call_paths()
+            .contains(&"coral.providers.github.repos.get".to_owned()),
+        "{:?}",
+        named.tools().call_paths()
+    );
+    let unknown = compiler
+        .unknown_tool_calls(
+            deadline(),
+            named.tools(),
+            &[
+                "coral.providers.github.repos.get".to_owned(),
+                "coral.providers.github.users.getAuthenticated".to_owned(),
+            ],
+        )
+        .expect("check the called chains");
+    assert!(unknown.is_empty(), "{unknown:?}");
+}
+
 #[test]
 fn saved_function_declaration_inlines_a_tool_result_type() {
     let compiler =

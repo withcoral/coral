@@ -499,11 +499,23 @@ function analyzeSavedFunctionPaths(body, fileName, targetName) {
 
   const functions = savedFunctionPathAnalysis(sourceFile, program, wrapped.authoredMappings);
   if (functions.validationError !== undefined) return functions;
-  const chains = toolReferenceChains(sourceFile, program, wrapped.authoredMappings);
+  const chains = calledPathChains(
+    toolReferenceChains(sourceFile, program, wrapped.authoredMappings),
+  );
   return {
     ...functions,
     tools: { callPaths: candidateToolPaths(chains), chains },
   };
+}
+
+// The chains as the running Program calls them: it joins segments with
+// dots, so `github["repos.get"]` calls `github.repos.get`, and admission
+// must not refuse it.
+function calledPathChains(chains) {
+  return chains.map((chain) => ({
+    ...chain,
+    segments: chain.segments.flatMap((segment) => segment.split('.')),
+  }));
 }
 
 function savedFunctionDependencyAnalysis(sourceFile, program) {
