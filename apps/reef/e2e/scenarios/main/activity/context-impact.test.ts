@@ -48,14 +48,15 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
         accessToken: await mcpToken(page, workspace),
         taskIntent: intent,
       })
-      const description = await execute.describe('coral.providers.contextFixture.read')
-      expect(description.isError).not.toBe(true)
+      // The exec states the goal, so the Task holds only the calls measured below.
       const observed = await observeRun(
         execute,
         await execute.exec(
           "await coral.providers.contextFixture.read(); console.log('é'); coral.emit('é'); return 'ok';",
         ),
       )
+      const description = await execute.describe('coral.providers.contextFixture.read')
+      expect(description.isError).not.toBe(true)
       expect(
         (
           await execute.saveFunction(
