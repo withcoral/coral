@@ -154,3 +154,63 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
         "the declaration carries the Tool's result type"
     );
 }
+
+/// `coral.workspace.search` declares one overload per mode, so a typed
+/// Program reads the result its own mode returns without narrowing, and a
+/// call that mixes the modes, or names types of several paths, does not
+/// type.
+#[tokio::test]
+async fn search_types_each_mode_with_the_result_it_returns() {
+    let fixture = Fixture::new().await;
+    let database = fixture.test_database.database();
+    let mut transaction = database.begin().await.unwrap();
+    coral_provider::ProviderModule::with_running_catalog(
+        coral_outbound::DestinationPolicy::default(),
+        database.clone(),
+        WorkspaceModule::new(database.clone()),
+    )
+    .install_missing_builtin_in_transaction(&mut transaction, &fixture.workspace, 20)
+    .await
+    .unwrap()
+    .expect("the Workspace has no Built-in Provider yet");
+    transaction.commit().await.unwrap();
+    let cases: &[(&str, &str, Located)] = &[
+        (
+            "a query reads its page",
+            "  const page = (await coral.workspace.search({ query: \"forecast\", limit: 3 })).data;\n  return [page.hits[0]?.signature_line, page.next_cursor];",
+            vec![],
+        ),
+        (
+            "paths read their descriptions and missing",
+            "  const found = (await coral.workspace.search({ paths: [\"a\", \"b\"] })).data;\n  return [found.descriptions[0]?.typescript_declaration, found.missing[0]?.call_path];",
+            vec![],
+        ),
+        (
+            "types read one path's descriptions",
+            "  return (await coral.workspace.search({ paths: [\"a\"], types: [\"T\"] })).data.descriptions;",
+            vec![],
+        ),
+        (
+            "a query and paths together",
+            "  return coral.workspace.search({ query: \"forecast\", paths: [\"a\"] });",
+            vec![(2769, Some(2), Some(26))],
+        ),
+        (
+            "types of several paths",
+            "  return coral.workspace.search({ paths: [\"a\", \"b\"], types: [\"T\"] });",
+            vec![(2769, Some(2), Some(26))],
+        ),
+        (
+            "a page read as descriptions",
+            "  return (await coral.workspace.search({ query: \"forecast\" })).data.descriptions;",
+            vec![(2339, Some(2), Some(69))],
+        ),
+    ];
+    for (name, body, expected) in cases {
+        assert_eq!(
+            &located(&save_diagnostics(&fixture, body).await),
+            expected,
+            "{name}"
+        );
+    }
+}

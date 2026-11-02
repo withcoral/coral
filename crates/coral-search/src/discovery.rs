@@ -51,7 +51,8 @@ impl ExactPaths {
         Self::checked_types(paths, types)
     }
 
-    /// One already parsed path, which `describe` bounds itself.
+    /// One already parsed path, for `describe`. Unlike [`Self::new`], it
+    /// leaves the path's length unbounded, as `describe` always has.
     pub(crate) fn one(path: &crate::CallPath, types: &[String]) -> Result<Self, Error> {
         Self::checked_types(vec![path.as_str().to_owned()], types.to_vec())
     }

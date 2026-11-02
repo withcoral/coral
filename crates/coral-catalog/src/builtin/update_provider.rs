@@ -19,7 +19,7 @@ use super::provider_input::{
     ServerInput,
 };
 use super::{
-    ArgumentProblem, BuiltinCredentialRoute, BuiltinTool, Definition, NAMESPACE_REASON,
+    ArgumentProblem, BuiltinCredentialRoute, BuiltinTool, Declared, Definition, NAMESPACE_REASON,
     ProviderFacts, derived_schema, present, tool_result,
 };
 use crate::{
@@ -73,6 +73,7 @@ pub(super) fn definition() -> Definition {
         hints: ToolHints::default(),
         input: derived_schema::<Arguments>(Contract::Deserialize),
         output: derived_schema::<UpdateProviderResult>(Contract::Serialize),
+        declared: Declared::Once,
     }
 }
 
