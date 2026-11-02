@@ -870,8 +870,8 @@ impl RunObservation {
         self
     }
 
-    /// Waits until new authored Emissions/Logs, changed actions, or terminal data are available;
-    /// [`Self::batching_output`] leaves out new output.
+    /// Waits until new authored Emissions/Logs, changed actions, or terminal data are available.
+    /// New output does not end a [`Self::batching_output`] wait, which still returns it.
     /// Without a cursor, output that exists when the wait begins is replayed, not new.
     /// A zero duration keeps the observation immediate.
     /// # Errors
