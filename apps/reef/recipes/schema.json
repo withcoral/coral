@@ -1051,7 +1051,8 @@
     "__schema50": {
       "type": "string",
       "enum": [
-        "slack_app_create_link"
+        "slack_app_create_link",
+        "datadog_mcp_redirect_allowlist"
       ],
       "description": "A Reef helper that writes help below the client ID field, such as a link that creates the OAuth application."
     },

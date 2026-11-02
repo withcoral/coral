@@ -41,5 +41,7 @@ authentication:
       label: Sign in with Datadog (MCP)
       flow: authorization_code
       documentation_url: https://docs.datadoghq.com/mcp_server/setup/
+      # Datadog rejects a callback URL its organization has not allowed.
+      client_config_hint_generator: datadog_mcp_redirect_allowlist
 icons:
   light: logo.png

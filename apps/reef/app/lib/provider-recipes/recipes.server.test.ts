@@ -1044,6 +1044,22 @@ describe('recipeConfiguration', () => {
       expect(configuration?.clientConfigHintMarkdown).toBe(hint)
     })
 
+    it('gives a hint generator the sign-in URL Coral discovered', () => {
+      const recipe = mcpRecipe('      client_config_hint_generator: datadog_mcp_redirect_allowlist')
+      const setup = setupWith(
+        {
+          authenticationMethods: ['oauth'],
+          values: {
+            authorizationUrl: 'https://app.datadoghq.eu/oauth2/v1/authorize',
+          } as NonNullable<SetupView['configuration']>['values'],
+        },
+        'mcp',
+      )
+      expect(recipeConfiguration(recipe, setup)?.clientConfigHintMarkdown).toContain(
+        '(https://app.datadoghq.eu/organization-settings/mcp)',
+      )
+    })
+
     it('asks for your own application when Coral cannot register one', () => {
       const recipe = mcpRecipe('      authorization_parameters: {prompt: consent}')
       expect(recipeConfiguration(recipe, mcpSetup(false))?.application).toMatchObject({

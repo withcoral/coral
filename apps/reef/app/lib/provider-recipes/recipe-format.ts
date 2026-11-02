@@ -249,7 +249,7 @@ const authorizationParameters = withEntries(
 )
 
 const clientConfigHintGenerator = z
-  .enum(['slack_app_create_link'])
+  .enum(['slack_app_create_link', 'datadog_mcp_redirect_allowlist'])
   .describe(
     'A Reef helper that writes help below the client ID field, such as a link that creates the OAuth application.',
   )

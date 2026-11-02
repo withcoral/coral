@@ -3,6 +3,30 @@ import { parse } from 'yaml'
 
 import { CLIENT_CONFIG_HINT_GENERATORS } from './client-config-hints'
 
+describe('datadog_mcp_redirect_allowlist', () => {
+  const callbackUrl = 'https://coral.example.com/provider-setup/oauth/callback'
+  // An unallowed callback fails sign-in with "Mismatching redirect URI", so the
+  // link must open the settings of the site the person signs in at.
+  it.each([
+    [
+      'https://app.datadoghq.eu/oauth2/v1/authorize',
+      'https://app.datadoghq.eu/organization-settings/mcp',
+    ],
+    [
+      'https://us3.datadoghq.com/oauth2/v1/authorize',
+      'https://us3.datadoghq.com/organization-settings/mcp',
+    ],
+    [undefined, 'https://docs.datadoghq.com/mcp_server/setup/'],
+    ['', 'https://docs.datadoghq.com/mcp_server/setup/'],
+  ])('links sign-in at %s to %s', (signInUrl, settings) => {
+    const hint = CLIENT_CONFIG_HINT_GENERATORS.datadog_mcp_redirect_allowlist({
+      callbackUrl,
+      signInUrl,
+    })
+    expect(hint).toContain(`[MCP settings](${settings})`)
+  })
+})
+
 describe('slack_app_create_link', () => {
   it('links to a Slack app with exactly this callback URL', () => {
     const callbackUrl = 'https://coral.example.com/provider-setup/oauth/callback'
