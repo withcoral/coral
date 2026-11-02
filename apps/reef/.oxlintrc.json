@@ -43,9 +43,11 @@
                 "name": "lucide-react",
                 "importNames": ["icons", "DynamicIcon"],
                 "message": "Import each icon by name in wax/components/icon/lucide-icons.ts, so the bundle holds only the icons Reef uses."
-              },
+              }
+            ],
+            "patterns": [
               {
-                "name": "lucide-react/dynamic",
+                "group": ["lucide-react/dynamic*"],
                 "message": "Import each icon by name in wax/components/icon/lucide-icons.ts, so the bundle holds only the icons Reef uses."
               }
             ]
