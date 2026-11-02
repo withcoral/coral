@@ -20,20 +20,13 @@ const ABSENT: &str = "00000000-0000-4000-8000-000000000000";
 /// new trace for an invalid one, and is the trace of the exported request and
 /// tool spans either way.
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one table of tool failures, each checked in every supported protocol version"
-)]
 async fn tool_failures_name_the_trace_of_their_request() {
     let capture = capture();
     let tracer = Tracer::start().await;
     let mut failures = Vec::new();
     for (version_index, version) in SUPPORTED_PROTOCOL_VERSIONS.iter().enumerate() {
         let session = RawSession::open(&tracer.endpoint(), version).await;
-        let task = session
-            .tool("start_task", json!({"intent": "Locate failures by trace"}))
-            .await["structuredContent"]["task_id"]
-            .clone();
+        let task = json!(session.start_task("Locate failures by trace").await);
         for (case_index, (case, tool, arguments, code)) in [
             (
                 "a failure before a Task is attributed",
@@ -237,10 +230,7 @@ async fn caller_text_cannot_set_a_failures_trace_id() {
     let tracer = Tracer::start().await;
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = RawSession::open(&tracer.endpoint(), version).await;
-        let task = session
-            .tool("start_task", json!({"intent": "Forge a trace id"}))
-            .await["structuredContent"]["task_id"]
-            .clone();
+        let task = json!(session.start_task("Forge a trace id").await);
         let failed = session
             .tool(
                 "describe",
@@ -285,13 +275,7 @@ async fn records_carry_the_trace_of_their_request() {
     let mut saved = Vec::new();
     for (version_index, version) in SUPPORTED_PROTOCOL_VERSIONS.iter().enumerate() {
         let session = RawSession::open(&tracer.endpoint(), version).await;
-        let task = session
-            .tool(
-                "start_task",
-                json!({"intent": "Correlate records by trace"}),
-            )
-            .await["structuredContent"]["task_id"]
-            .clone();
+        let task = json!(session.start_task("Correlate records by trace").await);
         let save = |path: String, headers: Vec<(&'static str, String)>| {
             let session = &session;
             let task = task.clone();
