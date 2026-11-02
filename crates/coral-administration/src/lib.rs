@@ -14,7 +14,8 @@
 //!
 //! Workspace authorizes and locks the mutation and prepares transaction-bound
 //! lost-access evidence. Provider retires credentials and pending workflows;
-//! Functions removes current definitions and writes private deletion evidence.
+//! Functions removes current definitions and writes private deletion evidence;
+//! Auth ends the Refresh Grants the lost access supported.
 //! Workspace then removes authority in the caller's transaction. Standalone
 //! commands open and commit that transaction; [`AccessLifecycleModule::apply_in_transaction`]
 //! joins an existing one without committing. Any failed facet or lifecycle event
@@ -22,7 +23,7 @@
 //! ends access there and always runs cleanup. Organization removal hands each
 //! Workspace the User solely owns to a transfer target in the same transaction.
 //!
-//! This Module depends on Workspace, Provider, Functions, and the private database
+//! This Module depends on Workspace, Provider, Functions, Auth, and the private database
 //! foundation. It never calls Run or Task, deletes retained history, initializes a
 //! compiler, or performs network revocation. Current authority at the commit is
 //! sufficient to block later dispatch at the Policy Enforcement Point; no
@@ -147,6 +148,8 @@ impl AccessLifecycleModule {
             .await?;
         coral_functions::delete_current_for_access_removal_in_transaction(tx, context, &prepared)
             .await?;
+        coral_auth::user_tokens::retire_for_access_removal_in_transaction(tx, context, &prepared)
+            .await?;
         self.workspaces
             .apply_access_removal_in_transaction(tx, context, prepared)
             .await?;
@@ -168,9 +171,14 @@ pub enum Error {
     /// Current function cleanup failed.
     #[error(transparent)]
     Functions(#[from] coral_functions::Error),
+    /// Refresh Grant retirement failed.
+    #[error(transparent)]
+    Auth(#[from] coral_auth::Error),
 }
 #[cfg(test)]
 mod organization_rejoin_tests;
+#[cfg(test)]
+mod refresh_grant_tests;
 #[cfg(test)]
 mod tests;
 

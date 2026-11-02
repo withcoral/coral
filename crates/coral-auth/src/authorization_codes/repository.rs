@@ -22,6 +22,7 @@ enum Codes {
     WorkspaceId,
     ExpiresAtUnixNanos,
     RedeemedAtUnixNanos,
+    RefreshEligible,
 }
 
 /// Removes every code that can no longer be redeemed, spent or not.
@@ -62,6 +63,7 @@ pub(super) async fn insert(
                     Codes::Resource,
                     Codes::WorkspaceId,
                     Codes::ExpiresAtUnixNanos,
+                    Codes::RefreshEligible,
                 ])
                 .values_panic([
                     code_digest.into(),
@@ -73,6 +75,7 @@ pub(super) async fn insert(
                     grant.resource.clone().into(),
                     grant.workspace_id.as_ref().map(ToString::to_string).into(),
                     expires_at_unix_nanos.into(),
+                    grant.refresh_eligible.into(),
                 ])
                 .on_conflict(
                     OnConflict::column(Codes::SignInDigest)
@@ -94,6 +97,7 @@ struct GrantRow {
     code_challenge: String,
     resource: String,
     workspace_id: Option<String>,
+    refresh_eligible: bool,
 }
 
 /// The rows a redemption of `code_digest` with `redemption` may spend.
@@ -151,6 +155,7 @@ pub(super) async fn spend(
                     Codes::CodeChallenge,
                     Codes::Resource,
                     Codes::WorkspaceId,
+                    Codes::RefreshEligible,
                 ]))
                 .to_owned(),
         )
@@ -170,6 +175,7 @@ pub(super) async fn spend(
             code_challenge: row.code_challenge,
             resource: row.resource,
             workspace_id,
+            refresh_eligible: row.refresh_eligible,
         })
     })
     .transpose()

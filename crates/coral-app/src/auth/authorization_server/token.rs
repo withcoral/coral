@@ -14,7 +14,8 @@ use super::query::{MAX_PARAMETER_NAME_BYTES, MAX_PARAMETER_VALUE_BYTES, MAX_PARA
 use super::response::security_headers;
 use super::{AuthorizationResource, AuthorizationServerHttpState};
 use coral_auth::PrivateAudience;
-use coral_auth::authorization_codes::{AuthorizationGrant, CodeRedemption};
+use coral_auth::authorization_codes::CodeRedemption;
+use coral_auth::user_tokens::{AccessTarget, IssuedTokens, RefreshRequest, TokenRefusal};
 use coral_mcp::McpEndpoint;
 use coral_telemetry::safe;
 
@@ -23,7 +24,7 @@ use coral_telemetry::safe;
 /// This is the endpoint's own limit rather than one of the shared parameter
 /// limits: it bounds a request body, which the parameter limits do not, and it
 /// is enforced while reading rather than while parsing.
-const MAX_BODY_BYTES: usize = 8 * 1024;
+pub(super) const MAX_BODY_BYTES: usize = 8 * 1024;
 
 pub(super) async fn oauth_token(
     State(state): State<AuthorizationServerHttpState>,
@@ -46,44 +47,57 @@ pub(super) async fn oauth_token(
         Err(FormError::InvalidScope) => return token_error(TokenError::InvalidScope),
         Err(FormError::Malformed) => return token_error(TokenError::InvalidRequest),
     };
-    match form.grant_type.as_ref().map(|value| value.as_str()) {
-        Some("authorization_code") => {}
-        None => return token_error(TokenError::InvalidRequest),
-        Some(_) => return token_error(TokenError::UnsupportedGrantType),
+    let Some(now_unix_nanos) = now_unix_nanos() else {
+        return token_error(TokenError::ServerError);
+    };
+    let issued = match form.grant_type.as_ref().map(|value| value.as_str()) {
+        Some("authorization_code") => redeem_code(&state, &form, now_unix_nanos).await,
+        Some("refresh_token") => refresh(&state, &form, now_unix_nanos).await,
+        None => Err(TokenError::InvalidRequest),
+        Some(_) => Err(TokenError::UnsupportedGrantType),
+    };
+    match issued {
+        Ok(issued) => token_response(&issued),
+        Err(error) => token_error(error),
     }
+}
+
+/// Spends the authorization code `form` presents for the target it names.
+async fn redeem_code(
+    state: &AuthorizationServerHttpState,
+    form: &TokenForm,
+    now_unix_nanos: i64,
+) -> Result<IssuedTokens, TokenError> {
     let (Some(code), Some(client_id), Some(redirect_uri), Some(verifier)) = (
         form.code.as_deref(),
         form.client_id.as_deref(),
         form.redirect_uri.as_deref(),
         form.code_verifier.as_deref(),
     ) else {
-        return token_error(TokenError::InvalidRequest);
+        return Err(TokenError::InvalidRequest);
     };
     let Some(resource) = form
         .resource
         .as_deref()
         .filter(|resource| !resource.is_empty())
     else {
-        return token_error(TokenError::InvalidTarget);
+        return Err(TokenError::InvalidTarget);
     };
-    let resource = match super::canonical_authorization_resource(resource) {
-        Ok(resource) => resource,
-        Err(_error) => return token_error(TokenError::InvalidTarget),
-    };
+    let resource = super::canonical_authorization_resource(resource)
+        .map_err(|_error| TokenError::InvalidTarget)?;
     if code.is_empty()
         || client_id.is_empty()
         || redirect_uri.is_empty()
         || !valid_code_verifier(verifier)
     {
-        return token_error(TokenError::InvalidRequest);
+        return Err(TokenError::InvalidRequest);
     }
-    let Some(target) = TokenTarget::resolve(
-        &state,
+    let target = access_target(
+        state,
         &resource,
         form.coral_audience.as_deref().map(String::as_str),
-    ) else {
-        return token_error(TokenError::InvalidTarget);
-    };
+    )
+    .ok_or(TokenError::InvalidTarget)?;
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let redemption = CodeRedemption {
         client_id,
@@ -91,18 +105,69 @@ pub(super) async fn oauth_token(
         code_challenge: &challenge,
         resource: &resource,
     };
-    let authorization = match redeem(&state, code, redemption).await {
-        Ok(authorization) => authorization,
-        Err(error) => return token_error(error),
-    };
     // This endpoint completes an interactive login, which only a person can
     // perform: the code being redeemed was issued to a browser that carried
     // someone through their identity provider. An agent obtains its own
     // credential elsewhere, and whatever mints one declares it there.
-    let issued = match target.issue(&state.session_tokens, &authorization) {
-        Ok(issued) => issued,
-        Err(error) => return token_error(error),
+    state
+        .tokens
+        .redeem_code(code, redemption, target, now_unix_nanos)
+        .await
+        .map_err(refused)
+}
+
+/// Exchanges the refresh token `form` presents. An omitted resource or
+/// audience keeps the grant's own; a supplied one must match it.
+async fn refresh(
+    state: &AuthorizationServerHttpState,
+    form: &TokenForm,
+    now_unix_nanos: i64,
+) -> Result<IssuedTokens, TokenError> {
+    let (Some(refresh_token), Some(client_id)) = (
+        form.refresh_token
+            .as_deref()
+            .filter(|token| !token.is_empty()),
+        form.client_id
+            .as_deref()
+            .filter(|client| !client.is_empty()),
+    ) else {
+        return Err(TokenError::InvalidRequest);
     };
+    let resource = form
+        .resource
+        .as_deref()
+        .map(|resource| super::canonical_authorization_resource(resource))
+        .transpose()
+        .map_err(|_error| TokenError::InvalidTarget)?;
+    let audience = form
+        .coral_audience
+        .as_deref()
+        .map(|audience| PrivateAudience::parse(audience).ok_or(TokenError::InvalidTarget))
+        .transpose()?;
+    let request = RefreshRequest {
+        client_id,
+        resource: resource.as_deref(),
+        audience,
+    };
+    state
+        .tokens
+        .refresh(refresh_token, request, now_unix_nanos)
+        .await
+        .map_err(refused)
+}
+
+fn refused(refusal: TokenRefusal) -> TokenError {
+    if refusal == TokenRefusal::InvalidGrant {
+        return TokenError::InvalidGrant;
+    }
+    tracing::warn!(
+        error.type = safe::kind(refusal.code()),
+        "token endpoint could not issue tokens"
+    );
+    TokenError::ServerError
+}
+
+fn token_response(issued: &IssuedTokens) -> Response {
     let Ok(since_epoch) = SystemTime::now().duration_since(UNIX_EPOCH) else {
         tracing::warn!(
             error.type = "clock",
@@ -110,134 +175,71 @@ pub(super) async fn oauth_token(
         );
         return token_error(TokenError::ServerError);
     };
-    let now = since_epoch.as_secs();
-    let Some(expires_in) = issued.expires_at.checked_sub(now).filter(|ttl| *ttl > 0) else {
+    let Some(expires_in) = issued
+        .access_token
+        .expires_at
+        .checked_sub(since_epoch.as_secs())
+        .filter(|ttl| *ttl > 0)
+    else {
         tracing::warn!("token endpoint issued an access token that had already expired");
         return token_error(TokenError::ServerError);
     };
-    json_response(
-        StatusCode::OK,
-        &serde_json::json!({
-            "access_token": issued.access_token,
-            "token_type": "Bearer",
-            "expires_in": expires_in,
-        }),
-    )
+    let mut body = serde_json::Map::new();
+    body.insert(
+        "access_token".into(),
+        issued.access_token.access_token.as_str().into(),
+    );
+    body.insert("token_type".into(), "Bearer".into());
+    body.insert("expires_in".into(), expires_in.into());
+    if let Some(refresh_token) = &issued.refresh_token {
+        body.insert("refresh_token".into(), refresh_token.expose().into());
+    }
+    json_response(StatusCode::OK, &serde_json::Value::Object(body))
 }
 
-/// Spends `code` when `redemption` repeats every binding it was issued with.
-async fn redeem(
-    state: &AuthorizationServerHttpState,
-    code: &str,
-    redemption: CodeRedemption<'_>,
-) -> Result<AuthorizationGrant, TokenError> {
-    let Ok(now_unix_nanos) = SystemTime::now()
+fn now_unix_nanos() -> Option<i64> {
+    let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|_error| ())
-        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).map_err(|_error| ()))
-    else {
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok());
+    if nanos.is_none() {
         tracing::warn!("token endpoint could not read the system clock");
-        return Err(TokenError::ServerError);
-    };
-    match state.codes.redeem(code, redemption, now_unix_nanos).await {
-        Ok(Some(authorization)) => Ok(authorization),
-        Ok(None) => Err(TokenError::InvalidGrant),
-        Err(error) => {
-            tracing::warn!(
-                error.type = safe::kind(error.code()),
-                "token endpoint could not redeem the authorization code"
-            );
-            Err(TokenError::ServerError)
-        }
     }
+    nanos
 }
 
-// First-party selection narrows the resource approved at login; it never
-// changes the User, creates a workload credential, or upgrades MCP to Reef.
-enum TokenTarget {
-    Public,
-    Mcp(coral_workspace::WorkspaceId),
-    Reef,
-    /// The Organization MCP Endpoint: its public URL audience, plus the
-    /// Workspace the User picked when they signed in.
-    Organization,
-}
-
-impl TokenTarget {
-    fn resolve(
-        state: &AuthorizationServerHttpState,
-        resource: &str,
-        audience: Option<&str>,
-    ) -> Option<Self> {
-        let target = state.authorization_resource(resource);
-        let Some(audience) = audience else {
-            return Some(match target {
-                Some(AuthorizationResource::Mcp(McpEndpoint::Organization)) => Self::Organization,
-                _ => Self::Public,
-            });
-        };
-        // An Organization MCP Endpoint token must carry the picked Workspace,
-        // which only the public audience does; a private audience would drop
-        // or replace it.
-        match (PrivateAudience::parse(audience)?, target?) {
-            (
-                PrivateAudience::Mcp,
-                AuthorizationResource::Mcp(McpEndpoint::Workspace(workspace)),
-            ) => Some(Self::Mcp(workspace)),
-            (PrivateAudience::Reef, AuthorizationResource::Registered) => Some(Self::Reef),
-            _ => None,
-        }
-    }
-
-    fn issue(
-        &self,
-        issuer: &coral_auth::SessionTokenIssuer,
-        authorization: &AuthorizationGrant,
-    ) -> Result<coral_auth::IssuedAccessToken, TokenError> {
-        let token = match self {
-            Self::Mcp(workspace) => issuer.issue_workspace_access_token(
-                &authorization.user_id,
-                &authorization.client_id,
-                PrivateAudience::Mcp.as_str(),
-                workspace,
-            ),
-            Self::Reef => issuer.issue_access_token(
-                &authorization.user_id,
-                &authorization.client_id,
-                PrivateAudience::Reef.as_str(),
-            ),
-            Self::Public => issuer.issue_access_token(
-                &authorization.user_id,
-                &authorization.client_id,
-                &authorization.resource,
-            ),
-            Self::Organization => {
-                // Only the Workspace picker issues an Organization MCP
-                // Endpoint code, so a code naming no Workspace is not one.
-                let workspace = authorization
-                    .workspace_id
-                    .as_ref()
-                    .ok_or(TokenError::InvalidGrant)?;
-                issuer.issue_workspace_access_token(
-                    &authorization.user_id,
-                    &authorization.client_id,
-                    &authorization.resource,
-                    workspace,
-                )
+/// What the token for `resource` is for. First-party selection narrows the
+/// resource approved at login; it never changes the User, creates a workload
+/// credential, or upgrades MCP to Reef.
+fn access_target(
+    state: &AuthorizationServerHttpState,
+    resource: &str,
+    audience: Option<&str>,
+) -> Option<AccessTarget> {
+    let target = state.authorization_resource(resource);
+    let Some(audience) = audience else {
+        return Some(match target {
+            // The Organization MCP Endpoint: its public URL audience, plus
+            // the Workspace the User picked when they signed in.
+            Some(AuthorizationResource::Mcp(McpEndpoint::Organization)) => {
+                AccessTarget::PickedWorkspace
             }
-        };
-        // The issuer's error is text, so only its kind is logged.
-        token.map_err(|_text| {
-            tracing::warn!(
-                error.type = "access_token_issuance",
-                "token endpoint could not issue an access token"
-            );
-            TokenError::ServerError
-        })
+            _ => AccessTarget::Resource,
+        });
+    };
+    // An Organization MCP Endpoint token must carry the picked Workspace,
+    // which only the public audience does; a private audience would drop
+    // or replace it.
+    match (PrivateAudience::parse(audience)?, target?) {
+        (PrivateAudience::Mcp, AuthorizationResource::Mcp(McpEndpoint::Workspace(workspace))) => {
+            Some(AccessTarget::PrivateMcp(workspace))
+        }
+        (PrivateAudience::Reef, AuthorizationResource::Registered) => Some(AccessTarget::Reef),
+        _ => None,
     }
 }
 
-fn client_auth_rejection(headers: &axum::http::HeaderMap) -> Option<Response> {
+pub(super) fn client_auth_rejection(headers: &axum::http::HeaderMap) -> Option<Response> {
     let mut values = headers.get_all(header::AUTHORIZATION).iter();
     let value = values.next()?;
     // RFC 6749 section 5.2 requires the 401 challenge to name the scheme the
@@ -266,7 +268,7 @@ fn client_auth_rejection(headers: &axum::http::HeaderMap) -> Option<Response> {
     Some(response)
 }
 
-fn valid_content_type(headers: &axum::http::HeaderMap) -> bool {
+pub(super) fn valid_content_type(headers: &axum::http::HeaderMap) -> bool {
     let mut values = headers.get_all(header::CONTENT_TYPE).iter();
     let (Some(value), None) = (values.next(), values.next()) else {
         return false;
@@ -281,23 +283,26 @@ fn valid_content_type(headers: &axum::http::HeaderMap) -> bool {
 }
 
 #[derive(Default)]
-struct TokenForm {
+pub(super) struct TokenForm {
     grant_type: Option<Zeroizing<String>>,
     code: Option<Zeroizing<String>>,
     redirect_uri: Option<Zeroizing<String>>,
-    client_id: Option<Zeroizing<String>>,
+    pub(super) client_id: Option<Zeroizing<String>>,
     code_verifier: Option<Zeroizing<String>>,
+    refresh_token: Option<Zeroizing<String>>,
+    /// The token a revocation request names.
+    pub(super) token: Option<Zeroizing<String>>,
     resource: Option<Zeroizing<String>>,
     coral_audience: Option<Zeroizing<String>>,
 }
 
-enum FormError {
+pub(super) enum FormError {
     Malformed,
     InvalidClient,
     InvalidScope,
 }
 
-fn parse_form(raw: &[u8]) -> Result<TokenForm, FormError> {
+pub(super) fn parse_form(raw: &[u8]) -> Result<TokenForm, FormError> {
     let mut form = TokenForm::default();
     let mut seen = BTreeSet::new();
     if raw.is_empty() {
@@ -328,6 +333,8 @@ fn parse_form(raw: &[u8]) -> Result<TokenForm, FormError> {
             "redirect_uri" => &mut form.redirect_uri,
             "client_id" => &mut form.client_id,
             "code_verifier" => &mut form.code_verifier,
+            "refresh_token" => &mut form.refresh_token,
+            "token" => &mut form.token,
             "resource" => &mut form.resource,
             "coral_audience" => &mut form.coral_audience,
             _ => continue,
@@ -377,7 +384,7 @@ fn valid_code_verifier(value: &str) -> bool {
 }
 
 #[derive(Clone, Copy)]
-enum TokenError {
+pub(super) enum TokenError {
     InvalidRequest,
     InvalidClient,
     InvalidGrant,
@@ -387,7 +394,7 @@ enum TokenError {
     ServerError,
 }
 
-fn token_error(error: TokenError) -> Response {
+pub(super) fn token_error(error: TokenError) -> Response {
     let status = match error {
         TokenError::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
@@ -395,7 +402,7 @@ fn token_error(error: TokenError) -> Response {
     let (error, description) = match error {
         TokenError::InvalidRequest => ("invalid_request", "token request is malformed"),
         TokenError::InvalidClient => ("invalid_client", "client authentication is not supported"),
-        TokenError::InvalidGrant => ("invalid_grant", "authorization code is invalid or expired"),
+        TokenError::InvalidGrant => ("invalid_grant", "grant is invalid or expired"),
         TokenError::InvalidScope => ("invalid_scope", "scope is not supported"),
         TokenError::InvalidTarget => (
             "invalid_target",
@@ -410,7 +417,7 @@ fn token_error(error: TokenError) -> Response {
     )
 }
 
-fn json_response(status: StatusCode, body: &serde_json::Value) -> Response {
+pub(super) fn json_response(status: StatusCode, body: &serde_json::Value) -> Response {
     (
         status,
         security_headers(),
@@ -421,7 +428,11 @@ fn json_response(status: StatusCode, body: &serde_json::Value) -> Response {
 }
 
 #[cfg(test)]
-mod tests {
+#[expect(
+    clippy::indexing_slicing,
+    reason = "tests index the token responses they just received"
+)]
+pub(super) mod tests {
     use std::sync::Arc;
 
     use axum::body::Body;
@@ -434,16 +445,17 @@ mod tests {
     use super::super::test_state::{database, http_state};
     use super::*;
     use coral_auth::SessionTokenIssuer;
-    use coral_auth::authorization_codes::{AuthorizationCodes, CodeIssue};
+    use coral_auth::authorization_codes::{AuthorizationCodes, AuthorizationGrant, CodeIssue};
     use coral_test_support::TestDatabase;
 
-    const CLIENT: &str = "https://client.example.test/oauth/client.json";
+    pub(in crate::auth::authorization_server) const CLIENT: &str =
+        "https://client.example.test/oauth/client.json";
     const REDIRECT: &str = "http://127.0.0.1:14554/oauth/callback";
     const VERIFIER: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
     const RESOURCE: &str = "https://api.example.test/mcp";
 
     /// The token route's state over a fresh database of authorization codes.
-    async fn state() -> (
+    pub(in crate::auth::authorization_server) async fn state() -> (
         AuthorizationServerHttpState,
         AuthorizationCodes,
         SessionTokenIssuer,
@@ -452,7 +464,8 @@ mod tests {
         let database = database().await;
         let state = http_state(&database, "https://accounts.example.test", "", &[RESOURCE]);
         let codes = state.codes.clone();
-        let session_tokens = state.session_tokens.clone();
+        let (_settings, session_tokens) =
+            crate::auth::test_config::resolved_settings("https://accounts.example.test", "");
         (state, codes, session_tokens, database)
     }
 
@@ -522,6 +535,7 @@ mod tests {
                         code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes())),
                         resource: resource.to_owned(),
                         workspace_id: chosen.clone(),
+                        refresh_eligible: false,
                     },
                     now_unix_nanos(),
                 )
@@ -596,6 +610,7 @@ mod tests {
                     code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
                     resource: RESOURCE.into(),
                     workspace_id: None,
+                    refresh_eligible: false,
                 },
                 now_unix_nanos(),
             )
@@ -630,7 +645,7 @@ mod tests {
         output.finish()
     }
 
-    fn request(body: impl Into<Body>) -> Request {
+    pub(in crate::auth::authorization_server) fn request(body: impl Into<Body>) -> Request {
         Request::builder()
             .method("POST")
             .header(
@@ -641,7 +656,7 @@ mod tests {
             .expect("request")
     }
 
-    async fn send(
+    pub(in crate::auth::authorization_server) async fn send(
         state: AuthorizationServerHttpState,
         request: Request,
     ) -> (StatusCode, HeaderMap, String) {
@@ -655,14 +670,14 @@ mod tests {
         (status, headers, body)
     }
 
-    fn assert_security(headers: &HeaderMap) {
+    pub(in crate::auth::authorization_server) fn assert_security(headers: &HeaderMap) {
         assert_eq!(headers[header::CONTENT_TYPE], "application/json");
         assert_eq!(headers[header::CACHE_CONTROL], "no-store");
         assert_eq!(headers[header::PRAGMA], "no-cache");
         assert_eq!(headers[header::REFERRER_POLICY], "no-referrer");
     }
 
-    async fn expect_error(
+    pub(in crate::auth::authorization_server) async fn expect_error(
         state: AuthorizationServerHttpState,
         request: Request,
         expected: &str,
@@ -935,5 +950,137 @@ mod tests {
         // asserts. The atomicity itself is covered by `coral_auth`'s
         // `a_code_issued_by_one_process_is_redeemed_once_by_any`.
         invalid_grant(state, "success-code").await;
+    }
+
+    /// A User who can refresh: an enabled Organization Member.
+    const MEMBER: &str = "0199f7a2-6a6e-7c3d-9a51-2f4e8b7d1c05";
+
+    /// Signs `MEMBER` in through a refresh-eligible code for `RESOURCE` and
+    /// returns the token response.
+    pub(in crate::auth::authorization_server) async fn signed_in(
+        state: &AuthorizationServerHttpState,
+        database: &TestDatabase,
+        audience: Option<&str>,
+    ) -> Value {
+        coral_test_support::provision_user(
+            database.database(),
+            MEMBER,
+            coral_workspace::OrganizationRole::Member,
+        )
+        .await;
+        state
+            .codes
+            .issue(
+                "refreshable",
+                "refreshable-sign-in",
+                &AuthorizationGrant {
+                    user_id: MEMBER.into(),
+                    client_id: CLIENT.into(),
+                    redirect_uri: REDIRECT.into(),
+                    code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes())),
+                    resource: RESOURCE.into(),
+                    workspace_id: None,
+                    refresh_eligible: true,
+                },
+                now_unix_nanos(),
+            )
+            .await
+            .unwrap();
+        let body = set_field(
+            &form("refreshable", CLIENT, REDIRECT, VERIFIER),
+            "coral_audience",
+            audience,
+        );
+        let (status, headers, body) = send(state.clone(), request(body)).await;
+        assert_security(&headers);
+        assert_eq!(status, StatusCode::OK, "{body}");
+        serde_json::from_str(&body).unwrap()
+    }
+
+    pub(in crate::auth::authorization_server) fn refresh_form(token: &str) -> String {
+        form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("grant_type", "refresh_token"),
+                ("refresh_token", token),
+                ("client_id", CLIENT),
+            ])
+            .finish()
+    }
+
+    /// The refresh grant needs only the token and client; a supplied resource
+    /// or audience must name the grant's own, and a refusal spends nothing.
+    #[tokio::test]
+    async fn refresh_rotates_and_refuses_what_the_grant_does_not_bind() {
+        let (state, _codes, _session, database) = state().await;
+        let issued = signed_in(&state, &database, Some("reef")).await;
+        let mut token = issued["refresh_token"].as_str().unwrap().to_owned();
+        assert!(token.starts_with("coral_rt_"));
+        for (field, value, error) in [
+            ("refresh_token", None, "invalid_request"),
+            ("client_id", None, "invalid_request"),
+            (
+                "client_id",
+                Some("https://other.example.test/client.json"),
+                "invalid_grant",
+            ),
+            ("resource", Some("not a resource URI"), "invalid_target"),
+            (
+                "resource",
+                Some("https://other.example.test/mcp"),
+                "invalid_grant",
+            ),
+            ("coral_audience", Some("unknown"), "invalid_target"),
+            ("coral_audience", Some("mcp"), "invalid_grant"),
+            ("scope", Some("coral:access"), "invalid_scope"),
+            ("client_secret", Some("secret"), "invalid_client"),
+        ] {
+            let body = set_field(&refresh_form(&token), field, value);
+            let refused = expect_error(state.clone(), request(body), error).await;
+            assert!(!refused.contains(&token), "{field}");
+        }
+        let duplicate = format!("{}&refresh_token=again", refresh_form(&token));
+        expect_error(state.clone(), request(duplicate), "invalid_request").await;
+
+        let mut previous = None;
+        for (resource, audience) in [
+            (None, None),
+            (Some("https://API.EXAMPLE.TEST/mcp"), Some("reef")),
+        ] {
+            let body = set_field(
+                &set_field(&refresh_form(&token), "resource", resource),
+                "coral_audience",
+                audience,
+            );
+            let (status, headers, body) = send(state.clone(), request(body)).await;
+            assert_security(&headers);
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let value: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(value["token_type"], "Bearer");
+            assert!(value["expires_in"].as_u64().unwrap() > 0);
+            let claims = jsonwebtoken::dangerous::insecure_decode::<Value>(
+                value["access_token"].as_str().unwrap(),
+            )
+            .unwrap()
+            .claims;
+            assert_eq!(claims["aud"], "reef");
+            assert_eq!(claims["sub"], MEMBER);
+            let next = value["refresh_token"].as_str().unwrap().to_owned();
+            assert_ne!(next, token);
+            previous = Some(std::mem::replace(&mut token, next));
+        }
+        let replay = refresh_form(&previous.unwrap());
+        expect_error(state.clone(), request(replay), "invalid_grant").await;
+        let ended = refresh_form(&token);
+        expect_error(state, request(ended), "invalid_grant").await;
+    }
+
+    #[tokio::test]
+    async fn a_client_that_did_not_declare_refresh_gets_no_refresh_token() {
+        let (state, codes, _session, _database) = state().await;
+        seed(&codes, "access-only", VERIFIER).await;
+        let (status, body) = redeem(state, "access-only", VERIFIER).await;
+        assert_eq!(status, StatusCode::OK);
+        let value: Value = serde_json::from_str(&body).unwrap();
+        assert!(value.get("refresh_token").is_none());
     }
 }

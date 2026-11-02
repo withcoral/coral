@@ -33,6 +33,16 @@ Membership removal, cannot be undone by signing in again, and does not disable W
 the User created them or provisioned their Provider Accounts. _Avoid_: User deletion, automatic session-based
 reactivation, Agent disablement
 
+**Refresh Grant**: The durable right one sign-in gives one OAuth client to obtain new User access tokens without
+signing in again, until an absolute expiry fixed at the sign-in. Only a client that declares the `refresh_token` grant
+gets one. It fixes the User, client, resource, private audience, and Workspace of the sign-in; a refresh cannot change
+them. Each refresh spends one single-use refresh token and returns its successor; presenting a spent token ends the
+grant. A refresh rechecks enabled Organization Membership and, for a Workspace-scoped grant, Workspace Membership, and
+never consults the upstream identity provider. Removing either Membership ends the grants it supported, and rejoining
+revives none. Ending a grant stops refresh only; access tokens already issued keep their expiry. _Avoid_: session,
+offline access, sliding expiry
+_In Reef_: never named
+
 **User Profile**: A User's mutable name and email, neither guaranteed unique, distinct from the stable User identity and
 never a grant of authority. Conflicting emails do not merge Users or transfer access. Workspace Owners can see names
 and emails in authorized people and Agent-creator views; Members can see their own profile and the designated Owners'

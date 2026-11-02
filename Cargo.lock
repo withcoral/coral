@@ -605,6 +605,7 @@ name = "coral-administration"
 version = "1.4.0"
 dependencies = [
  "async-trait",
+ "coral-auth",
  "coral-catalog",
  "coral-credentials",
  "coral-db",
@@ -694,6 +695,7 @@ dependencies = [
  "coral-test-support",
  "coral-workspace",
  "jsonwebtoken",
+ "ring",
  "sea-query",
  "serde",
  "serde_json",
@@ -702,6 +704,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

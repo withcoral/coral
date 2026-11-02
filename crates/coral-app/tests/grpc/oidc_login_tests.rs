@@ -17,14 +17,14 @@ use url::Url;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-const AUTH_ISSUER: &str = "https://auth.example.test";
-const CALLBACK: &str = "https://client.example.test/callback";
+pub(super) const AUTH_ISSUER: &str = "https://auth.example.test";
+pub(super) const CALLBACK: &str = "https://client.example.test/callback";
 const RESOURCE: &str =
     "https://mcp.example.test/workspaces/01234567-89ab-4cde-8fab-0123456789ab/mcp";
 const ORGANIZATION_RESOURCE: &str = "https://mcp.example.test/mcp";
-const VERIFIER: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
+pub(super) const VERIFIER: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
 
-fn location(response: &reqwest::Response) -> Url {
+pub(super) fn location(response: &reqwest::Response) -> Url {
     let location = response
         .headers()
         .get(LOCATION)
@@ -33,14 +33,14 @@ fn location(response: &reqwest::Response) -> Url {
     Url::parse(location).expect("absolute redirect")
 }
 
-fn param(url: &Url, name: &str) -> String {
+pub(super) fn param(url: &Url, name: &str) -> String {
     url.query_pairs()
         .find_map(|(key, value)| (key == name).then(|| value.into_owned()))
         .unwrap_or_else(|| panic!("{url} has no {name}"))
 }
 
 /// Mounts discovery and keys for an upstream provider served by `provider`.
-async fn mount_provider(provider: &MockServer) {
+pub(super) async fn mount_provider(provider: &MockServer) {
     let issuer = provider.uri();
     Mock::given(method("GET"))
         .and(path("/.well-known/openid-configuration"))
@@ -83,12 +83,14 @@ async fn mount_token(provider: &MockServer, subject: &str, nonce: &str) {
     Mock::given(method("POST"))
         .and(path("/token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id_token": id_token})))
+        // Each sign-in's exchange gets its own nonce.
+        .up_to_n_times(1)
         .mount(provider)
         .await;
 }
 
 /// Unverified claims of a token this test just received from the server.
-fn claims(token: &str) -> Value {
+pub(super) fn claims(token: &str) -> Value {
     let payload = token.split('.').nth(1).expect("JWT payload");
     serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).expect("base64url")).expect("JSON")
 }
@@ -160,95 +162,19 @@ impl Composed {
     /// that page. Returns the client ID and the response to the provider's
     /// callback.
     async fn sign_in(&self, resource: &str) -> (String, reqwest::Response) {
-        let (endpoint, http) = (&self.endpoint, &self.http);
-        let registered: Value = http
-            .post(format!("{endpoint}/oauth/register"))
-            .json(&json!({"redirect_uris": [CALLBACK]}))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let client_id = registered
-            .get("client_id")
-            .and_then(Value::as_str)
-            .expect("client ID")
-            .to_owned();
-        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes()));
-        let page = http
-            .get(format!("{endpoint}/oauth/authorize"))
-            .query(&[
-                ("client_id", client_id.as_str()),
-                ("redirect_uri", CALLBACK),
-                ("response_type", "code"),
-                ("code_challenge_method", "S256"),
-                ("code_challenge", &challenge),
-                ("resource", resource),
-                ("state", "client-state"),
-            ])
-            .send()
-            .await
-            .unwrap();
-        // At `/mcp` the person approves after sign-in, where they pick the
-        // Workspace, so the request goes straight to the provider.
-        let approved = if resource == ORGANIZATION_RESOURCE {
-            assert_eq!(page.status(), 302, "no approval page before sign-in");
-            page
-        } else {
-            assert_eq!(page.status(), 200);
-            let cookie = cookie_pair(&page, "__Host-coral_oauth_approval=");
-            let ticket = ticket(&page.text().await.unwrap());
-            http.post(format!("{endpoint}/oauth/authorize"))
-                .header(ORIGIN, AUTH_ISSUER)
-                .header(COOKIE, cookie)
-                .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(format!("ticket={ticket}&decision=continue"))
-                .send()
-                .await
-                .unwrap()
-        };
-        let upstream = location(&approved);
-        let sign_in_cookie = cookie_pair(&approved, "__Host-coral_oauth_signin_");
-        mount_token(
+        sign_in(
+            &self.endpoint,
+            &self.http,
             &self.provider,
-            "upstream-subject",
-            &param(&upstream, "nonce"),
+            resource,
+            &json!({"redirect_uris": [CALLBACK]}),
         )
-        .await;
-
-        let returned = http
-            .get(format!("{endpoint}/auth/oidc/callback"))
-            .header(COOKIE, sign_in_cookie)
-            .query(&[
-                ("state", param(&upstream, "state").as_str()),
-                ("code", "provider-code"),
-            ])
-            .send()
-            .await
-            .unwrap();
-        (client_id, returned)
+        .await
     }
 
     /// Redeems `code` for `resource` and returns the access token's claims.
     async fn token_claims(&self, client_id: &str, code: &str, resource: &str) -> Value {
-        let token: Value = self
-            .http
-            .post(format!("{}/oauth/token", self.endpoint))
-            .form(&[
-                ("grant_type", "authorization_code"),
-                ("code", code),
-                ("client_id", client_id),
-                ("redirect_uri", CALLBACK),
-                ("code_verifier", VERIFIER),
-                ("resource", resource),
-            ])
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
+        let token = redeem(&self.endpoint, &self.http, client_id, code, resource, None).await;
         claims(
             token
                 .get("access_token")
@@ -263,8 +189,116 @@ impl Composed {
     }
 }
 
+/// Registers a client with `registration` at the authorization server at
+/// `endpoint` and walks one person through the upstream sign-in at
+/// `provider` for `resource`, approving the client first at a Workspace MCP
+/// URL. At `/mcp` the approval comes after sign-in, so the callback's
+/// response is that page. Returns the client ID and the response to the
+/// provider's callback.
+pub(super) async fn sign_in(
+    endpoint: &str,
+    http: &reqwest::Client,
+    provider: &MockServer,
+    resource: &str,
+    registration: &Value,
+) -> (String, reqwest::Response) {
+    let registered: Value = http
+        .post(format!("{endpoint}/oauth/register"))
+        .json(registration)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let client_id = registered
+        .get("client_id")
+        .and_then(Value::as_str)
+        .expect("client ID")
+        .to_owned();
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes()));
+    let page = http
+        .get(format!("{endpoint}/oauth/authorize"))
+        .query(&[
+            ("client_id", client_id.as_str()),
+            ("redirect_uri", CALLBACK),
+            ("response_type", "code"),
+            ("code_challenge_method", "S256"),
+            ("code_challenge", &challenge),
+            ("resource", resource),
+            ("state", "client-state"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    // At `/mcp` the person approves after sign-in, where they pick the
+    // Workspace, so the request goes straight to the provider.
+    let approved = if resource == ORGANIZATION_RESOURCE {
+        assert_eq!(page.status(), 302, "no approval page before sign-in");
+        page
+    } else {
+        assert_eq!(page.status(), 200);
+        let cookie = cookie_pair(&page, "__Host-coral_oauth_approval=");
+        let ticket = ticket(&page.text().await.unwrap());
+        http.post(format!("{endpoint}/oauth/authorize"))
+            .header(ORIGIN, AUTH_ISSUER)
+            .header(COOKIE, cookie)
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(format!("ticket={ticket}&decision=continue"))
+            .send()
+            .await
+            .unwrap()
+    };
+    let upstream = location(&approved);
+    let sign_in_cookie = cookie_pair(&approved, "__Host-coral_oauth_signin_");
+    mount_token(provider, "upstream-subject", &param(&upstream, "nonce")).await;
+
+    let returned = http
+        .get(format!("{endpoint}/auth/oidc/callback"))
+        .header(COOKIE, sign_in_cookie)
+        .query(&[
+            ("state", param(&upstream, "state").as_str()),
+            ("code", "provider-code"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    (client_id, returned)
+}
+
+/// Redeems `code` for `resource`, optionally narrowed to a private
+/// `audience`, and returns the token response.
+pub(super) async fn redeem(
+    endpoint: &str,
+    http: &reqwest::Client,
+    client_id: &str,
+    code: &str,
+    resource: &str,
+    audience: Option<&str>,
+) -> Value {
+    let mut form = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("client_id", client_id),
+        ("redirect_uri", CALLBACK),
+        ("code_verifier", VERIFIER),
+        ("resource", resource),
+    ];
+    if let Some(audience) = audience {
+        form.push(("coral_audience", audience));
+    }
+    let response = http
+        .post(format!("{endpoint}/oauth/token"))
+        .form(&form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "the code redeems");
+    response.json().await.unwrap()
+}
+
 /// The first `name=value` pair a response sets whose name starts with `prefix`.
-fn cookie_pair(response: &reqwest::Response, prefix: &str) -> String {
+pub(super) fn cookie_pair(response: &reqwest::Response, prefix: &str) -> String {
     response
         .headers()
         .get_all(SET_COOKIE)
@@ -276,7 +310,7 @@ fn cookie_pair(response: &reqwest::Response, prefix: &str) -> String {
         .to_owned()
 }
 
-fn ticket(html: &str) -> String {
+pub(super) fn ticket(html: &str) -> String {
     html.split("name=\"ticket\" value=\"")
         .nth(1)
         .and_then(|tail| tail.split('"').next())
