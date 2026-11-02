@@ -61,6 +61,15 @@ pub(crate) struct SignatureLine {
     /// Whether the line has no cut marker and its input names no type the
     /// line does not show, so a caller can call from it.
     pub(crate) complete: bool,
+    /// Where the callable and its input end in `text`; the result follows.
+    pub(crate) input_end: usize,
+}
+
+impl SignatureLine {
+    /// The callable and its input, without the result.
+    pub(crate) fn input(&self) -> &str {
+        self.text.get(..self.input_end).unwrap_or(&self.text)
+    }
 }
 
 /// What the declaration declares, and the name the line calls it by: the
@@ -86,26 +95,30 @@ impl Callable<'_> {
 
 /// The bounded signature line of the callable in `declaration`.
 pub(crate) fn signature_line(declaration: &str, callable: Callable<'_>) -> SignatureLine {
-    let (text, names_unshown_type) = if let Some(declarations) = syntax::read(declaration) {
-        let shown = render::render(&declarations, callable);
-        (
-            fit(&shown, SIGNATURE_LINE_MAX_BYTES),
-            shown.names_unshown_type,
-        )
-    } else {
-        tracing::debug!("a declaration has no readable callable; its signature line is cut");
-        (format!("{}({CUT_MARKER})", callable.leaf()), false)
-    };
+    let ((text, input_end), names_unshown_type) =
+        if let Some(declarations) = syntax::read(declaration) {
+            let shown = render::render(&declarations, callable);
+            (
+                fit(&shown, SIGNATURE_LINE_MAX_BYTES),
+                shown.names_unshown_type,
+            )
+        } else {
+            tracing::debug!("a declaration has no readable callable; its signature line is cut");
+            let text = format!("{}({CUT_MARKER})", callable.leaf());
+            ((text.clone(), text.len()), false)
+        };
     SignatureLine {
         complete: !names_unshown_type && !text.contains(CUT_MARKER),
         text,
+        input_end,
     }
 }
 
 /// The line within `max_bytes`: the result in its most detailed form that
 /// fits what the input leaves, or [`RESULT_RESERVED_BYTES`] when the input
-/// leaves less, then the input in what remains.
-fn fit(shown: &Shown, max_bytes: usize) -> String {
+/// leaves less, then the input in what remains. Returns the line and where
+/// its input ends.
+fn fit(shown: &Shown, max_bytes: usize) -> (String, usize) {
     let call = format!("{}({})", shown.leaf, shown.parameters.whole);
     let room = max_bytes
         .saturating_sub(call.len() + RESULT_SEPARATOR.len())
@@ -122,7 +135,9 @@ fn fit(shown: &Shown, max_bytes: usize) -> String {
     } else {
         cut_call(shown, budget)
     };
-    cut(&format!("{call}{RESULT_SEPARATOR}{result}"), max_bytes)
+    let line = cut(&format!("{call}{RESULT_SEPARATOR}{result}"), max_bytes);
+    let input_end = call.len().min(line.len());
+    (line, input_end)
 }
 
 /// The callable within `budget`: the input object's members from the first,

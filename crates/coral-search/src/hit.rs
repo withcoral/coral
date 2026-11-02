@@ -35,8 +35,7 @@ pub(crate) fn hit_text(
     let signature = signature_line(material.declaration, material.callable);
     let Some((terms, matched)) = query else {
         return HitText {
-            signature_line: signature.text,
-            complete: signature.complete,
+            signature,
             description_snippet: snippet(material.description, None),
             guidance_snippet: None,
             matched_tags: Vec::new(),
@@ -48,8 +47,7 @@ pub(crate) fn hit_text(
         .iter()
         .any(|field| field == "guidance");
     HitText {
-        signature_line: signature.text,
-        complete: signature.complete,
+        signature,
         description_snippet: snippet(material.description, terms.leftmost(material.description)),
         guidance_snippet: material
             .guidance

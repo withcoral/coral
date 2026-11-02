@@ -15,6 +15,15 @@ fn http_result(branches: &[(&str, &str)]) -> (&'static str, String) {
     )
 }
 
+/// The line's text and whether it is complete, once its input is checked
+/// to end where its result begins.
+fn shown(line: SignatureLine) -> (String, bool) {
+    assert!(line.input().ends_with(')'), "{}", line.text);
+    let after = line.text.get(line.input_end..).expect("input end");
+    assert!(after.is_empty() || after.starts_with(": "), "{}", line.text);
+    (line.text, line.complete)
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -361,11 +370,8 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         ),
     ] {
         assert_eq!(
-            signature_line(declaration, callable),
-            SignatureLine {
-                text: expected.to_string(),
-                complete,
-            },
+            shown(signature_line(declaration, callable)),
+            (expected.to_string(), complete),
             "{declaration}"
         );
     }
@@ -432,11 +438,11 @@ fn a_long_enum_gives_way_so_an_mcp_listing_still_shows_its_query_and_text_result
     );
 
     assert_eq!(
-        signature_line(&declaration, Callable::Tool { leaf: "listIssues" }),
-        SignatureLine {
-            text: r#"listIssues(input: { query?: string; team?: string; assignee?: string; state?: string; limit?: number; includeArchived?: boolean; orderBy?: "createdAt" | "updatedAt"; … }): Promise<{ data: { content: Array<McpContentBlock> } }> // JSON text in data.content[0].text"#.to_string(),
-            complete: false,
-        }
+        shown(signature_line(&declaration, Callable::Tool { leaf: "listIssues" })),
+        (
+            r#"listIssues(input: { query?: string; team?: string; assignee?: string; state?: string; limit?: number; includeArchived?: boolean; orderBy?: "createdAt" | "updatedAt"; … }): Promise<{ data: { content: Array<McpContentBlock> } }> // JSON text in data.content[0].text"#.to_string(),
+            false,
+        )
     );
 }
 
@@ -458,13 +464,16 @@ fn required_inputs_come_first_and_long_enums_last() {
     );
 
     assert_eq!(
-        signature_line(&declaration, Callable::Tool { leaf: "list" }),
-        SignatureLine {
-            text: format!(
+        shown(signature_line(
+            &declaration,
+            Callable::Tool { leaf: "list" }
+        )),
+        (
+            format!(
                 "list(input: {{ owner: string; kind: {long}; sort?: \"asc\" | \"desc\"; page?: number; fields?: Array<{long}> }}): Promise<{{ data: {{ structuredContent?: {{ total }}; content: Array<McpContentBlock> }} }}>"
             ),
-            complete: true,
-        },
+            true,
+        ),
         "required members come first, each group's long enums after its others, \
          and a declared output shows its field names"
     );

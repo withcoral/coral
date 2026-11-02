@@ -89,9 +89,10 @@ fn hit(hit: &SearchHit) -> coral_catalog::SearchHit {
 
 /// The top-level arguments a query term matched that the cut signature line
 /// does not show, in name order: a long argument can push the one the agent
-/// needs past the cut.
+/// needs past the cut. Only the input counts, since the result can show a
+/// member of the same name.
 fn matched_inputs(hit: &SearchHit) -> Vec<&str> {
-    let line = hit.signature_line();
+    let line = hit.signature_input();
     let mut names = hit
         .evidence()
         .paths()
