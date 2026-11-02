@@ -1382,6 +1382,20 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     )
     .await;
     assert_eq!(structured(&closed)["code"], "task_closed");
+    // With no start_task, the refusal must say how to start new work.
+    let closed_exec = call(
+        &client_a,
+        "exec",
+        json!({"task_id": task_id, "intent": "No new attempts", "program": "return 1;"}),
+    )
+    .await;
+    assert_eq!(
+        untraced(structured(&closed_exec)),
+        json!({
+            "code": "task_closed",
+            "message": "Task is closed to new attempts. For new work, call `exec` with `goal` instead of `task_id` to start a new Task."
+        })
+    );
     let observed_after_closure = call(
         &client_a,
         "wait",

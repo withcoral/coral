@@ -733,9 +733,12 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
         coral_task::Error::Search(error) => return search_failure(error),
         coral_task::Error::Functions(error) => return functions_failure(error),
         coral_task::Error::Run(error) => return run_failure(error),
-        coral_task::Error::TaskClosed => {
-            ToolFailure::stable("task_closed", "Task is closed to new attempts")
-        }
+        // With no start_task, the refusal is the agent's only hint that new
+        // work starts a new Task.
+        coral_task::Error::TaskClosed => ToolFailure::stable(
+            "task_closed",
+            "Task is closed to new attempts. For new work, call `exec` with `goal` instead of `task_id` to start a new Task.",
+        ),
         coral_task::Error::InteractionNotFound => {
             ToolFailure::stable("interaction_not_found", "Task Interaction was not found")
         }
