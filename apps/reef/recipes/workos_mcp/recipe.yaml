@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: workos_mcp
+# The catalog offers this beside the OpenAPI Recipe, on the one workos card.
+service: workos
+display_name: WorkOS
+description: WorkOS's hosted MCP server.
+
+source:
+  mcp:
+    url: https://mcp.workos.com/mcp
+
+authentication:
+  default: oauth
+  options:
+    oauth:
+      # Discover OAuth settings and register a client with WorkOS automatically.
+      # The server acts as the user's dashboard account, with its role, so it
+      # accepts no API key.
+      method: oauth_discovery
+      label: Sign in with WorkOS
+      flow: authorization_code
+      documentation_url: https://workos.com/docs/mcp
+      # The resource metadata advertises no scopes, so Coral would request
+      # none. These are the scopes the authorization server advertises.
+      scopes:
+        - openid # Identify the account.
+        - profile # Read the account's name.
+        - email # Read the account's email address.
+        - offline_access # Issue a refresh token, so the account stays signed in.
