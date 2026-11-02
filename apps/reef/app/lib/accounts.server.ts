@@ -27,6 +27,7 @@ import {
   workspaceName,
 } from './management.server'
 import { authorizedWorkspace } from './workspace-route.server'
+import { loadRevision } from './action-count.server'
 import { blockerLabel, providerName, routeChoice, uuidOr404 } from './providers.server'
 import type { AgentProviderView } from '@/views/management/agent-providers'
 import type { Crumb } from '@/views/management/types'
@@ -450,13 +451,16 @@ export function userAccountPath(provider: string, returnTo?: string | null) {
 export async function loadUserAccounts(
   context: Readonly<RouterContextProvider>,
   params: { workspace: string },
+  signal?: AbortSignal,
 ): Promise<UserAccountsView> {
   const { workspace, api } = await authorizedWorkspace(context, params.workspace)
-  const snapshot = await api.accounts.listUserAccounts({ parent: workspace.name })
+  const revision = await loadRevision(api, workspace, 'connections', signal)
+  const snapshot = await api.accounts.listUserAccounts({ parent: workspace.name }, { signal })
   const path = `${workspace.path}/accounts`
   return {
     workspace,
     path,
+    revision,
     accounts: snapshot.accounts.map((row) => {
       const current = row.account
       const account = current?.account
@@ -469,8 +473,11 @@ export async function loadUserAccounts(
         canConnect: Boolean(current?.canConnect || current?.canReconnect),
         canDisconnect:
           Boolean(account?.canManage) && accountConnectionState(account) !== 'not_connected',
-        waitingUntil: row.pendingConnection
-          ? timestamp(row.pendingConnection.expireTime)
+        connectionRequest: row.pendingConnection
+          ? {
+              name: row.pendingConnection.name,
+              expiresAt: timestamp(row.pendingConnection.expireTime),
+            }
           : undefined,
         connectPath: userAccountPath(row.provider, path),
         detailPath: userAccountPath(row.provider),

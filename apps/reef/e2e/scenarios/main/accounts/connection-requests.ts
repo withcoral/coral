@@ -68,9 +68,11 @@ export async function connectionRequests(context: TestContext) {
         const review = page.getByRole('dialog', { name: 'Review action', exact: true })
         await review.getByRole('button', { name: 'Connect Connections', exact: true }).waitFor()
         await review.getByRole('button', { name: 'Decline', exact: true }).waitFor()
-        // Accounts sits in the workspace navigation.
+        // Accounts sits in the workspace navigation and counts the request on any page.
         await page.goto(`/workspaces/${workspace}`)
-        await page.getByRole('link', { name: 'Accounts', exact: true }).click()
+        await page
+          .getByRole('link', { name: 'Accounts. 1 pending connection request', exact: true })
+          .click()
         await page.getByRole('heading', { name: 'Accounts', exact: true, level: 1 }).waitFor()
         await page.getByText('A connection request is waiting.', { exact: true }).waitFor()
         await page.getByText('Not connected', { exact: true }).waitFor()

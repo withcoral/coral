@@ -1,6 +1,6 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import type { Workspace } from '@/generated/coral/management/v1/workspace_pb'
-import type { ActionCounts } from './activity-live-types'
+import type { ActionCountKind, ActionCounts } from './activity-live-types'
 import { resourcePath, type ManagementApi } from './management.server'
 
 /** One authenticated count-only read per Workspace; unavailable is never reported as zero.
@@ -32,4 +32,18 @@ export async function loadActionCounts(
       }),
     ),
   )
+}
+
+/** The revision of one kind in `workspace`, for a page that follows it. Read it before the
+ * page's rows, so the rows are at least as new as it: a newer revision on the shell's stream
+ * then refreshes them, and no change falls between the two reads. Undefined when Coral
+ * could not count. */
+export async function loadRevision(
+  api: Pick<ManagementApi, 'activity'>,
+  workspace: Pick<Workspace, 'name'>,
+  kind: ActionCountKind,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  const counts = await loadActionCounts(api, [workspace], signal)
+  return counts[resourcePath(workspace.name)]?.revisions[kind]
 }

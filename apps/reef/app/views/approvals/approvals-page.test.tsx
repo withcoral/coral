@@ -1,12 +1,11 @@
 /** @vitest-environment happy-dom */
 import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useEffect, useState, type ReactNode } from 'react'
 import { useLoaderData, type ActionFunctionArgs, type LoaderFunctionArgs } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import type { ActionCount, ActionCounts } from '@/lib/activity-live-types'
-import { ActionSignalContext, type ActionSignal } from '@/lib/use-action-signal'
-import { renderLivePage, renderRoute, type RouteOptions } from '@/test-support/route'
+import type { ActionSignal } from '@/lib/use-action-signal'
+import { renderLivePage, renderRoute, shellSignal, type RouteOptions } from '@/test-support/route'
 import {
   approval,
   approvalContext,
@@ -114,22 +113,15 @@ async function renderLive(coral: Coral, first: ActionSignal, options: RouteOptio
     const selected = new URL(request.url).searchParams.get('request')
     return { ...coral.read, selected, review: (selected && coral.reviews?.[selected]) || null }
   })
-  let send!: (signal: ActionSignal) => void
-  function Shell({ children }: { children: ReactNode }) {
-    const [signal, setSignal] = useState(first)
-    useEffect(() => {
-      send = setSignal
-    }, [])
-    return <ActionSignalContext value={signal}>{children}</ActionSignalContext>
-  }
+  const { wrapper, signal } = shellSignal(first)
   const { router } = renderRoute(<LoadedRoute />, {
     ...options,
     loader,
     ErrorBoundary: ApprovalsErrorBoundary,
-    wrapper: Shell,
+    wrapper,
   })
   await screen.findByRole('table', { name: 'Pending approvals' })
-  return { loader, router, signal: (next: ActionSignal) => act(async () => send(next)) }
+  return { loader, router, signal }
 }
 
 it('asks each request as a question and names its tool, agent and deadline', () => {

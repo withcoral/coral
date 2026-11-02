@@ -180,6 +180,40 @@ const settled: Record<Exclude<ConnectionState, 'pending'>, string> = {
     'The account authorization changed. Coral does not switch accounts for waiting calls.',
 }
 
+/** Declines one exact connection request. Its fetcher is keyed by the request's name, so a
+ * view that shows the outcome reads it with `useFetcher({ key: request })`. */
+export function DeclineConnection({
+  request,
+  ariaLabel,
+  size,
+  disabled = false,
+}: {
+  request: string
+  /** Names the request when "Decline" alone does not, as in a list. */
+  ariaLabel?: string
+  size?: '22'
+  disabled?: boolean
+}) {
+  const csrf = useShellCsrf()
+  const decline = useFetcher<typeof resolve>({ key: request })
+  return (
+    <decline.Form method="post" action="/activity/resolve">
+      <input type="hidden" name="csrf" value={csrf} />
+      <input type="hidden" name="name" value={request} />
+      <input type="hidden" name="intent" value="decline_connection" />
+      <Button.TextButton
+        type="submit"
+        variant="secondary"
+        size={size}
+        ariaLabel={ariaLabel}
+        disabled={disabled || decline.state !== 'idle'}
+      >
+        Decline
+      </Button.TextButton>
+    </decline.Form>
+  )
+}
+
 /** A selected connection request leads the panel, as an approval does: its header with the
  * deadline, then `children` (its Run, as context), then Connect or Decline. One connection can
  * unblock several waiting calls, so it is never labelled as one call's approval. */
@@ -196,7 +230,6 @@ function ConnectionAction({
 }) {
   const csrf = useShellCsrf()
   const connected = useActivityConnected()
-  const decline = useFetcher<typeof resolve>({ key: request.name })
   const provider = providerLabel || 'provider'
   const archived = useActivityArchived()
   const pending = request.state === 'pending'
@@ -232,18 +265,7 @@ function ConnectionAction({
           <Typography.BodySmall>Connect your {provider} account to continue.</Typography.BodySmall>
           {/* Like an approval: the secondary choice leads, the primary one ends. */}
           <PanelFooter>
-            <decline.Form method="post" action="/activity/resolve">
-              <input type="hidden" name="csrf" value={csrf} />
-              <input type="hidden" name="name" value={request.name} />
-              <input type="hidden" name="intent" value="decline_connection" />
-              <Button.TextButton
-                type="submit"
-                variant="secondary"
-                disabled={!connected || decline.state !== 'idle'}
-              >
-                Decline
-              </Button.TextButton>
-            </decline.Form>
+            <DeclineConnection request={request.name} disabled={!connected} />
             <ConnectButton
               action={connectHref(request.provider, returnTo)}
               csrf={csrf}

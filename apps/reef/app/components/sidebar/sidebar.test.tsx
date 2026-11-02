@@ -272,6 +272,9 @@ const counts = {
 function activityLink() {
   return screen.getByRole('link', { name: /^Activity/ })
 }
+function accountsLink() {
+  return screen.getByRole('link', { name: /^Accounts/ })
+}
 function approvalsLink() {
   return screen.getByRole('link', { name: /^Approvals/ })
 }
@@ -294,13 +297,15 @@ test('Approvals sits directly under Overview and shows with nothing pending', ()
 test('an open workspace shows each count on its kind, a closed one the total on its name', () => {
   render('/workspaces/ops/providers', { actionCounts: counts })
   expect(approvalsLink()).toHaveAccessibleName('Approvals. 3 pending approvals')
-  expect(activityLink()).toHaveAccessibleName('Activity. 2 pending connection requests')
+  expect(accountsLink()).toHaveAccessibleName('Accounts. 2 pending connection requests')
+  expect(activityLink()).toHaveAccessibleName('Activity')
   expect(header('Operations')).toHaveAccessibleName('Operations')
   expect(header(/^Research/)).toHaveAccessibleName('Research. 5 pending actions')
   // The label and the count are separate text, so neither reads as "Approvals3".
   expect(within(approvalsLink()).getByText('Approvals')).toBeInTheDocument()
   expect(within(approvalsLink()).getByText('3')).toBeInTheDocument()
-  expect(within(activityLink()).getByText('2')).toBeInTheDocument()
+  expect(within(accountsLink()).getByText('2')).toBeInTheDocument()
+  expect(activityLink().textContent).toBe('Activity')
   expect(within(header(/^Research/)).getByText('5')).toBeInTheDocument()
 })
 test('collapsed, the current workspace shows each kind and the others their total on the tile', () => {
@@ -308,7 +313,8 @@ test('collapsed, the current workspace shows each kind and the others their tota
   const rail = screen.getByRole('group', { name: 'Workspaces' })
   expect(within(rail).getByRole('link', { name: 'Operations' })).toBeInTheDocument()
   expect(approvalsLink()).toHaveAccessibleName('Approvals. 3 pending approvals')
-  expect(activityLink()).toHaveAccessibleName('Activity. 2 pending connection requests')
+  expect(accountsLink()).toHaveAccessibleName('Accounts. 2 pending connection requests')
+  expect(activityLink()).toHaveAccessibleName('Activity')
   expect(
     within(rail).getByRole('link', { name: 'Research. 5 pending actions' }),
   ).toBeInTheDocument()
@@ -318,7 +324,7 @@ test('a single request reads in the singular', () => {
     actionCounts: { '/workspaces/ops': { total: '2', approvals: '1', connections: '1' } },
   })
   expect(approvalsLink()).toHaveAccessibleName('Approvals. 1 pending approval')
-  expect(activityLink()).toHaveAccessibleName('Activity. 1 pending connection request')
+  expect(accountsLink()).toHaveAccessibleName('Accounts. 1 pending connection request')
 })
 test.each([
   [

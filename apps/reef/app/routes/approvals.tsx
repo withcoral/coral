@@ -1,7 +1,7 @@
 import { data } from 'react-router'
 import type { Route } from './+types/approvals'
 import { ActivityRequiredActionKind } from '@/generated/coral/management/v1/activity_pb'
-import { loadActionCounts } from '@/lib/action-count.server'
+import { loadRevision } from '@/lib/action-count.server'
 import { approvalReading, pendingActions, settledApprovals, transient } from '@/lib/activity.server'
 import { managementFailure, privateHeaders } from '@/lib/management.server'
 import { providerMarks } from '@/lib/providers.server'
@@ -16,10 +16,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     // An archived Workspace takes no decisions. Run detail keeps its past approvals.
     if (workspace.state === 'archived')
       throw new Response('Not found', { status: 404, headers: privateHeaders })
-    // Read the revision first, so the rows are at least as new as it. A newer revision on
-    // the shell's stream then refreshes them, and no change falls between the two reads.
-    const counts = await loadActionCounts(api, [workspace], request.signal)
-    const revision = counts[workspace.path]?.revisions.approvals
+    const revision = await loadRevision(api, workspace, 'approvals', request.signal)
     // A request reaches history only by leaving the pending set, so the same revision covers
     // the newest settled page. Older pages load on request and stay as they are.
     const [approvals, settled, providers] = await Promise.all([

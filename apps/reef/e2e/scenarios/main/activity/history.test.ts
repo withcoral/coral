@@ -63,9 +63,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         expect(
           await page
             .getByRole('navigation', { name: 'Coral', exact: true })
-            .getByRole('link', {
-              name: /^Activity(\. \d+ pending connection requests?)?$/,
-            })
+            .getByRole('link', { name: 'Activity', exact: true })
             .getAttribute('aria-current'),
         ).toBe('page')
         const nav = page.getByRole('navigation', { name: 'Coral', exact: true })

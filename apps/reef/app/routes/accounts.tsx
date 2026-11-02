@@ -10,9 +10,11 @@ import {
 import { UserAccountsPage } from '@/views/accounts/user-accounts-page'
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
-export async function loader({ context, params }: Route.LoaderArgs) {
+export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
-    return data(await loadUserAccounts(context, params), { headers: accountHeaders })
+    return data(await loadUserAccounts(context, params, request.signal), {
+      headers: accountHeaders,
+    })
   } catch (error) {
     accountFailure(error)
   }

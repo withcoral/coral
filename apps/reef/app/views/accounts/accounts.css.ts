@@ -57,3 +57,10 @@ export const accountStatus = style({
   gap: 4,
   paddingBlock: 8,
 })
+// Decline, then Connect, at the end of a row.
+export const rowActions = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: 8,
+  justifyContent: 'flex-end',
+})

@@ -16,6 +16,7 @@ import {
   type RouteObject,
 } from 'react-router'
 import { onTestFinished } from 'vitest'
+import { ActionSignalContext, type ActionSignal } from '@/lib/use-action-signal'
 
 export interface RouteOptions {
   /** The URL the router starts at. */
@@ -68,6 +69,22 @@ export function renderLivePage<Page>(
     ...renderRoute(<LivePage />, options),
     update: (next: Page) => act(async () => show(next)),
   }
+}
+
+/**
+ * The app shell's required-actions signal, starting at `first`. Pass `wrapper` to a render;
+ * `signal` moves it as the shell's stream would.
+ */
+export function shellSignal(first: ActionSignal) {
+  let send!: (next: ActionSignal) => void
+  function Shell({ children }: { children: ReactNode }) {
+    const [signal, setSignal] = useState(first)
+    useEffect(() => {
+      send = setSignal
+    }, [])
+    return <ActionSignalContext value={signal}>{children}</ActionSignalContext>
+  }
+  return { wrapper: Shell, signal: (next: ActionSignal) => act(async () => send(next)) }
 }
 
 /** Renders `view` as the route at `entry` to static HTML, as the server would. */

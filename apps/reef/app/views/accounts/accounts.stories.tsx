@@ -70,7 +70,10 @@ const personal: UserAccountsView = {
       canConnect: true,
       canDisconnect: false,
       // Far enough ahead that the story always shows a waiting run.
-      waitingUntil: '2099-01-01T00:14:00.000Z',
+      connectionRequest: {
+        name: 'workspaces/demo/accountConnectionRequests/linear',
+        expiresAt: '2099-01-01T00:14:00.000Z',
+      },
       connectPath: '/connect',
       detailPath: '/details',
     },

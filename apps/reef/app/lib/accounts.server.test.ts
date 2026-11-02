@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   cancelProviderAccountAuthorization: vi.fn(),
   resolveAccountConnectionRequest: vi.fn(),
   completeProviderSetupAuthorization: vi.fn(),
+  countRequiredActions: vi.fn(),
 }))
 const handlers = {
   providers: { getProvider: mocks.getProvider },
@@ -49,6 +50,7 @@ const handlers = {
     resolveAccountConnectionRequest: mocks.resolveAccountConnectionRequest,
     completeProviderSetupAuthorization: mocks.completeProviderSetupAuthorization,
   },
+  activity: { countRequiredActions: mocks.countRequiredActions },
 }
 const api = fakeManagement(handlers)
 const transport = fakeManagementTransport(handlers)
@@ -458,6 +460,7 @@ it('lists your accounts and the run that waits on one', async () => {
         providerDisplayName: 'Linear',
         account: { canConnect: true, canReconnect: false },
         pendingConnection: {
+          name: `${base.slice(1)}/accountConnectionRequests/waiting`,
           state: AccountConnectionState.PENDING,
           expireTime: { seconds: 1_800_000_000n, nanos: 0 },
         },
@@ -483,7 +486,10 @@ it('lists your accounts and the run that waits on one', async () => {
       name: 'Linear',
       state: 'not_connected',
       canConnect: true,
-      waitingUntil: '2027-01-15T08:00:00.000Z',
+      connectionRequest: {
+        name: `${base.slice(1)}/accountConnectionRequests/waiting`,
+        expiresAt: '2027-01-15T08:00:00.000Z',
+      },
       connectPath: `${connectBase}?returnTo=${encodeURIComponent(`${base}/accounts`)}`,
       detailPath: connectBase,
     }),
@@ -492,9 +498,24 @@ it('lists your accounts and the run that waits on one', async () => {
       state: 'connected',
       accountId: 'account',
       canDisconnect: true,
-      waitingUntil: undefined,
+      connectionRequest: undefined,
     }),
   ])
+})
+
+// The rows must be at least as new as the revision, or a change between them is never seen.
+it('reads the connection revision before your accounts', async () => {
+  const reads: string[] = []
+  mocks.countRequiredActions.mockImplementation(() => {
+    reads.push('revision')
+    return { approvalRevision: 'approvals', connectionRevision: 'connections' }
+  })
+  mocks.listUserAccounts.mockImplementation(() => {
+    reads.push('rows')
+    return { accounts: [] }
+  })
+  expect((await loadUserAccounts(context, { workspace })).revision).toBe('connections')
+  expect(reads).toEqual(['revision', 'rows'])
 })
 
 it('does not redirect a successful shared or agent connection', async () => {

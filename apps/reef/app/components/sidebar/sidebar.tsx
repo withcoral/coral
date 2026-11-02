@@ -129,10 +129,14 @@ function workspaceDestinations(
       icon: 'Activity',
       label: 'Activity',
       also: `${w}/runs/`,
-      pending: pending(count?.connections, 'connection request'),
     },
     { to: `${w}/providers`, icon: 'Plug', label: 'Providers' },
-    { to: `${w}/accounts`, icon: 'KeyRound', label: 'Accounts' },
+    {
+      to: `${w}/accounts`,
+      icon: 'KeyRound',
+      label: 'Accounts',
+      pending: pending(count?.connections, 'connection request'),
+    },
     { to: `${w}/functions`, icon: 'SquareFunction', label: 'Functions' },
     ...(owner ? [{ to: `${w}/agents`, icon: 'Bot' as const, label: 'Agents' }] : []),
     // A local deployment has no other people to manage.
