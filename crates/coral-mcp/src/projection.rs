@@ -18,7 +18,7 @@ pub(crate) use discovery::{
     Description, SavedDetail, SavedFunctionResult, SearchResult, exact_description, saved_function,
     search,
 };
-pub(crate) use run::{ExecResult, ObservedRun, run_update};
+pub(crate) use run::{RunUpdateResult, run_update};
 
 /// Every Coral-owned result keeps the SDK's compact JSON text of
 /// `structuredContent` as `content[0]`, as both served MCP versions advise.

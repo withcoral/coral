@@ -732,8 +732,8 @@ async fn a_raw_retry_completes_the_call_that_asked(endpoint: &str, version: &Pro
     session.close().await;
 }
 
-/// Later calls in the Task an `exec` started name it, and every `exec`
-/// result names it too, including the retry that completes one.
+/// Later calls in the Task an `exec` started name it, and its result does
+/// not name it back.
 async fn continue_and_end(session: &super::RawSession, task: &str) {
     let later = session
         .tool(
@@ -743,40 +743,10 @@ async fn continue_and_end(session: &super::RawSession, task: &str) {
         .await;
     assert_eq!(later["structuredContent"]["state"], "succeeded", "{later}");
     assert_eq!(
-        later["structuredContent"]["task_id"], task,
-        "an exec that names its Task names it in its result too"
+        later["structuredContent"].get("task_id"),
+        None,
+        "only the call that starts a Task names it"
     );
-    let arguments = json!({
-        "task_id":task, "intent":"Invoke an approval-gated Tool", "wait_ms":5000,
-        "program":PROGRAM
-    });
-    let asked = session.tool("exec", arguments.clone()).await;
-    assert_eq!(asked["resultType"], "input_required", "{asked}");
-    let key = asked["inputRequests"]
-        .as_object()
-        .and_then(|requests| requests.keys().next())
-        .expect("one elicitation for one approval")
-        .clone();
-    let retried = session
-        .result(
-            "tools/call",
-            json!({
-                "name":"exec", "arguments":arguments, "requestState":asked["requestState"],
-                "inputResponses":{key:{"action":"cancel"}}
-            }),
-        )
-        .await
-        .expect("retry completes");
-    assert_eq!(
-        retried["structuredContent"]["task_id"], task,
-        "the retry of an exec that names its Task names it too: {retried}"
-    );
-    session
-        .tool(
-            "cancel",
-            json!({"run_id":retried["structuredContent"]["run_id"]}),
-        )
-        .await;
     let ended = session
         .tool("end_task", json!({"task_id":task, "outcome":"success"}))
         .await;

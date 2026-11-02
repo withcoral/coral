@@ -382,8 +382,8 @@ impl TaskModule {
     }
 
     /// Returns the Task a Run was submitted in when the caller is that Task's
-    /// own Principal. A retried call that submitted the Run reads it here,
-    /// because its first answer had no place for the Task's id.
+    /// own Principal. A call that started a Task with its first Run reads it
+    /// here when it could not return the Task's id the first time.
     /// A Run without a Task, or in another Principal's Task, has none.
     /// # Errors
     /// Returns authority and persistence failures.

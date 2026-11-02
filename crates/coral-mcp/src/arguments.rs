@@ -337,15 +337,19 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
             "Delete one Saved Function.",
             mutation_annotations("Delete Function", true, false),
         ),
-        always_loaded(tool::<ExecArguments, crate::projection::ExecResult<'_>>(
-            "Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.",
-            mutation_annotations("Execute Program", true, true),
-        )),
-        always_loaded(tool::<WaitArguments, crate::projection::ObservedRun<'_>>(
-            "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Returns when `required_actions` change, the Run ends, or `wait_ms` runs out, with the output that arrived by then. New output alone does not end the wait. Observing consumes nothing, so an earlier cursor reads the same output again.",
-            read_annotations("Wait for Run"),
-        )),
-        tool::<CancelArguments, crate::projection::ObservedRun<'_>>(
+        always_loaded(
+            tool::<ExecArguments, crate::projection::RunUpdateResult<'_>>(
+                "Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.",
+                mutation_annotations("Execute Program", true, true),
+            ),
+        ),
+        always_loaded(
+            tool::<WaitArguments, crate::projection::RunUpdateResult<'_>>(
+                "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Returns when `required_actions` change, the Run ends, or `wait_ms` runs out, with the output that arrived by then. New output alone does not end the wait. Observing consumes nothing, so an earlier cursor reads the same output again.",
+                read_annotations("Wait for Run"),
+            ),
+        ),
+        tool::<CancelArguments, crate::projection::RunUpdateResult<'_>>(
             "Request cancellation of one Program Run.",
             mutation_annotations("Cancel Run", true, false),
         ),
