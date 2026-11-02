@@ -39,6 +39,12 @@ export const meta = style({
   alignItems: 'center',
   columnGap: 4,
 })
-export const logo = style({ display: 'inline-flex', flexShrink: 0, marginInlineEnd: 2 })
-/** The outcome keeps its width beside a long request. */
-export const outcome = style({ flexShrink: 0 })
+/** The history fills what the pending requests leave, and stays tall enough to read when
+ * many requests wait: the list then scrolls them both. */
+export const history = style({
+  display: 'flex',
+  flex: '1 1 auto',
+  flexDirection: 'column',
+  minHeight: 280,
+  minWidth: 0,
+})

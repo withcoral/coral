@@ -236,6 +236,12 @@ const historyRows = () =>
     .getAllByRole('row')
     .filter((row) => within(row).queryAllByRole('link').length > 0)
 
+/** A row's cells, as text. */
+const cells = (row: HTMLElement) =>
+  within(row)
+    .getAllByRole('cell')
+    .map((cell) => cell.textContent)
+
 describe('history', () => {
   it('follows the pending requests, newest first, with outcome, reviewer and time', () => {
     renderRoute(
@@ -248,17 +254,27 @@ describe('history', () => {
     const [pending, history] = screen.getAllByRole('table')
     expect(pending).toHaveAccessibleName('Pending approvals')
     expect(history).toHaveAccessibleName('Approval history')
+    // Each row is one line under its UTC day: time, request, tool, who asked, outcome, approver.
+    expect(within(history).getByRole('rowgroup', { name: 'Tue 22 Sep 2026' })).toBeInTheDocument()
     const [approved, expired] = historyRows()
     expect(within(approved).getByRole('link', { name: 'Handle approved?' })).toBeInTheDocument()
-    expect(approved).toHaveTextContent('mail.approved')
-    expect(approved).toHaveTextContent('Collections agent')
-    expect(approved).toHaveTextContent('Ada Lovelace')
-    expect(approved).toHaveTextContent('Approved')
-    expect(within(approved).getByText('22 Sep 2026, 10:00:00 UTC')).toBeInTheDocument()
+    expect(cells(approved)).toEqual([
+      '10:00:00',
+      'Handle approved?',
+      'mail.approved',
+      'Collections agent',
+      'Approved',
+      'Ada Lovelace',
+    ])
     // Nobody decided an expired request. Its time is its deadline.
-    expect(expired).toHaveTextContent('Expired')
-    expect(within(expired).getByText('22 Sep 2026, 09:00:00 UTC')).toBeInTheDocument()
-    expect(expired).not.toHaveTextContent('Ada Lovelace')
+    expect(cells(expired)).toEqual([
+      '09:00:00',
+      'Handle expired?',
+      'mail.expired',
+      'Collections agent',
+      'Expired',
+      '—',
+    ])
     // Settled rows take no decision.
     expect(within(history).queryByRole('button', { name: /^Approve/ })).not.toBeInTheDocument()
   })

@@ -6,9 +6,9 @@ import { useRevalidateWhileVisible } from '@/lib/use-revalidate-while-visible'
 import { Button, Dialog, Table, Typography } from '@/wax/components'
 import { Icon, type IconName } from '@/wax/components/icon'
 import { Pill, type PillColor } from '@/wax/components/pill'
-import { CodeChip } from '@/wax/components/code-chip'
+import { ToolName } from '@/wax/components/tool-name'
 import { Deadline } from '@/wax/components/deadline'
-import { Logo, type LogoIcons } from '@/wax/components/logo'
+import type { LogoIcons } from '@/wax/components/logo'
 import { PageLayout } from '@/wax/components/page-layout'
 import { toolOwner } from '@/lib/call-root'
 import {
@@ -26,7 +26,8 @@ import { revealHref } from '../activity/navigation'
 import { Panel } from '../activity/panel'
 import * as panelStyles from '../activity/panel.css'
 import { approvalQuestion, pendingQuestion } from '../activity/pending'
-import { Instant } from '../activity/instant'
+import { dayLabel, UtcTime } from '../activity/instant'
+import { utcDay } from '@/lib/activity-list'
 import type {
   ActivityRow,
   ApprovalDetail,
@@ -228,35 +229,51 @@ export function ApprovalsPage({
                 </Typography.BodySmall>
               )}
               {history.rows.length > 0 && (
-                <Table.Container
-                  ariaLabel="Approval history"
-                  variant="card"
-                  layout="fixed"
-                  columns={[{ label: 'History', width: { fill: 1 } }]}
-                >
-                  <Table.Head />
-                  <Table.Body>
-                    {history.rows.map((row) => (
-                      <SettledRow
-                        key={row.name}
-                        settled={row}
-                        owner={toolOwner(row.callPath, providers)}
-                        open={row.name === selected}
-                      />
+                // As in Activity and Providers, the history scrolls inside its own frame.
+                <div className={styles.history}>
+                  <Table.Container
+                    ariaLabel="Approval history"
+                    density="compact"
+                    layout="scroll"
+                    columns={HISTORY_COLUMNS}
+                  >
+                    <Table.Head />
+                    {/* Each row sits under the UTC day it settled, as Activity's records do. */}
+                    {settledDays(history.rows).map(({ day, rows }) => (
+                      <Table.Group
+                        key={day}
+                        label={dayLabel(day)}
+                        heading={
+                          <Table.Cell fullWidth>
+                            <Typography.BodySmall color="secondary">
+                              {dayLabel(day)}
+                            </Typography.BodySmall>
+                          </Table.Cell>
+                        }
+                      >
+                        {rows.map((row) => (
+                          <SettledRow
+                            key={row.name}
+                            settled={row}
+                            owner={toolOwner(row.callPath, providers)}
+                            open={row.name === selected}
+                          />
+                        ))}
+                      </Table.Group>
                     ))}
-                  </Table.Body>
-                  {history.more && (
-                    <Table.LoadMore
-                      onLoad={history.load}
-                      loading={history.loading}
-                      loadingLabel="Loading older approvals…"
-                      error={history.failed && 'Older approvals are unavailable.'}
-                      retryLabel="Try again"
-                    >
-                      Load older approvals
-                    </Table.LoadMore>
-                  )}
-                </Table.Container>
+                    {history.more && (
+                      <Table.LoadMore
+                        onLoad={history.load}
+                        loading={history.loading}
+                        loadingLabel="Loading older approvals…"
+                        error={history.failed && 'Older approvals are unavailable.'}
+                        retryLabel="Try again"
+                      >
+                        Load older approvals
+                      </Table.LoadMore>
+                    )}
+                  </Table.Container>
+                </div>
               )}
             </div>
             <ReviewRail
@@ -460,8 +477,32 @@ const outcomes: Record<
   expired: { label: 'Expired', icon: 'Hourglass', color: 'gray' },
 }
 
-/** One settled request: its question, its tool, its outcome with an icon and text, who
- * decided and when. An expired request has no reviewer; its time is its deadline. */
+// The request and tool share what is left, but never shrink past a readable width: a
+// narrow screen scrolls the table sideways instead, as Activity's does.
+const HISTORY_COLUMNS: Table.Column[] = [
+  { label: 'TIME · UTC', width: 104 },
+  { label: 'REQUEST', width: 'minmax(220px, 2fr)' },
+  { label: 'TOOL', width: 'minmax(160px, 1fr)' },
+  { label: 'ASKED BY', width: 'content' },
+  { label: 'OUTCOME', width: 120 },
+  { label: 'DECIDED BY', width: 'content' },
+]
+
+/** Settled rows by the UTC day they settled, keeping Coral's newest-first order. */
+function settledDays(rows: SettledApproval[]) {
+  const days: { day: string; rows: SettledApproval[] }[] = []
+  for (const row of rows) {
+    const day = utcDay(row.settledAt)
+    const last = days.at(-1)
+    if (last?.day === day) last.rows.push(row)
+    else days.push({ day, rows: [row] })
+  }
+  return days
+}
+
+/** One settled request on one line: when, what it asked, the tool, who asked, the outcome
+ * with an icon and text, and who decided. An expired request has no approver; its time is
+ * its deadline. */
 function SettledRow({
   settled,
   owner,
@@ -474,25 +515,52 @@ function SettledRow({
   const question = approvalQuestion(settled.run)
   const href = reviewHref(settled.name)
   const outcome = outcomes[settled.outcome]
+  const { run } = settled
   return (
     <Table.Row to={href} selected={open} preventScrollReset>
-      <Table.Cell wrap>
-        <span className={styles.row}>
-          <span className={styles.request}>
-            <Table.RowLink to={href}>{question}</Table.RowLink>
-            <CallMeta callPath={settled.callPath} owner={owner} run={settled.run}>
-              {settled.approverLabel && `${settled.approverLabel} · `}
-              <Instant value={settled.settledAt} />
-            </CallMeta>
-          </span>
-          {/* An icon and a word, so the outcome does not rest on colour. */}
-          <Pill color={outcome.color} className={styles.outcome}>
-            <Icon name={outcome.icon} size="14" />
-            {outcome.label}
-          </Pill>
-        </span>
+      <Table.Cell mono>
+        <UtcTime value={settled.settledAt} />
       </Table.Cell>
+      <Table.Cell title={question}>
+        <Table.RowLink to={href}>{question}</Table.RowLink>
+      </Table.Cell>
+      <Table.Cell>
+        <CallTool callPath={settled.callPath} owner={owner} />
+      </Table.Cell>
+      <Table.Cell>{run.agent ? run.actorLabel || 'Unknown agent' : 'You'}</Table.Cell>
+      <Table.Cell>
+        {/* An icon and a word, so the outcome does not rest on colour. */}
+        <Pill color={outcome.color} size="small">
+          <Icon name={outcome.icon} size="14" />
+          {outcome.label}
+        </Pill>
+      </Table.Cell>
+      <Table.Cell>{settled.approverLabel || '—'}</Table.Cell>
     </Table.Row>
+  )
+}
+
+/** The call's tool under its provider's logo, or the whole Call Path when no provider of
+ * the workspace owns it. */
+function CallTool({
+  callPath,
+  owner,
+  size,
+}: {
+  callPath: string
+  owner: ToolOwner
+  size?: 'default' | 'small'
+}) {
+  return (
+    <ToolName
+      size={size}
+      title={callPath}
+      provider={
+        owner ? { name: owner.provider.displayName, icons: owner.provider.icons } : undefined
+      }
+    >
+      {owner?.relativePath ?? callPath}
+    </ToolName>
   )
 }
 
@@ -512,21 +580,11 @@ function CallMeta({
 }) {
   return (
     <Typography.BodySmall as="span" variant="secondary" className={styles.meta}>
-      {owner ? (
+      {callPath && (
         <>
-          <span role="img" aria-label={owner.provider.displayName} className={styles.logo}>
-            <Logo name={owner.provider.displayName} icons={owner.provider.icons} size="18" />
-          </span>
-          <CodeChip>{owner.relativePath}</CodeChip>
+          <CallTool callPath={callPath} owner={owner} size="small" />
           {' · '}
         </>
-      ) : (
-        callPath && (
-          <>
-            <CodeChip>{callPath}</CodeChip>
-            {' · '}
-          </>
-        )
       )}
       {/* The page names the Workspace. Show who only when an Agent started the Run. */}
       {run.agent && `${run.actorLabel || 'Unknown agent'} · `}

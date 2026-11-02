@@ -63,6 +63,8 @@ import { useCommentGuard, useDecisionOutcome, useUnsentComment } from '../action
 import { ContextImpact } from './context-impact'
 import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-types'
 import { activityDays, utcDay } from '@/lib/activity-list'
+import { dayLabel, UtcTime } from './instant'
+import { ToolName } from '@/wax/components/tool-name'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import * as styles from './task-activity.css'
 import { invocationOutcomeLabels, resultUnknown } from './labels'
@@ -81,6 +83,11 @@ export function rowLabel(row: ActivityRow): string {
     case 'output':
       return row.label
   }
+}
+/** A record's name. A call names its tool as every tool list does. */
+function RecordLabel({ row }: { row: ActivityRow }) {
+  const label = rowLabel(row)
+  return row.kind === 'invocation' ? <ToolName title={label}>{label}</ToolName> : label
 }
 const toolIcons = new Map<string, IconName>([
   ['search', 'Search'],
@@ -178,35 +185,8 @@ function rowDuration(row: ActivityRow) {
   const end = row.kind === 'task' ? row.endedAt : row.kind === 'tool' ? row.completedAt : null
   return end ? duration((Date.parse(end) - Date.parse(row.startedAt)) * 1_000_000) : '—'
 }
-// Activity reads time in UTC, as its column heading says. An ISO instant splits
-// into the UTC time without a time zone lookup.
-const utcTime = (instant: string) => instant.slice(11, 19)
-const dayParts = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'UTC',
-  weekday: 'short',
-  day: 'numeric',
-  month: 'short',
-  year: 'numeric',
-})
-/**
- * Names a UTC calendar day (`YYYY-MM-DD`): "Tue 22 Sep 2026". Never "Today": the
- * reader's today is often another UTC day, and the record alone decides its label.
- */
-function dayLabel(day: string) {
-  const part = Object.fromEntries(
-    dayParts
-      .formatToParts(new Date(`${day}T00:00:00.000Z`))
-      .map(({ type, value }) => [type, value]),
-  )
-  return `${part.weekday} ${part.day} ${part.month} ${part.year}`
-}
-/** The time column shows the UTC time only; the full instant is on hover. */
 function StartTime({ startedAt }: { startedAt: string }) {
-  return (
-    <time dateTime={startedAt} title={`${utcDay(startedAt)} ${utcTime(startedAt)} UTC`}>
-      {utcTime(startedAt)}
-    </time>
-  )
+  return <UtcTime value={startedAt} />
 }
 function emptyBranchMessage(row: Extract<ActivityRow, { kind: 'task' | 'run' }>) {
   if (row.kind === 'task')
@@ -374,7 +354,7 @@ const RecordRow = memo(function RecordRow({
       <Table.Cell mono>
         <StartTime startedAt={row.startedAt} />
       </Table.Cell>
-      <Table.Cell mono={row.kind === 'invocation'}>
+      <Table.Cell>
         <Table.Record
           depth={depth}
           // The full table is one Tab stop; its keys reach the records.
@@ -407,7 +387,7 @@ const RecordRow = memo(function RecordRow({
             preventScrollReset
             onClick={(event) => pickFromLink(event, () => actions.select(row))}
           >
-            {rowLabel(row)}
+            <RecordLabel row={row} />
           </Link>
         </Table.Record>
       </Table.Cell>
@@ -1376,7 +1356,7 @@ export function Activity({
                         <Table.Cell mono>
                           <StartTime startedAt={outside.startedAt} />
                         </Table.Cell>
-                        <Table.Cell mono={outside.kind === 'invocation'}>
+                        <Table.Cell>
                           <Table.Record
                             icon={rowIcon(outside)}
                             metadata={
@@ -1398,7 +1378,7 @@ export function Activity({
                                 pickFromLink(event, () => actions.select(outside))
                               }
                             >
-                              {rowLabel(outside)}
+                              <RecordLabel row={outside} />
                             </Link>
                           </Table.Record>
                         </Table.Cell>
