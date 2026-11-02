@@ -1242,12 +1242,24 @@ impl ProgramHost for RejectingToolHost {
         _location: Option<AuthoredLocation>,
     ) -> coral_v8::ToolFuture {
         Box::pin(async move {
+            if call_path.ends_with(".retrievePage") {
+                return Err(ToolHostError::Rejected {
+                    code: "tool_not_found",
+                    message: "Tool Call Path was not found".into(),
+                    trace_id: None,
+                    suggestions: vec![
+                        "coral.providers.notion.retrieveAPage".to_string(),
+                        "coral.providers.notion.updatePage".to_string(),
+                    ],
+                });
+            }
             Err(ToolHostError::Rejected {
                 code: "upstream_incomplete",
                 message: "durable Tool failure".into(),
                 trace_id: call_path
                     .ends_with(".traced")
                     .then(|| "0123456789abcdef0123456789abcdef".to_string()),
+                suggestions: Vec::new(),
             })
         })
     }
@@ -1421,6 +1433,7 @@ fn an_uncaught_error_response_retains_its_status_and_a_bounded_body() {
             status: Some(422),
             body: Some(r#"{"field":"city"}"#.to_string()),
             body_truncated: false,
+            suggestions: Vec::new(),
         }
     );
 
@@ -1698,6 +1711,63 @@ fn tool_error_preserves_optional_trace_and_resists_program_replacement() {
             "name": "ToolError", "isToolError": true, "code": "upstream_incomplete",
             "traceId": "0123456789abcdef0123456789abcdef", "serialized": "{}"
         })
+    );
+}
+
+// Catches: suggestions a Program cannot read from the error it caught, can
+// change, or that an uncaught error does not retain.
+#[test]
+fn a_tool_not_found_error_carries_the_suggested_paths() {
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
+    let program = compiler
+        .compile(
+            compilation_deadline(),
+            r#"
+        try { await coral.providers.notion.retrievePage({}); }
+        catch (error) {
+            try { error.suggestions.push("coral.providers.forged.path"); } catch {}
+            try { error.suggestions = []; } catch {}
+            return {code: error.code, suggestions: error.suggestions,
+                frozen: Object.isFrozen(error.suggestions)};
+        }
+    "#,
+        )
+        .expect("compile");
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, Arc::new(RejectingToolHost))
+        .expect("handled");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(output.final_value_json().expect("value"))
+            .expect("JSON"),
+        serde_json::json!({
+            "code": "tool_not_found",
+            "suggestions": [
+                "coral.providers.notion.retrieveAPage",
+                "coral.providers.notion.updatePage",
+            ],
+            "frozen": true,
+        })
+    );
+
+    let program = compiler
+        .compile(
+            compilation_deadline(),
+            "return await coral.providers.notion.retrievePage({});",
+        )
+        .expect("compile");
+    let error = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, Arc::new(RejectingToolHost))
+        .expect_err("an uncaught Tool error fails the Program");
+    let Error::ProgramRejected(error) = error else {
+        panic!("{error}");
+    };
+    assert_eq!(
+        error.tool.expect("trusted Tool fields").suggestions,
+        [
+            "coral.providers.notion.retrieveAPage",
+            "coral.providers.notion.updatePage",
+        ]
     );
 }
 

@@ -50,6 +50,10 @@ pub struct ProgramToolError {
     /// `body` omits the rest of the encoded `data`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub body_truncated: bool,
+    /// For `tool_not_found`, the Call Paths near the one the Program named
+    /// that its caller can call, nearest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<String>,
 }
 
 /// The status and bounded encoded `data` of one Tool Result.

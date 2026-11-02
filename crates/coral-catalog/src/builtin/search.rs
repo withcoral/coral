@@ -439,6 +439,12 @@ pub struct MissingPath {
     /// The path as the caller wrote it.
     #[schemars(description = "The path as you wrote it.")]
     pub call_path: String,
+    /// Up to three Call Paths of the same Call Root that the caller can
+    /// call, nearest first.
+    #[schemars(
+        description = "Up to 3 call paths you can call under the same root, nearest first."
+    )]
+    pub suggestions: Vec<String>,
 }
 
 /// One exact description: the callable's current contract, with the
@@ -610,6 +616,10 @@ pub(super) mod tests {
 
     /// A page with every optional part, an empty page, and an exact lookup
     /// with each kind of description and a missing path.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one value for each part of the output schema"
+    )]
     pub(in crate::builtin) fn results() -> Vec<Value> {
         let hit = SearchHit {
             call_path: "coral.providers.github.repos.get".to_owned(),
@@ -701,6 +711,7 @@ pub(super) mod tests {
                 ],
                 missing: vec![MissingPath {
                     call_path: "coral.providers.notion.retrievePage".to_owned(),
+                    suggestions: vec!["coral.providers.notion.retrieveAPage".to_owned()],
                 }],
             }),
             SearchOutput::Paths(PathsResult {

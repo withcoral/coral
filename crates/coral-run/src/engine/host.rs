@@ -124,6 +124,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
                         code: CoralFailure::InvalidInput.code(),
                         message: CoralFailure::InvalidInput.message().into(),
                         trace_id: trace_id.clone(),
+                        suggestions: Vec::new(),
                     }
                 })?;
                 self.invoker
@@ -135,6 +136,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
                                 code: failure.code(),
                                 message: failure.message(),
                                 trace_id: trace_id.clone(),
+                                suggestions: failure.suggestions().to_vec(),
                             }
                         }
                         InvocationHostError::Upstream {

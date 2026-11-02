@@ -46,6 +46,8 @@ declare namespace coral {
     readonly status?: number;
     readonly data?: unknown;
     readonly metadata?: unknown;
+    /** For \`tool_not_found\`, up to 3 Call Paths you can call, nearest first. */
+    readonly suggestions?: readonly string[];
   }
 }
 
@@ -121,17 +123,31 @@ function unknownTools(tools) {
     }
   }
   const unknown = [];
-  for (const { segments, start, called } of tools.chains) {
+  for (const { segments, start, line, column, called } of tools.chains) {
     if (!called) continue;
     for (let length = 2; length <= segments.length; length += 1) {
       const key = segments.slice(0, length).join('.');
       if (resolved.has(key)) break;
       if (namespaces.has(key)) continue;
-      unknown.push({ start, callPath: `coral.${segments.join('.')}` });
+      unknown.push({ start, line, column, callPath: `coral.${segments.join('.')}` });
       break;
     }
   }
   return unknown;
+}
+
+// The called chains that name no Tool among `callPaths`, the complete
+// Call Paths the caller can call: the rule of the unknown-Tool diagnostic,
+// which Program Admission applies before a Run is created.
+function unknownToolCalls(chains, callPaths) {
+  const declarations = callPaths.map((callPath) => ({
+    pathSegments: callPath.split('.').slice(1),
+  }));
+  return unknownTools({ chains, declarations }).map(({ callPath, line, column }) => ({
+    callPath,
+    line,
+    column,
+  }));
 }
 
 // The declaration files that type the `coral` namespace, and the Tool

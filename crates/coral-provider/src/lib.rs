@@ -795,12 +795,14 @@ impl<'a> InvocationCaller<'a> {
         }
     }
 
-    /// The caller's current Workspace authority, holding it as the policy
-    /// enforcement point does; `None` when the caller has none.
+    /// The caller's current Workspace authority, read with `lock`: held
+    /// shared as the policy enforcement point does, or plainly in a read
+    /// snapshot. `None` when the caller has none.
     async fn authority(
         self,
         transaction: &mut coral_db::Transaction<'_>,
         workspace_id: &WorkspaceId,
+        lock: coral_db::RowLock,
     ) -> Result<Option<coral_workspace::PrincipalWorkspaceEvidence>, Error> {
         match self
             .workspaces
@@ -809,7 +811,7 @@ impl<'a> InvocationCaller<'a> {
                 self.actor,
                 workspace_id,
                 self.now_unix_nanos,
-                coral_db::RowLock::Shared,
+                lock,
             )
             .await
         {
@@ -845,6 +847,52 @@ pub async fn resolve_invocation_tool_in_transaction(
     caller: InvocationCaller<'_>,
     call_path: &str,
 ) -> Result<Option<ResolvedInvocationTool>, Error> {
+    let reached = reached_tool(
+        transaction,
+        workspace_id,
+        caller,
+        call_path,
+        coral_db::RowLock::Shared,
+    )
+    .await?;
+    resolved(transaction, reached).await
+}
+
+/// Whether [`resolve_invocation_tool_in_transaction`] would resolve
+/// `call_path` for `caller` now, read in a read snapshot without holding
+/// any row: Program Admission's check of the Call Paths a Program names
+/// literally. A Tool that policy disables still resolves, so its call is
+/// recorded and refused when made.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-package failure.
+pub async fn resolves_invocation_tool_in_snapshot(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    caller: InvocationCaller<'_>,
+    call_path: &str,
+) -> Result<bool, Error> {
+    Ok(reached_tool(
+        transaction,
+        workspace_id,
+        caller,
+        call_path,
+        coral_db::RowLock::None,
+    )
+    .await?
+    .is_some())
+}
+
+/// The Tool `call_path` names that `caller` reaches, with its Provider and
+/// Generation, read with `lock`.
+async fn reached_tool(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    caller: InvocationCaller<'_>,
+    call_path: &str,
+    lock: coral_db::RowLock,
+) -> Result<Option<ReachedTool>, Error> {
     let Some((call_root, relative_path)) = access::ProviderCallRoot::split_call_path(call_path)
     else {
         return Ok(None);
@@ -853,17 +901,18 @@ pub async fn resolve_invocation_tool_in_transaction(
         // Every Principal reaches an Owner-added Provider's Tools, so
         // admission reads no Workspace authority for it and takes no hold.
         ProviderCallRoot::Owner(_) => None,
-        // Hold Workspace authority before the Provider, the order the policy
-        // enforcement point uses.
-        ProviderCallRoot::Builtin => match caller.authority(transaction, workspace_id).await? {
+        // Read Workspace authority before the Provider, the order the policy
+        // enforcement point holds them in.
+        ProviderCallRoot::Builtin => match caller.authority(transaction, workspace_id, lock).await?
+        {
             Some(authority) => authority.effective_user_role(),
             None => return Ok(None),
         },
     };
     Ok(
-        resolve_reached_tool(transaction, workspace_id, &call_root, relative_path)
+        reached_tool_by_root(transaction, workspace_id, &call_root, relative_path, lock)
             .await?
-            .filter(|resolved| reaches(&call_root, resolved.tool().key(), role)),
+            .filter(|(_access, _generation, tool)| reaches(&call_root, tool.key(), role)),
     )
 }
 
@@ -893,37 +942,30 @@ pub async fn resolve_owner_tool_in_transaction(
         matches!(call_root, ProviderCallRoot::Owner(_)),
         "{call_path} needs a caller"
     );
-    resolve_reached_tool(transaction, workspace_id, &call_root, relative_path).await
-}
-
-async fn resolve_reached_tool(
-    transaction: &mut coral_db::Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    call_root: &ProviderCallRoot,
-    relative_path: &str,
-) -> Result<Option<ResolvedInvocationTool>, Error> {
-    // Admission reads the Provider shared, like the Policy Enforcement Point
-    // that rechecks it: concurrent admissions read side by side, and a Provider
-    // change waits for the admissions in flight.
-    let Some(stored) = crate::runtime::active_provider_by_call_root_in_transaction(
+    let reached = reached_tool_by_root(
         transaction,
         workspace_id,
-        call_root,
+        &call_root,
+        relative_path,
         coral_db::RowLock::Shared,
     )
-    .await?
-    else {
-        return Ok(None);
-    };
-    let provider_access = stored.provider.access().clone();
-    let generation_id = stored.generation_id;
-    let Some(tool) = coral_catalog::tool_by_relative_path_in_transaction(
-        transaction,
-        &generation_id,
-        relative_path,
-    )
-    .await?
-    else {
+    .await?;
+    resolved(transaction, reached).await
+}
+
+/// A Tool's Provider access, the Generation that holds it, and the Tool.
+type ReachedTool = (
+    ProviderAccess,
+    coral_catalog::ProviderGenerationId,
+    coral_catalog::MaterializedTool,
+);
+
+/// The reached Tool with the schema graph its Invocation plans against.
+async fn resolved(
+    transaction: &mut coral_db::Transaction<'_>,
+    reached: Option<ReachedTool>,
+) -> Result<Option<ResolvedInvocationTool>, Error> {
+    let Some((provider_access, generation_id, tool)) = reached else {
         return Ok(None);
     };
     let schema_graph =
@@ -934,6 +976,38 @@ async fn resolve_reached_tool(
         tool,
         schema_graph,
     )))
+}
+
+async fn reached_tool_by_root(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    call_root: &ProviderCallRoot,
+    relative_path: &str,
+    lock: coral_db::RowLock,
+) -> Result<Option<ReachedTool>, Error> {
+    // Invocation admission holds the Provider shared, like the Policy
+    // Enforcement Point that rechecks it: concurrent admissions read side by
+    // side, and a Provider change waits for the admissions in flight. Program
+    // Admission only reads it, in a snapshot.
+    let Some(stored) = crate::runtime::active_provider_by_call_root_in_transaction(
+        transaction,
+        workspace_id,
+        call_root,
+        lock,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let provider_access = stored.provider.access().clone();
+    let generation_id = stored.generation_id;
+    Ok(coral_catalog::tool_by_relative_path_in_transaction(
+        transaction,
+        &generation_id,
+        relative_path,
+    )
+    .await?
+    .map(|tool| (provider_access, generation_id, tool)))
 }
 
 /// Rechecks exact retained Provider dispatch evidence, holding the Provider

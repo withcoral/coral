@@ -226,6 +226,9 @@ pub enum ToolHostError {
         message: std::borrow::Cow<'static, str>,
         /// Optional lowercase W3C trace identifier; grants no authority.
         trace_id: Option<String>,
+        /// Call Paths the caller can call that are near the one it named,
+        /// nearest first; empty for every failure but `tool_not_found`.
+        suggestions: Vec<String>,
     },
     /// Reject with a complete upstream outcome that is not a declared success,
     /// after it is durable. The Program reads its `status`, `data` and
@@ -470,8 +473,8 @@ impl LinkedSavedFunctionSource {
     }
 }
 
-/// The Call Paths one Saved Function module names directly, as its typed
-/// preparation needs them.
+/// The Call Paths one Saved Function module or Program body names
+/// directly, as typed preparation and Program Admission need them.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SavedFunctionCallPaths {
     functions: Vec<SavedFunctionReference>,
@@ -509,6 +512,11 @@ impl ToolReferences {
     pub fn call_paths(&self) -> &[String] {
         &self.call_paths
     }
+
+    fn chains_json(&self) -> Result<String, Error> {
+        serde_json::to_string(&self.chains)
+            .map_err(|error| Error::CompilerProtocol(error.to_string()))
+    }
 }
 
 /// One literal chain, relative to `coral`, where it starts in the source, and
@@ -518,6 +526,40 @@ struct ToolChain {
     segments: Vec<String>,
     start: u64,
     called: bool,
+    /// The one-based authored line and column where it starts.
+    line: u64,
+    column: u64,
+}
+
+/// A called literal `coral.providers` or `coral.workspace` chain that names
+/// no Tool the caller can call, and where the source names it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UnknownToolCall {
+    call_path: String,
+    line: u64,
+    column: u64,
+}
+
+impl UnknownToolCall {
+    /// The complete chain as written, such as
+    /// `coral.providers.notion.retrievePage`.
+    #[must_use]
+    pub fn call_path(&self) -> &str {
+        &self.call_path
+    }
+
+    /// The one-based authored source line.
+    #[must_use]
+    pub const fn line(&self) -> u64 {
+        self.line
+    }
+
+    /// The one-based authored source column.
+    #[must_use]
+    pub const fn column(&self) -> u64 {
+        self.column
+    }
 }
 
 /// One declaration that types a Call Path under `coral.providers`,

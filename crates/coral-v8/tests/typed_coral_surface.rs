@@ -211,6 +211,67 @@ fn unknown_tool_diagnostic_names_the_call_path_only() {
     }
 }
 
+// Catches: Program Admission applying a rule other than the unknown-Tool
+// diagnostic's, refusing a computed or aliased call it cannot judge, or
+// naming the wrong place in the authored body.
+#[test]
+fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+    let source = "const page = await coral.providers.notion.retrievePage({ page_id: \"p\" });\n\
+        const repo = await coral.providers.github.repos.get({ owner: \"a\", repo: \"b\" });\n\
+        await coral.providers.github.repos.get.call(null, {});\n\
+        const name = \"get\";\n\
+        await coral.providers.github.repos[name]({});\n\
+        const repos = coral.providers.github.repos;\n\
+        await repos.gett({});\n\
+        await coral.workspace.deleteEverything();\n\
+        await coral.providers.notion.retrievePage({ page_id: \"q\" });\n\
+        return [page, repo];";
+    let named = compiler
+        .program_call_paths(deadline(), source)
+        .expect("analyze the Program body");
+    assert_eq!(
+        named.tools().call_paths(),
+        [
+            "coral.providers.github.repos",
+            "coral.providers.github.repos.get",
+            "coral.providers.github.repos.get.call",
+            "coral.providers.notion.retrievePage",
+            "coral.workspace.deleteEverything",
+        ]
+    );
+    let callable = ["coral.providers.github.repos.get".to_owned()];
+    let unknown = compiler
+        .unknown_tool_calls(deadline(), named.tools(), &callable)
+        .expect("check the called chains");
+    assert_eq!(
+        unknown
+            .iter()
+            .map(|call| (call.call_path(), call.line(), call.column()))
+            .collect::<Vec<_>>(),
+        [
+            ("coral.providers.notion.retrievePage", 1, 20),
+            ("coral.workspace.deleteEverything", 8, 7),
+            ("coral.providers.notion.retrievePage", 9, 7),
+        ]
+    );
+    assert!(
+        compiler
+            .unknown_tool_calls(
+                deadline(),
+                named.tools(),
+                &[
+                    "coral.providers.github.repos.get".to_owned(),
+                    "coral.providers.notion.retrievePage".to_owned(),
+                    "coral.workspace.deleteEverything".to_owned(),
+                ],
+            )
+            .expect("check the called chains")
+            .is_empty()
+    );
+}
+
 #[test]
 fn saved_function_declaration_inlines_a_tool_result_type() {
     let compiler =
