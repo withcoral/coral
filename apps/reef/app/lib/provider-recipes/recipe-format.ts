@@ -249,7 +249,7 @@ const authorizationParameters = withEntries(
 )
 
 const clientConfigHintGenerator = z
-  .enum(['slack_app_create_link'])
+  .enum(['slack_app_create_link', 'datadog_mcp_redirect_allowlist'])
   .describe(
     'A Reef helper that writes help below the client ID field, such as a link that creates the OAuth application.',
   )
@@ -497,6 +497,13 @@ export const recipeSchema = z.strictObject({
   service: name
     .describe(
       'The id of the recipe that describes the same service from another source, such as github for github_mcp. Without one, the recipe is its own service. Reef offers the recipes of one service together.',
+    )
+    .optional(),
+  button_label: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9 .-]{0,11}$/, 'must be a short word such as V2')
+    .describe(
+      "The word on this recipe's button beside the other recipes of its service, such as V1 and V2 for two API versions. Without one, the button reads MCP or API. A labelled recipe offers its own id as the namespace, not the service's.",
     )
     .optional(),
   display_name: label,
