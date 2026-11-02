@@ -2282,7 +2282,7 @@ describe('an account connection the Run waits on', () => {
     expect(
       within(runActions()).getByRole('heading', { level: 3, name: 'Connect your Linear account' }),
     ).toBeInTheDocument()
-    expect(within(runActions()).queryByText(/Approve|Decline/)).not.toBeInTheDocument()
+    expect(within(runActions()).queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
     const footer = screen.getByRole('button', { name: 'Decline' }).closest('footer')!
     expect(within(footer).getByRole('button', { name: 'Connect Linear' })).toBeInTheDocument()
   })

@@ -23,7 +23,7 @@ import { revealHref } from '../activity/navigation'
 import { Panel } from '../activity/panel'
 import * as panelStyles from '../activity/panel.css'
 import { dayLabel, UtcTime } from '../activity/instant'
-import { utcDay } from '@/lib/activity-list'
+import { utcDays } from '@/lib/activity-list'
 import type {
   ActivityRow,
   ApprovalDetail,
@@ -201,7 +201,7 @@ export function ApprovalsPage({
                   <Table.Head />
                   {approvals.length === 0 && live && (
                     <Table.Status>
-                      {history.rows.length || history.unavailable ? (
+                      {history.rows.length || history.more || history.unavailable ? (
                         <Typography.Body>Nothing to approve.</Typography.Body>
                       ) : (
                         <EmptyPage
@@ -228,7 +228,8 @@ export function ApprovalsPage({
                     Approval history is unavailable.
                   </Typography.BodySmall>
                 )}
-                {history.rows.length > 0 && (
+                {/* A page can hold no row this Reef shows and still lead to older ones. */}
+                {(history.rows.length > 0 || history.more) && (
                   // As in Activity and Providers, the history scrolls inside its own frame.
                   <div className={styles.history}>
                     <Table.Container
@@ -239,9 +240,13 @@ export function ApprovalsPage({
                     >
                       <Table.Head />
                       {/* Each row sits under the UTC day it settled, as Activity's records do. */}
-                      {settledDays(history.rows).map(({ day, rows }) => (
+                      {utcDays(
+                        history.rows,
+                        (row) => row.settledAt,
+                        (row) => row.name,
+                      ).map(({ day, key, rows }) => (
                         <Table.Group
-                          key={day}
+                          key={key}
                           label={dayLabel(day)}
                           heading={
                             <Table.Cell fullWidth>
@@ -464,18 +469,6 @@ const HISTORY_COLUMNS: Table.Column[] = [
   { label: 'OUTCOME', width: 120 },
   { label: 'DECIDED BY', width: 'content' },
 ]
-
-/** Settled rows by the UTC day they settled, keeping Coral's newest-first order. */
-function settledDays(rows: SettledApproval[]) {
-  const days: { day: string; rows: SettledApproval[] }[] = []
-  for (const row of rows) {
-    const day = utcDay(row.settledAt)
-    const last = days.at(-1)
-    if (last?.day === day) last.rows.push(row)
-    else days.push({ day, rows: [row] })
-  }
-  return days
-}
 
 /** One settled request on one line: when, what it asked, the tool, who asked, the outcome
  * with an icon and text, and who decided. An expired request has no approver; its time is

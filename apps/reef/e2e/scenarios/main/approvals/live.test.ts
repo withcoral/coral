@@ -95,7 +95,7 @@ test('A request reaches the sidebar on any page, and a decision on the Approvals
         waitMs: 1,
         taskIntent: 'Agent goal',
       })
-      await agent.exec(CALL)
+      const asked = await agent.exec(CALL)
       await rows.first().waitFor()
       const otherOwner = managementClients(alice.accessToken)
       const { actions } = await otherOwner.activity.browseRequiredActions({ workspace: name })
@@ -105,6 +105,8 @@ test('A request reaches the sidebar on any page, and a decision on the Approvals
       await page.getByText('Nothing to approve.', { exact: true }).waitFor()
       // Owners share one record of Agent decisions.
       await history.first().getByText('Approved', { exact: true }).waitFor()
+      // The Agent's call ends here, so the next step counts only its own call.
+      await observeRun(agent, asked)
       expect(await stillLoaded()).toBe(true)
     })
 

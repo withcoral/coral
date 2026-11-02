@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { activityPage, invocationRow, runRow, taskRow, toolRow } from './fixtures'
+import { activityPage, approvalRequest, invocationRow, runRow, taskRow, toolRow } from './fixtures'
 import {
+  leavesActivityReview,
   activityNavigation,
   activityStops,
   liveRun,
@@ -1496,4 +1497,27 @@ describe('live scopes', () => {
     expect(query.get(`preceding.${oldTask}`)).toBe('0')
     expect(query.getAll('liveExpanded')).toEqual([oldTask])
   })
+})
+
+/** The Activity address that selects `record` and reviews the approval. */
+const reviewAt = (record: string) =>
+  ({
+    pathname: '/activity',
+    search: `?${new URLSearchParams({ record, request: approvalRequest.name })}`,
+  }) as Parameters<ReturnType<typeof leavesActivityReview>>[0]
+
+// Catches: moving between an approval's Run and its call, either way, losing the review and
+// its unsent comment, or another record keeping it.
+it.each([
+  ['the Run to its call', false, approvalRequest.run, approvalRequest.invocation],
+  ['the call to its Run', false, approvalRequest.invocation, approvalRequest.run],
+  ['the Run to another record', true, approvalRequest.run, 'workspaces/finance/runs/other'],
+  [
+    'the call to another call',
+    true,
+    approvalRequest.invocation,
+    'workspaces/finance/invocations/two',
+  ],
+])('moving from %s leaves the review: %s', (_, leaves, from, to) => {
+  expect(leavesActivityReview(approvalRequest)(reviewAt(from), reviewAt(to))).toBe(leaves)
 })

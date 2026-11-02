@@ -89,14 +89,13 @@ export const leavesActivityReview =
     const from = new URLSearchParams(current.search)
     const to = new URLSearchParams(next.search)
     const record = from.get('record') ?? current.pathname.slice(1)
+    // The approval's Run and its call, in either order.
+    const pair = request?.kind === 'approval' ? [request.run, request.invocation] : []
+    const sameReview =
+      pair.includes(record) && pair.includes(to.get('record') ?? '') && record !== to.get('record')
     return (
       current.pathname !== next.pathname ||
-      (from.get('record') !== to.get('record') &&
-        !(
-          request?.kind === 'approval' &&
-          record === request.run &&
-          to.get('record') === request.invocation
-        )) ||
+      (from.get('record') !== to.get('record') && !sameReview) ||
       (from.get('request') ?? request?.name ?? null) !== to.get('request')
     )
   }

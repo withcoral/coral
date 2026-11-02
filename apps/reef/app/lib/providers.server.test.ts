@@ -220,6 +220,20 @@ it.each([
   expect(read).toBe(reads)
 })
 
+// Catches: a decorative read that hides a lapsed sign-in, so the page never asks you to sign in.
+it('fails Activity for a lapsed sign-in', async () => {
+  const api = fakeManagement({
+    providers: {
+      listProviders: () => {
+        throw new ConnectError('expired', Code.Unauthenticated)
+      },
+    },
+  })
+  await expect(
+    activityProviderMarks(api, 'workspaces/w', new Request('http://reef/activity')),
+  ).rejects.toMatchObject({ code: Code.Unauthenticated })
+})
+
 it('keys each logo by its provider, and leaves out a provider without one', async () => {
   const logos = await providerLogos(
     fakeManagement({

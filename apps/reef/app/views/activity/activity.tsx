@@ -189,9 +189,6 @@ function rowDuration(row: ActivityRow) {
   const end = row.kind === 'task' ? row.endedAt : row.kind === 'tool' ? row.completedAt : null
   return end ? duration((Date.parse(end) - Date.parse(row.startedAt)) * 1_000_000) : '—'
 }
-function StartTime({ startedAt }: { startedAt: string }) {
-  return <UtcTime value={startedAt} />
-}
 function emptyBranchMessage(row: Extract<ActivityRow, { kind: 'task' | 'run' }>) {
   if (row.kind === 'task')
     return row.endedAt ? 'This task made no calls.' : 'This task has not made a call yet.'
@@ -357,7 +354,7 @@ const RecordRow = memo(function RecordRow({
   const cells = (
     <>
       <Table.Cell mono>
-        <StartTime startedAt={row.startedAt} />
+        <UtcTime value={row.startedAt} />
       </Table.Cell>
       <Table.Cell>
         <Table.Record
@@ -1359,7 +1356,7 @@ export function Activity({
                     {outside && (
                       <Table.Row recordKey={outside.name} selected status={rowStatus(outside)}>
                         <Table.Cell mono>
-                          <StartTime startedAt={outside.startedAt} />
+                          <UtcTime value={outside.startedAt} />
                         </Table.Cell>
                         <Table.Cell>
                           <Table.Record

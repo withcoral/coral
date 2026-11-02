@@ -65,7 +65,9 @@ pub(crate) async fn page(
             Alias::new("i"),
             col("i", "workspace_id")
                 .eq(col("a", "workspace_id"))
-                .and(col("i", "id").eq(col("a", "invocation_id"))),
+                .and(col("i", "id").eq(col("a", "invocation_id")))
+                // The request's own Invocation is a call of its Run.
+                .and(col("i", "run_id").eq(col("a", "run_id"))),
         )
         .columns(
             [
@@ -86,7 +88,10 @@ pub(crate) async fn page(
             ),
             Alias::new("provider_label"),
         )
-        .and_where(col("a", "state").is_in(SETTLED.map(ApprovalState::storage)));
+        .and_where(col("a", "state").is_in(SETTLED.map(ApprovalState::storage)))
+        // A pending request has no decision time. Stating it lets the partial settled index
+        // serve the read without passing pending rows, which sort first descending on Postgres.
+        .and_where(col("a", "decided_at_unix_nanos").is_not_null());
     // The Workspace match names the request's own column, so the settled index
     // serves it; the join makes it the Run's Workspace too.
     coral_workspace::history_repository::restrict(

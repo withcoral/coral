@@ -294,7 +294,7 @@ describe('exact approval review', () => {
     expect(page.container).not.toHaveTextContent('Approval needed')
     expect(page.container).not.toHaveTextContent('Approved')
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /this call/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^(Approve|Decline)$/ })).not.toBeInTheDocument()
   })
 
   it('does not guard a submitted comment as unsent after a durable winning denial', async () => {
@@ -518,7 +518,7 @@ describe('approval review layout', () => {
     })
     expect(statuses()).toEqual([label])
     expect(screen.queryByText('Approval required')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /this call/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^(Approve|Decline)$/ })).not.toBeInTheDocument()
     expect(screen.queryByText('Add a comment')).not.toBeInTheDocument()
     expect(screen.queryByText('Program body')).not.toBeInTheDocument()
     // The decision reads in a list of its own, without a heading.
@@ -550,6 +550,6 @@ it('an archived workspace shows the arguments but tells you to restore it before
   expect(
     screen.getByText('Ask a workspace owner to restore this workspace. Then decide.'),
   ).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: /this call$/ })).toBeNull()
+  expect(screen.queryByRole('button', { name: /^(Approve|Decline)$/ })).toBeNull()
   expect(screen.queryByText('Add a comment')).toBeNull()
 })

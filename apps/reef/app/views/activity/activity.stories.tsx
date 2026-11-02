@@ -574,7 +574,30 @@ export const StatusMarkers: Story = {
 /** While the workspace has a call's provider, the call names its tool under that provider's
  * logo. A call whose provider is gone keeps its kind and full Call Path. */
 export const ProviderTools: Story = {
-  args: StatusMarkers.args,
+  args: {
+    page: {
+      ...StatusMarkers.args!.page!,
+      branches: {
+        ...StatusMarkers.args!.page!.branches,
+        [run]: {
+          ...StatusMarkers.args!.page!.branches[run]!,
+          rows: [
+            ...StatusMarkers.args!.page!.branches[run]!.rows,
+            {
+              ...call,
+              name: `${invocation}-retired`,
+              state: 'ended',
+              outcome: 'upstream_outcome',
+              requiresAction: false,
+              // No provider of the workspace owns it now.
+              callPath: 'coral.providers.retired.lookup',
+              sourceLocation: undefined,
+            },
+          ],
+        },
+      },
+    },
+  },
   decorators: [
     (Story) => (
       <ProviderMarksContext value={[{ callRoot: 'coral.providers.linear', displayName: 'Linear' }]}>
@@ -582,6 +605,17 @@ export const ProviderTools: Story = {
       </ProviderMarksContext>
     ),
   ],
+  play: async ({ canvas }) => {
+    const table = canvas.getByRole('table', { name: 'Activity records' })
+    // A call of a provider the workspace has: its logo and tool, its full Call Path on hover.
+    await expect(within(table).getByRole('link', { name: 'Linear listIssues' })).toBeVisible()
+    await expect(within(table).getByTitle('coral.providers.linear.listIssues')).toBeVisible()
+    // A call whose provider is gone: its kind and its full Call Path.
+    await expect(
+      within(table).getByRole('link', { name: 'coral.providers.retired.lookup' }),
+    ).toBeVisible()
+    await expect(within(table).getAllByRole('img', { name: 'tool' })).toHaveLength(1)
+  },
 }
 export const Collapsed: Story = {
   args: {

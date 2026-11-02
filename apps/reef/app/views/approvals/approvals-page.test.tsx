@@ -370,6 +370,21 @@ describe('history', () => {
     expect(screen.queryByRole('table', { name: 'Approval history' })).not.toBeInTheDocument()
   })
 
+  // Catches: a newest page with no row this Reef can show hiding the way to older ones.
+  it('offers older approvals after a page with no row to show', async () => {
+    const older = settledRow('older', 'declined', '2026-09-21T09:00:00.000Z', 'You')
+    renderRoute(
+      <ApprovalsPage
+        approvals={[]}
+        settled={{ approvals: [], next: 'page-2' }}
+        workspacePath={path}
+      />,
+      { routes: [{ path: `${path}/approvals/history`, loader: () => historyOf(older) }] },
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Load older approvals' }))
+    await screen.findByRole('link', { name: 'Handle older?' })
+  })
+
   // A page loaded for one workspace must not show up in the next one's history.
   it('starts over in another workspace', async () => {
     const older = settledRow('older', 'declined', '2026-09-21T09:00:00.000Z', 'You')

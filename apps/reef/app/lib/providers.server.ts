@@ -54,15 +54,15 @@ export function toolName(provider: string, key: string) {
 }
 
 /** Follows page tokens to the end; the tree shows every Provider. */
-export async function listAllProviders(api: Pick<ManagementApi, 'providers'>, parent: string) {
+export async function listAllProviders(
+  api: Pick<ManagementApi, 'providers'>,
+  parent: string,
+  signal?: AbortSignal,
+) {
   const providers: Provider[] = []
   let pageToken = ''
   do {
-    const page = await api.providers.listProviders({
-      parent,
-      pageSize: 100,
-      pageToken,
-    })
+    const page = await api.providers.listProviders({ parent, pageSize: 100, pageToken }, { signal })
     providers.push(...page.providers)
     pageToken = page.nextPageToken
   } while (pageToken)
@@ -71,7 +71,8 @@ export async function listAllProviders(api: Pick<ManagementApi, 'providers'>, pa
 /**
  * Each provider of `workspace` with the logo that stands for it, as on the providers page:
  * Coral's mark for the Built-in Provider, else the logo of the recipe whose id its namespace
- * keeps. Logos only decorate, so none show while Coral cannot list the providers.
+ * keeps. Logos only decorate, so none show while Coral cannot list the providers, and no
+ * page fails for them. A lapsed sign-in still fails, so you sign in again.
  */
 async function providersWithLogos(
   api: Pick<ManagementApi, 'providers'>,
@@ -79,18 +80,13 @@ async function providersWithLogos(
   signal?: AbortSignal,
 ): Promise<{ provider: Provider; icons?: RecipeIcons }[]> {
   try {
-    signal?.throwIfAborted()
-    return (await listAllProviders(api, workspace)).map((provider) => ({
+    return (await listAllProviders(api, workspace, signal)).map((provider) => ({
       provider,
       icons: provider.builtin ? CORAL_ICONS : recipeChoiceById(provider.namespace)?.icons,
     }))
   } catch (error) {
-    if (
-      error instanceof ConnectError &&
-      (error.code === Code.Unavailable || error.code === Code.Internal)
-    )
-      return []
-    throw error
+    if (error instanceof ConnectError && error.code === Code.Unauthenticated) throw error
+    return []
   }
 }
 /** Each provider's call root and name with its logo, to mark the calls it owns. */
@@ -107,8 +103,7 @@ export async function providerMarks(
 }
 /**
  * The marks Activity names its calls by. A later page of a loaded list keeps the marks its
- * route loaded, so it reads none. The marks only decorate: without them a call shows its
- * full Call Path, so a failed read never fails the page.
+ * route loaded, so it reads none. Without marks, a call shows its full Call Path.
  */
 export async function activityProviderMarks(
   api: Pick<ManagementApi, 'providers'>,
@@ -116,7 +111,7 @@ export async function activityProviderMarks(
   request: Request,
 ): Promise<ProviderMark[]> {
   if (new URL(request.url).searchParams.get(activityPageFetchKey) === 'page') return []
-  return providerMarks(api, workspace, request.signal).catch(() => [])
+  return providerMarks(api, workspace, request.signal)
 }
 /** Each provider's logo by its canonical name. A provider without one is absent. */
 export async function providerLogos(
