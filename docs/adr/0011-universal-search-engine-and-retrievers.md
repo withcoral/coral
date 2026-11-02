@@ -7,7 +7,8 @@ status: accepted
 Universal Search has one engine and one retriever per Search Entity kind: Operations and Saved Functions. The engine
 normalizes the query, asks every retriever, fuses their ranked lists by position and pages the result; it never
 branches on kind. A retriever owns everything about its kind: applying its owners' visibility rules, matching, ranking,
-evidence, and exact resolution for `describe`. Only positions and evidence cross into the engine, because raw scores are
+evidence, and exact resolution for exact Call Path lookups. Only positions and evidence cross into the engine, because
+raw scores are
 assumed incomparable across retrievers. Search applies visibility but decides none; those rules stay with the owning
 domains.
 
@@ -16,8 +17,9 @@ a branch to every loop. Rejected: per-kind branches in the engine; a lanes-only 
 and stops a kind from ranking its own way; and one ranking per lane across kinds, which assumes scores stay comparable
 once each kind ranks its own way.
 
-Fusion weights retrievers equally and puts a Saved Function before an Operation at equal rank: people wrote Saved
-Functions for this Workspace, and no model has them memorised.
+Fusion weights retrievers equally. A Saved Function ranks above an Operation only when its match is at least
+as relevant: people wrote Saved Functions for this Workspace and no model has them memorised, but winning every
+tie by position put an unrelated Saved Function first on about a quarter of searches.
 
 ## Search owns its index
 

@@ -155,7 +155,8 @@ a history of attributed attempts, and an independently declared terminal success
 to new attempts without canceling work already underway. A User can inspect that User's Tasks and a Workspace
 Owner can inspect Tasks attributed to Workspace-owned Agents, but ownership or ordinary Workspace membership grants no
 access to another User's private Task, intent, or history. Optional completion feedback belongs to the Task and shares its
-visibility and retention; it is not a separate report or interaction.
+visibility and retention; it is not a separate report or interaction. An agent starts a Task with its first Program,
+which states the goal, and one MCP session holds one open Task unless the agent asks for another.
 
 _Avoid_: Single call, synthetic Run wrapper, Principal-owned Task, Workspace-shared Task, using Episode or session as
 aliases for Task
@@ -169,8 +170,9 @@ exist. _Avoid_: task id, task key, task handle, task alias, short identifier, ag
 
 **Task Interaction**: An individually identified, Workspace-owned child record in a Task's history of one authorized
 attempt to use Coral, retaining the participating Principal, separate per-call intent, timing, attempt outcome, and any
-search page or exact description as returned at that time. A User can inspect that User's interactions and a
-Workspace Owner can inspect Workspace-owned Agent interactions, without gaining another User's private work or giving
+search page or exact description as returned at that time, including a search a Program makes through
+`coral.workspace.search`. A User can inspect that User's interactions and a Workspace Owner can inspect Workspace-owned
+Agent interactions, without gaining another User's private work or giving
 Agents general history access.
 _Avoid_: Task, independent goal, Program Run, Tool Invocation, Program Run Event, Administrative Lifecycle Event,
 telemetry, replay checkpoint
@@ -245,11 +247,12 @@ _Avoid_: Source, Upstream Service, Provider Definition, provider account
 _In Reef_: "provider"; revoke and restore are "Disable" and "Enable"; hard deletion is "Remove"
 
 **Built-in Provider**: The one Provider in every Workspace whose Tool catalog Coral itself defines and whose
-Tools Coral itself performs, with no upstream dispatch. Its Call Root is `coral.workspace`. It shares search,
-describe, Tool Access State, Approval Requests, and Tool Invocation records with every other Provider. Each of
+Tools Coral itself performs, with no upstream dispatch. Its Call Root is `coral.workspace`. It shares Universal
+Search, Tool Access State, Approval Requests, and Tool Invocation records with every other Provider. Each of
 its Tools declares the Workspace action it needs, and a Principal discovers, invokes, and inspects only the
-Tools whose action its authority permits: every Principal reaches `listProviders` and `getPolicy`, and only a User
-with effective Workspace Owner authority reaches `addProvider`, `getProvider`, `updateProvider` and `updatePolicy`. An
+Tools whose action its authority permits: every Principal reaches `listProviders`, `getPolicy` and `search`, and
+only a User with effective Workspace Owner authority reaches `addProvider`, `getProvider`, `updateProvider` and
+`updatePolicy`. An
 Owner can disable and enable it and set its Tool policy, but nobody can rename, reconfigure, or remove it, and it
 has no Provider Accounts. Its Tools add a Provider (`addProvider`), list the Workspace's Providers
 (`listProviders`), read one Owner-created Provider's Provider Configuration in the shapes `addProvider` takes
@@ -283,7 +286,7 @@ the Built-in Provider. _Avoid_: namespace, prefix
 **Provider Tool**: A single callable action exposed by an Upstream Service, or by Coral for the Built-in Provider,
 through a Provider and made available by Coral.
 It has named inputs and returns one upstream-native result. "Tool" alone, and in the terms below such as Tool Key and
-Tool Invocation, means a Provider Tool. Coral's own MCP interface, such as `exec` and `search`, consists of MCP tools,
+Tool Invocation, means a Provider Tool. Coral's own MCP interface, such as `exec` and `wait`, consists of MCP tools,
 not Provider Tools. _Avoid_: Operation, Capability, function, MCP tool (for a Provider Tool)
 _In Reef_: "tool"
 
@@ -393,7 +396,7 @@ Shared types belong to the Provider namespace, such as `coral.providers.github.S
 Tool group or a global type namespace. Authoritative provider schemas remain private catalog material and are not
 also returned as JSON Schema. A Tool whose own description, without the shared types it names, cannot fit the
 discovery limit is unavailable to Principal-facing discovery, while Reef can show its safe diagnostic with the observed
-and permitted sizes; within that limit, describe fits
+and permitted sizes; within that limit, exact description fits
 its result types to the describe budget and returns the rest through `types`. _Avoid_: JSON Schema discovery result,
 global provider type
 
@@ -404,8 +407,9 @@ Tool can still require that User to connect an Account before dispatch. Search i
 discoverability. _Avoid_: Ready Tool, discovery readiness
 
 **Universal Search**: Principal-filtered relevance discovery over the Principal's Discoverable Tools and Saved
-Functions. It returns Search Hits with evidence; describe returns an Authoring Description fitted to the describe
-budget, or the types of it named in `types`. It searches only
+Functions, which Programs reach through the Built-in Tool `coral.workspace.search`. A query returns Search Hits with
+evidence; exact Call Paths return their Authoring Descriptions fitted to the describe budget, or the types named in
+`types`, and name the paths that match nothing with nearby Discoverable Call Paths. It searches only
 secret-free catalog material and does not execute a Saved Function or dispatch to an Upstream Service. Provider-native
 search is an ordinary Tool that only a Coral Program can invoke. V1 Universal Search stores no Tool Result,
 Program Value, Run data, or observed memory. Reef exact catalog inspection is a separate administration projection. _Avoid_: Provider search fanout, observed-value memory, exact catalog administration
@@ -414,15 +418,17 @@ Program Value, Run data, or observed memory. Reef exact catalog inspection is a 
 the Principal's current Saved Functions. Each Search Entity has one complete Call Path, one Authoring Description,
 and one set of secret-free fields, its metadata and declaration-field paths, that Universal Search indexes for it. An
 Tool whose declaration-field paths exceed the index bound keeps only its shallower paths, and the index logs a
-warning; no search bound makes a Tool unavailable. Universal Search returns a Search Hit for it, and describe its
-Authoring Description, never the Entity's private material. _Avoid_: Authoring Kind, search document
+warning; no search bound makes a Tool unavailable. Universal Search returns a Search Hit for it, and an exact lookup
+its Authoring Description, never the Entity's private material. _Avoid_: Authoring Kind, search document
 
 **Search Hit**: One item of a search page, cut to what an agent needs to choose and call a Search Entity: its Call
-Path, signature line, and Description Snippet; a Guidance Snippet and matched tags only where a query term matched
-them, and the matched arguments that its cut signature line does not show; for a Tool, its declared Tool
+Path, signature line, whether that line is complete enough to call from, and Description Snippet; a Guidance Snippet
+and matched tags only where a query term matched them, and the matched arguments that its cut signature line does not
+show; for a Tool, its declared Tool
 Hints, and its approval requirement and deprecation flag only when set.
-The Call Path names the kind and the Provider, the rank reflects why the hit matched, and describe gives the rest.
-Never the declaration.
+The signature line puts required inputs first and always keeps the result, stating plainly when the result is JSON
+text. The Call Path names the kind and the Provider, the rank reflects why the hit matched, and an exact lookup gives
+the rest. Never the declaration.
 
 **Search Coverage**: What one search page states, per kind of Search Entity, about how much of the Principal's Search
 Entities it examined and why results may be missing: how many Providers or Saved Functions were eligible, searched, and
@@ -629,7 +635,9 @@ state
 excludes Run-level termination and unexpected host defects and makes no public claim about dispatch, external effects,
 or retry safety in v1. When Coral can identify an invalid argument, an `invalid_input` failure names it and gives a
 Coral-written reason, which can list the argument names the Tool declares; otherwise it may give only a general
-message. It never repeats a submitted value. _Avoid_: Upstream failure, transport failure, Program failure
+message. A `tool_not_found` failure names the Call Path the Program wrote and the nearest Discoverable Call Paths.
+Apart from that path, which is code rather than data, it never repeats a submitted value. _Avoid_: Upstream failure,
+transport failure, Program failure
 
 **Upstream Result**: The Upstream Service-owned value and safe upstream metadata carried by an Upstream Outcome. Coral
 does not reshape the value into normalized rows or make upstream schema conformance a condition of success. _Avoid_:
@@ -738,9 +746,10 @@ environment, direct-network, credential, or WebAssembly surface. V8 disables cod
 ambient standard library, dynamic code
 
 **Program Admission**: The host step that accepts a submitted TypeScript Program only after Coral has resolved its
-statically named Saved Functions, built the exact source closure, enforced capability and size rules, and emitted
-executable JavaScript and source maps. Syntax, missing source, forbidden capability, emission, and limit failures return
-safe diagnostics without creating a Program Run. V1 does not compute ordinary TypeScript semantic diagnostics during
+statically named Saved Functions, built the exact source closure, enforced capability and size rules, checked that every
+literal Tool Call Path names a Tool the Principal can call, and emitted executable JavaScript and source maps. Syntax,
+missing source, unknown Call Path, forbidden capability, emission, and limit failures return safe diagnostics without
+creating a Program Run. V1 does not compute ordinary TypeScript semantic diagnostics during
 one-time Program admission. After admission succeeds, later JavaScript or Tool failures belong to the durable
 Program Run. _Avoid_: Runtime compilation, partial Run, semantic type gate
 
