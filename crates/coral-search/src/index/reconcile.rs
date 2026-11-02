@@ -136,17 +136,19 @@ impl SearchIndex {
     ///    longer exists. Best effort. A source's delete never touches these
     ///    tables, so this step is what guarantees the rows go.
     /// 4. On Postgres, recounts the statistics of every Workspace whose rows
-    ///    changed after its last count, not only those this pass wrote: step
-    ///    3 and a notified Saved Function removal both remove rows without a
-    ///    count.
+    ///    changed after its last count, not only those this pass wrote: a
+    ///    notified write schedules its Workspace's recount after it commits,
+    ///    and a recount that failed, or a process that stopped before it,
+    ///    leaves the statistics stale. The pass's own writes schedule none.
     ///
     /// Removal runs first. The pass reads what each step must do from a read
     /// snapshot, so a pass that finds no change never takes the writer, which
     /// every other write in the process would wait behind.
     ///
     /// Each removal, Generation, function and recount is written in a
-    /// transaction of its own, under the in-process mutex, which the pass
-    /// holds for that one item. A pass under load waits for the writer once
+    /// transaction of its own. Each but a recount runs under the in-process
+    /// mutex, which the pass holds for that one item; a recount holds its
+    /// Workspace's statistics lock alone, which no write takes. A pass under load waits for the writer once
     /// per item, and holding the mutex across those waits would hold back
     /// every notified write. A notified write or a change that lands between
     /// two items may index, replace or delete what the pass read as stale, so
@@ -187,7 +189,12 @@ impl SearchIndex {
             coral.search.reconcile.rows_written = Empty,
             error.type = Empty,
         );
-        let work = self.run_pass().instrument(pass.clone()).await;
+        // The pass's statistics step recounts what its writes change.
+        let index = Self {
+            schedules_recounts: false,
+            ..self.clone()
+        };
+        let work = index.run_pass().instrument(pass.clone()).await;
         if let Some(statistics) = work.statistics {
             statistics.record(&pass);
         }
@@ -262,7 +269,7 @@ impl SearchIndex {
             coral.search.reconcile.workspaces_recounted = Empty,
             coral.search.reconcile.rows_written = Empty,
         );
-        match step(span.clone(), self.refresh_stale_workspaces()).await {
+        match step(span.clone(), self.recount_stale_workspaces()).await {
             Ok(statistics) => {
                 statistics.record(&span);
                 work.statistics = Some(statistics);
@@ -484,8 +491,10 @@ impl SearchIndex {
 
     /// Step 4 of a pass: on Postgres, recounts the statistics of each
     /// Workspace whose watermark no longer matches its rows, one Workspace per
-    /// transaction under its lock. Fails when the watermarks cannot be read.
-    async fn refresh_stale_workspaces(&self) -> Result<StatisticsWork, ()> {
+    /// transaction under its statistics lock. A Workspace that a scheduled recount
+    /// counted after the check is skipped. Fails when the watermarks cannot be
+    /// read.
+    async fn recount_stale_workspaces(&self) -> Result<StatisticsWork, ()> {
         let check = self
             .read_snapshot(async |transaction| {
                 let check = indexer::check_statistics(transaction).await?;
@@ -508,41 +517,13 @@ impl SearchIndex {
             ..StatisticsWork::default()
         };
         for workspace_id in &check.stale {
-            let _write = self.writes.lock().await;
-            let span = tracing::info_span!(
-                parent: None,
-                "coral.search.refresh_statistics",
-                coral.workspace.id = safe::id(&workspace_id),
-                coral.search.rows_written = Empty,
-                coral.search.write.trigger = Empty,
-                error.type = Empty,
-            );
-            let refreshed = in_write_span(
-                span.clone(),
-                WriteTrigger::Reconcile,
-                self.within_limit(async {
-                    let mut transaction = self.database.begin().await?;
-                    let rows = indexer::refresh_statistics(&mut transaction, workspace_id).await?;
-                    transaction.commit().await?;
-                    Ok(rows)
-                }),
-            )
-            .await;
-            match refreshed {
-                Ok(rows) => {
-                    span.record("coral.search.rows_written", safe::number(rows));
+            match self.recount(workspace_id, WriteTrigger::Reconcile).await {
+                Ok(Some(rows)) => {
                     work.workspaces_recounted += 1;
                     work.rows_written += rows;
                 }
-                Err(error) => {
-                    // TODO: an error monitor for failed index writes is still to be set up.
-                    tracing::error!(
-                        coral.workspace.id = safe::id(&workspace_id),
-                        error.type = safe::kind(error.code()),
-                        "failed to refresh a Workspace's search statistics"
-                    );
-                    work.failed = true;
-                }
+                Ok(None) => {}
+                Err(_) => work.failed = true,
             }
         }
         Ok(work)

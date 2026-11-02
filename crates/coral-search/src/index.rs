@@ -23,6 +23,7 @@ use crate::indexer::tools::{self, AttemptedGeneration, ToolIndexer, ToolRemoval}
 use crate::indexer::{self, EntityIndexer, IndexError};
 
 mod reconcile;
+mod statistics;
 mod telemetry;
 
 /// How long one index write may run before it is rolled back and logged as
@@ -45,7 +46,9 @@ const WRITER_WAIT_LIMIT: Duration = Duration::from_mins(1);
 /// Function, and a failed write marks its span. Notified writes run in the
 /// order of the notifications. One in-process mutex serializes every write,
 /// and a reconcile pass takes it for one item at a time. A write that runs
-/// past its limit is rolled back and counts as failed. Cloning is cheap; every
+/// past its limit is rolled back and counts as failed. On Postgres, a write
+/// counts no ranking statistics: once it commits, it schedules its Workspace's
+/// recount, as the `statistics` module describes. Cloning is cheap; every
 /// clone shares the database handle, the order, the mutex, and the reconcile
 /// interval.
 #[derive(Clone)]
@@ -58,6 +61,12 @@ pub struct SearchIndex {
     /// The last notified write; the next one waits for it.
     last_write: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
     in_flight: Arc<watch::Sender<usize>>,
+    /// The Workspaces whose statistics recount is due.
+    recounts: Arc<statistics::PendingRecounts>,
+    recount_delay: Duration,
+    /// Whether a committed write schedules its Workspace's recount. A
+    /// reconcile pass's copy does not: the pass recounts what it changed.
+    schedules_recounts: bool,
     telemetry: Arc<telemetry::IndexTelemetry>,
     #[cfg(test)]
     row_build_pause: Option<Arc<RowBuildPause>>,
@@ -124,6 +133,9 @@ impl SearchIndex {
             reconcile_interval,
             last_write: Arc::new(std::sync::Mutex::new(None)),
             in_flight: Arc::new(watch::Sender::new(0)),
+            recounts: Arc::new(statistics::PendingRecounts::default()),
+            recount_delay: statistics::RECOUNT_DELAY,
+            schedules_recounts: true,
             telemetry: Arc::new(telemetry::IndexTelemetry::default()),
             #[cfg(test)]
             row_build_pause: None,
@@ -437,11 +449,14 @@ impl SearchIndex {
         }
     }
 
-    /// Waits until notified writes and committed visibility observations finish.
+    /// Waits until notified writes, the statistics recounts they scheduled,
+    /// and committed visibility observations finish. A scheduled recount runs
+    /// at once rather than after its delay.
     ///
     /// A caller that must observe the index after a notification, a test
     /// above all, awaits this first.
     pub async fn settled(&self) {
+        self.recounts.flush();
         let mut in_flight = self.in_flight.subscribe();
         // This index holds the sender, so the channel stays open while this
         // waits and the wait cannot fail.
@@ -500,6 +515,16 @@ impl SearchIndex {
     pub const fn with_write_limit(mut self, limit: Duration) -> Self {
         self.write_limit = limit;
         self.writer_wait_limit = limit;
+        self
+    }
+
+    /// Replaces the delay between the first change of a Workspace's rows and
+    /// its statistics recount, so a test can observe the rows before the
+    /// recount.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub const fn with_recount_delay(mut self, delay: Duration) -> Self {
+        self.recount_delay = delay;
         self
     }
 
@@ -635,7 +660,8 @@ impl SearchIndex {
     /// later try. A write that overruns after it takes the lock fails as
     /// [`IndexError::Overran`], which repeats until something changes. A
     /// write that took the lock records how long it waited and wrote on its
-    /// write span. Returns the rows it wrote.
+    /// write span. Once it commits, it schedules the Workspace's statistics
+    /// recount. Returns the rows it wrote.
     async fn write<'e, I: EntityIndexer + 'e>(
         &self,
         indexer: &I,
@@ -696,6 +722,7 @@ impl SearchIndex {
             safe::number(millis(locked.elapsed())),
         );
         let (effect, committed_at) = written?;
+        self.rows_changed(workspace_id);
         self.observe_committed_visibility(workspace_id.clone(), effect, committed_at);
         Ok(rows)
     }
@@ -772,21 +799,31 @@ impl SearchIndex {
         let _observation = tokio::spawn(observe.instrument(span).with_current_subscriber());
     }
 
+    /// Removes what `removal` names in a transaction of its own, then
+    /// schedules the statistics recount of the Workspace it changed.
     async fn erase<I: EntityIndexer>(
         &self,
         indexer: &I,
         removal: &I::Removal,
     ) -> Result<(), IndexError> {
-        self.within_limit(async {
-            let mut transaction = self.database.begin().await?;
-            if let Err(error) = indexer.remove(&mut transaction, removal).await {
-                rollback(transaction).await;
-                return Err(error);
-            }
-            transaction.commit().await?;
-            Ok(())
-        })
-        .await
+        let changed = self
+            .within_limit(async {
+                let mut transaction = self.database.begin().await?;
+                let changed = match indexer.remove(&mut transaction, removal).await {
+                    Ok(changed) => changed,
+                    Err(error) => {
+                        rollback(transaction).await;
+                        return Err(error);
+                    }
+                };
+                transaction.commit().await?;
+                Ok(changed)
+            })
+            .await?;
+        if let Some(workspace_id) = changed {
+            self.rows_changed(&workspace_id);
+        }
+        Ok(())
     }
 
     /// Begins a write, waiting again while the writer is busy, in this
@@ -819,7 +856,9 @@ impl SearchIndex {
             transaction.commit().await?;
             Ok(())
         })
-        .await
+        .await?;
+        self.rows_changed(generation.workspace_id());
+        Ok(())
     }
     async fn record_failed_function(
         &self,
@@ -838,7 +877,9 @@ impl SearchIndex {
             transaction.commit().await?;
             Ok(())
         })
-        .await
+        .await?;
+        self.rows_changed(entry.workspace_id());
+        Ok(())
     }
 }
 
@@ -896,6 +937,9 @@ enum WriteTrigger {
     Notified,
     /// A reconcile pass.
     Reconcile,
+    /// Committed writes that changed a Workspace's rows: a statistics
+    /// recount.
+    RowsChanged,
 }
 
 impl WriteTrigger {
@@ -903,6 +947,7 @@ impl WriteTrigger {
         match self {
             Self::Notified => "notified",
             Self::Reconcile => "reconcile",
+            Self::RowsChanged => "rows_changed",
         }
     }
 }

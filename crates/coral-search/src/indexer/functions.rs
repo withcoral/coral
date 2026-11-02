@@ -66,23 +66,18 @@ impl EntityIndexer for SavedFunctionIndexer {
     ) -> Result<super::IndexEffect, IndexError> {
         repository::upsert_function_row(transaction, row, now_unix_nanos()?).await?;
         repository::delete_function_state(transaction, entry.workspace_id(), entry.id()).await?;
-        repository::refresh_function_length(transaction, entry.workspace_id(), entry.id()).await?;
-        repository::refresh_workspace_statistics(transaction, entry.workspace_id()).await?;
         Ok(super::IndexEffect::Updated)
     }
 
-    /// Removes the function's row and state row. It takes no Workspace lock
-    /// and recounts no statistics: a delete lowers the Workspace's row count,
-    /// so the statistics step of the next pass recounts the Workspace. Many
-    /// removals in a row then cost one recount.
+    /// Removes the function's row and state row.
     async fn remove(
         &self,
         transaction: &mut Transaction<'_>,
         removal: &FunctionRemoval,
-    ) -> Result<(), IndexError> {
+    ) -> Result<Option<WorkspaceId>, IndexError> {
         repository::delete_function_entry(transaction, &removal.workspace_id, &removal.function_id)
             .await?;
-        Ok(())
+        Ok(Some(removal.workspace_id.clone()))
     }
 
     /// Returns each current function to index again:
@@ -239,7 +234,6 @@ pub(crate) async fn record_failed_attempt(
     error: &IndexError,
     reconcile_interval: Duration,
 ) -> Result<(), IndexError> {
-    repository::lock_workspace(transaction, entry.workspace_id()).await?;
     // A failure of another revision starts the count again.
     let prior = repository::failed_function(transaction, entry.workspace_id(), entry.id())
         .await?

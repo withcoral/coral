@@ -1,0 +1,3 @@
+-- Postgres counts each row's vector length in a generated column from this
+-- step on. SQLite's FTS5 keeps its own lengths and statistics, so it has
+-- nothing to do.

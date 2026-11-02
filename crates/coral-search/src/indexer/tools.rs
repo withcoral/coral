@@ -33,9 +33,7 @@ pub(crate) enum ToolRemoval {
     /// One Generation that stopped being active.
     Generation(ProviderGenerationId),
     /// One Generation a reconcile pass found superseded, as
-    /// [`ToolIndexer::superseded`] describes. Unlike
-    /// [`Self::Generation`], it takes no Workspace lock and recounts no
-    /// statistics: the pass's statistics step does.
+    /// [`ToolIndexer::superseded`] describes.
     Superseded {
         workspace_id: WorkspaceId,
         generation_id: ProviderGenerationId,
@@ -91,8 +89,6 @@ impl EntityIndexer for ToolIndexer {
             generation_state(entries.into(), attempted_at, AttemptState::Complete),
         )
         .await?;
-        repository::refresh_generation_lengths(transaction, workspace_id, generation_id).await?;
-        repository::refresh_workspace_statistics(transaction, workspace_id).await?;
         let target = || super::IndexedCatalog {
             provider_id: entries.provider_id().clone(),
             generation_id: generation_id.clone(),
@@ -129,17 +125,17 @@ impl EntityIndexer for ToolIndexer {
         &self,
         transaction: &mut Transaction<'_>,
         removal: &ToolRemoval,
-    ) -> Result<(), IndexError> {
+    ) -> Result<Option<WorkspaceId>, IndexError> {
         match removal {
             ToolRemoval::Provider {
                 workspace_id,
                 provider_id,
             } => {
-                repository::lock_workspace(transaction, workspace_id).await?;
                 repository::delete_provider(transaction, workspace_id, provider_id).await?;
+                Ok(Some(workspace_id.clone()))
             }
             ToolRemoval::Generation(generation_id) => {
-                repository::delete_generation(transaction, generation_id).await?;
+                repository::delete_generation(transaction, generation_id).await
             }
             ToolRemoval::Superseded {
                 workspace_id,
@@ -151,9 +147,9 @@ impl EntityIndexer for ToolIndexer {
                     generation_id,
                 )
                 .await?;
+                Ok(Some(workspace_id.clone()))
             }
         }
-        Ok(())
     }
 
     /// Returns each active Generation with no state row, one whose state row
@@ -281,10 +277,6 @@ impl ToolIndexer {
     /// run after that snapshot: a Generation made active again before its
     /// removal would lose its rows and state row until the next pass indexes
     /// it again.
-    ///
-    /// A removal takes no Workspace lock and recounts no statistics: a delete
-    /// lowers the Workspace's row count, so the statistics step of the same
-    /// pass recounts the Workspace under its lock.
     pub(crate) async fn superseded(
         &self,
         transaction: &mut Transaction<'_>,
@@ -382,7 +374,6 @@ pub(crate) async fn record_failed_attempt(
     error: &IndexError,
     reconcile_interval: Duration,
 ) -> Result<(), IndexError> {
-    repository::lock_workspace(transaction, generation.workspace_id).await?;
     let prior = repository::failed_generation_retry_rule(
         transaction,
         generation.workspace_id,

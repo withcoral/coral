@@ -321,30 +321,32 @@ const NAMES: &str = r#"{
 #[tokio::test]
 async fn postgres_camel_case_step_splits_indexed_names_and_restates_lengths_and_statistics() {
     coral_test_support::database_only!(Postgres);
-    // Every step but 31 and 32, the two under test. This binary publishes
-    // the Provider, and its repositories need every column a later step
-    // outside Universal Search adds, so the plan skips only the steps the
-    // test applies later. Step 33 drops the stream's ledger, which 31 and 32
-    // do not read.
+    // Every step but 31 and 32, the two under test, and 53, which rebuilds
+    // the vector that 31 rewrites. This binary publishes the Provider, and
+    // its repositories need every column a later step outside Universal
+    // Search adds, so the plan skips only the steps the test applies later.
+    // Step 33 drops the stream's ledger, which 31 and 32 do not read.
     let before_camel_case = coral_test_support::edited_migration_plan(|migrations| {
         migrations
             .into_iter()
-            .filter(|migration| !(31..=32).contains(&migration.version))
+            .filter(|migration| !(31..=32).contains(&migration.version) && migration.version != 53)
             .collect()
     });
     let modules = TestModules::with_plan(&before_camel_case).await;
     let database = modules.search.database.clone();
     // This binary's statistics count also writes the watermark that step 32
-    // adds. The columns exist only while it indexes, so the search tables
-    // then have the shape a binary at step 30 left.
+    // adds, and reads the length column that step 53 adds. The columns exist
+    // only while it indexes, so the search tables then have the shape a
+    // binary at step 30 left.
     modules
         .fixture
         .execute_fixture_sql(
             "ALTER TABLE search_stats \
-             ADD COLUMN counted_rows BIGINT, ADD COLUMN counted_max_indexed_at BIGINT",
+             ADD COLUMN counted_rows BIGINT, ADD COLUMN counted_max_indexed_at BIGINT; \
+             ALTER TABLE search_entities ADD COLUMN tsv_length INTEGER",
         )
         .await
-        .expect("add the watermark columns");
+        .expect("add the watermark and length columns");
     let user = organization_user(database.clone(), USER).await;
     let workspace = modules.create_workspace(&user).await;
     let provider = modules
@@ -355,10 +357,11 @@ async fn postgres_camel_case_step_splits_indexed_names_and_restates_lengths_and_
         .fixture
         .execute_fixture_sql(
             "ALTER TABLE search_stats \
-             DROP COLUMN counted_rows, DROP COLUMN counted_max_indexed_at",
+             DROP COLUMN counted_rows, DROP COLUMN counted_max_indexed_at; \
+             ALTER TABLE search_entities DROP COLUMN tsv_length",
         )
         .await
-        .expect("drop the watermark columns");
+        .expect("drop the watermark and length columns");
     let generation = active_generation(&database, &provider).await;
     let doc = |key: &str| format!("{generation}:{key}");
     assert!(!vector_matches(&database, &doc("listComments"), "comments:A").await);
@@ -406,7 +409,91 @@ async fn postgres_camel_case_step_splits_indexed_names_and_restates_lengths_and_
     );
 }
 
-/// One Workspace's Postgres row lengths and ranking statistics.
+#[tokio::test]
+async fn postgres_length_step_keeps_each_vector_and_stores_the_length_an_update_counted() {
+    coral_test_support::database_only!(Postgres);
+    // Every step but 53, the one under test.
+    let before_lengths = coral_test_support::edited_migration_plan(|migrations| {
+        migrations
+            .into_iter()
+            .filter(|migration| migration.version != 53)
+            .collect()
+    });
+    let modules = TestModules::with_plan(&before_lengths).await;
+    let database = modules.search.database.clone();
+    // This binary reads the length column that step 53 adds, so a plain one
+    // stands in while it indexes. An earlier release counted `doc_len` in a
+    // second update of each row, which the fixture repeats.
+    modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE search_entities ADD COLUMN tsv_length INTEGER")
+        .await
+        .expect("add the length column");
+    let user = organization_user(database.clone(), USER).await;
+    let workspace = modules.create_workspace(&user).await;
+    modules
+        .publish_openapi(&user, &workspace, NAMES, "tracker", 20)
+        .await;
+    modules.converge().await;
+    modules
+        .fixture
+        .execute_fixture_sql(
+            "UPDATE search_entities AS d SET doc_len = coalesce(( \
+                 SELECT sum(coalesce(array_length(u.positions, 1), 1)) \
+                 FROM unnest(d.tsv) AS u(lexeme, positions, weights) \
+             ), 0); \
+             ALTER TABLE search_entities DROP COLUMN tsv_length",
+        )
+        .await
+        .expect("count the lengths as an earlier release did");
+    let indexed = vectors(&database, &workspace, "doc_len").await;
+    assert!(
+        indexed
+            .iter()
+            .any(|(_doc, vector, _length)| vector.contains("'comments':2A")),
+        "step 31's vector splits camelCase names: {indexed:?}"
+    );
+
+    database
+        .migrate(coral_db::migration_plan())
+        .await
+        .expect("apply step 53");
+
+    assert_eq!(
+        vectors(&database, &workspace, "tsv_length").await,
+        indexed,
+        "the shared function builds step 31's vector, and its length is the one counted"
+    );
+}
+
+/// Each of a Workspace's rows as `(doc_id, vector, length)`, in document id
+/// order, with its length read from `length_column`.
+async fn vectors(
+    database: &Database,
+    workspace: &WorkspaceId,
+    length_column: &str,
+) -> Vec<(String, String, i32)> {
+    let mut snapshot = database
+        .begin_read_snapshot()
+        .await
+        .expect("open a snapshot");
+    let rows = snapshot
+        .fetch_all_sql(
+            &format!(
+                "SELECT doc_id, tsv::text, {length_column} FROM search_entities \
+                 WHERE workspace_id = $1 ORDER BY doc_id"
+            ),
+            sea_query::Values(vec![workspace.to_string().into()]),
+        )
+        .await
+        .expect("read the vectors");
+    snapshot.rollback().await.expect("close the snapshot");
+    rows
+}
+
+/// One Workspace's Postgres row lengths and ranking statistics. Each length
+/// counts the lexeme positions of the row's vector, by the indexer's rule, so
+/// it reads the same before and after the step that stores it.
 #[derive(Debug, PartialEq)]
 struct Statistics {
     lengths: Vec<(String, i32)>,
@@ -417,17 +504,22 @@ struct Statistics {
 impl Statistics {
     async fn read(database: &Database, workspace: &WorkspaceId) -> Self {
         let workspace = workspace.to_string();
-        let lengths = database
-            .fetch_all(
-                Query::select()
-                    .columns([Alias::new("doc_id"), Alias::new("doc_len")])
-                    .from(Alias::new("search_entities"))
-                    .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace.clone()))
-                    .order_by(Alias::new("doc_id"), Order::Asc)
-                    .to_owned(),
+        let mut snapshot = database
+            .begin_read_snapshot()
+            .await
+            .expect("open a snapshot");
+        let lengths = snapshot
+            .fetch_all_sql(
+                "SELECT d.doc_id, coalesce(( \
+                     SELECT sum(coalesce(array_length(u.positions, 1), 1)) \
+                     FROM unnest(d.tsv) AS u(lexeme, positions, weights) \
+                 ), 0)::integer \
+                 FROM search_entities AS d WHERE d.workspace_id = $1 ORDER BY d.doc_id",
+                sea_query::Values(vec![workspace.clone().into()]),
             )
             .await
             .expect("read row lengths");
+        snapshot.rollback().await.expect("close the snapshot");
         let terms = database
             .fetch_all(
                 Query::select()

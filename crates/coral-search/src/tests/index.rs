@@ -339,23 +339,20 @@ async fn backlog_sampling_continues_while_synchronous_index_work_is_held() {
         .expect("row work starts");
     // Any snapshot taken before the hold is now too old to satisfy this.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let fresh = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            if metrics
-                .values("coral.search.index.backlog.sample.age")
-                .iter()
-                .any(|age| *age < 0.15)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+    let fresh = eventually(std::time::Duration::from_secs(2), async || {
+        metrics
+            .values("coral.search.index.backlog.sample.age")
+            .iter()
+            .any(|age| *age < 0.15)
     })
     .await;
     drop(hold);
     background.abort();
     let _stopped = background.await;
-    fresh.expect("synchronous reconciliation cannot stop the observer from refreshing");
+    assert!(
+        fresh,
+        "synchronous reconciliation cannot stop the observer from refreshing"
+    );
 }
 
 #[tokio::test]
@@ -390,25 +387,20 @@ async fn an_observer_panic_does_not_stop_reconciliation_and_the_observer_restart
         .execute_fixture_sql("ALTER TABLE unavailable_index_states RENAME TO search_index_states")
         .await
         .unwrap();
-    let reconciled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let states = world.search_index_states(Some(&world.tracer)).await;
-            if matches!(
-                states.get(&world.tracer),
-                Some(crate::SearchIndexState::Indexed)
-            ) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+    let reconciled = eventually(std::time::Duration::from_secs(5), async || {
+        let states = world.search_index_states(Some(&world.tracer)).await;
+        matches!(
+            states.get(&world.tracer),
+            Some(crate::SearchIndexState::Indexed)
+        )
     })
     .await;
-    if reconciled.is_ok() {
+    if reconciled {
         wait_for_observation(|| !metrics.named("coral.search.index.backlog").is_empty()).await;
     }
     background.abort();
     let _stopped = background.await;
-    reconciled.expect("observer failure must not stop reconciliation");
+    assert!(reconciled, "observer failure must not stop reconciliation");
     assert!(
         logs.events()
             .iter()
@@ -504,13 +496,23 @@ async fn an_unreadable_backlog_reports_unknown_and_recovers_after_the_next_snaps
 }
 
 async fn wait_for_observation(ready: impl Fn() -> bool) {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while !ready() {
+    assert!(
+        eventually(std::time::Duration::from_secs(5), async || ready()).await,
+        "background backlog observation converges"
+    );
+}
+
+/// Checks `ready` every 10 ms until it holds or `limit` passes, and answers
+/// whether it held: what a background write or observation leaves shows a
+/// moment after the call that starts it returns.
+async fn eventually(limit: std::time::Duration, mut ready: impl AsyncFnMut() -> bool) -> bool {
+    tokio::time::timeout(limit, async {
+        while !ready().await {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("background backlog observation converges");
+    .is_ok()
 }
 
 #[tokio::test]
@@ -1289,23 +1291,27 @@ async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
             span.name
         );
     }
+    // Only Postgres keeps statistics of its own. An index write counts none,
+    // so the statistics step recounts the Workspace the pass wrote.
+    let checked = match world.modules.search.database.system() {
+        DatabaseSystem::Postgres => 1,
+        DatabaseSystem::Sqlite => 0,
+    };
+    let recount = (checked > 0).then_some("coral.search.refresh_statistics");
     assert_eq!(
         write_names(&writes),
         [
             "coral.search.index_generation",
             "coral.search.sync_function"
-        ],
-        "the first pass indexes the Provider and the function"
+        ]
+        .into_iter()
+        .chain(recount)
+        .collect::<Vec<_>>(),
+        "the first pass indexes the Provider and the function, then counts them"
     );
     assert_eq!(item_work(&pass, "generations"), (1, 0));
     assert_eq!(item_work(&pass, "functions"), (1, 0));
-    // Only Postgres keeps statistics of its own. Each index write counts its
-    // Workspace, so the statistics step finds nothing to count after them.
-    let checked = match world.modules.search.database.system() {
-        DatabaseSystem::Postgres => 1,
-        DatabaseSystem::Sqlite => 0,
-    };
-    assert_eq!(statistics_work(&pass), (checked, 0, false));
+    assert_eq!(statistics_work(&pass), (checked, checked, checked > 0));
     let (pass, writes) = split_pass(world.traced_pass().await);
     assert!(writes.is_empty(), "a pass that changed nothing: {writes:?}");
     assert_eq!(item_work(&pass, "generations"), (0, 0));
@@ -1624,24 +1630,21 @@ async fn visibility_read_pressure_does_not_hold_up_later_index_writes() {
     })
     .await;
     world.index.remove_generation(old.generation_id().clone());
-    let removed = tokio::time::timeout(std::time::Duration::from_millis(500), async {
-        loop {
-            if spans
-                .finished()
-                .iter()
-                .any(|span| span.name == "coral.search.remove_generation")
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+    let removed = eventually(std::time::Duration::from_millis(500), async || {
+        spans
+            .finished()
+            .iter()
+            .any(|span| span.name == "coral.search.remove_generation")
     })
     .await;
     for reader in readers {
         reader.rollback().await.unwrap();
     }
     world.index.settled().await;
-    removed.expect("the next write proceeds while a visibility read is queued");
+    assert!(
+        removed,
+        "the next write proceeds while a visibility read is queued"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2215,6 +2218,202 @@ async fn postgres_statistics_follow_each_write_and_removal_of_the_workspace() {
 }
 
 #[tokio::test]
+async fn an_index_write_commits_while_a_recount_waits_on_the_statistics() {
+    // An index write upserts its own rows and counts no statistics, and a
+    // recount takes no lock that a write takes. So neither a recount held up
+    // on the statistics nor anything else that holds those tables holds back
+    // a write.
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let tracer_entries = world.stored_entries(&world.tracer).await;
+    let ledger_entries = world.stored_entries(&ledger).await;
+    let index = world
+        .index
+        .clone()
+        .with_recount_delay(std::time::Duration::ZERO);
+    let database = &world.modules.search.database;
+    let mut blocker = database.begin().await.expect("begin the blocker");
+    blocker
+        .execute_sql(
+            "LOCK TABLE search_terms, search_stats IN ACCESS EXCLUSIVE MODE",
+            sea_query::Values(Vec::new()),
+        )
+        .await
+        .expect("lock the statistics tables");
+    let recount_waits = async || {
+        let mut snapshot = database.begin_read_snapshot().await.unwrap();
+        let (waiting,): (i64,) = snapshot
+            .fetch_all_sql(
+                "SELECT count(*) FROM pg_locks WHERE NOT granted \
+                 AND relation IN ('search_terms'::regclass, 'search_stats'::regclass)",
+                sea_query::Values(Vec::new()),
+            )
+            .await
+            .expect("read the waiting locks")
+            .into_iter()
+            .next()
+            .expect("a count");
+        snapshot.rollback().await.unwrap();
+        waiting > 0
+    };
+    let wait = std::time::Duration::from_secs(5);
+
+    notify(&index, &tracer_entries);
+    assert!(
+        eventually(wait, async || !world.tool_rows().await.is_empty()).await,
+        "the write committed while the statistics were locked"
+    );
+    assert!(
+        eventually(wait, recount_waits).await,
+        "its recount waits on the statistics"
+    );
+    notify(&index, &ledger_entries);
+    assert!(
+        eventually(wait, async || world.indexed_generations().await.len() == 2).await,
+        "the next write committed while the recount waited"
+    );
+
+    blocker.rollback().await.expect("release the statistics");
+    index.settled().await;
+    assert!(world.has_term("forecast").await, "the recount followed");
+    assert!(world.has_term("ledger").await);
+    world.assert_exact_statistics().await;
+}
+
+#[tokio::test]
+async fn an_index_write_updates_only_the_rows_it_changes_and_each_once() {
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    // Every update of a search row leaves its document id behind.
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql(
+            "CREATE TABLE search_entity_updates (doc_id TEXT NOT NULL); \
+             CREATE FUNCTION record_search_entity_update() RETURNS trigger \
+                 LANGUAGE plpgsql AS $$ BEGIN \
+                     INSERT INTO search_entity_updates VALUES (NEW.doc_id); RETURN NEW; \
+                 END $$; \
+             CREATE TRIGGER record_search_entity_update AFTER UPDATE ON search_entities \
+                 FOR EACH ROW EXECUTE FUNCTION record_search_entity_update()",
+        )
+        .await
+        .expect("record each row update");
+    let updates = async || {
+        let mut snapshot = world
+            .modules
+            .search
+            .database
+            .begin_read_snapshot()
+            .await
+            .unwrap();
+        let rows: Vec<(String,)> = snapshot
+            .fetch_all_sql(
+                "SELECT doc_id FROM search_entity_updates ORDER BY doc_id",
+                sea_query::Values(Vec::new()),
+            )
+            .await
+            .expect("read the updates");
+        snapshot.rollback().await.unwrap();
+        rows.into_iter().map(|(doc_id,)| doc_id).collect::<Vec<_>>()
+    };
+    let entries = world.stored_entries(&world.tracer).await;
+
+    notify(&world.index, &entries);
+    world.index.settled().await;
+    assert_eq!(
+        updates().await,
+        Vec::<String>::new(),
+        "a new row takes one insert"
+    );
+
+    // Stale text on one row, and no state row, so the next write runs and
+    // brings back the one value that differs.
+    let stamps = world.row_stamps().await;
+    let [(changed, _stamp), ..] = stamps.as_slice() else {
+        panic!("the Generation has rows");
+    };
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE search_entities SET description = 'stale' WHERE doc_id = '{changed}'; \
+             DELETE FROM search_index_states; \
+             DELETE FROM search_entity_updates"
+        ))
+        .await
+        .expect("make one row stale");
+    notify(&world.index, &entries);
+    world.index.settled().await;
+    assert_eq!(
+        updates().await,
+        std::slice::from_ref(changed),
+        "the write updates the changed row once and leaves the rest"
+    );
+    world.assert_exact_statistics().await;
+}
+
+#[tokio::test]
+async fn one_statistics_recount_follows_a_burst_of_writes() {
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let tracer_entries = world.stored_entries(&world.tracer).await;
+    let ledger_entries = world.stored_entries(&ledger).await;
+    // A delay no test run reaches, so only `settled` ends it.
+    let index = world
+        .index
+        .clone()
+        .with_recount_delay(std::time::Duration::from_mins(5));
+
+    let spans = CapturedSpans::default();
+    {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(spans.clone()),
+        );
+        notify(&index, &tracer_entries);
+        notify(&index, &ledger_entries);
+    }
+    assert!(
+        eventually(std::time::Duration::from_secs(5), async || {
+            world.indexed_generations().await.len() == 2
+        })
+        .await,
+        "both writes committed"
+    );
+    assert_eq!(world.statistics().await, None, "no write counted");
+    index.settled().await;
+
+    // A recount that a write marked after the first one started finds the
+    // statistics current and writes nothing.
+    let recounts = spans
+        .recorded()
+        .into_iter()
+        .filter(|span| {
+            span.name == "coral.search.refresh_statistics"
+                && !span.fields.contains_key("coral.search.skipped")
+        })
+        .collect::<Vec<_>>();
+    let [recount] = recounts.as_slice() else {
+        panic!("one recount for both writes: {recounts:?}");
+    };
+    assert_eq!(
+        recount
+            .fields
+            .get("coral.search.write.trigger")
+            .map(String::as_str),
+        Some("\"rows_changed\"")
+    );
+    assert!(world.has_term("forecast").await);
+    assert!(world.has_term("ledger").await);
+    world.assert_exact_statistics().await;
+}
+
+#[tokio::test]
 async fn a_rewrite_of_an_unchanged_generation_writes_no_search_row() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
@@ -2703,20 +2902,18 @@ impl World {
             tracing::info_span!("request").in_scope(|| notice(&self.index));
         }
         self.index.settled().await;
+        // On Postgres a write's statistics recount follows in a root span of
+        // its own.
+        let is_write = |span: &SpanData| {
+            span.name.starts_with("coral.search.") && span.name != "coral.search.refresh_statistics"
+        };
         // A database driver may hold the write's span for a moment after the
         // write returns.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        let spans = loop {
-            let spans = capture.finished();
-            if spans
-                .iter()
-                .any(|span| span.name.starts_with("coral.search."))
-                || tokio::time::Instant::now() > deadline
-            {
-                break spans;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        };
+        eventually(std::time::Duration::from_secs(5), async || {
+            capture.finished().iter().any(is_write)
+        })
+        .await;
+        let spans = capture.finished();
         let request = spans
             .iter()
             .find(|span| span.name == "request")
@@ -2724,7 +2921,7 @@ impl World {
             .clone();
         let [write] = spans
             .into_iter()
-            .filter(|span| span.name.starts_with("coral.search."))
+            .filter(is_write)
             .collect::<Vec<_>>()
             .try_into()
             .expect("one write span");
@@ -2863,7 +3060,7 @@ impl World {
     /// The Workspace's Postgres statistics counted again from its rows' vectors,
     /// by the rules the indexer follows: what [`Self::stored_statistics`]
     /// holds when the statistics are exact. The mean length counts each
-    /// vector's lexeme positions again, so a stale `doc_len` shows.
+    /// vector's lexeme positions again, so a wrong `tsv_length` shows.
     async fn recounted_statistics(&self) -> Statistics {
         let mut transaction = self
             .modules

@@ -43,9 +43,6 @@ enum SearchEntities {
     Fingerprint,
     /// When the row last changed: the attempt that wrote its values.
     IndexedAtUnixNanos,
-    /// The row's vector length, on Postgres only. A write that changes the
-    /// row clears it, and the indexer then counts it again.
-    DocLen,
 }
 
 /// The `search_index_states` table and its columns, for sea-query. Each row
@@ -138,22 +135,42 @@ const CHUNK_ROWS: usize = 500;
 /// two-key form never conflicts with the one-key lock of the stream steps.
 const WORKSPACE_LOCK_CLASS: i32 = 0x7372_6368;
 
+/// The class of the Postgres advisory lock on one Workspace's statistics
+/// recounts, ASCII `srst`, keyed as [`WORKSPACE_LOCK_CLASS`] is.
+const STATISTICS_LOCK_CLASS: i32 = 0x7372_7374;
+
 /// On Postgres, takes the transaction-scoped lock on the Workspace's search
 /// index writes, so two processes that write one Workspace take turns.
 /// `Database::begin` runs at the server's default isolation, read committed,
 /// so each later statement of the transaction sees what the previous holder
-/// committed, and its statistics count includes those rows. `SQLite`
-/// serializes every write already.
+/// committed. The writes of one Workspace therefore commit in the order of
+/// their stamps, and each write stamps its rows later than every row that a
+/// statistics count could have seen before it: the statistics watermark
+/// relies on that. `SQLite` serializes every write already.
 pub(super) async fn lock_workspace(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
 ) -> Result<(), Error> {
-    lock_workspace_id(transaction, &workspace_id.to_string()).await
+    advisory_lock(transaction, WORKSPACE_LOCK_CLASS, workspace_id).await
 }
 
-async fn lock_workspace_id(
+/// On Postgres, takes the transaction-scoped lock on the Workspace's
+/// statistics recounts, so two recounts of one Workspace take turns and
+/// neither meets the other's term rows. A recount takes no write lock: its
+/// one statement counts from one snapshot, and the watermark it stores shows
+/// each write that commits after that snapshot. So a write never waits for a
+/// recount. `SQLite` keeps no statistics.
+pub(super) async fn lock_statistics(
     transaction: &mut Transaction<'_>,
-    workspace_id: &str,
+    workspace_id: &WorkspaceId,
+) -> Result<(), Error> {
+    advisory_lock(transaction, STATISTICS_LOCK_CLASS, workspace_id).await
+}
+
+async fn advisory_lock(
+    transaction: &mut Transaction<'_>,
+    class: i32,
+    workspace_id: &WorkspaceId,
 ) -> Result<(), Error> {
     if transaction.system() != DatabaseSystem::Postgres {
         return Ok(());
@@ -161,7 +178,7 @@ async fn lock_workspace_id(
     transaction
         .execute_sql(
             "SELECT pg_advisory_xact_lock($1, hashtext($2))",
-            sea_query::Values(vec![WORKSPACE_LOCK_CLASS.into(), workspace_id.into()]),
+            sea_query::Values(vec![class.into(), workspace_id.to_string().into()]),
         )
         .await?;
     Ok(())
@@ -269,7 +286,7 @@ pub(super) async fn upsert_tool_rows(
         for row in chunk {
             statement.values_panic(row.values(indexed_at_unix_nanos));
         }
-        statement.on_conflict(changed_rows_only(transaction.system(), TOOL_COLUMNS));
+        statement.on_conflict(changed_rows_only(TOOL_COLUMNS));
         transaction.execute(statement).await?;
     }
     Ok(())
@@ -278,17 +295,14 @@ pub(super) async fn upsert_tool_rows(
 /// The conflict action of a row upsert: it updates a conflicting row only
 /// when the insert brings another value for a column other than the key and
 /// the stamp. A row whose values stay the same keeps its stamp and its
-/// version, and no trigger fires for it. On Postgres the update also clears
-/// `doc_len`, so the length refresh counts that row again.
+/// version, and no trigger fires for it. On Postgres the update recomputes
+/// the row's generated vector and length, so each row takes one write.
 ///
 /// Both databases compare with `IS DISTINCT FROM`, so two NULLs are equal.
 /// `SQLite` has it from 3.39; the bundled build is newer.
 ///
 /// `columns` opens with the two key columns and ends with the stamp.
-fn changed_rows_only<const N: usize>(
-    system: DatabaseSystem,
-    columns: [SearchEntities; N],
-) -> OnConflict {
+fn changed_rows_only<const N: usize>(columns: [SearchEntities; N]) -> OnConflict {
     let changed = columns
         .into_iter()
         .skip(2)
@@ -301,9 +315,6 @@ fn changed_rows_only<const N: usize>(
         });
     let mut on_conflict = OnConflict::columns([SearchEntities::WorkspaceId, SearchEntities::DocId]);
     on_conflict.update_columns(columns.into_iter().skip(2));
-    if system == DatabaseSystem::Postgres {
-        on_conflict.value(SearchEntities::DocLen, Expr::null());
-    }
     on_conflict.action_and_where(changed.into());
     on_conflict
 }
@@ -346,8 +357,7 @@ pub(super) async fn delete_rows_not_written(
     Ok(())
 }
 
-/// Deletes every Tool row of the Generation, then refreshes the
-/// Workspace's statistics.
+/// Deletes every Tool row of the Generation.
 pub(super) async fn delete_generation_rows(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -356,7 +366,6 @@ pub(super) async fn delete_generation_rows(
     transaction
         .execute(generation_rows(workspace_id, generation_id))
         .await?;
-    refresh_statistics(transaction, &workspace_id.to_string()).await?;
     Ok(())
 }
 
@@ -475,14 +484,13 @@ pub(super) async fn write_generation_state(
     Ok(())
 }
 
-/// Deletes one Generation's Tool rows and state row, then refreshes the
-/// statistics of the Workspace its state row named, under that Workspace's
-/// lock. Nothing is locked or refreshed when the index held no state for the
-/// Generation: the next reconcile pass sees the changed rows.
+/// Deletes one Generation's Tool rows and state row. Returns the Workspace
+/// its state row named, `None` when the index held no state for the
+/// Generation: the next reconcile pass then sees the changed rows.
 pub(super) async fn delete_generation(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-) -> Result<(), Error> {
+) -> Result<Option<WorkspaceId>, IndexError> {
     let generation_id = generation_id.to_string();
     let workspace: Option<(String,)> = transaction
         .fetch_optional(
@@ -494,9 +502,6 @@ pub(super) async fn delete_generation(
                 .to_owned(),
         )
         .await?;
-    if let Some((workspace_id,)) = &workspace {
-        lock_workspace_id(transaction, workspace_id).await?;
-    }
     transaction
         .execute(
             Query::delete()
@@ -519,14 +524,13 @@ pub(super) async fn delete_generation(
                 .to_owned(),
         )
         .await?;
-    if let Some((workspace_id,)) = workspace {
-        refresh_statistics(transaction, &workspace_id).await?;
-    }
-    Ok(())
+    workspace
+        .map(|(workspace_id,)| parse_workspace_id(&workspace_id))
+        .transpose()
 }
 
 /// Deletes the Tool rows and state rows of every Generation of one
-/// Provider, then refreshes the Workspace's statistics.
+/// Provider.
 pub(super) async fn delete_provider(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -554,7 +558,6 @@ pub(super) async fn delete_provider(
                 .to_owned(),
         )
         .await?;
-    refresh_statistics(transaction, &workspace_id).await?;
     Ok(())
 }
 
@@ -644,7 +647,7 @@ pub(super) async fn upsert_function_row(
     row: &FunctionRow<'_>,
     indexed_at_unix_nanos: i64,
 ) -> Result<(), Error> {
-    let on_conflict = changed_rows_only(transaction.system(), FUNCTION_COLUMNS);
+    let on_conflict = changed_rows_only(FUNCTION_COLUMNS);
     transaction
         .execute(
             Query::insert()
@@ -658,8 +661,7 @@ pub(super) async fn upsert_function_row(
     Ok(())
 }
 
-/// Deletes a Saved Function's row and state row. The caller leaves the
-/// Workspace's statistics to the next reconcile pass.
+/// Deletes a Saved Function's row and state row.
 pub(super) async fn delete_function_entry(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -680,7 +682,7 @@ fn function_row(workspace_id: &WorkspaceId, function_id: &SavedFunctionId) -> De
         .to_owned()
 }
 
-/// Deletes a Saved Function's row, then refreshes the Workspace's statistics.
+/// Deletes a Saved Function's row.
 pub(super) async fn delete_function_row(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -689,7 +691,6 @@ pub(super) async fn delete_function_row(
     transaction
         .execute(function_row(workspace_id, function_id))
         .await?;
-    refresh_statistics(transaction, &workspace_id.to_string()).await?;
     Ok(())
 }
 
@@ -1180,7 +1181,7 @@ pub(super) async fn generations_with_rows(
 }
 
 /// Deletes one Generation's Tool rows and state row within its
-/// Workspace. The caller refreshes the Workspace's statistics.
+/// Workspace.
 pub(super) async fn delete_generation_in_workspace(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -1398,6 +1399,48 @@ pub(super) async fn statistics_watermarks(
         .collect()
 }
 
+/// One Workspace's stored watermark's row count and newest stamp, and its
+/// rows' count and newest stamp now.
+type WorkspaceWatermarkColumns = (Option<i64>, Option<i64>, i64, Option<i64>);
+
+/// On Postgres, reads one Workspace's statistics watermark beside its rows
+/// now. `None` on `SQLite`, which keeps no statistics of its own.
+pub(super) async fn workspace_watermark(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<Option<WorkspaceWatermarks>, IndexError> {
+    if transaction.system() != DatabaseSystem::Postgres {
+        return Ok(None);
+    }
+    let rows: Vec<WorkspaceWatermarkColumns> = transaction
+        .fetch_all_sql(
+            "SELECT s.counted_rows, s.counted_max_indexed_at, r.row_count, r.max_indexed_at \
+             FROM ( \
+                 SELECT count(*) AS row_count, max(indexed_at_unix_nanos) AS max_indexed_at \
+                 FROM search_entities WHERE workspace_id = $1 \
+             ) AS r \
+             LEFT JOIN search_stats AS s ON s.workspace_id = $1",
+            sea_query::Values(vec![workspace_id.to_string().into()]),
+        )
+        .await?;
+    let (counted_rows, counted_max, rows, max_indexed_at_unix_nanos) = rows
+        .into_iter()
+        .next()
+        // An aggregate without a grouping always returns one row.
+        .ok_or_else(|| Error::from(sqlx::Error::RowNotFound))?;
+    Ok(Some(WorkspaceWatermarks {
+        workspace_id: workspace_id.clone(),
+        counted: counted_rows.map(|rows| Watermark {
+            rows,
+            max_indexed_at_unix_nanos: counted_max,
+        }),
+        current: Watermark {
+            rows,
+            max_indexed_at_unix_nanos,
+        },
+    }))
+}
+
 fn workspace_generation(
     workspace_id: &str,
     generation_id: &str,
@@ -1427,68 +1470,10 @@ fn parse_workspace_id(value: &str) -> Result<WorkspaceId, IndexError> {
         .map_err(|_error| IndexError::Corrupt("a search index row has an invalid Workspace id"))
 }
 
-/// On Postgres, counts `doc_len` for each of one Generation's rows that has
-/// none: the number of lexeme positions in the row's vector. An insert and
-/// an update leave the length empty; a row the write kept keeps its length.
-/// `SQLite` needs none.
-pub(super) async fn refresh_generation_lengths(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    generation_id: &ProviderGenerationId,
-) -> Result<(), Error> {
-    if transaction.system() != DatabaseSystem::Postgres {
-        return Ok(());
-    }
-    transaction
-        .execute_sql(
-            "UPDATE search_entities AS d \
-             SET doc_len = coalesce(( \
-                 SELECT sum(coalesce(array_length(u.positions, 1), 1)) \
-                 FROM unnest(d.tsv) AS u(lexeme, positions, weights) \
-             ), 0) \
-             WHERE d.workspace_id = $1 AND d.provider_generation_id = $2 \
-               AND d.doc_len IS NULL",
-            sea_query::Values(vec![
-                workspace_id.to_string().into(),
-                generation_id.to_string().into(),
-            ]),
-        )
-        .await?;
-    Ok(())
-}
-
-/// On Postgres, counts `doc_len` for one Saved Function's row when it has
-/// none, as [`refresh_generation_lengths`] does for a Generation's.
-pub(super) async fn refresh_function_length(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    function_id: &SavedFunctionId,
-) -> Result<(), Error> {
-    if transaction.system() != DatabaseSystem::Postgres {
-        return Ok(());
-    }
-    transaction
-        .execute_sql(
-            "UPDATE search_entities AS d \
-             SET doc_len = coalesce(( \
-                 SELECT sum(coalesce(array_length(u.positions, 1), 1)) \
-                 FROM unnest(d.tsv) AS u(lexeme, positions, weights) \
-             ), 0) \
-             WHERE d.workspace_id = $1 AND d.saved_function_id = $2 \
-               AND d.doc_len IS NULL",
-            sea_query::Values(vec![
-                workspace_id.to_string().into(),
-                function_id.to_string().into(),
-            ]),
-        )
-        .await?;
-    Ok(())
-}
-
 /// On Postgres, rewrites a Workspace's ranking statistics from its rows: the
 /// document frequency of every lexeme, the document count, and the mean
-/// document length. `SQLite`'s FTS5 keeps its own statistics. The caller
-/// holds the Workspace's lock.
+/// vector length. `SQLite`'s FTS5 keeps its own statistics. The caller
+/// holds the Workspace's statistics lock.
 ///
 /// One statement counts and writes, so the counts and the watermark beside
 /// them come from one snapshot: `ts_stat` reads its query with the snapshot
@@ -1496,17 +1481,11 @@ pub(super) async fn refresh_function_length(
 /// it updates the terms whose count changed, inserts the new terms, deletes
 /// the terms that are gone, and updates the totals row only when a value in
 /// it changed. Returns the rows written or deleted.
-pub(super) async fn refresh_workspace_statistics(
+pub(super) async fn recount_workspace_statistics(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
 ) -> Result<u64, Error> {
-    refresh_statistics(transaction, &workspace_id.to_string()).await
-}
-
-async fn refresh_statistics(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &str,
-) -> Result<u64, Error> {
+    let workspace_id = workspace_id.to_string();
     if transaction.system() != DatabaseSystem::Postgres {
         return Ok(0);
     }
@@ -1516,9 +1495,12 @@ async fn refresh_statistics(
     // The three term sub-statements touch disjoint rows: one statement must
     // not write one row twice. The terms are not an upsert with a `WHERE`
     // on its update: that locks each term row it matches and logs it, also
-    // when the count did not change. Under the Workspace's lock no other
-    // process inserts a term of this Workspace, so the insert meets no
-    // conflict. The totals row is one row, so its upsert may skip by `WHERE`.
+    // when the count did not change. Under the Workspace's statistics lock
+    // no other recount inserts a term of this Workspace, so the insert meets
+    // no conflict. A process of an earlier release counts inside its index
+    // write under the write lock instead; during a rolling update its count
+    // may meet this one, fail, and leave the watermark stale for the next
+    // pass. The totals row is one row, so its upsert may skip by `WHERE`.
     let (written,): (i64,) = transaction
         .fetch_all_sql(
             "WITH counted AS MATERIALIZED ( \
@@ -1552,7 +1534,7 @@ async fn refresh_statistics(
                  INSERT INTO search_stats AS s ( \
                      workspace_id, total_docs, avgdl, counted_rows, counted_max_indexed_at \
                  ) \
-                 SELECT $1::text, count(*), coalesce(avg(doc_len), 1.0), \
+                 SELECT $1::text, count(*), coalesce(avg(tsv_length), 1.0), \
                      count(*), max(indexed_at_unix_nanos) \
                  FROM search_entities WHERE workspace_id = $1::text \
                  ON CONFLICT (workspace_id) DO UPDATE \

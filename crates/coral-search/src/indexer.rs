@@ -167,11 +167,12 @@ pub(crate) trait EntityIndexer: Send + Sync {
     fn rows<'e>(&self, entry: &'e Self::Entry) -> Result<Self::Rows<'e>, IndexError>;
 
     /// Writes `rows`, the entry's rows, and the entry's state, all or nothing
-    /// within the transaction, and stamps each row with the time it writes
-    /// them. Writing the same entry again leaves the same rows. The caller
-    /// holds the entry's Workspace lock, so the stamp is later than each
-    /// stamp before it while the clock moves forward, and the write's
-    /// statistics count sees every write of that Workspace before it.
+    /// within the transaction, each row in one statement, and stamps each row
+    /// with the time it writes them. Writing the same entry again
+    /// leaves the same rows. The caller holds the entry's Workspace lock, so
+    /// the stamp is later than each stamp a statistics count saw before it
+    /// while the clock moves forward. The write counts no statistics: the
+    /// caller schedules the Workspace's recount once it commits.
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
@@ -179,12 +180,13 @@ pub(crate) trait EntityIndexer: Send + Sync {
         rows: &Self::Rows<'_>,
     ) -> Result<IndexEffect, IndexError>;
 
-    /// Removes the rows and state the removal names.
+    /// Removes the rows and state the removal names. Returns the Workspace
+    /// whose rows it removed, `None` when the index did not know it.
     async fn remove(
         &self,
         transaction: &mut Transaction<'_>,
         removal: &Self::Removal,
-    ) -> Result<(), IndexError>;
+    ) -> Result<Option<WorkspaceId>, IndexError>;
 
     /// Compares the index with `expected`, everything the owners hold now,
     /// and returns what `expected` holds and the index lacks, holds stale, or
@@ -226,7 +228,7 @@ pub(crate) async fn check_statistics(
     let workspaces_checked = watermarks.len();
     let stale = watermarks
         .into_iter()
-        .filter(|workspace| workspace.counted != Some(workspace.current))
+        .filter(is_stale)
         .map(|workspace| workspace.workspace_id)
         .collect();
     Ok(StatisticsCheck {
@@ -244,14 +246,32 @@ pub(crate) async fn lock_workspace(
     Ok(repository::lock_workspace(transaction, workspace_id).await?)
 }
 
-/// On Postgres, takes the Workspace's lock and rewrites its ranking
-/// statistics from its rows. Returns the statistics rows written or deleted.
-pub(crate) async fn refresh_statistics(
+/// Whether a Workspace's rows changed after its last count, or no count with
+/// a watermark wrote its statistics.
+fn is_stale(watermarks: &repository::WorkspaceWatermarks) -> bool {
+    watermarks.counted != Some(watermarks.current)
+}
+
+/// On Postgres, takes the Workspace's statistics lock and, when its rows
+/// changed after the last count, as [`check_statistics`] compares them,
+/// rewrites its ranking statistics from its rows. Takes no write lock, so no
+/// index write waits for it. Returns the statistics rows written or deleted,
+/// `None` when the statistics were current. `SQLite` keeps no statistics, so
+/// it counts nothing.
+pub(crate) async fn recount_statistics(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-) -> Result<u64, IndexError> {
-    repository::lock_workspace(transaction, workspace_id).await?;
-    Ok(repository::refresh_workspace_statistics(transaction, workspace_id).await?)
+) -> Result<Option<u64>, IndexError> {
+    repository::lock_statistics(transaction, workspace_id).await?;
+    let stale = repository::workspace_watermark(transaction, workspace_id)
+        .await?
+        .is_some_and(|watermarks| is_stale(&watermarks));
+    if !stale {
+        return Ok(None);
+    }
+    Ok(Some(
+        repository::recount_workspace_statistics(transaction, workspace_id).await?,
+    ))
 }
 
 fn now_unix_nanos() -> Result<i64, IndexError> {
