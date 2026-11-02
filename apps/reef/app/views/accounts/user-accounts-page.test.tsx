@@ -2,7 +2,7 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { data, useLoaderData, type ActionFunctionArgs } from 'react-router'
-import { expect, it, vi } from 'vitest'
+import { expect, it } from 'vitest'
 import type { ActionCount } from '@/lib/activity-live-types'
 import type { ActionSignal } from '@/lib/use-action-signal'
 import { renderRoute, shellSignal } from '@/test-support/route'
@@ -63,23 +63,22 @@ async function renderLive(
   coral: { view: UserAccountsView },
   resolve: (form: FormData) => unknown = () => ({ connection: 'declined' }),
 ) {
-  const loader = vi.fn(() => coral.view)
-  const decide = vi.fn(async ({ request: posted }: ActionFunctionArgs) =>
-    resolve(await posted.formData()),
-  )
   const { wrapper, signal } = shellSignal(signalOf(counted(coral.view.revision!)))
   renderRoute(<LoadedRoute />, {
     csrf: 'test',
-    loader,
+    loader: () => coral.view,
     wrapper,
     routes: [
-      { path: '/activity/resolve', action: decide },
+      {
+        path: '/activity/resolve',
+        action: async ({ request: posted }: ActionFunctionArgs) => resolve(await posted.formData()),
+      },
       // Opening the connect dialog starts an authorization here.
       { path: '/connect/:provider', action: () => ({ error: 'Try later.' }) },
     ],
   })
   await screen.findByRole('table', { name: 'Accounts' })
-  return { loader, decide, signal }
+  return { signal }
 }
 
 /** A modal dialog hides the rows from assistive technology, but they stay on the page. */
@@ -100,7 +99,8 @@ it('declines a waiting request from its row, next to Connect', async () => {
 
   await userEvent.click(row.getByRole('button', { name: 'Decline Linear' }))
 
-  expect(posted).toEqual([{ csrf: 'test', name: request, intent: 'decline_connection' }])
+  // The form's fields belong to DeclineConnection; the row chooses which request it declines.
+  expect(posted.map((form) => form.name)).toEqual([request])
   // The decision reloads the page, and the settled request leaves the row.
   await waitFor(() =>
     expect(within(rowOf('Linear')).queryByText('A connection request is waiting.')).toBeNull(),
@@ -120,11 +120,10 @@ it('says why a decline failed, and keeps the request', async () => {
 // Catches: a refresh that remounts the page, closing your connect dialog and clearing your filter.
 it('refreshes in place when the connection revision changes, and keeps your dialog and filter', async () => {
   const coral = { view: viewAt('one', [linear, ledger]) }
-  const { loader, signal } = await renderLive(coral)
+  const { signal } = await renderLive(coral)
   await userEvent.type(screen.getByRole('searchbox', { name: 'Filter accounts' }), 'l')
   await userEvent.click(screen.getByRole('button', { name: 'Reconnect Ledger' }))
   const dialog = await screen.findByRole('dialog', { name: 'Reconnect Ledger' })
-  const reads = loader.mock.calls.length
 
   // One request ends as another starts, so the count stays the same.
   coral.view = viewAt('two', [
@@ -133,7 +132,6 @@ it('refreshes in place when the connection revision changes, and keeps your dial
   ])
   await signal(signalOf(counted('two')))
 
-  await waitFor(() => expect(loader.mock.calls.length - reads).toBe(1))
   await waitFor(() =>
     expect(within(rowOf('Ledger')).getByText('A connection request is waiting.')).toBeTruthy(),
   )

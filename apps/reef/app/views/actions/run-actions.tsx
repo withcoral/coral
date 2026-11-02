@@ -1,11 +1,11 @@
 import { useState, type ReactNode } from 'react'
-import { useFetcher, useRevalidator } from 'react-router'
+import { useRevalidator } from 'react-router'
 import { Button, List, Typography } from '@/wax/components'
 import { CodeChip } from '@/wax/components/code-chip'
 import { Deadline } from '@/wax/components/deadline'
 import { useShellCsrf } from '@/lib/use-shell-csrf'
-import type { action as resolve } from '@/routes/activity-resolve'
 import { ConnectButton } from '../accounts/connect-button'
+import { DeclineConnection } from './decline-connection'
 import { ApprovalReview } from './review'
 import { PanelFooter } from '../activity/panel'
 import { DetailHeader } from '../activity/detail-header'
@@ -178,40 +178,6 @@ const settled: Record<Exclude<ConnectionState, 'pending'>, string> = {
   route_changed: 'The account setting changed. Coral does not switch accounts for waiting calls.',
   authorization_changed:
     'The account authorization changed. Coral does not switch accounts for waiting calls.',
-}
-
-/** Declines one exact connection request. Its fetcher is keyed by the request's name, so a
- * view that shows the outcome reads it with `useFetcher({ key: request })`. */
-export function DeclineConnection({
-  request,
-  ariaLabel,
-  size,
-  disabled = false,
-}: {
-  request: string
-  /** Names the request when "Decline" alone does not, as in a list. */
-  ariaLabel?: string
-  size?: '22'
-  disabled?: boolean
-}) {
-  const csrf = useShellCsrf()
-  const decline = useFetcher<typeof resolve>({ key: request })
-  return (
-    <decline.Form method="post" action="/activity/resolve">
-      <input type="hidden" name="csrf" value={csrf} />
-      <input type="hidden" name="name" value={request} />
-      <input type="hidden" name="intent" value="decline_connection" />
-      <Button.TextButton
-        type="submit"
-        variant="secondary"
-        size={size}
-        ariaLabel={ariaLabel}
-        disabled={disabled || decline.state !== 'idle'}
-      >
-        Decline
-      </Button.TextButton>
-    </decline.Form>
-  )
 }
 
 /** A selected connection request leads the panel, as an approval does: its header with the

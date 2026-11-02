@@ -1,5 +1,4 @@
 import { useDeferredValue, useState } from 'react'
-import { useFetcher } from 'react-router'
 import { Button, Table, Typography } from '@/wax/components'
 import type { IconName } from '@/wax/components/icon'
 import { Deadline } from '@/wax/components/deadline'
@@ -14,7 +13,7 @@ import type {
   PersonalAccountState,
   UserAccountRow,
   UserAccountsView,
-  WaitingConnection,
+  ConnectionRequest,
 } from './types'
 import { accountStates } from './account-states'
 import { ConnectButton } from './connect-button'
@@ -22,8 +21,7 @@ import { DisconnectAccount } from './disconnect-account'
 import * as styles from './accounts.css'
 import { filterQuery } from '@/utils/filter-query'
 import { useFollowRequiredActions } from '@/lib/use-action-signal'
-import type { action as resolve } from '@/routes/activity-resolve'
-import { DeclineConnection } from '@/views/actions/run-actions'
+import { DeclineConnection, useDeclineFailure } from '@/views/actions/decline-connection'
 
 const states: Record<
   PersonalAccountState,
@@ -143,19 +141,16 @@ export function UserAccountsPage({
   )
 }
 
-/** A waiting connection request, its deadline, and why a decline of it failed. The row's
- * Decline shares its fetcher, keyed by the request's name. */
-function WaitingRequest({ request }: { request: WaitingConnection }) {
-  const decline = useFetcher<typeof resolve>({ key: request.name })
+/** A waiting connection request, its deadline, and why a decline of it failed. */
+function WaitingRequest({ request }: { request: ConnectionRequest }) {
+  const failure = useDeclineFailure(request.name)
   return (
     <>
       <span className={styles.actions}>
         <Typography.BodySmallStrong>A connection request is waiting.</Typography.BodySmallStrong>
         <Deadline at={request.expiresAt} />
       </span>
-      {decline.state === 'idle' && decline.data && 'error' in decline.data && (
-        <Typography.BodySmall role="alert">{decline.data.error}</Typography.BodySmall>
-      )}
+      {failure && <Typography.BodySmall role="alert">{failure}</Typography.BodySmall>}
     </>
   )
 }

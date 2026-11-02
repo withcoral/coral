@@ -60,7 +60,7 @@ export type ConnectionState =
   | 'route_changed'
   | 'authorization_changed'
 /** Your pending Account Connection Request for one provider. */
-export interface WaitingConnection {
+export interface ConnectionRequest {
   name: string
   expiresAt: string
 }
@@ -78,7 +78,7 @@ export interface UserAccountRow {
   canConnect: boolean
   canDisconnect: boolean
   /** Your pending connection request, if any. */
-  connectionRequest?: WaitingConnection
+  connectionRequest?: ConnectionRequest
   connectPath: string
   /** Account detail: granted permissions, reconnect, and disconnect. */
   detailPath: string
