@@ -6,7 +6,7 @@ import { markupRoute, renderLivePage, renderRoute } from '@/test-support/route'
 import { Activity, duration } from './activity'
 import { ActivityArchivedContext } from './live'
 import { ActionReviewSession } from '../actions/review'
-import { activityPage, approval, approvalRequest, run as waiting, workspace } from './fixtures'
+import { activityPage, approvalRequest, run as waiting, taskRow, workspace } from './fixtures'
 import type { ActivityPage, ActivityRow, ActivityViewProps } from './types'
 
 const startedAt = '2026-09-18T14:02:00.000Z'
@@ -130,18 +130,12 @@ it('marks only the tool call as needing action, never its containing Run', () =>
   )
 })
 
-it('retains the selected review and draft across pending reorder and removal, but conceals access loss', async () => {
+it('retains the selected review and draft across a live refresh, but conceals access loss', async () => {
   const user = userEvent.setup()
   const initial = activityPage({
     rows: [waiting],
     selected: waiting.name,
     selectedRow: waiting,
-    pending: {
-      actions: [{ action: approval, run: waiting }],
-      actionCount: '1',
-      next: '',
-      unavailable: false,
-    },
     detail: {
       kind: 'run',
       run: waiting,
@@ -164,10 +158,9 @@ it('retains the selected review and draft across pending reorder and removal, bu
   const comment = screen.getByRole('textbox', { name: 'Comment (optional)' })
   await user.type(comment, 'Keep this draft')
 
-  await publish({
-    ...initial,
-    pending: { actions: [], actionCount: '0', next: '', unavailable: false },
-  })
+  // A newer record arrives above the waiting Run.
+  await publish({ ...initial, rows: [taskRow('newer', 'A newer goal'), waiting] })
+  expect(document.body).toHaveTextContent('A newer goal')
   expect(document.body).toHaveTextContent('exact-recipient')
   expect(screen.getByRole('textbox', { name: 'Comment (optional)' })).toBe(comment)
   expect(comment).toHaveValue('Keep this draft')
@@ -177,7 +170,6 @@ it('retains the selected review and draft across pending reorder and removal, bu
     detail: null,
     selectedRow: null,
     unavailable: true,
-    pending: { actions: [], actionCount: '0', next: '', unavailable: true },
   })
   expect(document.body).not.toHaveTextContent('exact-recipient')
   expect(screen.queryByRole('button', { name: 'Approve this call' })).not.toBeInTheDocument()

@@ -295,12 +295,6 @@ it('keeps the Workspace Activity destination while updating independent exact de
   try {
     const first = await emission(reader)
     expect(first.page.listPath).toBe(path)
-    expect(first.page.pending).toEqual({
-      actions: [],
-      actionCount: '0',
-      next: '',
-      unavailable: false,
-    })
     expect(first.page.detail).toMatchObject({
       source: 'selected-source-only',
       run: { state: 'running', requiresAction: true },

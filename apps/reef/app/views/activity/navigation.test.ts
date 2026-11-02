@@ -182,12 +182,11 @@ it('carries bounded reader identities and anchored child demand when selecting, 
   }
   expect(target(nav.backHref).has('record')).toBe(false)
 })
-it('writes the reading anchor for selection, not for explicit root navigation or pending-action pages', () => {
+it('writes the reading anchor for selection, not for explicit root navigation', () => {
   const nav = activityNavigation(page, '/activity', '?anchor=old', reading)
   expect(target(nav.recordHref(run)).get('anchor')).toBe(task)
   expect(target(nav.href({ anchor: run })).get('anchor')).toBe(run)
   expect(target(nav.href({ anchor: null })).has('anchor')).toBe(false)
-  expect(target(nav.href({ pendingAfter: 'next' })).get('anchor')).toBe('old')
 })
 it('removes collapsed branch coordinates and never accumulates a child-window history', () => {
   const nav = activityNavigation(

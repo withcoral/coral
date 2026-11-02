@@ -169,6 +169,17 @@ it('names no agent on your own run, and asks a plain question when the run has n
   expect(screen.getByRole('table', { name: 'Pending approvals' })).not.toHaveTextContent('You')
 })
 
+// Catches: a question that keeps the intent's own end mark, as "invoices.?".
+it('asks the run intent as a question, worded like the MCP prompt', () => {
+  renderPage([{ ...agentAction, run: { ...agentAction.run, intent: 'Check my invoices.' } }])
+  expect(screen.getByRole('table', { name: 'Pending approvals' })).toHaveTextContent(
+    'Check my invoices?',
+  )
+  expect(screen.getByRole('table', { name: 'Pending approvals' })).not.toHaveTextContent(
+    'invoices.?',
+  )
+})
+
 it('offers each decision on the row, named for the request it decides', () => {
   renderPage([agentAction])
   for (const decision of ['Approve', 'Decline'])

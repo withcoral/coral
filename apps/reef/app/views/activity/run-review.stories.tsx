@@ -80,12 +80,6 @@ const request: Extract<RequestDetail, { kind: 'approval' }> = {
   decidedAt: null,
   comment: null,
 }
-/** Queue entries for each action of `runs`, in order. */
-function queued(...runs: (typeof run)[]) {
-  return runs.flatMap((item) =>
-    (item.actionPage?.actions ?? []).map((action) => ({ action, run: item })),
-  )
-}
 const accountRun: typeof run = {
   ...run,
   name: `${workspace}/runs/account`,
@@ -144,18 +138,13 @@ const page: ActivityPage = {
   selected: null,
   selectedRow: null,
   listPath: '/workspaces/finance/activity',
-  pending: {
-    actionCount: '3',
-    next: '',
-    unavailable: false,
-    actions: queued(run, accountRun),
-  },
 }
+/** The Runs a story can open by address, each waiting on its actions. */
+const waitingRuns = [run, accountRun]
 function StoryActivity({ page: initial }: { page: ActivityPage }) {
   const [query] = useSearchParams()
   const selected = query.get('record') ?? initial.selected
-  const selectedRun =
-    initial.pending?.actions.find((item) => item.run.name === selected)?.run ?? initial.selectedRow
+  const selectedRun = waitingRuns.find((item) => item.name === selected) ?? initial.selectedRow
   const action =
     selectedRun?.kind === 'run'
       ? selectedRun.actionPage?.actions.find((item) => item.name === query.get('request'))
@@ -279,7 +268,7 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
   )
 }
 const meta = {
-  title: 'Activity/Pending actions',
+  title: 'Activity/Run review',
   component: Activity,
   args: { page },
   beforeEach: freezeStoryClock,
@@ -302,34 +291,6 @@ const meta = {
 } satisfies Meta<typeof Activity>
 export default meta
 type Story = StoryObj<typeof meta>
-export const Combined: Story = {
-  play: async ({ canvasElement, userEvent }) => {
-    const canvas = within(canvasElement)
-    const pending = await canvas.findByRole('heading', { name: 'Needs your action' })
-    const heading = canvas.getByRole('heading', { name: 'Your recent activity' })
-    const live = canvas.getByRole('button', { name: 'Live' })
-    // The page's live toggle sits right after the list heading, below the actions.
-    await expect(heading.parentElement).toContainElement(live)
-    await expect(heading.nextElementSibling).toContainElement(live)
-    await expect(pending.compareDocumentPosition(live)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
-    // Its visible label is its name; its tooltip describes what pressing it does.
-    await expect(live).toHaveTextContent(/^Live$/)
-    await expect(live).toHaveAttribute('aria-pressed', 'false')
-    await expect(live).toHaveAccessibleDescription('Follow the newest task or run.')
-    // Off, the target icon is open; the label stays beside it.
-    await expect(live.querySelector('svg')).toHaveClass('lucide-locate')
-    // Tab reaches it after the actions, and before the table.
-    live.focus()
-    await userEvent.tab({ shift: true })
-    await expect(pending.closest('section')).toContainElement(
-      canvasElement.ownerDocument.activeElement as HTMLElement,
-    )
-    await userEvent.tab()
-    await expect(live).toHaveFocus()
-    await userEvent.tab()
-    await expect(canvas.getByRole('table', { name: 'Activity records' })).toHaveFocus()
-  },
-}
 export const ExactReview: Story = {
   parameters: {
     initialEntry: `/workspaces/finance/activity?record=${run.name}&request=${request.name}`,
@@ -372,7 +333,6 @@ export const SingleAction: Story = {
       ...page,
       selected: run.name,
       selectedRow: singleRun,
-      pending: { actions: queued(singleRun), actionCount: '1', next: '', unavailable: false },
       detail: {
         kind: 'run',
         run: singleRun,
@@ -402,35 +362,6 @@ export const SingleAction: Story = {
         source: 'return await coral.providers.linear.listIssues({ assignee: "me" });',
         linkedFunctions: [],
         terminal: { kind: 'unavailable' },
-      },
-    },
-  },
-}
-export const EmptyPending: Story = {
-  args: {
-    page: { ...page, pending: { actions: [], actionCount: '0', next: '', unavailable: false } },
-  },
-}
-export const ManyPending: Story = {
-  args: {
-    page: {
-      ...page,
-      pending: {
-        actionCount: '200',
-        next: 'next-page',
-        unavailable: false,
-        actions: Array.from({ length: 10 }, (_, index) => ({
-          action: {
-            ...run.actionPage!.actions[0],
-            name: `${workspace}/approvals/reminder-${index}`,
-            deadline: `2030-09-22T09:${String(index + 10).padStart(2, '0')}:00Z`,
-          },
-          run: {
-            ...run,
-            name: `${run.name}-${index}`,
-            intent: `Send invoice reminders ${index + 1}`,
-          },
-        })),
       },
     },
   },
@@ -483,7 +414,6 @@ export const ResolvedSelection: Story = {
       ...page,
       selected: run.name,
       selectedRow: run,
-      pending: { actions: [], actionCount: '0', next: '', unavailable: false },
       detail: {
         kind: 'run',
         run: { ...run, actionPage: { actions: [], total: '0', next: '' } },
@@ -503,29 +433,6 @@ export const ResolvedSelection: Story = {
     },
   },
 }
-/** Parallel calls to one Tool: one Run, three separate decisions. */
-export const ParallelCalls: Story = {
-  args: {
-    page: {
-      ...page,
-      pending: {
-        actionCount: '3',
-        next: '',
-        unavailable: false,
-        actions: ['open', 'progress', 'review'].map((state) => ({
-          action: {
-            ...singleRun.actionPage!.actions[0],
-            name: `${workspace}/approvals/${state}`,
-          },
-          run: {
-            ...singleRun,
-            intent: 'Rerun the three parallel listIssues calls for my Linear issues',
-          },
-        })),
-      },
-    },
-  },
-}
 /**
  * Scrolled review content passes under the sticky review header. The play function
  * scrolls an argument label behind the header so Chromatic records that the header
@@ -537,7 +444,6 @@ const reviewHeaderOverArguments: Story = {
       ...page,
       selected: run.name,
       selectedRow: run,
-      pending: { actions: [], actionCount: '0', next: '', unavailable: false },
       detail: {
         kind: 'run',
         run: { ...run, actionPage: { actions: [], total: '0', next: '' } },

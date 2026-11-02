@@ -55,7 +55,7 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
         'localActions',
       )
       const runner = programRunner(page, target, id, { waitMs: 1000 })
-      for (const decision of ['decline', 'queue', 'cancel']) {
+      for (const decision of ['decline', 'approvals-row', 'cancel']) {
         const waiting = await runner.exec(
           'try { await coral.providers.localActions.read({}); } catch (error) { return error.code; }',
         )
@@ -72,11 +72,11 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
         expect(new URL(required.run_status_url).pathname).toBe(`/${run}`)
         expect(Date.parse(required.deadline_at) - Date.now()).toBeGreaterThan(10 * 60_000)
         await page.goto(required.run_status_url)
-        if (decision === 'queue') {
-          // Decide from the queue row, without opening the review.
-          await page.goto(`/${workspace.name}/activity`)
+        if (decision === 'approvals-row') {
+          // Decide from the Approvals row, without opening the review.
+          await page.goto(`/${workspace.name}/approvals`)
           await page
-            .locator('[aria-label="Pending actions"]')
+            .getByRole('table', { name: 'Pending approvals', exact: true })
             .getByRole('button', { name: /^Decline: / })
             .click()
           await expect

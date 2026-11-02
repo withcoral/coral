@@ -291,13 +291,6 @@ export interface ActivityBranch {
   unavailable: boolean
 }
 export interface ActivityPage {
-  pending?: {
-    /** One entry per pending request, most urgent first. */
-    actions: PendingAction[]
-    actionCount: string
-    next: string
-    unavailable: boolean
-  }
   rows: ActivityRow[]
   branches: Record<string, ActivityBranch>
   expanded: string[]

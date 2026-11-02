@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { markupRoute, renderLivePage, renderRoute } from '@/test-support/route'
 import { ActivityDetail } from './detail'
 import { ActionReviewSession } from '../actions/review'
-import { approvalRequest, pendingPage, run, workspace } from './fixtures'
+import { approvalRequest, personalPage, run, workspace } from './fixtures'
 import { stored } from './discovery/fixtures'
 import { discoveryView } from './discovery/response'
 import { ActivityConnectedContext } from './live'
@@ -47,10 +47,9 @@ it('keeps exact evidence and a receipt after the selected request leaves pending
     requiresAction: false,
   }
   const html = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: run.name,
     selectedRow: selected,
-    pending: { actions: [], actionCount: '0', next: '', unavailable: false },
     detail: {
       kind: 'run',
       run: selected,
@@ -75,7 +74,7 @@ it('keeps exact evidence and a receipt after the selected request leaves pending
 })
 function runDetail(actions: typeof run.actionPage, request: typeof approvalRequest) {
   return markup({
-    ...pendingPage,
+    ...personalPage,
     selected: run.name,
     selectedRow: { ...run, actionPage: actions },
     detail: {
@@ -116,7 +115,7 @@ it('offers what the Run waits on now beside a settled selection, but not beside 
 it('shows purpose and caller once, with nothing but the call to decide on', () => {
   const selected = { ...run, actorLabel: 'You', agent: '' }
   const html = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: run.name,
     selectedRow: selected,
     detail: {
@@ -160,7 +159,7 @@ it.each([true, false])(
       callPath: 'coral.providers.mail.send',
     }
     const html = markup({
-      ...pendingPage,
+      ...personalPage,
       selected: call.name,
       selectedRow: { ...call, kind: 'invocation' },
       detail: {
@@ -219,7 +218,7 @@ it.each([true, false])(
     }
     const container = document.createElement('div')
     container.innerHTML = markup({
-      ...pendingPage,
+      ...personalPage,
       selected: call.name,
       selectedRow: { ...call, kind: 'invocation' },
       detail: {
@@ -492,7 +491,7 @@ it.each([
     const feedback = 'No export tool.\nSearch returned nothing.'
     const container = document.createElement('div')
     container.innerHTML = markup({
-      ...pendingPage,
+      ...personalPage,
       selected: task.name,
       selectedRow: { ...task, kind: 'task' },
       detail: { kind: 'task', task, ...(withFeedback && { feedback }) },
@@ -589,7 +588,7 @@ it.each([
     }
     const container = document.createElement('div')
     container.innerHTML = markup({
-      ...pendingPage,
+      ...personalPage,
       selected: task.name,
       selectedRow: { ...task, kind: 'task' },
       detail: { kind: 'task', task },
@@ -611,7 +610,7 @@ it.each([
 /** A page that selects `task` and shows its detail, as the loader returns it. */
 function taskDetailPage(task: Omit<ActivityRow & { kind: 'task' }, 'kind'>): ActivityPage {
   return {
-    ...pendingPage,
+    ...personalPage,
     selected: task.name,
     selectedRow: { ...task, kind: 'task' },
     detail: { kind: 'task', task },
@@ -881,7 +880,7 @@ it.each<[string, Detail, string, string]>([
   ['an unknown event', event({ ...at, kind: 'unknown' }), 'Unknown run event', 'run event'],
 ])('names %s, with its record kind under the title', (_, detail, title, kind) => {
   const container = document.createElement('div')
-  container.innerHTML = markup({ ...pendingPage, selected: null, selectedRow: null, detail })
+  container.innerHTML = markup({ ...personalPage, selected: null, selectedRow: null, detail })
   const header = container.querySelector('header')!
   expect(within(header).getByRole('heading', { level: 2 }).textContent).toBe(title)
   const subtitles = within(header)
@@ -929,7 +928,7 @@ it.each<[string, RunDetail, string | null]>([
       ],
     }
     const container = document.createElement('div')
-    container.innerHTML = markup({ ...pendingPage, selected: null, selectedRow: null, detail })
+    container.innerHTML = markup({ ...personalPage, selected: null, selectedRow: null, detail })
     const timing = container.querySelector('dl')!
     // The timing list comes straight after the header.
     expect(container.querySelector('header')!.nextElementSibling).toBe(timing.closest('section'))
@@ -990,7 +989,7 @@ const searchPanel = (response: string, current: (index: number) => string | null
     evidence.view.page.hits.forEach((hit, index) => (hit.currentHref = current(index)))
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: null,
     selectedRow: null,
     detail: tool({ tool: 'search' }, evidence),
@@ -1105,7 +1104,7 @@ it.each<[string, string, typeof searchContext | undefined, string, string[]]>([
   const evidence = discovered(context ?? searchContext, response)
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: null,
     selectedRow: null,
     detail: tool({ tool: 'search' }, evidence),
@@ -1271,7 +1270,7 @@ const describePanel = (evidence: InteractionEvidence, overrides: Partial<Interac
   const name = `${workspace}/tasks/one/interactions/describe`
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: name,
     selectedRow: null,
     detail: tool({ tool: 'describe', name, intent: 'Check the inputs', ...overrides }, evidence),
@@ -1423,7 +1422,7 @@ const execPanel = (overrides: Partial<InteractionRow>, evidence: InteractionEvid
   const name = `${workspace}/tasks/one/interactions/exec`
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: name,
     selectedRow: null,
     detail: tool({ tool: 'exec', name, intent: 'Send invoice reminders', ...overrides }, evidence),
@@ -1532,7 +1531,7 @@ const functionPanel = (overrides: Partial<InteractionRow>, evidence: Interaction
   const name = `${workspace}/tasks/one/interactions/${overrides.tool}`
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: name,
     selectedRow: null,
     detail: tool({ name, ...overrides }, evidence),
@@ -1686,7 +1685,7 @@ it.each([
   const name = `${workspace}/tasks/one/interactions/search`
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: name,
     selectedRow: null,
     detail: tool(
@@ -1729,7 +1728,7 @@ it.each<[string, Detail, string | null]>([
   'shows what %s returned in a Final value card, or nothing when it returned nothing',
   (_, detail, value) => {
     const container = document.createElement('div')
-    container.innerHTML = markup({ ...pendingPage, selected: null, selectedRow: null, detail })
+    container.innerHTML = markup({ ...personalPage, selected: null, selectedRow: null, detail })
     const card = container.querySelector('[aria-label="Final value"]')
     // No value shows no card and no sentence; JSON null is a value and has its card.
     if (value === null) expect(card).toBeNull()
@@ -1768,7 +1767,7 @@ it.each<[string, Detail, ActivityRow | null]>([
   ],
 ])('offers no parent navigation from %s', (_, detail, selectedRow) => {
   const container = document.createElement('div')
-  container.innerHTML = markup({ ...pendingPage, selected: null, selectedRow, detail })
+  container.innerHTML = markup({ ...personalPage, selected: null, selectedRow, detail })
   expect(container.textContent).not.toContain('Open task')
   expect(container.textContent).not.toContain('Open parent execution')
 })
@@ -1776,7 +1775,7 @@ it.each<[string, Detail, ActivityRow | null]>([
 it('states a Run end once, in its title, not again in the body', () => {
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: null,
     selectedRow: null,
     detail: event({ ...at, kind: 'run.ended', state: 'timed_out' }),
@@ -1834,7 +1833,7 @@ it.each<[string, RunEvent, boolean, string, string[], string | null]>([
   (_, value, withRow, card, content, level) => {
     const container = document.createElement('div')
     container.innerHTML = markup({
-      ...pendingPage,
+      ...personalPage,
       selected: null,
       selectedRow: withRow ? outputOf(value) : null,
       detail: event(value),
@@ -1874,7 +1873,7 @@ it.each<[string, RunEvent, boolean, string, string[], string | null]>([
 it('states another run event its time once, in its list', () => {
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: null,
     selectedRow: null,
     detail: event({ ...at, kind: 'run.started' }),
@@ -1895,7 +1894,7 @@ it('keeps the whole log message and emitted value in the body', () => {
     }),
     event({ ...at, kind: 'program.emitted', value: '{"intent":"misleading"}' }),
   ]) {
-    container.innerHTML = markup({ ...pendingPage, selected: null, selectedRow: null, detail })
+    container.innerHTML = markup({ ...personalPage, selected: null, selectedRow: null, detail })
     expect(container.textContent).toContain(
       detail.event.kind === 'program.logged' ? 'Next page' : '"misleading"',
     )
@@ -1906,7 +1905,7 @@ it('keeps no record path for another run event, but its header badge', () => {
   const name = `${run.name}/events/7`
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: name,
     selectedRow: null,
     detail: {
@@ -1950,7 +1949,7 @@ it('lists what the Run waits on as cards, each opening its exact review', () => 
     <ActionReviewSession>
       <ActivityDetail
         page={{
-          ...pendingPage,
+          ...personalPage,
           selected: waiting.name,
           selectedRow: waiting,
           detail: {
@@ -2020,7 +2019,7 @@ it('says how many actions loaded when a page of them failed, and offers to try a
     <ActionReviewSession>
       <ActivityDetail
         page={{
-          ...pendingPage,
+          ...personalPage,
           selected: waiting.name,
           selectedRow: waiting,
           detail: {
@@ -2066,7 +2065,7 @@ function showActions(
     <ActionReviewSession>
       <ActivityDetail
         page={{
-          ...pendingPage,
+          ...personalPage,
           selected: waiting.name,
           selectedRow: waiting,
           detail: {
@@ -2267,7 +2266,7 @@ describe('an account connection the Run waits on', () => {
         <ActionReviewSession>
           <ActivityDetail
             page={{
-              ...pendingPage,
+              ...personalPage,
               selected: selected.name,
               selectedRow: selected,
               detail: {
@@ -2329,7 +2328,7 @@ describe('an account connection the Run waits on', () => {
       const headers = document.querySelectorAll('header')
       expect(headers).toHaveLength(1)
       const header = headers[0]
-      // A settled request has left the pending list that names its provider.
+      // A settled request has left the Run's pending actions, which name its provider.
       expect(within(header).getByRole('heading', { level: 3 }).textContent).toBe(
         state === 'pending' ? 'Connect your Linear account' : 'Connect your account',
       )
@@ -2366,7 +2365,7 @@ describe('an account connection the Run waits on', () => {
       <ActionReviewSession>
         <ActivityDetail
           page={{
-            ...pendingPage,
+            ...personalPage,
             selected: waiting.name,
             selectedRow: waiting,
             detail: {
@@ -2430,7 +2429,7 @@ describe('an account connection the Run waits on', () => {
       <ActionReviewSession>
         <ActivityDetail
           page={{
-            ...pendingPage,
+            ...personalPage,
             selected: call.name,
             selectedRow: { ...call, kind: 'invocation' },
             detail: {
@@ -2508,7 +2507,7 @@ describe('an account connection the Run waits on', () => {
       <ActionReviewSession>
         <ActivityDetail
           page={{
-            ...pendingPage,
+            ...personalPage,
             selected: call.name,
             selectedRow: { ...call, kind: 'invocation' },
             detail: {
@@ -2557,7 +2556,7 @@ describe('an account connection the Run waits on', () => {
 /** One record's panel, as static markup in a container. */
 const show = (detail: Detail, selected: string | null = null) => {
   const container = document.createElement('div')
-  container.innerHTML = markup({ ...pendingPage, selected, selectedRow: null, detail })
+  container.innerHTML = markup({ ...personalPage, selected, selectedRow: null, detail })
   return container
 }
 // Catches: an approval review that adds its Run's state, failure or final value under its own
@@ -2644,7 +2643,7 @@ it.each(
 it('says the run is canceling until the live read shows it ended', async () => {
   const running = { ...run, requiresAction: false, actionPage: undefined }
   const pageOf = (current: typeof running, terminal: RunDetail['terminal']): ActivityPage => ({
-    ...pendingPage,
+    ...personalPage,
     selected: current.name,
     selectedRow: current,
     detail: {
@@ -2691,7 +2690,7 @@ it('keeps the pinned Decline and Approve inside the one named review region', ()
     <ActionReviewSession>
       <ActivityDetail
         page={{
-          ...pendingPage,
+          ...personalPage,
           selected: run.name,
           selectedRow: pending,
           detail: { ...runPanel(pending), request: approvalRequest },
@@ -2974,7 +2973,7 @@ describe('each record states only what helps, once', () => {
           <ActionReviewSession>
             <ActivityDetail
               page={{
-                ...pendingPage,
+                ...personalPage,
                 selected: null,
                 selectedRow: null,
                 detail: runPanel({

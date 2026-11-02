@@ -25,7 +25,6 @@ import { ExecutionSourceSplit } from '../activity/execution-source-split'
 import { revealHref } from '../activity/navigation'
 import { Panel } from '../activity/panel'
 import * as panelStyles from '../activity/panel.css'
-import { approvalQuestion, pendingQuestion } from '../activity/pending'
 import { dayLabel, UtcTime } from '../activity/instant'
 import { utcDay } from '@/lib/activity-list'
 import type {
@@ -44,6 +43,13 @@ import type { ProviderMark } from './types'
 const RETRY_MS = 10_000
 /** The provider that owns a call, and the tool under it, if it is still in the workspace. */
 type ToolOwner = ReturnType<typeof toolOwner<ProviderMark>>
+
+/** What an approval request of `run` asks: the Run's intent as a question, worded like the MCP
+ * prompt for the same request. */
+function approvalQuestion(run: Pick<PendingAction['run'], 'intent'>) {
+  const intent = run.intent?.replace(/[.!?]+$/, '')
+  return intent ? `${intent}?` : 'Approve this tool call?'
+}
 
 /** One value, so the page without history keeps one identity across renders. */
 const NO_HISTORY: SettledPage = { approvals: [], next: '' }
@@ -437,7 +443,7 @@ function ApprovalRow({
   open: boolean
 }) {
   const { action, run } = pending
-  const question = pendingQuestion(pending)
+  const question = approvalQuestion(run)
   const href = reviewHref(action.name)
   return (
     <Table.Row to={href} selected={open} preventScrollReset>

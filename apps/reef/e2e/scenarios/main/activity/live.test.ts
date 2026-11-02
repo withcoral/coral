@@ -412,7 +412,7 @@ test('Current Run and tool actions settle live while exact review stays selected
           parent: provider,
           policies: [{ tool, accessState: ToolAccessState.DISABLED }],
         })
-        // The action leaves the queue as soon as the policy commits.
+        // The tool stops waiting on you as soon as the policy commits.
         await expect
           .poll(() => page.getByText('needs action', { exact: true }).count(), { timeout: 10_000 })
           .toBe(0)
@@ -488,16 +488,25 @@ test('Current Run and tool actions settle live while exact review stays selected
           expect(
             await page.getByRole('button', { name: 'Approve this call', exact: true }).count(),
           ).toBe(0)
-          await page.getByRole('button', { name: 'Close details', exact: true }).click()
-          await page.waitForURL((url) => !url.searchParams.has('record'))
-          await page.getByRole('link', { name: 'Review', exact: true }).first().click()
+          // The Run's own action list opens the review of a call that waits on you.
+          await page
+            .getByRole('navigation', { name: 'Actions in this run', exact: true })
+            .getByRole('link', { name: /^Review / })
+            .first()
+            .click()
           await page.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()
           await page.waitForURL((url) =>
             Boolean(url.searchParams.get('record')?.includes('/invocations/')),
           )
         } else {
-          await page.goto(activityUrl)
-          await page.getByRole('link', { name: 'Review', exact: true }).first().click()
+          // An Owner finds the Agent's request on the Approvals page, then opens it in activity.
+          await page.goto(`/workspaces/${id}/approvals`)
+          await page
+            .getByRole('table', { name: 'Pending approvals', exact: true })
+            .getByRole('link', { name: /^Review: / })
+            .first()
+            .click()
+          await page.getByRole('link', { name: 'Open in activity', exact: true }).click()
         }
         await page.getByRole('dialog', { name: 'Review action', exact: true }).waitFor()
         const history = page.getByRole('table', {
@@ -599,7 +608,7 @@ test('Current Run and tool actions settle live while exact review stays selected
           )
           .toBe(0n)
         // The live page settles: nothing waits on you, and no review offers a decision.
-        await expect.poll(() => page.locator('[aria-label="Pending actions"]').count()).toBe(0)
+        await approvalsLink(0n).waitFor()
         await expect
           .poll(() => page.getByRole('button', { name: 'Approve this call', exact: true }).count())
           .toBe(0)
@@ -633,11 +642,9 @@ test('Current Run and tool actions settle live while exact review stays selected
           await expect.poll(() => commentFact.count()).toBe(comments)
           expect(await dialog.getByText('Reviewed once', { exact: true }).count()).toBe(comments)
         }
-        await expect.poll(() => page.locator('[aria-label="Pending actions"]').count()).toBe(0)
         expect(
           await page.getByRole('table', { name: 'Activity records', includeHidden: true }).count(),
         ).toBe(1)
-        expect(await page.locator('[aria-label="Pending actions"]').count()).toBe(0)
         expect(
           await page.getByRole('button', { name: 'Approve this call', exact: true }).count(),
         ).toBe(0)

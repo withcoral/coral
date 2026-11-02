@@ -46,7 +46,6 @@ const listKeys = new Set<string>([
   'anchor',
   'before',
   'after',
-  'pendingAfter',
   'root',
   'rootMode',
 ])
@@ -177,11 +176,8 @@ export function activityNavigation(
   const href = (changes: Record<string, string | string[] | null>, path = page.listPath) => {
     const next = new URLSearchParams(context)
     // Selection and expansion keep the reading position, so a reload opens there.
-    // Explicit root navigation names its own anchor; pending-action pages keep the URL's.
-    if (
-      !['before', 'after', 'anchor', 'pendingAfter'].some((key) => key in changes) &&
-      path === page.listPath
-    ) {
+    // Explicit root navigation names its own anchor.
+    if (!['before', 'after', 'anchor'].some((key) => key in changes) && path === page.listPath) {
       if (reading.anchor) next.set('anchor', reading.anchor)
       else next.delete('anchor')
     }

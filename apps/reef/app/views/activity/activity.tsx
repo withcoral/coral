@@ -58,7 +58,6 @@ import {
   restoreFirst,
   useActivityArchived,
 } from './live'
-import { PendingActions } from './pending'
 import { useCommentGuard, useDecisionOutcome, useUnsentComment } from '../actions/review'
 import { ContextImpact } from './context-impact'
 import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-types'
@@ -1245,7 +1244,6 @@ export function Activity({
                   </Typography.BodySmall>
                 )}
               </div>
-              <PendingActions page={page} />
               <div
                 className={styles.list}
                 ref={listRef}

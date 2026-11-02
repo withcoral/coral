@@ -1048,8 +1048,8 @@ function noteEnd(seen: LoadEvidence, task: string, value: TaskRead) {
  *   `oldestRunAction` times it, by the tool that waits on it, so the tool
  *   that started waiting first wins, not the request made first: Coral states no
  *   request time. The candidates are the Runs that run and wait on you that the list,
- *   a loaded window or your queue of required actions shows. Your queue lists a shared
- *   connection once, under one Run, so while it holds a connection, every Task whose
+ *   a loaded window or your pending requests show. Those list a shared connection
+ *   once, under one Run, so while they hold a connection, every Task whose
  *   row says a Run of it runs is read in full for the other Runs that wait. That read
  *   also finds its newest Run that runs, so no window is read twice. An archived
  *   workspace takes no action, so it reads none.
@@ -1108,12 +1108,12 @@ async function liveLatestWork(
       (await api.workspaces.getWorkspace({ name: scope.workspace }, { signal })).state !==
         WorkspaceState.ARCHIVED)
   if (actionable) {
-    const queue = tasks.length ? await requiredActions(page, query, api, scope, signal) : []
+    const waiting = tasks.length ? await pendingActions(api, scope.workspace, signal) : []
     const eligible = new Set(tasks.map((task) => task.name))
-    for (const { run } of queue)
+    for (const { run } of waiting)
       if (unfinishedRun(page, run) && (eligible.has(run.task) || asking.has(run.name)))
         asking.set(run.name, run.task)
-    if (queue.some(({ action }) => action.kind === 'account_connection'))
+    if (waiting.some(({ action }) => action.kind === 'account_connection'))
       for (const task of tasks) await readRuns(task.name, { waiting: true })
     const timed = await Promise.all(
       [...asking.keys()].map((run) => runActions(run, undefined, api, scope, signal)),
@@ -1282,29 +1282,6 @@ async function liveLatestWork(
     noteEnd(seen, name, value)
     return value
   }
-}
-
-/**
- * Every request in your queue of required actions in the workspace, with a Run that
- * waits on it. It takes the page the pending actions already read when that holds them
- * all, and reads the rest a page at a time otherwise.
- */
-async function requiredActions(
-  page: ActivityPage,
-  query: URLSearchParams,
-  api: ActivityApi,
-  scope: ActivityScope,
-  signal: AbortSignal,
-): Promise<PendingAction[]> {
-  const shown = page.pending
-  if (
-    shown &&
-    !shown.unavailable &&
-    !query.get('pendingAfter') &&
-    shown.actions.length >= Number(shown.actionCount)
-  )
-    return shown.actions
-  return pendingActions(api, scope.workspace, signal)
 }
 
 /** Every pending request in `workspace` that waits on the caller, most urgent first, each
@@ -1709,34 +1686,6 @@ export async function loadActivity(
     if (run) automaticAnchors.set(run, row.name)
     for (const name of [task, run])
       if (name && !page.expanded.includes(name)) page.expanded.push(name)
-  }
-  if (!scope.agent) {
-    try {
-      const value = await api.activity.browseRequiredActions(
-        {
-          workspace: scope.workspace,
-          after: query.get('pendingAfter') ?? '',
-          pageSize: 10,
-        },
-        { signal },
-      )
-      page.pending = {
-        actions: value.actions.flatMap(({ action, run }) =>
-          action && run
-            ? actionSummaryView(action).map((summary) => ({
-                action: summary,
-                run: { ...runView(run), kind: 'run' as const },
-              }))
-            : [],
-        ),
-        actionCount: value.actionCount.toString(),
-        next: value.nextAfter,
-        unavailable: false,
-      }
-    } catch (error) {
-      if (!unavailable(error)) throw error
-      page.pending = { actions: [], actionCount: '0', next: '', unavailable: true }
-    }
   }
   try {
     const value = await api.activity.browseActivityRoots(

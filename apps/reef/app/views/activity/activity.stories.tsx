@@ -794,7 +794,6 @@ export const LargeHistory: Story = {
           selected: selectedRow ? selected : null,
           selectedRow,
           detail: selectedRow?.kind === 'task' ? { kind: 'task', task: selectedRow } : null,
-          pending: undefined,
         }}
       />
     )

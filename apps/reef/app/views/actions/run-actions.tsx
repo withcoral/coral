@@ -201,7 +201,7 @@ function ConnectionAction({
   const pending = request.state === 'pending'
   const header = (
     <DetailHeader
-      // A settled request has left the pending list, which names its provider.
+      // A settled request has left the Run's pending actions, which name its provider.
       title={providerLabel ? `Connect your ${providerLabel} account` : 'Connect your account'}
       status={request.state}
       kind="account connection request"

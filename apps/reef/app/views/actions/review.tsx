@@ -390,12 +390,12 @@ const plateIcons: Record<IconPlateTone, IconName> = {
   gray: 'Shield',
 }
 
-/** Approves or declines one exact request from the queue without opening its review.
+/** Approves or declines one exact request from its row without opening its review.
  * After a decision the row keeps its controls, disabled, until the live read removes it. */
 export function QuickDecision({ name, label }: { name: string; label: string }) {
   const csrf = useShellCsrf()
   const connected = useActivityConnected()
-  const fetcher = useFetcher<typeof action>({ key: `queue:${name}` })
+  const fetcher = useFetcher<typeof action>({ key: `quick-decision:${name}` })
   const pending = fetcher.state !== 'idle'
   const submitting = pending ? fetcher.formData?.get('intent') : undefined
   const winning =

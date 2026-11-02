@@ -3,15 +3,22 @@ import { expect, test } from 'vitest'
 import { createActors, mcpToken, withOwnerSession } from '../../../support/actors.ts'
 import { joinAsOwner, managementClients } from '../../../support/management.ts'
 import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
-import { addProviderFromFile, createWorkspace, programRunner } from '../../../support/providers.ts'
+import {
+  addProviderFromFile,
+  breadcrumb,
+  createWorkspace,
+  observeRun,
+  programRunner,
+} from '../../../support/providers.ts'
 import { ToolAccessState } from '../../../generated/coral/management/v1/policy_pb.ts'
 
 const CALL = 'return await coral.providers.approvalsFixture.read();'
 const CALL_PATH = 'coral.providers.approvalsFixture.read'
 
-// The real change signal, through Coral's watch and Reef's stream, reaches an open page. Lower
-// tests cover the revision and the refresh on either side of that connection.
-test('An open Approvals page shows a new request and moves a decided one to history without a reload', async (context) => {
+// The real change signal, through Coral's watch and Reef's stream, reaches an open page and the
+// sidebar on any other. Lower tests cover the revision and the refresh on either side of that
+// connection.
+test('A request reaches the sidebar on any page, and a decision on the Approvals page continues the run and moves it to history', async (context) => {
   let calls = 0
   const upstream = await listen(
     context,
@@ -22,7 +29,8 @@ test('An open Approvals page shows a new request and moves a decided one to hist
   )
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
-    const workspace = await createWorkspace(actor.accessToken, `Approvals ${crypto.randomUUID()}`)
+    const workspaceName = `Approvals ${crypto.randomUUID()}`
+    const workspace = await createWorkspace(actor.accessToken, workspaceName)
     const provider = (
       await addProviderFromFile(
         page,
@@ -54,6 +62,10 @@ test('An open Approvals page shows a new request and moves a decided one to hist
       .getByRole('table', { name: 'Approval history', exact: true })
       .getByRole('row')
       .filter({ has: page.getByRole('link') })
+    /** This Workspace's destinations in the sidebar. */
+    const destinations = page
+      .getByRole('navigation', { name: 'Coral', exact: true })
+      .getByRole('group', { name: workspaceName, exact: true })
     /** A reload clears this mark, so the page proves that it stayed mounted. */
     const stillLoaded = () =>
       page.evaluate(() => (window as { approvalsMark?: boolean }).approvalsMark)
@@ -96,20 +108,32 @@ test('An open Approvals page shows a new request and moves a decided one to hist
       expect(await stillLoaded()).toBe(true)
     })
 
-    await step('A decision on the row removes it, and the run continues', async () => {
-      const before = calls
-      const settled = await history.count()
-      await runner.exec(CALL)
-      await rows.first().waitFor()
-      await rows
-        .first()
-        .getByRole('button', { name: /^Approve: / })
-        .click()
-      await page.getByText('Nothing to approve.', { exact: true }).waitFor()
-      await expect.poll(() => calls).toBe(before + 1)
-      await expect.poll(() => history.count()).toBe(settled + 1)
-      expect(await stillLoaded()).toBe(true)
-    })
+    await step(
+      'A request counts in the sidebar on Activity, and its row decision continues the run',
+      async () => {
+        const before = calls
+        const settled = await history.count()
+        await destinations.getByRole('link', { name: 'Activity', exact: true }).click()
+        await breadcrumb(page, 'Activity').waitFor()
+        const accepted = await runner.exec(CALL)
+        // The count reaches the page you are on, and leads to the request.
+        await destinations
+          .getByRole('link', { name: 'Approvals. 1 pending approval', exact: true })
+          .click()
+        await rows.first().waitFor()
+        await rows
+          .first()
+          .getByRole('button', { name: /^Approve: / })
+          .click()
+        await page.getByText('Nothing to approve.', { exact: true }).waitFor()
+        await destinations.getByRole('link', { name: 'Approvals', exact: true }).waitFor()
+        await expect.poll(() => calls).toBe(before + 1)
+        // The Run ends as it does after an approval: it succeeds.
+        await observeRun(runner, accepted)
+        await expect.poll(() => history.count()).toBe(settled + 1)
+        expect(await stillLoaded()).toBe(true)
+      },
+    )
 
     await step('An owner reviews an Agent request and moves to the next request', async () => {
       const before = calls
