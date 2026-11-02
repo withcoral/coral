@@ -2,7 +2,14 @@ import { chartBgColor, chartColor, computeNiceTicks, scaleLinear } from '../util
 import * as styles from './line-chart.css'
 
 export interface LineChartProps {
+  /** Names the chart as an image. Say what it shows, so the reader needs no picture. */
+  ariaLabel?: string
+  /** Marks each point with a dot. Turn it off for dense series. */
+  dots?: boolean
+  /** The text of a y-axis tick. */
+  formatTick?: (value: number) => string
   height?: number
+  /** One per point. An empty label leaves that point's tick blank. */
   labels?: string[]
   series: LineChartSeries[]
   width?: number
@@ -10,16 +17,39 @@ export interface LineChartProps {
 
 export interface LineChartSeries {
   color?: string
-  data: number[]
+  /** A null point has no value: the line breaks there. */
+  data: (number | null)[]
   label: string
 }
 
 const PADDING = { bottom: 28, left: 44, right: 8, top: 8 }
 
-export function LineChart({ height = 200, labels, series, width = 400 }: LineChartProps) {
+/** The runs of consecutive points that have a value, as [index, value] pairs. */
+function segments(data: (number | null)[]) {
+  const runs: [number, number][][] = []
+  let run: [number, number][] = []
+  data.forEach((value, index) => {
+    if (value === null) {
+      if (run.length) runs.push(run)
+      run = []
+    } else run.push([index, value])
+  })
+  if (run.length) runs.push(run)
+  return runs
+}
+
+export function LineChart({
+  ariaLabel,
+  dots = true,
+  formatTick = String,
+  height = 200,
+  labels,
+  series,
+  width = 400,
+}: LineChartProps) {
   if (series.length === 0) return null
 
-  const allValues = series.flatMap((s) => s.data)
+  const allValues = series.flatMap((s) => s.data).filter((v) => v !== null)
   if (allValues.length === 0) return null
 
   const minValue = Math.min(...allValues)
@@ -41,6 +71,8 @@ export function LineChart({ height = 200, labels, series, width = 400 }: LineCha
       height={height}
       viewBox={`0 0 ${width} ${height}`}
       width={width}
+      role={ariaLabel ? 'img' : undefined}
+      aria-label={ariaLabel}
     >
       {/* Gridlines */}
       {ticks.map((tick) => {
@@ -61,7 +93,7 @@ export function LineChart({ height = 200, labels, series, width = 400 }: LineCha
               x={PADDING.left - 6}
               y={y}
             >
-              {tick}
+              {formatTick(tick)}
             </text>
           </g>
         )
@@ -69,6 +101,7 @@ export function LineChart({ height = 200, labels, series, width = 400 }: LineCha
 
       {/* X-axis labels */}
       {labels?.map((label, i) => {
+        if (!label) return null
         const x = PADDING.left + xScale(i)
         return (
           <text
@@ -86,37 +119,44 @@ export function LineChart({ height = 200, labels, series, width = 400 }: LineCha
 
       {/* Series */}
       {series.map((s, si) => {
-        const points = s.data.map(
-          (v, i) => `${PADDING.left + xScale(i)},${PADDING.top + yScale(v)}`,
-        )
         const color = chartColor(s.color)
         const bgColor = chartBgColor(s.color)
-
-        // Area fill
-        const firstX = PADDING.left + xScale(0)
-        const lastX = PADDING.left + xScale(s.data.length - 1)
         const baseline = PADDING.top + yScale(tickMin)
-        const areaPoints = [...points, `${lastX},${baseline}`, `${firstX},${baseline}`]
 
         return (
           <g key={si}>
-            <polygon fill={bgColor} opacity={0.3} points={areaPoints.join(' ')} />
-            <polyline
-              fill="none"
-              points={points.join(' ')}
-              stroke={color}
-              strokeLinejoin="round"
-              strokeWidth={2}
-            />
-            {s.data.map((v, i) => (
-              <circle
-                cx={PADDING.left + xScale(i)}
-                cy={PADDING.top + yScale(v)}
-                fill={color}
-                key={i}
-                r={3}
-              />
-            ))}
+            {segments(s.data).map((run) => {
+              const points = run.map(
+                ([i, v]) => `${PADDING.left + xScale(i)},${PADDING.top + yScale(v)}`,
+              )
+              // Area fill
+              const firstX = PADDING.left + xScale(run[0][0])
+              const lastX = PADDING.left + xScale(run[run.length - 1][0])
+              const areaPoints = [...points, `${lastX},${baseline}`, `${firstX},${baseline}`]
+              return (
+                <g key={run[0][0]}>
+                  <polygon fill={bgColor} opacity={0.3} points={areaPoints.join(' ')} />
+                  <polyline
+                    fill="none"
+                    points={points.join(' ')}
+                    stroke={color}
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                  />
+                  {/* A lone point has no line, so it always shows as a dot. */}
+                  {(dots || run.length === 1) &&
+                    run.map(([i, v]) => (
+                      <circle
+                        cx={PADDING.left + xScale(i)}
+                        cy={PADDING.top + yScale(v)}
+                        fill={color}
+                        key={i}
+                        r={dots ? 3 : 2}
+                      />
+                    ))}
+                </g>
+              )
+            })}
           </g>
         )
       })}

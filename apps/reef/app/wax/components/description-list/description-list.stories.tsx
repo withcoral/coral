@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { CodeBlock } from '@/wax/components/code-block'
+import { Picker } from '@/wax/components/picker'
 
 import * as DescriptionList from './index'
 
@@ -25,6 +26,25 @@ export const Untitled: Story = {
   render: () => (
     <DescriptionList.List>
       <DescriptionList.Row label="Workspace">workspaces/finance</DescriptionList.Row>
+    </DescriptionList.List>
+  ),
+}
+export const Compact: Story = {
+  render: () => (
+    <DescriptionList.List title="Settings" heading="h3" density="compact">
+      <DescriptionList.Row label="Size">
+        <Picker
+          ariaLabel="Size: Medium"
+          options={[
+            { value: 'small', label: 'Small' },
+            { value: 'medium', label: 'Medium' },
+          ]}
+          value="medium"
+          onChange={() => {}}
+        />
+      </DescriptionList.Row>
+      <DescriptionList.Row label="Cloud">AWS</DescriptionList.Row>
+      <DescriptionList.Row label="Region">eu-west-1</DescriptionList.Row>
     </DescriptionList.List>
   ),
 }
