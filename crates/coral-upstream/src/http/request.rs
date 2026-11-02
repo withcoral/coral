@@ -426,9 +426,8 @@ fn serialize_parameters(
             }
         }
     }
-    let has_body = arguments.contains_key("body");
     for name in arguments.keys() {
-        if name == "body" && has_body {
+        if name == "body" && declares_body {
             continue;
         }
         if !parameters
@@ -486,7 +485,7 @@ fn undeclared_argument(
     let mut bytes = 0;
     for declared_name in &declared {
         let quoted = format!("`{declared_name}`");
-        bytes += quoted.len() + ", ".len();
+        bytes += quoted.len() + if shown.is_empty() { 0 } else { ", ".len() };
         if bytes > DECLARED_NAMES_BYTES {
             break;
         }
@@ -708,11 +707,6 @@ fn serialize_request_body(
     limits: coral_value::ValueLimits,
 ) -> Result<(Option<Vec<u8>>, Option<String>), Error> {
     let Some(binding) = request_body else {
-        if arguments.contains_key("body") {
-            return Err(Error::InvalidArguments(
-                "Tool does not declare a request body".to_string(),
-            ));
-        }
         return Ok((None, None));
     };
     let Some(body) = arguments.get("body") else {

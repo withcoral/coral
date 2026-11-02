@@ -736,8 +736,8 @@ paths:
     ))
 }
 
-fn undeclared_reason(prepared: &PreparedProviderCatalog) -> String {
-    let arguments = serde_json::json!({"query": "secret-canary"});
+fn rejection_of(prepared: &PreparedProviderCatalog, argument: &str) -> String {
+    let arguments = serde_json::json!({argument: "secret-canary"});
     match try_plan(prepared, &arguments) {
         Err(coral_upstream::Error::InvalidArguments(reason)) => reason,
         Err(error) => panic!("{error}"),
@@ -745,25 +745,50 @@ fn undeclared_reason(prepared: &PreparedProviderCatalog) -> String {
     }
 }
 
+fn undeclared_reason(prepared: &PreparedProviderCatalog) -> String {
+    rejection_of(prepared, "query")
+}
+
 #[test]
 fn an_undeclared_argument_lists_what_the_tool_declares() {
     let names = ["cursor".to_string(), "limit".to_string()];
-    for (prepared, expected) in [
+    for (prepared, argument, expected) in [
         (
             query_tool(&names, false),
+            "query",
             "Tool argument `query` is not declared. It declares: `cursor`, `limit`.",
         ),
         (
             query_tool(&names, true),
+            "query",
             "Tool argument `query` is not declared. It declares: `body`, `cursor`, `limit`.",
         ),
         (
             query_tool(&[], false),
+            "query",
             "Tool argument `query` is not declared. This Tool declares no arguments.",
         ),
+        (
+            query_tool(&names, false),
+            "body",
+            "Tool argument `body` is not declared. It declares: `cursor`, `limit`.",
+        ),
+        (
+            query_tool(&[], false),
+            "body",
+            "Tool argument `body` is not declared. This Tool declares no arguments.",
+        ),
     ] {
-        assert_eq!(undeclared_reason(&prepared), expected);
+        assert_eq!(rejection_of(&prepared, argument), expected);
     }
+}
+
+#[test]
+fn a_parameter_named_body_is_a_declared_argument() {
+    let prepared = query_tool(&["body".to_string()], false);
+    let dispatch = plan(&prepared, &serde_json::json!({"body": "value"}));
+    assert_eq!(dispatch.url().query(), Some("body=value"));
+    assert_eq!(dispatch.body(), None);
 }
 
 #[test]
@@ -823,12 +848,31 @@ fn the_declared_list_is_capped_and_says_how_many_it_left_out() {
 }
 
 #[test]
-fn a_declared_name_past_the_cap_does_not_leave_an_empty_list() {
-    assert_eq!(
-        undeclared_reason(&query_tool(&["n".repeat(600)], false)),
-        "Tool argument `query` is not declared. \
-         Its declared argument names are too long to list."
-    );
+fn the_declared_list_fills_the_cap_exactly_and_leaves_no_empty_list() {
+    let (a, b) = ("a".repeat(253), "b".repeat(253));
+    let (longer_b, n) = ("b".repeat(254), "n".repeat(510));
+    let not_declared = "Tool argument `query` is not declared.";
+    for (names, expected) in [
+        // Each pair renders to 512 bytes, then to 513.
+        (
+            vec![n.clone()],
+            format!("{not_declared} It declares: `{n}`."),
+        ),
+        (
+            vec![format!("{n}n")],
+            format!("{not_declared} Its declared argument names are too long to list."),
+        ),
+        (
+            vec![a.clone(), b.clone()],
+            format!("{not_declared} It declares: `{a}`, `{b}`."),
+        ),
+        (
+            vec![a.clone(), longer_b],
+            format!("{not_declared} It declares: `{a}`, and 1 more."),
+        ),
+    ] {
+        assert_eq!(undeclared_reason(&query_tool(&names, false)), expected);
+    }
 }
 
 #[tokio::test]
