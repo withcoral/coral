@@ -457,7 +457,7 @@ or `caller`. It resolves a required User caller Account before creating any requ
 binds the exact Account authorization. It then rechecks all
 authority and configuration, refreshes or resolves credentials, and dispatches. Approval bypasses none of these checks.
 Authority loss or Run termination settles a pending Invocation and closes its exact Approval Request without dispatch or
-replay. Detaching from a concurrent Account Connection Request does not cancel another Invocation's wait or the
+replay. A Run timeout expires that Request instead, because the Run's deadline bounds the Request's deadline. Detaching from a concurrent Account Connection Request does not cancel another Invocation's wait or the
 connection itself. Account-setting changes, explicit Account replacement, and Disconnect stop affected pending work;
 Coral never switches accounts. A Provider update alone does not stop an already-authorized Invocation that retained an
 older Generation and compatible Account, but changed authentication requirements end obsolete connection requests and
@@ -528,8 +528,8 @@ interface, and its link opens the exact Run independently of the activity list's
 User OAuth and normal Run authorization; the URL grants no authority. The view shows the Run status, Events,
 Invocations, and every Approval Request and Account Connection Request that the User can inspect. It groups all current
 human actions for the Run and receives Run, approval, and account-connection changes without a manual refresh.
-Authorized Workspace Owners find Agent approval actions through Reef's queue and notifications. _Avoid_: Per-Invocation
-action URL, bearer URL, MCP session state
+Authorized Workspace Owners find Agent approval actions on the Approvals Page. _Avoid_: Per-Invocation action URL,
+bearer URL, MCP session state
 
 **Action Prompt**: A negotiated MCP elicitation that asks the invoking User about one current Approval Request or
 Account Connection Request of their own Run, while an observation of that Run is in progress. Each observing tool call
@@ -545,13 +545,17 @@ _Avoid_: one prompt per Run, form connection prompt
 **Approval Request**: A durable host-owned request for a human decision on one pending Tool Invocation. Reef is
 the v1 human resolution interface that every Request can use, in local and remote deployments; a deployment without its
 local or hosted Reef interface is not ready. Coral creates a Request whenever an Invocation requires approval. It records the exact logical
-Tool arguments for review on the Run Status Page independently of the agent transport. Its deadline settles the
-Invocation with `approval_expired`; denial settles it with `approval_declined`. The first durable terminal decision
+Tool arguments for review on the Approvals Page and the Run Status Page independently of the agent transport. Its deadline settles the
+Invocation with `approval_expired`; declining settles it with `approval_declined`. The first durable terminal decision
 wins. A later decision returns that result without changing it. If policy becomes `disabled`, Coral settles the
 Invocation with `tool_disabled`; if it becomes `enabled`, Coral closes the Request and continues after its other
 checks. A later Invocation can create a new request. The invoking User can also decide it through an Action Prompt in
 their MCP client; Reef remains available for every Request. An active browser is not required, and existing Requests
 survive a temporary Reef outage. _Avoid_: per-Invocation approval URL, Program pause payload
+
+**Approvals Page**: The Workspace page in Reef where a person decides the Approval Requests waiting on them and reads
+those already approved, declined or expired. It shows only Requests of Runs that person can inspect, for as long as the
+Run is retained. _Avoid_: approval queue, action queue, inbox
 
 **Invocation Approval**: A human decision that satisfies an `approval_required` Tool Access State for one exact
 Tool Invocation. It is bound to the Workspace, Provider and account-setting version, Invoking Principal, private

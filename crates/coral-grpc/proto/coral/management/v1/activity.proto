@@ -28,6 +28,10 @@ service ActivityService {
   rpc BrowseRequiredActions(BrowseRequiredActionsRequest) returns (BrowseRequiredActionsResponse);
   // Counts pending requests. A connection request shared by several Runs counts once.
   rpc CountRequiredActions(CountRequiredActionsRequest) returns (CountRequiredActionsResponse);
+  // Lists one Workspace's approved, declined and expired approval requests, newest
+  // first: the caller's own, plus Agent requests in Workspaces the caller owns. Rows
+  // never include arguments or comments; read those with InspectApproval.
+  rpc BrowseSettledApprovals(BrowseSettledApprovalsRequest) returns (BrowseSettledApprovalsResponse);
   // Sums the caller's recent work in one Workspace: call outcomes, stopped and
   // busiest Tools, approval decisions, and context impact. Counts the caller's
   // own work and, in a Workspace the caller owns, its Agents' work, like the
@@ -779,6 +783,54 @@ message ActivityRequiredAction {
   // A Run that waits on the request. For a shared connection request, the Run whose
   // deadline comes first. Its action_page is absent.
   ActivityRun run = 2;
+}
+// How a settled approval request ended.
+enum ActivityApprovalOutcome {
+  // Unknown to this client.
+  ACTIVITY_APPROVAL_OUTCOME_UNSPECIFIED = 0;
+  // A person approved it.
+  ACTIVITY_APPROVAL_OUTCOME_APPROVED = 1;
+  // A person declined it.
+  ACTIVITY_APPROVAL_OUTCOME_DECLINED = 2;
+  // Its deadline passed with nobody deciding.
+  ACTIVITY_APPROVAL_OUTCOME_EXPIRED = 3;
+}
+// Selects a page of one Workspace's settled approval requests.
+message BrowseSettledApprovalsRequest {
+  // Required workspaces/{workspace}.
+  string workspace = 1;
+  // next_after from the previous page. Empty starts at the newest request.
+  string after = 2;
+  // 1 to 100; zero means 50.
+  uint32 page_size = 3;
+}
+// A page of settled approval requests, newest first. Requests Coral closed are left out.
+message BrowseSettledApprovalsResponse {
+  // This page.
+  repeated ActivitySettledApproval approvals = 1;
+  // Pass as after to get the next page; empty on the last page. A newer decision
+  // does not move a page already read.
+  string next_after = 2;
+}
+// One settled approval request. Never includes arguments, comments or where the
+// decision came from.
+message ActivitySettledApproval {
+  // workspaces/{workspace}/approvals/{approval}.
+  string name = 1;
+  // How it ended. New values may be added; treat unknown values as unspecified.
+  ActivityApprovalOutcome outcome = 2;
+  // When it settled. For an expired request, its deadline.
+  int64 settled_at_unix_nanos = 3;
+  // Principal whose decision won; empty for an expired request.
+  string approver = 4;
+  // Label for who decided: "You", their name, or "Unavailable user". Empty if nobody decided.
+  string approver_label = 5;
+  // Path the Program called.
+  string call_path = 6;
+  // The Provider's current display name, or "Unavailable provider" if it was removed.
+  string provider_label = 7;
+  // The Run that asked. Its action_page is absent.
+  ActivityRun run = 8;
 }
 // Approves or declines one request, after the caller has reviewed its arguments.
 message DecideApprovalRequest {

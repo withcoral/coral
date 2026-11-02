@@ -10,6 +10,7 @@ import {
   workspace,
 } from '../activity/fixtures'
 import { freezeStoryClock, minutesAfterStoryNow } from '../activity/story-clock'
+import type { SettledApproval } from '../activity/types'
 import { ApprovalsPage } from './approvals-page'
 
 const path = `/${workspace}`
@@ -74,6 +75,36 @@ export const Pending: Story = {
   },
 }
 
+const settled = (
+  request: string,
+  outcome: SettledApproval['outcome'],
+  minutesAgo: number,
+  approverLabel: string,
+  intent: string,
+  agent = true,
+): SettledApproval => ({
+  name: `${workspace}/approvals/${request}`,
+  outcome,
+  settledAt: minutesAfterStoryNow(-minutesAgo),
+  approverLabel,
+  callPath: MAIL_SEND,
+  providerLabel: 'Mail',
+  run: agent
+    ? { ...run, name: `${workspace}/runs/${request}`, intent }
+    : { ...run, name: `${workspace}/runs/${request}`, agent: '', actorLabel: 'You', intent },
+})
+
+// Each outcome shows an icon and a word. An expired request names nobody, and its time is
+// its deadline.
+const history = {
+  approvals: [
+    settled('approved', 'approved', 3, 'You', 'Send the overdue reminders'),
+    settled('declined', 'declined', 40, 'Ada Lovelace', 'Email every customer'),
+    settled('expired', 'expired', 180, '', 'Archive last year’s threads', false),
+  ],
+  next: 'older',
+}
+
 const reading = {
   detail: {
     ...approvalRequest,
@@ -118,6 +149,14 @@ export const RequestUnavailable: Story = {
 }
 
 export const Empty: Story = { args: { workspacePath: path, approvals: [] } }
+
+// Pending requests first, then what already happened, with more to load.
+export const WithHistory: Story = { args: { ...Pending.args, settled: history } }
+
+// Nothing waits: the page says so above history.
+export const NothingPending: Story = {
+  args: { ...Pending.args, approvals: [], settled: { ...history, next: '' } },
+}
 
 // The shell's stream dropped. The rows stay, marked as unavailable, and take no decision.
 export const Unavailable: Story = {

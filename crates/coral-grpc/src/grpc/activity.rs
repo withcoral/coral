@@ -84,6 +84,69 @@ fn required_action_kind(kind: i32) -> Result<Option<coral_run::RequiredActionKin
     }
 }
 
+/// The Run a request belongs to, with its Task and exec intent when visible.
+fn action_run(context: &coral_task::ActionRun) -> wire::ActivityRun {
+    let mut run = execution::run(&context.run);
+    run.intent = context
+        .intent
+        .as_ref()
+        .map(|intent| intent.as_str().to_owned())
+        .unwrap_or_default();
+    run.task = context
+        .task
+        .as_ref()
+        .map(|task| format!("workspaces/{}/tasks/{}", task.workspace, task.task))
+        .unwrap_or_default();
+    run
+}
+
+/// "You", the approver's name, or the unavailable label; empty when nobody decided.
+fn approver_label(
+    actor: &coral_workspace::AuthenticatedPrincipal,
+    approver: Option<&coral_workspace::Principal>,
+    name: Option<String>,
+) -> String {
+    match approver {
+        Some(approver) if approver == actor.principal() => "You".into(),
+        Some(_) => name.unwrap_or_else(|| execution::UNAVAILABLE_USER.into()),
+        None => String::new(),
+    }
+}
+
+fn settled_approval(
+    actor: &coral_workspace::AuthenticatedPrincipal,
+    settled: coral_task::SettledApproval,
+) -> wire::ActivitySettledApproval {
+    use coral_run::SettledOutcome as O;
+    use wire::ActivityApprovalOutcome as W;
+    let (approver, name) = settled
+        .approver
+        .map(|approver| (Some(approver.principal), approver.name))
+        .unwrap_or_default();
+    wire::ActivitySettledApproval {
+        name: format!(
+            "workspaces/{}/approvals/{}",
+            settled.run.run.workspace, settled.approval
+        ),
+        outcome: match settled.outcome {
+            O::Approved => W::Approved,
+            O::Declined => W::Declined,
+            O::Expired => W::Expired,
+        }
+        .into(),
+        settled_at_unix_nanos: settled.settled_at_unix_nanos,
+        approver_label: approver_label(actor, approver.as_ref(), name),
+        approver: approver
+            .map(|approver| approver.id().to_string())
+            .unwrap_or_default(),
+        call_path: settled.call_path,
+        provider_label: settled
+            .provider_label
+            .unwrap_or_else(|| execution::UNAVAILABLE_PROVIDER.into()),
+        run: Some(action_run(&settled.run)),
+    }
+}
+
 fn scope(scope: &wire::ActivityScope) -> Result<HistoryScope, Status> {
     let workspace = workspace_filter(&scope.workspace)?;
     if scope.agent.is_empty() {
@@ -374,32 +437,56 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             actions: page
                 .actions
                 .iter()
-                .map(|queued| {
-                    let context = &queued.run;
-                    let mut run = execution::run(&context.run);
-                    run.intent = context
-                        .intent
-                        .as_ref()
-                        .map(|intent| intent.as_str().to_owned())
-                        .unwrap_or_default();
-                    run.task = context
-                        .task
-                        .as_ref()
-                        .map(|task| format!("workspaces/{}/tasks/{}", task.workspace, task.task))
-                        .unwrap_or_default();
-                    wire::ActivityRequiredAction {
-                        action: Some(execution::action_summary(
-                            &context.run.workspace,
-                            &queued.action,
-                        )),
-                        run: Some(run),
-                    }
+                .map(|queued| wire::ActivityRequiredAction {
+                    action: Some(execution::action_summary(
+                        &queued.run.run.workspace,
+                        &queued.action,
+                    )),
+                    run: Some(action_run(&queued.run)),
                 })
                 .collect(),
             next_after: page
                 .next
                 .map(|cursor| cursor.to_string())
                 .unwrap_or_default(),
+        }))
+    }
+    async fn browse_settled_approvals(
+        &self,
+        request: Request<wire::BrowseSettledApprovalsRequest>,
+    ) -> Result<Response<wire::BrowseSettledApprovalsResponse>, Status> {
+        let actor = self
+            .principal(&request, None, PrivateAudience::Reef)
+            .await?;
+        let input = request.into_inner();
+        let workspace = workspace_filter(&input.workspace)?
+            .ok_or_else(|| Status::invalid_argument("Workspace is required"))?;
+        let after = if input.after.is_empty() {
+            None
+        } else {
+            Some(coral_run::SettledCursor::parse(&input.after).map_err(execution::run_error)?)
+        };
+        let page = self
+            .tasks
+            .settled_approvals(
+                &self.runs,
+                &actor,
+                &workspace,
+                after.as_ref(),
+                limit(input.page_size)?,
+            )
+            .await
+            .map_err(error)?;
+        Ok(Response::new(wire::BrowseSettledApprovalsResponse {
+            next_after: page
+                .next
+                .map(|cursor| cursor.to_string())
+                .unwrap_or_default(),
+            approvals: page
+                .approvals
+                .into_iter()
+                .map(|settled| settled_approval(&actor, settled))
+                .collect(),
         }))
     }
     async fn decide_approval(
@@ -475,17 +562,8 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             .inspect_approval(&actor, &workspace, &id)
             .await
             .map_err(execution::run_error)?;
-        let approver_label = if let Some(approver) = &value.approver {
-            if approver == actor.principal() {
-                "You".into()
-            } else {
-                value
-                    .approver_name
-                    .unwrap_or_else(|| execution::UNAVAILABLE_USER.into())
-            }
-        } else {
-            String::new()
-        };
+        let approver_label =
+            approver_label(&actor, value.approver.as_ref(), value.approver_name.clone());
         Ok(Response::new(wire::InspectApprovalResponse {
             provider_label: value
                 .provider_label

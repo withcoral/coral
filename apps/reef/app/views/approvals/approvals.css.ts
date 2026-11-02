@@ -40,3 +40,5 @@ export const meta = style({
   columnGap: 4,
 })
 export const logo = style({ display: 'inline-flex', flexShrink: 0, marginInlineEnd: 2 })
+/** The outcome keeps its width beside a long request. */
+export const outcome = style({ flexShrink: 0 })

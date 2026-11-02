@@ -187,6 +187,24 @@ export interface PendingAction {
   action: ActionSummary
   run: Extract<ActivityRow, { kind: 'run' }>
 }
+/** An approval request that a person approved or declined, or whose deadline passed. It never
+ * holds arguments or a comment; the review reads those. */
+export interface SettledApproval {
+  name: string
+  outcome: 'approved' | 'declined' | 'expired'
+  /** When it settled. For an expired request, its deadline. */
+  settledAt: string
+  /** "You", the reviewer's name, or "Unavailable user". Empty when nobody decided. */
+  approverLabel: string
+  callPath: string
+  providerLabel: string
+  run: Extract<ActivityRow, { kind: 'run' }>
+}
+/** One page of settled approvals, newest first. `next` continues it; empty at the end. */
+export interface SettledPage {
+  approvals: SettledApproval[]
+  next: string
+}
 export type ActionSummary = Exclude<RequestReference, { kind: 'unknown' }> & {
   callPath: string
   providerLabel: string

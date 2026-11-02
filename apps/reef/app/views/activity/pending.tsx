@@ -13,6 +13,11 @@ import * as styles from './task-activity.css'
 export function pendingQuestion({ action, run }: PendingAction) {
   if (action.kind === 'account_connection')
     return `Connect your ${action.providerLabel || 'provider'} account to continue.`
+  return approvalQuestion(run)
+}
+
+/** What an approval request of `run` asks: the Run's intent as a question. */
+export function approvalQuestion(run: Pick<PendingAction['run'], 'intent'>) {
   const intent = run.intent?.replace(/[.!?]+$/, '')
   return intent ? `${intent}?` : 'Approve this tool call?'
 }

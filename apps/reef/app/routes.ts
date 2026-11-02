@@ -15,6 +15,7 @@ export default [
     route('activity/observe', 'routes/activity-observe.ts'),
     route('activity/count', 'routes/activity-count.ts'),
     route('activity/resolve', 'routes/activity-resolve.ts'),
+    route('workspaces/:workspace/approvals/history', 'routes/approvals-history.ts'),
     route('provider-setup/oauth/callback', 'routes/provider-setup-oauth-callback.ts'),
     route(
       'workspaces/:workspace/account-authorizations/:authorization/progress',

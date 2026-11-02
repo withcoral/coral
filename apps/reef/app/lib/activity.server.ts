@@ -1,6 +1,7 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { redirect } from 'react-router'
 import {
+  ActivityApprovalOutcome,
   ActivityRequiredActionKind,
   ActivityRunState,
   ActivityInvocationState,
@@ -33,6 +34,8 @@ import type {
   DiscoveryView,
   ActivityPage,
   ActivityRow,
+  SettledApproval,
+  SettledPage,
   ActivityBranch,
   ExecutionRow,
   InvocationRow,
@@ -1326,6 +1329,41 @@ export async function pendingActions(
     after = value.nextAfter
   } while (after)
   return actions
+}
+
+const settledOutcomes = {
+  [ActivityApprovalOutcome.APPROVED]: 'approved',
+  [ActivityApprovalOutcome.DECLINED]: 'declined',
+  [ActivityApprovalOutcome.EXPIRED]: 'expired',
+} as const satisfies Partial<Record<ActivityApprovalOutcome, SettledApproval['outcome']>>
+
+/** One page of `workspace`'s settled approvals that you can inspect, newest first, after
+ * `after` or from the newest. A row whose outcome this build does not know is left out. */
+export async function settledApprovals(
+  api: Pick<ManagementApi, 'activity'>,
+  workspace: string,
+  after: string,
+  signal: AbortSignal,
+): Promise<SettledPage> {
+  const value = await api.activity.browseSettledApprovals({ workspace, after }, { signal })
+  return {
+    approvals: value.approvals.flatMap((row): SettledApproval[] => {
+      const outcome = settledOutcomes[row.outcome as keyof typeof settledOutcomes]
+      if (!outcome || !row.run) return []
+      return [
+        {
+          name: row.name,
+          outcome,
+          settledAt: timestamp(row.settledAtUnixNanos),
+          approverLabel: row.approverLabel,
+          callPath: row.callPath,
+          providerLabel: row.providerLabel,
+          run: { ...runView(row.run), kind: 'run' },
+        },
+      ]
+    }),
+    next: value.nextAfter,
+  }
 }
 
 /**

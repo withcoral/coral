@@ -1,11 +1,15 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { expect, it, vi } from 'vitest'
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
-import { ActivityRequiredActionKind } from '@/generated/coral/management/v1/activity_pb'
+import {
+  ActivityApprovalOutcome,
+  ActivityRequiredActionKind,
+} from '@/generated/coral/management/v1/activity_pb'
 import { WorkspaceRole, WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { fakeManagementTransport, type ManagementHandlers } from '@/lib/management.test-support'
-import type { ApprovalReading } from '@/views/activity/types'
+import type { ApprovalReading, SettledPage } from '@/views/activity/types'
 import { loader } from './approvals'
+import { loader as historyLoader } from './approvals-history'
 
 const coral = vi.hoisted(() => ({ transport: undefined as unknown }))
 vi.mock('@/lib/coral-request.server', () => ({
@@ -37,7 +41,12 @@ function fakeCoral(
         state,
       }),
     },
-    activity: { browseRequiredActions: browse, countRequiredActions: count, ...review },
+    activity: {
+      browseRequiredActions: browse,
+      countRequiredActions: count,
+      browseSettledApprovals: () => ({ approvals: [] }),
+      ...review,
+    },
     providers: { listProviders: () => ({ providers: [] }) },
   })
 }
@@ -53,6 +62,7 @@ async function loaderData(search = '') {
     result as unknown as {
       data: {
         approvals: { action: { name: string } }[]
+        settled: SettledPage | null
         revision?: string
         selected: string | null
         review: ApprovalReading | null
@@ -222,4 +232,110 @@ it('reads the open request after the revision', async () => {
   )
   await loaderData(selectedSearch)
   expect(order).toEqual(['revision', 'request'])
+})
+
+const settledRow = (request: string, outcome: ActivityApprovalOutcome, approverLabel = '') => ({
+  name: `${workspace}/approvals/${request}`,
+  outcome,
+  settledAtUnixNanos: nanos('2026-09-22T11:00:00Z'),
+  approverLabel,
+  callPath: `mail.${request}`,
+  run: { name: `${workspace}/runs/${request}`, workspace, intent: 'Send reminders' },
+})
+
+// History follows the same revision as the pending rows: a request settles by leaving them.
+it('reads the newest settled page after the revision, in the order Coral returns it', async () => {
+  const order: string[] = []
+  const settled = vi.fn(({ after }: { after: string }) => {
+    order.push(`settled:${after}`)
+    return {
+      approvals: [
+        settledRow('expired', ActivityApprovalOutcome.EXPIRED),
+        settledRow('approved', ActivityApprovalOutcome.APPROVED, 'Ada Lovelace'),
+        // An outcome this build does not know is no row, not a wrong one.
+        settledRow('newer', 99 as ActivityApprovalOutcome),
+      ],
+      nextAfter: 'older',
+    }
+  })
+  fakeCoral(
+    WorkspaceState.ACTIVE,
+    () => ({ actions: [] }),
+    () => {
+      order.push('revision')
+      return {}
+    },
+    { browseSettledApprovals: settled },
+  )
+  const page = (await loaderData()).settled!
+  expect(page.approvals).toMatchObject([
+    { name: `${workspace}/approvals/expired`, outcome: 'expired', approverLabel: '' },
+    {
+      name: `${workspace}/approvals/approved`,
+      outcome: 'approved',
+      approverLabel: 'Ada Lovelace',
+      settledAt: '2026-09-22T11:00:00.000Z',
+      run: { intent: 'Send reminders' },
+    },
+  ])
+  expect(page.next).toBe('older')
+  // Older pages load on request, never with the page.
+  expect(order).toEqual(['revision', 'settled:'])
+})
+
+function loadHistory(search: string) {
+  const request = new Request(`http://reef.test/workspaces/${id}/approvals/history${search}`)
+  return historyLoader({ ...authRouteTestArgs(request, {}), params: { workspace: id } } as never)
+}
+
+it('loads the settled page after the given position', async () => {
+  const settled = vi.fn(() => ({
+    approvals: [settledRow('older', ActivityApprovalOutcome.DECLINED, 'You')],
+  }))
+  fakeCoral(WorkspaceState.ACTIVE, () => ({ actions: [] }), undefined, {
+    browseSettledApprovals: settled,
+  })
+  const result = (await loadHistory('?after=older')) as unknown as { data: SettledPage }
+  expect(result.data).toMatchObject({
+    approvals: [{ name: `${workspace}/approvals/older`, outcome: 'declined' }],
+    next: '',
+  })
+  expect(settled).toHaveBeenCalledWith(
+    expect.objectContaining({ workspace, after: 'older' }),
+    expect.anything(),
+  )
+})
+
+// The page keeps its rows through an outage, so the failure is an answer, not a new page.
+it('answers an outage as unavailable, and refuses a missing position or an archived workspace', async () => {
+  fakeCoral(WorkspaceState.ACTIVE, () => ({ actions: [] }), undefined, {
+    browseSettledApprovals: () => {
+      throw new ConnectError('down', Code.Unavailable)
+    },
+  })
+  const outage = (await loadHistory('?after=older')) as unknown as {
+    data: unknown
+    init: { status: number }
+  }
+  expect(outage.data).toEqual({ unavailable: true })
+  expect(outage.init.status).toBe(503)
+  await expect(loadHistory('')).rejects.toMatchObject({ status: 400 })
+  const settled = vi.fn(() => ({ approvals: [] }))
+  fakeCoral(WorkspaceState.ARCHIVED, () => ({ actions: [] }), undefined, {
+    browseSettledApprovals: settled,
+  })
+  await expect(loadHistory('?after=older')).rejects.toMatchObject({ status: 404 })
+  expect(settled).not.toHaveBeenCalled()
+})
+
+// Pending requests have deadlines: a history outage must not hide them.
+it('keeps the pending rows when the history cannot be read', async () => {
+  fakeCoral(WorkspaceState.ACTIVE, () => ({ actions: [queued('first')] }), undefined, {
+    browseSettledApprovals: () => {
+      throw new ConnectError('down', Code.Unavailable)
+    },
+  })
+  const { approvals, settled } = await loaderData()
+  expect(approvals).toHaveLength(1)
+  expect(settled).toBeNull()
 })

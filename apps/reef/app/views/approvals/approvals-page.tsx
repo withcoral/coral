@@ -1,9 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { isRouteErrorResponse, useNavigate, useRouteError } from 'react-router'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { isRouteErrorResponse, useFetcher, useNavigate, useRouteError } from 'react-router'
 import { EmptyPage } from '@/components/empty-page'
 import { useFollowRequiredActions } from '@/lib/use-action-signal'
 import { useRevalidateWhileVisible } from '@/lib/use-revalidate-while-visible'
 import { Button, Dialog, Table, Typography } from '@/wax/components'
+import { Icon, type IconName } from '@/wax/components/icon'
+import { Pill, type PillColor } from '@/wax/components/pill'
 import { CodeChip } from '@/wax/components/code-chip'
 import { Deadline } from '@/wax/components/deadline'
 import { Logo, type LogoIcons } from '@/wax/components/logo'
@@ -23,14 +25,75 @@ import { ExecutionSourceSplit } from '../activity/execution-source-split'
 import { revealHref } from '../activity/navigation'
 import { Panel } from '../activity/panel'
 import * as panelStyles from '../activity/panel.css'
-import { pendingQuestion } from '../activity/pending'
-import type { ApprovalDetail, ApprovalReading, PendingAction } from '../activity/types'
+import { approvalQuestion, pendingQuestion } from '../activity/pending'
+import { Instant } from '../activity/instant'
+import type {
+  ActivityRow,
+  ApprovalDetail,
+  ApprovalReading,
+  PendingAction,
+  SettledApproval,
+  SettledPage,
+} from '../activity/types'
 import { trail } from '../management/layout'
 import { ManagementErrorBoundary } from '../management/management-error'
 import * as styles from './approvals.css'
 import type { ProviderMark } from './types'
 
 const RETRY_MS = 10_000
+/** The provider that owns a call, and the tool under it, if it is still in the workspace. */
+type ToolOwner = ReturnType<typeof toolOwner<ProviderMark>>
+const NO_HISTORY: SettledPage = { approvals: [], next: '' }
+
+/** A later page of settled approvals, or the outage that kept it from loading. */
+type OlderPage = SettledPage | { unavailable: true }
+
+/** Settled approvals: the newest page the loader reads, then the older pages loaded here.
+ * A refresh replaces the newest page. Every row loaded stays, since a settled request does
+ * not change, so the list does not jump while you read older rows. The rows keep Coral's
+ * order. A newest page Coral could not read (`null`) keeps the rows already shown. */
+function useHistory(read: SettledPage | null, workspacePath: string) {
+  const newest = read ?? NO_HISTORY
+  const fetcher = useFetcher<OlderPage>()
+  const [shown, setShown] = useState({ workspacePath, read, rows: newest.approvals })
+  // The last page loaded here and where it ends. Before one loads, the newest page's end.
+  const [older, setOlder] = useState<{ page?: OlderPage; next?: string }>({})
+  if (shown.workspacePath !== workspacePath) {
+    // Another workspace starts over.
+    setShown({ workspacePath, read, rows: newest.approvals })
+    setOlder({})
+  } else if (shown.read !== read) {
+    // The newest rows go first. Each row they move down stays, after them.
+    setShown({ workspacePath, read, rows: [...newest.approvals, ...without(shown.rows, newest)] })
+  }
+  const page = fetcher.state === 'idle' ? fetcher.data : undefined
+  if (page && page !== older.page) {
+    // Each loaded page joins the rows once. An outage keeps the place to retry from.
+    if ('unavailable' in page) setOlder({ ...older, page })
+    else {
+      setOlder({ page, next: page.next })
+      setShown({ ...shown, rows: [...shown.rows, ...without(page.approvals, shown.rows)] })
+    }
+  }
+  const next = older.next ?? newest.next
+  return {
+    rows: shown.rows,
+    unavailable: read === null,
+    more: Boolean(next) && read !== null,
+    loading: fetcher.state !== 'idle',
+    failed: Boolean(older.page && 'unavailable' in older.page),
+    load: () =>
+      void fetcher.load(
+        `${workspacePath}/approvals/history?${new URLSearchParams({ after: next })}`,
+      ),
+  }
+}
+
+/** `rows` without those already in `shown`. */
+function without(rows: SettledApproval[], shown: SettledApproval[] | SettledPage) {
+  const names = new Set(('approvals' in shown ? shown.approvals : shown).map((row) => row.name))
+  return rows.filter((row) => !names.has(row.name))
+}
 
 const reviewHref = (name: string) => `?${new URLSearchParams({ [REVIEW_PARAM]: name })}`
 
@@ -48,6 +111,7 @@ function nextPending(approvals: PendingAction[], decided: ApprovalDetail) {
  * so the page says so and takes no decision. */
 export function ApprovalsPage({
   approvals,
+  settled = NO_HISTORY,
   workspacePath,
   revision,
   selected = null,
@@ -55,6 +119,9 @@ export function ApprovalsPage({
   providers = [],
 }: {
   approvals: PendingAction[]
+  /** The newest page of settled approvals, read with `approvals`. Null when Coral could not
+   * read it, which leaves the pending rows. */
+  settled?: SettledPage | null
   /** Keys the Workspace's revision. */
   workspacePath: string
   /** The approval revision read before `approvals`, if it was readable. */
@@ -66,14 +133,16 @@ export function ApprovalsPage({
   /** The workspace's providers, which name each call by its logo and tool. */
   providers?: ProviderMark[]
 }) {
-  const table = Table.useRowCursor()
+  // One cursor around both tables, so the arrows move through them as one list.
+  const list = Table.useRowCursor()
   const live = useFollowRequiredActions(workspacePath, 'approvals', revision)
+  const history = useHistory(settled, workspacePath)
   return (
     <ActionReviewSession request={review?.detail}>
       <PageLayout variant="split" breadcrumbs={trail([], 'Approvals')}>
         <ActivityConnectedContext value={live}>
           <div className={styles.page}>
-            <div className={styles.list}>
+            <div className={styles.list} ref={list}>
               {!live && (
                 <Typography.BodySmall role="status">
                   Approvals are unavailable.
@@ -81,7 +150,6 @@ export function ApprovalsPage({
               )}
               <Table.Container
                 ariaLabel="Pending approvals"
-                ref={table}
                 variant="card"
                 layout="fixed"
                 columns={[
@@ -96,12 +164,16 @@ export function ApprovalsPage({
                 <Table.Head />
                 {approvals.length === 0 && live && (
                   <Table.Status>
-                    <EmptyPage
-                      fullSize={false}
-                      iconName="ShieldCheck"
-                      title="Nothing to approve."
-                      description="Requests that need your approval appear here."
-                    />
+                    {history.rows.length || history.unavailable ? (
+                      <Typography.Body>Nothing to approve.</Typography.Body>
+                    ) : (
+                      <EmptyPage
+                        fullSize={false}
+                        iconName="ShieldCheck"
+                        title="Nothing to approve."
+                        description="Requests that need your approval appear here. Decided and expired requests appear below them."
+                      />
+                    )}
                   </Table.Status>
                 )}
                 <Table.Body>
@@ -115,6 +187,42 @@ export function ApprovalsPage({
                   ))}
                 </Table.Body>
               </Table.Container>
+              {history.unavailable && (
+                <Typography.BodySmall role="status">
+                  Approval history is unavailable.
+                </Typography.BodySmall>
+              )}
+              {history.rows.length > 0 && (
+                <Table.Container
+                  ariaLabel="Approval history"
+                  variant="card"
+                  layout="fixed"
+                  columns={[{ label: 'History', width: { fill: 1 } }]}
+                >
+                  <Table.Head />
+                  <Table.Body>
+                    {history.rows.map((row) => (
+                      <SettledRow
+                        key={row.name}
+                        settled={row}
+                        owner={toolOwner(row.callPath, providers)}
+                        open={row.name === selected}
+                      />
+                    ))}
+                  </Table.Body>
+                  {history.more && (
+                    <Table.LoadMore
+                      onLoad={history.load}
+                      loading={history.loading}
+                      loadingLabel="Loading older approvals…"
+                      error={history.failed && 'Older approvals are unavailable.'}
+                      retryLabel="Try again"
+                    >
+                      Load older approvals
+                    </Table.LoadMore>
+                  )}
+                </Table.Container>
+              )}
             </div>
             <ReviewRail
               approvals={approvals}
@@ -273,7 +381,7 @@ function ApprovalRow({
 }: {
   pending: PendingAction
   /** The provider that owns the call, if it is still in the workspace. */
-  owner: { provider: ProviderMark; relativePath: string } | null
+  owner: ToolOwner
   open: boolean
 }) {
   const { action, run } = pending
@@ -286,31 +394,9 @@ function ApprovalRow({
         <span className={styles.row}>
           <span className={styles.request}>
             <Table.RowLink to={href}>{question}</Table.RowLink>
-            <Typography.BodySmall as="span" variant="secondary" className={styles.meta}>
-              {owner ? (
-                <>
-                  <span role="img" aria-label={owner.provider.displayName} className={styles.logo}>
-                    <Logo
-                      name={owner.provider.displayName}
-                      icons={owner.provider.icons}
-                      size="18"
-                    />
-                  </span>
-                  <CodeChip>{owner.relativePath}</CodeChip>
-                  {' · '}
-                </>
-              ) : (
-                action.callPath && (
-                  <>
-                    <CodeChip>{action.callPath}</CodeChip>
-                    {' · '}
-                  </>
-                )
-              )}
-              {/* The page names the Workspace. Show who only when an Agent started the Run. */}
-              {run.agent && `${run.actorLabel || 'Unknown agent'} · `}
+            <CallMeta callPath={action.callPath} owner={owner} run={run}>
               <Deadline at={action.deadline} />
-            </Typography.BodySmall>
+            </CallMeta>
           </span>
           <span className={styles.actions}>
             {/* The open review decides this request, and keeps your comment. */}
@@ -327,5 +413,89 @@ function ApprovalRow({
         </span>
       </Table.Cell>
     </Table.Row>
+  )
+}
+
+const outcomes: Record<
+  SettledApproval['outcome'],
+  { label: string; icon: IconName; color: PillColor }
+> = {
+  approved: { label: 'Approved', icon: 'ShieldCheck', color: 'green' },
+  declined: { label: 'Declined', icon: 'ShieldX', color: 'red' },
+  expired: { label: 'Expired', icon: 'Hourglass', color: 'gray' },
+}
+
+/** One settled request: its question, its tool, its outcome with an icon and text, who
+ * decided and when. An expired request has no reviewer; its time is its deadline. */
+function SettledRow({
+  settled,
+  owner,
+  open,
+}: {
+  settled: SettledApproval
+  owner: ToolOwner
+  open: boolean
+}) {
+  const question = approvalQuestion(settled.run)
+  const href = reviewHref(settled.name)
+  const outcome = outcomes[settled.outcome]
+  return (
+    <Table.Row to={href} selected={open} preventScrollReset>
+      <Table.Cell wrap>
+        <span className={styles.row}>
+          <span className={styles.request}>
+            <Table.RowLink to={href}>{question}</Table.RowLink>
+            <CallMeta callPath={settled.callPath} owner={owner} run={settled.run}>
+              {settled.approverLabel && `${settled.approverLabel} · `}
+              <Instant value={settled.settledAt} />
+            </CallMeta>
+          </span>
+          {/* An icon and a word, so the outcome does not rest on colour. */}
+          <Pill color={outcome.color} className={styles.outcome}>
+            <Icon name={outcome.icon} size="14" />
+            {outcome.label}
+          </Pill>
+        </span>
+      </Table.Cell>
+    </Table.Row>
+  )
+}
+
+/** The call's provider logo and tool, the Agent that started the Run, then `children`, on
+ * one line that wraps between them. */
+function CallMeta({
+  callPath,
+  owner,
+  run,
+  children,
+}: {
+  callPath: string
+  /** The provider that owns the call, if it is still in the workspace. */
+  owner: ToolOwner
+  run: Extract<ActivityRow, { kind: 'run' }>
+  children: ReactNode
+}) {
+  return (
+    <Typography.BodySmall as="span" variant="secondary" className={styles.meta}>
+      {owner ? (
+        <>
+          <span role="img" aria-label={owner.provider.displayName} className={styles.logo}>
+            <Logo name={owner.provider.displayName} icons={owner.provider.icons} size="18" />
+          </span>
+          <CodeChip>{owner.relativePath}</CodeChip>
+          {' · '}
+        </>
+      ) : (
+        callPath && (
+          <>
+            <CodeChip>{callPath}</CodeChip>
+            {' · '}
+          </>
+        )
+      )}
+      {/* The page names the Workspace. Show who only when an Agent started the Run. */}
+      {run.agent && `${run.actorLabel || 'Unknown agent'} · `}
+      {children}
+    </Typography.BodySmall>
   )
 }

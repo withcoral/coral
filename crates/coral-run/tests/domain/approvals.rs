@@ -2110,6 +2110,77 @@ async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
     assert_eq!(probe.prechecks(), Vec::new(), "no read woke it");
 }
 
+/// A request the Run's timeout reaches while it is pending expires, as
+/// its own deadline (capped at the Run's) would have expired it: no
+/// approver, dated at its deadline, its Invocation failed
+/// `approval_expired`, and one Expired lifecycle event. The Run still ends
+/// `timed_out`.
+#[tokio::test]
+async fn a_run_timeout_expires_its_pending_approval() {
+    let fixture = TestModules::new(Arc::new(
+        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
+    ))
+    .await;
+    let tool = fixture
+        .user_tool("user:timed-out-review", "Nobody answers in time")
+        .await;
+    fixture.require_approval(&tool).await;
+    let approvals = fixture.approvals();
+    let run = fixture
+        .runs
+        .start(
+            &tool.principal,
+            &tool.workspace_id,
+            RunSubmission::new(
+                ProgramSource::parse("await coral.providers.weather.getForecast({});").unwrap(),
+                RunTimeout::from_millis(500).unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    let request = wait_for_approval(
+        &approvals,
+        &tool.principal,
+        &tool.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &tool.principal,
+        &tool.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    assert_eq!(terminal.state(), RunState::TimedOut);
+    let expired = approvals
+        .get(&tool.principal, &tool.workspace_id, &request.id)
+        .await
+        .unwrap();
+    assert_eq!(expired.state, ApprovalState::Expired);
+    assert_eq!(expired.approver, None);
+    assert_eq!(
+        expired.decided_at_unix_nanos,
+        Some(request.deadline_at_unix_nanos),
+        "dated at its deadline"
+    );
+    let rows = fixture
+        .invocation_rows(&tool.workspace_id, run.run_id())
+        .await;
+    assert!(
+        matches!(rows.as_slice(), [row] if row.failure_code.as_deref() == Some("approval_expired")),
+        "{rows:?}"
+    );
+    let events = approvals
+        .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
+        .await
+        .unwrap();
+    assert!(
+        matches!(events.as_slice(), [event] if event.state == ApprovalState::Expired),
+        "{events:?}"
+    );
+}
+
 /// A fixture under `policy` whose Invocations and Run Owners one
 /// [`WaitProbe`] watches; approval-gated calls go to an upstream that
 /// rejects them.

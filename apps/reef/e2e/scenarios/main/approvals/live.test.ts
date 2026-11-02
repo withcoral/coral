@@ -11,7 +11,7 @@ const CALL_PATH = 'coral.providers.approvalsFixture.read'
 
 // The real change signal, through Coral's watch and Reef's stream, reaches an open page. Lower
 // tests cover the revision and the refresh on either side of that connection.
-test('An open Approvals page shows a new request and drops a decided one without a reload', async (context) => {
+test('An open Approvals page shows a new request and moves a decided one to history without a reload', async (context) => {
   let calls = 0
   const upstream = await listen(
     context,
@@ -50,6 +50,10 @@ test('An open Approvals page shows a new request and drops a decided one without
       .getByRole('row')
       // Each request's row, which shows the tool after its provider's logo, not its Call Path.
       .filter({ has: page.getByRole('link', { name: /^Review: / }) })
+    const history = page
+      .getByRole('table', { name: 'Approval history', exact: true })
+      .getByRole('row')
+      .filter({ has: page.getByRole('link') })
     /** A reload clears this mark, so the page proves that it stayed mounted. */
     const stillLoaded = () =>
       page.evaluate(() => (window as { approvalsMark?: boolean }).approvalsMark)
@@ -87,11 +91,14 @@ test('An open Approvals page shows a new request and drops a decided one without
       if (request?.case !== 'approval') throw new Error('Expected an approval')
       await otherOwner.activity.decideApproval({ name: request.value, decision: 'approve' })
       await page.getByText('Nothing to approve.', { exact: true }).waitFor()
+      // Owners share one record of Agent decisions.
+      await history.first().getByText('Approved', { exact: true }).waitFor()
       expect(await stillLoaded()).toBe(true)
     })
 
     await step('A decision on the row removes it, and the run continues', async () => {
       const before = calls
+      const settled = await history.count()
       await runner.exec(CALL)
       await rows.first().waitFor()
       await rows
@@ -100,11 +107,13 @@ test('An open Approvals page shows a new request and drops a decided one without
         .click()
       await page.getByText('Nothing to approve.', { exact: true }).waitFor()
       await expect.poll(() => calls).toBe(before + 1)
+      await expect.poll(() => history.count()).toBe(settled + 1)
       expect(await stillLoaded()).toBe(true)
     })
 
     await step('An owner reviews an Agent request and moves to the next request', async () => {
       const before = calls
+      const settled = await history.count()
       await agent.exec(CALL)
       await runner.exec(CALL)
       await expect.poll(() => rows.count()).toBe(2)
@@ -122,6 +131,8 @@ test('An open Approvals page shows a new request and drops a decided one without
       await expect.poll(() => calls).toBe(before + 1)
       await page.getByRole('button', { name: 'Decline', exact: true }).click()
       await page.getByText('Nothing to approve.', { exact: true }).waitFor()
+      await expect.poll(() => history.count()).toBe(settled + 2)
+      await history.first().getByText('Declined', { exact: true }).waitFor()
     })
   })
 })

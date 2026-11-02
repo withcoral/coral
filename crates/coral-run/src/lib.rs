@@ -138,6 +138,11 @@ pub use activity::{RunEntries, RunEntry, RunEntryAnchor, RunEntryWindow};
 pub use activity_observation::{ActivityObservation, ActivityWake};
 pub use admission::{PreparedRun, StagedRun};
 pub mod approval;
+mod approval_history;
+mod approval_history_repository;
+pub use approval_history::{
+    Approver, SettledApproval, SettledApprovals, SettledCursor, SettledOutcome,
+};
 mod approval_repository;
 mod builtin;
 mod enforcement;

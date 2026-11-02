@@ -2127,7 +2127,7 @@ const approvals = {
   ),
 } satisfies Record<ApprovalState, Story>
 export const ApprovalApproved = approvals.approved
-export const ApprovalDenied = approvals.declined
+export const ApprovalDeclined = approvals.declined
 export const ApprovalExpired = approvals.expired
 export const ApprovalClosed = approvals.closed
 export const ApprovalPendingReconnecting = panel(

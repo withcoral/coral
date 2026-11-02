@@ -15,7 +15,12 @@ import {
   run,
   workspace,
 } from '../activity/fixtures'
-import type { ApprovalReading, PendingAction } from '../activity/types'
+import type {
+  ApprovalReading,
+  PendingAction,
+  SettledApproval,
+  SettledPage,
+} from '../activity/types'
 import { ApprovalsErrorBoundary, ApprovalsPage } from './approvals-page'
 
 const agentAction: PendingAction = { action: approval, run }
@@ -82,6 +87,7 @@ const signalOf = (revision: string, other: ActionCounts = {}): ActionSignal => (
 
 interface LoadedPage {
   approvals: PendingAction[]
+  settled?: SettledPage | null
   revision?: string
   selected?: string | null
   review?: ApprovalReading | null
@@ -205,6 +211,164 @@ it('says there is nothing to approve when no request waits', () => {
   renderPage([])
   expect(screen.getByText('Nothing to approve.')).toBeInTheDocument()
   expect(screen.queryByRole('link', { name: /^Review/ })).not.toBeInTheDocument()
+})
+
+const settledRow = (
+  request: string,
+  outcome: SettledApproval['outcome'],
+  settledAt: string,
+  approverLabel = '',
+): SettledApproval => ({
+  name: `${workspace}/approvals/${request}`,
+  outcome,
+  settledAt,
+  approverLabel,
+  callPath: `mail.${request}`,
+  providerLabel: 'Mail',
+  run: { ...run, name: `${workspace}/runs/${request}`, intent: `Handle ${request}` },
+})
+const approvedRow = settledRow('approved', 'approved', '2026-09-22T10:00:00.000Z', 'Ada Lovelace')
+const expiredRow = settledRow('expired', 'expired', '2026-09-22T09:00:00.000Z')
+const historyOf = (...approvals: SettledApproval[]): SettledPage => ({ approvals, next: '' })
+/** The settled rows, without the heading or the row that loads more. */
+const historyRows = () =>
+  within(screen.getByRole('table', { name: 'Approval history' }))
+    .getAllByRole('row')
+    .filter((row) => row.querySelector('[data-row-link]'))
+
+describe('history', () => {
+  it('follows the pending requests, newest first, with outcome, reviewer and time', () => {
+    renderRoute(
+      <ApprovalsPage
+        approvals={[agentAction]}
+        settled={historyOf(approvedRow, expiredRow)}
+        workspacePath={path}
+      />,
+    )
+    const [pending, history] = screen.getAllByRole('table')
+    expect(pending).toHaveAccessibleName('Pending approvals')
+    expect(history).toHaveAccessibleName('Approval history')
+    const [approved, expired] = historyRows()
+    expect(within(approved).getByRole('link', { name: 'Handle approved?' })).toBeInTheDocument()
+    expect(approved).toHaveTextContent('mail.approved')
+    expect(approved).toHaveTextContent('Collections agent')
+    expect(approved).toHaveTextContent('Ada Lovelace')
+    expect(approved).toHaveTextContent('Approved')
+    expect(within(approved).getByText('22 Sep 2026, 10:00:00 UTC')).toBeInTheDocument()
+    // Nobody decided an expired request. Its time is its deadline.
+    expect(expired).toHaveTextContent('Expired')
+    expect(within(expired).getByText('22 Sep 2026, 09:00:00 UTC')).toBeInTheDocument()
+    expect(expired).not.toHaveTextContent('Ada Lovelace')
+    // Settled rows take no decision.
+    expect(within(history).queryByRole('button', { name: /^Approve/ })).not.toBeInTheDocument()
+  })
+
+  it('says "Declined", never "Denied"', () => {
+    renderRoute(
+      <ApprovalsPage
+        approvals={[]}
+        settled={historyOf(settledRow('declined', 'declined', approvedRow.settledAt, 'You'))}
+        workspacePath={path}
+      />,
+    )
+    expect(historyRows()[0]).toHaveTextContent('Declined')
+    expect(document.body.textContent).not.toMatch(/denied/i)
+  })
+
+  it('starts with "Nothing to approve." above history when nothing waits', () => {
+    renderRoute(
+      <ApprovalsPage approvals={[]} settled={historyOf(approvedRow)} workspacePath={path} />,
+    )
+    const pending = screen.getByRole('table', { name: 'Pending approvals' })
+    expect(within(pending).getByText('Nothing to approve.')).toBeInTheDocument()
+    expect(
+      within(pending).queryByText(/Requests that need your approval appear here/),
+    ).not.toBeInTheDocument()
+    expect(historyRows()).toHaveLength(1)
+  })
+
+  it('explains the empty page when there are no requests at all', () => {
+    renderPage([])
+    expect(screen.getByText(/Requests that need your approval appear here/)).toBeInTheDocument()
+    expect(screen.queryByRole('table', { name: 'Approval history' })).not.toBeInTheDocument()
+  })
+
+  it('opens a settled row in the panel, and the arrows reach it after the pending rows', async () => {
+    const { router } = renderRoute(
+      <ApprovalsPage
+        approvals={[agentAction]}
+        settled={historyOf(approvedRow)}
+        workspacePath={path}
+      />,
+    )
+    await userEvent.keyboard('{ArrowDown}{ArrowDown}')
+    expect(screen.getByRole('link', { name: 'Handle approved?' })).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+    expect(openedRequest(router)).toBe(approvedRow.name)
+  })
+
+  // Older rows you loaded must not vanish when a decision refreshes the page.
+  it('loads older rows, and a refresh updates the newest rows and keeps them', async () => {
+    const older = settledRow('older', 'declined', '2026-09-21T09:00:00.000Z', 'You')
+    const history = vi.fn(({ request }: LoaderFunctionArgs) => {
+      expect(new URL(request.url).searchParams.get('after')).toBe('page-2')
+      return historyOf(older)
+    })
+    const coral: Coral = {
+      read: {
+        approvals: [agentAction],
+        settled: { approvals: [approvedRow, expiredRow], next: 'page-2' },
+        revision: 'one',
+      },
+    }
+    const { signal } = await renderLive(coral, signalOf('one'), {
+      routes: [{ path: `${path}/approvals/history`, loader: history }],
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Load older approvals' }))
+    expect(await screen.findByRole('link', { name: 'Handle older?' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Load older approvals' })).not.toBeInTheDocument()
+
+    // The agent's request settles: it leaves the pending rows and tops the history.
+    const decided = settledRow('one', 'approved', '2026-09-22T11:00:00.000Z', 'You')
+    coral.read = {
+      approvals: [],
+      settled: { approvals: [decided, approvedRow], next: 'page-2' },
+      revision: 'two',
+    }
+    await signal(signalOf('two'))
+    await screen.findByText('Nothing to approve.')
+    expect(historyRows().map((row) => within(row).getAllByRole('link')[0].textContent)).toEqual([
+      'Handle one?',
+      'Handle approved?',
+      'Handle expired?',
+      'Handle older?',
+    ])
+    expect(history).toHaveBeenCalled()
+  })
+
+  it('keeps the pending rows and says so when the history cannot be read', () => {
+    renderRoute(<ApprovalsPage approvals={[agentAction]} settled={null} workspacePath={path} />)
+    expect(screen.getByRole('link', { name: 'Send invoice reminders?' })).toBeInTheDocument()
+    expect(screen.getByText('Approval history is unavailable.')).toHaveAttribute('role', 'status')
+    expect(screen.queryByRole('table', { name: 'Approval history' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the rows and offers a retry when older rows cannot load', async () => {
+    let answer: unknown = { unavailable: true }
+    const coral: Coral = {
+      read: { approvals: [], settled: { approvals: [approvedRow], next: 'page-2' } },
+    }
+    await renderLive(coral, signalOf('one'), {
+      routes: [{ path: `${path}/approvals/history`, loader: () => answer }],
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Load older approvals' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Older approvals are unavailable.')
+    expect(historyRows()).toHaveLength(1)
+    answer = historyOf(expiredRow)
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('link', { name: 'Handle expired?' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
 })
 
 it('refreshes in place when the approval revision changes, and keeps your place', async () => {
