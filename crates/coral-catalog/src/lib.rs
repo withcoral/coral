@@ -18,11 +18,14 @@ pub use builtin::{
     AddProviderArguments, AddProviderResult, ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME,
     BuiltinAccessState, BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity,
     BuiltinCredentialRoute, BuiltinExecutionBinding, BuiltinTool, ConfigurationChoices,
-    ConfigurationOutput, ConfigurationPatch, GetPolicyArguments, GetPolicyResult,
-    GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
-    ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts, ProviderSourceArgument,
-    ProviderSourceOutput, SourceChange, UpdatePolicyArguments, UpdatePolicyResult,
-    UpdateProviderArguments, UpdateProviderResult,
+    ConfigurationOutput, ConfigurationPatch, DeclaredHints, Description, DescriptionAuthoring,
+    GetPolicyArguments, GetPolicyResult, GetProviderArguments, GetProviderResult,
+    ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
+    MissingPath, PathsResult, ProviderFacts, ProviderSourceArgument, ProviderSourceOutput,
+    SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, SavedDetail, SavedDiagnostic, SavedDiagnosticCategory,
+    SearchArguments, SearchHit, SearchOutput, SearchResult, SearchRetriever,
+    SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus, SourceChange,
+    UpdatePolicyArguments, UpdatePolicyResult, UpdateProviderArguments, UpdateProviderResult,
 };
 mod configuration;
 pub use configuration::{

@@ -163,6 +163,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             "getPolicy",
             "getProvider",
             "listProviders",
+            "search",
             "updatePolicy",
             "updateProvider"
         ]

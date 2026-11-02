@@ -29,7 +29,11 @@ fn hints_project_only_what_the_provider_declared() {
             json!({ "idempotent": true, "open_world": false }),
         ),
     ] {
-        assert_eq!(super::hints(hints), expected, "{hints:?}");
+        assert_eq!(
+            json!(coral_catalog::DeclaredHints::from(hints)),
+            expected,
+            "{hints:?}"
+        );
     }
 }
 
@@ -114,7 +118,7 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
                 "description_snippet": "Lists pull requests.",
             }),
         );
-        assert_eq!(super::hit(&hit), expected, "{name}");
+        assert_eq!(json!(super::hit(&hit)), expected, "{name}");
     }
 }
 

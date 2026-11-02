@@ -19,7 +19,8 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/SearchHit"
-          }
+          },
+          "description": "The hits, best first. Without a query, in Call Path order."
         },
         "has_more": {
           "type": "boolean"
@@ -47,15 +48,15 @@
       "properties": {
         "call_path": {
           "type": "string",
-          "description": "`coral.providers.<namespace>.…` for a provider tool,\n`coral.functions.…` for a Saved Function."
+          "description": "`coral.providers.<namespace>.…` for a provider tool, `coral.workspace.…` for one of Coral's own, `coral.functions.…` for a Saved Function."
         },
         "signature_line": {
           "type": "string",
-          "description": "The callable's input members one level deep; a provider tool's result\ndata types by name, an unnamed object as `{…}`; a Saved Function's\nresult members one level deep. At most 512 UTF-8 bytes."
+          "description": "The callable's input members one level deep; a provider tool's result data types by name, an unnamed object as `{…}`; a Saved Function's result members one level deep. At most 512 UTF-8 bytes."
         },
         "description_snippet": {
           "type": "string",
-          "description": "At most 512 UTF-8 bytes of the description, around the first matched\nterm; `…` marks cut text."
+          "description": "At most 512 UTF-8 bytes of the description, around the first matched term; `…` marks cut text."
         },
         "guidance_snippet": {
           "type": [
@@ -76,11 +77,10 @@
           "items": {
             "type": "string"
           },
-          "description": "The arguments a query term matched that the signature line does not\nshow; absent when there are none."
+          "description": "The arguments a query term matched that the signature line does not show; absent when there are none."
         },
         "hints": {
-          "$ref": "#/$defs/Hints",
-          "description": "Present only when the Provider declared a hint."
+          "$ref": "#/$defs/Hints"
         },
         "approval_required": {
           "type": "boolean",
@@ -96,7 +96,7 @@
         "signature_line",
         "description_snippet"
       ],
-      "description": "One Search Hit. Call a read from it when its signature line is complete:\nno cut marker (`…`) and no type named in its input that the line does not\nshow. Describe first otherwise, and before a write."
+      "description": "One Search Hit. Call a read from it when its signature line is complete: no cut marker (`…`) and no type named in its input that the line does not show. Read its exact description first otherwise, and before a write."
     },
     "Hints": {
       "type": "object",
@@ -115,7 +115,7 @@
           "type": "boolean"
         }
       },
-      "description": "Effect hints the Provider declared. An absent field is undeclared, not a\nprotocol default."
+      "description": "Effect hints the Provider declared. An absent field is undeclared, not a protocol default."
     },
     "RetrieverStatus": {
       "type": "object",
@@ -150,7 +150,7 @@
         "partial",
         "error"
       ],
-      "description": "- `partial`: some Providers or Saved Functions are not indexed yet, or\n  failed; results may be missing.\n- `error`: the retriever could not rank; its results are missing.\n\nRetry shortly or list without a query."
+      "description": "- `partial`: some Providers or Saved Functions are not indexed yet, or failed; results may be missing.\n- `error`: the retriever could not rank; its results are missing.\n\nRetry shortly or list without a query."
     },
     "RetrieverCoverage": {
       "type": "object",

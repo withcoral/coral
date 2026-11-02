@@ -330,14 +330,11 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
             "Start one Coral Task for one unit of user work.",
             mutation_annotations("Start Task", false, false),
         )),
-        always_loaded(tool::<SearchArguments, crate::projection::SearchResult>(
+        always_loaded(tool::<SearchArguments, coral_catalog::SearchResult>(
             SEARCH_TOOL_DESCRIPTION,
             read_annotations("Search"),
         )),
-        always_loaded(tool::<
-            DescribeArguments,
-            crate::projection::Description<Option<crate::projection::SavedDetail>>,
-        >(
+        always_loaded(tool::<DescribeArguments, coral_catalog::Description>(
             "Describe one exact Call Path: the inputs and result types needed to call it. Result types beyond a size limit appear as field names only or are not shown; describe the same path with types to see them. To compare candidates, call describe for each of them in parallel.",
             read_annotations("Describe"),
         )),

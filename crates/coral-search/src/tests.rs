@@ -1,6 +1,7 @@
 mod builtin;
 mod describe;
 mod describe_tools;
+mod discover;
 mod index;
 mod retrieval;
 mod storage;

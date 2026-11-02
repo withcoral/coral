@@ -31,11 +31,17 @@ async fn search_and_describe_show_each_builtin_tool_to_the_principals_it_reaches
     for (principal, reached) in [
         (
             AuthenticatedPrincipal::user(owner),
-            &["addProvider", "listProviders", "getPolicy", "updatePolicy"][..],
+            &[
+                "addProvider",
+                "listProviders",
+                "getPolicy",
+                "updatePolicy",
+                "search",
+            ][..],
         ),
         (
             AuthenticatedPrincipal::user(member),
-            &["listProviders", "getPolicy"][..],
+            &["listProviders", "getPolicy", "search"][..],
         ),
     ] {
         for (key, terms) in [
@@ -43,6 +49,7 @@ async fn search_and_describe_show_each_builtin_tool_to_the_principals_it_reaches
             ("listProviders", "list providers"),
             ("getPolicy", "provider policy"),
             ("updatePolicy", "update policy"),
+            ("search", "search tools"),
         ] {
             let reaches = reached.contains(&key);
             let call_path = format!("coral.workspace.{key}");
