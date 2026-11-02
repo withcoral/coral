@@ -59,8 +59,8 @@ import {
   useActivityArchived,
 } from './live'
 import { ActivitySearch } from './search'
-import type { FilterQuery } from '@/utils/filter-query'
-import { intentQuery } from '@/lib/activity-search'
+import { keptForRuns } from '@/lib/activity-search'
+import { filterQuery, type FilterQuery } from '@/utils/filter-query'
 import { HighlightedMatches } from '@/wax/components/highlighted-matches'
 import { useCommentGuard, useDecisionOutcome, useUnsentComment } from '../actions/review'
 import { ContextImpact } from './context-impact'
@@ -374,7 +374,7 @@ const RecordRow = memo(function RecordRow({
           tabbable={scope.glimpse}
           icon={recordIcon(row, providers)}
           expanded={expanded}
-          disabled={!expanded && scope.full}
+          disabled={!expanded && scope.full && !keptForRuns(row)}
           onToggle={expandable ? () => actions.toggle(row.name) : undefined}
           marker={row.kind === 'invocation' && row.requiresAction ? 'needs action' : undefined}
           metadata={
@@ -717,31 +717,6 @@ export function Activity({
     () => (more ? page.rows.slice(0, more.roots) : page.rows),
     [more, page.rows],
   )
-  // A search opens each Task it lists only for its Runs, so you see them. The loader
-  // opens those of the page it loads; this opens those a later page or snapshot brings
-  // in, unless you collapsed them.
-  const unrevealed = useMemo(() => {
-    if (glimpse || !page.query) return []
-    const collapsed = new Set(nav.query.getAll('collapse'))
-    return page.rows
-      .filter(
-        (row) =>
-          row.kind === 'task' &&
-          row.intentMatches === false &&
-          !page.expanded.includes(row.name) &&
-          !collapsed.has(row.name),
-      )
-      .map((row) => row.name)
-      .slice(0, Math.max(0, MAX_EXPANDED_RECORDS - page.expanded.length))
-  }, [glimpse, page.query, page.rows, page.expanded, nav.query])
-  const revealKey = unrevealed.join('\n')
-  useEffect(() => {
-    if (!revealKey || transition.state !== 'idle') return
-    void navigate(nav.href({ tree: '1', expand: [...page.expanded, ...revealKey.split('\n')] }), {
-      replace: true,
-      preventScrollReset: true,
-    })
-  }, [revealKey, transition.state, navigate, nav, page.expanded])
   // Where ↑ and ↓ go. A glimpse takes no keys.
   const stops = useMemo(() => (glimpse ? [] : activityStops(page, roots)), [glimpse, page, roots])
   const open = selected !== null && closing === null
@@ -796,7 +771,7 @@ export function Activity({
     record: revealRecord,
   })
   if (reveal.route !== revealRecord) setReveal({ route: revealRecord, record: revealRecord })
-  const full = page.expanded.length >= MAX_EXPANDED_RECORDS
+  const full = nav.expandedByYou.length >= MAX_EXPANDED_RECORDS
   // Rows and keys navigate with the reader's latest position, read when they act.
   const now = {
     nav,
@@ -912,7 +887,7 @@ export function Activity({
       if (!row || (owner === 'rail' && (!current.open || row.name !== current.shownRecord)))
         return false
       if (row.kind === 'task' || row.kind === 'run') {
-        if (!current.expanded.includes(row.name) && current.full) return false
+        if (!current.expanded.includes(row.name) && current.full && !keptForRuns(row)) return false
         actions.toggle(row.name, true)
         return true
       }
@@ -1216,17 +1191,18 @@ export function Activity({
       selected: shownRecord,
       active: activeRecord,
       expanded: new Set(expandedKey ? expandedKey.split('\n') : []),
-      full: (expandedKey ? expandedKey.split('\n').length : 0) >= MAX_EXPANDED_RECORDS,
+      full,
       finalValueRun,
       href: glimpse ? revealHref : (row) => selectionHref(page.listPath, search, row.name),
       observed,
       glimpse,
-      query: intentQuery(page.query ?? ''),
+      query: filterQuery(page.query ?? ''),
     }),
     [
       shownRecord,
       activeRecord,
       expandedKey,
+      full,
       finalValueRun,
       page.listPath,
       search,
@@ -1280,7 +1256,7 @@ export function Activity({
                     Activity is unavailable. Reconnecting…
                   </Typography.BodySmall>
                 )}
-                {page.expanded.length >= MAX_EXPANDED_RECORDS && (
+                {full && (
                   <Typography.BodySmall>
                     Collapse a record before you expand another.
                   </Typography.BodySmall>
@@ -1383,11 +1359,11 @@ export function Activity({
                             icon={recordIcon(outside, providers)}
                             metadata={
                               <>
-                              <span>
-                                {page.query
-                                  ? 'Outside this search:'
-                                  : 'Outside this workspace or page:'}
-                              </span>
+                                <span>
+                                  {page.query
+                                    ? 'Outside this search:'
+                                    : 'Outside this workspace or page:'}
+                                </span>
                                 {/* This row sits outside every day group, so it names its own day. */}
                                 <span>{dayLabel(utcDay(outside.startedAt))}</span>
                               </>
@@ -1417,35 +1393,35 @@ export function Activity({
                         </Table.Cell>
                       </Table.Row>
                     )}
-                  {!page.rows.length && !page.listUnavailable && !page.anchorUnavailable && (
-                    // Below a record the list keeps open, the status is one more row.
-                    <Table.Status scope={outside ? 'group' : 'table'}>
-                      {page.query ? (
-                        <EmptyPage
-                          fullSize={false}
-                          iconName="Search"
-                          title="No matching activity"
-                          description={`No task or run intent contains “${page.query}”.`}
-                        />
-                      ) : (
-                        <EmptyPage
-                          fullSize={false}
-                          iconName="Activity"
-                          title={archived ? 'No activity' : 'No activity yet'}
-                          description={
-                            archived
-                              ? restoreFirst(archived, 'start new runs')
-                              : connect
-                                ? 'Connect an MCP client to this workspace. Its calls show here.'
-                                : page.agent
-                                  ? "The agent's calls show here."
-                                  : 'Your calls show here.'
-                          }
-                          action={connect && <CopyMcpEndpoint {...connect} />}
-                        />
-                      )}
-                    </Table.Status>
-                  )}
+                    {!page.rows.length && !page.listUnavailable && !page.anchorUnavailable && (
+                      // Below a record the list keeps open, the status is one more row.
+                      <Table.Status scope={outside ? 'group' : 'table'}>
+                        {page.query ? (
+                          <EmptyPage
+                            fullSize={false}
+                            iconName="Search"
+                            title="No matching activity"
+                            description={`No task or run intent contains “${page.query}”.`}
+                          />
+                        ) : (
+                          <EmptyPage
+                            fullSize={false}
+                            iconName="Activity"
+                            title={archived ? 'No activity' : 'No activity yet'}
+                            description={
+                              archived
+                                ? restoreFirst(archived, 'start new runs')
+                                : connect
+                                  ? 'Connect an MCP client to this workspace. Its calls show here.'
+                                  : page.agent
+                                    ? "The agent's calls show here."
+                                    : 'Your calls show here.'
+                            }
+                            action={connect && <CopyMcpEndpoint {...connect} />}
+                          />
+                        )}
+                      </Table.Status>
+                    )}
                   </Table.Body>
                 </Table.Container>
                 {more && (page.hasAfter || page.rows.length > roots.length) && (

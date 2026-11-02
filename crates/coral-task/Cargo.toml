@@ -17,6 +17,7 @@ coral-functions.workspace = true
 coral-identifier.workspace = true
 coral-run.workspace = true
 coral-search.workspace = true
+regex-syntax.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 coral-workspace.workspace = true

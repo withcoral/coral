@@ -1042,6 +1042,7 @@ dependencies = [
  "coral-telemetry",
  "coral-test-support",
  "coral-workspace",
+ "regex-syntax",
  "sea-query",
  "serde",
  "serde_json",

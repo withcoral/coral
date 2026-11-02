@@ -69,6 +69,94 @@ it('aborts an unused subscription and ignores even a transport that delivers aft
   await new Promise((resolve) => setTimeout(resolve, 0))
   expect(store.get(state).page.hasAfter).toBe(false)
 })
+const kept = (id: number) => ({ ...taskRow(`t${id}`), intentMatches: false })
+const searchedPage = (rows: ActivityRow[]) => ({
+  ...page,
+  query: 'invoice',
+  rows,
+  expanded: rows.map((row) => row.name),
+  branches: Object.fromEntries(
+    rows.map((row) => [
+      row.name,
+      { rows: [], next: '', unavailable: false, total: '0', offset: 0 },
+    ]),
+  ),
+  hasAfter: true,
+})
+// Catches: a Task from a later page that closes, stops updating or loses its child
+// window, or a request past the route's bound on child windows.
+it('watches a search-opened Task from a later page, and asks only for the windows it can hold', async () => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>
+  const requests: ActivityObservation[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(c) {
+              controller = c
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      )
+    }),
+  )
+  const first = Array.from({ length: 25 }, (_, id) => kept(id))
+  const later = Array.from({ length: 25 }, (_, id) => kept(id + 25))
+  const initial = { ...searchedPage(first), expanded: first.map((row) => row.name) }
+  const store = createStore()
+  const state = activityObservation(initial, '/workspaces/w/activity', 'q=invoice')
+  const unmount = store.sub(state, () => {})
+  try {
+    await vi.waitFor(() => expect(requests).toHaveLength(1))
+    store.set(state, { kind: 'load', direction: 'older' })
+    store.set(state, { kind: 'loaded', direction: 'older', page: searchedPage(later) })
+    const view = activityView(store.get(state))
+    // The first page's snapshot did not read the later page, yet its Tasks stay open.
+    expect(view.expanded).toEqual(expect.arrayContaining(later.map((row) => row.name)))
+    store.set(state, { kind: 'root', atStart: false })
+    store.set(state, { kind: 'visible', records: [later[20]!.name] })
+    expect(store.get(state).roots).toContain(later[20]!.name)
+    store.set(state, {
+      kind: 'viewport',
+      parent: later[20]!.name,
+      viewport: { offset: 200, anchor: '', preceding: 0 },
+    })
+    expect(store.get(state).viewports[later[20]!.name]?.offset).toBe(200)
+    // A snapshot answers, so the moved window reconnects. The observation route accepts
+    // at most 25 revealed windows beside 20 you expand.
+    controller.enqueue(snapshot(searchedPage(first)))
+    await vi.waitFor(() => expect(requests.length).toBeGreaterThan(1))
+    const { window } = requests.at(-1)!
+    expect(window.revealed).toContain(later[20]!.name)
+    expect(window.revealed!.length).toBeLessThanOrEqual(25)
+    expect(window.branches[later[20]!.name]?.offset).toBe(200)
+    expect(window.branches[first[0]!.name]).toBeUndefined()
+    // Back at the newest records the read lists the first page, so those Tasks ask for
+    // the window you left them at, watched or not.
+    const moved = first[18]!.name
+    store.set(state, { kind: 'visible', records: [first[0]!.name] })
+    store.set(state, {
+      kind: 'viewport',
+      parent: moved,
+      viewport: { offset: 300, anchor: '', preceding: 0 },
+    })
+    store.set(state, { kind: 'root', atStart: true })
+    controller.enqueue(snapshot(searchedPage(first)))
+    await vi.waitFor(() => expect(requests.at(-1)!.window.followRoot).toBe(true))
+    const following = requests.at(-1)!.window
+    expect(following.roots).not.toContain(moved)
+    expect(following.branches[moved]?.offset).toBe(300)
+    expect(following.revealed).toContain(moved)
+    expect(following.revealed!.length).toBeLessThanOrEqual(25)
+    expect(following.branches[later[20]!.name]).toBeUndefined()
+  } finally {
+    unmount()
+  }
+})
 it('reconnects with the latest bounded viewport without hiding the current window during a scroll request', async () => {
   vi.useFakeTimers()
   let controller!: ReadableStreamDefaultController<Uint8Array>

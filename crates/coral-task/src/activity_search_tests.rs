@@ -98,26 +98,93 @@ async fn a_query_keeps_tasks_whose_intent_or_run_submission_intent_contains_it()
 }
 
 #[tokio::test]
-async fn queries_match_literally_and_fold_only_ascii_case() {
+async fn queries_match_literally_and_ignore_unicode_case() {
     let f = Fixture::new().await;
-    let percent = f.goal_with("Raise quota to 50% now").await;
-    let underscore = f.goal_with("Rename deploy_url").await;
-    let accented = f.goal_with("Été report").await;
-    f.goal_with("Raise quota to 500 now").await;
-    f.goal_with("Rename deployXurl").await;
-    for (query, expected) in [
-        ("50% n", vec![percent.id().clone()]),
-        ("DEPLOY_", vec![underscore.id().clone()]),
-        ("été", vec![]),
-        ("Été REPORT", vec![accented.id().clone()]),
-    ] {
-        let page = f.searched_roots(query, &ActivityWindow::Edge, 10).await;
-        let ids: Vec<_> = task_matches(&page.rows)
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
-        assert_eq!(ids, expected, "query {query:?}");
+    let intents = [
+        "Raise quota to 50% now",
+        "Raise quota to 500 now",
+        "Rename deploy_url",
+        "Rename deployXurl",
+        "Match a.c and [x] and (y|z)^$ and a-b and \\d\\d",
+        "Match abc and x and yz",
+        "Été report",
+        "ΣΑΣ ledger",
+        "ПРИВЕТ team",
+        "kelvin scale",
+        "\u{10428}\u{10429}\u{1042a} notes",
+        "Straße plan",
+        "e\u{301}te\u{301} decomposed",
+    ];
+    let mut goals = Vec::new();
+    for intent in intents {
+        goals.push((intent, f.goal_with(intent).await));
     }
+    for (query, expected) in [
+        ("50% n", vec!["Raise quota to 50% now"]),
+        ("DEPLOY_", vec!["Rename deploy_url"]),
+        ("a.c", vec![intents[4]]),
+        ("[x]", vec![intents[4]]),
+        ("(Y|Z)^$", vec![intents[4]]),
+        ("a-b", vec![intents[4]]),
+        ("\\D\\d", vec![intents[4]]),
+        // Every character of the query is one character of the intent, in any case.
+        ("été", vec!["Été report"]),
+        ("ÉTÉ REPORT", vec!["Été report"]),
+        ("σας", vec!["ΣΑΣ ledger"]),
+        ("привет", vec!["ПРИВЕТ team"]),
+        ("\u{212a}ELVIN", vec!["kelvin scale"]),
+        ("\u{10400}\u{10401}\u{10402}", vec![intents[10]]),
+        ("STRAßE", vec!["Straße plan"]),
+        // Simple case folding: one character never folds to several, and a composed
+        // character is not its decomposed sequence.
+        ("STRASSE", vec![]),
+        ("été dec", vec![]),
+    ] {
+        let page = f.searched_roots(query, &ActivityWindow::Edge, 20).await;
+        let found: Vec<_> = task_matches(&page.rows)
+            .into_iter()
+            .map(|(id, own)| {
+                let (intent, _) = goals
+                    .iter()
+                    .find(|(_, goal)| goal.id() == &id)
+                    .expect("a listed goal");
+                assert_eq!(own, Some(true), "query {query:?} on {intent:?}");
+                *intent
+            })
+            .collect();
+        assert_eq!(found, expected, "query {query:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_run_submission_matches_in_any_unicode_case() {
+    let f = Fixture::new().await;
+    let goal = f.goal_with("Weekly chores").await;
+    for intent in ["Archive ÉCHÉANCES", "Tidy up"] {
+        f.commands
+            .submit(&f.call(&goal, intent), "return 1;", 60_000)
+            .await
+            .unwrap();
+    }
+    let page = f
+        .searched_roots("échéance", &ActivityWindow::Edge, 10)
+        .await;
+    assert_eq!(task_matches(&page.rows), [(goal.id().clone(), Some(false))]);
+    let identity = TaskIdentity {
+        workspace: f.workspace.clone(),
+        task: goal.id().clone(),
+    };
+    let children = searched_children(&f, &identity, "échéance", InteractionWindow::Start, 10).await;
+    assert_eq!(intents(&children), ["Archive ÉCHÉANCES"]);
+}
+
+#[tokio::test]
+async fn a_query_of_the_longest_length_reads_without_a_database_error() {
+    let f = Fixture::new().await;
+    // A character with four case variants, and a character that needs escaping.
+    let longest = "θ]".repeat(512);
+    let page = f.searched_roots(&longest, &ActivityWindow::Edge, 10).await;
+    assert!(page.rows.is_empty());
 }
 
 #[test]

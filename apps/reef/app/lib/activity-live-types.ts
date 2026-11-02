@@ -11,6 +11,8 @@ export interface ActivityReadingWindow {
   roots: string[]
   followRoot: boolean
   branches: Record<string, ActivityViewport>
+  /** The `branches` of Tasks the search opens, which are not records you expand. */
+  revealed?: string[]
 }
 export interface ActivityObservation {
   path: string

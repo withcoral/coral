@@ -344,6 +344,41 @@ it('accepts encoded Agent navigation and rejects encoded path separators', async
     observeActivity(request({ ...observation, path: `/${workspace}/agents/agent%2Fother` }), f.api),
   ).rejects.toMatchObject({ status: 400 })
 })
+const numbered = (kind: string, index: number) =>
+  `${workspace}/${kind}/00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
+// Catches: a 400 for Tasks a search opens, or a search that lifts the limit on your own.
+it('reads the child windows of Tasks a search opens without counting them as records you expand', async () => {
+  const f = fixture()
+  const viewport = { offset: 0, anchor: '', preceding: 0 }
+  const revealed = Array.from({ length: 25 }, (_, index) => numbered('tasks', index))
+  const chosen = Array.from({ length: 20 }, (_, index) => numbered('runs', index))
+  const window = {
+    roots: [task],
+    followRoot: false,
+    revealed,
+    branches: Object.fromEntries([...revealed, ...chosen].map((item) => [item, viewport])),
+  }
+  const stream = await observeActivity(
+    request({ ...observation, search: 'q=invoices', window }),
+    f.api,
+  )
+  const reader = stream.body!.getReader()
+  expect((await emission(reader)).kind).toBe('page')
+  await reader.cancel()
+  for (const body of [
+    // 21 records you expand are still too many.
+    {
+      ...window,
+      branches: { ...window.branches, [numbered('runs', 20)]: viewport },
+    },
+    { ...window, revealed: [...revealed, numbered('tasks', 25)] },
+    { ...window, revealed: ['not a record'] },
+  ])
+    await expect(
+      observeActivity(request({ ...observation, search: 'q=invoices', window: body }), f.api),
+    ).rejects.toMatchObject({ status: 400 })
+})
+
 it('rejects unbounded or invalid viewports before any domain query', async () => {
   const f = fixture()
   for (const body of [

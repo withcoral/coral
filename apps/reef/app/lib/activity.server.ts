@@ -85,7 +85,12 @@ import {
 } from './activity-live-types'
 import { ACTIVITY_PAGE_SIZE } from './activity-list'
 import { activityPageFetchKey } from './activity-page-fetch'
-import { ACTIVITY_SEARCH_MAX_CHARS, activitySearch, activitySearchKey } from './activity-search'
+import {
+  ACTIVITY_SEARCH_MAX_CHARS,
+  activitySearch,
+  activitySearchKey,
+  revealedTasks,
+} from './activity-search'
 
 /** Activity and its requests, and the current catalog that discovery links open. */
 export type ActivityApi = Pick<
@@ -1618,6 +1623,7 @@ export async function loadActivity(
     selected,
     selectedRow: null,
     query: search,
+    collapsed: [...new Set(query.getAll('collapse'))],
     listPath:
       options.listPath ?? (scope.agent ? `/${scope.agent}` : `/${scope.workspace}/activity`),
   }
@@ -1725,21 +1731,8 @@ export async function loadActivity(
     page.hasBefore = value.hasBefore
     page.hasAfter = value.hasAfter
     page.anchorUnavailable = value.anchorUnavailable
-    // A search keeps a Task whose intent does not match for its matching Runs, so it
-    // shows them, until you collapse it. The reader expands one that a later page or
-    // snapshot brings in.
-    const collapsed = new Set(query.getAll('collapse'))
-    const navigation = !reading && query.get(activityPageFetchKey) !== 'page'
-    for (const row of page.rows)
-      if (
-        navigation &&
-        row.kind === 'task' &&
-        row.intentMatches === false &&
-        !collapsed.has(row.name) &&
-        !page.expanded.includes(row.name) &&
-        page.expanded.length < MAX_EXPANDED_RECORDS
-      )
-        page.expanded.push(row.name)
+    for (const name of revealedTasks(page.rows, page.collapsed))
+      if (!page.expanded.includes(name)) page.expanded.push(name)
   } catch (error) {
     if (!unavailable(error)) throw error
     page.rows = []

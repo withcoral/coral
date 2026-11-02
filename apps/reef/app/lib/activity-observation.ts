@@ -11,6 +11,7 @@ import {
 import type { ActivityPage } from '@/views/activity/types'
 import { readingWindow, type ActivityViewport } from './activity-live-types'
 import {
+  ACTIVITY_PAGE_SIZE,
   failPage,
   liveRoots,
   loadsAutomatically,
@@ -24,7 +25,7 @@ import {
 } from './activity-list'
 import { activityPageFetchKey, fetchedActivityPage } from './activity-page-fetch'
 import { subscribeActivityStream } from './activity-stream'
-import { activitySearchKey } from './activity-search'
+import { activitySearchKey, openRecords, revealedTasks } from './activity-search'
 
 const idle = () => {}
 // Selection, expansion and reading position never change which list is loaded.
@@ -84,6 +85,8 @@ export function activityView({ page, list }: LiveActivityState): ActivityPage {
   if (page.listUnavailable) return page
   return {
     ...page,
+    // The search opens its Tasks wherever they joined the list, not only in this page.
+    expanded: openRecords(page, list.rows),
     rows: list.rows,
     branches: list.branches,
     hasBefore: list.hasNewer,
@@ -117,7 +120,11 @@ export function activityObservation(
   const canFollowRoot = canFollow(list, initial)
   window.followRoot = canFollowRoot && (joined ? previous.followRoot : true)
   const visible = joined ? previous.visible : list.rows.slice(0, 10).map((row) => row.name)
-  window.roots = liveRoots(list, visible, initial.expanded)
+  const opened = ({ rows }: ActivityList) => openRecords(initial, rows)
+  const youExpand = query.getAll('expand')
+  const revealed = ({ rows }: ActivityList) =>
+    revealedTasks(rows, initial.collapsed).filter((name) => !youExpand.includes(name))
+  window.roots = liveRoots(list, visible, opened(list))
   for (const [parent, viewport] of Object.entries(window.branches)) {
     if (!query.has(`offset.${parent}`)) continue
     viewport.anchor = query.get(`anchor.${parent}`) ?? ''
@@ -148,17 +155,37 @@ export function activityObservation(
   // Child windows the reader moved after the open connection read its window. That
   // connection's snapshots still report the offsets it was opened with.
   const moved = new Set<string>()
+  let latestList = list
   const input = () => {
     snapshotFollows = window.followRoot
     answered = false
     moved.clear()
-    return { path, search: query.toString(), window }
+    // Of the Tasks the search opens, only those this read lists ask for a child window,
+    // so a request holds one page of them. The rest keep the window they last showed.
+    const read = window.followRoot
+      ? latestList.rows.slice(0, ACTIVITY_PAGE_SIZE).map((row) => row.name)
+      : window.roots
+    const searchOpened = revealed(latestList)
+    const watched = searchOpened.filter((name) => read.includes(name))
+    const branches = Object.entries(window.branches).filter(
+      ([parent]) => !searchOpened.includes(parent) || watched.includes(parent),
+    )
+    return {
+      path,
+      search: query.toString(),
+      window: {
+        ...window,
+        branches: Object.fromEntries(branches),
+        ...(watched.length && { revealed: watched }),
+      },
+    }
   }
   let wake = idle
   /** Recomputes the watched records after the list or the viewport changes. */
   const watch = (current: LiveActivityState): LiveActivityState => {
+    latestList = current.list
     const followable = canFollow(current.list, initial)
-    const roots = liveRoots(current.list, current.visible, initial.expanded)
+    const roots = liveRoots(current.list, current.visible, opened(current.list))
     let changed = false
     if (!sameNames(roots, window.roots)) {
       window.roots = roots
@@ -188,7 +215,7 @@ export function activityObservation(
         set(state, { ...current, followRoot: follow })
         wake()
       } else if (change.kind === 'viewport') {
-        if (!initial.expanded.includes(change.parent)) return
+        if (!opened(current.list).includes(change.parent)) return
         const old = window.branches[change.parent]
         const next = change.viewport
         if (
@@ -278,7 +305,8 @@ function pageHref(page: ActivityPage, search: string, query: Record<string, stri
   // Records that the page brings in open their child windows where the URL keeps them.
   for (const [key, value] of current) {
     const parent = branchCoordinate(key)
-    if (parent && expanded.has(parent)) next.append(key, value)
+    // Under a search, a Task the page brings in may be one the search opens.
+    if (parent && (expanded.has(parent) || page.query)) next.append(key, value)
   }
   // Every Workspace list reads through the Activity route; an Agent's through its own.
   const path = page.agent ? page.listPath : `${page.listPath.replace(/\/activity$/, '')}/activity`

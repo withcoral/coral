@@ -1,10 +1,10 @@
 /** @vitest-environment happy-dom */
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it } from 'vitest'
 import { renderRoute } from '@/test-support/route'
 import { Activity } from './activity'
-import { activityPage, workspace } from './fixtures'
+import { activityPage, runRow, toolRow, workspace } from './fixtures'
 import type { ActivityPage, ActivityRow } from './types'
 
 const startedAt = '2026-09-18T14:02:00.000Z'
@@ -69,15 +69,83 @@ it('says when no Task or Run intent matches the search', () => {
   expect(screen.queryByText('No activity yet')).toBeNull()
 })
 
-it.each([
-  ['opens a Task a later page lists only for its Runs', '', [goal.name]],
-  ['keeps one you collapsed closed', `&collapse=${goal.name}`, []],
-])('%s', async (_, collapse, expanded) => {
-  const page = searched({ rows: [{ ...goal, intentMatches: false }] })
-  const { router } = renderRoute(() => <Activity page={page} />, {
-    entry: `${listPath}?q=invoice&tree=1${collapse}`,
+const task = (id: number): ActivityRow & { kind: 'task' } => ({
+  ...goal,
+  name: `${workspace}/tasks/t${id}`,
+  intent: `Weekly chores ${id}`,
+  intentMatches: false,
+})
+/** A search that lists `count` Tasks only for one matching Run each. */
+const keptForRuns = (count: number, overrides: Partial<ActivityPage> = {}) => {
+  const rows = Array.from({ length: count }, (_, id) => task(id))
+  return searched({
+    rows,
+    branches: Object.fromEntries(
+      rows.map((row, id) => [
+        row.name,
+        {
+          rows: [
+            runRow(`r${id}`, row.name, {
+              submission: { ...toolRow(row.name, `i${id}`), intent: `Export invoice ${id}` },
+            }),
+          ],
+          total: '1',
+          offset: 0,
+          next: '',
+          unavailable: false,
+        },
+      ]),
+    ),
+    ...overrides,
   })
-  await waitFor(() => expect(address(router).getAll('expand')).toEqual(expanded))
+}
+
+// Catches: reveal that stops at the limit on records you expand, or writes to the address.
+it('opens every Task a search lists only for its Runs, past the limit on records you expand', () => {
+  const { router } = renderRoute(() => <Activity page={keptForRuns(25)} />, {
+    entry: `${listPath}?q=invoice`,
+  })
+  const table = screen.getByRole('table', { name: 'Activity records' })
+  for (let id = 0; id < 25; id += 1)
+    expect(within(table).getByRole('link', { name: `Export invoice ${id}` })).toBeVisible()
+  expect(screen.queryByText('Collapse a record before you expand another.')).toBeNull()
+  // The search decides what opens, so the address stays short.
+  expect(address(router).has('expand')).toBe(false)
+})
+
+// Catches: a collapsed Task that opens again, or that the limit keeps closed.
+it('keeps a Task you collapsed closed, and lets you open it while you are at the limit', async () => {
+  const user = userEvent.setup()
+  const collapsed = task(0).name
+  const chosen = Array.from({ length: 20 }, (_, id) => `${workspace}/runs/chosen${id}`)
+  const { [collapsed]: _closed, ...branches } = keptForRuns(2).branches
+  const { router } = renderRoute(
+    () => (
+      <Activity
+        page={keptForRuns(2, {
+          branches,
+          expanded: [...chosen, task(1).name],
+          collapsed: [collapsed],
+        })}
+      />
+    ),
+    {
+      entry: `${listPath}?q=invoice&tree=1&collapse=${collapsed}${chosen
+        .map((name) => `&expand=${name}`)
+        .join('')}`,
+    },
+  )
+  const table = screen.getByRole('table', { name: 'Activity records' })
+  expect(within(table).queryByRole('link', { name: 'Export invoice 0' })).toBeNull()
+  expect(within(table).getByRole('link', { name: 'Export invoice 1' })).toBeVisible()
+  // Your own records are at the limit, and the search's are not among them.
+  expect(screen.getByText('Collapse a record before you expand another.')).toBeVisible()
+  const row = within(table)
+    .getByRole('link', { name: 'Weekly chores 0' })
+    .closest<HTMLElement>('[role="row"]')!
+  await user.click(within(row).getByRole('button', { name: 'Expand record' }))
+  expect(address(router).has('collapse')).toBe(false)
+  expect(address(router).getAll('expand')).toEqual(chosen)
 })
 
 it('lists the open record that the search leaves out first, then says nothing matches', () => {
@@ -95,12 +163,12 @@ it('lists the open record that the search leaves out first, then says nothing ma
 })
 
 it.each([
-  ['ASCII letters in either case', 'INVOICE', 'invoice'],
-  ['other letters only as typed', 'été', null],
-])('marks %s, as Coral matches them', (_, query, marked) => {
-  const row = { ...goal, intent: 'Été invoice review', intentMatches: true }
+  ['ASCII letters', 'INVOICE', 'Été invoice review', 'invoice'],
+  ['accented letters', 'été', 'Été invoice review', 'Été'],
+])('marks %s in either case, as Coral matches them', (_, query, intent, marked) => {
+  const row = { ...goal, intent, intentMatches: true }
   renderRoute(() => <Activity page={searched({ query, rows: [row] })} />, {
-    entry: `${listPath}?q=${query}`,
+    entry: `${listPath}?q=${encodeURIComponent(query)}`,
   })
-  expect(screen.queryByText(/./, { selector: 'strong' })?.textContent ?? null).toBe(marked)
+  expect(screen.getByText(/./u, { selector: 'strong' }).textContent).toBe(marked)
 })

@@ -140,24 +140,35 @@ pub(crate) async fn discovery_context(
         .collect()
 }
 
-/// `"{table}"."intent"` contains the query, ignoring ASCII case. Postgres
-/// would fold other letters under its database locale; the "C" collation keeps
-/// it to ASCII, as SQLite's `LOWER` is.
+/// `"{table}"."intent"` contains the query, ignoring case. One pattern serves
+/// Postgres's `~` and `SQLite`'s `REGEXP` alike, and its explicit classes need
+/// neither backend's locale, case folding or character classes.
 pub(crate) fn intent_contains(system: DatabaseSystem, table: &str, query: &IntentQuery) -> Expr {
-    let column = format!("\"{table}\".\"intent\"");
-    let folded = match system {
-        DatabaseSystem::Sqlite => Expr::cust(format!("LOWER({column})")),
-        DatabaseSystem::Postgres => Expr::cust(format!("LOWER({column} COLLATE \"C\")")),
+    let operator = match system {
+        DatabaseSystem::Postgres => "~",
+        DatabaseSystem::Sqlite => "REGEXP",
     };
-    let mut pattern = String::from("%");
-    for character in query.folded().chars() {
-        if matches!(character, '\\' | '%' | '_') {
-            pattern.push('\\');
+    coral_db::col(table, "intent").binary(
+        sea_query::BinOper::Custom(operator),
+        Expr::val(intent_pattern(query)),
+    )
+}
+
+/// One class per query character, so every character stands for itself. Both
+/// regular expression dialects read a backslash inside a class as an escape.
+fn intent_pattern(query: &IntentQuery) -> String {
+    let mut pattern = String::new();
+    for variants in query.variants() {
+        pattern.push('[');
+        for &character in variants {
+            if matches!(character, '\\' | '[' | ']' | '^' | '-') {
+                pattern.push('\\');
+            }
+            pattern.push(character);
         }
-        pattern.push(character);
+        pattern.push(']');
     }
-    pattern.push('%');
-    folded.like(sea_query::LikeExpr::new(pattern).escape('\\'))
+    pattern
 }
 
 pub(crate) struct RootPage {

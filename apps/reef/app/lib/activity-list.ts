@@ -1,4 +1,5 @@
 import type { ActivityBranch, ActivityPage, ActivityRow } from '@/views/activity/types'
+import { openRecords } from './activity-search'
 
 /** Records in each page that Reef asks Coral for. */
 export const ACTIVITY_PAGE_SIZE = 25
@@ -152,7 +153,7 @@ export function mergeActivityPage(
     if (rows[0]?.name === page.rows[0]!.name) hasNewer = page.hasBefore
     if (rows.at(-1)?.name === page.rows.at(-1)!.name) hasOlder = page.hasAfter
   }
-  const expanded = new Set(page.expanded)
+  const expanded = new Set(openRecords(page, rows))
   const branches = Object.fromEntries(
     Object.entries({ ...list.branches, ...page.branches }).filter(([name]) => expanded.has(name)),
   )

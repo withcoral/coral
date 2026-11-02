@@ -3236,16 +3236,42 @@ describe('intent search', () => {
       { scope },
     )
     expect(collapsed.expanded).toEqual([])
+    expect(collapsed.branches[task]).toBeUndefined()
+    expect(collapsed.collapsed).toEqual([task])
   })
 
-  it('reads a live snapshot for the search, and leaves opening new Tasks to the reader', async () => {
-    const { api, calls } = coral(searched({ [task]: false }))
-    const page = await loadActivity(request({ q: 'invoices', tree: '1' }), api, {
-      scope,
-      reading: { roots: [], followRoot: true, branches: {} },
+  // Catches: reveal that stops at the limit on records you expand, or that leaves a
+  // Task a later page or Live brings in closed.
+  it.each([
+    ['a navigation', { q: 'invoices' }, undefined],
+    ['a later page', { q: 'invoices', tree: '1', load: 'page', after: task }, undefined],
+    [
+      'a live snapshot',
+      { q: 'invoices', tree: '1' },
+      { roots: [], followRoot: true, branches: {} },
+    ],
+  ])('reveals every Task %s lists only for its Runs', async (_, values, reading) => {
+    const listed = Array.from({ length: 25 }, (__, index) => `${task}-${index}`)
+    const chosen = Array.from({ length: 20 }, (__, index) => `${workspace}/runs/chosen-${index}`)
+    const { api } = coral(searched(Object.fromEntries(listed.map((name) => [name, false]))), {
+      activity: {
+        browseRunEntries: () => ({ entries: [], total: 0n, offset: 0n }),
+      },
     })
-    expect(queries(calls, 'roots')).toEqual(['invoices'])
-    expect(page.rows).toMatchObject([{ name: task, intentMatches: false }])
-    expect(page.expanded).toEqual([])
+    const page = await loadActivity(request({ ...values, expand: chosen }), api, {
+      scope,
+      reading,
+    })
+    expect(page.rows.map((row) => row.name)).toEqual(listed)
+    expect(page.expanded).toEqual(expect.arrayContaining(listed))
+    expect(Object.keys(page.branches)).toEqual(expect.arrayContaining(listed))
+  })
+
+  it('still refuses more than 20 records you expand yourself', async () => {
+    const { api } = coral(searched({ [task]: false }))
+    const chosen = Array.from({ length: 21 }, (_, index) => `${task}-${index}`)
+    await expect(
+      loadActivity(request({ q: 'invoices', tree: '1', expand: chosen }), api, { scope }),
+    ).rejects.toMatchObject({ status: 400 })
   })
 })

@@ -1,6 +1,7 @@
 use std::fmt;
 
 use coral_workspace::{Principal, WorkspaceId};
+use regex_syntax::hir::{ClassUnicode, ClassUnicodeRange};
 
 use crate::Error;
 
@@ -99,10 +100,12 @@ pub const INTENT_QUERY_MAX_CHARS: usize = 1024;
 
 /// A literal Activity search over Task intent and Run submission intent.
 ///
-/// Matching is substring containment that ignores ASCII case, the same on
-/// SQLite and Postgres. Other characters match exactly.
+/// Matching is substring containment that ignores case by Unicode simple case
+/// folding, the same on `SQLite` and Postgres under any locale. One character
+/// matches one character: `ß` does not match `SS`, and a composed `é` does not
+/// match `e` with a combining accent.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IntentQuery(String);
+pub struct IntentQuery(Vec<Vec<char>>);
 
 impl IntentQuery {
     /// Trims surrounding whitespace and validates the query.
@@ -122,19 +125,36 @@ impl IntentQuery {
                 "intent query must be {INTENT_QUERY_MIN_CHARS} to {INTENT_QUERY_MAX_CHARS} characters with no null character"
             )));
         }
-        Ok(Self(value.to_ascii_lowercase()))
+        Ok(Self(value.chars().map(case_variants).collect()))
     }
 
     /// Whether `intent` contains the query.
     #[must_use]
     pub fn matches(&self, intent: &TaskIntent) -> bool {
-        intent.as_str().to_ascii_lowercase().contains(&self.0)
+        let intent: Vec<char> = intent.as_str().chars().collect();
+        intent.windows(self.0.len()).any(|window| {
+            window
+                .iter()
+                .zip(&self.0)
+                .all(|(character, variants)| variants.contains(character))
+        })
     }
 
-    /// The query with ASCII letters in lowercase.
-    pub(crate) fn folded(&self) -> &str {
+    /// Each query character's case variants, the character included.
+    pub(crate) fn variants(&self) -> &[Vec<char>] {
         &self.0
     }
+}
+
+/// `character` and every character it equals under Unicode simple case folding.
+fn case_variants(character: char) -> Vec<char> {
+    let mut class = ClassUnicode::new([ClassUnicodeRange::new(character, character)]);
+    class.case_fold_simple();
+    class
+        .ranges()
+        .iter()
+        .flat_map(|range| range.start()..=range.end())
+        .collect()
 }
 
 /// Terminal Task outcome.

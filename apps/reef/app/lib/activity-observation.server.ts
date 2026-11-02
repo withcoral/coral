@@ -49,8 +49,12 @@ async function observation(request: Request): Promise<ActivityObservation> {
     )
       throw invalid()
     const branches = Object.entries(value.window.branches)
+    const revealed = value.window.revealed ?? []
     if (
-      branches.length > 20 ||
+      !Array.isArray(revealed) ||
+      revealed.length > 25 ||
+      !revealed.every(name) ||
+      branches.filter(([parent]) => !revealed.includes(parent)).length > 20 ||
       branches.some(
         ([parent, viewport]) =>
           !name(parent) ||
@@ -92,7 +96,10 @@ export async function observeActivity(
   url.search = input.search
   url.searchParams.set('tree', '1')
   for (const parent of Object.keys(input.window.branches)) {
-    if (!url.searchParams.getAll('expand').includes(parent))
+    if (
+      !input.window.revealed?.includes(parent) &&
+      !url.searchParams.getAll('expand').includes(parent)
+    )
       url.searchParams.append('expand', parent)
   }
   return activityStream(

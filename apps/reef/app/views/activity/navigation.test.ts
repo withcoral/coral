@@ -1572,6 +1572,85 @@ describe('search navigation', () => {
     expect(target(unsearched.toggleHref(task)).has('collapse')).toBe(false)
   })
 
+  describe('a Task the search opens', () => {
+    const other = 'workspaces/w/tasks/other'
+    const keptTask = { ...taskRow('t'), name: task, intentMatches: false }
+    const opened = (overrides: Partial<ActivityPage> = {}) =>
+      activityPage({
+        rows: [keptTask],
+        expanded: [task, other],
+        query: 'invoices',
+        listPath: '/workspaces/w/activity',
+        ...overrides,
+      })
+    const at = (value: ActivityPage, search: string) =>
+      activityNavigation(value, '/workspaces/w/activity', search, {
+        anchor: null,
+        branches: value.expanded.includes(task)
+          ? { [task]: { offset: 200, anchor: '', preceding: 0 } }
+          : {},
+      })
+
+    // Catches: a search-opened Task that uses up the limit on records you expand.
+    it('never joins the records you expand, in the address or at the limit', () => {
+      const nav = at(opened(), `?q=invoices&tree=1&expand=${other}`)
+      expect(target(nav.recordHref(run)).getAll('expand')).toEqual([other])
+      expect(target(nav.toggleHref(run)).getAll('expand')).toEqual([other, run])
+      expect(nav.expandedByYou).toEqual([other])
+    })
+
+    // Catches: re-opening that takes a place among the records you expand.
+    it('collapses and opens again through the collapse key alone', () => {
+      const nav = at(opened(), `?q=invoices&tree=1&expand=${other}`)
+      const closed = target(nav.toggleHref(task))
+      expect(closed.getAll('expand')).toEqual([other])
+      expect(closed.getAll('collapse')).toEqual([task])
+      const reopened = at(
+        opened({ expanded: [other], collapsed: [task] }),
+        `?${closed}`,
+      ).toggleHref(task)
+      expect(target(reopened).getAll('expand')).toEqual([other])
+      expect(target(reopened).has('collapse')).toBe(false)
+    })
+
+    // Catches: an address that grows with every Task the search opens.
+    it('keeps a child window you scrolled, and only that, in the address', () => {
+      const scrolled = target(at(opened(), `?q=invoices&tree=1&expand=${other}`).recordHref(run))
+      expect(scrolled.get(`offset.${task}`)).toBe('200')
+      const start = target(
+        activityNavigation(opened(), '/workspaces/w/activity', `?q=invoices&tree=1`, {
+          anchor: null,
+          branches: { [task]: { offset: 0, anchor: '', preceding: 0 } },
+        }).recordHref(run),
+      )
+      expect(start.has(`offset.${task}`)).toBe(false)
+    })
+
+    // Catches: a window you scrolled back to the start that returns to its old place.
+    it('forgets the place of a child window you scrolled back to its start', () => {
+      const back = target(
+        activityNavigation(
+          opened(),
+          '/workspaces/w/activity',
+          `?q=invoices&tree=1&offset.${task}=200&preceding.${task}=3&anchor.${task}=${run}`,
+          { anchor: null, branches: { [task]: { offset: 0, anchor: '', preceding: 0 } } },
+        ).recordHref(run),
+      )
+      for (const key of ['offset', 'preceding', 'anchor'])
+        expect(back.has(`${key}.${task}`)).toBe(false)
+    })
+
+    // Catches: live mode refused at the limit for a Task that is already open.
+    it('needs no room to follow live', () => {
+      const chosen = Array.from({ length: 20 }, (_, index) => `workspaces/w/runs/c${index}`)
+      const nav = at(
+        opened({ expanded: [task, ...chosen] }),
+        `?q=invoices&tree=1${chosen.map((name) => `&expand=${name}`).join('')}`,
+      )
+      expect(nav.liveRoom([task])).toBe(true)
+    })
+  })
+
   it('shows the complete list while a search is typed', () => {
     expect(readsActivity(new URLSearchParams('q=in'))).toBe(true)
   })

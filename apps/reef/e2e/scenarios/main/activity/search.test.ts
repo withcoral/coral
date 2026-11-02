@@ -78,3 +78,62 @@ test('Activity search lists matching Tasks and Runs as you type, follows new mat
     { actor: actor.label, storageState: actor.storageState },
   )
 })
+
+test('Activity search ignores Unicode case, and opens every Task it lists for its Runs through later pages and live arrivals', async (context) => {
+  const actor = await loginActor(context, authenticatedTarget().authentication.owner)
+  await withBrowserSession(
+    context,
+    async ({ page, target, step }) => {
+      const word = `zq${crypto.randomUUID().slice(0, 8)}`
+      const workspace = await createWorkspace(actor.accessToken, `Reveal ${word}`)
+      const accessToken = await mcpToken(page, workspace)
+      const runner = (taskIntent: string) =>
+        programRunner(page, target, workspace, { accessToken, taskIntent })
+      const matching = async (index: number) => {
+        const execute = runner(`Chores ${index}`)
+        await observeRun(execute, await execute.exec('return 1;', `ÉCHÉANCE ${word} ${index}`))
+        await observeRun(execute, await execute.exec('return 1;', `Tidy up ${index}`))
+      }
+      // More than the limit on records you expand, and more than one page.
+      const count = 26
+      for (let index = 0; index < count; index += 1) await matching(index)
+
+      const table = page.getByRole('table', { name: 'Activity records', exact: true })
+      const field = page.getByRole('searchbox', { name: 'Search intent', exact: true })
+      const run = (index: number) =>
+        table.getByRole('link', { name: `ÉCHÉANCE ${word} ${index}`, exact: true })
+      await step('Search in another case and see the Runs of every Task', async () => {
+        await page.goto(`/workspaces/${workspace}/activity`)
+        await field.fill(`échéance ${word}`)
+        for (let index = count - 1; index >= 0; index -= 1) {
+          await run(index).scrollIntoViewIfNeeded()
+          await run(index).waitFor()
+        }
+        expect(await table.getByRole('link', { name: 'Tidy up 0', exact: true }).count()).toBe(0)
+        expect(await table.locator('strong').first().innerText()).toBe(`ÉCHÉANCE ${word}`)
+      })
+      await step('See the Runs of a Task that arrives while you search', async () => {
+        // Live inserts new records only at the top of the list.
+        await run(count - 1).scrollIntoViewIfNeeded()
+        await page.mouse.wheel(0, -100_000)
+        await matching(count)
+        await run(count).waitFor()
+      })
+      await step('Collapse one Task, keep it collapsed on reload, then open it', async () => {
+        const row = table.getByRole('row', { name: /Chores 0/ }).first()
+        await row.scrollIntoViewIfNeeded()
+        await row.getByRole('button', { name: 'Collapse record' }).click()
+        await run(0).waitFor({ state: 'detached' })
+        expect(new URL(page.url()).searchParams.has('collapse')).toBe(true)
+        await page.reload()
+        await run(count).waitFor()
+        const closed = table.getByRole('row', { name: /Chores 0/ }).first()
+        await closed.scrollIntoViewIfNeeded()
+        await closed.getByRole('button', { name: 'Expand record' }).click()
+        await run(0).waitFor()
+        expect(new URL(page.url()).searchParams.has('collapse')).toBe(false)
+      })
+    },
+    { actor: actor.label, storageState: actor.storageState },
+  )
+})

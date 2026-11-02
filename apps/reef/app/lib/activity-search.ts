@@ -1,4 +1,4 @@
-import type { FilterQuery } from '@/utils/filter-query'
+import type { ActivityPage, ActivityRow } from '@/views/activity/types'
 
 /** Fewest characters an activity search reads, as Coral's `INTENT_QUERY_MIN_CHARS`. */
 export const ACTIVITY_SEARCH_MIN_CHARS = 3
@@ -16,32 +16,21 @@ export function activitySearch(typed: string | null): string {
   return [...text].length >= ACTIVITY_SEARCH_MIN_CHARS ? text : ''
 }
 
-const fold = (text: string) => text.replace(/[A-Z]/g, (letter) => letter.toLowerCase())
+/** A Task a search lists only for its Runs. */
+export const keptForRuns = (row: ActivityRow) => row.kind === 'task' && row.intentMatches === false
 
 /**
- * Marks matches as Coral matches intent: every character stands for itself, and only
- * ASCII letters match in either case. `filterQuery` also folds other letters, so it
- * would mark text that Coral did not match.
+ * The Tasks a search opens: those it lists only for their Runs, unless you collapsed
+ * them. The list decides them, so they take no place in the address or in the limit on
+ * the records you expand, and each read holds at most one page of them.
  */
-export function intentQuery(search: string): FilterQuery {
-  const text = search.trim()
-  const needle = fold(text)
-  const ranges = (marked: string): [number, number][] => {
-    if (!needle) return []
-    const found: [number, number][] = []
-    const haystack = fold(marked)
-    for (
-      let at = haystack.indexOf(needle);
-      at !== -1;
-      at = haystack.indexOf(needle, at + needle.length)
-    )
-      found.push([at, at + needle.length])
-    return found
-  }
-  return {
-    text,
-    matches: (...texts) =>
-      !needle || texts.some((candidate) => candidate != null && ranges(candidate).length > 0),
-    ranges,
-  }
+export function revealedTasks(rows: ActivityRow[], collapsed: readonly string[] = []): string[] {
+  return rows.flatMap((row) =>
+    keptForRuns(row) && !collapsed.includes(row.name) ? [row.name] : [],
+  )
+}
+
+/** The records open over `rows`: those `page` names, and those its search opens. */
+export function openRecords(page: ActivityPage, rows: ActivityRow[]): string[] {
+  return [...new Set([...page.expanded, ...revealedTasks(rows, page.collapsed)])]
 }

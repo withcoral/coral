@@ -45,6 +45,7 @@ export interface ActivityLoadControl {
   automatic: boolean
 }
 
+/** Records you can expand at once. A search opens more, without counting them. */
 export const MAX_EXPANDED_RECORDS = 20
 export const runStates = [
   'running',
@@ -294,6 +295,8 @@ export interface ActivityPage {
   rows: ActivityRow[]
   branches: Record<string, ActivityBranch>
   expanded: string[]
+  /** The Tasks you collapsed that the search would open. */
+  collapsed?: string[]
   anchors?: Record<string, string>
   hasBefore: boolean
   hasAfter: boolean

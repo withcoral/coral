@@ -6533,8 +6533,8 @@ pub struct BrowseActivityRootsRequest {
     #[prost(message, optional, tag = "6")]
     pub retained: ::core::option::Option<ActivityRecords>,
     /// Return only the Tasks whose intent, or the intent of one of their Runs,
-    /// contains this text. ASCII letters match in either case; other characters
-    /// match exactly. Surrounding whitespace is ignored. 3 to 80 characters;
+    /// contains this text. Every character stands for itself, in any case under
+    /// Unicode simple case folding. Surrounding whitespace is ignored. 3 to 1024 characters;
     /// leave empty to list all activity. Runs started outside a Task never match.
     #[prost(string, tag = "7")]
     pub query: ::prost::alloc::string::String,

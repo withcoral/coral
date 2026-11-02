@@ -189,6 +189,27 @@ describe('merging', () => {
     const merged = mergeActivityPage(opened, page({ rows: [run(0), run(9)] }), { retained: true })!
     expect(names(merged)).toEqual(['r1', 'r2', 'r3'])
   })
+  // Catches: a snapshot of other records that closes a Task from an earlier page.
+  it('keeps the branch of a Task a search opens while a read of other records joins', () => {
+    const kept = task(2, { intentMatches: false })
+    const read = (overrides: Partial<ActivityPage> = {}) =>
+      activityPage({
+        rows: [task(1, { intentMatches: true }), kept],
+        branches: { [kept.name]: branch([run(20)]) },
+        query: 'invoices',
+        ...overrides,
+      })
+    const list = openActivityList(read())
+    const snapshot = { rows: [task(1, { intentMatches: true })], branches: {} }
+    const merged = mergeActivityPage(list, read(snapshot), { retained: true })!
+    expect(merged.branches[kept.name]).toBe(list.branches[kept.name])
+    const collapsed = mergeActivityPage(list, read({ ...snapshot, collapsed: [kept.name] }), {
+      retained: true,
+    })!
+    expect(merged.branches[kept.name]).toBeDefined()
+    expect(collapsed.branches[kept.name]).toBeUndefined()
+  })
+
   it('drops the branches of records that are no longer expanded', () => {
     const merged = mergeActivityPage(opened, page({ rows: [run(1)], expanded: [run(3).name] }), {
       retained: true,
