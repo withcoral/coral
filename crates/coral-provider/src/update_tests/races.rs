@@ -189,13 +189,15 @@ async fn first_shared_publication_wins_over_a_competing_prepared_replacement() {
         .providers
         .regenerate_provider(&context, winner.clone())
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     assert_eq!(first.outcome(), ProviderPublicationOutcome::Succeeded);
     let rejected = h
         .providers
         .regenerate_provider(&context, loser.clone())
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     assert_eq!(rejected.outcome(), ProviderPublicationOutcome::Failed);
     assert_eq!(
         rejected.diagnostic().unwrap().code(),
@@ -212,7 +214,8 @@ async fn first_shared_publication_wins_over_a_competing_prepared_replacement() {
         h.providers
             .regenerate_provider(&context, winner)
             .await
-            .unwrap(),
+            .unwrap()
+            .value,
         first
     );
     assert_eq!(
@@ -290,7 +293,8 @@ async fn setting_change_cancels_pending_connections_and_reconnects_before_their_
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(
         h.accounts
             .submit_secret(
@@ -347,7 +351,8 @@ async fn setting_change_cancels_pending_connections_and_reconnects_before_their_
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(
         h.accounts
             .submit_secret(

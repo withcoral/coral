@@ -69,6 +69,7 @@ async fn workspace_provider_deletion_removes_its_accounts_and_cancels_open_autho
         )
         .await
         .unwrap()
+        .value
         .published_provider()
         .unwrap()
         .clone();
@@ -147,7 +148,8 @@ async fn workspace_provider_deletion_removes_its_accounts_and_cancels_open_autho
     providers
         .delete_provider(&admin, &scope, provider.id())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     for (actor, account) in [(&context, user_account_id), (&admin, owner_account_id)] {
         assert!(matches!(
             accounts

@@ -65,7 +65,7 @@ impl Fixture {
             index = index.with_write_limit(limit);
         }
         Self {
-            workflow: ProviderWorkflow::new(database.clone(), providers.clone(), index.clone()),
+            workflow: ProviderWorkflow::new(providers.clone(), index.clone()),
             search: UniversalSearchModule::new(database, workspaces),
             db,
             owner,
@@ -220,8 +220,8 @@ async fn publication_indexes_the_new_tools_and_regeneration_removes_the_supersed
 #[tokio::test]
 async fn a_replay_a_reused_generation_or_a_failed_outcome_notifies_nothing() {
     let f = Fixture::new().await;
-    // The test helper commits without notifying, so the index starts empty
-    // and any notification would show.
+    // The Provider module commits without notifying search, so the index
+    // starts empty and any notification would show.
     let setup = f.setup(FORECAST).await;
     let creation = f.creation(&setup);
     let provider = f
@@ -229,6 +229,7 @@ async fn a_replay_a_reused_generation_or_a_failed_outcome_notifies_nothing() {
         .publish_workspace_provider(&change(&f.owner), creation.clone())
         .await
         .unwrap()
+        .value
         .published_provider()
         .unwrap()
         .id()

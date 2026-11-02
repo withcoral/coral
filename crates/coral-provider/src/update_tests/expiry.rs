@@ -45,7 +45,8 @@ async fn expired_shared_replacement_records_one_terminal_failure_and_scrubs_the_
         .providers
         .regenerate_provider(&expired, request.clone())
         .await
-        .expect("expiry is a terminal domain diagnostic");
+        .expect("expiry is a terminal domain diagnostic")
+        .value;
     assert_eq!(failed.outcome(), ProviderPublicationOutcome::Failed);
     assert_eq!(failed.diagnostic().unwrap().code(), "setup_expired");
     assert_eq!(
@@ -99,7 +100,8 @@ async fn expired_shared_replacement_records_one_terminal_failure_and_scrubs_the_
         h.providers
             .regenerate_provider(&expired, request)
             .await
-            .unwrap(),
+            .unwrap()
+            .value,
         failed
     );
     assert_eq!(

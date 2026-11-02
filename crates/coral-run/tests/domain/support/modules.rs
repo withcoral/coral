@@ -328,7 +328,8 @@ impl TestModules {
                 ),
             )
             .await
-            .expect("publish the second Provider");
+            .expect("publish the second Provider")
+            .value;
         let provider = publication
             .published_provider()
             .expect("the second Provider published");
@@ -644,7 +645,8 @@ impl TestModules {
                 ),
             )
             .await
-            .expect("publish Provider");
+            .expect("publish Provider")
+            .value;
         let published = publication
             .published_provider()
             .expect("successful Publication");
@@ -914,7 +916,8 @@ pub(crate) async fn configure_authored_provider(
         .providers
         .delete_provider(&context, &tool.workspace_id, &tool.provider_id)
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let setup = fixture
         .providers
         .prepare_openapi_fixture(
@@ -972,7 +975,8 @@ pub(crate) async fn configure_authored_provider(
             .with_account_grant(grant.provisional_grant_id.expect("provisional grant")),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     let provider = publication.published_provider().expect("published").clone();
     tool.provider_id = provider.id().clone();
     tool.policy_target = ToolPolicyTarget::new(
@@ -1004,7 +1008,8 @@ pub(crate) async fn configure_shared_provider(
         .providers
         .delete_provider(&context, &tool.workspace_id, &tool.provider_id)
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let provider = fixture
         .providers
         .publish_shared_fixture(
@@ -1072,7 +1077,8 @@ pub(crate) async fn configure_user_caller(
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     fixture.accounts()
 }
 

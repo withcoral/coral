@@ -74,6 +74,7 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
         )
         .await
         .unwrap()
+        .value
         .published_provider()
         .unwrap()
         .clone();
@@ -87,7 +88,8 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
             crate::ProviderDisplayName::parse("Renamed").unwrap(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let current = providers
         .inspect_providers(&owner, &scope)
         .await
@@ -224,7 +226,8 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
             request,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     assert_eq!(regenerated.outcome(), ProviderPublicationOutcome::Succeeded);
     let after = providers
         .inspect_providers(&owner, &scope)
@@ -253,7 +256,8 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
             provider.id(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
 }
 
 coral_test_support::provider_setup_fixtures!(crate);
@@ -462,7 +466,8 @@ async fn an_owner_reads_a_providers_configuration_by_namespace() {
     providers
         .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
     let other = workspaces
         .create(&context, WorkspaceDisplayName::parse("Other").unwrap())
@@ -490,7 +495,8 @@ async fn an_owner_reads_a_providers_configuration_by_namespace() {
             crate::ProviderDisplayName::parse("Forecasts").unwrap(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     let disabled = providers
         .disable_provider(
             &with_etag(change_context(owner.clone(), 12, 'c'), &renamed.etag()),
@@ -604,7 +610,8 @@ async fn active_provider_names_cover_only_inspectable_workspaces() {
     providers
         .install_builtin_in_transaction(&mut transaction, &context, used.id())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
     for (workspace, title, namespace) in [
         (&used, "Zebra", "zebra"),

@@ -388,7 +388,8 @@ async fn move_to_shared_account(waiting: &WaitingConnection) {
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
 }
 
 /// Each loss ends the waiting Invocation once, with a catchable code, and
@@ -940,7 +941,8 @@ async fn caller_connection_cannot_complete_an_obsolete_contract_after_regenerati
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let completed = accounts
         .submit_secret(
             &context,

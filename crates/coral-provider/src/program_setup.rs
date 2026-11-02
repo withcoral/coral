@@ -308,10 +308,14 @@ pub async fn published_provider_in_transaction(
     provider: &ProviderId,
     principal: &coral_workspace::Principal,
 ) -> Result<PublishedProvider, Error> {
-    let active =
-        crate::repository::provider_in_transaction(&mut *transaction, workspace_id, provider)
-            .await?
-            .ok_or(Error::ProviderNotFound)?;
+    let active = crate::repository::current_provider(
+        &mut *transaction,
+        workspace_id,
+        crate::repository::ProviderKey::Id(provider),
+        crate::repository::ProviderHold::None,
+    )
+    .await?
+    .ok_or(Error::ProviderNotFound)?;
     // A Publication creates an Owner-added Provider, whose Tools every
     // Principal reaches whatever its role.
     published_active_provider_in_transaction(transaction, active, principal, None).await

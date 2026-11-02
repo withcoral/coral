@@ -106,12 +106,13 @@ async fn agent_update(shared: bool, removal_first: bool) {
             async { gate.proceed.notify_one(); },
         );
         removal.await.unwrap().unwrap();
-        result.unwrap()
+        result.unwrap().value
     } else {
         let result = providers
             .regenerate_provider(&context, update.clone())
             .await
-            .unwrap();
+            .unwrap()
+            .value;
         f.lifecycle
             .delete_agent(&context, f.workspace.id(), agent.principal().id())
             .await
@@ -168,7 +169,8 @@ async fn agent_update(shared: bool, removal_first: bool) {
         providers
             .regenerate_provider(&context, update)
             .await
-            .unwrap(),
+            .unwrap()
+            .value,
         result
     );
     assert_eq!(

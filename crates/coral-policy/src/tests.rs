@@ -138,6 +138,7 @@ async fn declared_read_only_and_safe_http_methods_select_the_default_policy() {
         )
         .await
         .expect("publish MCP Provider")
+        .value
         .published_provider()
         .expect("published resources")
         .access()
@@ -1167,7 +1168,8 @@ async fn provider_removal_discards_current_policy_but_retains_its_event() {
             target.provider_id(),
         )
         .await
-        .expect("remove Provider and current policy");
+        .expect("remove Provider and current policy")
+        .skip_search();
 
     assert!(matches!(
         policies.decision(&owner, &target).await,
@@ -1571,7 +1573,8 @@ async fn provider_rules_hold_the_exact_rules_of_current_tools_by_call_path() {
                         ),
                     )
                     .await
-                    .expect("update Provider");
+                    .expect("update Provider")
+                    .skip_search();
             }
             ThenProvider::Disabled => {
                 providers

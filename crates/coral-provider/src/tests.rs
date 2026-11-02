@@ -118,6 +118,7 @@ pub(crate) async fn publish_provider(
         )
         .await
         .expect("publish Provider")
+        .value
         .published_provider()
         .expect("Provider")
         .clone()

@@ -656,11 +656,11 @@ impl AccountModule {
         expire(&mut tx, context, owner, authority, &mut row).await?;
         let mut view = row.view();
         // Label fields as the Provider presents them now, when it still sends them.
-        let stored = crate::repository::provider_for_workspace_in_transaction(
+        let stored = crate::repository::current_provider(
             &mut tx,
             owner,
-            &row.provider_id,
-            coral_db::RowLock::None,
+            crate::repository::ProviderKey::Id(&row.provider_id),
+            crate::repository::ProviderHold::None,
         )
         .await?;
         if let Some(stored) = stored {
@@ -747,16 +747,14 @@ async fn provider_contract(
     owner: &WorkspaceId,
     provider_id: &ProviderId,
 ) -> Result<ProviderCredentialContract, Error> {
-    let active = {
-        let workspace = owner;
-        provider_repository::hold_active_provider_for_workspace_in_transaction(
-            tx,
-            workspace,
-            provider_id,
-        )
-        .await?;
-        crate::runtime::active_provider_in_transaction(tx, workspace, provider_id).await?
-    }
+    let active = provider_repository::current_provider(
+        tx,
+        owner,
+        provider_repository::ProviderKey::Id(provider_id),
+        provider_repository::ProviderHold::Exclusive,
+    )
+    .await?
+    .and_then(provider_repository::ProviderWithActiveGeneration::into_active)
     .ok_or(Error::ProviderNotFound)?;
     Ok(coral_catalog::credential_contract_in_transaction(tx, &active.generation_id).await?)
 }

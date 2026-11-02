@@ -109,7 +109,8 @@ async fn a_workspace_has_one_builtin_provider_beside_an_owner_provider_named_wor
     let builtin = providers
         .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
 
     let namesake = publish_provider(
@@ -217,7 +218,8 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
     let builtin = providers
         .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
     let document = || {
         ProviderSetupSource::OpenApiDocument(
@@ -295,11 +297,10 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
                     )
                     .await
             }
-            BuiltinChange::Delete => {
-                providers
-                    .delete_provider(&context, workspace.id(), builtin.id())
-                    .await
-            }
+            BuiltinChange::Delete => providers
+                .delete_provider(&context, workspace.id(), builtin.id())
+                .await
+                .map(drop),
         };
         assert!(
             matches!(result, Err(Error::BuiltinProviderManaged)),
@@ -371,7 +372,8 @@ async fn only_a_provider_an_owner_adds_has_a_source_to_inspect() {
     let builtin = providers
         .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
     let added = publish_provider(
         &providers,
@@ -459,7 +461,8 @@ impl BuiltinWorkspace {
         let builtin = providers
             .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
             .await
-            .unwrap();
+            .unwrap()
+            .skip_search();
         transaction.commit().await.unwrap();
         Self {
             fixture,
@@ -482,18 +485,16 @@ impl BuiltinWorkspace {
     /// Generation in its own transaction. Returns the Providers it updated.
     async fn boot(&self, served: &BuiltinCatalog, at: i64) -> Vec<crate::ProviderId> {
         let process = serving(&self.providers, served.clone());
-        let database = self.fixture.database();
         let mut updated = Vec::new();
         for outdated in process.outdated_builtin_generations().await.unwrap() {
-            let mut transaction = database.begin().await.unwrap();
             if process
-                .update_builtin_catalog_in_transaction(&mut transaction, &outdated, at)
+                .update_builtin_catalog(&outdated, at)
                 .await
                 .unwrap()
+                .value
             {
                 updated.push(outdated.provider_id().clone());
             }
-            transaction.commit().await.unwrap();
         }
         updated
     }
@@ -666,30 +667,29 @@ async fn two_processes_that_boot_together_activate_one_generation() {
         .unwrap()
         .try_into()
         .expect("the Built-in Provider pins the running catalog");
-    let update = |process: &ProviderModule, database: std::sync::Arc<coral_db::Database>, at| {
+    let update = |process: &ProviderModule, at| {
         let process = process.clone();
         let outdated = outdated.clone();
-        async move {
-            let mut transaction = database.begin().await.unwrap();
-            let replaced = process
-                .update_builtin_catalog_in_transaction(&mut transaction, &outdated, at)
-                .await
-                .unwrap();
-            transaction.commit().await.unwrap();
-            replaced
-        }
+        async move { process.update_builtin_catalog(&outdated, at).await.unwrap() }
     };
 
-    let (left, right) = tokio::join!(
-        update(&first, arranged.fixture.database(), 20),
-        update(&second, peer, 21),
-    );
+    let (left, right) = tokio::join!(update(&first, 20), update(&second, 21),);
 
-    assert_eq!(
-        [left, right].iter().filter(|replaced| **replaced).count(),
-        1,
-        "{left:?} {right:?}"
-    );
+    // The winner tells search to read its Generation and drop the outdated
+    // one; the process that found it replaced tells search nothing.
+    let (winner, loser) = if left.value {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    assert!(winner.value && !loser.value, "{winner:?} {loser:?}");
+    let crate::SearchChange::Activated(activated) = &winner.search else {
+        panic!("an update activates a Generation: {:?}", winner.search);
+    };
+    assert_eq!(activated.provider(), outdated.provider_id());
+    assert_eq!(activated.replaced(), Some(outdated.generation_id()));
+    assert_ne!(activated.generation(), outdated.generation_id());
+    assert_eq!(loser.search, crate::SearchChange::Unchanged);
     assert_eq!(arranged.keys().await, keys);
     assert_eq!(arranged.events().await.len(), before + 1);
 }
@@ -959,15 +959,23 @@ async fn a_boot_installs_the_builtin_provider_only_where_a_workspace_has_none() 
     assert_eq!(without, expected);
     let before = arranged.events().await.len();
 
-    let database = arranged.fixture.database();
     for workspace in [&arranged.workspace, earlier, archived] {
-        let mut transaction = database.begin().await.unwrap();
-        let installed = arranged
+        let committed = arranged
             .providers
-            .install_missing_builtin_in_transaction(&mut transaction, workspace.id(), 20)
+            .install_missing_builtin(workspace.id(), 20)
             .await
             .unwrap();
-        transaction.commit().await.unwrap();
+        // Search reads the installed Provider's first Generation.
+        match (&committed.value, &committed.search) {
+            (Some(provider), crate::SearchChange::Activated(activated)) => {
+                assert_eq!(activated.workspace(), workspace.id());
+                assert_eq!(activated.provider(), provider.id());
+                assert_eq!(activated.replaced(), None);
+            }
+            (None, crate::SearchChange::Unchanged) => {}
+            other => panic!("an install names what it activated: {other:?}"),
+        }
+        let installed = committed.value;
         let name = workspace.display_name().as_str();
         assert_eq!(
             installed.is_some(),
@@ -1019,24 +1027,20 @@ async fn two_processes_that_boot_together_install_one_builtin_provider() {
         coral_workspace::WorkspaceModule::new(peer.clone()),
         running(),
     );
-    let install = |process: &ProviderModule, database: std::sync::Arc<coral_db::Database>, at| {
+    let install = |process: &ProviderModule, at| {
         let process = process.clone();
         let workspace_id = workspace.id().clone();
         async move {
-            let mut transaction = database.begin().await.unwrap();
-            let installed = process
-                .install_missing_builtin_in_transaction(&mut transaction, &workspace_id, at)
+            process
+                .install_missing_builtin(&workspace_id, at)
                 .await
-                .unwrap();
-            transaction.commit().await.unwrap();
-            installed.is_some()
+                .unwrap()
+                .value
+                .is_some()
         }
     };
 
-    let (left, right) = tokio::join!(
-        install(&first, fixture.database(), 20),
-        install(&second, peer, 21),
-    );
+    let (left, right) = tokio::join!(install(&first, 20), install(&second, 21),);
 
     assert_eq!(
         [left, right].iter().filter(|installed| **installed).count(),

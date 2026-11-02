@@ -153,7 +153,7 @@ async fn provisional_credentials_roll_back_with_authority_and_cannot_be_promoted
                     .is_empty()
             );
         } else {
-            let publication = published.unwrap();
+            let publication = published.unwrap().value;
             let provider = publication.published_provider().unwrap().access().id();
             let evidence = accounts::credential_evidence(&database, workspace.id(), &member).await;
             assert_eq!(

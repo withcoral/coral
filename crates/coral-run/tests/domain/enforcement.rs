@@ -469,7 +469,8 @@ async fn provider_disablement_at_the_enforcement_point_blocks_dispatch() {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     let provider = publication.published_provider().unwrap();
     let selected_provider = provider;
     fixture
@@ -612,7 +613,8 @@ async fn provider_disablement_and_deletion_after_the_enforcement_point_preserve_
                             &tool.provider_id,
                         )
                         .await
-                        .expect("remove Provider after enforcement");
+                        .expect("remove Provider after enforcement")
+                        .skip_search();
                 }
             }
         })
@@ -774,7 +776,8 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
                         &tool.provider_id,
                     )
                     .await
-                    .expect("remove Provider before enforcement");
+                    .expect("remove Provider before enforcement")
+                    .skip_search();
             }
             EnforcementRace::CredentialRoute => {
                 move_to_caller_route(&fixture, &tool).await;
@@ -887,7 +890,8 @@ async fn admitted_invocation_dispatches_its_retained_generation_after_provider_r
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .expect("activate replacement Generation before the enforcement point");
+        .expect("activate replacement Generation before the enforcement point")
+        .skip_search();
     assert!(matches!(
         fixture
             .providers

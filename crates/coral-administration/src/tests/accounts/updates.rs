@@ -60,7 +60,8 @@ async fn connected_account(
         providers
             .regenerate_provider(&change(&f.member), initial)
             .await
-            .unwrap();
+            .unwrap()
+            .skip_search();
         f.accounts
             .get_account(
                 &change(&f.member),
@@ -298,7 +299,8 @@ async fn publication_before_offboarding_preserves_shared_accounts_but_retires_ca
             let result = providers
                 .regenerate_provider(&change(&f.member), update)
                 .await
-                .unwrap();
+                .unwrap()
+                .value;
             assert_eq!(result.outcome(), ProviderPublicationOutcome::Succeeded);
             let before = providers
                 .inspect_provider(&f.owner, f.workspace.id(), &f.provider)

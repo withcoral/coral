@@ -53,7 +53,6 @@ pub(super) fn document_source() -> serde_json::Value {
 /// that Coral renames through too.
 pub(super) fn workflow(fixture: &TestModules) -> coral_administration::ProviderWorkflow {
     coral_administration::ProviderWorkflow::new(
-        fixture.database.clone(),
         fixture.providers.clone(),
         coral_search::SearchIndex::new(fixture.database.clone(), Duration::from_mins(5)),
     )
@@ -97,7 +96,8 @@ impl AdminScope {
                 &workspace_id,
             )
             .await
-            .expect("install the Built-in Provider");
+            .expect("install the Built-in Provider")
+            .skip_search();
         transaction.commit().await.unwrap();
         Self {
             fixture,
@@ -411,6 +411,7 @@ impl AdminScope {
             )
             .await
             .unwrap()
+            .value
             .published_provider()
             .expect("published Provider")
             .clone()
@@ -801,15 +802,14 @@ async fn a_tool_this_version_does_not_perform_fails_before_approval() {
         .unwrap()
         .try_into()
         .expect("the Workspace's Built-in Provider pins the older catalog");
-    let mut transaction = scope.fixture.database.begin().await.unwrap();
     assert!(
         newer
-            .update_builtin_catalog_in_transaction(&mut transaction, &outdated, 20)
+            .update_builtin_catalog(&outdated, 20)
             .await
-            .unwrap(),
+            .unwrap()
+            .value,
         "the newer Coral publishes its catalog"
     );
-    transaction.commit().await.unwrap();
 
     let run = scope
         .start(

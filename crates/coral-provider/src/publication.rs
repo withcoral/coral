@@ -47,15 +47,17 @@ pub trait ProviderRenamer: Send + Sync {
 
 pub use types::{
     ActivatedGeneration, ProviderPublication, ProviderPublicationId, ProviderPublicationOutcome,
-    ProviderRegenerationPublication, ProviderRegenerationRequest, PublicationEvidence, Published,
+    ProviderRegenerationPublication, ProviderRegenerationRequest,
     WorkspaceProviderPublicationRequest,
 };
+pub(crate) use types::{PublicationEvidence, Published};
 
 use coral_catalog::{AuthenticationConfiguration, MaterializationOutcome, ProviderSetupInput};
 use coral_db::Transaction;
 use coral_workspace::{AuthenticatedUser, AuthoritySource, ChangeContext, WorkspaceAction};
 
 use crate::account::setup as setup_credentials;
+use crate::change::{Committed, SearchChange};
 use crate::repository as provider_repository;
 use crate::types::check_etag;
 use crate::{
@@ -164,7 +166,7 @@ enum Preflight {
 }
 
 /// What preparation returns: a stored result, or a publication to write.
-pub enum PreparedPublication<T> {
+pub(crate) enum PreparedPublication<T> {
     /// The request had already committed. Nothing is left to write.
     Replayed(T),
     /// A materialized publication for [`ProviderModule::publish_in_transaction`].
@@ -175,7 +177,7 @@ pub enum PreparedPublication<T> {
 ///
 /// It carries the start time: lock waits and materialization count against a
 /// Setup grant's lifetime.
-pub struct MaterializedPublication<T> {
+pub(crate) struct MaterializedPublication<T> {
     pinned: PinnedPublication,
     materialized: MaterializationOutcome,
     started: std::time::Instant,
@@ -474,13 +476,14 @@ impl ProviderModule {
                 regeneration: baseline,
             } => {
                 validate_regeneration_setup(&request, &current_setup)?;
-                let current_provider = provider_repository::provider_in_transaction(
+                let current_provider = provider_repository::current_provider(
                     transaction,
                     &owner,
-                    request.provider_id(),
+                    provider_repository::ProviderKey::Id(request.provider_id()),
+                    provider_repository::ProviderHold::None,
                 )
                 .await?
-                .filter(|stored| stored.provider.state() == ProviderState::Active)
+                .and_then(provider_repository::ProviderWithActiveGeneration::into_active)
                 .ok_or(Error::ProviderNotFound)?;
                 let access = current_provider.provider.access();
                 let destructive = request.account_grant().is_some()
@@ -540,10 +543,14 @@ impl ProviderModule {
         };
         let mut changed_field_paths = applied.changed_field_paths.to_vec();
         if let Some(provider_id) = source_target {
-            let current =
-                provider_repository::provider_in_transaction(transaction, &owner, provider_id)
-                    .await?
-                    .ok_or(Error::ProviderNotFound)?;
+            let current = provider_repository::current_provider(
+                transaction,
+                &owner,
+                provider_repository::ProviderKey::Id(provider_id),
+                provider_repository::ProviderHold::None,
+            )
+            .await?
+            .ok_or(Error::ProviderNotFound)?;
             if current.source_url.as_deref() != current_setup.setup.input_url() {
                 changed_field_paths.push("provider.source_url");
                 // A source-only change still changes the next refresh target.
@@ -797,7 +804,7 @@ impl ProviderModule {
     ///
     /// Returns authority, Setup, request-conflict, operational, or persistence
     /// failures. None of them changes state.
-    pub async fn prepare_publication(
+    pub(crate) async fn prepare_publication(
         &self,
         context: &ChangeContext,
         request: WorkspaceProviderPublicationRequest,
@@ -820,7 +827,7 @@ impl ProviderModule {
     ///
     /// Requires current owner authority and an active exact Provider. A failure
     /// leaves the Setup ready for retry.
-    pub async fn prepare_regeneration(
+    pub(crate) async fn prepare_regeneration(
         &self,
         context: &ChangeContext,
         request: ProviderRegenerationRequest,
@@ -851,7 +858,7 @@ impl ProviderModule {
     /// Returns authority, Setup, request-conflict, current-state race, or
     /// persistence failures. Some come after earlier writes: never commit the
     /// transaction after an error.
-    pub async fn publish_in_transaction<T>(
+    pub(crate) async fn publish_in_transaction<T>(
         &self,
         transaction: &mut Transaction<'_>,
         context: &ChangeContext,
@@ -873,52 +880,54 @@ impl ProviderModule {
     }
 }
 
-/// Provider-rule tests publish without the Provider workflow and its notifications.
-#[cfg(any(test, feature = "test-fixtures"))]
 impl ProviderModule {
     /// Prepares, writes, and commits one Workspace-owned Provider creation.
     ///
+    /// An exact replay of a committed request returns the same terminal
+    /// result. Safe structural and domain failures are successful calls whose
+    /// returned outcome is `Failed`.
+    ///
     /// # Errors
     ///
-    /// Returns the errors of [`Self::prepare_publication`] and
-    /// [`Self::publish_in_transaction`].
+    /// Returns authority, Setup, request-conflict, current-state race,
+    /// materialization or persistence failures, which commit nothing.
     pub async fn publish_workspace_provider(
         &self,
         context: &ChangeContext,
         request: WorkspaceProviderPublicationRequest,
-    ) -> Result<ProviderPublication, Error> {
-        match Box::pin(self.prepare_publication(context, request)).await? {
-            PreparedPublication::Replayed(publication) => Ok(publication),
-            PreparedPublication::Materialized(publication) => {
-                Box::pin(self.commit_materialized(context, *publication)).await
-            }
-        }
+    ) -> Result<Committed<ProviderPublication>, Error> {
+        let prepared = Box::pin(self.prepare_publication(context, request)).await?;
+        Box::pin(self.commit_publication(context, prepared)).await
     }
 
     /// Prepares, writes, and commits one Provider regeneration.
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`Self::prepare_regeneration`] and
-    /// [`Self::publish_in_transaction`].
+    /// Returns the errors of [`Self::publish_workspace_provider`], and
+    /// [`Error::EtagMismatch`] when the Provider changed since the request's
+    /// etag.
     pub async fn regenerate_provider(
         &self,
         context: &ChangeContext,
         request: ProviderRegenerationRequest,
-    ) -> Result<ProviderRegenerationPublication, Error> {
-        match Box::pin(self.prepare_regeneration(context, request)).await? {
-            PreparedPublication::Replayed(publication) => Ok(publication),
-            PreparedPublication::Materialized(publication) => {
-                Box::pin(self.commit_materialized(context, *publication)).await
-            }
-        }
+    ) -> Result<Committed<ProviderRegenerationPublication>, Error> {
+        let prepared = Box::pin(self.prepare_regeneration(context, request)).await?;
+        Box::pin(self.commit_publication(context, prepared)).await
     }
 
-    async fn commit_materialized<T>(
+    /// Writes a prepared Publication's terminal result in its own transaction.
+    /// A replay, a reuse of the active Generation, or a failed outcome leaves
+    /// search as it is.
+    async fn commit_publication<T>(
         &self,
         context: &ChangeContext,
-        publication: MaterializedPublication<T>,
-    ) -> Result<T, Error> {
+        prepared: PreparedPublication<T>,
+    ) -> Result<Committed<T>, Error> {
+        let publication = match prepared {
+            PreparedPublication::Replayed(value) => return Ok(Committed::unchanged(value)),
+            PreparedPublication::Materialized(publication) => *publication,
+        };
         #[cfg(test)]
         self.publication_observer
             .reached(PublicationPoint::TerminalAttempt)
@@ -942,7 +951,15 @@ impl ProviderModule {
                 .reached(PublicationPoint::Committed)
                 .await;
         }
-        Ok(published.publication)
+        Ok(Committed {
+            value: published.publication,
+            search: match published.evidence {
+                PublicationEvidence::Activated(activated) => SearchChange::Activated(activated),
+                PublicationEvidence::Replayed
+                | PublicationEvidence::ReusedActiveGeneration
+                | PublicationEvidence::Failed => SearchChange::Unchanged,
+            },
+        })
     }
 }
 
@@ -1027,12 +1044,14 @@ impl ProviderModule {
                 .check_administration_in_transaction(transaction, actor, workspace_id)
                 .await?;
         }
-        provider_repository::hold_provider_in_transaction(
+        Ok(provider_repository::current_provider(
             transaction,
             request.owner(),
-            request.provider_id(),
+            provider_repository::ProviderKey::Id(request.provider_id()),
+            provider_repository::ProviderHold::Exclusive,
         )
-        .await
+        .await?
+        .is_some())
     }
 
     #[expect(
@@ -1304,10 +1323,11 @@ impl ProviderModule {
                     )
                     .await?;
                     access::update_credential_route(transaction, &access, route).await?;
-                    let current = provider_repository::provider_in_transaction(
+                    let current = provider_repository::current_provider(
                         transaction,
                         request.owner(),
-                        request.provider_id(),
+                        provider_repository::ProviderKey::Id(request.provider_id()),
+                        provider_repository::ProviderHold::None,
                     )
                     .await?
                     .ok_or(Error::ProviderNotFound)?;

@@ -309,7 +309,8 @@ async fn published_device_provider(
             .with_account_grant(completed.provisional_grant_id.unwrap()),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider = publication.published_provider().unwrap().clone();
     (device, provider, completed)

@@ -168,7 +168,8 @@ async fn update_compatibility_is_unknown_until_prepared_and_survives_restart() {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     let provider = published.published_provider().unwrap();
     let count = TestMaterializer::counting();
     let mut providers = h.providers.clone();

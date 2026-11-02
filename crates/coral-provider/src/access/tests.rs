@@ -72,7 +72,8 @@ async fn exact_inspection_uses_workspace_scope_and_requires_a_membership() {
             provider.id(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert!(matches!(
         providers
             .inspect_provider(&administrator, workspace.id(), provider.id())
@@ -282,7 +283,8 @@ async fn workspace_uniqueness_and_invocation_follow_the_stored_call_root() {
                     ),
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .value;
             published.push(publication);
         }
         let [earlier, later] = <[_; 2]>::try_from(published).unwrap();
@@ -670,7 +672,8 @@ async fn fixed_routes_require_exact_provider_and_eligible_administrative_owner()
                 ),
             )
             .await
-            .unwrap();
+            .unwrap()
+            .value;
         assert_eq!(
             publication.outcome(),
             crate::ProviderPublicationOutcome::Failed

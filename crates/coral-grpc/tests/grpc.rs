@@ -214,7 +214,6 @@ impl Fixture {
                     workspaces.clone(),
                 ),
                 provider_workflow: coral_administration::ProviderWorkflow::new(
-                    database.clone(),
                     providers.clone(),
                     search_index.clone(),
                 ),
@@ -275,7 +274,8 @@ impl Fixture {
         self.provider_module
             .install_builtin_in_transaction(&mut tx, &change(&self.owner), self.workspace.id())
             .await
-            .unwrap();
+            .unwrap()
+            .skip_search();
         tx.commit().await.unwrap();
     }
 

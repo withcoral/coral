@@ -6,8 +6,8 @@ use coral_workspace::{OrganizationRole, WorkspaceDisplayName, WorkspaceId};
 use super::tests::{
     CREDENTIAL_FREE_OPENAPI, change_context, organization_user, publish_provider, test_modules,
 };
-use crate::ProviderModule;
 use crate::access::CredentialRoute;
+use crate::{ProviderModule, SearchChange};
 
 const CITIES_OPENAPI: &str = r##"openapi: 3.1.0
 info:
@@ -133,6 +133,7 @@ async fn hits_hydrate_the_fields_the_stored_generations_entries_index() {
         )
         .await
         .unwrap()
+        .value
         .published_provider()
         .expect("published MCP Provider")
         .clone();
@@ -253,7 +254,8 @@ async fn stored_entries_follow_the_providers_active_generation() {
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     assert_eq!(
         regeneration.outcome(),
         crate::ProviderPublicationOutcome::Succeeded
@@ -283,6 +285,79 @@ async fn stored_entries_follow_the_providers_active_generation() {
             .collect::<Vec<_>>(),
         ["getCity", "listCities"],
         "the entries are the new Generation's Tools"
+    );
+}
+
+#[tokio::test]
+async fn a_committed_change_names_what_search_must_reread() {
+    let (fixture, workspaces, providers) = test_modules().await;
+    let owner = organization_user(
+        fixture.database(),
+        "user:search-change",
+        OrganizationRole::Owner,
+    )
+    .await;
+    let context = change_context(owner.clone(), 10, '1');
+    let workspace = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Changes").unwrap())
+        .await
+        .unwrap();
+    let provider = publish_provider(
+        &providers,
+        &context,
+        workspace.id(),
+        CREDENTIAL_FREE_OPENAPI,
+        "weather",
+        CredentialRoute::None,
+    )
+    .await;
+    let rename = || {
+        providers.rename_provider(
+            &context,
+            workspace.id(),
+            provider.id(),
+            crate::ProviderDisplayName::parse("Renamed").unwrap(),
+        )
+    };
+
+    // Search copies the display name, so it reads the Provider again.
+    let renamed = rename().await.unwrap();
+    assert_eq!(renamed.value.display_name(), "Renamed");
+    assert_eq!(
+        renamed.search,
+        SearchChange::Refreshed {
+            workspace: workspace.id().clone(),
+            provider: provider.id().clone(),
+        }
+    );
+    // The same name again writes nothing, so search has nothing to read.
+    let stored = || async {
+        let etag = providers
+            .inspect_provider(&owner, workspace.id(), provider.id())
+            .await
+            .unwrap()
+            .etag();
+        let events = providers
+            .list_lifecycle_events(&owner, workspace.id())
+            .await
+            .unwrap()
+            .len();
+        (etag, events)
+    };
+    let before = stored().await;
+    assert_eq!(rename().await.unwrap().search, SearchChange::Unchanged);
+    assert_eq!(stored().await, before, "the etag and the lifecycle events");
+
+    let removed = providers
+        .delete_provider(&context, workspace.id(), provider.id())
+        .await
+        .unwrap();
+    assert_eq!(
+        removed.search,
+        SearchChange::Removed {
+            workspace: workspace.id().clone(),
+            provider: provider.id().clone(),
+        }
     );
 }
 
@@ -448,12 +523,16 @@ async fn active_generation(
     workspace_id: &WorkspaceId,
     provider: &crate::Provider,
 ) -> ProviderGenerationId {
-    let mut transaction = providers.database.begin().await.unwrap();
-    let stored =
-        crate::repository::provider_in_transaction(&mut transaction, workspace_id, provider.id())
-            .await
-            .unwrap()
-            .expect("stored Provider");
+    let mut transaction = providers.database.begin_read_snapshot().await.unwrap();
+    let stored = crate::repository::current_provider(
+        &mut transaction,
+        workspace_id,
+        crate::repository::ProviderKey::Id(provider.id()),
+        crate::repository::ProviderHold::None,
+    )
+    .await
+    .unwrap()
+    .expect("stored Provider");
     transaction.rollback().await.unwrap();
     stored.generation_id
 }
