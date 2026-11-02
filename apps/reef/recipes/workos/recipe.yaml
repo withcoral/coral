@@ -4,10 +4,12 @@ id: workos
 display_name: WorkOS
 description: Organizations, users, SSO connections, directories, roles and audit logs from WorkOS.
 
-# WorkOS publishes this document in its own repository.
+# WorkOS publishes this document in its own repository. The URL pins a commit
+# of main (2026-10-30), so the document changes only when a reviewed change
+# here moves the pin.
 source:
   openapi:
-    url: https://raw.githubusercontent.com/workos/openapi-spec/main/spec/open-api-spec.yaml
+    url: https://raw.githubusercontent.com/workos/openapi-spec/58ca0f78dc2fa55e425e329b140b5a48ebf2ccee/spec/open-api-spec.yaml
 
 authentication:
   options:
