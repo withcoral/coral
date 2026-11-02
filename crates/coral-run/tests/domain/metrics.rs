@@ -359,3 +359,81 @@ async fn program_output_records_what_the_run_keeps_and_rejects() {
         owned(&[("output.kind=emission", 1)])
     );
 }
+
+/// A summary phase names how it ended, in its metric and its span: a phase a client
+/// deadline stops still leaves its span and counts as canceled, not as an error.
+#[tokio::test]
+async fn an_activity_summary_phase_records_how_it_ended() {
+    use coral_telemetry::metric::{
+        ActivitySummaryPhase as Phase, ActivitySummaryPhaseOutcome as Outcome,
+    };
+    use coral_telemetry::testing::{SpanCapture, attribute};
+    use opentelemetry::trace::Status;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    super::trace::capture();
+    for (phase, outcome, error_type) in [
+        (Phase::CallOutcomes, Outcome::Completed, None),
+        (
+            Phase::ActorContext,
+            Outcome::Failed,
+            Some("activity_summary_phase_failed"),
+        ),
+        (Phase::Unmeasured, Outcome::Canceled, None),
+    ] {
+        let (spans, metrics) = (SpanCapture::default(), MetricCapture::default());
+        let guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry()
+                .with(spans.layer())
+                .with(metrics.layer()),
+        );
+        let work = async {
+            match outcome {
+                Outcome::Completed => Ok(()),
+                Outcome::Failed => Err(()),
+                Outcome::Canceled => std::future::pending().await,
+            }
+        };
+        // A deadline drops the phase's future, as a client's does at Coral's handler.
+        let answer = tokio::time::timeout(
+            Duration::from_millis(10),
+            crate::activity_summary_phase(phase, work),
+        )
+        .await;
+        assert_eq!(answer.is_err(), outcome == Outcome::Canceled);
+        drop(guard);
+
+        let finished = spans.finished();
+        let [span] = finished.as_slice() else {
+            panic!("{phase:?} left {} spans", finished.len());
+        };
+        assert_eq!(
+            span.name,
+            format!("coral.activity.summary {}", phase.as_str())
+        );
+        assert_eq!(
+            attribute(span, "coral.activity.summary.phase").as_deref(),
+            Some(phase.as_str())
+        );
+        assert_eq!(
+            attribute(span, "coral.activity.summary.outcome").as_deref(),
+            Some(outcome.as_str())
+        );
+        assert_eq!(attribute(span, "error.type").as_deref(), error_type);
+        assert_eq!(
+            matches!(span.status, Status::Error { .. }),
+            error_type.is_some()
+        );
+        assert_eq!(
+            counts(&metrics, "coral.activity.summary.phase.duration"),
+            owned(&[(
+                &format!(
+                    "activity.summary.phase={},outcome={}",
+                    phase.as_str(),
+                    outcome.as_str()
+                ),
+                1
+            )])
+        );
+    }
+}

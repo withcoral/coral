@@ -1,7 +1,9 @@
 //! Activity hierarchy: Task owns root grouping and accepted-execution associations.
 use crate::{AttemptKind, Error, InteractionSummary, Task, TaskId, TaskModule};
-use coral_run::{RunId, RunModule, RunSummary};
+use coral_run::{RunId, RunModule, RunSummary, activity_summary_phase};
+use coral_telemetry::metric::ActivitySummaryPhase;
 use coral_workspace::{AuthenticatedPrincipal, HistoryScope, WorkspaceId};
+use tracing::Instrument as _;
 
 // This metric covers discovery and execution, not authoring or completion feedback.
 // Missing evidence within this scope is unknown; other attempts are not applicable.
@@ -142,19 +144,34 @@ impl TaskModule {
         days: u32,
     ) -> Result<coral_run::ActivitySummary, Error> {
         let window = runs.summary_window(days)?;
-        let mut tx = self.database.begin_read_snapshot().await?;
-        let authority = self
-            .workspaces
-            .action_history_authority_in_transaction(&mut tx, actor, Some(workspace))
+        async move {
+            let mut tx = activity_summary_phase(
+                ActivitySummaryPhase::Acquire,
+                self.database.begin_read_snapshot(),
+            )
             .await?;
-        let discovery =
-            crate::repository::activity::discovery_context(&mut tx, &authority, window.since())
+            let authority = activity_summary_phase(
+                ActivitySummaryPhase::Authorize,
+                self.workspaces.action_history_authority_in_transaction(
+                    &mut tx,
+                    actor,
+                    Some(workspace),
+                ),
+            )
+            .await?;
+            let discovery = activity_summary_phase(
+                ActivitySummaryPhase::DiscoveryContext,
+                crate::repository::activity::discovery_context(&mut tx, &authority, window.since()),
+            )
+            .await?;
+            let summary = runs
+                .activity_summary_in_transaction(&mut tx, &authority, &window, discovery)
                 .await?;
-        let summary = runs
-            .activity_summary_in_transaction(&mut tx, &authority, &window, discovery)
-            .await?;
-        tx.commit().await?;
-        Ok(summary)
+            activity_summary_phase(ActivitySummaryPhase::Commit, tx.commit()).await?;
+            Ok(summary)
+        }
+        .instrument(coral_run::activity_summary_span(workspace, days))
+        .await
     }
 
     /// Reads a single bounded mixed root window in one authorization snapshot.

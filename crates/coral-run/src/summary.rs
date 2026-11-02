@@ -2,9 +2,12 @@
 use crate::{CoralFailure, Error, InvocationResultKind, RunModule};
 use coral_catalog::ToolKey;
 use coral_provider::ProviderId;
-use coral_workspace::{HistoryAuthority, Principal};
+use coral_telemetry::metric::{self, ActivitySummaryPhase, ActivitySummaryPhaseOutcome};
+use coral_telemetry::safe;
+use coral_workspace::{HistoryAuthority, Principal, WorkspaceId};
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use tracing::Instrument as _;
 
 /// The longest window a summary covers.
 pub const MAX_SUMMARY_DAYS: u32 = 30;
@@ -408,6 +411,64 @@ fn tally(evidence: Vec<OutcomeEvidence>) -> Tally {
     }
 }
 
+/// The span of one Activity summary, not yet entered. Its parent is the current
+/// span. The summary's spans live here for `trace_filter`, which admits `coral_run`.
+#[must_use]
+pub fn activity_summary_span(workspace: &WorkspaceId, days: u32) -> tracing::Span {
+    tracing::info_span!(
+        "coral.activity.summary",
+        coral.workspace.id = safe::id(workspace),
+        coral.activity.summary.days = safe::number(days),
+    )
+}
+
+/// Records how a phase ended on its span: canceled, unless `work` answered first.
+struct PhaseEnd {
+    span: tracing::Span,
+    outcome: ActivitySummaryPhaseOutcome,
+}
+
+impl Drop for PhaseEnd {
+    fn drop(&mut self) {
+        self.span.record(
+            "coral.activity.summary.outcome",
+            safe::kind(self.outcome.as_str()),
+        );
+    }
+}
+
+/// Runs `work` as `phase` of an Activity summary, in a child span and timed as
+/// `coral.activity.summary.phase.duration`. A client deadline drops `work`, and
+/// both then record the phase as canceled, which names what the deadline stopped.
+/// # Errors
+/// Returns what `work` returns.
+pub async fn activity_summary_phase<T, E>(
+    phase: ActivitySummaryPhase,
+    work: impl Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let span = tracing::info_span!(
+        "coral.activity.summary.phase",
+        otel.name = safe::span_name("coral.activity.summary", Some(&phase.as_str())),
+        coral.activity.summary.phase = safe::kind(phase.as_str()),
+        coral.activity.summary.outcome = tracing::field::Empty,
+        error.type = tracing::field::Empty,
+    );
+    let measure = metric::activity_summary_phase(phase);
+    let mut end = PhaseEnd {
+        span: span.clone(),
+        outcome: ActivitySummaryPhaseOutcome::Canceled,
+    };
+    let output = work.instrument(span).await;
+    measure.finish(&output);
+    if output.is_ok() {
+        end.outcome = ActivitySummaryPhaseOutcome::Completed;
+    } else {
+        end.outcome = ActivitySummaryPhaseOutcome::Failed;
+        coral_telemetry::record_failure(&end.span, "activity_summary_phase_failed");
+    }
+    output
+}
+
 impl RunModule {
     /// Returns the summary window that ends now and spans `days`.
     /// # Errors
@@ -435,13 +496,28 @@ impl RunModule {
         context: Vec<ActorContext>,
     ) -> Result<ActivitySummary, Error> {
         let since = window.since();
-        let evidence = crate::summary_repository::call_outcomes(tx, authority, since).await?;
+        let evidence = activity_summary_phase(
+            ActivitySummaryPhase::CallOutcomes,
+            crate::summary_repository::call_outcomes(tx, authority, since),
+        )
+        .await?;
         let days =
             crate::summary_repository::daily_calls(tx, authority, since, NANOS_PER_DAY).await?;
-        let approvals = crate::summary_repository::approval_decisions(tx, authority, since).await?;
-        let mut actors = crate::summary_repository::actor_context(tx, authority, since).await?;
-        let context_impact_partial =
-            crate::summary_repository::unmeasured(tx, authority, since).await?;
+        let approvals = activity_summary_phase(
+            ActivitySummaryPhase::ApprovalDecisions,
+            crate::summary_repository::approval_decisions(tx, authority, since),
+        )
+        .await?;
+        let mut actors = activity_summary_phase(
+            ActivitySummaryPhase::ActorContext,
+            crate::summary_repository::actor_context(tx, authority, since),
+        )
+        .await?;
+        let context_impact_partial = activity_summary_phase(
+            ActivitySummaryPhase::Unmeasured,
+            crate::summary_repository::unmeasured(tx, authority, since),
+        )
+        .await?;
         for share in context {
             match actors.iter_mut().find(|a| a.principal == share.principal) {
                 Some(actor) => actor.bytes += share.bytes,

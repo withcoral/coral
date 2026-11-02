@@ -138,6 +138,13 @@ mod tests {
 
     /// Search index reconcile passes run every interval and almost never
     /// find work; their debug spans stay out of the default export.
+    /// `coral_task` calls these spans, and its own target is not admitted.
+    #[test]
+    fn the_default_trace_filter_exports_activity_summary_spans() {
+        let targets: Targets = DEFAULT_TRACE_FILTER.parse().expect("valid default filter");
+        assert!(targets.would_enable("coral_run::summary", &tracing::Level::INFO));
+    }
+
     #[test]
     fn the_default_trace_filter_leaves_out_reconcile_passes() {
         let targets: Targets = DEFAULT_TRACE_FILTER.parse().expect("valid default filter");
