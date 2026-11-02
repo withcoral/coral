@@ -22,7 +22,7 @@ const FUNCTION_PATH_DESCRIPTION: &str =
 const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible provider tools and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`, or `coral.workspace` for the Built-in Provider's tools. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows provider tools to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
 const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
-pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 10_000;
+pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 30_000;
 pub(crate) const DEFAULT_WAIT_MS: u64 = 0;
 pub(crate) const MAX_WAIT_MS: u64 = 30_000;
 
@@ -191,7 +191,7 @@ pub(crate) struct ExecArguments {
     #[schemars(
         range(min = 0, max = MAX_WAIT_MS),
         extend("default" = DEFAULT_EXEC_WAIT_MS),
-        description = format!("How long this call waits for output before returning, in milliseconds. Default {DEFAULT_EXEC_WAIT_MS}. 0 returns at once.")
+        description = format!("Longest this call waits for the Run to end or for `required_actions` to change, in milliseconds. New output does not end the wait. Default {DEFAULT_EXEC_WAIT_MS}. 0 returns at once.")
     )]
     pub(crate) wait_ms: Option<u64>,
 }
@@ -217,7 +217,7 @@ pub(crate) struct WaitArguments {
     #[schemars(
         range(min = 0, max = MAX_WAIT_MS),
         extend("default" = DEFAULT_WAIT_MS),
-        description = format!("How long to wait for new output, a required action, or the end of the Run, in milliseconds. Default {DEFAULT_WAIT_MS}.")
+        description = format!("Longest this call waits for the Run to end or for `required_actions` to change, in milliseconds. New output does not end the wait. Default {DEFAULT_WAIT_MS}, which returns at once.")
     )]
     pub(crate) wait_ms: Option<u64>,
 }
@@ -357,7 +357,7 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
         ),
         always_loaded(
             tool::<WaitArguments, crate::projection::RunUpdateResult<'_>>(
-                "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Observing consumes nothing, so an earlier cursor reads the same output again.",
+                "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Returns when `required_actions` change, the Run ends, or `wait_ms` runs out, with the output that arrived by then. New output alone does not end the wait. Observing consumes nothing, so an earlier cursor reads the same output again.",
                 read_annotations("Wait for Run"),
             ),
         ),

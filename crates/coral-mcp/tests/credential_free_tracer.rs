@@ -1467,6 +1467,66 @@ async fn an_abandoned_exec_request_does_not_cancel_accepted_work() {
     .expect("accepted Run continues to its second Tool after request loss");
 }
 
+/// A Program that logs through a long read does not make the agent spend a
+/// turn on each Log: `wait` holds them until its `wait_ms` runs out or the Run
+/// ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_log_does_not_end_wait_and_the_end_of_the_run_does() {
+    const WAIT_MS: u64 = 1_000;
+    let tracer = Tracer::start().await;
+    let client = tracer.sdk().await;
+    let task = start_task(&client, "Batch output through wait").await;
+    let accepted = call(
+        &client,
+        "exec",
+        json!({
+            "task_id":task, "intent":"Log, then read for a long time", "wait_ms":0,
+            "program":"console.log('before the read'); await coral.providers.weather.disconnectedFirst(); return 7;"
+        }),
+    )
+    .await;
+    let accepted = structured(&accepted);
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        tracer.upstream.signals.first_arrived.notified(),
+    )
+    .await
+    .expect("the Program logs and reaches the gated upstream");
+    // The gate stays shut until this reply arrives, so the handler has to see
+    // a running Run, however late the request reaches it. Load can only delay
+    // the reply, so this lower bound cannot flake.
+    let started = tokio::time::Instant::now();
+    let held = call(
+        &client,
+        "wait",
+        json!({"run_id":accepted["run_id"], "cursor":accepted["next_cursor"], "wait_ms":WAIT_MS}),
+    )
+    .await;
+    assert!(
+        started.elapsed() >= Duration::from_millis(WAIT_MS),
+        "a Log alone does not end the wait: {:?}",
+        started.elapsed()
+    );
+    let held = structured(&held);
+    assert_eq!(held["state"], "running");
+    assert_eq!(held["events"].as_array().expect("output").len(), 1);
+
+    tracer.upstream.signals.release.notify_one();
+    let finished = tokio::time::timeout(
+        Duration::from_secs(10),
+        call(
+            &client,
+            "wait",
+            json!({"run_id":held["run_id"], "cursor":held["next_cursor"], "wait_ms":30_000}),
+        ),
+    )
+    .await
+    .expect("the end of the Run ends the wait");
+    let finished = structured(&finished);
+    assert_eq!(finished["state"], "succeeded");
+    assert_eq!(finished["final_value"], json!({"kind":"value", "value":7}));
+}
+
 /// The process-wide capture of every span, the metrics, Coral's events before
 /// the export filter, not the test client's wire dumps or the body targets
 /// that stay home, and what leaves the host. It installs once per process.
