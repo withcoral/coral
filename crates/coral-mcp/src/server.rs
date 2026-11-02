@@ -228,7 +228,10 @@ impl McpServer {
             (None, Some(goal)) => ExecTarget::Goal(coral_task::NewTaskCommand::new(
                 self.runtime.principal.clone(),
                 self.workspace_id.clone(),
-                TaskIntent::parse(goal).map_err(invalid_input)?,
+                // The call's own `intent` fails with the same text, so name
+                // which of the two this is.
+                TaskIntent::parse(goal)
+                    .map_err(|error| invalid_input(format!("`goal`: {error}")))?,
                 TaskIntent::parse(&arguments.intent).map_err(invalid_input)?,
                 TraceId::current_or_new(),
             )),

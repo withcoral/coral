@@ -134,6 +134,13 @@ async fn check_text(session: &RawSession, task: &str, tools: &[Value]) {
             .await
             .expect_err("intent remains validated at the handler");
         assert_eq!(error.get("code"), Some(&json!(-32602)));
+        // exec also takes the call's own `intent`, which fails with the same
+        // text, so the refusal names `goal`.
+        let message = error.get("message").and_then(Value::as_str);
+        assert!(
+            message.is_some_and(|it| it.starts_with("`goal`: ")),
+            "{error:?}"
+        );
         let rejected = session
             .tool(
                 "search",
