@@ -6,7 +6,7 @@ import { useLoaderData, type ActionFunctionArgs, type LoaderFunctionArgs } from 
 import { describe, expect, it, vi } from 'vitest'
 import type { ActionCount, ActionCounts } from '@/lib/activity-live-types'
 import { ActionSignalContext, type ActionSignal } from '@/lib/use-action-signal'
-import { renderRoute, type RouteOptions } from '@/test-support/route'
+import { renderLivePage, renderRoute, type RouteOptions } from '@/test-support/route'
 import {
   approval,
   approvalContext,
@@ -234,7 +234,7 @@ const historyOf = (...approvals: SettledApproval[]): SettledPage => ({ approvals
 const historyRows = () =>
   within(screen.getByRole('table', { name: 'Approval history' }))
     .getAllByRole('row')
-    .filter((row) => row.querySelector('[data-row-link]'))
+    .filter((row) => within(row).queryAllByRole('link').length > 0)
 
 describe('history', () => {
   it('follows the pending requests, newest first, with outcome, reviewer and time', () => {
@@ -351,6 +351,24 @@ describe('history', () => {
     expect(screen.getByRole('link', { name: 'Send invoice reminders?' })).toBeInTheDocument()
     expect(screen.getByText('Approval history is unavailable.')).toHaveAttribute('role', 'status')
     expect(screen.queryByRole('table', { name: 'Approval history' })).not.toBeInTheDocument()
+  })
+
+  // A page loaded for one workspace must not show up in the next one's history.
+  it('starts over in another workspace', async () => {
+    const older = settledRow('older', 'declined', '2026-09-21T09:00:00.000Z', 'You')
+    const { update } = renderLivePage(
+      ({ settled, workspacePath }: { settled: SettledPage; workspacePath: string }) => (
+        <ApprovalsPage approvals={[]} settled={settled} workspacePath={workspacePath} />
+      ),
+      { settled: { approvals: [approvedRow], next: 'page-2' }, workspacePath: path },
+      { routes: [{ path: `${path}/approvals/history`, loader: () => historyOf(older) }] },
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Load older approvals' }))
+    await screen.findByRole('link', { name: 'Handle older?' })
+    await update({ settled: historyOf(expiredRow), workspacePath: '/workspaces/other' })
+    expect(historyRows().map((row) => within(row).getAllByRole('link')[0].textContent)).toEqual([
+      'Handle expired?',
+    ])
   })
 
   it('keeps the rows and offers a retry when older rows cannot load', async () => {

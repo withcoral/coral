@@ -52,8 +52,8 @@ pub struct SettledApproval<R = crate::RunSummary> {
 /// Non-authorizing position in the newest-first history.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettledCursor {
-    settled_at_unix_nanos: i64,
-    approval: ApprovalId,
+    pub(crate) settled_at_unix_nanos: i64,
+    pub(crate) approval: ApprovalId,
 }
 
 impl SettledCursor {
@@ -109,13 +109,8 @@ impl crate::RunModule {
             ));
         }
         let now = self.now()?;
-        let (rows, has_more) = crate::approval_history_repository::page(
-            tx,
-            authority,
-            after.map(|cursor| (cursor.settled_at_unix_nanos, &cursor.approval)),
-            limit,
-        )
-        .await?;
+        let (rows, has_more) =
+            crate::approval_history_repository::page(tx, authority, after, limit).await?;
         let mut names = HashMap::new();
         let mut approvals = Vec::with_capacity(rows.len());
         for row in rows {

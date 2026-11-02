@@ -1310,20 +1310,15 @@ async fn wait_for_action_page(
     .await
 }
 
+/// Starts `source` as the member, with a minute to run.
 async fn start(f: &Fixture, source: &str) -> coral_run::RunId {
-    f.runs
-        .start(
-            &AuthenticatedPrincipal::user(f.member.clone()),
-            f.workspace.id(),
-            coral_run::RunSubmission::new(
-                coral_run::ProgramSource::parse(source).unwrap(),
-                coral_run::RunTimeout::from_millis(60_000).unwrap(),
-            ),
-        )
-        .await
-        .unwrap()
-        .run_id()
-        .clone()
+    start_as(
+        f,
+        &AuthenticatedPrincipal::user(f.member.clone()),
+        source,
+        60_000,
+    )
+    .await
 }
 
 async fn terminal(f: &Fixture, id: &coral_run::RunId) -> wire::InspectRunResponse {
@@ -1791,11 +1786,10 @@ async fn activity_summary_wire_rejects_malformed_and_hidden_windows_and_labels_i
     assert_eq!(tool.callers, [you]);
 }
 
-/// History lists one Workspace's approved, declined and expired requests, newest first,
-/// and pages stably. Who sees a row follows who invoked its Run, not who decided it: a
-/// User sees their own Runs, and every Owner sees Agent Runs, including another Owner's
-/// decision. Another User's Run stays hidden from an Owner, and a request Coral closed
-/// stays out. No row carries arguments or comments.
+/// Who sees a settled row follows who invoked its Run, not who decided it: a User sees
+/// their own Runs, and every Owner sees Agent Runs, including another Owner's decision.
+/// Another User's Run stays hidden from an Owner. No row carries arguments or comments.
+/// What history holds and how it pages are `coral-run`'s rules, tested there.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -1868,23 +1862,19 @@ async fn settled_approvals_follow_who_invoked_the_run() {
     let run = start_as(&f, &member, call, 60_000).await;
     let member_approved = pending_approval(&f, &member_token, &run).await;
     decide(&member_token, &member_approved, "approve").await;
-    until_terminal(&f, &member, &run).await;
+    f.settle(&member, &run).await;
     let run = start_as(&f, &owner, call, 60_000).await;
     let owner_declined = pending_approval(&f, &owner_token, &run).await;
     decide(&owner_token, &owner_declined, "decline").await;
-    until_terminal(&f, &owner, &run).await;
+    f.settle(&owner, &run).await;
     let run = start_as(&f, &agent, call, 60_000).await;
     let agent_approved = pending_approval(&f, &owner_token, &run).await;
     decide(&owner_token, &agent_approved, "approve").await;
-    until_terminal(&f, &agent, &run).await;
-    let run = start_as(&f, &member, call, 60_000).await;
-    let closed = pending_approval(&f, &member_token, &run).await;
-    cancel(&f, &run).await;
-    until_terminal(&f, &member, &run).await;
+    f.settle(&agent, &run).await;
     // Nobody answers before the Run's timeout.
     let run = start_as(&f, &member, call, 1_000).await;
     let member_expired = pending_approval(&f, &member_token, &run).await;
-    until_terminal(&f, &member, &run).await;
+    f.settle(&member, &run).await;
 
     let browse = async |token: &str, workspace: String, after: String, page_size: u32| {
         f.activity()
@@ -1936,29 +1926,9 @@ async fn settled_approvals_follow_who_invoked_the_run() {
             .collect();
         assert_eq!(seen, expected, "{viewer}");
         assert!(page.next_after.is_empty(), "{viewer}");
-        assert!(
-            page.approvals
-                .windows(2)
-                .all(|pair| matches!(pair, [newer, older] if newer.settled_at_unix_nanos >= older.settled_at_unix_nanos)),
-            "{viewer}: newest first"
-        );
-        assert!(!seen.iter().any(|(name, ..)| **name == closed), "{viewer}");
         let encoded = String::from_utf8_lossy(&prost::Message::encode_to_vec(&page)).into_owned();
         assert!(!encoded.contains("private-argument"), "{viewer}");
         assert!(!encoded.contains("private-comment"), "{viewer}");
-        // A page of one continues to the same rows.
-        let mut paged = Vec::new();
-        let mut after = String::new();
-        loop {
-            let page = browse(token, workspace.clone(), after, 1).await.unwrap();
-            paged.extend(page.approvals.into_iter().map(|row| row.name));
-            if page.next_after.is_empty() {
-                break;
-            }
-            after = page.next_after;
-        }
-        let names: Vec<_> = expected.iter().map(|(name, ..)| (*name).clone()).collect();
-        assert_eq!(paged, names, "{viewer}: pages");
     }
 
     let rows = browse(&member_token, workspace.clone(), String::new(), 100)
@@ -2020,6 +1990,7 @@ async fn settled_approvals_follow_who_invoked_the_run() {
     }
 }
 
+/// Starts `source` as `actor`, with `timeout_ms` to run.
 async fn start_as(
     f: &Fixture,
     actor: &AuthenticatedPrincipal,
@@ -2044,59 +2015,29 @@ async fn start_as(
 /// The name of the approval `run` waits on, as `token`'s holder reads it.
 async fn pending_approval(f: &Fixture, token: &str, run: &coral_run::RunId) -> String {
     let mut client = f.activity();
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            let detail = client
-                .inspect_run(request(
-                    wire::InspectRunRequest {
-                        name: format!("workspaces/{}/runs/{run}", f.workspace.id()),
-                        page_size: 1,
-                        ..Default::default()
-                    },
-                    token,
-                    "reef",
-                ))
-                .await
-                .unwrap()
-                .into_inner();
-            let approval = detail
-                .run
-                .and_then(|run| run.action_page)
-                .and_then(|page| page.actions.into_iter().next())
-                .and_then(|action| action.request)
-                .and_then(|reference| match reference.request {
-                    Some(wire::activity_request_reference::Request::Approval(name)) => Some(name),
-                    _ => None,
-                });
-            if let Some(name) = approval {
-                break name;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the Run waits on an approval")
-}
-
-/// Observes `run` until it ends; an observation also returns while a request waits.
-async fn until_terminal(f: &Fixture, actor: &AuthenticatedPrincipal, run: &coral_run::RunId) {
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        while !f
-            .runs
-            .observe(
-                actor,
-                f.workspace.id(),
-                run,
-                &coral_run::RunObservation::initial(std::time::Duration::from_secs(5)).unwrap(),
-            )
+    on_activity_change(f, async || {
+        let detail = client
+            .inspect_run(request(
+                wire::InspectRunRequest {
+                    name: format!("workspaces/{}/runs/{run}", f.workspace.id()),
+                    page_size: 1,
+                    ..Default::default()
+                },
+                token,
+                "reef",
+            ))
             .await
             .unwrap()
-            .state()
-            .is_terminal()
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
+            .into_inner();
+        detail
+            .run
+            .and_then(|run| run.action_page)
+            .and_then(|page| page.actions.into_iter().next())
+            .and_then(|action| action.request)
+            .and_then(|reference| match reference.request {
+                Some(wire::activity_request_reference::Request::Approval(name)) => Some(name),
+                _ => None,
+            })
     })
     .await
-    .expect("the Run ends");
 }

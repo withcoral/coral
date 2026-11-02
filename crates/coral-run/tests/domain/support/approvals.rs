@@ -109,6 +109,27 @@ impl ActionQueue for RunModule {
     }
 }
 
+/// One page of `actor`'s settled approvals in `workspace`, read in its own
+/// snapshot under the action queue's authority, as the Task module reads it.
+pub(crate) async fn settled_approvals(
+    runs: &RunModule,
+    actor: &AuthenticatedPrincipal,
+    workspace: &coral_workspace::WorkspaceId,
+    after: Option<&crate::SettledCursor>,
+    limit: u16,
+) -> Result<crate::SettledApprovals, Error> {
+    let mut tx = runs.database.begin_read_snapshot().await?;
+    let authority = runs
+        .workspaces
+        .action_history_authority_in_transaction(&mut tx, actor, Some(workspace))
+        .await?;
+    let page = runs
+        .settled_approvals_in_transaction(&mut tx, actor, &authority, after, limit)
+        .await?;
+    tx.commit().await?;
+    Ok(page)
+}
+
 /// An approval-gated Tool whose Invocations stop at the approval wait.
 pub(crate) struct ApprovalGatedTool {
     pub(crate) fixture: TestModules,

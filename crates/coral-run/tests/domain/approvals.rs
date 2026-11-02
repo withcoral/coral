@@ -2181,6 +2181,152 @@ async fn a_run_timeout_expires_its_pending_approval() {
     );
 }
 
+/// History holds the requests a person approved or declined and those whose
+/// deadline passed, newest first, and leaves out a request Coral closed. Its
+/// keyset seeks past a position, so a page already read stays put when a
+/// newer request settles, and paging never repeats or skips a row. A page
+/// size outside 1–100 is refused.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one history arranged through every way a request settles"
+)]
+async fn settled_approvals_list_decisions_and_expiries_newest_first_and_page_stably() {
+    use crate::SettledOutcome::{Approved, Declined, Expired};
+    let fixture = TestModules::new(Arc::new(
+        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
+    ))
+    .await;
+    let tool = fixture.user_tool("user:history", "Approval history").await;
+    fixture.require_approval(&tool).await;
+    let approvals = fixture.approvals();
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    let call =
+        "try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }";
+    let start = async |timeout_ms: u64| {
+        let run = fixture
+            .runs
+            .start(
+                actor,
+                workspace,
+                RunSubmission::new(
+                    ProgramSource::parse(call).unwrap(),
+                    RunTimeout::from_millis(timeout_ms).unwrap(),
+                ),
+            )
+            .await
+            .unwrap()
+            .run_id()
+            .clone();
+        let request = wait_for_approval(&approvals, actor, workspace, &run).await;
+        (run, request.id)
+    };
+    let decide = async |request: &crate::approval::ApprovalId, decision| {
+        approvals
+            .decide(
+                actor,
+                workspace,
+                request,
+                decision,
+                None,
+                &TraceId::parse(&"d".repeat(32)).unwrap(),
+            )
+            .await
+            .unwrap();
+    };
+    let settled = async |after: Option<&crate::SettledCursor>, limit| {
+        settled_approvals(&fixture.runs, actor, workspace, after, limit)
+            .await
+            .unwrap()
+    };
+
+    let (_, approved) = start(60_000).await;
+    decide(&approved, ApprovalDecision::Approve).await;
+    let (_, declined) = start(60_000).await;
+    decide(&declined, ApprovalDecision::Decline).await;
+    let (closed_run, closed) = start(60_000).await;
+    fixture
+        .runs
+        .cancel(actor, workspace, &closed_run, &immediate(None, 1))
+        .await
+        .unwrap();
+    wait_for_terminal(&fixture.runs, actor, workspace, &closed_run).await;
+    // Nobody answers before the Run's timeout.
+    let (expired_run, expired) = start(500).await;
+    wait_for_terminal(&fixture.runs, actor, workspace, &expired_run).await;
+    assert_eq!(
+        approvals
+            .get(actor, workspace, &closed)
+            .await
+            .unwrap()
+            .state,
+        ApprovalState::Closed
+    );
+
+    let all = settled(None, 100).await;
+    let rows: Vec<_> = all
+        .approvals
+        .iter()
+        .map(|row| (row.approval.clone(), row.outcome, row.approver.is_some()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (expired.clone(), Expired, false),
+            (declined.clone(), Declined, true),
+            (approved.clone(), Approved, true),
+        ],
+        "newest first, and the closed request stays out"
+    );
+    assert!(all.next.is_none());
+    let expiry = approvals.get(actor, workspace, &expired).await.unwrap();
+    let [expired_row, declined_row, _] = all.approvals.as_slice() else {
+        panic!("three settled rows")
+    };
+    assert_eq!(
+        expired_row.settled_at_unix_nanos, expiry.deadline_at_unix_nanos,
+        "an expiry is dated at its deadline"
+    );
+    assert_eq!(
+        declined_row
+            .approver
+            .as_ref()
+            .map(|approver| &approver.principal),
+        Some(actor.principal())
+    );
+
+    let first = settled(None, 2).await;
+    let cursor = first.next.clone().expect("a later page");
+    // A request that settles now is newer than every row read so far.
+    let (_, newer) = start(60_000).await;
+    decide(&newer, ApprovalDecision::Approve).await;
+    let rest = settled(Some(&cursor), 2).await;
+    let paged: Vec<_> = first
+        .approvals
+        .iter()
+        .chain(&rest.approvals)
+        .map(|row| row.approval.clone())
+        .collect();
+    assert_eq!(paged, [expired.clone(), declined, approved]);
+    assert!(rest.next.is_none());
+    // A fresh read shows it beside the rows it is newer than. The expiry stays
+    // first: it is dated at its deadline, later than any decision here.
+    let fresh: Vec<_> = settled(None, 2)
+        .await
+        .approvals
+        .into_iter()
+        .map(|row| row.approval)
+        .collect();
+    assert_eq!(fresh, [expired, newer]);
+
+    for limit in [0, 101] {
+        assert!(matches!(
+            settled_approvals(&fixture.runs, actor, workspace, None, limit).await,
+            Err(Error::InvalidInput(_))
+        ));
+    }
+}
+
 /// A fixture under `policy` whose Invocations and Run Owners one
 /// [`WaitProbe`] watches; approval-gated calls go to an upstream that
 /// rejects them.

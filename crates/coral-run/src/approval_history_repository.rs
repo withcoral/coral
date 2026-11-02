@@ -39,13 +39,13 @@ struct SettledRow {
     provider_label: Option<String>,
 }
 
-/// A page of settled requests after `after` = (decision time, request), newest
-/// first, and whether more follow. The keyset seeks past the position, so a
+/// A page of settled requests after `after`, newest first, and whether more
+/// follow. The keyset seeks past the position, so a
 /// later decision cannot move a page already read.
 pub(crate) async fn page(
     tx: &mut Transaction<'_>,
     authority: &HistoryAuthority,
-    after: Option<(i64, &ApprovalId)>,
+    after: Option<&crate::SettledCursor>,
     limit: u16,
 ) -> Result<(Vec<SettledEvidence>, bool), Error> {
     let mut select = Query::select();
@@ -96,13 +96,14 @@ pub(crate) async fn page(
         column("r", "principal_id"),
         column("r", "principal_kind"),
     );
-    if let Some((settled_at, approval)) = after {
+    if let Some(after) = after {
+        let at = after.settled_at_unix_nanos;
         select.and_where(
             col("a", "decided_at_unix_nanos")
-                .lt(settled_at)
+                .lt(at)
                 .or(col("a", "decided_at_unix_nanos")
-                    .eq(settled_at)
-                    .and(col("a", "id").lt(approval.to_string()))),
+                    .eq(at)
+                    .and(col("a", "id").lt(after.approval.to_string()))),
         );
     }
     select

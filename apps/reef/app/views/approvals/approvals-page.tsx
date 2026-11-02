@@ -43,55 +43,90 @@ import type { ProviderMark } from './types'
 const RETRY_MS = 10_000
 /** The provider that owns a call, and the tool under it, if it is still in the workspace. */
 type ToolOwner = ReturnType<typeof toolOwner<ProviderMark>>
+
+/** One value, so the page without history keeps one identity across renders. */
 const NO_HISTORY: SettledPage = { approvals: [], next: '' }
 
 /** A later page of settled approvals, or the outage that kept it from loading. */
 type OlderPage = SettledPage | { unavailable: true }
+
+/** What the history shows of one workspace, and what it was built from. */
+interface History {
+  workspacePath: string
+  /** The newest page the rows include. */
+  read: SettledPage | null
+  /** The last later page this history took in, so each one joins the rows once. */
+  loaded: OlderPage | undefined
+  /** Where the later pages loaded here end. Before one loads, the newest page's end. */
+  next?: string
+  rows: SettledApproval[]
+}
 
 /** Settled approvals: the newest page the loader reads, then the older pages loaded here.
  * A refresh replaces the newest page. Every row loaded stays, since a settled request does
  * not change, so the list does not jump while you read older rows. The rows keep Coral's
  * order. A newest page Coral could not read (`null`) keeps the rows already shown. */
 function useHistory(read: SettledPage | null, workspacePath: string) {
-  const newest = read ?? NO_HISTORY
   const fetcher = useFetcher<OlderPage>()
-  const [shown, setShown] = useState({ workspacePath, read, rows: newest.approvals })
-  // The last page loaded here and where it ends. Before one loads, the newest page's end.
-  const [older, setOlder] = useState<{ page?: OlderPage; next?: string }>({})
-  if (shown.workspacePath !== workspacePath) {
-    // Another workspace starts over.
-    setShown({ workspacePath, read, rows: newest.approvals })
-    setOlder({})
-  } else if (shown.read !== read) {
-    // The newest rows go first. Each row they move down stays, after them.
-    setShown({ workspacePath, read, rows: [...newest.approvals, ...without(shown.rows, newest)] })
-  }
-  const page = fetcher.state === 'idle' ? fetcher.data : undefined
-  if (page && page !== older.page) {
-    // Each loaded page joins the rows once. An outage keeps the place to retry from.
-    if ('unavailable' in page) setOlder({ ...older, page })
-    else {
-      setOlder({ page, next: page.next })
-      setShown({ ...shown, rows: [...shown.rows, ...without(page.approvals, shown.rows)] })
-    }
-  }
-  const next = older.next ?? newest.next
+  const loaded = fetcher.state === 'idle' ? fetcher.data : undefined
+  const [history, setHistory] = useState(() => fresh(workspacePath, read, loaded))
+  // Derived from the reads during render, so a refresh never shows the old rows first.
+  const current = advance(history, workspacePath, read, loaded)
+  if (current !== history) setHistory(current)
+  const next = current.next ?? read?.next
   return {
-    rows: shown.rows,
+    rows: current.rows,
     unavailable: read === null,
     more: Boolean(next) && read !== null,
     loading: fetcher.state !== 'idle',
-    failed: Boolean(older.page && 'unavailable' in older.page),
+    failed: Boolean(current.loaded && 'unavailable' in current.loaded),
     load: () =>
       void fetcher.load(
-        `${workspacePath}/approvals/history?${new URLSearchParams({ after: next })}`,
+        `${workspacePath}/approvals/history?${new URLSearchParams({ after: next ?? '' })}`,
       ),
   }
 }
 
-/** `rows` without those already in `shown`. */
-function without(rows: SettledApproval[], shown: SettledApproval[] | SettledPage) {
-  const names = new Set(('approvals' in shown ? shown.approvals : shown).map((row) => row.name))
+/** A workspace's history from its newest page. A page the fetcher already holds belongs to
+ * the workspace before, so it never joins these rows. */
+function fresh(
+  workspacePath: string,
+  read: SettledPage | null,
+  loaded: OlderPage | undefined,
+): History {
+  return { workspacePath, read, loaded, rows: read?.approvals ?? [] }
+}
+
+/** `history` after the newest page `read` and the later page `loaded`, or `history` itself
+ * when neither is new. */
+function advance(
+  history: History,
+  workspacePath: string,
+  read: SettledPage | null,
+  loaded: OlderPage | undefined,
+): History {
+  if (history.workspacePath !== workspacePath) return fresh(workspacePath, read, loaded)
+  let next = history
+  if (read && read !== history.read)
+    // The newest rows go first. Each row they move down stays, after them.
+    next = { ...next, read, rows: [...read.approvals, ...notIn(next.rows, read.approvals)] }
+  if (loaded && loaded !== history.loaded)
+    // An outage keeps the place to retry from.
+    next =
+      'unavailable' in loaded
+        ? { ...next, loaded }
+        : {
+            ...next,
+            loaded,
+            next: loaded.next,
+            rows: [...next.rows, ...notIn(loaded.approvals, next.rows)],
+          }
+  return next
+}
+
+/** `rows` that `shown` does not hold yet. */
+function notIn(rows: SettledApproval[], shown: SettledApproval[]) {
+  const names = new Set(shown.map((row) => row.name))
   return rows.filter((row) => !names.has(row.name))
 }
 

@@ -339,3 +339,39 @@ it('keeps the pending rows when the history cannot be read', async () => {
   expect(approvals).toHaveLength(1)
   expect(settled).toBeNull()
 })
+
+const refuse = () => {
+  throw new ConnectError('gone', Code.NotFound)
+}
+
+// A refusal is an answer: it must not read as an outage that "Try again" could fix.
+it.each([
+  ['the workspace', 'getWorkspace'],
+  ['the history', 'browseSettledApprovals'],
+])('fails a later page that Coral refuses at %s', async (_, refusing) => {
+  coral.transport = fakeManagementTransport({
+    workspaces: {
+      getWorkspace:
+        refusing === 'getWorkspace'
+          ? refuse
+          : ({ name }) => ({
+              name,
+              effectiveRole: WorkspaceRole.MEMBER,
+              state: WorkspaceState.ACTIVE,
+            }),
+    },
+    activity: {
+      browseSettledApprovals: refusing === 'browseSettledApprovals' ? refuse : () => ({}),
+    },
+  })
+  await expect(loadHistory('?after=older')).rejects.toMatchObject({ status: 404 })
+})
+
+it('fails the page when Coral refuses the history', async () => {
+  fakeCoral(WorkspaceState.ACTIVE, () => ({ actions: [] }), undefined, {
+    browseSettledApprovals: () => {
+      throw new ConnectError('denied', Code.PermissionDenied)
+    },
+  })
+  await expect(load()).rejects.toMatchObject({ status: 403 })
+})

@@ -564,7 +564,7 @@ function unavailable(error: unknown) {
 }
 /** A passing Coral fault. Only optional context may leave it out; sign-in, validation and a
  * cancelled load still fail the read. */
-function transient(error: unknown) {
+export function transient(error: unknown) {
   return (
     error instanceof ConnectError &&
     (error.code === Code.Unavailable || error.code === Code.Internal)
