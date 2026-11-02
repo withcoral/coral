@@ -427,7 +427,8 @@ and matched tags only where a query term matched them, and the matched arguments
 show; for a Tool, its declared Tool
 Hints, and its approval requirement and deprecation flag only when set.
 The signature line puts required inputs first and always keeps the result, stating plainly when the result is text,
-usually JSON. Whether the line is complete depends on its inputs alone. The Call Path names the kind and the Provider, the rank reflects why the hit matched, and an exact lookup gives
+usually JSON. Whether the line is complete depends on its inputs alone. The Call Path names the kind and the Provider,
+the rank reflects why the hit matched, and an exact lookup gives
 the rest. Never the declaration.
 
 **Search Coverage**: What one search page states, per kind of Search Entity, about how much of the Principal's Search
