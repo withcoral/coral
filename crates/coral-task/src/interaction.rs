@@ -56,6 +56,12 @@ impl AttributedCommand {
             trace_id,
         }
     }
+
+    /// The Task this command acts in.
+    #[must_use]
+    pub const fn task_id(&self) -> &TaskId {
+        &self.task_id
+    }
 }
 
 /// A call that states a new goal instead of naming a Task. Its first attempt

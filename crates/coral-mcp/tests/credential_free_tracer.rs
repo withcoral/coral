@@ -1267,9 +1267,8 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     let executed_update = structured(&executed);
     assert_eq!(executed_update["state"], "succeeded");
     assert_eq!(
-        executed_update.get("task_id"),
-        None,
-        "a call that names its Task does not name it back"
+        executed_update["task_id"], task_id,
+        "an exec that names its Task names it in its result too"
     );
     assert_eq!(
         executed_update["final_value"],
@@ -1286,7 +1285,11 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     )
     .await;
     assert_eq!(structured(&waited)["state"], "succeeded");
-    assert_eq!(structured(&waited).get("task_id"), None);
+    assert_eq!(
+        structured(&waited).get("task_id"),
+        None,
+        "wait takes the run_id from the exec that named the Task"
+    );
     assert_eq!(
         structured(&waited)["final_value"],
         json!({"kind":"value", "value":18})
@@ -1645,6 +1648,24 @@ async fn start_lost_worker(
     }).await.expect("lost worker thread")
 }
 
+/// `result` as `wait` reports it: only `exec` names the Task, so the text
+/// that mirrors `structuredContent` drops it too.
+fn without_task(result: &Value) -> Value {
+    let mut result = result.clone();
+    let Some(structured) = result
+        .get_mut("structuredContent")
+        .and_then(Value::as_object_mut)
+    else {
+        return result;
+    };
+    structured.shift_remove("task_id");
+    let text = serde_json::to_string(structured).expect("compact JSON");
+    if let Some(block) = result.pointer_mut("/content/0/text") {
+        *block = Value::String(text);
+    }
+    result
+}
+
 async fn check_raw_rich_paging(endpoint: &str, task: &str, protocol_version: &ProtocolVersion) {
     let session = RawSession::open(endpoint, protocol_version).await;
     let mut result = session.tool("exec", json!({"task_id":task, "intent":"Page exact rich blocks", "wait_ms":1000,
@@ -1668,7 +1689,8 @@ async fn check_raw_rich_paging(endpoint: &str, task: &str, protocol_version: &Pr
         }
         let replayed = session.tool("wait", replay_arguments).await;
         assert_eq!(
-            replayed, result,
+            replayed,
+            without_task(&result),
             "same cursor replays complete output and rich indices"
         );
         let content = result

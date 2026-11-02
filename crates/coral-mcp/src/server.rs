@@ -249,17 +249,14 @@ impl McpServer {
         // A retry answers prompts about the Run this call already started.
         if let Some(run_id) = prompting.continued_run().cloned() {
             // The first answer was `input_required`, which had no place for
-            // the Task this call started. Read it before the answers apply,
-            // so a failed read loses none of them.
-            let started = match target {
-                ExecTarget::Task(_) => None,
-                ExecTarget::Goal(_) => self.started_task(&run_id).await?,
-            };
+            // the Task. Read it before the answers apply, so a failed read
+            // loses none of them.
+            let task = self.run_task(&run_id).await?;
             return self
-                .observe_prompting(&run_id, &reread, &reread, prompting, started.as_ref())
+                .observe_prompting(&run_id, &reread, &reread, prompting, Some(&task))
                 .await;
         }
-        let (started, accepted) = match target {
+        let (task, accepted) = match target {
             ExecTarget::Task(call) => {
                 let accepted = self
                     .runtime
@@ -268,7 +265,7 @@ impl McpServer {
                     .submit(&call, &arguments.program, timeout)
                     .await
                     .map_err(task_failure)?;
-                (None, accepted)
+                (call.task_id().clone(), accepted)
             }
             ExecTarget::Goal(call) => {
                 let (task, accepted) = self
@@ -278,12 +275,12 @@ impl McpServer {
                     .submit_new_task(&call, &arguments.program, timeout)
                     .await
                     .map_err(task_failure)?;
-                (Some(task.id().clone()), accepted)
+                (task.id().clone(), accepted)
             }
         };
         if wait_ms == 0 {
             return self
-                .run_update(&accepted, started.as_ref())
+                .run_update(&accepted, Some(&task))
                 .map(Into::into)
                 .map_err(DispatchError::Tool);
         }
@@ -297,26 +294,25 @@ impl McpServer {
             &observation,
             &reread.by_acceptor(),
             prompting,
-            started.as_ref(),
+            Some(&task),
         )
         .await
     }
 
-    /// The Task that a first `exec`, now retried, started with `run_id`.
-    /// Coral reads it from the Run rather than from `requestState`, which
-    /// is client input.
-    async fn started_task(&self, run_id: &RunId) -> Result<Option<TaskId>, DispatchError> {
+    /// The Task of the Run a retried `exec` started. Coral reads it from the
+    /// Run rather than from `requestState`, which is client input. A Run in
+    /// none of the caller's Tasks is no Run an `exec` started.
+    async fn run_task(&self, run_id: &RunId) -> Result<TaskId, DispatchError> {
         let task = self
             .runtime
             .modules
             .tasks
             .run_task(&self.runtime.principal, &self.workspace_id, run_id)
             .await
-            .map_err(task_failure)?;
-        Ok(task.map(|task| {
-            tool_call::record_task(task.telemetry_id());
-            task.id().clone()
-        }))
+            .map_err(task_failure)?
+            .ok_or_else(|| run_failure(coral_run::Error::RunNotFound))?;
+        tool_call::record_task(task.telemetry_id());
+        Ok(task.id().clone())
     }
 
     async fn wait(
@@ -361,7 +357,7 @@ impl McpServer {
         observation: &RunObservation,
         reread: &RunObservation,
         mut prompting: Prompting,
-        started: Option<&TaskId>,
+        task: Option<&TaskId>,
     ) -> Result<CallToolResponse, DispatchError> {
         let trace = &TraceId::current_or_new();
         self.answer_prompts(run_id, prompting.take_answers(), trace)
@@ -420,7 +416,7 @@ impl McpServer {
                 }
             }
         }
-        self.run_update(&update, started)
+        self.run_update(&update, task)
             .map(Into::into)
             .map_err(DispatchError::Tool)
     }
@@ -563,16 +559,18 @@ impl McpServer {
         .map_err(DispatchError::Tool)
     }
 
+    /// Projects a Run Update. An `exec` names the Task of its Run; `wait`
+    /// and `cancel` name none.
     fn run_update(
         &self,
         update: &coral_run::RunUpdate,
-        started: Option<&TaskId>,
+        task: Option<&TaskId>,
     ) -> Result<CallToolResult, ToolFailure> {
         let modules = &self.runtime.modules;
-        let started = started.map(ToString::to_string);
+        let task = task.map(ToString::to_string);
         projection::run_update(
             update,
-            started.as_deref(),
+            task.as_deref(),
             &modules.human_interface,
             modules.run_update_page_bytes.get(),
         )

@@ -680,7 +680,7 @@ export async function confirmConfiguration(
 }
 
 export interface RunUpdate {
-  /** Only on the result of the exec that started the Task. */
+  /** On every exec result. wait and cancel results leave it out. */
   task_id?: string
   run_id: string
   state: string
@@ -853,7 +853,7 @@ export function programRunner(
     program,
     wait_ms: waitMs,
   })
-  /** Keeps the Task an exec started, from its first result that names it. */
+  /** Keeps the Task the first exec started, from the result that names it. */
   const started = (result: ToolResult<RunUpdate>) => {
     // An input_required result has no structuredContent yet.
     const named = result.structuredContent?.task_id

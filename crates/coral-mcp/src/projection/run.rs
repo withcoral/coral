@@ -19,12 +19,9 @@ use super::{ToolFailure, success};
     {"if":{"properties":{"state":{"const":"failed"},"has_more":{"const":false}},"required":["state","has_more"]},"then":{"properties":{"failure":true},"required":["failure"]}},
     {"if":{"properties":{"state":{"not":{"const":"running"}}},"required":["state"]},"then":{"properties":{"required_actions":{"type":"array","maxItems":0}}}}
 ]))]
-pub(crate) struct RunUpdateResult<'a> {
-    /// The Task this call started from `goal`, only on that call's result.
-    /// Pass it as `task_id` to every later call for the same unit of work.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "crate::arguments::identifier_schema")]
-    task_id: Option<&'a str>,
+pub(crate) struct RunUpdateResult<'a, Task> {
+    #[serde(flatten)]
+    task: Task,
     #[schemars(schema_with = "crate::arguments::identifier_schema")]
     run_id: String,
     state: State,
@@ -45,6 +42,26 @@ pub(crate) struct RunUpdateResult<'a> {
     #[schemars(with = "String")]
     trace_id: Option<String>,
 }
+
+/// What `exec` reports: every result names the Task its Run belongs to.
+pub(crate) type ExecResult<'a> = RunUpdateResult<'a, ExecTask<'a>>;
+
+/// What `wait` and `cancel` report. They take the `run_id` from the `exec`
+/// result that already named the Task, so they do not repeat it.
+pub(crate) type ObservedRun<'a> = RunUpdateResult<'a, NoTask>;
+
+// Flattened into the result, so only the field carries a description.
+#[derive(Clone, Copy, Serialize, JsonSchema)]
+pub(crate) struct ExecTask<'a> {
+    /// The Task this Run belongs to: the one `goal` started, or the one
+    /// `task_id` named. Pass it as `task_id` to later calls for the same
+    /// unit of work.
+    #[schemars(schema_with = "crate::arguments::identifier_schema")]
+    task_id: &'a str,
+}
+
+#[derive(Clone, Copy, Serialize, JsonSchema)]
+pub(crate) struct NoTask {}
 
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -153,17 +170,30 @@ enum FailureCode {
 }
 
 /// Projects the largest prefix of `update` that fits `page_bytes`, or one
-/// item. `started` names the Task this call started, if it started one.
+/// item. An `exec` passes the Task its Run belongs to; `wait` and `cancel`
+/// pass none.
 pub(crate) fn run_update(
     update: &RunUpdate,
-    started: Option<&str>,
+    task: Option<&str>,
+    human_interface: &crate::HumanInterfaceUrl,
+    page_bytes: usize,
+) -> Result<CallToolResult, ToolFailure> {
+    match task {
+        Some(task_id) => paged(update, ExecTask { task_id }, human_interface, page_bytes),
+        None => paged(update, NoTask {}, human_interface, page_bytes),
+    }
+}
+
+fn paged<Task: Serialize + Copy>(
+    update: &RunUpdate,
+    task: Task,
     human_interface: &crate::HumanInterfaceUrl,
     page_bytes: usize,
 ) -> Result<CallToolResult, ToolFailure> {
     let mut count = update.events().len();
     loop {
         let page = update.event_prefix(count);
-        let result = project_run_update(&page, started, human_interface)?;
+        let result = project_run_update(&page, task, human_interface)?;
         if fits(&result, page_bytes) {
             return Ok(result);
         }
@@ -171,7 +201,7 @@ pub(crate) fn run_update(
         // combination is too large, deliver these Events and advance first.
         if !page.events().is_empty() && page.terminal_outcome().is_some() {
             let deferred =
-                project_run_update(&page.defer_terminal_outcome(), started, human_interface)?;
+                project_run_update(&page.defer_terminal_outcome(), task, human_interface)?;
             if count <= 1 || fits(&deferred, page_bytes) {
                 return Ok(deferred);
             }
@@ -190,9 +220,9 @@ fn fits(result: &CallToolResult, page_bytes: usize) -> bool {
     serde_json::to_vec(result).is_ok_and(|bytes| bytes.len() <= page_bytes)
 }
 
-fn project_run_update<'a>(
-    update: &'a RunUpdate,
-    started: Option<&'a str>,
+fn project_run_update<Task: Serialize>(
+    update: &RunUpdate,
+    task: Task,
     human_interface: &crate::HumanInterfaceUrl,
 ) -> Result<CallToolResult, ToolFailure> {
     let mut rich = Vec::new();
@@ -230,7 +260,7 @@ fn project_run_update<'a>(
         _ => (None, None),
     };
     let mut result = success(RunUpdateResult {
-        task_id: started,
+        task,
         run_id: update.run_id().to_string(),
         state: match update.state() {
             RunState::Running => State::Running,

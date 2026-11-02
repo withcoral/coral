@@ -35,7 +35,30 @@ impl OutputContracts {
                 .expect("Run tool")["outputSchema"]
                 .clone()
         };
-        assert_eq!(schema("exec"), schema("wait"));
+        // Every exec result names its Task; wait and cancel take the run_id
+        // from that result, so they repeat nothing else.
+        let mut exec = schema("exec");
+        let update = exec
+            .pointer_mut("/$defs/RunUpdateResult")
+            .and_then(Value::as_object_mut)
+            .expect("exec Run Update");
+        assert!(
+            update["required"]
+                .as_array()
+                .expect("required")
+                .contains(&json!("task_id")),
+            "every exec result names its Task"
+        );
+        update["properties"]
+            .as_object_mut()
+            .expect("properties")
+            .remove("task_id")
+            .expect("exec advertises task_id");
+        update["required"]
+            .as_array_mut()
+            .expect("required")
+            .retain(|field| field != "task_id");
+        assert_eq!(exec, schema("wait"), "exec adds only task_id to wait");
         assert_eq!(schema("wait"), schema("cancel"));
         Self(contracts)
     }
@@ -68,6 +91,17 @@ impl OutputContracts {
                 "every valid Run state is a tool success"
             );
             Self::check_run(validator, structured);
+            if name != "exec" {
+                let mut repeated = structured.clone();
+                repeated
+                    .as_object_mut()
+                    .expect("Run Update")
+                    .insert("task_id".into(), json!("alpha-bravo-charlie-delta"));
+                assert!(
+                    !validator.is_valid(&repeated),
+                    "{name} does not repeat the Task its exec named"
+                );
+            }
         }
     }
 
@@ -141,8 +175,16 @@ impl OutputContracts {
                     "diagnostics_truncated",
                 ],
                 "delete_function" => &["call_path"],
-                "exec" | "wait" | "cancel" => &[
+                "exec" => &[
+                    "task_id",
                     "run_id",
+                    "state",
+                    "events",
+                    "required_actions",
+                    "next_cursor",
+                    "has_more",
+                ],
+                "wait" | "cancel" => &[
                     "state",
                     "events",
                     "required_actions",
