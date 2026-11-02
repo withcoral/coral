@@ -32,7 +32,7 @@ export type SourceChoice = SourceLocation & {
    */
   service?: string
   /** The word on this recipe's button; MCP or API by its kind when absent. */
-  sourceLabel?: string
+  buttonLabel?: string
   displayName: string
   /** One line on the catalog row. */
   description: string
@@ -50,17 +50,18 @@ function serviceOf(choice: SourceChoice): string {
 }
 
 /**
- * The namespace Configuration first offers for a recipe: its service. A recipe
- * with its own source label reads another API of the service, which a
- * workspace may add beside the rest, so it offers its own id.
+ * The namespace Configuration first offers for a recipe: its service. A button
+ * label marks a recipe that reads another API of the service, which a
+ * workspace may add beside the rest, so a labelled recipe offers its own id.
+ * The label therefore also sets the namespace, not only the button's word.
  */
 export function recipeNamespace(choice: SourceChoice): string {
-  return choice.sourceLabel ? choice.id : serviceOf(choice)
+  return choice.buttonLabel ? choice.id : serviceOf(choice)
 }
 
 /** The word that tells a recipe's button apart from the other sources of its service. */
-export function sourceLabel(choice: SourceChoice): string {
-  return choice.sourceLabel ?? (choice.kind === 'mcp' ? 'MCP' : 'API')
+export function sourceButtonLabel(choice: SourceChoice): string {
+  return choice.buttonLabel ?? (choice.kind === 'mcp' ? 'MCP' : 'API')
 }
 
 /** A service's recipes in button order: MCP first, then the rest in library order. */

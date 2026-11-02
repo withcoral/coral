@@ -1,12 +1,13 @@
 import { expect, test } from 'vitest'
 import { filledSourceUrl, recipeNamespace, type SourceChoice } from './choice'
 
-// Recipes told apart by a source label read different APIs of one service, so a
-// workspace can add them side by side without their namespaces colliding.
+// An MCP recipe offers its service's namespace, as an API recipe without a
+// button label does: a workspace adds one or the other. Labelled recipes read
+// different APIs of the service, so V1 and V2 can sit side by side.
 test.each<[Partial<SourceChoice>, string]>([
   [{ id: 'datadog_mcp', service: 'datadog_v1', kind: 'mcp' }, 'datadog_v1'],
-  [{ id: 'datadog_v1', sourceLabel: 'V1' }, 'datadog_v1'],
-  [{ id: 'datadog_v2', service: 'datadog_v1', sourceLabel: 'V2' }, 'datadog_v2'],
+  [{ id: 'datadog_v1', buttonLabel: 'V1' }, 'datadog_v1'],
+  [{ id: 'datadog_v2', service: 'datadog_v1', buttonLabel: 'V2' }, 'datadog_v2'],
 ])('offers %o the namespace %s', (fields, expected) => {
   const recipe = {
     id: '',

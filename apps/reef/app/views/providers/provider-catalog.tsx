@@ -3,7 +3,7 @@ import { Button, Card, Inputs, ScrollArea, Typography } from '@/wax/components'
 import { Logo } from '@/wax/components/logo'
 import {
   byService,
-  sourceLabel,
+  sourceButtonLabel,
   sourcesInOrder,
   type RecipeIcons,
   type ServiceChoices,
@@ -56,7 +56,7 @@ function ServiceRow({
           onRecipe(first)
         }}
         action={sources.map((choice) => {
-          const source = sourceLabel(choice)
+          const source = sourceButtonLabel(choice)
           const busy = reading?.id === choice.id
           return (
             <Button.Container

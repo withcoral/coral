@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SetupView } from '@/views/providers/types'
 
-import { byService, sourceLabel } from './choice'
+import { byService, sourceButtonLabel } from './choice'
 import { CLIENT_CONFIG_HINT_GENERATORS } from './client-config-hints'
 import {
   recipeConfiguration as configurationFor,
@@ -123,7 +123,7 @@ inputs:
   })
 
   // A card takes its name and icon from the recipe named after the service,
-  // tells its buttons apart as MCP, API or a recipe's own source label, and
+  // tells its buttons apart as MCP, API or a recipe's own button label, and
   // names the provider alike from any of them.
   it('gives every shared service a recipe of its own name, a distinct word on each button and one display name', () => {
     for (const choice of RECIPE_CHOICES) {
@@ -133,7 +133,7 @@ inputs:
     expect(shared.length).toBeGreaterThan(0)
     for (const { service, shown, choices } of shared) {
       expect(shown.id, service).toBe(service)
-      const labels = choices.map(sourceLabel)
+      const labels = choices.map(sourceButtonLabel)
       expect(new Set(labels).size, `${service}: ${labels.join(', ')}`).toBe(labels.length)
       expect(new Set(choices.map((choice) => choice.displayName)), service).toEqual(
         new Set([shown.displayName]),

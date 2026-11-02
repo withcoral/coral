@@ -36,7 +36,7 @@ import {
 } from '@/components/policy-toggle'
 import {
   byService,
-  sourceLabel,
+  sourceButtonLabel,
   sourceSearch,
   sourcesInOrder,
   type RecipeIcons,
@@ -366,7 +366,7 @@ function CatalogMatch({
       {sources.map((choice) => {
         const label =
           sources.length > 1
-            ? `Add ${shown.displayName} ${sourceLabel(choice)}`
+            ? `Add ${shown.displayName} ${sourceButtonLabel(choice)}`
             : `Add ${shown.displayName}`
         const busy = reading?.id === choice.id
         return (

@@ -2,7 +2,7 @@
 schema_version: 1
 id: datadog_v2
 service: datadog_v1
-source_label: V2
+button_label: V2
 display_name: Datadog
 description: >-
   Spans, traces, APM services, incidents, log search, RUM, CI Visibility,
