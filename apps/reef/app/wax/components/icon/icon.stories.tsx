@@ -166,7 +166,7 @@ export const Variants: Story = {
   ),
 }
 
-/** A plate per review state: required, approved, denied, other. */
+/** A plate per review state: required, approved, declined, other. */
 export const Plates: Story = {
   args: { name: 'Shield' },
   render: () => (

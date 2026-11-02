@@ -18,9 +18,6 @@ test('The shell remembers navigation preferences and recovers from a missing pag
       await page.getByRole('button', { name: 'Collapse sidebar', exact: true }).waitFor()
     })
     await step('Open Activity from the workspace in the sidebar', async () => {
-      expect(await page.getByRole('link', { name: 'Needs your action', exact: true }).count()).toBe(
-        0,
-      )
       await page.goto(`/workspaces/${workspace}`)
       await page
         .getByRole('navigation', { name: 'Coral', exact: true })

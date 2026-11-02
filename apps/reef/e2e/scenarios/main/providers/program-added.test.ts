@@ -311,6 +311,6 @@ test(
 )
 
 test(
-  "A workspace owner denies their Program's new provider, and the Program catches the failure",
+  "A workspace owner declines their Program's new provider, and the Program catches the failure",
   deniedProgramProvider,
 )

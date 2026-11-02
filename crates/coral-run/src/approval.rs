@@ -484,7 +484,7 @@ async fn decision_required(
 
 /// The approver's current name, when Workspace profile rules let `actor`
 /// read it.
-async fn approver_name(
+pub(crate) async fn approver_name(
     tx: &mut Transaction<'_>,
     workspaces: &WorkspaceModule,
     actor: &AuthenticatedPrincipal,
@@ -708,6 +708,42 @@ pub(super) async fn close_for_invocation(
         .await?;
     }
     Ok(())
+}
+
+/// Expires the Invocation's pending Approval Request as its Run times out,
+/// dated at the request's deadline, which the Run's deadline bounds, and
+/// fails the Invocation `approval_expired`, returning its `invocation.ended`.
+/// `None` when no request of the Invocation is pending.
+///
+/// # Errors
+///
+/// [`Error::HeadMismatch`] when another terminal writer ended the
+/// Invocation meanwhile.
+pub(super) async fn expire_for_timeout(
+    tx: &mut Transaction<'_>,
+    run: &RunRecord,
+    invocation: &InvocationId,
+    now: i64,
+) -> Result<Option<OwnedEvent>, Error> {
+    let row = approval_repository::find_for_invocation(tx, &run.workspace_id, invocation).await?;
+    let Some(mut row) = row.filter(|row| row.state == ApprovalState::Pending) else {
+        return Ok(None);
+    };
+    let deadline = row.deadline_at_unix_nanos;
+    transition(
+        tx,
+        &run.workspace_id,
+        &mut row,
+        ApprovalState::Expired,
+        deadline,
+        None,
+        &TraceId::current_or_new(),
+    )
+    .await?;
+    settle_rejection(tx, run, &row, now)
+        .await?
+        .map(Some)
+        .ok_or(Error::HeadMismatch)
 }
 
 /// What the Run Owner decided for one Approval Request, as the pure `apply`

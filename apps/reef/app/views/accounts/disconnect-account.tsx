@@ -9,12 +9,15 @@ export function DisconnectAccount({
   action,
   children,
   size,
+  quiet = false,
 }: {
   form: FormContext
   action: string
   /** Hidden fields that identify the account where the action needs them. */
   children?: ReactNode
   size?: ButtonSize
+  /** A secondary button, for a list where every row offers it. The confirmation stays red. */
+  quiet?: boolean
 }) {
   return (
     <ActionDialog
@@ -24,6 +27,7 @@ export function DisconnectAccount({
       action={action}
       destructive
       triggerSize={size}
+      triggerVariant={quiet ? 'secondary' : undefined}
       description="Disconnect removes your stored credentials immediately. Coral stops unsent calls that use this account."
     >
       {children}

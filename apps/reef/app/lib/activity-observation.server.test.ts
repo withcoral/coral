@@ -20,10 +20,6 @@ function fixture(children = 0) {
   const transport = createRouterTransport(({ service }) => {
     service(ActivityService, {
       watchActivity: changes.watch,
-      browseRequiredActions: () => {
-        reads++
-        return { actions: [] }
-      },
       browseActivityRoots: (input) => {
         reads++
         if (!authorized)
@@ -192,7 +188,6 @@ it('cancels an in-flight history request when the reader cancels observation', a
         await pending
         return { roots: [] }
       },
-      browseRequiredActions: () => ({ actions: [] }),
     })
   })
   const response = await observeActivity(request(observation), {
@@ -295,12 +290,6 @@ it('keeps the Workspace Activity destination while updating independent exact de
   try {
     const first = await emission(reader)
     expect(first.page.listPath).toBe(path)
-    expect(first.page.pending).toEqual({
-      actions: [],
-      actionCount: '0',
-      next: '',
-      unavailable: false,
-    })
     expect(first.page.detail).toMatchObject({
       source: 'selected-source-only',
       run: { state: 'running', requiresAction: true },

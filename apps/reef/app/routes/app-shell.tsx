@@ -14,7 +14,7 @@ import { ContentContainer } from '@/components/content-container'
 import { Sidebar } from '@/components/sidebar'
 import { loadActionCounts } from '@/lib/action-count.server'
 import { LocalDeploymentContext } from '@/lib/deployment'
-import { useActionCounts } from '@/lib/use-action-count'
+import { ActionSignalContext, useActionSignal } from '@/lib/use-action-signal'
 import { memberWorkspaces } from '@/lib/workspace-route.server'
 import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { ShellFormContext } from '@/views/management/forms'
@@ -73,6 +73,13 @@ export function shouldRevalidate({
   const next = providerPath.exec(nextUrl.pathname)
   if (current && next && current[1] === next[1] && currentUrl.search === nextUrl.search)
     return false
+  // The Approvals page's selection is URL state too; its own loader reads the review.
+  if (
+    currentUrl.pathname === nextUrl.pathname &&
+    currentUrl.search !== nextUrl.search &&
+    /^\/workspaces\/[^/]+\/approvals$/.test(nextUrl.pathname)
+  )
+    return false
   return defaultShouldRevalidate
 }
 function browserAuth(auth: RequestAuth): BrowserAuth {
@@ -81,7 +88,7 @@ function browserAuth(auth: RequestAuth): BrowserAuth {
     : { mode: 'disabled' }
 }
 export default function AppShell({ loaderData }: Route.ComponentProps) {
-  const actionCounts = useActionCounts(loaderData.actionCounts)
+  const actionSignal = useActionSignal(loaderData.actionCounts)
   const rootData = useRouteLoaderData('root') as { sidebarIsMinimized: boolean } | undefined
   const location = useLocation()
   const matches = useMatches()
@@ -94,7 +101,7 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
         <NavigationRoot>
           <div className={styles.layout}>
             <Sidebar
-              actionCounts={actionCounts}
+              actionCounts={actionSignal.counts}
               auth={loaderData.auth}
               organizationOwner={loaderData.organizationOwner}
               newerRelease={loaderData.newerRelease}
@@ -120,7 +127,9 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
                     : null
                 }
               >
-                <Outlet />
+                <ActionSignalContext value={actionSignal}>
+                  <Outlet />
+                </ActionSignalContext>
               </BreadcrumbRoot>
             </ContentContainer>
           </div>

@@ -167,13 +167,12 @@ it('requests the viewport a reader scrolls to before the first snapshot answers'
     await vi.advanceTimersByTimeAsync(0)
   }
 })
-it('keeps history reading identities when pending actions resolve and observation reconnects', async () => {
+it('keeps history reading identities when observation reconnects', async () => {
   vi.useFakeTimers()
   const root = 'workspaces/w/runs/r'
   const initial: ActivityPage = {
     ...page,
     listPath: '/activity',
-    pending: { actions: [], actionCount: '2', next: 'r', unavailable: false },
     rows: [
       {
         kind: 'run',
@@ -195,12 +194,8 @@ it('keeps history reading identities when pending actions resolve and observatio
     'fetch',
     vi.fn((_url, init) => {
       requests.push(JSON.parse(init.body))
-      const empty = {
-        ...initial,
-        pending: { actions: [], actionCount: '0', next: '', unavailable: false },
-      }
       return Promise.resolve(
-        new Response(`data: ${JSON.stringify({ kind: 'page', page: empty })}\n\n`, {
+        new Response(`data: ${JSON.stringify({ kind: 'page', page: initial })}\n\n`, {
           headers: { 'Content-Type': 'text/event-stream' },
         }),
       )
@@ -543,7 +538,7 @@ const revealOutput = (name: string, position: number, eventKind = 'program.emitt
   position,
   workspace: 'workspaces/work',
   run: revealRun,
-  label: name === revealFinal ? 'final value' : `emission #${position + 1}`,
+  label: name === revealFinal ? 'return value' : `emission #${position + 1}`,
   eventKind,
   startedAt: '1970-01-01T00:00:00.000Z',
   agent: '',
