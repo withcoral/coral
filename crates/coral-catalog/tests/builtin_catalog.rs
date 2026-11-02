@@ -126,6 +126,23 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
+        (
+            BuiltinTool::Search,
+            // Read-only, so the default Tool Access State is enabled.
+            ToolHints::new(Some(true), None, Some(true), None),
+            &[
+                r#""paths"?: Array<string>"#,
+                r#""query"?: string"#,
+                r#""types"?: Array<string>"#,
+                "data: (SearchResult | PathsResult)",
+                r#""hits": Array<SearchHit>"#,
+                r#""signature_line": string"#,
+                r#""missing": Array<MissingPath>"#,
+                r#""kind": "provider_tool""#,
+                r#""kind": "saved_function""#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
     ] {
         let key = tool_key.key();
         let tool = tools
