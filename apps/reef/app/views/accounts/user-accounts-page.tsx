@@ -2,6 +2,7 @@ import { useDeferredValue, useState } from 'react'
 import { Button, Table, Typography } from '@/wax/components'
 import type { IconName } from '@/wax/components/icon'
 import { Deadline } from '@/wax/components/deadline'
+import { Logo } from '@/wax/components/logo'
 import { Pill } from '@/wax/components/pill'
 import type { PillColor } from '@/wax/components/pill/pill'
 import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOptions } from '@/components/catalog'
@@ -90,8 +91,9 @@ export function UserAccountsPage({
         columns={[
           { label: 'Provider', width: { fill: 2 } },
           { label: 'Status', width: { fill: 2 } },
-          // Fixed, so filtering out the widest buttons does not move the other columns.
-          { ariaLabel: 'Actions', width: 168, align: 'right' },
+          // Fixed for a screen width, so filtering out the widest buttons does not move the
+          // other columns. On a phone it narrows, and Decline wraps above Connect.
+          { ariaLabel: 'Actions', width: 'clamp(124px, 35%, 192px)', align: 'right' },
         ]}
       >
         <Table.Head />
@@ -120,17 +122,20 @@ export function UserAccountsPage({
           {shown.map((row) => (
             <Table.Row key={row.provider} to={row.detailPath}>
               <Table.Cell>
-                <Table.RowLink to={row.detailPath} aria-label={`${row.name} account details`}>
-                  {row.name}
-                </Table.RowLink>
+                <span className={styles.provider}>
+                  <Logo name={row.name} icons={row.icons} size="20" />
+                  <Table.RowLink to={row.detailPath} aria-label={`${row.name} account details`}>
+                    {row.name}
+                  </Table.RowLink>
+                </span>
               </Table.Cell>
-              <Table.Cell>
+              <Table.Cell wrap>
                 <span className={styles.accountStatus}>
                   <Pill color={states[row.state].color}>{states[row.state].label}</Pill>
                   {row.connectionRequest && <WaitingRequest request={row.connectionRequest} />}
                 </span>
               </Table.Cell>
-              <Table.Cell control>
+              <Table.Cell>
                 <AccountAction row={row} view={v} pending={pending} />
               </Table.Cell>
             </Table.Row>
@@ -147,8 +152,10 @@ function WaitingRequest({ request }: { request: ConnectionRequest }) {
   return (
     <>
       <span className={styles.actions}>
-        <Typography.BodySmallStrong>A connection request is waiting.</Typography.BodySmallStrong>
-        <Deadline at={request.expiresAt} />
+        <Typography.BodySmall as="span" variant="secondary">
+          A connection request is waiting.
+        </Typography.BodySmall>
+        <Deadline at={request.expiresAt} variant="secondary" />
       </span>
       {failure && <Typography.BodySmall role="alert">{failure}</Typography.BodySmall>}
     </>
@@ -173,7 +180,7 @@ function AccountAction({
   const action = states[row.state].action
   const disconnect =
     connected && row.canDisconnect && row.accountId ? (
-      <DisconnectAccount form={view.form} action={view.path} size="22">
+      <DisconnectAccount form={view.form} action={view.path} quiet>
         <input type="hidden" name="provider" value={row.provider} />
         <input type="hidden" name="account" value={row.accountId} />
       </DisconnectAccount>
@@ -191,7 +198,6 @@ function AccountAction({
         ariaLabel={`${action} ${row.name}`}
         primary={Boolean(waiting)}
         disabled={pending}
-        size="22"
       />
     )
   ) : (
@@ -208,7 +214,7 @@ function AccountAction({
         label: action,
         ariaLabel: `${action} ${row.name}`,
         variant: waiting ? 'primary' : 'secondary',
-        size: '22',
+        size: '32',
       }}
       action={row.connectPath}
       description={audience.onlyYou}
@@ -222,7 +228,6 @@ function AccountAction({
         <DeclineConnection
           request={waiting.name}
           ariaLabel={`Decline ${row.name}`}
-          size="22"
           disabled={pending}
         />
       )}

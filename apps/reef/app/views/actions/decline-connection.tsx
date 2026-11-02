@@ -10,13 +10,11 @@ const useDecline = (request: string) => useFetcher<typeof resolve>({ key: `decli
 export function DeclineConnection({
   request,
   ariaLabel,
-  size,
   disabled = false,
 }: {
   request: string
   /** Names the request when "Decline" alone does not, as in a list. */
   ariaLabel?: string
-  size?: '22'
   disabled?: boolean
 }) {
   const csrf = useShellCsrf()
@@ -29,7 +27,6 @@ export function DeclineConnection({
       <Button.TextButton
         type="submit"
         variant="secondary"
-        size={size}
         ariaLabel={ariaLabel}
         disabled={disabled || decline.state !== 'idle'}
       >

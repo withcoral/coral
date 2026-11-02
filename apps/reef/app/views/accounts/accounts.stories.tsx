@@ -1,6 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
+import githubIcon from '../../../recipes/github/github.svg'
+import githubDarkIcon from '../../../recipes/github/github-dark.svg'
+import linearIcon from '../../../recipes/linear/logo.svg'
+import linearDarkIcon from '../../../recipes/linear/logo-dark.svg'
+import { freezeStoryClock, minutesAfterStoryNow } from '../activity/story-clock'
 import { AccountsPage } from './accounts-page'
 import { AuthorizationPage } from './authorization-page'
 import { UserAccountsPage } from './user-accounts-page'
@@ -65,14 +70,14 @@ const personal: UserAccountsView = {
     {
       provider: 'workspaces/demo/providers/linear',
       name: 'Linear',
+      icons: { light: linearIcon, dark: linearDarkIcon },
       oauth: true,
       state: 'not_connected',
       canConnect: true,
       canDisconnect: false,
-      // Far enough ahead that the story always shows a waiting run.
       connectionRequest: {
         name: 'workspaces/demo/accountConnectionRequests/linear',
-        expiresAt: '2099-01-01T00:14:00.000Z',
+        expiresAt: minutesAfterStoryNow(15),
       },
       connectPath: '/connect',
       detailPath: '/details',
@@ -80,6 +85,7 @@ const personal: UserAccountsView = {
     {
       provider: 'workspaces/demo/providers/github',
       name: 'GitHub',
+      icons: { light: githubIcon, dark: githubDarkIcon },
       oauth: true,
       state: 'connected',
       accountId: account.id,
@@ -104,6 +110,7 @@ const personal: UserAccountsView = {
 }
 const meta = {
   title: 'Reef/Accounts',
+  beforeEach: freezeStoryClock,
   parameters: { layout: 'fullscreen' },
   decorators: [
     (Story) => {

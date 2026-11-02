@@ -14,6 +14,7 @@ import { RECIPE_CHOICES } from './provider-recipes/library.server'
 import { CORAL_ICONS } from '@/views/providers/coral-icons'
 import {
   personalAccountAction,
+  providerLogos,
   providerMarks,
   providerFailure,
   searchIndexView,
@@ -174,4 +175,21 @@ it('marks no provider while Coral cannot list them', async () => {
       throw new ConnectError('down', Code.Unavailable)
     }),
   ).toEqual([])
+})
+
+it('keys each logo by its provider, and leaves out a provider without one', async () => {
+  const logos = await providerLogos(
+    fakeManagement({
+      providers: {
+        listProviders: () => ({
+          providers: [
+            { name: 'workspaces/w/providers/ours', namespace: withIcons.id },
+            { name: 'workspaces/w/providers/handmade', namespace: 'handmade' },
+          ],
+        }),
+      },
+    }),
+    'workspaces/w',
+  )
+  expect([...logos]).toEqual([['workspaces/w/providers/ours', withIcons.icons]])
 })

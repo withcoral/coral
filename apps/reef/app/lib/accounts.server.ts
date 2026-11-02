@@ -28,7 +28,13 @@ import {
 } from './management.server'
 import { authorizedWorkspace } from './workspace-route.server'
 import { loadRevision } from './action-count.server'
-import { blockerLabel, providerName, routeChoice, uuidOr404 } from './providers.server'
+import {
+  blockerLabel,
+  providerLogos,
+  providerName,
+  routeChoice,
+  uuidOr404,
+} from './providers.server'
 import type { AgentProviderView } from '@/views/management/agent-providers'
 import type { Crumb } from '@/views/management/types'
 import {
@@ -455,7 +461,10 @@ export async function loadUserAccounts(
 ): Promise<UserAccountsView> {
   const { workspace, api } = await authorizedWorkspace(context, params.workspace)
   const revision = await loadRevision(api, workspace, 'connections', signal)
-  const snapshot = await api.accounts.listUserAccounts({ parent: workspace.name }, { signal })
+  const [snapshot, logos] = await Promise.all([
+    api.accounts.listUserAccounts({ parent: workspace.name }, { signal }),
+    providerLogos(api, workspace.name, signal),
+  ])
   const path = `${workspace.path}/accounts`
   return {
     workspace,
@@ -467,6 +476,7 @@ export async function loadUserAccounts(
       return {
         provider: row.provider,
         name: row.providerDisplayName,
+        icons: logos.get(row.provider),
         state: accountConnectionState(account),
         accountId: account?.id,
         oauth: current ? isOAuth(current.credentialMethod) : false,

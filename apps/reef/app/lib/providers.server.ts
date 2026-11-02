@@ -1,6 +1,7 @@
 import { CORAL_ICONS } from '@/views/providers/coral-icons'
 import type { ProviderMark } from '@/views/approvals/types'
 import { recipeChoiceById } from './provider-recipes/library.server'
+import type { RecipeIcons } from './provider-recipes/choice'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { data } from 'react-router'
 import {
@@ -71,21 +72,17 @@ export async function listAllProviders(api: Pick<ManagementApi, 'providers'>, pa
  * Coral's mark for the Built-in Provider, else the logo of the recipe whose id its namespace
  * keeps. Logos only decorate, so none show while Coral cannot list the providers.
  */
-export async function providerMarks(
+async function providersWithLogos(
   api: Pick<ManagementApi, 'providers'>,
   workspace: string,
-  signal: AbortSignal,
-): Promise<ProviderMark[]> {
+  signal?: AbortSignal,
+): Promise<{ provider: Provider; icons?: RecipeIcons }[]> {
   try {
-    signal.throwIfAborted()
-    return (await listAllProviders(api, workspace)).map((provider) => {
-      const icons = provider.builtin ? CORAL_ICONS : recipeChoiceById(provider.namespace)?.icons
-      return {
-        callRoot: provider.callRoot,
-        displayName: provider.displayName,
-        ...(icons && { icons }),
-      }
-    })
+    signal?.throwIfAborted()
+    return (await listAllProviders(api, workspace)).map((provider) => ({
+      provider,
+      icons: provider.builtin ? CORAL_ICONS : recipeChoiceById(provider.namespace)?.icons,
+    }))
   } catch (error) {
     if (
       error instanceof ConnectError &&
@@ -94,6 +91,27 @@ export async function providerMarks(
       return []
     throw error
   }
+}
+/** Each provider's call root and name with its logo, to mark the calls it owns. */
+export async function providerMarks(
+  api: Pick<ManagementApi, 'providers'>,
+  workspace: string,
+  signal: AbortSignal,
+): Promise<ProviderMark[]> {
+  return (await providersWithLogos(api, workspace, signal)).map(({ provider, icons }) => ({
+    callRoot: provider.callRoot,
+    displayName: provider.displayName,
+    ...(icons && { icons }),
+  }))
+}
+/** Each provider's logo by its canonical name. A provider without one is absent. */
+export async function providerLogos(
+  api: Pick<ManagementApi, 'providers'>,
+  workspace: string,
+  signal?: AbortSignal,
+): Promise<Map<string, RecipeIcons>> {
+  const logos = await providersWithLogos(api, workspace, signal)
+  return new Map(logos.flatMap(({ provider, icons }) => (icons ? [[provider.name, icons]] : [])))
 }
 
 export async function listAllTools(api: Pick<ManagementApi, 'providers'>, parent: string) {

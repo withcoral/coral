@@ -1,6 +1,7 @@
 import { authRouteTestArgs, authTestContext } from '@/auth/server-context.test-helper'
 import { loader as oauthCallback } from '@/routes/provider-setup-oauth-callback'
 import { commitCallbackReturn } from './provider-publication-attempt/setup.server'
+import { RECIPE_CHOICES } from './provider-recipes/library.server'
 import { fakeManagement, fakeManagementTransport } from './management.test-support'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -36,9 +37,10 @@ const mocks = vi.hoisted(() => ({
   resolveAccountConnectionRequest: vi.fn(),
   completeProviderSetupAuthorization: vi.fn(),
   countRequiredActions: vi.fn(),
+  listProviders: vi.fn(),
 }))
 const handlers = {
-  providers: { getProvider: mocks.getProvider },
+  providers: { getProvider: mocks.getProvider, listProviders: mocks.listProviders },
   agents: { getAgent: mocks.getAgent },
   accounts: {
     getProviderAccount: mocks.getProviderAccount,
@@ -88,6 +90,7 @@ beforeEach(() => {
   })
   mocks.getAgent.mockResolvedValue({ displayName: 'Nightly reconciler' })
   mocks.getProviderAccount.mockResolvedValue({ requestedScopes: [] })
+  mocks.listProviders.mockResolvedValue({ providers: [] })
 })
 
 function load(query: string) {
@@ -480,10 +483,14 @@ it('lists your accounts and the run that waits on one', async () => {
       },
     ],
   })
+  const linear = RECIPE_CHOICES.find((choice) => choice.id === 'linear')!
+  expect(linear.icons).toBeDefined()
+  mocks.listProviders.mockResolvedValue({ providers: [{ name: provider, namespace: 'linear' }] })
   const view = await loadUserAccounts(context, { workspace })
   expect(view.accounts).toEqual([
     expect.objectContaining({
       name: 'Linear',
+      icons: linear.icons,
       state: 'not_connected',
       canConnect: true,
       connectionRequest: {
@@ -498,6 +505,7 @@ it('lists your accounts and the run that waits on one', async () => {
       state: 'connected',
       accountId: 'account',
       canDisconnect: true,
+      icons: undefined,
       connectionRequest: undefined,
     }),
   ])
