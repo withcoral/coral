@@ -347,3 +347,40 @@ async fn a_missing_path_names_the_nearest_paths_the_caller_can_call_in_its_call_
     );
     assert!(!suggested.is_empty(), "the others still are");
 }
+
+// Catches: a suggestion order led by a Tool whose name shares no word with
+// the guessed path, because only its schema text holds one: the types of
+// `coral.workspace.search` name retrievers, so a ranked query for
+// `retrieve policy` puts it first on SQLite, ahead of the Tools named for
+// policies.
+#[tokio::test]
+async fn a_tool_named_with_a_word_of_the_path_is_suggested_before_one_whose_name_shares_none() {
+    let fixture = TestModules::new().await;
+    let scope = TracerScope::new(&fixture).await;
+    let database = fixture.search.database.clone();
+    let mut transaction = database.begin().await.unwrap();
+    fixture
+        .providers
+        .install_builtin_in_transaction(
+            &mut transaction,
+            &change(scope.user.clone(), 50, '5'),
+            &scope.workspace_id,
+        )
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    fixture.converge().await;
+
+    let lookup = look_up(&fixture, &scope, &["coral.workspace.retrievePolicy"]).await;
+    let found = suggestions(&lookup);
+    let [(_, suggested)] = found.as_slice() else {
+        panic!("one missing path: {found:?}");
+    };
+    let mut named = suggested.iter().take(2).copied().collect::<Vec<_>>();
+    named.sort_unstable();
+    assert_eq!(
+        named,
+        ["coral.workspace.getPolicy", "coral.workspace.updatePolicy"],
+        "the Tools named for policies come first: {suggested:?}"
+    );
+}

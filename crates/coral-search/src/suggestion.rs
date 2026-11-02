@@ -21,11 +21,19 @@ pub const SUGGESTIONS_MAX: usize = 3;
 /// `retrieveAPage` name the same words.
 const FILLER_WORDS: [&str; 3] = ["a", "an", "the"];
 
+/// The shortest word that matches a longer one it starts.
+const SHORTEST_WORD_STEM: usize = 3;
+
 /// Up to [`SUGGESTIONS_MAX`] Call Paths near `written`, nearest first:
 /// each Tool of its Call Root whose last segment has the same words, in
 /// Call Path order, then the Tools a ranked query of its words under that
-/// root finds, in rank order. None when the root is not one the caller can
-/// search.
+/// root finds: first those whose own path shares a word with `written`,
+/// then the rest, each in rank order. None when the root is not one the
+/// caller can search.
+///
+/// The ranked query reads every text of a Tool, its schema text too, so a
+/// Tool whose types merely mention a word can rank first. A path names a
+/// Tool, so a Tool named with one of its words is nearer.
 ///
 /// The exact match reads the catalog, not the index, so it still answers
 /// while ranking is down; a ranking failure leaves only the exact matches.
@@ -98,7 +106,17 @@ pub(crate) async fn suggestions(
         }
         Err(QueryError::Shared(error)) => return Err(error),
     };
-    for entity in window {
+    let written_words = path_words(relative_path);
+    let (named, others): (Vec<_>, Vec<_>) = window.into_iter().partition(|entity| {
+        ProviderCallRoot::split_call_path(entity.call_path().as_str()).is_some_and(
+            |(_root, relative)| {
+                path_words(relative)
+                    .iter()
+                    .any(|word| written_words.iter().any(|written| same_word(word, written)))
+            },
+        )
+    });
+    for entity in named.into_iter().chain(others) {
         let path = entity.call_path().as_str();
         if suggested.len() == SUGGESTIONS_MAX {
             break;
@@ -113,10 +131,28 @@ pub(crate) async fn suggestions(
 /// The distinct words of a Call Path's last segment, without filler words.
 fn leaf_words(relative_path: &str) -> BTreeSet<String> {
     let leaf = relative_path.rsplit('.').next().unwrap_or(relative_path);
-    words(leaf)
+    path_words(leaf)
+}
+
+/// The distinct words of every segment of `relative_path`, without filler
+/// words.
+fn path_words(relative_path: &str) -> BTreeSet<String> {
+    words(relative_path)
         .into_iter()
         .filter(|word| !FILLER_WORDS.contains(&word.as_str()))
         .collect()
+}
+
+/// Whether two path words are one word: equal, or one starts with the other
+/// and is at least [`SHORTEST_WORD_STEM`] long, as `repo` and `repos`, or
+/// `org` and `organization`, are.
+fn same_word(one: &str, other: &str) -> bool {
+    let (shorter, longer) = if one.len() <= other.len() {
+        (one, other)
+    } else {
+        (other, one)
+    };
+    shorter == longer || (shorter.len() >= SHORTEST_WORD_STEM && longer.starts_with(shorter))
 }
 
 /// The lowercase words of `text`: split on every character that is not a
@@ -158,7 +194,7 @@ fn words(text: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{leaf_words, words};
+    use super::{leaf_words, same_word, words};
 
     #[test]
     fn words_split_separators_and_camel_case() {
@@ -182,5 +218,21 @@ mod tests {
             leaf_words("pages.retrieveAPage")
         );
         assert_ne!(leaf_words("getRepo"), leaf_words("repos.get"));
+    }
+
+    #[test]
+    fn a_word_matches_the_longer_word_it_starts() {
+        for (one, other, same) in [
+            ("repo", "repos", true),
+            ("organization", "org", true),
+            ("policy", "policy", true),
+            ("retrieve", "retrievers", true),
+            ("get", "getter", true),
+            ("a", "add", false),
+            ("ge", "get", false),
+            ("policy", "providers", false),
+        ] {
+            assert_eq!(same_word(one, other), same, "{one} {other}");
+        }
     }
 }
