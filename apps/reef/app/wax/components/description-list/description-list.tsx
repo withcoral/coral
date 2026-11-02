@@ -5,7 +5,7 @@ import { Typography } from '@/wax/components/typography'
 
 import * as styles from './description-list.css'
 
-/** Read-only label and value pairs. An optional title heads the list, at the heading level
+/** Label and value pairs. An optional title heads the list, at the heading level
  * the caller names: one under the heading the list sits in.
  *
  * `compact` suits a form's short facts: the labels take one column as wide as the widest,

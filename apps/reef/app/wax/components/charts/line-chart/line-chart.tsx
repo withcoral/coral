@@ -22,7 +22,16 @@ export interface LineChartSeries {
   label: string
 }
 
-const PADDING = { bottom: 28, left: 44, right: 8, top: 8 }
+const PADDING = { bottom: 28, right: 8, top: 8 }
+// The y-axis labels end this far from the plot.
+const TICK_GAP = 6
+
+/** The width left of the plot: enough for the longest y-axis label, and at least 44px.
+ * One character of the 11px axis text is about 6.6px wide. */
+function gutter(tickLabels: string[]) {
+  const longest = Math.max(...tickLabels.map((label) => label.length))
+  return Math.max(44, Math.ceil(longest * 6.6) + TICK_GAP)
+}
 
 /** The runs of consecutive points that have a value, as [index, value] pairs. */
 function segments(data: (number | null)[]) {
@@ -58,12 +67,13 @@ export function LineChart({
   const tickMin = ticks[0]
   const tickMax = ticks[ticks.length - 1]
 
+  const tickLabels = ticks.map(formatTick)
+  const left = gutter(tickLabels)
   const maxPoints = Math.max(...series.map((s) => s.data.length))
-  const plotWidth = width - PADDING.left - PADDING.right
-  const plotHeight = height - PADDING.top - PADDING.bottom
 
-  const yScale = scaleLinear([tickMin, tickMax], [plotHeight, 0])
-  const xScale = scaleLinear([0, Math.max(maxPoints - 1, 1)], [0, plotWidth])
+  // Both scales map straight to SVG coordinates.
+  const yScale = scaleLinear([tickMin, tickMax], [height - PADDING.bottom, PADDING.top])
+  const xScale = scaleLinear([0, Math.max(maxPoints - 1, 1)], [left, width - PADDING.right])
 
   return (
     <svg
@@ -75,25 +85,19 @@ export function LineChart({
       aria-label={ariaLabel}
     >
       {/* Gridlines */}
-      {ticks.map((tick) => {
-        const y = PADDING.top + yScale(tick)
+      {ticks.map((tick, i) => {
+        const y = yScale(tick)
         return (
           <g key={tick}>
-            <line
-              className={styles.gridLine}
-              x1={PADDING.left}
-              x2={width - PADDING.right}
-              y1={y}
-              y2={y}
-            />
+            <line className={styles.gridLine} x1={left} x2={width - PADDING.right} y1={y} y2={y} />
             <text
               className={styles.axisText}
               dominantBaseline="middle"
               textAnchor="end"
-              x={PADDING.left - 6}
+              x={left - TICK_GAP}
               y={y}
             >
-              {formatTick(tick)}
+              {tickLabels[i]}
             </text>
           </g>
         )
@@ -102,7 +106,7 @@ export function LineChart({
       {/* X-axis labels */}
       {labels?.map((label, i) => {
         if (!label) return null
-        const x = PADDING.left + xScale(i)
+        const x = xScale(i)
         return (
           <text
             className={styles.axisText}
@@ -121,17 +125,15 @@ export function LineChart({
       {series.map((s, si) => {
         const color = chartColor(s.color)
         const bgColor = chartBgColor(s.color)
-        const baseline = PADDING.top + yScale(tickMin)
+        const baseline = yScale(tickMin)
 
         return (
           <g key={si}>
             {segments(s.data).map((run) => {
-              const points = run.map(
-                ([i, v]) => `${PADDING.left + xScale(i)},${PADDING.top + yScale(v)}`,
-              )
+              const points = run.map(([i, v]) => `${xScale(i)},${yScale(v)}`)
               // Area fill
-              const firstX = PADDING.left + xScale(run[0][0])
-              const lastX = PADDING.left + xScale(run[run.length - 1][0])
+              const firstX = xScale(run[0][0])
+              const lastX = xScale(run[run.length - 1][0])
               const areaPoints = [...points, `${lastX},${baseline}`, `${firstX},${baseline}`]
               return (
                 <g key={run[0][0]}>
@@ -146,13 +148,7 @@ export function LineChart({
                   {/* A lone point has no line, so it always shows as a dot. */}
                   {(dots || run.length === 1) &&
                     run.map(([i, v]) => (
-                      <circle
-                        cx={PADDING.left + xScale(i)}
-                        cy={PADDING.top + yScale(v)}
-                        fill={color}
-                        key={i}
-                        r={dots ? 3 : 2}
-                      />
+                      <circle cx={xScale(i)} cy={yScale(v)} fill={color} key={i} r={dots ? 3 : 2} />
                     ))}
                 </g>
               )

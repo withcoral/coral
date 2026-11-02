@@ -22,9 +22,11 @@ export const row = style({
     [`screen and (max-width: ${breakpoints.mobile})`]: { gridTemplateColumns: 'minmax(0, 1fr)' },
   },
   selectors: {
-    // The rows share the list's columns. A row is as tall as a control, so text and pickers sit evenly.
+    // The rows share the list's columns and gaps. A row is as tall as a control, so text and
+    // pickers sit evenly. Compact rows stay side by side on mobile: their labels are short.
     [`${compactList} > &`]: {
       alignItems: 'center',
+      columnGap: 'normal',
       gridColumn: '1 / -1',
       gridTemplateColumns: 'subgrid',
       minHeight: 32,

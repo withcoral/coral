@@ -117,6 +117,30 @@ export const LineWithGaps: StoryObj<typeof LineChart> = {
   },
 }
 
+/** Long tick labels widen the left gutter instead of running off the chart. */
+export const LineWideTicks: StoryObj<typeof LineChart> = {
+  args: {
+    ariaLabel: 'Monthly spend',
+    formatTick: (value) => value.toLocaleString('en-US', { currency: 'USD', style: 'currency' }),
+    labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
+    series: [
+      {
+        color: 'green',
+        data: [1_200_000, 1_850_000, 1_600_000, 2_400_000, 2_100_000, 2_750_000],
+        label: 'Spend',
+      },
+    ],
+  },
+  render: (args) => <LineChart {...args} />,
+  play: async ({ canvasElement }) => {
+    const chart = within(canvasElement).getByRole('img', { name: 'Monthly spend' })
+    const left = chart.getBoundingClientRect().left
+    for (const tick of chart.querySelectorAll('text')) {
+      await expect(tick.getBoundingClientRect().left).toBeGreaterThanOrEqual(left)
+    }
+  },
+}
+
 // --- Sparkline ---
 
 export const SparklineDefault: StoryObj<typeof Sparkline> = {

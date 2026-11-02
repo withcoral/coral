@@ -30,6 +30,7 @@ export const Untitled: Story = {
   ),
 }
 export const Compact: Story = {
+  parameters: { chromatic: { viewports: [390, 1280] } },
   render: () => (
     <DescriptionList.List title="Settings" heading="h3" density="compact">
       <DescriptionList.Row label="Size">
