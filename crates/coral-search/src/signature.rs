@@ -1,6 +1,6 @@
 //! The signature line of a Search Hit, derived from the authoritative
-//! TypeScript declaration at hydration, and whether it is complete enough to
-//! call from.
+//! TypeScript declaration at hydration, and whether its input is complete
+//! enough to call from.
 //!
 //! The `input` object's members appear inline one level deep, required ones
 //! first and long enums last. A nested object appears as `{…}`, and a named
@@ -11,7 +11,7 @@
 //! A Tool's result is its envelope with the `data` types of its success
 //! responses: the top-level field names of an object, named or not, when
 //! they fit, and the types by name otherwise. An MCP-backed Tool without a
-//! declared output shows that its result is JSON text in
+//! declared output shows that its result is text, usually JSON, in
 //! `data.content[0].text`. A Saved Function's result is shown as its input
 //! is: an object's members one level deep, named or not. The line looks
 //! inside the result's `Promise` and one level of array. The compiler infers
@@ -22,8 +22,10 @@
 //! The line is at most [`SIGNATURE_LINE_MAX_BYTES`]. The result keeps up to
 //! [`RESULT_RESERVED_BYTES`] of it in its most detailed form that fits, so a
 //! long input never cuts it; the input's last members give way first, to the
-//! marker. A line with no marker whose input names no type it does not show
-//! is complete.
+//! marker. A line is complete when its input has no marker, names no type
+//! the line does not show, and is the callable's only overload: the line
+//! shows the first. The result never counts: the caller reads what a call
+//! returns, so a result the line abridges does not stop a call.
 //!
 //! `syntax` reads the declaration with oxc into the small type tree of `tree`;
 //! `render` and `envelope` print the line from that tree, and `abridge`
@@ -58,8 +60,9 @@ const RESULT_SEPARATOR: &str = ": ";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SignatureLine {
     pub(crate) text: String,
-    /// Whether the line has no cut marker and its input names no type the
-    /// line does not show, so a caller can call from it.
+    /// Whether the line's input has no cut marker, names no type the line
+    /// does not show, and is the callable's only overload, so a caller can
+    /// call from it. The result does not count.
     pub(crate) complete: bool,
     /// Where the callable and its input end in `text`; the result follows.
     pub(crate) input_end: usize,
@@ -95,23 +98,24 @@ impl Callable<'_> {
 
 /// The bounded signature line of the callable in `declaration`.
 pub(crate) fn signature_line(declaration: &str, callable: Callable<'_>) -> SignatureLine {
-    let ((text, input_end), names_unshown_type) =
-        if let Some(declarations) = syntax::read(declaration) {
-            let shown = render::render(&declarations, callable);
-            (
-                fit(&shown, SIGNATURE_LINE_MAX_BYTES),
-                shown.names_unshown_type,
-            )
-        } else {
-            tracing::debug!("a declaration has no readable callable; its signature line is cut");
-            let text = format!("{}({CUT_MARKER})", callable.leaf());
-            ((text.clone(), text.len()), false)
-        };
-    SignatureLine {
-        complete: !names_unshown_type && !text.contains(CUT_MARKER),
+    let ((text, input_end), hides_input) = if let Some(declarations) = syntax::read(declaration) {
+        let shown = render::render(&declarations, callable);
+        (
+            fit(&shown, SIGNATURE_LINE_MAX_BYTES),
+            shown.names_unshown_type || shown.overloaded,
+        )
+    } else {
+        tracing::debug!("a declaration has no readable callable; its signature line is cut");
+        let text = format!("{}({CUT_MARKER})", callable.leaf());
+        ((text.clone(), text.len()), false)
+    };
+    let mut line = SignatureLine {
+        complete: false,
         text,
         input_end,
-    }
+    };
+    line.complete = !hides_input && !line.input().contains(CUT_MARKER);
+    line
 }
 
 /// The line within `max_bytes`: the result in its most detailed form that

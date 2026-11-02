@@ -10,7 +10,7 @@ use super::tree::{Member, Type};
 use crate::hit::CUT_MARKER;
 
 /// Where an MCP-backed Tool without a declared output puts its result.
-const MCP_TEXT_RESULT: &str = "// JSON text in data.content[0].text";
+const MCP_TEXT_RESULT: &str = "// text, usually JSON, in data.content[0].text";
 
 /// How a form shows each `data` type.
 #[derive(Clone, Copy)]

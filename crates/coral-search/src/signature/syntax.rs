@@ -195,20 +195,35 @@ impl Scan<'_> {
         });
     }
 
+    /// The first overload of the callable, and whether it has others: the
+    /// default export's, else those of the function it names, else the only
+    /// function.
     fn finish(mut self) -> Option<Declarations> {
-        let chosen = self
+        let exported_default = self
             .functions
             .iter()
-            .position(|candidate| candidate.exported_default)
-            .or_else(|| {
-                self.functions.iter().position(|candidate| {
+            .any(|candidate| candidate.exported_default);
+        let overloads = self
+            .functions
+            .iter()
+            .enumerate()
+            .filter(|(_index, candidate)| {
+                if exported_default {
+                    candidate.exported_default
+                } else {
                     candidate.name.is_some() && candidate.name == self.default_name
-                })
+                }
             })
+            .map(|(index, _candidate)| index)
+            .collect::<Vec<_>>();
+        let chosen = overloads
+            .first()
+            .copied()
             .or_else(|| (self.functions.len() == 1).then_some(0))?;
         Some(Declarations {
             aliases: self.aliases,
             callable: self.functions.swap_remove(chosen).signature,
+            overloaded: overloads.len() > 1,
             statements: Vec::new(),
         })
     }

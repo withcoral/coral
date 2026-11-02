@@ -36,6 +36,9 @@ pub(super) struct Shown {
     pub(super) results: Vec<String>,
     /// Whether the input names a type that the line does not show.
     pub(super) names_unshown_type: bool,
+    /// Whether the callable has other overloads, whose inputs the line does
+    /// not show.
+    pub(super) overloaded: bool,
 }
 
 /// The parameters as one text, and the first one's object members, which a
@@ -107,6 +110,7 @@ pub(super) fn render(declarations: &Declarations, callable: Callable<'_>) -> Sho
         },
         results,
         names_unshown_type: input.named.get(),
+        overloaded: declarations.overloaded,
     }
 }
 
@@ -370,7 +374,7 @@ impl Renderer<'_> {
     }
 
     /// A result type: named types by name, an anonymous object as the
-    /// marker, so a line that hides one is not complete.
+    /// marker.
     pub(super) fn result(&self, type_: &Type, seen: &mut HashSet<String>) -> String {
         self.render(type_, seen, &format!("{{{CUT_MARKER}}}"), "unknown")
     }

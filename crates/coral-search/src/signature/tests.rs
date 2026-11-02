@@ -151,7 +151,7 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
         (
             nested_mcp,
             Callable::Tool { leaf: "forecast" },
-            "forecast(input: { city: string; options?: {…}; days?: Array<number> }): Promise<{ data: { content: Array<McpContentBlock> } }> // JSON text in data.content[0].text",
+            "forecast(input: { city: string; options?: {…}; days?: Array<number> }): Promise<{ data: { content: Array<McpContentBlock> } }> // text, usually JSON, in data.content[0].text",
             false,
         ),
         (
@@ -170,7 +170,7 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
             inline_only.as_str(),
             Callable::Tool { leaf: "merged" },
             "merged(): Promise<{ data: { a?; b? } | {…} }>",
-            false,
+            true,
         ),
         (
             typed_and_untyped.as_str(),
@@ -232,13 +232,13 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
                 leaf: "pullRequestDetails",
             },
             "pullRequestDetails(input: { repo: string; number: number }): Promise<{ title: string; merged_at: string | null; base: {…}; linked: string[] }>",
-            false,
+            true,
         ),
         (
             listed,
             Callable::SavedFunction { leaf: "openPrs" },
             "openPrs(input: { repo: string }): Promise<{ number: number; author: {…} }[]>",
-            false,
+            true,
         ),
         (
             generic_array,
@@ -288,7 +288,7 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
             mapped_result,
             Callable::SavedFunction { leaf: "mapped" },
             "mapped(): Promise<…>",
-            false,
+            true,
         ),
         (
             arrow,
@@ -306,19 +306,19 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
             promised_cycle,
             Callable::SavedFunction { leaf: "loop" },
             "loop(): Promise<…>",
-            false,
+            true,
         ),
         (
             promised_chain,
             Callable::SavedFunction { leaf: "chain" },
             "chain(): Promise<…>",
-            false,
+            true,
         ),
         (
             promised_through_alias,
             Callable::SavedFunction { leaf: "relay" },
             "relay(): Promise<…>",
-            false,
+            true,
         ),
         (
             recursive,
@@ -440,7 +440,7 @@ fn a_long_enum_gives_way_so_an_mcp_listing_still_shows_its_query_and_text_result
     assert_eq!(
         shown(signature_line(&declaration, Callable::Tool { leaf: "listIssues" })),
         (
-            r#"listIssues(input: { query?: string; team?: string; assignee?: string; state?: string; limit?: number; includeArchived?: boolean; orderBy?: "createdAt" | "updatedAt"; … }): Promise<{ data: { content: Array<McpContentBlock> } }> // JSON text in data.content[0].text"#.to_string(),
+            r#"listIssues(input: { query?: string; team?: string; assignee?: string; state?: string; limit?: number; includeArchived?: boolean; orderBy?: "createdAt" | "updatedAt"; … }): Promise<{ data: { content: Array<McpContentBlock> } }> // text, usually JSON, in data.content[0].text"#.to_string(),
             false,
         )
     );
@@ -575,4 +575,93 @@ fn an_input_that_is_not_one_object_is_cut_at_a_word_boundary() {
     );
     assert!(line.text.starts_with("wide(input: { field0: string; "));
     assert!(!line.complete);
+}
+
+#[test]
+fn only_the_input_decides_whether_a_line_is_complete() {
+    let (aliases, widget) = http_result(&[("Widget", "200")]);
+    let (_aliases, open) =
+        http_result(&[("(Record<string, unknown> & Record<string, unknown>)", "200")]);
+    for (declaration, callable, expected, complete) in [
+        (
+            "export default function details(input: { id: number }): Promise<{ base: { ref: string } }>;".to_string(),
+            Callable::SavedFunction { leaf: "details" },
+            "details(input: { id: number }): Promise<{ base: {…} }>",
+            true,
+        ),
+        (
+            format!("{aliases}export default function (input: {{ \"id\": string }}): {widget};"),
+            Callable::Tool { leaf: "widget" },
+            "widget(input: { id: string }): Promise<{ data: Widget }>",
+            true,
+        ),
+        (
+            format!("{aliases}export default function (input: {{ \"id\": string }}): {open};"),
+            Callable::Tool { leaf: "open" },
+            "open(input: { id: string }): Promise<{ data: {…} }>",
+            true,
+        ),
+        (
+            "export default function post(input: { body: Body }): Promise<{ id: number }>;"
+                .to_string(),
+            Callable::SavedFunction { leaf: "post" },
+            "post(input: { body: Body }): Promise<{ id: number }>",
+            false,
+        ),
+        (
+            "export default function nest(input: { body: { text: string } }): Promise<{ id: number }>;"
+                .to_string(),
+            Callable::SavedFunction { leaf: "nest" },
+            "nest(input: { body: {…} }): Promise<{ id: number }>",
+            false,
+        ),
+    ] {
+        assert_eq!(
+            shown(signature_line(&declaration, callable)),
+            (expected.to_string(), complete),
+            "a cut marker or an unseen type name in the result leaves the line complete; \
+             one in the input does not: {declaration}"
+        );
+    }
+}
+
+#[test]
+fn a_line_that_shows_one_of_several_overloads_is_not_complete() {
+    // Shaped like coral.workspace.search: one overload per mode. The line
+    // shows the first, so it hides the inputs of the others.
+    let overloads = "type Page = { hits: Array<string> };\n\
+         type Paths = { descriptions: Array<string> };\n\
+         export default function (input: { \"query\"?: string }): Promise<{ data: Page; metadata: { kind: \"builtin\" } }>;\n\
+         export default function (input: { \"paths\": Array<string> }): Promise<{ data: Paths; metadata: { kind: \"builtin\" } }>;";
+    let named = "declare function pick(input: { id: string }): number;\n\
+         declare function pick(input: { ids: string[] }): number[];\n\
+         export default pick;";
+    let single = "declare function pick(input: { id: string }): number;\nexport default pick;";
+
+    for (declaration, callable, expected, complete) in [
+        (
+            overloads,
+            Callable::Tool { leaf: "search" },
+            "search(input: { query?: string }): Promise<{ data: { hits } }>",
+            false,
+        ),
+        (
+            named,
+            Callable::SavedFunction { leaf: "pick" },
+            "pick(input: { id: string }): number",
+            false,
+        ),
+        (
+            single,
+            Callable::SavedFunction { leaf: "pick" },
+            "pick(input: { id: string }): number",
+            true,
+        ),
+    ] {
+        assert_eq!(
+            shown(signature_line(declaration, callable)),
+            (expected.to_string(), complete),
+            "{declaration}"
+        );
+    }
 }

@@ -332,15 +332,17 @@ pub struct SearchHit {
     #[schemars(
         description = "The callable's input members one level deep, required ones first, then \
                        its result, which the line always keeps: a provider tool's result data as its \
-                       top-level field names when they fit, or by type name, and a Saved \
-                       Function's result members one level deep. `{…}` and `…` mark what the \
-                       line leaves out. At most 512 UTF-8 bytes."
+                       top-level field names when they fit, or by type name; for an MCP tool that \
+                       declares no output, a note that the result is text, usually JSON, in \
+                       `data.content[0].text`; and a Saved Function's result members one level \
+                       deep. `{…}` and `…` mark what the line leaves out. At most 512 UTF-8 bytes."
     )]
     pub signature_line: String,
-    /// Whether the signature line is complete enough to call from.
+    /// Whether the signature line's input is complete enough to call from.
     #[schemars(
-        description = "Whether you can call from the signature line: it has no `…` and its \
-                       input names no type that it does not show."
+        description = "Whether you can call from the signature line: its input has no `…`, \
+                       names no type that the line does not show, and is the callable's only \
+                       overload. What the line leaves out of the result does not count."
     )]
     pub complete: bool,
     /// The description around the first matched term.

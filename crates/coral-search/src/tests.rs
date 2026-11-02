@@ -1289,7 +1289,7 @@ async fn an_mcp_listing_without_an_output_schema_keeps_its_inputs_and_text_resul
     let [hit] = page.hits() else {
         panic!("one MCP Tool hit: {:?}", page.hits());
     };
-    let line = "listIssues(input: { limit?: number; query?: string; team?: string; … }): Promise<{ data: { content: Array<McpContentBlock> } }> // JSON text in data.content[0].text";
+    let line = "listIssues(input: { limit?: number; query?: string; team?: string; … }): Promise<{ data: { content: Array<McpContentBlock> } }> // text, usually JSON, in data.content[0].text";
     assert_eq!(
         (hit.signature_line(), hit.complete()),
         (line, false),

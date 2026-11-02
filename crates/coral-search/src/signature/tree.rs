@@ -63,6 +63,9 @@ pub(super) struct Signature {
 pub(super) struct Declarations {
     pub(super) aliases: HashMap<String, Type>,
     pub(super) callable: Signature,
+    /// Whether the callable has other overloads, which the line does not
+    /// show.
+    pub(super) overloaded: bool,
     pub(super) statements: Vec<TopLevel>,
 }
 
