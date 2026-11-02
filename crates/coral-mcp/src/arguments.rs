@@ -334,13 +334,13 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
             SEARCH_TOOL_DESCRIPTION,
             read_annotations("Search"),
         )),
-        tool::<
+        always_loaded(tool::<
             DescribeArguments,
             crate::projection::Description<Option<crate::projection::SavedDetail>>,
         >(
             "Describe one exact Call Path: the inputs and result types needed to call it. Result types beyond a size limit appear as field names only or are not shown; describe the same path with types to see them. To compare candidates, call describe for each of them in parallel.",
             read_annotations("Describe"),
-        ),
+        )),
         tool::<SaveFunctionArguments, crate::projection::SavedFunctionResult<'_>>(
             "Atomically create or replace one Saved Function. Programs call it as `coral.functions.<path>(...)`.",
             mutation_annotations("Save Function", true, false),
@@ -492,7 +492,7 @@ mod tests {
             ("exec", Some(json!(true))),
             ("wait", Some(json!(true))),
             ("end_task", Some(json!(true))),
-            ("describe", None),
+            ("describe", Some(json!(true))),
             ("save_function", None),
             ("delete_function", None),
             ("cancel", None),
