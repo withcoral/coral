@@ -1055,8 +1055,11 @@ describe('recipeConfiguration', () => {
         },
         'mcp',
       )
-      expect(recipeConfiguration(recipe, setup)?.clientConfigHintMarkdown).toContain(
-        '(https://app.datadoghq.eu/organization-settings/mcp)',
+      expect(recipeConfiguration(recipe, setup)?.clientConfigHintMarkdown).toBe(
+        CLIENT_CONFIG_HINT_GENERATORS.datadog_mcp_redirect_allowlist({
+          ...hintContext,
+          signInUrl: 'https://app.datadoghq.eu/oauth2/v1/authorize',
+        }),
       )
     })
 

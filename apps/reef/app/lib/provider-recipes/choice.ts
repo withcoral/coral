@@ -163,9 +163,13 @@ export function filledSourceUrl(choice: SourceChoice, answers: Record<string, st
   }
   let missing = false
   const inputs = new Map(choice.sourceInputs?.map((input) => [input.name, input]))
+  const query = choice.url.indexOf('?')
   const url = choice.url.replace(inputReference, (reference, name: string, offset: number) => {
     const answer = answers[name]?.trim() ?? ''
     if (!answer) missing = true
+    // An answer in the query is one value: `&`, `#` or `?` must not start another
+    // part. Commas stay, so a list such as all,apm reads as the service expects.
+    if (query !== -1 && offset > query) return encodeURIComponent(answer).replaceAll('%2C', ',')
     const type = inputs.get(name)?.type
     // Strip only the join separator. A complete endpoint may require its final slash.
     if (type === 'url' && choice.url[offset + reference.length] === '/')

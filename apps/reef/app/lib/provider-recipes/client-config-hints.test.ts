@@ -10,20 +10,21 @@ describe('datadog_mcp_redirect_allowlist', () => {
   it.each([
     [
       'https://app.datadoghq.eu/oauth2/v1/authorize',
-      'https://app.datadoghq.eu/organization-settings/mcp',
+      '[MCP settings](https://app.datadoghq.eu/organization-settings/mcp)',
     ],
     [
       'https://us3.datadoghq.com/oauth2/v1/authorize',
-      'https://us3.datadoghq.com/organization-settings/mcp',
+      '[MCP settings](https://us3.datadoghq.com/organization-settings/mcp)',
     ],
-    [undefined, 'https://docs.datadoghq.com/mcp_server/setup/'],
-    ['', 'https://docs.datadoghq.com/mcp_server/setup/'],
-  ])('links sign-in at %s to %s', (signInUrl, settings) => {
+    // Without a site, the link opens the guide and says so.
+    [undefined, '[Datadog MCP setup guide](https://docs.datadoghq.com/mcp_server/setup/)'],
+    ['', '[Datadog MCP setup guide](https://docs.datadoghq.com/mcp_server/setup/)'],
+  ])('links sign-in at %s to %s', (signInUrl, link) => {
     const hint = CLIENT_CONFIG_HINT_GENERATORS.datadog_mcp_redirect_allowlist({
       callbackUrl,
       signInUrl,
     })
-    expect(hint).toContain(`[MCP settings](${settings})`)
+    expect(hint).toContain(link)
   })
 })
 

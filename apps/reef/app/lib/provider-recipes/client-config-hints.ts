@@ -16,11 +16,11 @@ export interface ClientConfigHintContext {
  * "Mismatching redirect URI". The MCP settings page sits on the host the person
  * signs in at, so the link follows their site.
  */
-function datadogMcpSettings(signInUrl: string | undefined) {
+function datadogMcpSettingsLink(signInUrl: string | undefined) {
   try {
-    return new URL('/organization-settings/mcp', signInUrl).href
+    return `[MCP settings](${new URL('/organization-settings/mcp', signInUrl).href})`
   } catch {
-    return 'https://docs.datadoghq.com/mcp_server/setup/'
+    return '[Datadog MCP setup guide](https://docs.datadoghq.com/mcp_server/setup/)'
   }
 }
 
@@ -31,5 +31,5 @@ export const CLIENT_CONFIG_HINT_GENERATORS: Record<
   slack_app_create_link: ({ callbackUrl }) =>
     `[Create a Slack app](${slackAppCreateLink(callbackUrl)}), then copy its client ID and client secret here.`,
   datadog_mcp_redirect_allowlist: ({ signInUrl }) =>
-    `Before you sign in, ask a Datadog admin to add the callback URL in [MCP settings](${datadogMcpSettings(signInUrl)}).`,
+    `Before you sign in, ask a Datadog admin to add the callback URL in ${datadogMcpSettingsLink(signInUrl)}.`,
 }
