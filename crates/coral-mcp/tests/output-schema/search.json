@@ -52,7 +52,11 @@
         },
         "signature_line": {
           "type": "string",
-          "description": "The callable's input members one level deep; a provider tool's result data types by name, an unnamed object as `{…}`; a Saved Function's result members one level deep. At most 512 UTF-8 bytes."
+          "description": "The callable's input members one level deep, required ones first, then its result, which the line always keeps: a provider tool's result data as its top-level field names when they fit, or by type name, and a Saved Function's result members one level deep. `{…}` and `…` mark what the line leaves out. At most 512 UTF-8 bytes."
+        },
+        "complete": {
+          "type": "boolean",
+          "description": "Whether you can call from the signature line: it has no `…` and its input names no type that it does not show."
         },
         "description_snippet": {
           "type": "string",
@@ -94,9 +98,10 @@
       "required": [
         "call_path",
         "signature_line",
+        "complete",
         "description_snippet"
       ],
-      "description": "One Search Hit. Call a read from it when its signature line is complete: no cut marker (`…`) and no type named in its input that the line does not show. Read its exact description first otherwise, and before a write."
+      "description": "One Search Hit. Call a read from it when it is complete. Read its exact description first otherwise, and before a write."
     },
     "Hints": {
       "type": "object",

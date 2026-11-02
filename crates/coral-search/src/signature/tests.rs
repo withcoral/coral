@@ -1,4 +1,4 @@
-use super::{Callable, SIGNATURE_LINE_MAX_BYTES, signature_line};
+use super::{Callable, SIGNATURE_LINE_MAX_BYTES, SignatureLine, signature_line};
 
 const HTTP_RESULT_ALIASES: &str = "type HttpResult<Data, Status, MediaType> = { status: Status; data: Data; metadata: { readonly kind: \"http\"; readonly mediaType: MediaType; readonly decodeDiagnostics: readonly { readonly code: string }[] } };\n";
 
@@ -124,11 +124,12 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
     let lone_surrogate = "export default function surrogate(input: { \"\\uD800\": number; mode: \"\\uD800\" | \"a\" }): number;";
     let markers = "export default function markers(input: { pair: [number, number?]; cb?: ((value?: number) => number) | null; sum: (...values: number[]) => number }): number;";
 
-    for (declaration, callable, expected) in [
+    for (declaration, callable, expected, complete) in [
         (
             list_issues.as_str(),
             Callable::Tool { leaf: "list" },
-            r#"list(input: { owner: string; per_page?: number; state?: "open" | "closed" | "all" }): Promise<{ data: Array<Issue> }>"#,
+            r#"list(input: { owner: string; per_page?: number; state?: "open" | "closed" | "all" }): Promise<{ data: Array<{ id?; labels?; title? }> }>"#,
+            true,
         ),
         (
             create_issue.as_str(),
@@ -136,71 +137,85 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
                 leaf: "createIssue",
             },
             "createIssue(input: { body: BodyInput; owner: string }): Promise<{ data: Issue | IssueDraft }>",
+            false,
         ),
         (
             nested_mcp,
             Callable::Tool { leaf: "forecast" },
-            "forecast(input: { city: string; options?: {…}; days?: Array<number> }): Promise<{ data: {…} }>",
+            "forecast(input: { city: string; options?: {…}; days?: Array<number> }): Promise<{ data: { content: Array<McpContentBlock> } }> // JSON text in data.content[0].text",
+            false,
         ),
         (
             status_range.as_str(),
             Callable::Tool { leaf: "names" },
             "names(): Promise<{ data: Array<Name> }>",
+            true,
         ),
         (
             named_with_inline.as_str(),
             Callable::Tool { leaf: "update" },
-            "update(): Promise<{ data: Issue & {…} }>",
+            "update(): Promise<{ data: { id; triage? } }>",
+            true,
         ),
         (
             inline_only.as_str(),
             Callable::Tool { leaf: "merged" },
-            "merged(): Promise<{ data: {…} }>",
+            "merged(): Promise<{ data: { a?; b? } | {…} }>",
+            false,
         ),
         (
             typed_and_untyped.as_str(),
             Callable::Tool { leaf: "accept" },
-            "accept(): Promise<{ data: Thing | unknown }>",
+            "accept(): Promise<{ data: { id } | unknown }>",
+            true,
         ),
         (
             shadowed_record.as_str(),
             Callable::Tool { leaf: "pair" },
             "pair(): Promise<{ data: Thing & Record<string, unknown> }>",
+            true,
         ),
         (
             aliased_open_record.as_str(),
             Callable::Tool { leaf: "extra" },
-            "extra(): Promise<{ data: Thing }>",
+            "extra(): Promise<{ data: { id } }>",
+            true,
         ),
         (
             shadowed_record_input,
             Callable::SavedFunction { leaf: "lookup" },
             "lookup(input: { q: string } & Record<string, unknown>): number",
+            false,
         ),
         (
             default_only.as_str(),
             Callable::Tool { leaf: "thing" },
-            "thing(): Promise<{ data: Thing }>",
+            "thing(): Promise<{ data: { id } }>",
+            true,
         ),
         (
             argumentless.as_str(),
             Callable::Tool { leaf: "delete" },
             "delete(): Promise<{ data: string }>",
+            true,
         ),
         (
             fallback,
             Callable::Tool { leaf: "raw" },
             "raw(input: unknown): Promise<{ data: unknown }>",
+            true,
         ),
         (
             named_input,
             Callable::SavedFunction { leaf: "run" },
             "run(input: { value: number; nested: {…}; tags?: string[] }): number",
+            false,
         ),
         (
             anonymous,
             Callable::SavedFunction { leaf: "count" },
             "count(input: { q: string }): { n: number }",
+            true,
         ),
         (
             inferred,
@@ -208,11 +223,13 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
                 leaf: "pullRequestDetails",
             },
             "pullRequestDetails(input: { repo: string; number: number }): Promise<{ title: string; merged_at: string | null; base: {…}; linked: string[] }>",
+            false,
         ),
         (
             listed,
             Callable::SavedFunction { leaf: "openPrs" },
             "openPrs(input: { repo: string }): Promise<{ number: number; author: {…} }[]>",
+            false,
         ),
         (
             generic_array,
@@ -220,133 +237,333 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
                 leaf: "openIssuesByLabel",
             },
             "openIssuesByLabel(input: { label: string }): Promise<Array<{ number: number; title: string }>>",
+            true,
         ),
         (
             readonly_array,
             Callable::SavedFunction { leaf: "labels" },
             "labels(): ReadonlyArray<{ name: string }>",
+            true,
         ),
         (
             named_union,
             Callable::SavedFunction { leaf: "find" },
             "find(input: { id: number }): Promise<{ id: number } | undefined>",
+            true,
         ),
         (
             named_intersection,
             Callable::SavedFunction { leaf: "tagged" },
             "tagged(): Promise<{ id: number } & { tag: string }>",
+            true,
         ),
         (
             aliased_promise,
             Callable::SavedFunction { leaf: "aliased" },
             "aliased(): Promise<{ title: string }>",
+            true,
         ),
         (
             union_elements,
             Callable::SavedFunction { leaf: "rows" },
             "rows(): Promise<({ id: number } | undefined)[]>",
+            true,
         ),
         (
             union_generic,
             Callable::SavedFunction { leaf: "events" },
-            "events(): Array<{ kind: \"a\" } | { kind: \"b\" }>",
+            r#"events(): Array<{ kind: "a" } | { kind: "b" }>"#,
+            true,
         ),
         (
             mapped_result,
             Callable::SavedFunction { leaf: "mapped" },
             "mapped(): Promise<…>",
+            false,
         ),
         (
             arrow,
             Callable::SavedFunction { leaf: "measure" },
             "measure(input: { q: string }): number",
+            true,
         ),
         (
             alias_union,
             Callable::SavedFunction { leaf: "f" },
-            "f(input: { mode: \"a\" | \"b\"; modes?: (\"a\" | \"b\")[]; limit?: number }): Promise<{ x: number }[]>",
+            r#"f(input: { mode: "a" | "b"; modes?: ("a" | "b")[]; limit?: number }): Promise<{ x: number }[]>"#,
+            true,
         ),
         (
             promised_cycle,
             Callable::SavedFunction { leaf: "loop" },
             "loop(): Promise<…>",
+            false,
         ),
         (
             promised_chain,
             Callable::SavedFunction { leaf: "chain" },
             "chain(): Promise<…>",
+            false,
         ),
         (
             promised_through_alias,
             Callable::SavedFunction { leaf: "relay" },
             "relay(): Promise<…>",
+            false,
         ),
         (
             recursive,
             Callable::SavedFunction { leaf: "walk" },
             "walk(input: { tree: Tree }): number",
+            false,
         ),
         (
             unreadable,
             Callable::SavedFunction { leaf: "strange" },
             "strange(…)",
+            false,
         ),
         (
             keyed_record,
             Callable::SavedFunction { leaf: "keyed" },
-            "keyed(input: { label?: string } & Record<\"id\", unknown>): number",
+            r#"keyed(input: { label?: string } & Record<"id", unknown>): number"#,
+            true,
         ),
         (
             beyond_members,
             Callable::SavedFunction { leaf: "beyond" },
-            "beyond(input: { keys: …; pick: Pick<Input, \"a\">; kind: …; label: … }): number",
+            r#"beyond(input: { keys: …; pick: Pick<Input, "a">; kind: …; label: … }): number"#,
+            false,
         ),
         (
             shadowed_global,
             Callable::SavedFunction { leaf: "shadow" },
             "shadow(input: { list: Array }): number",
+            false,
         ),
         (
             escaped_literal,
             Callable::Tool { leaf: "quoted" },
             r#"quoted(): Promise<{ data: "x\"|y" | "z" }>"#,
+            true,
         ),
         (
             lone_surrogate,
             Callable::SavedFunction { leaf: "surrogate" },
-            "surrogate(input: { …; mode: … | \"a\" }): number",
+            r#"surrogate(input: { …; mode: … | "a" }): number"#,
+            false,
         ),
         (
             markers,
             Callable::SavedFunction { leaf: "markers" },
-            "markers(input: { pair: [number, number?]; cb?: ((value?: number) => number) | null; sum: (...values: number[]) => number }): number",
+            "markers(input: { pair: [number, number?]; sum: (...values: number[]) => number; cb?: ((value?: number) => number) | null }): number",
+            true,
         ),
     ] {
         assert_eq!(
             signature_line(declaration, callable),
-            expected,
+            SignatureLine {
+                text: expected.to_string(),
+                complete,
+            },
             "{declaration}"
         );
     }
 }
 
+/// An MCP-backed Tool's declaration as the catalog projects it, with
+/// `output` as its declared output, or `unknown` when it declares none.
+fn mcp_tool(input: &str, output: &str) -> String {
+    format!(
+        "type McpSafeMeta = Record<string, unknown>;\n\
+         export default function (input: {input}): Promise<{{ data: {{ content: Array<McpContentBlock>; structuredContent?: {output}; isError?: false }}; metadata: {{ kind: \"mcp\"; _meta?: McpSafeMeta }} }}>;"
+    )
+}
+
+/// A string-literal union of `values`.
+fn literals(values: &[&str]) -> String {
+    values
+        .iter()
+        .map(|value| format!("\"{value}\""))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
 #[test]
-fn a_long_signature_line_is_cut_at_a_word_boundary_with_a_marker() {
+fn a_long_enum_gives_way_so_an_mcp_listing_still_shows_its_query_and_text_result() {
+    // Shaped like an issue tracker's MCP `list_issues`: a long `fields` enum
+    // declared first once pushed every other input, and the result, past
+    // the cut.
+    let fields = literals(&[
+        "id",
+        "identifier",
+        "title",
+        "description",
+        "priority",
+        "estimate",
+        "state",
+        "assignee",
+        "creator",
+        "team",
+        "project",
+        "cycle",
+        "labels",
+        "parent",
+        "children",
+        "createdAt",
+        "updatedAt",
+        "startedAt",
+        "completedAt",
+        "canceledAt",
+        "dueDate",
+        "url",
+        "branchName",
+        "attachments",
+        "comments",
+        "subscribers",
+        "relations",
+        "reactions",
+    ]);
+    let declaration = mcp_tool(
+        &format!(
+            "{{ \"fields\"?: Array<{fields}>; \"query\"?: string; \"team\"?: string; \"assignee\"?: string; \"state\"?: string; \"limit\"?: number; \"includeArchived\"?: boolean; \"orderBy\"?: \"createdAt\" | \"updatedAt\" }}"
+        ),
+        "unknown",
+    );
+
+    assert_eq!(
+        signature_line(&declaration, Callable::Tool { leaf: "listIssues" }),
+        SignatureLine {
+            text: r#"listIssues(input: { query?: string; team?: string; assignee?: string; state?: string; limit?: number; includeArchived?: boolean; orderBy?: "createdAt" | "updatedAt"; … }): Promise<{ data: { content: Array<McpContentBlock> } }> // JSON text in data.content[0].text"#.to_string(),
+            complete: false,
+        }
+    );
+}
+
+#[test]
+fn required_inputs_come_first_and_long_enums_last() {
+    let long = literals(&[
+        "created",
+        "updated",
+        "popularity",
+        "long-running",
+        "comments",
+        "reactions",
+    ]);
+    let declaration = mcp_tool(
+        &format!(
+            "{{ \"fields\"?: Array<{long}>; \"sort\"?: \"asc\" | \"desc\"; \"kind\": {long}; \"page\"?: number; \"owner\": string }}"
+        ),
+        "{ \"total\": number }",
+    );
+
+    assert_eq!(
+        signature_line(&declaration, Callable::Tool { leaf: "list" }),
+        SignatureLine {
+            text: format!(
+                "list(input: {{ owner: string; kind: {long}; sort?: \"asc\" | \"desc\"; page?: number; fields?: Array<{long}> }}): Promise<{{ data: {{ structuredContent?: {{ total }}; content: Array<McpContentBlock> }} }}>"
+            ),
+            complete: true,
+        },
+        "required members come first, each group's long enums after its others, \
+         and a declared output shows its field names"
+    );
+}
+
+#[test]
+fn a_long_input_gives_way_to_the_result_member_by_member() {
     let members = (0..80)
         .map(|index| format!("\"field{index}\": string"))
         .collect::<Vec<_>>()
         .join("; ");
-    let declaration =
-        format!("function wide(input: {{ {members} }}): Promise<{{ data: unknown }}>;");
+    let issue = "type Issue = { \"id\": number; \"title\": string; \"state\"?: string };\n";
+    let wide = |data: &str| {
+        let (aliases, result) = http_result(&[(data, "200")]);
+        format!("{aliases}{issue}export default function (input: {{ {members} }}): {result};")
+    };
+
+    let line = signature_line(&wide("Array<Issue>"), Callable::Tool { leaf: "wide" });
+
+    assert!(
+        line.text.len() <= SIGNATURE_LINE_MAX_BYTES,
+        "{}",
+        line.text.len()
+    );
+    assert!(
+        line.text
+            .starts_with("wide(input: { field0: string; field1: string; "),
+        "{}",
+        line.text
+    );
+    assert!(
+        line.text
+            .ends_with("; … }): Promise<{ data: Array<{ id; title; state? }> }>"),
+        "whole members, then the marker, then the whole result with its fields: {}",
+        line.text
+    );
+    assert!(
+        !line.complete,
+        "a line that leaves out inputs is not complete"
+    );
+
+    let fields = (0..40)
+        .map(|index| format!("\"column{index}\": string"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let (aliases, result) = http_result(&[("Row", "200")]);
+    let row = format!("type Row = {{ {fields} }};\n");
+    let line = signature_line(
+        &format!("{aliases}{row}export default function (input: {{ {members} }}): {result};"),
+        Callable::Tool { leaf: "wide" },
+    );
+    assert!(
+        line.text.ends_with("; … }): Promise<{ data: Row }>"),
+        "a result whose fields do not fit beside a long input shows its type name: {}",
+        line.text
+    );
+
+    let line = signature_line(
+        &format!("{aliases}{row}export default function (input: {{ \"id\": string }}): {result};"),
+        Callable::Tool { leaf: "row" },
+    );
+    assert!(
+        line.text
+            .starts_with("row(input: { id: string }): Promise<{ data: { column0; column1; ")
+            && line.text.ends_with("; column39 } }>")
+            && line.complete,
+        "a short input leaves the result more than its reserve: {}",
+        line.text
+    );
+}
+
+#[test]
+fn an_input_that_is_not_one_object_is_cut_at_a_word_boundary() {
+    let members = (0..80)
+        .map(|index| format!("\"field{index}\": string"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let declaration = format!(
+        "function wide(input: {{ {members} }} | {{ \"id\": string }}): Promise<{{ data: unknown }}>;"
+    );
 
     let line = signature_line(&declaration, Callable::Tool { leaf: "wide" });
 
-    assert!(line.len() <= SIGNATURE_LINE_MAX_BYTES, "{}", line.len());
-    assert!(line.ends_with('…'), "{line}");
-    let kept = line.trim_end_matches('…');
+    assert!(
+        line.text.len() <= SIGNATURE_LINE_MAX_BYTES,
+        "{}",
+        line.text.len()
+    );
+    assert!(
+        line.text.ends_with("…): Promise<{ data: unknown }>"),
+        "{}",
+        line.text
+    );
+    let kept = line.text.trim_end_matches("…): Promise<{ data: unknown }>");
     assert!(
         kept.ends_with(';') || kept.ends_with(':'),
-        "cut inside a word: {line}"
+        "cut inside a word: {}",
+        line.text
     );
-    assert!(line.starts_with("wide(input: { field0: string; "));
+    assert!(line.text.starts_with("wide(input: { field0: string; "));
+    assert!(!line.complete);
 }

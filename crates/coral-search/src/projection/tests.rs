@@ -41,6 +41,7 @@ fn hints_project_only_what_the_provider_declared() {
 fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
     let text = |guidance: Option<&str>, tags: &[&str]| HitText {
         signature_line: "list(input: { repo: string }): Promise<{ data: Array<Pull> }>".into(),
+        complete: true,
         description_snippet: "Lists pull requests.".into(),
         guidance_snippet: guidance.map(Into::into),
         matched_tags: tags.iter().map(|&tag| tag.into()).collect(),
@@ -115,6 +116,7 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
             &mut expected,
             json!({
                 "signature_line": "list(input: { repo: string }): Promise<{ data: Array<Pull> }>",
+                "complete": true,
                 "description_snippet": "Lists pull requests.",
             }),
         );

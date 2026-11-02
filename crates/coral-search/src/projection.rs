@@ -72,6 +72,7 @@ fn hit(hit: &SearchHit) -> coral_catalog::SearchHit {
     coral_catalog::SearchHit {
         call_path: hit.call_path().as_str().to_owned(),
         signature_line: hit.signature_line().to_owned(),
+        complete: hit.complete(),
         description_snippet: hit.description_snippet().to_owned(),
         guidance_snippet: hit.guidance_snippet().map(str::to_owned),
         matched_tags: hit.matched_tags().to_vec(),

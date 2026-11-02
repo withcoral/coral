@@ -611,6 +611,7 @@ fn bounded_unique(
 pub struct SearchHit {
     call_path: CallPath,
     signature_line: String,
+    complete: bool,
     description_snippet: String,
     guidance_snippet: Option<String>,
     matched_tags: Vec<String>,
@@ -663,6 +664,7 @@ impl ToolHit {
 /// The text a Search Hit shows, derived at hydration.
 pub(crate) struct HitText {
     pub(crate) signature_line: String,
+    pub(crate) complete: bool,
     pub(crate) description_snippet: String,
     pub(crate) guidance_snippet: Option<String>,
     pub(crate) matched_tags: Vec<String>,
@@ -705,6 +707,7 @@ impl SearchHit {
         Self {
             call_path,
             signature_line: text.signature_line,
+            complete: text.complete,
             description_snippet: text.description_snippet,
             guidance_snippet: text.guidance_snippet,
             matched_tags: text.matched_tags,
@@ -729,11 +732,17 @@ impl SearchHit {
         &self.call_path
     }
 
-    /// Returns the bounded signature line. It is complete when it has no cut
-    /// marker and names no type it does not show.
+    /// Returns the bounded signature line.
     #[must_use]
     pub fn signature_line(&self) -> &str {
         &self.signature_line
+    }
+
+    /// Returns whether the signature line is complete enough to call from:
+    /// it has no cut marker, and its input names no type it does not show.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.complete
     }
 
     /// Returns the bounded window of the description.
