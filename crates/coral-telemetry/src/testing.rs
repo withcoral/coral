@@ -172,6 +172,18 @@ impl ExportCapture {
         OpenTelemetryTracingBridge::new(&self.logger)
     }
 
+    /// Every span that has left so far.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the in-memory exporter fails.
+    #[must_use]
+    pub fn finished(&self) -> Vec<SpanData> {
+        self.spans
+            .get_finished_spans()
+            .expect("read exported spans")
+    }
+
     /// Everything that has left so far, as text to search.
     ///
     /// # Panics
@@ -180,10 +192,7 @@ impl ExportCapture {
     #[must_use]
     pub fn text(&self) -> String {
         self.logger.force_flush().expect("flush exported logs");
-        let spans = self
-            .spans
-            .get_finished_spans()
-            .expect("read exported spans");
+        let spans = self.finished();
         let logs = self.logs.get_emitted_logs().expect("read exported logs");
         format!("{spans:?}{logs:?}")
     }

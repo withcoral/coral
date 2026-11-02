@@ -214,6 +214,66 @@ async fn plant_caller_text(f: &Fixture, text: &str) {
     f.wait_for_terminal(run.run_id()).await;
 }
 
+const SUMMARY_PHASES: [&str; 8] = [
+    "acquire",
+    "authorize",
+    "discovery_context",
+    "call_outcomes",
+    "approval_decisions",
+    "actor_context",
+    "unmeasured",
+    "commit",
+];
+
+/// Waits until both captures hold a summary's whole trace. SQLite's connection worker
+/// holds its last command's span after it answers, so a call can return before that
+/// span and its ancestors end, and an ended span reaches `spans` before `export`.
+async fn wait_for_summary_spans(
+    spans: &coral_telemetry::testing::SpanCapture,
+    export: &coral_telemetry::testing::ExportCapture,
+) {
+    use std::time::Duration;
+    let names: Vec<String> = ["request".to_owned(), "coral.activity.summary".to_owned()]
+        .into_iter()
+        .chain(SUMMARY_PHASES.map(|phase| format!("coral.activity.summary {phase}")))
+        .collect();
+    let missing = || {
+        let traced: Vec<String> = spans
+            .finished()
+            .iter()
+            .map(|s| s.name.to_string())
+            .collect();
+        let left: Vec<String> = export
+            .finished()
+            .iter()
+            .map(|s| s.name.to_string())
+            .collect();
+        let absent = |held: &[String]| -> Vec<String> {
+            names
+                .iter()
+                .filter(|name| !held.contains(name))
+                .cloned()
+                .collect()
+        };
+        (absent(&traced), absent(&left))
+    };
+    let all_ended = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (traced, exported) = missing();
+            if traced.is_empty() && exported.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    assert!(
+        all_ended.is_ok(),
+        "spans that never ended (traced, exported): {:?}",
+        missing()
+    );
+}
+
 /// A summary's trace shows where its time goes, phase by phase, and what leaves the
 /// host holds no caller text, though the summary itself reads the Agent's label.
 #[tokio::test]
@@ -248,6 +308,9 @@ async fn activity_summary_traces_each_phase_without_caller_text() {
         "the summary read the caller text this test plants"
     );
 
+    let phases = SUMMARY_PHASES;
+    wait_for_summary_spans(&spans, &export).await;
+
     let finished = spans.finished();
     let find = |name: &str| {
         finished
@@ -268,16 +331,6 @@ async fn activity_summary_traces_each_phase_without_caller_text() {
         attribute(parent, "coral.activity.summary.days").as_deref(),
         Some("7")
     );
-    let phases = [
-        "acquire",
-        "authorize",
-        "discovery_context",
-        "call_outcomes",
-        "approval_decisions",
-        "actor_context",
-        "unmeasured",
-        "commit",
-    ];
     let mut children: Vec<_> = finished
         .iter()
         .filter(|span| span.parent_span_id == parent.span_context.span_id())
