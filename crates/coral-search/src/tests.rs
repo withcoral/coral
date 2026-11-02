@@ -2,6 +2,7 @@ mod builtin;
 mod describe;
 mod describe_tools;
 mod index;
+mod ranking;
 mod retrieval;
 mod storage;
 

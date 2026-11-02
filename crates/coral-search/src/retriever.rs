@@ -3,8 +3,9 @@
 //!
 //! A retriever applies its owners' visibility rules once per request, puts
 //! the answer into its ranked statement over the search-owned table, and
-//! hands the engine positions only. It hydrates and describes the Entities
-//! of its kind. Every method joins the caller's read snapshot and opens no
+//! hands the engine its window in rank order, each Entity with the
+//! [`MatchStrength`] that one rule gives every kind. It hydrates and
+//! describes the Entities of its kind. Every method joins the caller's read snapshot and opens no
 //! connection of its own.
 
 pub(crate) mod functions;
@@ -111,8 +112,29 @@ pub(crate) struct QueryRequest<'a> {
 /// One retriever's answer to a query: the window in rank order and its
 /// coverage. The state follows from the coverage.
 pub(crate) struct Answer {
-    pub(crate) window: Vec<EntityRef>,
+    pub(crate) window: Vec<Scored>,
     pub(crate) coverage: RetrieverCoverage,
+}
+
+/// One Entity of a ranked window and how strongly it matches.
+pub(crate) struct Scored {
+    pub(crate) entity: EntityRef,
+    pub(crate) strength: MatchStrength,
+}
+
+/// How strongly one ranked Entity matches the query, by one rule over the
+/// fields every kind's row holds: the name, the title, the description and
+/// the Provider name, weighted 8, 6, 2 and 2. Each kind ranks by its own
+/// statement, and those scores do not compare, but this does, so the engine
+/// can tell which retriever's next Entity is the better match.
+///
+/// Phrase points come first: what the row's statement ordered by first.
+/// Word points follow: for each content word of the query, the weight of
+/// every field that holds it as a whole word.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct MatchStrength {
+    phrase_points: i64,
+    word_points: u32,
 }
 
 /// Why a retriever could not answer.

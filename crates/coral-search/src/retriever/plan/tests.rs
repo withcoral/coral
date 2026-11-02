@@ -71,3 +71,104 @@ fn a_word_no_row_holds_reaches_the_catalog_words_one_edit_away() {
         assert_eq!(near, expected, "{word}: {reason}");
     }
 }
+
+/// The plan for `query`, from the terms the engine gives it: each word and
+/// the whole query.
+fn plan(query: &str) -> QueryPlan {
+    let terms = query
+        .split_whitespace()
+        .map(str::to_string)
+        .chain(std::iter::once(query.to_string()))
+        .collect::<Vec<_>>();
+    QueryPlan::build(&terms).expect("a plan")
+}
+
+#[test]
+fn a_query_names_a_provider_by_its_namespace_or_every_word_of_its_display_name() {
+    for (query, namespace, display_name, named, reason) in [
+        (
+            "search issues linear",
+            Some("linear"),
+            "Linear",
+            true,
+            "a term is the namespace",
+        ),
+        (
+            "search linearb",
+            Some("linear"),
+            "Linear",
+            false,
+            "a term that holds the namespace is not it",
+        ),
+        (
+            "events of google calendar",
+            Some("gcal"),
+            "Google Calendar",
+            true,
+            "the query holds every word of the display name",
+        ),
+        (
+            "events of my calendar",
+            Some("gcal"),
+            "Google Calendar",
+            false,
+            "the query holds one word of two",
+        ),
+        (
+            "search github",
+            Some("gh"),
+            "GitHub",
+            true,
+            "a camelCase display name is one word",
+        ),
+        (
+            "list workspace members",
+            None,
+            "Coral",
+            false,
+            "the Built-in Provider has no namespace, so `workspace` names nothing",
+        ),
+        (
+            "coral providers",
+            None,
+            "Coral",
+            true,
+            "its display name still names it",
+        ),
+    ] {
+        assert_eq!(
+            plan(query).names_provider(namespace, display_name),
+            named,
+            "{query}: {reason}"
+        );
+    }
+}
+
+#[test]
+fn word_points_count_each_query_word_a_field_holds_as_a_whole_word() {
+    for (query, field, points, reason) in [
+        (
+            "open issues",
+            "triage.openIssues",
+            2,
+            "a camelCase edge and a separator end words",
+        ),
+        (
+            "issues",
+            "reissues",
+            0,
+            "a word inside a longer word is none",
+        ),
+        ("issues", "ISSUES", 1, "case does not count"),
+        (
+            "the issues issues",
+            "the issues",
+            1,
+            "a filler word counts nothing, and a repeated word counts once",
+        ),
+        ("openissues", "openIssues", 1, "the whole run is a word too"),
+    ] {
+        let strength = plan(query).strength(0, [(field, 1)]);
+        assert_eq!(strength.word_points, points, "{query} in {field}: {reason}");
+    }
+}

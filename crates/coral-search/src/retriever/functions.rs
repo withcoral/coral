@@ -17,7 +17,7 @@ use super::plan::QueryPlan;
 use super::repository;
 use super::{
     Answer, EntityRef, EntityRetriever, Hydrated, Listing, QueryError, QueryRequest,
-    RequestContext, SavedFunctionRef, count,
+    RequestContext, SavedFunctionRef, Scored, count,
 };
 use crate::evidence::{EvidenceBuilder, EvidenceTerms};
 use crate::hit::{HitMaterial, hit_text};
@@ -123,11 +123,14 @@ impl EntityRetriever for SavedFunctionRetriever {
             let Some(material) = functions.get(&function.saved_function_id) else {
                 continue;
             };
-            window.push(EntityRef::SavedFunction(SavedFunctionRef {
-                material: material.clone(),
-                call_path: function.call_path,
-                near_spellings: Arc::clone(&near_spellings),
-            }));
+            window.push(Scored {
+                entity: EntityRef::SavedFunction(SavedFunctionRef {
+                    material: material.clone(),
+                    call_path: function.call_path,
+                    near_spellings: Arc::clone(&near_spellings),
+                }),
+                strength: function.strength,
+            });
         }
         Ok(Answer {
             coverage: RetrieverCoverage::new(
