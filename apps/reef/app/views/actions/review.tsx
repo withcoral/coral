@@ -248,7 +248,8 @@ export function ApprovalReview({
   return (
     <section className={styles.review} aria-label={panelLabel === label ? undefined : label}>
       <PanelHeader
-        icon={plateIcons[tone]}
+        // On the Approvals page the provider's logo leads the heading, and the pill names the state.
+        icon={approvals ? undefined : plateIcons[tone]}
         tone={tone}
         heading="h3"
         title={
