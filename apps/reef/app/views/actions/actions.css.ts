@@ -14,7 +14,3 @@ export const action = style({
   minWidth: 0,
 })
 export const actionMeta = style({ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 })
-
-/** A provider's logo before the call it would run, aligned on the heading's line. */
-export const titleWithLogo = style({ display: 'inline-flex', alignItems: 'center', gap: 8 })
-export const logo = style({ display: 'inline-flex', flexShrink: 0 })

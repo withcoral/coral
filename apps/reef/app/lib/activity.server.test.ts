@@ -900,7 +900,7 @@ describe('hierarchical activity through the private server interface', () => {
     ])
     const paged = await loadActivity(request({ ...query, [`cursor.${run}`]: '3' }), api, { scope })
     expect(paged.branches[run].rows).toMatchObject([
-      { name: `${run}/final`, label: 'final value', contextImpactBytes: '4' },
+      { name: `${run}/final`, label: 'return value', contextImpactBytes: '4' },
     ])
   })
   it('preserves complete signed totals without summing only loaded children or coercing unavailable to zero', async () => {
@@ -921,7 +921,7 @@ describe('hierarchical activity through the private server interface', () => {
     expect(expanded.branches[task].rows[0]).toMatchObject({ contextImpactBytes: '-148000' })
     expect(expanded.branches[run].rows).toMatchObject([
       { contextImpactBytes: '-150000' },
-      { contextImpactBytes: '2000', label: 'final value', name: `${run}/final` },
+      { contextImpactBytes: '2000', label: 'return value', name: `${run}/final` },
     ])
     const unavailable = await loadActivity(request(), coral(list()).api, {
       scope,

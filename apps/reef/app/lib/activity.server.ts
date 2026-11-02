@@ -1759,7 +1759,7 @@ export async function loadActivity(
           event.name !== page.selected &&
           event.name !== anchor(row.name)
         )
-          return [{ ...event, name: `${row.name}/final`, label: 'final value' }]
+          return [{ ...event, name: `${row.name}/final`, label: 'return value' }]
         return [event]
       }),
     }

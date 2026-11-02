@@ -5,6 +5,7 @@ import { expect, it, onTestFinished, vi } from 'vitest'
 import { markupRoute, renderLivePage, renderRoute } from '@/test-support/route'
 import { Activity, duration } from './activity'
 import { ActivityArchivedContext } from './live'
+import { ProviderMarksContext } from './call-tool'
 import { ActionReviewSession } from '../actions/review'
 import { activityPage, approvalRequest, run as waiting, taskRow, workspace } from './fixtures'
 import type { ActivityPage, ActivityRow, ActivityViewProps } from './types'
@@ -122,6 +123,33 @@ it.each(['program.logged', 'program.emitted', 'run.started'])(
     expect(markup).not.toMatch(/retained|diagnostic/)
   },
 )
+
+// Catches: a call that names its tool by the full Call Path while the workspace still has its
+// provider, or a call whose provider is gone that loses its kind and its path.
+it.each([
+  [
+    'its provider',
+    [{ callRoot: 'coral.providers.linear', displayName: 'Linear' }],
+    'Linear listIssues',
+    false,
+  ],
+  [
+    'no provider that owns it',
+    [{ callRoot: 'coral.providers.mail', displayName: 'Mail' }],
+    'coral.providers.linear.listIssues',
+    true,
+  ],
+])('names a call by the logo and tool of %s', (_, providers, name, kindShown) => {
+  renderRoute(
+    <ProviderMarksContext value={providers}>
+      <Activity page={activityPage({ rows: [invocation] })} />
+    </ProviderMarksContext>,
+    { entry: '/activity' },
+  )
+  expect(screen.getByRole('link', { name })).toBeInTheDocument()
+  expect(screen.getByTitle(invocation.callPath)).toBeInTheDocument()
+  expect(screen.queryAllByRole('img', { name: 'tool' })).toHaveLength(kindShown ? 1 : 0)
+})
 
 it('marks only the tool call as needing action, never its containing Run', () => {
   expect(render({ ...run, state: 'running', requiresAction: true })).not.toContain('needs action')
@@ -584,7 +612,6 @@ it.each([
       context: splitContext,
     },
     'coral.emit #3',
-    'program output',
   ],
   [
     'a log',
@@ -602,15 +629,8 @@ it.each([
       context: splitContext,
     },
     'console.info #3',
-    'program log',
   ],
-  [
-    'a Run',
-    { ...run, intent: 'Send invoice reminders' },
-    splitContext,
-    'Send invoice reminders',
-    'program run',
-  ],
+  ['a Run', { ...run, intent: 'Send invoice reminders' }, splitContext, 'Send invoice reminders'],
   [
     'a tool',
     invocation,
@@ -625,11 +645,10 @@ it.each([
       context: splitContext,
     },
     'coral.providers.linear.listIssues',
-    'tool',
   ],
-] satisfies [string, ActivityRow, ActivityPage['detail'], string, string][])(
+] satisfies [string, ActivityRow, ActivityPage['detail'], string][])(
   'heads %s selection in the split with its own header alone',
-  (_, selectedRow, detail, title, kind) => {
+  (_, selectedRow, detail, title) => {
     renderRoute(
       <Activity
         page={activityPage({
@@ -652,7 +671,6 @@ it.each([
     expect(others).toHaveLength(0)
     expect(heading).toHaveTextContent(title)
     const header = heading!.closest('header')!
-    expect(header).toHaveTextContent(kind)
     expect(within(drawer).getAllByRole('button', { name: 'Close details' })).toEqual([
       within(header).getByRole('button', { name: 'Close details' }),
     ])

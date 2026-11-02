@@ -104,7 +104,7 @@ const finalRow: Child = {
   ...output(program.name, 99, 'program.emitted').row,
   sourceLocation: undefined,
   name: `${program.name}/final`,
-  label: 'final value',
+  label: 'return value',
   eventKind: 'run.ended',
 }
 

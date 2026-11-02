@@ -15,7 +15,6 @@ import { Disclosure } from '@/wax/components/disclosure'
 import { Deadline } from '@/wax/components/deadline'
 import * as DescriptionList from '@/wax/components/description-list'
 import type { IconName, IconPlateTone } from '@/wax/components/icon'
-import { Logo, type LogoIcons } from '@/wax/components/logo'
 import { Pill } from '@/wax/components/pill'
 import type { ApprovalContext, ApprovalDetail, RequestDetail } from '../activity/types'
 import { restoreFirst, useActivityArchived, useActivityConnected } from '../activity/live'
@@ -23,6 +22,7 @@ import { settledApproval } from './approval-state'
 import { PanelFooter, PanelHeader, usePanelLabel } from '../activity/panel'
 import { requestedBy } from '../activity/labels'
 import { Arguments } from './arguments'
+import { CallTitle, useCallProvider } from '../activity/call-tool'
 import { useShellCsrf } from '@/lib/use-shell-csrf'
 import type { action } from '@/routes/activity-resolve'
 import * as styles from './actions.css'
@@ -194,7 +194,6 @@ export function ApprovalReview({
   context,
   callStartedAt,
   variant = 'activity',
-  providerIcons,
 }: {
   detail: ApprovalDetail
   context: ApprovalContext
@@ -202,10 +201,8 @@ export function ApprovalReview({
    * no start of its own; the Run's start and the deadline are not this call's. */
   callStartedAt?: string
   /** On the Approvals page, every review is an approval of one call and a pending one waits on
-   * you, so the review leaves that unsaid and shows the provider by its logo. */
+   * you, so the review leaves that unsaid and always shows the provider by its logo. */
   variant?: 'activity' | 'approvals'
-  /** The provider's logo, on the Approvals page. Without one, its initial shows. */
-  providerIcons?: LogoIcons
 }) {
   const csrf = useShellCsrf()
   const connected = useActivityConnected()
@@ -243,33 +240,28 @@ export function ApprovalReview({
   // inside the region; one name, so there is one region to find.
   const label = `Review ${detail.callPath}`
   const approvals = variant === 'approvals'
-  const provider = detail.providerLabel || 'Provider'
+  const owner = useCallProvider(detail.callPath)
+  // The provider's logo leads the heading while the workspace has the provider. The Approvals
+  // page always shows one: without the provider, its initial stands in.
+  const logo =
+    owner || approvals
+      ? {
+          name: detail.providerLabel || owner?.name || 'Provider',
+          icons: owner?.icons,
+        }
+      : null
   const panelLabel = usePanelLabel()
   return (
     <section className={styles.review} aria-label={panelLabel === label ? undefined : label}>
       <PanelHeader
-        // On the Approvals page the provider's logo leads the heading, and the pill names the state.
-        icon={approvals ? undefined : plateIcons[tone]}
+        // A logo stands in for the state icon, and the pill names the state.
+        icon={logo ? undefined : plateIcons[tone]}
         tone={tone}
         heading="h3"
-        title={
-          approvals ? (
-            <span className={styles.titleWithLogo}>
-              <span role="img" aria-label={provider} className={styles.logo}>
-                <Logo name={provider} icons={providerIcons} size="20" />
-              </span>
-              {detail.callPath}
-            </span>
-          ) : (
-            detail.callPath
-          )
-        }
+        title={logo ? <CallTitle callPath={detail.callPath} provider={logo} /> : detail.callPath}
         details={
           <>
-            {!approvals && (
-              <Typography.BodySmall variant="tertiary">approval request</Typography.BodySmall>
-            )}
-            {!approvals && detail.providerLabel && (
+            {!logo && detail.providerLabel && (
               <Typography.BodySmall variant="tertiary">
                 Provider: {detail.providerLabel}
               </Typography.BodySmall>

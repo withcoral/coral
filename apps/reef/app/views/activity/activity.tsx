@@ -63,7 +63,8 @@ import { ContextImpact } from './context-impact'
 import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-types'
 import { activityDays, utcDay } from '@/lib/activity-list'
 import { dayLabel, UtcTime } from './instant'
-import { ToolName } from '@/wax/components/tool-name'
+import { CallTool, ProviderMarksContext, type ProviderMark } from './call-tool'
+import { toolOwner } from '@/lib/call-root'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import * as styles from './task-activity.css'
 import { invocationOutcomeLabels, resultUnknown } from './labels'
@@ -83,10 +84,9 @@ export function rowLabel(row: ActivityRow): string {
       return row.label
   }
 }
-/** A record's name. A call names its tool as every tool list does. */
+/** A record's name. A call names its tool as every list of calls does. */
 function RecordLabel({ row }: { row: ActivityRow }) {
-  const label = rowLabel(row)
-  return row.kind === 'invocation' ? <ToolName title={label}>{label}</ToolName> : label
+  return row.kind === 'invocation' ? <CallTool callPath={rowLabel(row)} /> : rowLabel(row)
 }
 const toolIcons = new Map<string, IconName>([
   ['search', 'Search'],
@@ -95,6 +95,11 @@ const toolIcons = new Map<string, IconName>([
   ['save_function', 'Save'],
   ['delete_function', 'Trash'],
 ])
+/** A record's kind icon. A call whose provider the workspace still has shows that provider's
+ * logo in its name instead. */
+function recordIcon(row: ActivityRow, providers: readonly ProviderMark[]) {
+  return row.kind === 'invocation' && toolOwner(row.callPath, providers) ? undefined : rowIcon(row)
+}
 function rowIcon(row: ActivityRow): { name: IconName; label: string } {
   switch (row.kind) {
     case 'task':
@@ -333,6 +338,7 @@ const RecordRow = memo(function RecordRow({
   scope: RowScope
 }) {
   const actions = useContext(RowActionsContext)
+  const providers = useContext(ProviderMarksContext)
   const expandable = !scope.glimpse && (row.kind === 'task' || row.kind === 'run')
   const branch = scope.glimpse ? undefined : branches?.[row.name]
   const expanded = scope.expanded.has(row.name)
@@ -358,7 +364,7 @@ const RecordRow = memo(function RecordRow({
           depth={depth}
           // The full table is one Tab stop; its keys reach the records.
           tabbable={scope.glimpse}
-          icon={rowIcon(row)}
+          icon={recordIcon(row, providers)}
           expanded={expanded}
           disabled={!expanded && scope.full}
           onToggle={expandable ? () => actions.toggle(row.name) : undefined}
@@ -369,8 +375,8 @@ const RecordRow = memo(function RecordRow({
               <Pill
                 color="graySubtle"
                 role="img"
-                aria-label="final value"
-                title="Open this execution to inspect its final value"
+                aria-label="return value"
+                title="Open this run to see its return value"
               >
                 <Icon name="FileOutput" size="14" />
               </Pill>
@@ -1222,6 +1228,7 @@ export function Activity({
       </Table.Group>
     )
   })
+  const providers = useContext(ProviderMarksContext)
   const outside =
     page.selectedRow && !shownRecords(page, roots, glimpse).has(page.selectedRow.name)
       ? page.selectedRow
@@ -1356,7 +1363,7 @@ export function Activity({
                         </Table.Cell>
                         <Table.Cell>
                           <Table.Record
-                            icon={rowIcon(outside)}
+                            icon={recordIcon(outside, providers)}
                             metadata={
                               <>
                                 <span>Outside this workspace or page:</span>

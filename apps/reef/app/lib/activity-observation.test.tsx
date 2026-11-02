@@ -538,7 +538,7 @@ const revealOutput = (name: string, position: number, eventKind = 'program.emitt
   position,
   workspace: 'workspaces/work',
   run: revealRun,
-  label: name === revealFinal ? 'final value' : `emission #${position + 1}`,
+  label: name === revealFinal ? 'return value' : `emission #${position + 1}`,
   eventKind,
   startedAt: '1970-01-01T00:00:00.000Z',
   agent: '',

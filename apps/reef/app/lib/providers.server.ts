@@ -1,5 +1,6 @@
 import { CORAL_ICONS } from '@/views/providers/coral-icons'
-import type { ProviderMark } from '@/views/approvals/types'
+import type { ProviderMark } from '@/views/activity/call-tool'
+import { activityPageFetchKey } from './activity-page-fetch'
 import { recipeChoiceById } from './provider-recipes/library.server'
 import type { RecipeIcons } from './provider-recipes/choice'
 import { Code, ConnectError } from '@connectrpc/connect'
@@ -103,6 +104,19 @@ export async function providerMarks(
     displayName: provider.displayName,
     ...(icons && { icons }),
   }))
+}
+/**
+ * The marks Activity names its calls by. A later page of a loaded list keeps the marks its
+ * route loaded, so it reads none. The marks only decorate: without them a call shows its
+ * full Call Path, so a failed read never fails the page.
+ */
+export async function activityProviderMarks(
+  api: Pick<ManagementApi, 'providers'>,
+  workspace: string,
+  request: Request,
+): Promise<ProviderMark[]> {
+  if (new URL(request.url).searchParams.get(activityPageFetchKey) === 'page') return []
+  return providerMarks(api, workspace, request.signal).catch(() => [])
 }
 /** Each provider's logo by its canonical name. A provider without one is absent. */
 export async function providerLogos(

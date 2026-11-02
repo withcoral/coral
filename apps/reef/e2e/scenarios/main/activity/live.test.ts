@@ -472,10 +472,7 @@ test('Current Run and tool actions settle live while exact review stays selected
           query.append('expand', run)
           await page.goto(`${activityUrl}?${query}`)
           const table = page.getByRole('table', { name: 'Activity records', exact: true })
-          await table
-            .getByRole('link', { name: 'coral.providers.liveGate.lookup', exact: true })
-            .first()
-            .click()
+          await table.getByRole('link', { name: 'Live gate lookup', exact: true }).first().click()
           await page.getByRole('dialog', { name: 'Review action', exact: true }).waitFor()
           await page.waitForURL((url) => Boolean(url.searchParams.get('request')))
           await page.getByRole('button', { name: 'Close details', exact: true }).click()
@@ -525,7 +522,7 @@ test('Current Run and tool actions settle live while exact review stays selected
             includeHidden: true,
           })
           .getByRole('link', {
-            name: 'coral.providers.liveGate.lookup',
+            name: 'Live gate lookup',
             exact: true,
             includeHidden: true,
           })

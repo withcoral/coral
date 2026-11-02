@@ -5,6 +5,7 @@ import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { resizeViewport } from '../../../.storybook/browser'
 import { Activity } from './activity'
+import { ProviderMarksContext } from './call-tool'
 import { ActionReviewSession } from '../actions/review'
 import { stored } from './discovery/fixtures'
 import { discoveryView, functionTarget } from './discovery/response'
@@ -464,7 +465,7 @@ export const ContextImpact: Story = {
               eventKind: 'run.ended',
               // A Run's end is no call of the program's.
               sourceLocation: undefined,
-              label: 'final value',
+              label: 'return value',
               contextImpactBytes: '14500',
             },
           ],
@@ -569,6 +570,18 @@ export const StatusMarkers: Story = {
       selectedRow: null,
     },
   },
+}
+/** While the workspace has a call's provider, the call names its tool under that provider's
+ * logo. A call whose provider is gone keeps its kind and full Call Path. */
+export const ProviderTools: Story = {
+  args: StatusMarkers.args,
+  decorators: [
+    (Story) => (
+      <ProviderMarksContext value={[{ callRoot: 'coral.providers.linear', displayName: 'Linear' }]}>
+        <Story />
+      </ProviderMarksContext>
+    ),
+  ],
 }
 export const Collapsed: Story = {
   args: {
@@ -1088,7 +1101,7 @@ export const FinalValueOnExec: Story = {
               eventKind: 'run.ended',
               // A Run's end is no call of the program's.
               sourceLocation: undefined,
-              label: 'final value',
+              label: 'return value',
               contextImpactBytes: '15',
             },
           ],
@@ -1110,11 +1123,11 @@ export const FinalValueOnExec: Story = {
     const canvas = within(canvasElement)
     const table = canvas.queryByRole('table', { name: 'Activity records' })
     if (table) {
-      await expect(within(table).getByRole('img', { name: 'final value' })).toBeVisible()
-      await expect(within(table).getByRole('link', { name: 'final value' })).toBeVisible()
+      await expect(within(table).getByRole('img', { name: 'return value' })).toBeVisible()
+      await expect(within(table).getByRole('link', { name: 'return value' })).toBeVisible()
     }
     const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
-    const value = drawer.getByRole('region', { name: 'Final value' })
+    const value = drawer.getByRole('region', { name: 'Return value' })
     await expect(within(value).getByRole('group', { name: 'Structure' })).toHaveTextContent(
       '"invoices": 24',
     )

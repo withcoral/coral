@@ -304,7 +304,7 @@ export const VeryDeepJson: Story = {
 }
 /** Catches: JSON null shown as nothing. */
 export const JsonNull: Story = {
-  args: { label: 'Final value', value: 'null' },
+  args: { label: 'Return value', value: 'null' },
   play: async ({ canvasElement }) => {
     await expect(structureOf(canvasElement).textContent).toBe('null')
   },

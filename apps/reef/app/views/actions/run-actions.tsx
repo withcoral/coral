@@ -204,7 +204,6 @@ function ConnectionAction({
       // A settled request has left the Run's pending actions, which name its provider.
       title={providerLabel ? `Connect your ${providerLabel} account` : 'Connect your account'}
       status={request.state}
-      kind="account connection request"
       heading="h3"
       meta={pending && request.expiresAt && <Deadline at={request.expiresAt} variant="tertiary" />}
     />

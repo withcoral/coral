@@ -13,6 +13,7 @@ import { fakeManagement } from './management.test-support'
 import { RECIPE_CHOICES } from './provider-recipes/library.server'
 import { CORAL_ICONS } from '@/views/providers/coral-icons'
 import {
+  activityProviderMarks,
   personalAccountAction,
   providerLogos,
   providerMarks,
@@ -175,6 +176,48 @@ it('marks no provider while Coral cannot list them', async () => {
       throw new ConnectError('down', Code.Unavailable)
     }),
   ).toEqual([])
+})
+
+// Catches: Activity failing its page because the logos could not load, or a later page of
+// a loaded list listing every provider again.
+it.each([
+  [
+    'a page',
+    '/activity',
+    () => ({ providers: [{ callRoot: 'coral.providers.p', displayName: 'P' }] }),
+    [{ callRoot: 'coral.providers.p', displayName: 'P' }],
+    1,
+  ],
+  [
+    'a refused read',
+    '/activity',
+    () => {
+      throw new ConnectError('no', Code.PermissionDenied)
+    },
+    [],
+    1,
+  ],
+  [
+    'a later page of a loaded list',
+    '/activity?load=page&after=x',
+    () => ({ providers: [] }),
+    [],
+    0,
+  ],
+])('names Activity calls for %s', async (_, path, listProviders, marks, reads) => {
+  let read = 0
+  const api = fakeManagement({
+    providers: {
+      listProviders: () => {
+        read++
+        return listProviders()
+      },
+    },
+  })
+  expect(
+    await activityProviderMarks(api, 'workspaces/w', new Request(`http://reef${path}`)),
+  ).toEqual(marks)
+  expect(read).toBe(reads)
 })
 
 it('keys each logo by its provider, and leaves out a provider without one', async () => {

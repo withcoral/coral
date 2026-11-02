@@ -6,11 +6,8 @@ import { useRevalidateWhileVisible } from '@/lib/use-revalidate-while-visible'
 import { Button, Dialog, Table, Typography } from '@/wax/components'
 import { Icon, type IconName } from '@/wax/components/icon'
 import { Pill, type PillColor } from '@/wax/components/pill'
-import { ToolName } from '@/wax/components/tool-name'
 import { Deadline } from '@/wax/components/deadline'
-import type { LogoIcons } from '@/wax/components/logo'
 import { PageLayout } from '@/wax/components/page-layout'
-import { toolOwner } from '@/lib/call-root'
 import {
   ActionReviewSession,
   ApprovalReview,
@@ -38,12 +35,9 @@ import type {
 import { trail } from '../management/layout'
 import { ManagementErrorBoundary } from '../management/management-error'
 import * as styles from './approvals.css'
-import type { ProviderMark } from './types'
+import { CallTool, ProviderMarksContext, type ProviderMark } from '../activity/call-tool'
 
 const RETRY_MS = 10_000
-/** The provider that owns a call, and the tool under it, if it is still in the workspace. */
-type ToolOwner = ReturnType<typeof toolOwner<ProviderMark>>
-
 /** What an approval request of `run` asks: the Run's intent as a question, worded like the MCP
  * prompt for the same request. */
 function approvalQuestion(run: Pick<PendingAction['run'], 'intent'>) {
@@ -181,118 +175,107 @@ export function ApprovalsPage({
   const history = useHistory(settled, workspacePath)
   return (
     <ActionReviewSession request={review?.detail}>
-      <PageLayout variant="split" breadcrumbs={trail([], 'Approvals')}>
-        <ActivityConnectedContext value={live}>
-          <div className={styles.page}>
-            <div className={styles.list} ref={list}>
-              {!live && (
-                <Typography.BodySmall role="status">
-                  Approvals are unavailable.
-                </Typography.BodySmall>
-              )}
-              <Table.Container
-                ariaLabel="Pending approvals"
-                variant="card"
-                layout="fixed"
-                columns={[
-                  {
-                    label: approvals.length
-                      ? `Waiting on you · ${approvals.length}`
-                      : 'Waiting on you',
-                    width: { fill: 1 },
-                  },
-                ]}
-              >
-                <Table.Head />
-                {approvals.length === 0 && live && (
-                  <Table.Status>
-                    {history.rows.length || history.unavailable ? (
-                      <Typography.Body>Nothing to approve.</Typography.Body>
-                    ) : (
-                      <EmptyPage
-                        fullSize={false}
-                        iconName="ShieldCheck"
-                        title="Nothing to approve."
-                        description="Requests that need your approval appear here. Decided and expired requests appear below them."
-                      />
-                    )}
-                  </Table.Status>
+      <ProviderMarksContext value={providers}>
+        <PageLayout variant="split" breadcrumbs={trail([], 'Approvals')}>
+          <ActivityConnectedContext value={live}>
+            <div className={styles.page}>
+              <div className={styles.list} ref={list}>
+                {!live && (
+                  <Typography.BodySmall role="status">
+                    Approvals are unavailable.
+                  </Typography.BodySmall>
                 )}
-                <Table.Body>
-                  {approvals.map((pending) => (
-                    <ApprovalRow
-                      key={pending.action.name}
-                      pending={pending}
-                      owner={toolOwner(pending.action.callPath, providers)}
-                      open={pending.action.name === selected}
-                    />
-                  ))}
-                </Table.Body>
-              </Table.Container>
-              {history.unavailable && (
-                <Typography.BodySmall role="status">
-                  Approval history is unavailable.
-                </Typography.BodySmall>
-              )}
-              {history.rows.length > 0 && (
-                // As in Activity and Providers, the history scrolls inside its own frame.
-                <div className={styles.history}>
-                  <Table.Container
-                    ariaLabel="Approval history"
-                    density="compact"
-                    layout="scroll"
-                    columns={HISTORY_COLUMNS}
-                  >
-                    <Table.Head />
-                    {/* Each row sits under the UTC day it settled, as Activity's records do. */}
-                    {settledDays(history.rows).map(({ day, rows }) => (
-                      <Table.Group
-                        key={day}
-                        label={dayLabel(day)}
-                        heading={
-                          <Table.Cell fullWidth>
-                            <Typography.BodySmall color="secondary">
-                              {dayLabel(day)}
-                            </Typography.BodySmall>
-                          </Table.Cell>
-                        }
-                      >
-                        {rows.map((row) => (
-                          <SettledRow
-                            key={row.name}
-                            settled={row}
-                            owner={toolOwner(row.callPath, providers)}
-                            open={row.name === selected}
-                          />
-                        ))}
-                      </Table.Group>
+                <Table.Container
+                  ariaLabel="Pending approvals"
+                  variant="card"
+                  layout="fixed"
+                  columns={[
+                    {
+                      label: approvals.length
+                        ? `Waiting on you · ${approvals.length}`
+                        : 'Waiting on you',
+                      width: { fill: 1 },
+                    },
+                  ]}
+                >
+                  <Table.Head />
+                  {approvals.length === 0 && live && (
+                    <Table.Status>
+                      {history.rows.length || history.unavailable ? (
+                        <Typography.Body>Nothing to approve.</Typography.Body>
+                      ) : (
+                        <EmptyPage
+                          fullSize={false}
+                          iconName="ShieldCheck"
+                          title="Nothing to approve."
+                          description="Requests that need your approval appear here. Decided and expired requests appear below them."
+                        />
+                      )}
+                    </Table.Status>
+                  )}
+                  <Table.Body>
+                    {approvals.map((pending) => (
+                      <ApprovalRow
+                        key={pending.action.name}
+                        pending={pending}
+                        open={pending.action.name === selected}
+                      />
                     ))}
-                    {history.more && (
-                      <Table.LoadMore
-                        onLoad={history.load}
-                        loading={history.loading}
-                        loadingLabel="Loading older approvals…"
-                        error={history.failed && 'Older approvals are unavailable.'}
-                        retryLabel="Try again"
-                      >
-                        Load older approvals
-                      </Table.LoadMore>
-                    )}
-                  </Table.Container>
-                </div>
-              )}
+                  </Table.Body>
+                </Table.Container>
+                {history.unavailable && (
+                  <Typography.BodySmall role="status">
+                    Approval history is unavailable.
+                  </Typography.BodySmall>
+                )}
+                {history.rows.length > 0 && (
+                  // As in Activity and Providers, the history scrolls inside its own frame.
+                  <div className={styles.history}>
+                    <Table.Container
+                      ariaLabel="Approval history"
+                      density="compact"
+                      layout="scroll"
+                      columns={HISTORY_COLUMNS}
+                    >
+                      <Table.Head />
+                      {/* Each row sits under the UTC day it settled, as Activity's records do. */}
+                      {settledDays(history.rows).map(({ day, rows }) => (
+                        <Table.Group
+                          key={day}
+                          label={dayLabel(day)}
+                          heading={
+                            <Table.Cell fullWidth>
+                              <Typography.BodySmall color="secondary">
+                                {dayLabel(day)}
+                              </Typography.BodySmall>
+                            </Table.Cell>
+                          }
+                        >
+                          {rows.map((row) => (
+                            <SettledRow key={row.name} settled={row} open={row.name === selected} />
+                          ))}
+                        </Table.Group>
+                      ))}
+                      {history.more && (
+                        <Table.LoadMore
+                          onLoad={history.load}
+                          loading={history.loading}
+                          loadingLabel="Loading older approvals…"
+                          error={history.failed && 'Older approvals are unavailable.'}
+                          retryLabel="Try again"
+                        >
+                          Load older approvals
+                        </Table.LoadMore>
+                      )}
+                    </Table.Container>
+                  </div>
+                )}
+              </div>
+              <ReviewRail approvals={approvals} selected={selected} review={review} />
             </div>
-            <ReviewRail
-              approvals={approvals}
-              selected={selected}
-              review={review}
-              providerIcons={
-                review ? toolOwner(review.detail.callPath, providers)?.provider.icons : undefined
-              }
-            />
-          </div>
-        </ActivityConnectedContext>
-      </PageLayout>
+          </ActivityConnectedContext>
+        </PageLayout>
+      </ProviderMarksContext>
     </ActionReviewSession>
   )
 }
@@ -303,12 +286,10 @@ function ReviewRail({
   approvals,
   selected,
   review,
-  providerIcons,
 }: {
   approvals: PendingAction[]
   selected: string | null
   review: ApprovalReading | null
-  providerIcons?: LogoIcons
 }) {
   const navigate = useNavigate()
   const close = () => void navigate({ search: '' }, { preventScrollReset: true })
@@ -393,7 +374,6 @@ function ReviewRail({
                     context={shown.context}
                     callStartedAt={shown.call.startedAt}
                     variant="approvals"
-                    providerIcons={providerIcons}
                   />
                 </Panel>
               </ExecutionSourceSplit>
@@ -432,16 +412,7 @@ export function ApprovalsErrorBoundary() {
   )
 }
 
-function ApprovalRow({
-  pending,
-  owner,
-  open,
-}: {
-  pending: PendingAction
-  /** The provider that owns the call, if it is still in the workspace. */
-  owner: ToolOwner
-  open: boolean
-}) {
+function ApprovalRow({ pending, open }: { pending: PendingAction; open: boolean }) {
   const { action, run } = pending
   const question = approvalQuestion(run)
   const href = reviewHref(action.name)
@@ -452,7 +423,7 @@ function ApprovalRow({
         <span className={styles.row}>
           <span className={styles.request}>
             <Table.RowLink to={href}>{question}</Table.RowLink>
-            <CallMeta callPath={action.callPath} owner={owner} run={run}>
+            <CallMeta callPath={action.callPath} run={run}>
               <Deadline at={action.deadline} />
             </CallMeta>
           </span>
@@ -509,15 +480,7 @@ function settledDays(rows: SettledApproval[]) {
 /** One settled request on one line: when, what it asked, the tool, who asked, the outcome
  * with an icon and text, and who decided. An expired request has no approver; its time is
  * its deadline. */
-function SettledRow({
-  settled,
-  owner,
-  open,
-}: {
-  settled: SettledApproval
-  owner: ToolOwner
-  open: boolean
-}) {
+function SettledRow({ settled, open }: { settled: SettledApproval; open: boolean }) {
   const question = approvalQuestion(settled.run)
   const href = reviewHref(settled.name)
   const outcome = outcomes[settled.outcome]
@@ -531,7 +494,7 @@ function SettledRow({
         <Table.RowLink to={href}>{question}</Table.RowLink>
       </Table.Cell>
       <Table.Cell>
-        <CallTool callPath={settled.callPath} owner={owner} />
+        <CallTool callPath={settled.callPath} />
       </Table.Cell>
       <Table.Cell>{run.agent ? run.actorLabel || 'Unknown agent' : 'You'}</Table.Cell>
       <Table.Cell>
@@ -546,41 +509,14 @@ function SettledRow({
   )
 }
 
-/** The call's tool under its provider's logo, or the whole Call Path when no provider of
- * the workspace owns it. */
-function CallTool({
-  callPath,
-  owner,
-  size,
-}: {
-  callPath: string
-  owner: ToolOwner
-  size?: 'default' | 'small'
-}) {
-  return (
-    <ToolName
-      size={size}
-      title={callPath}
-      provider={
-        owner ? { name: owner.provider.displayName, icons: owner.provider.icons } : undefined
-      }
-    >
-      {owner?.relativePath ?? callPath}
-    </ToolName>
-  )
-}
-
 /** The call's provider logo and tool, the Agent that started the Run, then `children`, on
  * one line that wraps between them. */
 function CallMeta({
   callPath,
-  owner,
   run,
   children,
 }: {
   callPath: string
-  /** The provider that owns the call, if it is still in the workspace. */
-  owner: ToolOwner
   run: Extract<ActivityRow, { kind: 'run' }>
   children: ReactNode
 }) {
@@ -588,7 +524,7 @@ function CallMeta({
     <Typography.BodySmall as="span" variant="secondary" className={styles.meta}>
       {callPath && (
         <>
-          <CallTool callPath={callPath} owner={owner} size="small" />
+          <CallTool callPath={callPath} size="small" />
           {' · '}
         </>
       )}

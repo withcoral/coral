@@ -361,7 +361,6 @@ describe('approval review layout', () => {
     renderStatic({ ...approval, providerLabel: 'Mail', taskIntent: 'Chase overdue invoices' })
     const review = screen.getByRole('region', { name: `Review ${approval.callPath}` })
     expect(within(review).getByRole('heading', { name: approval.callPath })).toBeInTheDocument()
-    expect(within(review).getByText('approval request')).toBeInTheDocument()
     expect(review).toHaveTextContent('Provider: Mail')
     expect(review).toHaveTextContent('Approval required')
     // Why the call runs, in one list without a heading.
