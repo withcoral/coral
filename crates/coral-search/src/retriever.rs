@@ -129,11 +129,14 @@ pub(crate) struct Scored {
 /// can tell which retriever's next Entity is the better match.
 ///
 /// Phrase points come first: what the row's statement ordered by first.
-/// Word points follow: for each content word of the query, the weight of
-/// every field that holds it as a whole word.
+/// Whether the query names the Entity's Provider comes next, as the Tool
+/// statement orders by it next; an Entity with no Provider has none. Word
+/// points follow: for each content word of the query, the weight of every
+/// field that holds it as a whole word.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MatchStrength {
     phrase_points: i64,
+    named_provider: bool,
     word_points: u32,
 }
 

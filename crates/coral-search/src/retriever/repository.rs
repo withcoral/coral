@@ -176,11 +176,16 @@ struct RankedRow {
 }
 
 impl RankedRow {
-    fn strength(&self, plan: &QueryPlan) -> MatchStrength {
+    /// How strongly the row matches; `named` holds the Providers the query
+    /// names, empty for a kind without Providers.
+    fn strength(&self, plan: &QueryPlan, named: &[String]) -> MatchStrength {
         let [name, title, description, provider_name] =
             MATCH_FIELDS.map(|(_column, weight)| weight);
         plan.strength(
             self.phrase_points,
+            self.provider_id
+                .as_ref()
+                .is_some_and(|provider_id| named.contains(provider_id)),
             [
                 (self.qualified_name.as_str(), name),
                 (self.title.as_str(), title),
@@ -265,7 +270,7 @@ pub(super) async fn rank_tools(
     let entities = rows
         .into_iter()
         .map(|row| {
-            let strength = row.strength(plan);
+            let strength = row.strength(plan, &named);
             let (Some(provider_id), Some(tool_key)) = (row.provider_id, row.tool_key) else {
                 return Err(RetrievalError::Corrupt("a Tool row has no owner keys"));
             };
@@ -302,7 +307,7 @@ pub(super) async fn rank_functions(
     let entities = rows
         .into_iter()
         .map(|row| {
-            let strength = row.strength(plan);
+            let strength = row.strength(plan, &[]);
             let saved_function_id = row.saved_function_id.ok_or(RetrievalError::Corrupt(
                 "a Saved Function row has no function id",
             ))?;

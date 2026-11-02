@@ -168,7 +168,7 @@ fn word_points_count_each_query_word_a_field_holds_as_a_whole_word() {
         ),
         ("openissues", "openIssues", 1, "the whole run is a word too"),
     ] {
-        let strength = plan(query).strength(0, [(field, 1)]);
+        let strength = plan(query).strength(0, false, [(field, 1)]);
         assert_eq!(strength.word_points, points, "{query} in {field}: {reason}");
     }
 }

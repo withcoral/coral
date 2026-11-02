@@ -178,3 +178,60 @@ async fn each_query_ranks_its_most_relevant_entity_first() {
     }
     assert!(misranked.is_empty(), "{misranked:#?}");
 }
+
+#[tokio::test]
+async fn a_saved_function_never_splits_a_named_providers_tools_or_passes_a_stronger_tool() {
+    let (modules, principal, workspace) = catalog().await;
+    // Each row: the query, a Saved Function that holds one of its body
+    // words, and the Tools it must follow: every Tool of the Provider the
+    // query names, and a Tool that holds the query's words in its name and
+    // title.
+    let cases = [
+        (
+            "search slack messages",
+            "coral.functions.digest.weekly",
+            [
+                "coral.providers.slack.conversations.history",
+                "coral.providers.slack.users.list",
+                "coral.providers.slack.chat.postMessage",
+                "coral.providers.github.search.commits",
+            ],
+        ),
+        (
+            "slack list",
+            "coral.functions.standup.notes",
+            [
+                "coral.providers.slack.users.list",
+                "coral.providers.slack.conversations.history",
+                "coral.providers.slack.chat.postMessage",
+                "coral.providers.github.pulls.list",
+            ],
+        ),
+    ];
+    let mut misranked = Vec::new();
+    for (query, function, stronger) in cases {
+        let page = modules
+            .search
+            .search(
+                &principal,
+                &workspace,
+                &SearchRequest::query(SearchQuery::parse(query).unwrap()),
+            )
+            .await
+            .unwrap();
+        let ranked = paths(&page);
+        let position = |path: &str| ranked.iter().position(|ranked| *ranked == path);
+        for tool in stronger {
+            let follows = matches!(
+                (position(function), position(tool)),
+                (Some(function), Some(tool)) if function > tool
+            );
+            if !follows {
+                misranked.push(format!(
+                    "{query}: {function} above {tool}; order {ranked:?}"
+                ));
+            }
+        }
+    }
+    assert!(misranked.is_empty(), "{misranked:#?}");
+}

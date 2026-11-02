@@ -141,13 +141,15 @@ impl QueryPlan {
 
     /// How strongly a ranked row matches, by one rule for every kind, so
     /// the engine can compare the windows of different retrievers. The
-    /// phrase points are the ones the row's statement ordered by. Word points
-    /// add, for each content word of the query, the weight of every field
-    /// that holds it as a whole word, by the phrase test's word rule:
-    /// separators and camelCase edges end words, and case does not count.
+    /// phrase points and the named Provider are the keys the row's statement
+    /// ordered by first. Word points add, for each content word of the
+    /// query, the weight of every field that holds it as a whole word, by
+    /// the phrase test's word rule: separators and camelCase edges end words,
+    /// and case does not count.
     pub(super) fn strength<'a>(
         &self,
         phrase_points: i64,
+        named_provider: bool,
         fields: impl IntoIterator<Item = (&'a str, u32)>,
     ) -> MatchStrength {
         let fields = fields
@@ -166,6 +168,7 @@ impl QueryPlan {
             .sum();
         MatchStrength {
             phrase_points,
+            named_provider,
             word_points,
         }
     }

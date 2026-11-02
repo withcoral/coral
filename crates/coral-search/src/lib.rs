@@ -541,7 +541,10 @@ fn normalize_query(query: &str) -> NormalizedQuery {
 /// retriever order, head to head: of the Entities each window offers next,
 /// the stronger match comes first, then the earlier position in its window,
 /// then the earlier retriever. Each window keeps its own order, and a kind's
-/// Entity outranks another kind's only when its match is at least as strong.
+/// Entity outranks another kind's next Entity only when its match is at least
+/// as strong. The strength leads with every key a ranked statement orders by
+/// before its score; a key it lacked would let a weak Entity pass the strong
+/// ones queued behind the other window's head.
 fn fuse(windows: Vec<(usize, Vec<Scored>)>) -> Vec<Ranked> {
     let mut heads = windows
         .into_iter()
