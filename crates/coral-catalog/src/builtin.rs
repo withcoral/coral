@@ -224,6 +224,7 @@ impl BuiltinCatalog {
             hints,
             input: empty_object_schema(),
             output: empty_object_schema(),
+            declared: Declared::Once,
         }));
         Self::from_definitions(definitions)
     }
@@ -610,6 +611,19 @@ struct Definition {
     hints: ToolHints,
     input: Value,
     output: Value,
+    declared: Declared,
+}
+
+/// How a Built-in Tool's declaration pairs its input with its result.
+#[derive(Debug, Clone, Copy)]
+enum Declared {
+    /// One call signature: the input schema returns the output schema.
+    Once,
+    /// One overload per branch of the input schema's `anyOf`, in order.
+    /// Entry `i` is the branch of the output schema's `anyOf` that input
+    /// branch `i` returns, so a typed Program gets the result its own
+    /// input returns, with no narrowing.
+    Overloads(&'static [usize]),
 }
 
 fn definition(tool: BuiltinTool) -> Definition {
@@ -651,8 +665,13 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
     for (definition, binding) in drafts {
         let key = binding.tool_key().clone();
         let relative_path = definition.key.to_string();
-        let (declaration, type_references) =
-            project(&binding, &schema_graph, &type_names, &mut shared_types)?;
+        let (declaration, type_references) = project(
+            &binding,
+            definition.declared,
+            &schema_graph,
+            &type_names,
+            &mut shared_types,
+        )?;
         if crate::types::tool_description_too_large(
             &relative_path,
             BUILTIN_PROVIDER_DISPLAY_NAME,
@@ -701,13 +720,37 @@ pub(crate) fn typescript_names(graph: &SchemaGraph) -> TypeScriptNames {
 
 fn project(
     binding: &BuiltinExecutionBinding,
+    declared: Declared,
     graph: &SchemaGraph,
     type_names: &TypeScriptNames,
     shared: &mut SharedTypes,
 ) -> Result<(String, Vec<String>), CatalogDiagnostic> {
     let mut projector = TypeScriptProjector::new(graph, type_names, ProjectionOptions::builtin());
-    let input = projector.project(binding.input_schema(), Direction::Input)?;
-    let output = projector.project(binding.output_schema(), Direction::Output)?;
+    let signatures = match declared {
+        Declared::Once => vec![(
+            projector.project(binding.input_schema(), Direction::Input)?,
+            projector.project(binding.output_schema(), Direction::Output)?,
+        )],
+        Declared::Overloads(results) => {
+            let inputs = projector.project_branches(binding.input_schema(), Direction::Input)?;
+            let outputs = projector.project_branches(binding.output_schema(), Direction::Output)?;
+            if inputs.len() != results.len() {
+                return Err(invalid(
+                    "a built-in overload table does not match the input branches",
+                ));
+            }
+            inputs
+                .into_iter()
+                .zip(results)
+                .map(|(input, result)| {
+                    outputs
+                        .get(*result)
+                        .map(|output| (input, output.clone()))
+                        .ok_or_else(|| invalid("a built-in overload names no output branch"))
+                })
+                .collect::<Result<_, _>>()?
+        }
+    };
     let type_references = projector.share_named_declarations(shared)?;
     // A closed object is wider in structural TypeScript; only an error rejects.
     if projector
@@ -717,10 +760,16 @@ fn project(
     {
         return Err(invalid("a built-in schema cannot be projected faithfully"));
     }
-    let declaration = render_callable_declaration(
-        &format!("input: {input}"),
-        &format!("Promise<{{ data: {output}; metadata: {{ kind: \"builtin\" }} }}>"),
-    );
+    let declaration = signatures
+        .iter()
+        .map(|(input, output)| {
+            render_callable_declaration(
+                &format!("input: {input}"),
+                &format!("Promise<{{ data: {output}; metadata: {{ kind: \"builtin\" }} }}>"),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     Ok((declaration, type_references))
 }
 

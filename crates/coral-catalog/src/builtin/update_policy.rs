@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    ArgumentProblem, BuiltinAccessState, BuiltinTool, Definition, NAMESPACE_REASON, derived_schema,
-    tool_result,
+    ArgumentProblem, BuiltinAccessState, BuiltinTool, Declared, Definition, NAMESPACE_REASON,
+    derived_schema, tool_result,
 };
 use crate::{ToolHints, ToolPresentation};
 
@@ -51,6 +51,7 @@ pub(super) fn definition() -> Definition {
         hints: ToolHints::new(None, None, Some(true), None),
         input: derived_schema::<Arguments>(Contract::Deserialize),
         output: derived_schema::<UpdatePolicyResult>(Contract::Serialize),
+        declared: Declared::Once,
     }
 }
 
