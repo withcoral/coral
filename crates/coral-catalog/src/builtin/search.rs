@@ -15,7 +15,9 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ArgumentProblem, BuiltinTool, Definition, derived_schema, tool_result, words_schema};
+use super::{
+    ArgumentProblem, BuiltinTool, Declared, Definition, derived_schema, tool_result, words_schema,
+};
 use crate::{ToolHints, ToolPresentation};
 
 /// Any Principal that can inspect the Workspace discovers what it can call.
@@ -46,26 +48,52 @@ pub(super) fn definition() -> Definition {
         ),
         // Read-only: the default Tool Access State is enabled.
         hints: ToolHints::new(Some(true), None, Some(true), None),
-        input: derived_schema::<Arguments>(Contract::Deserialize),
+        input: derived_schema::<Input>(Contract::Deserialize),
         output: derived_schema::<SearchOutput>(Contract::Serialize),
+        declared: Declared::Overloads(OVERLOADS),
     }
 }
 
-/// `search`'s arguments as a Program writes them.
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(description = "", extend("dependentRequired" = { "types": ["paths"] }))]
-struct Arguments {
-    #[serde(default, deserialize_with = "super::present")]
+/// `search`'s input as a Program is typed from it: one mode per call. Each
+/// branch is one overload of the declaration, so a Program that passes
+/// `query` gets a page and one that passes `paths` gets exact descriptions
+/// (see [`OVERLOADS`]). Coral reads [`Arguments`], which accepts the same
+/// values, so a call that mixes the modes gets a reason for each argument
+/// to leave out.
+#[derive(JsonSchema)]
+#[schemars(untagged, description = "")]
+#[expect(
+    dead_code,
+    reason = "the schema is derived from these types; Coral reads Arguments"
+)]
+enum Input {
+    Query(QueryInput),
+    Paths(PathsInput),
+    Types(TypesInput),
+}
+
+/// The result branch of [`SearchOutput`] that each branch of [`Input`]
+/// returns, in order: a page for a query, exact descriptions for paths.
+pub(super) const OVERLOADS: &[usize] = &[0, 1, 1];
+
+/// A ranked page, or a listing without a query.
+#[derive(JsonSchema)]
+#[schemars(inline, deny_unknown_fields, description = "")]
+#[expect(
+    dead_code,
+    reason = "the schema is derived from these types; Coral reads Arguments"
+)]
+struct QueryInput {
+    #[serde(default)]
     #[schemars(
         with = "String",
         length(min = 1),
         description = "Keywords for the capability you need, such as list pull requests. Leave \
-                       out people, record titles, IDs, dates and other record values. Omit it, \
-                       and paths, to list what you can call."
+                       out people, record titles, IDs, dates and other record values. Omit it \
+                       to list what you can call."
     )]
     query: Option<String>,
-    #[serde(default, deserialize_with = "super::present")]
+    #[serde(default)]
     #[schemars(
         with = "String",
         description = "A namespace from coral.providers.<namespace>, or coral.workspace for \
@@ -73,34 +101,85 @@ struct Arguments {
                        Functions stay. Omit it unless you know which service holds the data."
     )]
     provider: Option<String>,
-    #[serde(default, deserialize_with = "super::present")]
+    #[serde(default)]
     #[schemars(
         with = "u16",
         range(min = 1, max = 50),
         description = "Maximum hits. Default 10."
     )]
     limit: Option<u16>,
-    #[serde(default, deserialize_with = "super::present")]
+    #[serde(default)]
     #[schemars(
         with = "String",
         description = "The next_cursor of the previous page, with the same query and provider."
     )]
     cursor: Option<String>,
-    #[serde(default, deserialize_with = "super::present")]
+}
+
+/// The exact descriptions of 1 to 10 Call Paths.
+#[derive(JsonSchema)]
+#[schemars(inline, deny_unknown_fields, description = "")]
+#[expect(
+    dead_code,
+    reason = "the schema is derived from these types; Coral reads Arguments"
+)]
+struct PathsInput {
     #[schemars(
-        with = "Vec<String>",
         length(min = 1, max = 10),
-        description = "1 to 10 complete Call Paths to read exactly, instead of a query, such as \
+        description = "1 to 10 complete Call Paths to read exactly, such as \
                        coral.providers.github.repos.get."
     )]
+    paths: Vec<String>,
+}
+
+/// Named types of one Call Path's declaration.
+#[derive(JsonSchema)]
+#[schemars(inline, deny_unknown_fields, description = "")]
+#[expect(
+    dead_code,
+    reason = "the schema is derived from these types; Coral reads Arguments"
+)]
+struct TypesInput {
+    #[schemars(
+        schema_with = "one_path_schema",
+        description = "The one complete Call Path whose types to read."
+    )]
+    paths: (String,),
+    #[schemars(
+        length(max = 32),
+        description = "Type names from its declaration, returned whole instead of the inputs \
+                       and the function."
+    )]
+    types: Vec<String>,
+}
+
+/// Exactly one Call Path, which TypeScript reads as `[string]`.
+fn one_path_schema(_generator: &mut SchemaGenerator) -> Schema {
+    schemars::json_schema!({
+        "type": "array",
+        "prefixItems": [{ "type": "string" }],
+        "items": false,
+        "minItems": 1,
+    })
+}
+
+/// `search`'s arguments as Coral reads them: every argument of every mode,
+/// so a call that mixes modes reads, and [`SearchArguments::parse`] names
+/// each argument to leave out.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Arguments {
+    #[serde(default, deserialize_with = "super::present")]
+    query: Option<String>,
+    #[serde(default, deserialize_with = "super::present")]
+    provider: Option<String>,
+    #[serde(default, deserialize_with = "super::present")]
+    limit: Option<u16>,
+    #[serde(default, deserialize_with = "super::present")]
+    cursor: Option<String>,
+    #[serde(default, deserialize_with = "super::present")]
     paths: Option<Vec<String>>,
     #[serde(default, deserialize_with = "super::present")]
-    #[schemars(
-        with = "Vec<String>",
-        length(max = 32),
-        description = "With one path: type names from its declaration, returned whole instead \
-                       of the inputs and the function."
-    )]
     types: Option<Vec<String>>,
 }
 
@@ -185,7 +264,8 @@ impl SearchArguments {
 }
 
 /// What `search` returns: a page of hits for a query, or the exact
-/// descriptions of the paths it named.
+/// descriptions of the paths it named. [`OVERLOADS`] names each variant by
+/// its position, so the declaration gives each input mode its own result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(untagged)]
 #[schemars(description = "")]
