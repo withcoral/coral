@@ -112,7 +112,7 @@ async fn coral_failure_is_coded_and_durable_before_program_continues() {
     for (argument, message) in [
         (
             r#"{unexpected: "secret-canary"}"#,
-            "Tool arguments are invalid: Tool argument `unexpected` is not declared",
+            "Tool arguments are invalid: Tool argument `unexpected` is not declared. It declares: `city`.",
         ),
         (
             "null",
