@@ -2175,9 +2175,9 @@ const taskName = (id: string) => `${workspace}/tasks/${id}`
 const asks = (item: TaskRun) => !item.ended && (item.waits ?? []).some(waiting)
 /**
  * Coral holding `roots`, newest first. Your pending requests list each once, under the
- * first Run that waits on it, or under `queued[request]` when given.
+ * first Run that waits on it, or under `listedUnder[request]` when given.
  */
-function liveWorld(roots: LiveRoot[], queued: Record<string, string> = {}) {
+function liveWorld(roots: LiveRoot[], listedUnder: Record<string, string> = {}) {
   const tasks = roots.flatMap((root) => (root.kind === 'task' ? [root] : []))
   const all = roots.flatMap((root) =>
     root.kind === 'task'
@@ -2198,13 +2198,13 @@ function liveWorld(roots: LiveRoot[], queued: Record<string, string> = {}) {
     requiresAction: asks(item),
     actionPage: undefined,
   })
-  const queue = new Map<string, (typeof all)[number]>()
+  const pending = new Map<string, (typeof all)[number]>()
   for (const entry of all)
     if (asks(entry.item))
       for (const wait of (entry.item.waits ?? []).filter(waiting))
-        if (!queue.has(requestName(wait))) queue.set(requestName(wait), entry)
-  for (const [name, waiter] of Object.entries(queued))
-    queue.set(
+        if (!pending.has(requestName(wait))) pending.set(requestName(wait), entry)
+  for (const [name, waiter] of Object.entries(listedUnder))
+    pending.set(
       name,
       all.find(({ item }) => runOf(item.id) === waiter)!,
     )
@@ -2232,11 +2232,11 @@ function liveWorld(roots: LiveRoot[], queued: Record<string, string> = {}) {
     activity: {
       ...reads.activity,
       browseRequiredActions: () => ({
-        actions: [...queue].map(([name, entry]) => ({
+        actions: [...pending].map(([name, entry]) => ({
           action: summary(name),
           run: runView(entry),
         })),
-        actionCount: BigInt(queue.size),
+        actionCount: BigInt(pending.size),
       }),
       // A page of the listed roots after `after`, as Coral pages them.
       browseActivityRoots: (input: {
@@ -2397,10 +2397,10 @@ describe("Page live's projection past the list", () => {
     },
     { kind: 'task', id: 'o', partial: true, old: true, runs: [{ id: 'x', waits: [shared] }] },
   ]
-  const queued = { [requestName(shared)]: runOf('x') }
+  const listedUnder = { [requestName(shared)]: runOf('x') }
   it('names a Run that waits on a connection your pending requests list under another Task, reading each window once', async () => {
     // `z` runs, submitted last.
-    const { api, calls } = coral(liveWorld(sharing([{ id: 'z' }]), queued))
+    const { api, calls } = coral(liveWorld(sharing([{ id: 'z' }]), listedUnder))
     const page = await loadActivity(onLatest(), api, { scope })
     expect(page.liveLatest?.action).toEqual(actionIn('n', 'y', also))
     expect(liveNames(page.liveLatest)?.running).toEqual({ [taskName('n')]: runOf('z') })
@@ -2410,7 +2410,7 @@ describe("Page live's projection past the list", () => {
   it.each<{
     name: string
     roots: LiveRoot[]
-    queued?: Record<string, string>
+    listedUnder?: Record<string, string>
     refused: [task: string, offset: number]
     named: ReturnType<typeof liveNames>
     windows: Record<string, string[]>
@@ -2428,7 +2428,7 @@ describe("Page live's projection past the list", () => {
     {
       name: 'a window of a Task it reads in full while your pending requests hold a connection',
       roots: sharing([]),
-      queued,
+      listedUnder,
       refused: [taskName('n'), 0],
       named: {},
       windows: { [taskName('n')]: ['head', '51', '0'] },
@@ -2436,13 +2436,13 @@ describe("Page live's projection past the list", () => {
     {
       name: 'an older window of a Task, after it found its newest Run that runs',
       roots: sharing([{ id: 'z' }]),
-      queued,
+      listedUnder,
       refused: [taskName('n'), 0],
       named: { running: { [taskName('n')]: runOf('z') } },
       windows: { [taskName('n')]: ['head', '52', '0'] },
     },
   ])('never says it read every record when Reef cannot read $name', async (item) => {
-    const world = liveWorld(item.roots, item.queued)
+    const world = liveWorld(item.roots, item.listedUnder)
     const { api, calls } = coral(world, refusing(world, ...item.refused))
     const page = await loadActivity(onLatest(), api, { scope })
     expect(liveNames(page.liveLatest)).toEqual(item.named)

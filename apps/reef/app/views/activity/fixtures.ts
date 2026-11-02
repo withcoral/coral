@@ -85,7 +85,7 @@ export function activityPage(overrides: Partial<ActivityPage> = {}): ActivityPag
   }
 }
 
-/** Your personal history, one finished Run. */
+/** Your personal history: one running Run, with nothing pending. */
 export const personalPage = activityPage({
   rows: [
     {

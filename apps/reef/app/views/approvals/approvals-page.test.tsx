@@ -163,21 +163,19 @@ it('counts what waits on you in the heading', () => {
   expect(screen.getByRole('columnheader', { name: 'Waiting on you · 2' })).toBeInTheDocument()
 })
 
-it('names no agent on your own run, and asks a plain question when the run has no intent', () => {
+it('names no agent on your own run', () => {
   renderPage([ownAction])
-  expect(screen.getByRole('link', { name: 'Approve this tool call?' })).toBeInTheDocument()
   expect(screen.getByRole('table', { name: 'Pending approvals' })).not.toHaveTextContent('You')
 })
 
-// Catches: a question that keeps the intent's own end mark, as "invoices.?".
-it('asks the run intent as a question, worded like the MCP prompt', () => {
-  renderPage([{ ...agentAction, run: { ...agentAction.run, intent: 'Check my invoices.' } }])
-  expect(screen.getByRole('table', { name: 'Pending approvals' })).toHaveTextContent(
-    'Check my invoices?',
-  )
-  expect(screen.getByRole('table', { name: 'Pending approvals' })).not.toHaveTextContent(
-    'invoices.?',
-  )
+// Catches: a question that keeps the intent's own end mark, as "invoices.?", or a blank one.
+it.each([
+  ['Send invoice reminders', 'Send invoice reminders?'],
+  ['Check my invoices.', 'Check my invoices?'],
+  ['', 'Approve this tool call?'],
+])('asks the run intent %j as a question, worded like the MCP prompt', (intent, question) => {
+  renderPage([{ ...agentAction, run: { ...agentAction.run, intent } }])
+  expect(screen.getByRole('link', { name: question })).toBeInTheDocument()
 })
 
 it('offers each decision on the row, named for the request it decides', () => {

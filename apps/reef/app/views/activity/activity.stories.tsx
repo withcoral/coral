@@ -351,6 +351,19 @@ export const MixedHistory: Story = {
     await expectAlignedHeaders(await openDrawer(canvasElement))
   },
 }
+/** The live toggle sits right after the list heading, and Tab moves from it to the table. */
+export const LiveToggleOrder: Story = {
+  args: { page: { ...page, selected: null, selectedRow: null, detail: null } },
+  parameters: { initialEntry: '/workspaces/finance/activity' },
+  play: async ({ canvas, userEvent }) => {
+    const heading = await canvas.findByRole('heading', { name: 'Your recent activity' })
+    const live = canvas.getByRole('button', { name: 'Live' })
+    await expect(heading.nextElementSibling).toContainElement(live)
+    live.focus()
+    await userEvent.tab()
+    await expect(canvas.getByRole('table', { name: 'Activity records' })).toHaveFocus()
+  },
+}
 export const CompletionFeedback: Story = {
   args: {
     page: {

@@ -20,10 +20,6 @@ function fixture(children = 0) {
   const transport = createRouterTransport(({ service }) => {
     service(ActivityService, {
       watchActivity: changes.watch,
-      browseRequiredActions: () => {
-        reads++
-        return { actions: [] }
-      },
       browseActivityRoots: (input) => {
         reads++
         if (!authorized)
@@ -192,7 +188,6 @@ it('cancels an in-flight history request when the reader cancels observation', a
         await pending
         return { roots: [] }
       },
-      browseRequiredActions: () => ({ actions: [] }),
     })
   })
   const response = await observeActivity(request(observation), {
