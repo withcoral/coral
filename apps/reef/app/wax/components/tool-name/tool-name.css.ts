@@ -14,8 +14,10 @@ export const root = style({
 
 export const logo = style({ display: 'inline-flex', flexShrink: 0 })
 
-// The colour is its context's: a tool reads as one more value in its row.
+// One colour wherever a tool is named: a table cell's, so a tool reads as one more
+// value in its row and never outshines it.
 const name = style({
+  color: theme.content.secondary,
   minWidth: 0,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
