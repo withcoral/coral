@@ -63,7 +63,12 @@ impl ReadyHttpDispatch {
             path,
             query,
             mut headers,
-        } = serialize_parameters(binding.path_template(), binding.parameters(), arguments)?;
+        } = serialize_parameters(
+            binding.path_template(),
+            binding.parameters(),
+            binding.request_body().is_some(),
+            arguments,
+        )?;
         let base_path = url.path().trim_end_matches('/');
         let tool_path = path.trim_start_matches('/');
         // URL parsing removes dot segments, which would send the request, and
@@ -373,6 +378,7 @@ struct SerializedParameters {
 fn serialize_parameters(
     path_template: &str,
     parameters: &[HttpParameterBinding],
+    declares_body: bool,
     arguments: &Map<String, Value>,
 ) -> Result<SerializedParameters, Error> {
     let mut path = path_template.to_string();
@@ -420,17 +426,18 @@ fn serialize_parameters(
             }
         }
     }
-    let has_body = arguments.contains_key("body");
     for name in arguments.keys() {
-        if name == "body" && has_body {
+        if name == "body" && declares_body {
             continue;
         }
         if !parameters
             .iter()
             .any(|parameter| parameter.logical_name() == name)
         {
-            return Err(Error::InvalidArguments(format!(
-                "Tool argument `{name}` is not declared"
+            return Err(Error::InvalidArguments(undeclared_argument(
+                name,
+                parameters,
+                declares_body,
             )));
         }
     }
@@ -453,6 +460,46 @@ fn serialize_parameters(
         query,
         headers,
     })
+}
+
+/// The most bytes one rejection spends on its declared names, quoting and
+/// commas included. A Program error's message holds 1024 bytes, so the end of
+/// the list, which says how much was cut, still reaches a Program that does
+/// not catch the failure.
+const DECLARED_NAMES_BYTES: usize = 512;
+
+/// Rejects `name`, listing what the Tool declares so the Program can correct
+/// the call without another read. The list holds catalog facts only, never a
+/// submitted value. `body` comes first so the cap cannot hide it.
+fn undeclared_argument(
+    name: &str,
+    parameters: &[HttpParameterBinding],
+    declares_body: bool,
+) -> String {
+    let declared = declares_body
+        .then_some("body")
+        .into_iter()
+        .chain(parameters.iter().map(HttpParameterBinding::logical_name))
+        .collect::<Vec<_>>();
+    let mut shown = Vec::new();
+    let mut bytes = 0;
+    for declared_name in &declared {
+        let quoted = format!("`{declared_name}`");
+        bytes += quoted.len() + if shown.is_empty() { 0 } else { ", ".len() };
+        if bytes > DECLARED_NAMES_BYTES {
+            break;
+        }
+        shown.push(quoted);
+    }
+    let more = declared.len() - shown.len();
+    let shown = shown.join(", ");
+    let correction = match more {
+        _ if declared.is_empty() => "This Tool declares no arguments.".to_string(),
+        0 => format!("It declares: {shown}."),
+        _ if shown.is_empty() => "Its declared argument names are too long to list.".to_string(),
+        more => format!("It declares: {shown}, and {more} more."),
+    };
+    format!("Tool argument `{name}` is not declared. {correction}")
 }
 
 fn serialize_path_parameter(
@@ -660,11 +707,6 @@ fn serialize_request_body(
     limits: coral_value::ValueLimits,
 ) -> Result<(Option<Vec<u8>>, Option<String>), Error> {
     let Some(binding) = request_body else {
-        if arguments.contains_key("body") {
-            return Err(Error::InvalidArguments(
-                "Tool does not declare a request body".to_string(),
-            ));
-        }
         return Ok((None, None));
     };
     let Some(body) = arguments.get("body") else {

@@ -194,7 +194,8 @@ pub struct Rejection {
 
 /// One argument to correct. Coral writes each reason; it never holds a
 /// submitted value, upstream content or a host diagnostic. A field or key name
-/// the Program wrote can appear, since it says what to correct.
+/// the Program wrote can appear, since it says what to correct, and so can the
+/// argument names the Tool declares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InputProblem {
     field: String,
