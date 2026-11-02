@@ -817,13 +817,13 @@ export const ActionsComeFirst: Story = {
 
     // Approving it reviews the next approval at once, with no stop at a newer record.
     world.visited = []
-    await userEvent.click(drawer().getByRole('button', { name: 'Approve this call' }))
+    await userEvent.click(drawer().getByRole('button', { name: 'Approve' }))
     await reviews(context, second)
     await following(true)
     await expect(world.visited).toEqual([second.name])
 
     // Denying the last one follows the newest record again.
-    await userEvent.click(drawer().getByRole('button', { name: 'Decline this call' }))
+    await userEvent.click(drawer().getByRole('button', { name: 'Decline' }))
     await selects('console.info #6', 'log #6')
     await following(true)
     await expect(address().has('request')).toBe(false)
@@ -849,7 +849,7 @@ export const ADecisionAdvancesWithLiveModeOff: Story = {
     await expect(toggle()).toHaveAttribute('aria-pressed', 'false')
 
     // Denying reviews the next approval and leaves live mode off. The review rests there.
-    await userEvent.click(within(rail()).getByRole('button', { name: 'Decline this call' }))
+    await userEvent.click(within(rail()).getByRole('button', { name: 'Decline' }))
     await reviews(context, second)
     await idle()
     await settled()
@@ -865,7 +865,7 @@ export const ADecisionAdvancesWithLiveModeOff: Story = {
 
     // Approving the last one reads the end of the program and selects its newest
     // record, still with live mode off.
-    await userEvent.click(within(rail()).getByRole('button', { name: 'Approve this call' }))
+    await userEvent.click(within(rail()).getByRole('button', { name: 'Approve' }))
     await selects('console.info #6', 'log #6')
     await expect(address().has('live')).toBe(false)
     await expect(toggle()).toHaveAttribute('aria-pressed', 'false')
@@ -888,7 +888,7 @@ export const AFailedOrUnfinishedDecisionHolds: Story = {
     const { rail, toggle, address, press, idle, following, selects } = await surface(context)
     await reviews(context, first)
     let held = address().toString()
-    const approve = () => within(rail()).getByRole('button', { name: 'Approve this call' })
+    const approve = () => within(rail()).getByRole('button', { name: 'Approve' })
     /** The approval stays selected while a record arrives and the page reads again. */
     const holds = async () => {
       await press('Add log')
@@ -982,7 +982,7 @@ export const AnOppositeDecisionThatWonHolds: Story = {
     // Another reviewer declined the call first. Your approval lost, so the review stays
     // and shows the decision that won.
     world.decision = 'lost'
-    await userEvent.click(within(rail()).getByRole('button', { name: 'Approve this call' }))
+    await userEvent.click(within(rail()).getByRole('button', { name: 'Approve' }))
     await expect(await within(rail()).findByText('Declined')).toBeVisible()
     await idle()
     await settled()
@@ -1028,7 +1028,7 @@ export const YourPickDuringADecisionStays: Story = {
     // You pick a record while your decision is under way. Once it saves, the review
     // does not take the selection back.
     world.decision = 'held'
-    const approve = () => within(rail()).getByRole('button', { name: 'Approve this call' })
+    const approve = () => within(rail()).getByRole('button', { name: 'Approve' })
     await userEvent.click(approve())
     await waitFor(() => expect(approve()).toHaveAttribute('aria-busy', 'true'))
     await expect(approve()).toHaveAttribute('aria-disabled', 'true')

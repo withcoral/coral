@@ -59,7 +59,7 @@ test("An owner's Program changes an added provider's policy once the owner appro
         .click()
       await page
         .getByRole('region', { name: 'Review coral.workspace.updatePolicy', exact: true })
-        .getByRole('button', { name: 'Approve this call', exact: true })
+        .getByRole('button', { name: 'Approve', exact: true })
         .click()
       await page.getByText('Approved', { exact: true }).waitFor()
       const { update } = await observeRun(runner, await runner.wait(paused))

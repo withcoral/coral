@@ -83,7 +83,7 @@ test('The Overview summary counts a declined call as decided, not to fix, reads 
       await page
         .getByRole('link', { name: 'Review coral.providers.summaryFixture.read', exact: true })
         .click()
-      await page.getByRole('button', { name: 'Decline this call', exact: true }).click()
+      await page.getByRole('button', { name: 'Decline', exact: true }).click()
       await page.getByText('Declined', { exact: true }).waitFor()
       const { update } = await observeRun(runner, await runner.wait(paused))
       expect(update.final_value).toEqual({ kind: 'value', value: 'approval_declined' })

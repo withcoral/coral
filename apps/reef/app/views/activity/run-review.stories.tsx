@@ -528,9 +528,7 @@ export const ActionListKeyboard: Story = {
     await expect(update).toHaveFocus()
     await userEvent.keyboard('{Enter}')
     // The second action's own review opens, with its own arguments.
-    await waitFor(() =>
-      expect(body.getByRole('button', { name: 'Approve this call' })).toBeVisible(),
-    )
+    await waitFor(() => expect(body.getByRole('button', { name: 'Approve' })).toBeVisible())
     await expect(body.getAllByText(/reminderSent/).length).toBeGreaterThan(0)
     await expect(body.queryByRole('navigation', { name: 'Actions in this run' })).toBeNull()
   },

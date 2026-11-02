@@ -172,7 +172,7 @@ it('retains the selected review and draft across a live refresh, but conceals ac
     unavailable: true,
   })
   expect(document.body).not.toHaveTextContent('exact-recipient')
-  expect(screen.queryByRole('button', { name: 'Approve this call' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
 })
 
 // Catches: a Workspace without an advertised endpoint showing a button that

@@ -364,7 +364,7 @@ export function ApprovalReview({
             disabled={pending || recording || !connected || commentInvalid}
             busy={submitting === 'decline'}
           >
-            {approvals ? 'Decline' : 'Decline this call'}
+            Decline
           </Button.TextButton>
           <Button.TextButton
             type="submit"
@@ -374,7 +374,7 @@ export function ApprovalReview({
             disabled={pending || recording || !connected || commentInvalid}
             busy={submitting === 'approve'}
           >
-            {approvals ? 'Approve' : 'Approve this call'}
+            Approve
           </Button.TextButton>
         </PanelFooter>
       )}

@@ -586,7 +586,7 @@ test("A workspace owner declines their Program's rename, then approves it, and t
     await step('Decline the rename, and the Program catches the failure', async () => {
       const paused = await pausedForApproval(program, rename)
       const review = await openReview(page, paused, 'updateProvider')
-      await review.getByRole('button', { name: 'Decline this call', exact: true }).click()
+      await review.getByRole('button', { name: 'Decline', exact: true }).click()
       await page.getByText('Declined', { exact: true }).waitFor()
       const { update } = await observeRun(program, await program.wait(paused))
       expect(update.final_value).toEqual({ kind: 'value', value: 'approval_declined' })
@@ -595,7 +595,7 @@ test("A workspace owner declines their Program's rename, then approves it, and t
     await step('Approve the same rename in a new Run, and Coral renames it', async () => {
       const paused = await pausedForApproval(program, rename)
       const review = await openReview(page, paused, 'updateProvider')
-      await review.getByRole('button', { name: 'Approve this call', exact: true }).click()
+      await review.getByRole('button', { name: 'Approve', exact: true }).click()
       await page.getByText('Approved', { exact: true }).waitFor()
       const { update } = await observeRun(program, await program.wait(paused))
       expect(update.final_value).toMatchObject({

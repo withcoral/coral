@@ -87,7 +87,7 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
             .toEqual({ kind: 'value', value: 'approval_declined' })
         } else if (decision === 'decline') {
           await page.getByRole('link', { name: /^Review .*localActions\.read$/ }).click()
-          await page.getByRole('button', { name: 'Decline this call', exact: true }).click()
+          await page.getByRole('button', { name: 'Decline', exact: true }).click()
           await page.getByText('Declined', { exact: true }).waitFor()
         } else {
           await page.getByRole('button', { name: 'Cancel run', exact: true }).click()

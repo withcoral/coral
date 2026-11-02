@@ -154,19 +154,19 @@ describe('exact approval review', () => {
     const atLimit = 'é'.repeat(512)
     await enterComment(`${atLimit}a`)
 
-    expect(button('Approve this call')).toBeDisabled()
-    expect(button('Decline this call')).toBeDisabled()
+    expect(button('Approve')).toBeDisabled()
+    expect(button('Decline')).toBeDisabled()
     expect(comment()).toBeInvalid()
     expect(comment()).toHaveAccessibleDescription(correction)
-    await click('Approve this call')
-    await click('Decline this call')
+    await click('Approve')
+    await click('Decline')
     expect(page.submissions).toHaveLength(0)
 
     await enterComment(atLimit)
     expect(comment()).toBeValid()
-    expect(button('Approve this call')).toBeEnabled()
-    expect(button('Decline this call')).toBeEnabled()
-    await click('Approve this call')
+    expect(button('Approve')).toBeEnabled()
+    expect(button('Decline')).toBeEnabled()
+    await click('Approve')
     expect(page.submissions).toHaveLength(1)
     expect(Object.fromEntries(page.submissions[0].form)).toEqual({
       csrf: 'test-csrf',
@@ -181,20 +181,20 @@ describe('exact approval review', () => {
     const page = renderReview()
     await enterComment('Review\0note')
 
-    expect(button('Approve this call')).toBeDisabled()
-    expect(button('Decline this call')).toBeDisabled()
+    expect(button('Approve')).toBeDisabled()
+    expect(button('Decline')).toBeDisabled()
     expect(comment()).toBeInvalid()
     expect(comment()).toHaveAccessibleDescription(correction)
-    await click('Approve this call')
-    await click('Decline this call')
+    await click('Approve')
+    await click('Decline')
     expect(page.submissions).toHaveLength(0)
 
     await enterComment('Review note')
-    expect(button('Approve this call')).toBeEnabled()
-    expect(button('Decline this call')).toBeEnabled()
+    expect(button('Approve')).toBeEnabled()
+    expect(button('Decline')).toBeEnabled()
     expect(comment()).toBeValid()
     expect(page.container).not.toHaveTextContent('Remove null characters.')
-    await click('Decline this call')
+    await click('Decline')
     expect(page.submissions).toHaveLength(1)
     expect(page.submissions[0].form.get('comment')).toBe('Review note')
     expect(page.submissions[0].form.get('intent')).toBe('decline')
@@ -202,8 +202,8 @@ describe('exact approval review', () => {
   })
 
   it.each([
-    ['Approve this call', 'Decline this call', 'approve'],
-    ['Decline this call', 'Approve this call', 'decline'],
+    ['Approve', 'Decline', 'approve'],
+    ['Decline', 'Approve', 'decline'],
   ])(
     'prevents duplicate or opposite decisions while %s is pending',
     async (label, other, intent) => {
@@ -230,7 +230,7 @@ describe('exact approval review', () => {
   it('retains the comment after an action error and submits the corrected comment on retry', async () => {
     const page = renderReview()
     await enterComment('Original review note')
-    await click('Approve this call')
+    await click('Approve')
     expect(page.submissions).toHaveLength(1)
     await act(async () =>
       page.submissions[0].respond({ error: 'Could not save your decision. Try again.' }),
@@ -238,11 +238,11 @@ describe('exact approval review', () => {
 
     expect(page.container).toHaveTextContent('Could not save your decision. Try again.')
     expect(comment()).toHaveValue('Original review note')
-    expect(button('Approve this call')).toBeEnabled()
-    expect(button('Decline this call')).toBeEnabled()
+    expect(button('Approve')).toBeEnabled()
+    expect(button('Decline')).toBeEnabled()
 
     await enterComment('Corrected review note')
-    await click('Approve this call')
+    await click('Approve')
     expect(page.submissions).toHaveLength(2)
     expect(Object.fromEntries(page.submissions[1].form)).toEqual({
       csrf: 'test-csrf',
@@ -267,12 +267,12 @@ describe('exact approval review', () => {
   ])('says your decision is saving until the live read shows it %s', async (state, label) => {
     const page = renderReview()
     await enterComment('Reviewed the exact arguments.')
-    await click('Approve this call')
+    await click('Approve')
     await act(async () => page.submissions[0].respond({ recording: true }))
 
     expect(statuses()).toContain('Saving your decision…')
-    expect(button('Approve this call')).toBeDisabled()
-    expect(button('Decline this call')).toBeDisabled()
+    expect(button('Approve')).toBeDisabled()
+    expect(button('Decline')).toBeDisabled()
     // The comment went with the decision, so it is no longer an unsent draft.
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
 
@@ -283,7 +283,7 @@ describe('exact approval review', () => {
   it('shows the durable denial returned to a stale approval attempt and removes decision controls', async () => {
     const page = renderReview()
     await enterComment('I intended to approve this call.')
-    await click('Approve this call')
+    await click('Approve')
     expect(page.submissions).toHaveLength(1)
     expect(page.submissions[0].form.get('intent')).toBe('approve')
     await act(async () => page.submissions[0].respond({ state: 'declined' }))
@@ -300,7 +300,7 @@ describe('exact approval review', () => {
   it('does not guard a submitted comment as unsent after a durable winning denial', async () => {
     const page = renderReview()
     await enterComment('I intended to approve this call.')
-    await click('Approve this call')
+    await click('Approve')
     expect(page.submissions).toHaveLength(1)
     await act(async () => page.submissions[0].respond({ state: 'declined' }))
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
@@ -386,7 +386,7 @@ describe('approval review layout', () => {
     const positions = order.map((text) => review.textContent!.indexOf(text))
     expect(positions).toEqual(positions.toSorted((a, b) => a - b))
     expect(review.textContent!.indexOf('Add a comment')).toBeLessThan(
-      review.textContent!.indexOf('Approve this call'),
+      review.textContent!.indexOf('Approve'),
     )
   })
 

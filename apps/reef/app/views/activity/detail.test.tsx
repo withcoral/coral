@@ -67,7 +67,8 @@ it('keeps exact evidence and a receipt after the selected request leaves pending
   })
   expect(html).toContain('exact-recipient')
   expect(html).toContain('Approved')
-  expect(html).not.toContain('Approve this call')
+  // No decision remains to make: no Approve button beside the "Approved" receipt.
+  expect(html).not.toMatch(/Approve(?!d)/)
   // The review's own decision leads; no badge repeats the Run's state under it.
   expect(html).not.toContain('Run state')
   expect(html).not.toContain('program run:')
@@ -109,7 +110,7 @@ it('offers what the Run waits on now beside a settled selection, but not beside 
     { total: '2', actions: [run.actionPage!.actions[0], next], next: '' },
     approvalRequest,
   )
-  expect(current).toContain('Approve this call')
+  expect(current).toMatch(/>Approve</)
   expect(current).not.toContain('request=workspaces%2Ffinance%2Fapprovals%2Ftwo')
 })
 it('shows purpose and caller once, with nothing but the call to decide on', () => {
@@ -190,10 +191,9 @@ it.each([true, false])(
     expect(html).toContain('Arguments (1)')
     expect(html).not.toContain('Retained request detail')
     expect(html.indexOf(call.callPath)).toBeLessThan(html.indexOf('review-native'))
-    expect(html.includes('Approve this call')).toBe(actionable)
-    expect(html.includes('Decline this call')).toBe(actionable)
-    if (actionable)
-      expect(html.indexOf('review-native')).toBeLessThan(html.indexOf('Approve this call'))
+    expect(html.includes('Approve')).toBe(actionable)
+    expect(html.includes('Decline')).toBe(actionable)
+    if (actionable) expect(html.indexOf('review-native')).toBeLessThan(html.indexOf('Approve'))
     else expect(html).toContain('Approval unavailable')
   },
 )
@@ -2206,7 +2206,7 @@ describe('a Run that waits on more than five actions', () => {
     expect(nav).toBeNull()
     if (request.kind === 'approval')
       expect(screen.getByRole('region', { name })).toContainElement(
-        screen.getByRole('button', { name: 'Approve this call' }),
+        screen.getByRole('button', { name: 'Approve' }),
       )
     else {
       expect(screen.getByRole('heading', { name })).toBeInTheDocument()
@@ -2356,7 +2356,10 @@ describe('an account connection the Run waits on', () => {
         expect(within(footer).getByRole('button', { name: 'Connect Linear' })).toBeInTheDocument()
         expect(footer.querySelector('time')).toBeNull()
       } else expect(within(runActions()).getByRole('status')).toBeInTheDocument()
-      expect(document.body.textContent).not.toMatch(/Approve|Decline this call|Arguments/)
+      // Nothing of an approval review: its Decline is the connection's own.
+      expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+      expect(screen.queryAllByRole('button', { name: 'Decline' }).length).toBeLessThanOrEqual(1)
+      expect(document.body).not.toHaveTextContent('Arguments')
     },
   )
 
@@ -2702,8 +2705,8 @@ it('keeps the pinned Decline and Approve inside the one named review region', ()
   const regions = screen.getAllByRole('region', { name: `Review ${approvalRequest.callPath}` })
   expect(regions).toHaveLength(1)
   const [review] = regions
-  const approve = within(review).getByRole('button', { name: 'Approve this call' })
-  const decline = within(review).getByRole('button', { name: 'Decline this call' })
+  const approve = within(review).getByRole('button', { name: 'Approve' })
+  const decline = within(review).getByRole('button', { name: 'Decline' })
   // Still the drawer's one pinned footer, at the review's end, after the call's outcome.
   const footer = approve.closest('footer')!
   expect(footer).toContainElement(decline)
@@ -2939,7 +2942,7 @@ describe('each record states only what helps, once', () => {
     for (const gone of ['Program body', 'exact-program-source', 'View in history', 'Cancel run'])
       expect(container.textContent).not.toContain(gone)
     expect(container.textContent).toContain('exact-recipient')
-    expect(container.textContent).toContain('Approve this call')
+    expect(within(container).queryByRole('button', { name: 'Approve' })).not.toBeNull()
     // The call's own start, when the call is loaded; never the Run's start or the deadline.
     const list = within(container).getByText('Requested by', { selector: 'dt' }).closest('dl')!
     if (fromCall) {

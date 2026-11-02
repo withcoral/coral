@@ -1995,7 +1995,7 @@ export const ApprovalInlineOpenApiDocument: Story = {
     await expect(within(review).queryByRole('button', { name: /^Show / })).toBeNull()
     // Nothing crosses the drawer's edge, and the decision stays in reach.
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
-    await expect(within(review).getByRole('button', { name: 'Approve this call' })).toBeVisible()
+    await expect(within(review).getByRole('button', { name: 'Approve' })).toBeVisible()
   },
 }
 /** A typical addProvider call: plain JSON that round-trips exactly. */
@@ -2068,7 +2068,7 @@ export const ApprovalAddProviderOpenApi: Story = {
     await expect(review).not.toHaveTextContent('shown below')
     await expect(within(review).queryByRole('button', { name: /^Show / })).toBeNull()
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
-    for (const name of ['Decline this call', 'Approve this call'])
+    for (const name of ['Decline', 'Approve'])
       await expect(within(review).getByRole('button', { name })).toBeVisible()
   },
 }
@@ -2173,7 +2173,7 @@ export const ApprovalWithoutNames: Story = {
     const requested = within(dialog).getByText('Requested by', { selector: 'dt' })
     await expect(requested.nextElementSibling!.textContent).toBe('Unknown agent')
     await expect(dialog).not.toHaveTextContent(/unavailable|Provider:|agents\//)
-    for (const name of ['Decline this call', 'Approve this call'])
+    for (const name of ['Decline', 'Approve'])
       await expect(within(dialog).getByRole('button', { name })).toBeVisible()
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
   },

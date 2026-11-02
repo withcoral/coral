@@ -108,7 +108,7 @@ export async function connectionRequests(context: TestContext) {
       // The same run continues to its approval instead of failing the connection.
       await openRun()
       await page.getByRole('link', { name: /^Review .*connections\.listEntries$/ }).click()
-      await page.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Approve', exact: true }).waitFor()
     })
     await step(
       'Decline on the run fails the waiting call and leaves the account alone',

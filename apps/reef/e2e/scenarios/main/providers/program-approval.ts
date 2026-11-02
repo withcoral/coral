@@ -71,7 +71,7 @@ export async function approvedProgramProvider(context: TestContext) {
     })
     let link = ''
     await step('Approve the call, and the Program gets a link where you sign in', async () => {
-      await page.getByRole('button', { name: 'Approve this call', exact: true }).click()
+      await page.getByRole('button', { name: 'Approve', exact: true }).click()
       await page.getByText('Approved', { exact: true }).waitFor()
       const { update } = await observeRun(runner, await runner.wait(paused))
       const { data } = (update.final_value as { value: { data: { status: string; url: string } } })
@@ -110,7 +110,7 @@ export async function deniedProgramProvider(context: TestContext) {
     const { workspace, runner, paused } = started
     await step('Decline the call, and the Program catches the failure', async () => {
       const review = await openReview(page, paused, 'addProvider')
-      await review.getByRole('button', { name: 'Decline this call', exact: true }).click()
+      await review.getByRole('button', { name: 'Decline', exact: true }).click()
       await page.getByText('Declined', { exact: true }).waitFor()
       const { update } = await observeRun(runner, await runner.wait(paused))
       expect(update.final_value).toEqual({ kind: 'value', value: 'approval_declined' })
