@@ -431,3 +431,54 @@ async fn a_thrown_program_gets_the_shapes_of_its_tool_results_with_its_failure()
         assert_eq!(shapes, expected, "{program}");
     }
 }
+
+/// Reading the shapes parses a bounded number of retained bytes: the latest
+/// Tool Results that fit, newest first. A result too large to fit is left
+/// undescribed and counted, so the failure read stays cheap however large
+/// the Tool Results were.
+#[tokio::test(flavor = "multi_thread")]
+async fn shapes_read_only_the_latest_tool_results_that_fit_the_read_budget() {
+    let large =
+        "x".repeat(usize::try_from(crate::tool_result_shape::RESULTS_READ_MAX_BYTES).unwrap());
+    let fixture = TestModules::with_upstream(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        Arc::new(RotatingUpstream::json([
+            serde_json::json!({"items": []}),
+            serde_json::json!({"blob": large}),
+            serde_json::json!({"next": null}),
+        ])),
+    )
+    .await;
+    let tool = fixture
+        .user_tool("user:result-budget", "Result budget")
+        .await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    let accepted = fixture
+        .runs
+        .start(
+            actor,
+            workspace,
+            submission(
+                "for (let i = 0; i < 3; i++) await coral.providers.weather.getForecast({}); throw new Error('guessed');",
+            ),
+        )
+        .await
+        .unwrap();
+    wait_for_terminal(&fixture.runs, actor, workspace, accepted.run_id()).await;
+    let last = fixture
+        .runs
+        .observe(actor, workspace, accepted.run_id(), &immediate(None, 100))
+        .await
+        .unwrap();
+    assert!(!last.has_more());
+    let shapes = last
+        .tool_result_shapes()
+        .expect("the Program received results");
+    let sketched: Vec<_> = shapes
+        .shapes()
+        .iter()
+        .map(|shape| (shape.invocations(), shape.data()))
+        .collect();
+    assert_eq!(sketched, [(1, "{ items: [] }"), (1, "{ next: null }")]);
+    assert_eq!(shapes.unsketched(), 1);
+}

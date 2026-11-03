@@ -195,6 +195,7 @@ async fn read_update(
                 &run.workspace_id,
                 &run.id,
                 tool_result_shape::RESULTS_READ,
+                tool_result_shape::RESULTS_READ_MAX_BYTES,
             )
             .await?;
             tool_result_shape::sketch(received, unread)

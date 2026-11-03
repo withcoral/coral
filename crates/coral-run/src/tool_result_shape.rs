@@ -31,6 +31,11 @@ const MAP_MIN_UNIFORM_KEYS: usize = 12;
 pub(crate) const SHAPES_MAX_BYTES: usize = 4096;
 /// The latest Tool Results one failure reads.
 pub(crate) const RESULTS_READ: u64 = 64;
+/// Retained bytes of Tool Results one failure parses, newest first: a few
+/// pages of a typical list API, and a few milliseconds of parsing, however
+/// large the results the Program received. A result that does not fit what
+/// is left is not read.
+pub(crate) const RESULTS_READ_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The shape of the data that one Call Path returned to a failed Program, and
 /// how many of its Tool Invocations returned data of that shape.
@@ -85,8 +90,9 @@ impl ToolResultShapes {
         &self.shapes
     }
 
-    /// Tool Results the Program received that no shape describes: earlier
-    /// results beyond the ones read, and shapes that did not fit.
+    /// Tool Results the Program received that no shape describes: results
+    /// beyond the ones read, those too large to read, and shapes that did
+    /// not fit.
     #[must_use]
     pub const fn unsketched(&self) -> u64 {
         self.unsketched
