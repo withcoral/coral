@@ -39,33 +39,36 @@ in the request (protocol revision, declared capabilities, client name) chooses a
 known clients, and a client it has never seen gets the same handoff. The map that decided this is
 [#2732](https://github.com/withcoral/coral/issues/2732); the parent of the implementation is #2825.
 
-## What changes so the link Route is reliable
+## What changes so the assistant's link is a Route to rely on
 
-The link Route existed before this decision, as the fallback for clients that got no prompt, and the live check showed
-why it was not yet a route to rely on: the assistant stopped after one call and asked the person to say when they had
-acted, named the Tool by guesswork, and left the person to find the request on a page that led with the Run's
-activity. Making it the one Route means making each of those deterministic
+The assistant's link existed before this decision, as the fallback for clients that got no prompt, and the live check
+showed why it was not yet a Route to rely on: the assistant stopped after one call and asked the person to say when
+they had acted, named the Tool by guesswork, and left the person to find the request on a page that led with the Run's
+activity. Making it the one Route means removing each of those
 ([what the assistant receives](https://github.com/withcoral/coral/issues/2736#issuecomment-6519311420)):
 
 - **The Run Update says what is asked.** Each Required Action names its kind, the waiting Tool and its Provider, the
-  actor, the deadline and the link to that exact request. The assistant puts the request in the person's words from
-  these fields alone; Coral writes no sentence for it, and the link travels only in its own field, never inside prose.
-- **The assistant's loop is written down, in the tools, not only in the instructions.** The server instructions keep
-  three lines (a non-empty list means the Run waits for a person; show the link and the Run identifier and ask them to
-  act; never ask for credentials in the chat). The descriptions of the two tools that observe a Run carry the loop
-  itself, because those are the tools whose result the assistant is reading when the list appears: tell the person
-  what is asked, the Run identifier, the link exactly as given and by when; then keep calling the waiting tool, each
-  call bounded, with the latest cursor, until the Run goes on, ends or its deadline passes. The person's decision in
-  Reef resumes the Run on its own, so the assistant does not ask them to report back, and makes no judgment about
-  whether anyone is reading: the same loop runs in a chat and unattended. It cannot decide and must not say it did. A
-  decline reaches the Program as its error and the assistant reports that from the Run's output rather than running the
-  Program again unasked; a connection is asked for only when its entry appears, never ahead of a Run.
-- **Waiting is exact.** The waiting tool returns at once when a Required Action appears or the Run changes, and holds
-  until then, from the cursor it was given (a cursorless call treats what it first reads as already seen, #2731). The
-  Run Deadline is the one deadline the assistant is told, so the loop's end is the Run's end.
-- **The page is the request.** The link opens the Run with that request selected, the page is headed by the Run
-  identifier the assistant said, each request is a card decided on its own with the exact arguments, and after the
-  last decision the page sends the person back to their AI app. The section below fixes the page.
+  actor, the deadline and the Run Status Page link, naming the request. The assistant phrases the request for the
+  person from these fields alone; Coral supplies no ready-made sentence, and the link travels only in its own field,
+  never inside prose.
+- **The assistant's loop is written down, in the tools, not only in the instructions.** The server instructions state
+  the rule in brief: a non-empty Required Action list means the Run waits for a person; show the link and the Run
+  identifier and ask that person to act; never ask for credentials in the chat. The descriptions of the tools that
+  observe a Run carry the loop itself, because those are the tools whose result the assistant is reading when a
+  Required Action appears: tell the person what is asked and by when, the Run identifier, and the link exactly as
+  given; then keep calling the waiting tool with the latest cursor until the Required Action is gone or the Run ends.
+  The person's decision in Reef resumes the Run on its own, so the assistant does not ask the person to report back.
+  The assistant makes no judgment about whether anyone is reading: the same loop runs in a chat and unattended. The
+  assistant cannot decide and must not say it did. A decline reaches the Program as an error; the assistant reports it
+  from the Run's output and does not run the Program again unasked. The assistant asks the person to connect an
+  Account only when that Required Action appears, never ahead of a Run.
+- **Waiting is exact.** From the cursor it was given, the waiting tool holds, for at most one bounded call, until a
+  Required Action appears or the Run changes, then returns at once; a call without a cursor treats what it first reads
+  as already seen ([#2731](https://github.com/withcoral/coral/issues/2731)). The Run Deadline bounds every deadline
+  the assistant is told, so the loop's end is the Run's end.
+- **The page is the request.** The link opens the Run's page. The page is headed by the Run identifier the assistant
+  said; each request is a card decided on its own, an approval card with the exact arguments; after the last decision
+  the page tells the person to go back to their AI app. The Run Status Page section settles the page.
 
 ## Consequences
 
@@ -76,7 +79,7 @@ activity. Making it the one Route means making each of those deterministic
   Update shows a decision made elsewhere.
 - **A stale session header is ignored.** A request that still names a session is served like any other.
 - **The assistant is told, not asked.** Nothing from the arguments or the Account travels in the Run Update, and no
-  field says whether the person saw anything; what the assistant receives and is told is fixed below.
+  field says whether the person saw anything; what the assistant receives is fixed above.
 - **One clock.** The **Run Deadline**, the Run's accepted time plus its timeout, bounds every wait for a person;
   nothing pauses or extends it, and a Run that waits past it ends `TimedOut` for the person to run again. An Approval
   Request has no deadline of its own, so an approval never expires while its Run lives: a decline is the Program's
