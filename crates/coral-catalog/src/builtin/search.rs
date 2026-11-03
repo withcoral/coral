@@ -346,9 +346,8 @@ pub struct SearchResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(
     deny_unknown_fields,
-    description = "One Search Hit. Call a read from it when its signature line is complete: \
-                   no `…` anywhere in it and no type named in its input that the line does not \
-                   show. Read its exact description first otherwise, and before a write."
+    description = "One Search Hit. Call a read from it when it is complete. Read its exact \
+                   description first otherwise, and before a write."
 )]
 pub struct SearchHit {
     /// The complete Call Path.
@@ -356,14 +355,25 @@ pub struct SearchHit {
                        `coral.workspace.…` for one of Coral's own, `coral.functions.…` for a \
                        Saved Function.")]
     pub call_path: String,
-    /// The callable's signature, cut to its byte limit.
+    /// The callable's signature, within its byte limit.
     #[schemars(
-        description = "The callable's input members one level deep; a provider tool's result \
-                       data types by name; a Saved Function's result members one level deep. \
-                       `{…}` marks an object the line does not show, a bare `…` what it cannot \
-                       read, and a final `…` cut text. At most 512 UTF-8 bytes."
+        description = "The callable's input members one level deep, required ones first, then \
+                       its result, which the line always keeps: a provider tool's result data as its \
+                       top-level field names when they fit, or by type name; for an MCP tool that \
+                       declares no output, a note that the result is text, usually JSON, in \
+                       `data.content[0].text`; and a Saved Function's result members one level \
+                       deep. `{…}` marks an object the line does not show, a bare `…` a type it \
+                       cannot read, and a last `…` member or final `…` what it cut to fit. At most \
+                       512 UTF-8 bytes."
     )]
     pub signature_line: String,
+    /// Whether the signature line's input is complete enough to call from.
+    #[schemars(
+        description = "Whether you can call from the signature line: its input has no `…`, \
+                       names no type that the line does not show, and is the callable's only \
+                       overload. What the line leaves out of the result does not count."
+    )]
+    pub complete: bool,
     /// The description around the first matched term.
     #[schemars(
         description = "At most 512 UTF-8 bytes of the description, around the first \
@@ -745,13 +755,13 @@ pub(super) mod tests {
         }
     }
 
-    /// A page with every optional part, an empty page, and an exact lookup
-    /// with each kind of description and a missing path.
-    pub(in crate::builtin) fn results() -> Vec<Value> {
+    /// A hit with every optional part, and one with none.
+    fn hits() -> Vec<SearchHit> {
         let hit = SearchHit {
             call_path: "coral.providers.github.repos.get".to_owned(),
             signature_line: "get(input: { owner: string }): Promise<{ data: Repository }>"
                 .to_owned(),
+            complete: true,
             description_snippet: "Get a repository.".to_owned(),
             guidance_snippet: Some("Pass the owner.".to_owned()),
             matched_tags: vec!["repos".to_owned()],
@@ -768,6 +778,7 @@ pub(super) mod tests {
         let bare = SearchHit {
             call_path: "coral.functions.weekly".to_owned(),
             signature_line: "weekly(input: {}): Promise<string>".to_owned(),
+            complete: false,
             description_snippet: "The weekly report.".to_owned(),
             guidance_snippet: None,
             matched_tags: Vec::new(),
@@ -776,6 +787,12 @@ pub(super) mod tests {
             approval_required: false,
             deprecated: false,
         };
+        vec![hit, bare]
+    }
+
+    /// A page with every optional part, an empty page, and an exact lookup
+    /// with each kind of description and a missing path.
+    pub(in crate::builtin) fn results() -> Vec<Value> {
         let status = |retriever, state| SearchRetrieverStatus {
             retriever,
             state,
@@ -789,7 +806,7 @@ pub(super) mod tests {
         };
         [
             SearchOutput::Page(SearchResult {
-                hits: vec![hit, bare],
+                hits: hits(),
                 next_offset: Some(20),
                 retriever_statuses: vec![
                     status(SearchRetriever::ProviderTool, SearchRetrieverState::Partial),
@@ -889,7 +906,8 @@ pub(super) mod tests {
     }
 
     // Catches: a hit that calls every `…` a cut, so a caller cannot tell an
-    // object the line leaves out, or a result it cannot read, from cut text.
+    // object the line leaves out, or a type it cannot read, from cut text; or
+    // one that lets a `…` in the result stop a call the input allows.
     #[test]
     fn a_hit_says_what_each_signature_marker_means() {
         let schema = serde_json::to_value(schemars::schema_for!(SearchHit)).expect("schema");
@@ -905,11 +923,17 @@ pub(super) mod tests {
         let line = text("/properties/signature_line/description");
         for meaning in [
             "`{…}` marks an object the line does not show",
-            "a bare `…` what it cannot read",
-            "a final `…` cut text",
+            "a bare `…` a type it cannot read",
+            "a last `…` member or final `…` what it cut to fit",
         ] {
             assert!(line.contains(meaning), "{line} lacks {meaning}");
         }
+        let complete = text("/properties/complete/description");
+        assert!(
+            complete.contains("its input has no `…`")
+                && complete.contains("What the line leaves out of the result does not count"),
+            "{complete}"
+        );
     }
 
     // Catches: an integer past 2^53 − 1, in a page's coverage or a saved

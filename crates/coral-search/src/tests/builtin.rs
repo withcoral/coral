@@ -89,3 +89,51 @@ async fn search_and_describe_show_each_builtin_tool_to_the_principals_it_reaches
         }
     }
 }
+
+// Catches: coral.workspace.search's hit claiming to be complete while its
+// line shows only the query overload and hides the paths modes.
+#[tokio::test]
+async fn the_search_tool_hit_is_not_complete_while_its_line_shows_one_overload() {
+    let fixture = TestModules::new().await;
+    let database = fixture.search.database.clone();
+    let owner = organization_user(database.clone(), "user:builtin-overloads").await;
+    let workspace = fixture.create_workspace(&owner).await;
+    let context = change(owner.clone(), 20, '3');
+    let mut transaction = database.begin().await.unwrap();
+    fixture
+        .providers
+        .install_builtin_in_transaction(&mut transaction, &context, &workspace)
+        .await
+        .unwrap()
+        .skip_search();
+    transaction.commit().await.unwrap();
+    fixture.converge().await;
+
+    let page = fixture
+        .search
+        .search(
+            &AuthenticatedPrincipal::user(owner),
+            &workspace,
+            &SearchRequest::list(),
+        )
+        .await
+        .unwrap();
+    let hit = page
+        .hits()
+        .iter()
+        .find(|hit| hit.call_path().as_str() == "coral.workspace.search")
+        .expect("search hit");
+
+    assert!(
+        hit.signature_line().starts_with("search(input: { ")
+            && hit.signature_line().contains("query?: string")
+            && !hit.signature_line().contains("paths"),
+        "the line shows the first overload: {}",
+        hit.signature_line()
+    );
+    assert!(
+        !hit.complete(),
+        "the paths overloads are hidden: {}",
+        hit.signature_line()
+    );
+}

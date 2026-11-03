@@ -8,6 +8,7 @@ use coral_provider::access::ProviderNamespace;
 pub use coral_functions::ExactSavedFunctionAuthoringMaterial as ExactSavedFunctionDetail;
 
 use crate::Error;
+use crate::signature::SignatureLine;
 
 #[cfg(test)]
 mod tests;
@@ -562,7 +563,7 @@ fn bounded_unique(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchHit {
     call_path: CallPath,
-    signature_line: String,
+    signature: SignatureLine,
     description_snippet: String,
     guidance_snippet: Option<String>,
     matched_tags: Vec<String>,
@@ -614,7 +615,7 @@ impl ToolHit {
 
 /// The text a Search Hit shows, derived at hydration.
 pub(crate) struct HitText {
-    pub(crate) signature_line: String,
+    pub(crate) signature: SignatureLine,
     pub(crate) description_snippet: String,
     pub(crate) guidance_snippet: Option<String>,
     pub(crate) matched_tags: Vec<String>,
@@ -656,7 +657,7 @@ impl SearchHit {
     ) -> Self {
         Self {
             call_path,
-            signature_line: text.signature_line,
+            signature: text.signature,
             description_snippet: text.description_snippet,
             guidance_snippet: text.guidance_snippet,
             matched_tags: text.matched_tags,
@@ -681,11 +682,22 @@ impl SearchHit {
         &self.call_path
     }
 
-    /// Returns the bounded signature line. It is complete when it has no cut
-    /// marker and names no type it does not show.
+    /// Returns the bounded signature line.
     #[must_use]
     pub fn signature_line(&self) -> &str {
-        &self.signature_line
+        &self.signature.text
+    }
+
+    /// Returns the signature line's callable and input, without its result.
+    pub(crate) fn signature_input(&self) -> &str {
+        self.signature.input()
+    }
+
+    /// Returns whether the signature line is complete enough to call from:
+    /// it has no cut marker, and its input names no type it does not show.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.signature.complete
     }
 
     /// Returns the bounded window of the description.
@@ -723,7 +735,7 @@ impl SearchHit {
         let tool = self.tool.as_ref();
         [
             self.call_path.as_str(),
-            self.signature_line.as_str(),
+            self.signature.text.as_str(),
             self.description_snippet.as_str(),
             self.guidance_snippet.as_deref().unwrap_or_default(),
             tool.map_or("", |tool| tool.provider_display_name.as_str()),

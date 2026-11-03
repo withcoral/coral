@@ -150,6 +150,7 @@ async fn listing_orders_hits_by_call_path() {
         "formatForecast(value: { temperatureC: number }): string",
         "the named input's members appear inline"
     );
+    assert!(saved_hit.complete(), "the line shows every type it names");
     assert!(
         saved_hit.tool().is_none(),
         "a Saved Function hit has no Provider display name and no hints"
@@ -158,8 +159,10 @@ async fn listing_orders_hits_by_call_path() {
     let tool_hit = listed.get(1).expect("Tool hit");
     assert_eq!(
         tool_hit.signature_line(),
-        "getForecast(): Promise<{ data: {…} }>"
+        "getForecast(): Promise<{ data: { temperatureC } }>",
+        "the result shows its top-level field names"
     );
+    assert!(tool_hit.complete());
     assert_eq!(
         tool_hit.description_snippet(),
         "Fetch the current conditions for one forecast location."
@@ -259,19 +262,26 @@ async fn tool_signature_lines_follow_the_published_declaration() {
     assert_eq!(
         page.hits()
             .iter()
-            .map(|hit| (hit.call_path().as_str(), hit.signature_line()))
+            .map(|hit| (
+                hit.call_path().as_str(),
+                hit.signature_line(),
+                hit.complete()
+            ))
             .collect::<Vec<_>>(),
         [
             (
                 "coral.providers.github.createIssue",
-                "createIssue(input: { body: PostReposOwnerIssuesBodyInput; owner: string }): Promise<{ data: Issue }>",
+                "createIssue(input: { body: PostReposOwnerIssuesBodyInput; owner: string }): Promise<{ data: { id?; title? } }>",
+                false,
             ),
             (
                 "coral.providers.github.listIssues",
-                r#"listIssues(input: { owner: string; state?: "open" | "closed" }): Promise<{ data: Array<Issue> }>"#,
+                r#"listIssues(input: { owner: string; state?: "open" | "closed" }): Promise<{ data: Array<{ id?; title? }> }>"#,
+                true,
             ),
         ],
-        "a flat input shows its members inline; a nested body shows its type by name"
+        "a flat input shows its members inline and is complete; a nested body shows its type \
+         by name, so its line is not; each result shows its field names"
     );
 }
 
@@ -1214,6 +1224,95 @@ async fn mcp_publication_prepares_schema_field_paths_for_search() {
 }
 
 #[tokio::test]
+async fn an_mcp_listing_without_an_output_schema_keeps_its_inputs_and_text_result_in_the_line() {
+    let fixture = TestModules::new().await;
+    let user = organization_user(fixture.search.database.clone(), "user:mcp-signature").await;
+    let principal = AuthenticatedPrincipal::user(user.clone());
+    let workspace_id = fixture.create_workspace(&user).await;
+    // Shaped like an issue tracker's `list_issues`: a long `fields` enum
+    // declared first, and no output schema, so the result is text.
+    let fields = "id identifier title description priority estimate state assignee creator \
+                  team project cycle labels parent children createdAt updatedAt startedAt \
+                  completedAt canceledAt dueDate url branchName attachments comments \
+                  subscribers relations reactions"
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    let snapshot = serde_json::json!({
+      "protocolVersion": "2025-11-25",
+      "serverInfo": {"name": "tracker", "title": "Tracker", "version": "1"},
+      "server": {"transport": "streamable_http", "url": "https://example.test/mcp"},
+      "capabilities": {"tools": {}},
+      "tools": [{
+        "name": "list_issues",
+        "description": "List issues in the workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "fields": {"type": "array", "items": {"type": "string", "enum": fields}},
+            "query": {"type": "string"},
+            "team": {"type": "string"},
+            "limit": {"type": "integer"}
+          }
+        },
+        "annotations": {"readOnlyHint": true}
+      }]
+    });
+    let setup = fixture
+        .providers
+        .prepare_mcp_fixture(
+            &change(user.clone(), 20, '2'),
+            &workspace_id,
+            McpDiscoverySnapshot::parse(&snapshot.to_string()).expect("MCP snapshot"),
+        )
+        .await
+        .expect("create MCP Provider Setup");
+    fixture
+        .providers
+        .publish_workspace_provider(
+            &change(user, 30, '3'),
+            WorkspaceProviderPublicationRequest::new(
+                ManagementRequestId::parse("61000000-0000-4000-8000-000000000005")
+                    .expect("request id"),
+                workspace_id.clone(),
+                setup.id().clone(),
+                ProviderNamespace::parse("tracker").expect("namespace"),
+                CredentialRoute::None,
+            ),
+        )
+        .await
+        .expect("publish MCP Provider")
+        .skip_search();
+    fixture.converge().await;
+
+    let page = fixture
+        .search
+        .search(&principal, &workspace_id, &SearchRequest::list())
+        .await
+        .expect("list MCP Tools");
+
+    let [hit] = page.hits() else {
+        panic!("one MCP Tool hit: {:?}", page.hits());
+    };
+    let line = "listIssues(input: { limit?: number; query?: string; team?: string; … }): Promise<{ data: { content: Array<McpContentBlock> } }> // text, usually JSON, in data.content[0].text";
+    assert_eq!(
+        (hit.signature_line(), hit.complete()),
+        (line, false),
+        "the enum gives way to the other inputs, and the line says where the result is"
+    );
+    let projected = crate::projection::search(&page);
+    assert_eq!(
+        (
+            projected.pointer("/hits/0/signature_line"),
+            projected.pointer("/hits/0/complete")
+        ),
+        (
+            Some(&serde_json::json!(line)),
+            Some(&serde_json::json!(false))
+        )
+    );
+}
+
+#[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "the fixture proves old and replacement search data switch at publication"
@@ -1847,6 +1946,7 @@ async fn a_page_of_fifty_hits_fits_the_budget_with_bounded_text() {
         assert!(
             hit.signature_line().len() <= SIGNATURE_LINE_MAX_BYTES
                 && hit.signature_line().ends_with(CUT_MARKER)
+                && !hit.complete()
         );
         assert!(
             hit.description_snippet().len() <= SNIPPET_MAX_BYTES
