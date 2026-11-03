@@ -2,11 +2,11 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { access, readdir } from 'node:fs/promises'
 import { EventEmitter, once } from 'node:events'
-import { createServer } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
 import { connect } from 'node:net'
 import { test } from 'node:test'
 import { createServer as createHttp2Server } from 'node:http2'
-import { createCipheriv, createHash, randomBytes } from 'node:crypto'
+import { gunzipSync } from 'node:zlib'
 
 import { createCookie } from 'react-router'
 
@@ -35,6 +35,9 @@ const REQUIRED_ENV = {
 }
 const CHILD_ENV = { ...process.env, ...REQUIRED_ENV }
 delete CHILD_ENV.FORCE_COLOR
+for (const name of Object.keys(CHILD_ENV)) {
+  if (name.startsWith('OTEL_')) delete CHILD_ENV[name]
+}
 
 test('probes valid runtime config immediately before listen with a fresh context', async () => {
   const events = []
@@ -144,6 +147,68 @@ test('local Reef answers only Host headers that name its own loopback listener',
         assert.deepEqual(reached, [], label)
       } else {
         assert.deepEqual(reached, [`http://${host(port).toLowerCase()}${path}`], label)
+      }
+    } finally {
+      await new Promise((resolve) => server.close(resolve))
+    }
+  }
+})
+
+// Catches: a large page sent whole to a remote reader, an event stream held
+// in a compressor's buffer, or a mutation's body compressed beside its secrets.
+test('compresses pages and data for a client that accepts it', async () => {
+  const page = 'x'.repeat(4096)
+  const respond = (type) => () =>
+    new Response(page, { headers: { 'Content-Type': type, 'Content-Length': '4096' } })
+  for (const [label, options, expected] of [
+    ['a page', { type: 'text/html; charset=utf-8' }, 'gzip'],
+    ['route data', { type: 'text/x-script' }, 'gzip'],
+    ['JSON', { type: 'application/json' }, 'gzip'],
+    ['an event stream', { type: 'text/event-stream' }, null],
+    ['an upload', { type: 'application/octet-stream' }, null],
+    ['a mutation', { type: 'text/html', method: 'POST' }, null],
+    ['a client without gzip', { type: 'text/html', accept: 'br' }, null],
+    ['a client that refuses gzip', { type: 'text/html', accept: 'gzip;q=0, br' }, null],
+    ['a weighted gzip', { type: 'text/html', accept: 'br;q=1, gzip;q=0.5' }, 'gzip'],
+    ['a local listener', { type: 'text/html', requireListenerHost: true }, null],
+  ]) {
+    const server = createServer(
+      createRequestListener({
+        handler: respond(options.type),
+        requireListenerHost: options.requireListenerHost,
+      }),
+    )
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const { port } = server.address()
+    try {
+      const response = await new Promise((resolve, reject) => {
+        const request = httpRequest(
+          {
+            port,
+            host: '127.0.0.1',
+            method: options.method ?? 'GET',
+            headers: {
+              'Accept-Encoding': options.accept ?? 'gzip',
+              Host: `127.0.0.1:${port}`,
+            },
+          },
+          resolve,
+        )
+        request.once('error', reject)
+        request.end()
+      })
+      const chunks = []
+      for await (const chunk of response) chunks.push(chunk)
+      const body = Buffer.concat(chunks)
+      assert.equal(response.headers['content-encoding'] ?? null, expected, label)
+      if (expected) {
+        assert.equal(gunzipSync(body).toString(), page, label)
+        assert.ok(body.length < page.length, label)
+        assert.equal(response.headers['content-length'], undefined, label)
+        assert.match(response.headers.vary, /Accept-Encoding/, label)
+      } else {
+        assert.equal(body.toString(), page, label)
       }
     } finally {
       await new Promise((resolve) => server.close(resolve))
@@ -326,15 +391,20 @@ test('rejected Coral sessions clear the cookie and offer sign in instead of a ge
   })
   peer.listen(0, '127.0.0.1')
   await once(peer, 'listening')
+  const authorization = await startSessionPeer()
   const child = spawn(process.execPath, ['server.mjs'], {
     cwd: import.meta.dirname,
-    env: { ...CHILD_ENV, CORAL_ENDPOINT: `http://127.0.0.1:${peer.address().port}` },
+    env: {
+      ...CHILD_ENV,
+      CORAL_ENDPOINT: `http://127.0.0.1:${peer.address().port}`,
+      CORAL_WEB_AUTH_ISSUER: authorization.url,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const stderr = streamText(child.stderr)
   try {
     const origin = `http://127.0.0.1:${await listeningPort(child)}`
-    const cookie = await validSessionCookie()
+    const cookie = await validSessionCookie(authorization.url)
     let csrfCookie
     const workspace = '/workspaces/00000000-0000-4000-8000-000000000001'
     // Authorization denials and outages are not session expiry. Keep the session.
@@ -381,7 +451,8 @@ test('rejected Coral sessions clear the cookie and offer sign in instead of a ge
         body:
           method === 'POST'
             ? new URLSearchParams({
-                csrf: csrf.token,
+                // Pages carry the token masked; a zero pad leaves it as it is.
+                csrf: `${Buffer.alloc(csrf.token.length).toString('base64url')}.${Buffer.from(csrf.token).toString('base64url')}`,
                 intent: 'createWorkspace',
                 displayName: 'Do not replay',
                 requestId: '00000000-0000-4000-8000-000000000002',
@@ -418,30 +489,46 @@ test('rejected Coral sessions clear the cookie and offer sign in instead of a ge
     await stderr
     for (const session of sessions) session.destroy()
     await new Promise((resolve) => peer.close(resolve))
+    await authorization.close()
   }
 })
 
-// A browser-valid, unexpired cookie whose token Coral no longer recognizes.
-async function validSessionCookie() {
+// A browser-valid, unexpired session cookie naming a session at `issuer`.
+async function validSessionCookie(issuer) {
   const secret = REQUIRED_ENV.CORAL_WEB_SESSION_SECRET
-  const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', createHash('sha256').update(secret).digest(), iv)
-  const ciphertext = Buffer.concat([
-    cipher.update(
-      JSON.stringify({
-        accessToken: 'deleted-database-token',
-        expiresAt: Math.floor(Date.now() / 1000) + 3600,
-        tokenType: 'Bearer',
-      }),
-    ),
-    cipher.final(),
-  ])
-  const encrypted = [iv, cipher.getAuthTag(), ciphertext]
-    .map((part) => part.toString('base64url'))
-    .join('.')
   return (
-    await createCookie('coral_web_session', { secrets: [secret] }).serialize(encrypted)
+    await createCookie('coral_web_session', { secrets: [secret] }).serialize({
+      endpoint: `${issuer}/oauth/session`,
+      endsAt: Math.floor(Date.now() / 1000) + 3600,
+      handle: 'coral_ws_test-session',
+    })
   ).split(';')[0]
+}
+
+/** Coral's authorization server, minting a Reef access token for every session resolve. */
+async function startSessionPeer() {
+  const peer = createServer((request, response) => {
+    request.resume()
+    if (request.method !== 'POST' || request.url !== '/oauth/session/token') {
+      response.writeHead(404).end()
+      return
+    }
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(
+      JSON.stringify({
+        access_token: 'deleted-database-token',
+        expires_in: 300,
+        session_expires_in: 3600,
+        token_type: 'Bearer',
+      }),
+    )
+  })
+  peer.listen(0, '127.0.0.1')
+  await once(peer, 'listening')
+  return {
+    url: `http://127.0.0.1:${peer.address().port}`,
+    close: () => new Promise((resolve) => peer.close(resolve)),
+  }
 }
 
 test('proxied logout accepts the runtime public host without trusting forwarded origins', async () => {
@@ -557,6 +644,94 @@ test('production entry names fatal runtime config and exits without listening', 
   assert.match(error, /Coral web startup failed: CORAL_WEB_PUBLIC_URL/)
 })
 
+test('one Reef request is one trace, rooted at Reef, that Coral calls join', async () => {
+  const collector = await startCollector()
+  const coral = await startGrpcPeer()
+  const authorization = await startSessionPeer()
+  const child = startReef({
+    CORAL_ENDPOINT: coral.url,
+    CORAL_WEB_AUTH_ISSUER: authorization.url,
+    OTEL_EXPORTER_OTLP_ENDPOINT: collector.url,
+    OTEL_SERVICE_NAME: 'reef-under-test',
+  })
+  const stderr = streamText(child.stderr)
+  const workspace = '/workspaces/00000000-0000-4000-8000-000000000001'
+  try {
+    const origin = `http://127.0.0.1:${await listeningPort(child)}`
+    const cookie = await validSessionCookie(authorization.url)
+    const callsDuring = async (...fetchArgs) => {
+      coral.calls.length = 0
+      await (await fetch(...fetchArgs)).text()
+      return [...coral.calls]
+    }
+
+    const page = await callsDuring(`${origin}${workspace}?marker=query-secret`, {
+      headers: { Cookie: cookie, baggage: 'user=baggage-secret' },
+    })
+    const stream = await callsDuring(`${origin}/activity/count`, {
+      headers: { Cookie: cookie, Origin: REQUIRED_ENV.CORAL_WEB_PUBLIC_URL },
+      method: 'POST',
+    })
+    await stopChild(child)
+
+    const spans = exportedSpans(collector.bodies)
+    const requests = spans.filter((span) => span.kind === SERVER_SPAN)
+    assert.deepEqual(
+      requests.map((span) => span.name),
+      ['GET /workspaces/:workspace', 'POST /activity/count'],
+    )
+    const [pageSpan, streamSpan] = requests
+    for (const [span, calls] of [
+      [pageSpan, page],
+      [streamSpan, stream],
+    ]) {
+      assert.ok(calls.length > 0, span.name)
+      for (const call of calls) {
+        const client = spans.find((candidate) => candidate.name === call.path.slice(1))
+        assert.equal(client.kind, CLIENT_SPAN, call.path)
+        assert.equal(call.traceparent, `00-${span.traceId}-${client.spanId}-01`, call.path)
+      }
+      assert.equal(span.resource['service.name'], 'reef-under-test')
+    }
+    assert.ok(
+      spans.some(
+        (span) => span.parentSpanId === pageSpan.spanId && span.name.startsWith('loader '),
+      ),
+    )
+    assert.deepEqual(
+      spans
+        .flatMap((span) => Object.keys(span.attributes))
+        .filter((key) => !SAFE_SPAN_KEYS.includes(key)),
+      [],
+    )
+    assert.ok(stream.some((call) => call.path.endsWith('/WatchActivity')))
+    assert.equal(pageSpan.parentSpanId, '')
+    assert.doesNotMatch(
+      Buffer.concat(collector.bodies).toString('latin1'),
+      /query-secret|baggage-secret|coral_web_session|00000000-0000-4000/,
+    )
+    assert.equal(await stderr, '')
+  } finally {
+    await stopChild(child)
+    await coral.close()
+    await authorization.close()
+    await collector.close()
+  }
+})
+
+test('production entry names an invalid sampler and exits without listening', async () => {
+  const child = startReef({
+    OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:9',
+    OTEL_TRACES_SAMPLER: 'unknown',
+  })
+  const stdout = streamText(child.stdout)
+  const stderr = streamText(child.stderr)
+  const [code] = await once(child, 'exit')
+  assert.notEqual(code, 0)
+  assert.match(await stderr, /trace export: OTEL_TRACES_SAMPLER must be one of/)
+  assert.doesNotMatch(await stdout, /Coral web listening/)
+})
+
 test('stops waiting for a listening port when the child exits', async () => {
   const child = spawn(process.execPath, ['-e', 'process.exit(2)'], {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -564,6 +739,141 @@ test('stops waiting for a listening port when the child exits', async () => {
 
   await assert.rejects(listeningPort(child), /server exited before listening \(2\)/)
 })
+
+function startReef(env) {
+  return spawn(process.execPath, ['server.mjs'], {
+    cwd: import.meta.dirname,
+    env: { ...CHILD_ENV, ...env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+}
+
+/** A native gRPC peer that denies every call and records its trace headers. */
+async function startGrpcPeer() {
+  const calls = []
+  const sessions = new Set()
+  const peer = createHttp2Server()
+  peer.on('session', (session) => {
+    sessions.add(session)
+    session.on('close', () => sessions.delete(session))
+  })
+  peer.on('stream', (stream, headers) => {
+    calls.push({ path: headers[':path'], traceparent: headers.traceparent })
+    stream.on('error', () => undefined)
+    stream.resume()
+    stream.respond({ ':status': 200, 'content-type': 'application/grpc', 'grpc-status': '7' })
+    stream.end()
+  })
+  peer.listen(0, '127.0.0.1')
+  await once(peer, 'listening')
+  return {
+    calls,
+    url: `http://127.0.0.1:${peer.address().port}`,
+    async close() {
+      for (const session of sessions) session.destroy()
+      await new Promise((resolve) => peer.close(resolve))
+    },
+  }
+}
+
+/** An OTLP/HTTP endpoint that keeps each request body. */
+async function startCollector() {
+  const bodies = []
+  const collector = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    bodies.push(Buffer.concat(chunks))
+    response.writeHead(200).end()
+  })
+  collector.listen(0, '127.0.0.1')
+  await once(collector, 'listening')
+  return {
+    bodies,
+    url: `http://127.0.0.1:${collector.address().port}`,
+    close: () => new Promise((resolve) => collector.close(resolve)),
+  }
+}
+
+const SERVER_SPAN = 2
+const CLIENT_SPAN = 3
+const SAFE_SPAN_KEYS = [
+  'error.type',
+  'http.request.method',
+  'http.response.status_code',
+  'http.route',
+  'rpc.method',
+  'rpc.response.status_code',
+  'rpc.system.name',
+]
+
+/** Decodes the spans of OTLP `ExportTraceServiceRequest` bodies. */
+function exportedSpans(bodies) {
+  const spans = []
+  for (const body of bodies) {
+    for (const resourceSpans of protoFields(body, 1)) {
+      const [resource] = protoFields(resourceSpans, 1)
+      for (const scopeSpans of protoFields(resourceSpans, 2)) {
+        for (const span of protoFields(scopeSpans, 2)) {
+          const text = (field) => (protoFields(span, field)[0] ?? Buffer.alloc(0)).toString()
+          const hex = (field) => (protoFields(span, field)[0] ?? Buffer.alloc(0)).toString('hex')
+          spans.push({
+            attributes: protoAttributes(span, 9),
+            kind: Number(protoFields(span, 6)[0]),
+            name: text(5),
+            parentSpanId: hex(4),
+            resource: protoAttributes(resource, 1),
+            spanId: hex(2),
+            traceId: hex(1),
+          })
+        }
+      }
+    }
+  }
+  return spans
+}
+
+function protoAttributes(message, field) {
+  return Object.fromEntries(
+    protoFields(message, field).map((attribute) => {
+      const [value] = protoFields(attribute, 2)
+      const [text] = protoFields(value, 1)
+      return [
+        protoFields(attribute, 1)[0].toString(),
+        text === undefined ? protoFields(value, 3)[0] : text.toString(),
+      ]
+    }),
+  )
+}
+
+/** The values of one field in a protobuf message: bytes, or a BigInt varint. */
+function protoFields(message, wanted) {
+  const values = []
+  let offset = 0
+  const varint = () => {
+    let value = 0n
+    let shift = 0n
+    let byte
+    do {
+      byte = message[offset++]
+      value |= BigInt(byte & 0x7f) << shift
+      shift += 7n
+    } while (byte & 0x80)
+    return value
+  }
+  const bytes = (length) => message.subarray(offset, (offset += length))
+  while (offset < message.length) {
+    const tag = Number(varint())
+    const readers = {
+      0: varint,
+      1: () => bytes(8),
+      2: () => bytes(Number(varint())),
+      5: () => bytes(4),
+    }
+    const value = readers[tag & 7]()
+    if (tag >> 3 === wanted) values.push(value)
+  }
+  return values
+}
 
 // fetch() always sends its own Host, and HTTP/1.1 requires one, so write the
 // request directly. HTTP/1.0 is the only way to omit Host.

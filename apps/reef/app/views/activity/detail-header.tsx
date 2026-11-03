@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
-import { Typography } from '@/wax/components'
 import type { IconName, IconPlateTone } from '@/wax/components/icon'
 import { Pill } from '@/wax/components/pill'
 import { PanelHeader } from './panel'
+import { CallTitle, type CallProvider } from './call-tool'
 
 const tones: Record<string, IconPlateTone> = {
   success: 'green',
@@ -32,40 +32,35 @@ export function DetailHeader({
   title,
   status,
   label = status.replaceAll('_', ' '),
-  kind,
   sticky,
   heading,
   showStatus = true,
   meta,
+  provider,
 }: {
   title: string
   /** The exact retained state; it selects the tone and icon. */
   status: string
   /** The pill's text, when it says more than the state. */
   label?: string
-  /** The record kind, named under the title. */
-  kind?: string
   sticky?: boolean
   heading?: 'h2' | 'h3'
   /** False when the title already says what the record is, so a badge would only repeat it. */
   showStatus?: boolean
-  /** More about the record under its kind, such as a live deadline. */
+  /** More about the record under its title, such as a live deadline. */
   meta?: ReactNode
+  /** A call's provider. Its logo leads the title in place of the state icon. */
+  provider?: CallProvider | null
 }) {
   const tone = tones[status] ?? 'gray'
   return (
     <PanelHeader
-      icon={icons[tone]}
+      icon={provider ? undefined : icons[tone]}
       tone={tone}
-      title={title}
+      title={provider ? <CallTitle callPath={title} provider={provider} /> : title}
       heading={heading}
       sticky={sticky}
-      details={
-        <>
-          {kind && <Typography.BodySmall variant="tertiary">{kind}</Typography.BodySmall>}
-          {meta}
-        </>
-      }
+      details={meta}
       status={showStatus && <Pill color={tone}>{label}</Pill>}
     />
   )

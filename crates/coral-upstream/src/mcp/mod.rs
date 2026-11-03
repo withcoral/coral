@@ -15,8 +15,11 @@ pub use resources::McpResources;
 pub use transport::McpRejection;
 
 use coral_catalog::AuthenticationConfiguration;
+use coral_telemetry::safe;
 use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
+
+use tracing::Instrument as _;
 
 use coral_catalog::{
     ExecutionBinding, MaterializedTool, McpExecutionBinding, McpInvocationMethod, ToolAvailability,
@@ -33,6 +36,7 @@ use rmcp::{RoleClient, ServiceExt as _};
 use serde_json::{Value, json};
 
 use crate::Error;
+use crate::span_field::{self, Declared};
 
 /// A validated, one-use request against an exact retained MCP binding.
 pub struct ReadyMcpDispatch {
@@ -290,6 +294,40 @@ impl McpUpstream {
     /// # Errors
     /// Returns an error when no complete bounded MCP result is available.
     pub async fn send(&self, dispatch: ReadyMcpDispatch) -> Result<McpOutcome, Error> {
+        let span = client_span(&dispatch);
+        let measure =
+            crate::exchange::ExchangeMeasure::start(coral_telemetry::metric::ProviderProtocol::Mcp);
+        let sent = self
+            .send_session(dispatch, span.clone(), Arc::clone(measure.bytes()))
+            .instrument(span.clone())
+            .await;
+        measure.end(sent.as_ref().map(|_outcome| ()));
+        match &sent {
+            Ok(outcome) if outcome.class() == crate::OutcomeClass::ErrorResponse => {
+                coral_telemetry::record_failure(&span, "tool_error");
+            }
+            Ok(_) => {}
+            // The JSON-RPC error code, as the MCP conventions name it.
+            Err(Error::McpRejected(rejection)) => coral_telemetry::record_failure(
+                &span,
+                safe::json_rpc_code(match rejection {
+                    McpRejection::InvalidParams | McpRejection::UnknownTool => -32602,
+                    McpRejection::Other(code) => *code,
+                }),
+            ),
+            Err(_) => coral_telemetry::record_failure(&span, "incomplete"),
+        }
+        sent
+    }
+
+    /// One session that sends `dispatch`, each of its requests carrying the
+    /// trace context of `span`, its client span.
+    async fn send_session(
+        &self,
+        dispatch: ReadyMcpDispatch,
+        span: tracing::Span,
+        bytes: Arc<crate::exchange::ExchangeBytes>,
+    ) -> Result<McpOutcome, Error> {
         let mut config = StreamableHttpClientTransportConfig::with_uri(
             dispatch.binding.server_url().to_string(),
         )
@@ -305,6 +343,8 @@ impl McpUpstream {
                 client: self.client.clone(),
                 limit: dispatch.limits.upstream_bytes(),
                 result: captured.clone(),
+                span,
+                bytes: Some(bytes),
             },
             config,
         );
@@ -388,4 +428,26 @@ impl McpUpstream {
         )?;
         McpOutcome::from_data(data, dispatch.binding.invocation_method(), dispatch.limits)
     }
+}
+
+/// The OpenTelemetry MCP client span of one dispatch: its method, the
+/// upstream tool name, and the server's scheme, address and port. Never the
+/// arguments, the result, a session identifier or the full URL.
+fn client_span(dispatch: &ReadyMcpDispatch) -> tracing::Span {
+    let (method, target) = match dispatch.binding.invocation_method() {
+        McpInvocationMethod::CallTool => ("tools/call", Declared::tool_name(&dispatch.binding)),
+        McpInvocationMethod::ReadResource => ("resources/read", None),
+    };
+    let server = url::Url::parse(dispatch.binding.server_url()).ok();
+    tracing::info_span!(
+        "mcp.client",
+        otel.name = safe::span_name(method, target.as_ref()),
+        otel.kind = "client",
+        mcp.method.name = safe::kind(method),
+        gen_ai.tool.name = target.as_ref().map(safe::id),
+        url.scheme = server.as_ref().map(span_field::scheme).map(safe::kind),
+        server.address = server.as_ref().and_then(span_field::host).as_ref().map(safe::id),
+        server.port = server.as_ref().and_then(url::Url::port_or_known_default).map(safe::number),
+        error.type = tracing::field::Empty,
+    )
 }

@@ -7,6 +7,7 @@ import {
   workspaceName,
 } from '@/lib/management.server'
 import { loadActivity } from '@/lib/activity.server'
+import { activityProviderMarks } from '@/lib/providers.server'
 import { loadActivityPage } from '@/lib/activity-page-fetch'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { LiveActivity } from './activity-live'
@@ -17,13 +18,15 @@ export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/man
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
-    const [page, { workspace }] = await Promise.all([
-      loadActivity(request, management(request, context), {
+    const api = management(context)
+    const [page, { workspace }, providerMarks] = await Promise.all([
+      loadActivity(request, api, {
         scope: { workspace: workspaceName(params.workspace) },
       }),
-      authorizedWorkspace(request, context, params.workspace),
+      authorizedWorkspace(context, params.workspace),
+      activityProviderMarks(api, workspaceName(params.workspace), request),
     ])
-    return data({ ...page, workspace }, { headers: privateHeaders })
+    return data({ ...page, workspace, providerMarks }, { headers: privateHeaders })
   } catch (error) {
     managementFailure(error)
   }
@@ -52,6 +55,7 @@ export default function ActivityRoute({ loaderData }: Route.ComponentProps) {
         initial={loaderData}
         connect={archived ? undefined : { endpoint: loaderData.workspace.connectEndpoint }}
         archived={archived ? role : undefined}
+        providers={loaderData.providerMarks}
       />
     </PageLayout>
   )

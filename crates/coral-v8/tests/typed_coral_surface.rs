@@ -1,16 +1,21 @@
 //! Typing `coral.providers`, `coral.workspace` and `coral.functions` from
 //! supplied declarations.
 
+use coral_telemetry as _;
+use coral_telemetry::metric::CompilerRole;
 use coral_v8::{
     CallableDeclaration, CompilerDiagnostic, CoralDeclarations, IsolateLimits, ProgramCompiler,
     SavedFunctionCompilation,
 };
 use coral_value as _;
 use deno_core_icudata as _;
+#[cfg(unix)]
+use rustix as _;
 use serde as _;
 use serde_json as _;
 use sourcemap as _;
 use thiserror as _;
+use tracing as _;
 use v8 as _;
 
 const DECLARATION_MAX_BYTES: usize = 256 * 1024;
@@ -95,7 +100,8 @@ fn errors(diagnostics: &[CompilerDiagnostic]) -> Vec<Located> {
 
 #[test]
 fn saved_function_diagnostics_check_calls_against_declarations() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let cases: &[(&str, &str, &[Located])] = &[
         (
             "a wrong input field",
@@ -174,7 +180,8 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
 /// Tool under the same root resolved.
 #[test]
 fn unknown_tool_diagnostic_names_the_call_path_only() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     for (name, tools) in [
         ("beside a resolved sibling", tools()),
         ("alone in its root", Vec::new()),
@@ -204,9 +211,111 @@ fn unknown_tool_diagnostic_names_the_call_path_only() {
     }
 }
 
+// Catches: Program Admission applying a rule other than the unknown-Tool
+// diagnostic's, admitting a call to a namespace of a callable Tool, which
+// fails with `tool_not_found` when it runs, refusing a computed or aliased
+// call it cannot judge, or naming the wrong place in the authored body.
+#[test]
+fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+    let source = "const page = await coral.providers.notion.retrievePage({ page_id: \"p\" });\n\
+        const repo = await coral.providers.github.repos.get({ owner: \"a\", repo: \"b\" });\n\
+        await coral.providers.github.repos.get.call(null, {});\n\
+        const name = \"get\";\n\
+        await coral.providers.github.repos[name]({});\n\
+        const repos = coral.providers.github.repos;\n\
+        await repos.gett({});\n\
+        await coral.workspace.deleteEverything();\n\
+        await coral.providers.notion.retrievePage({ page_id: \"q\" });\n\
+        await coral.providers.github.repos({});\n\
+        return [page, repo];";
+    let named = compiler
+        .program_call_paths(deadline(), source)
+        .expect("analyze the Program body");
+    assert_eq!(
+        named.tools().call_paths(),
+        [
+            "coral.providers.github.repos",
+            "coral.providers.github.repos.get",
+            "coral.providers.github.repos.get.call",
+            "coral.providers.notion.retrievePage",
+            "coral.workspace.deleteEverything",
+        ]
+    );
+    let callable = ["coral.providers.github.repos.get".to_owned()];
+    let unknown = compiler
+        .unknown_tool_calls(deadline(), named.tools(), &callable)
+        .expect("check the called chains");
+    assert_eq!(
+        unknown
+            .iter()
+            .map(|call| (call.call_path(), call.line(), call.column()))
+            .collect::<Vec<_>>(),
+        [
+            ("coral.providers.notion.retrievePage", 1, 20),
+            ("coral.workspace.deleteEverything", 8, 7),
+            ("coral.providers.notion.retrievePage", 9, 7),
+            ("coral.providers.github.repos", 10, 7),
+        ]
+    );
+    // Only the namespace call is left once every Tool it names is callable.
+    assert_eq!(
+        compiler
+            .unknown_tool_calls(
+                deadline(),
+                named.tools(),
+                &[
+                    "coral.providers.github.repos.get".to_owned(),
+                    "coral.providers.notion.retrievePage".to_owned(),
+                    "coral.workspace.deleteEverything".to_owned(),
+                ],
+            )
+            .expect("check the called chains")
+            .iter()
+            .map(coral_v8::UnknownToolCall::call_path)
+            .collect::<Vec<_>>(),
+        ["coral.providers.github.repos"]
+    );
+}
+
+// Catches: Program Admission refusing a literal call that runs, because a
+// literal segment with a dot names several segments of the Call Path the
+// running Program calls.
+#[test]
+fn a_literal_segment_with_a_dot_names_the_path_the_program_calls() {
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
+    let source = "await coral.providers.github.users.getAuthenticated();\n\
+        return await coral.providers.github[\"repos.get\"]({ owner: \"a\", repo: \"b\" });";
+    let named = compiler
+        .program_call_paths(deadline(), source)
+        .expect("analyze the Program body");
+    assert!(
+        named
+            .tools()
+            .call_paths()
+            .contains(&"coral.providers.github.repos.get".to_owned()),
+        "{:?}",
+        named.tools().call_paths()
+    );
+    let unknown = compiler
+        .unknown_tool_calls(
+            deadline(),
+            named.tools(),
+            &[
+                "coral.providers.github.repos.get".to_owned(),
+                "coral.providers.github.users.getAuthenticated".to_owned(),
+            ],
+        )
+        .expect("check the called chains");
+    assert!(unknown.is_empty(), "{unknown:?}");
+}
+
 #[test]
 fn saved_function_declaration_inlines_a_tool_result_type() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let compilation = prepare(
         &compiler,
         "export default async function repo(owner: string) {\n  const r = await coral.providers.github.repos.get({ owner, repo: \"coral\" });\n  return r.data.owner;\n}",
@@ -228,7 +337,8 @@ fn saved_function_declaration_inlines_a_tool_result_type() {
 /// Each diagnostic names the Tool by its Call Path.
 #[test]
 fn an_uninlinable_result_type_saves_the_untyped_declaration() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     for (name, declaration_max_bytes, source, expected_codes, named) in [
         (
             "a recursive result type",
@@ -277,7 +387,8 @@ fn an_uninlinable_result_type_saves_the_untyped_declaration() {
 
 #[test]
 fn call_path_analysis_names_every_candidate_tool_call_path() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let named = compiler
         .saved_function_call_paths(
             deadline(),

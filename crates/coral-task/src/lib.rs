@@ -54,7 +54,8 @@ pub use activity::{
 };
 mod execution_history;
 pub use execution_history::{
-    ActionRun, ActivityRunEntries, ExecutionHistory, RequiredActions, TaskSubmission,
+    ActionRun, ActivityRunEntries, ExecutionHistory, RequiredActions, SettledApproval,
+    SettledApprovals, TaskSubmission,
 };
 mod commands;
 mod error;
@@ -79,7 +80,8 @@ use coral_workspace::{
 
 pub use error::Error;
 pub use types::{
-    TASK_FEEDBACK_MAX_CHARS, TASK_INTENT_MAX_CHARS, Task, TaskId, TaskIntent, TaskOutcome,
+    FoundTaskId, TASK_FEEDBACK_MAX_CHARS, TASK_INTENT_MAX_CHARS, Task, TaskId, TaskIntent,
+    TaskOutcome,
 };
 
 /// Durable Task lifecycle and visibility Module.

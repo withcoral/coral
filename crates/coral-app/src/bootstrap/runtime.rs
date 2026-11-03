@@ -34,13 +34,27 @@ pub struct Launch {
     pub local_web_url: Option<coral_mcp::HumanInterfaceUrl>,
     /// Treat EOF on stdin like a termination signal.
     pub stop_on_stdin_close: bool,
+    /// The launching binary's version, for telemetry's `service.version`.
+    /// Without one, Coral's package version names the service.
+    pub service_version: Option<&'static str>,
+    /// A config directory the launcher selects. Without one, the environment
+    /// or the platform default selects it.
+    pub config_dir: Option<std::path::PathBuf>,
 }
 
 impl Launch {
     /// Passes this launch to `builder`.
     fn configure(self, builder: ServerBuilder) -> ServerBuilder {
+        let builder = match self.service_version {
+            Some(version) => builder.with_service_version(version),
+            None => builder,
+        };
         let builder = match self.local_web_url {
             Some(url) => builder.with_local_web_url(url),
+            None => builder,
+        };
+        let builder = match self.config_dir {
+            Some(config_dir) => builder.with_config_dir(config_dir),
             None => builder,
         };
         if self.desktop {
@@ -226,6 +240,15 @@ impl RunningRuntime {
     #[must_use]
     pub fn mcp_http_addr(&self) -> SocketAddr {
         self.mcp_http.local_addr()
+    }
+
+    /// The auth listener address: Coral's authorization server when sign-in
+    /// is on, local auth support otherwise.
+    #[must_use]
+    pub fn auth_http_addr(&self) -> Option<SocketAddr> {
+        self.auth_support
+            .as_ref()
+            .map(RunningCoralAuthorizationServer::local_addr)
     }
 
     /// The local Provider OAuth callback, when sign-in is off.

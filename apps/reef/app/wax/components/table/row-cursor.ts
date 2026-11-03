@@ -14,7 +14,8 @@ const ARROW_CONTROLS =
  * the first row and ↑ the last. Enter is the link's own, and the row with the
  * focused link shows it, so Tab and the arrows share one cursor.
  * Pass the returned ref to `Table.Container`, or to an element around several
- * tables to move through their rows as one list.
+ * tables to move through their rows as one list. A table inside a `hidden`
+ * element ignores the arrows.
  */
 export function useRowCursor({ filterId }: { filterId?: string } = {}) {
   const table = useRef<HTMLDivElement>(null)
@@ -25,6 +26,8 @@ export function useRowCursor({ filterId }: { filterId?: string } = {}) {
       const step = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0
       const target = event.target
       if (step === 0 || !table.current || !(target instanceof Element)) return
+      // A table kept mounted in a hidden panel leaves the arrows to the visible one.
+      if (table.current.closest('[hidden]')) return
       const links = [...table.current.querySelectorAll<HTMLElement>(ROW_LINK)]
       const filter = filterId ? document.getElementById(filterId) : null
       const row = table.current.contains(target) ? target.closest('[role="row"]') : null

@@ -7,6 +7,7 @@ mod organization_memberships;
 mod organization_workspaces;
 mod policies;
 mod providers;
+mod releases;
 mod saved_functions;
 mod workspaces;
 use std::sync::Arc;
@@ -46,6 +47,8 @@ pub struct Dependencies {
     pub saved_function_deletion: coral_functions::SavedFunctionDeletion,
     /// Atomic membership and Agent removal, retaining execution history.
     pub access_lifecycle: coral_administration::AccessLifecycleModule,
+    /// The newest published release; absent when the operator turned the check off.
+    pub releases: Option<coral_release::ReleaseCheck>,
 }
 
 /// Resolved transport context supplied by application composition.
@@ -82,6 +85,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         saved_function_deletion: dependencies.saved_function_deletion,
         runs: dependencies.runs,
         access_lifecycle: dependencies.access_lifecycle,
+        releases: dependencies.releases,
     };
     let mut routes = tonic::service::Routes::default()
         .add_service(
@@ -125,6 +129,9 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         .add_service(
             management::workspace_service_server::WorkspaceServiceServer::new(services.clone()),
         )
+        .add_service(management::release_service_server::ReleaseServiceServer::new(
+            services.clone(),
+        ))
         .add_service(
             management::saved_function_service_server::SavedFunctionServiceServer::new(
                 services.clone(),
@@ -164,6 +171,7 @@ struct GrpcServices {
     saved_function_deletion: coral_functions::SavedFunctionDeletion,
     runs: coral_run::RunModule,
     access_lifecycle: coral_administration::AccessLifecycleModule,
+    releases: Option<coral_release::ReleaseCheck>,
 }
 
 impl GrpcServices {

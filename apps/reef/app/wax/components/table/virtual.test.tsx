@@ -9,7 +9,7 @@ import { Container } from './container'
 import { Group } from './group'
 import { Head } from './head'
 import { Row } from './row'
-import { useVirtualRows, VirtualRows } from './virtual'
+import { useVirtualRows, VirtualGroups, VirtualRows } from './virtual'
 
 const columns = [{ label: 'Name', width: 'fill' }] as const
 const ROW = 40
@@ -18,9 +18,9 @@ const VIEWPORT = 200
 /** A row's top in the scroll port: the head above the list, plus the rows above it. */
 const top = (index: number) => HEADING_HEIGHT_PX.default + index * ROW
 
-// happy-dom lays nothing out. TanStack Virtual reads the scroll port and each
-// mounted row through `offsetHeight`, so the port is as tall as the viewport
-// here and every row measures `ROW`.
+// happy-dom lays nothing out. TanStack Virtual reads the scroll port through
+// `clientHeight` and each mounted row through `offsetHeight`, so the port is as
+// tall as the viewport here and every row measures `ROW`.
 function Catalog({
   groups,
   perGroup,
@@ -65,19 +65,67 @@ function Catalog({
   )
 }
 
+// Groups inside one group, as a provider holds its tool groups.
+function NestedCatalog({ groups, perGroup }: { groups: number; perGroup: number }) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const list = Array.from({ length: groups }, (_, group) => {
+    const index = group * (perGroup + 1) + 1
+    return {
+      label: `Group ${group}`,
+      index,
+      end: index + perGroup,
+      rows: Array.from({ length: perGroup }, (_row, member) => ({
+        index: index + member + 1,
+        name: `row-${group}-${member}`,
+      })),
+    }
+  })
+  const virtual = useVirtualRows({
+    count: groups * (perGroup + 1) + 1,
+    estimateSize: () => ROW,
+    overscan: 0,
+    scrollRef,
+  })
+  return (
+    <Container columns={columns} layout="scroll" ref={scrollRef}>
+      <Head />
+      <Group label="Provider" index={0}>
+        <VirtualGroups groups={list} virtual={virtual}>
+          {(group) => (
+            <Group key={group.label} label={group.label} index={group.index}>
+              <VirtualRows rows={group.rows} virtual={virtual}>
+                {({ index, name }) => (
+                  <Row key={name} data-index={index} ref={virtual.measureRow}>
+                    <Cell>{name}</Cell>
+                  </Row>
+                )}
+              </VirtualRows>
+            </Group>
+          )}
+        </VirtualGroups>
+      </Group>
+    </Container>
+  )
+}
+
 describe('Table virtual rows', () => {
   beforeEach(() => {
-    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
       configurable: true,
       get() {
-        if (this.getAttribute('role') === 'table') return VIEWPORT
-        return this.hasAttribute('data-index') ? ROW : 0
+        return this.getAttribute('role') === 'table' ? VIEWPORT : 0
       },
     })
-    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
       configurable: true,
       get() {
         return 600
+      },
+    })
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get() {
+        return this.hasAttribute('data-index') ? ROW : 0
       },
     })
   })
@@ -95,6 +143,32 @@ describe('Table virtual rows', () => {
     ])
     // Every group heading stays mounted, whatever the window holds.
     expect(host.querySelectorAll('[role="row"][aria-level]')).toHaveLength(4)
+  })
+
+  // Catches: every heading of a large catalog staying mounted, where the
+  // browser lays each one out again on any change.
+  it('mounts only the nested groups near the viewport, at their full height', async () => {
+    const { container: host } = render(<NestedCatalog groups={40} perGroup={5} />)
+    const headings = () =>
+      [...host.querySelectorAll('[role="row"][aria-level="2"]')].map((row) => row.textContent)
+    const rowsAndSpacers = () =>
+      [...host.querySelectorAll<HTMLElement>('[role="row"]')]
+        .filter((row) => row.style.blockSize || row.hasAttribute('data-index'))
+        .reduce((sum, row) => sum + (parseInt(row.style.blockSize) || ROW), 0)
+    expect(headings()).toEqual(['Group 0'])
+    expect(rowsAndSpacers()).toBe((40 * 6 + 1) * ROW)
+
+    const table = screen.getByRole('table')
+    await act(async () => {
+      table.scrollTop = 60 * ROW
+      table.dispatchEvent(new Event('scroll'))
+    })
+    // The first row's heading scrolled out above it, and still mounts to pin.
+    const firstRow = host.querySelector('[role="row"][data-index]:not([aria-level])')
+    const [, group] = /^row-(\d+)-/.exec(firstRow!.textContent)!
+    expect(headings()[0]).toBe(`Group ${group}`)
+    expect(headings().length).toBeLessThanOrEqual(2)
+    expect(rowsAndSpacers()).toBe((40 * 6 + 1) * ROW)
   })
 
   it('keeps the total height whichever rows are mounted', async () => {
@@ -137,7 +211,6 @@ describe('Table virtual rows', () => {
       scrolls.push(options.top!)) as typeof table.scrollTo
     // happy-dom reports no scroll height; the virtualizer clamps to it.
     Object.defineProperty(table, 'scrollHeight', { get: () => 21 * ROW })
-    Object.defineProperty(table, 'clientHeight', { get: () => VIEWPORT })
     // row-1-2 is index 10: 10 rows above it.
     await act(async () => handle!.scrollToIndex(10, { depth: 1 }))
     expect(scrolls).toEqual([top(10) - HEADING_HEIGHT_PX.default - GROUP_HEADING_HEIGHT_PX.default])

@@ -265,7 +265,7 @@ async fn connection_selection_never_retargets_to_a_replacement_request() {
     reason = "one gated observation checks action-only wake-up, unchanged wait expiry, and terminal cleanup"
 )]
 async fn required_actions_show_pending_approval_and_clear_without_a_run_event() {
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
         Arc::new(RejectingUpstream),
@@ -805,12 +805,16 @@ async fn the_queue_counts_each_shared_request_once_across_waiters_runs_and_pages
         bounded.action_count, 3,
         "the shared connection counts once across Runs and pages"
     );
-    assert_eq!(runs.required_action_count(user, None).await.unwrap(), 3);
+    let counts = runs.required_action_counts(user, None).await.unwrap();
+    assert_eq!((counts.approvals, counts.connections), (2, 1));
     runs.cancel(user, scope, second.run_id(), &immediate(None, 1))
         .await
         .unwrap();
     assert_eq!(
-        runs.required_action_count(user, None).await.unwrap(),
+        runs.required_action_counts(user, None)
+            .await
+            .unwrap()
+            .total(),
         3,
         "detaching one Run leaves the shared request actionable"
     );
@@ -913,12 +917,13 @@ async fn human_actions_are_concealed_from_owners_and_agents() {
         "ownership never exposes another User's actions"
     );
     assert_eq!(
-        runs.required_action_count(&other_owner, None)
+        runs.required_action_counts(&other_owner, None)
             .await
-            .unwrap(),
+            .unwrap()
+            .total(),
         0
     );
-    let denied = runs.required_action_count(&agent, None).await;
+    let denied = runs.required_action_counts(&agent, None).await;
     assert!(
         matches!(
             denied,
@@ -1141,9 +1146,10 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
     assert_eq!(
         fixture
             .runs
-            .required_action_count(&tool.principal, Some(&tool.workspace_id))
+            .required_action_counts(&tool.principal, Some(&tool.workspace_id))
             .await
-            .unwrap(),
+            .unwrap()
+            .total(),
         1
     );
     let [queued] = queue.actions.as_slice() else {
@@ -1235,9 +1241,10 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
     assert_eq!(
         fixture
             .runs
-            .required_action_count(&tool.principal, None)
+            .required_action_counts(&tool.principal, None)
             .await
-            .unwrap(),
+            .unwrap()
+            .total(),
         0
     );
     assert_eq!(
@@ -1467,6 +1474,7 @@ async fn publish_approval_provider(fixture: &TestModules, tool: &ToolFixture) {
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .expect("public Provider");
 }

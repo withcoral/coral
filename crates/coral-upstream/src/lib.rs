@@ -3,11 +3,14 @@
 //! Protocol adapters own planning, serialization, bounded sending, and complete
 //! result capture. They never retry, traverse pagination, or evaluate Coral
 //! authority. The Invocation owner supplies retained recipes and a Run-local
-//! resource registry; no policy or fenced-dispatch permit crosses this boundary.
+//! resource registry; no policy or Policy Enforcement Point permit crosses this
+//! boundary.
 
 mod dispatch;
+mod exchange;
 mod http;
 mod mcp;
+mod span_field;
 
 pub use dispatch::{OutcomeClass, ReadyDispatch, UpstreamOutcome};
 pub use http::{HttpDecodeDiagnostic, HttpOutcome, HttpRedirect, HttpUpstream, ReadyHttpDispatch};
@@ -17,6 +20,12 @@ pub use mcp::{
     discover_authorization, discover_mcp, register_client,
 };
 
+#[cfg(test)]
+use opentelemetry as _;
+#[cfg(test)]
+use opentelemetry_sdk as _;
+#[cfg(test)]
+use tracing_opentelemetry as _;
 #[cfg(test)]
 use wiremock as _;
 
@@ -35,6 +44,18 @@ fn is_json_media_type(essence: &str) -> bool {
 
 fn http_client(policy: coral_outbound::DestinationPolicy) -> Result<coral_outbound::Client, Error> {
     coral_outbound::Client::new(policy, std::time::Duration::from_secs(30)).map_err(Error::Client)
+}
+
+/// `request` with only the trace context of `span`, the client span it is
+/// sent in (`coral_telemetry::set_outbound_trace_context`).
+fn traced(
+    request: reqwest::RequestBuilder,
+    span: &tracing::Span,
+) -> Result<reqwest::RequestBuilder, Error> {
+    let (client, request) = request.build_split();
+    let mut request = request.map_err(Error::send)?;
+    coral_telemetry::set_outbound_trace_context(span, request.headers_mut());
+    Ok(reqwest::RequestBuilder::from_parts(client, request))
 }
 
 async fn read_bounded_body(

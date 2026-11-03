@@ -11,6 +11,7 @@ import {
   programRunner,
 } from '../../../support/providers.ts'
 import { updateBytes } from '../../../support/update-bytes.ts'
+import { shownPayload } from '../../../support/payloads.ts'
 
 const loop = (count: number) =>
   `for(let i=0;i<${count};i++) await coral.providers.lean.read({}); return ${count};`
@@ -74,7 +75,7 @@ test('Lean MCP updates preserve complete authorized Reef history', async (contex
           `/workspaces/${workspace}/activity?record=${encodeURIComponent(ends[127].invocation)}`,
         )
         await page.getByRole('dialog', { name: 'Activity details' }).waitFor()
-        await page.locator('pre').filter({ hasText: 'native-lean-result' }).first().waitFor()
+        await shownPayload(page, 'native-lean-result').waitFor()
         expect(observed.responses.join('')).not.toContain('native-lean-result')
       },
     )

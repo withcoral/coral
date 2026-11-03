@@ -5,12 +5,13 @@
 //! recovered owner's one chunk.
 
 use crate::invocation::{AdmittedInvocation, InvocationCompletion};
-use crate::lifecycle::RunRecord;
+use crate::lifecycle::{RunRecord, RunTerminationKind};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::{
     CoralFailure, Error, InvocationId, InvocationResultKind, approval, invocation_repository,
 };
 use coral_db::Transaction;
+use coral_telemetry::safe;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum InvocationState {
@@ -135,8 +136,8 @@ pub(crate) async fn finish_approval_failure(
 ) -> Result<Option<OwnedEvent>, Error> {
     if !invocation_repository::end_pending_with_failure(tx, run, invocation, failure, now).await? {
         tracing::warn!(
-            run_id = %run.id,
-            invocation_id = %invocation,
+            coral.run.id = safe::id(&run.held_id()),
+            coral.invocation.id = safe::id(&invocation),
             "approval decision found its Invocation no longer pending"
         );
         return Ok(None);
@@ -147,10 +148,12 @@ pub(crate) async fn finish_approval_failure(
     )))
 }
 
-/// Ends every nonterminal Invocation of `run` for its termination: pending
-/// ones as `run_terminated`, dispatching ones as `indeterminate` (or with
-/// the Tool Result Coral's own records establish), their pending
-/// Approval Requests closed. Returns their `invocation.ended` Events for the
+/// Ends every nonterminal Invocation of `run` for its termination `kind`:
+/// pending ones as `run_terminated`, dispatching ones as `indeterminate` (or
+/// with the Tool Result Coral's own records establish), their pending
+/// Approval Requests closed. A timeout instead expires a pending request,
+/// whose deadline the Run's bounds, and fails its Invocation
+/// `approval_expired`. Returns their `invocation.ended` Events for the
 /// caller's terminal chunk, so the Invocation rows, the Approval rows, the
 /// Events and `run.ended` commit together.
 ///
@@ -162,6 +165,7 @@ pub(crate) async fn finish_approval_failure(
 pub(crate) async fn end_nonterminal_invocations(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
+    kind: RunTerminationKind,
     ended_at_unix_nanos: i64,
 ) -> Result<Vec<OwnedEvent>, Error> {
     let invocations = invocation_repository::nonterminal_for_run(transaction, run).await?;
@@ -175,6 +179,15 @@ pub(crate) async fn end_nonterminal_invocations(
     }
     let mut events = Vec::with_capacity(invocations.len());
     for invocation in &invocations {
+        if kind == RunTerminationKind::TimedOut
+            && matches!(invocation.state, InvocationState::Pending)
+            && let Some(expired) =
+                approval::expire_for_timeout(transaction, run, &invocation.id, ended_at_unix_nanos)
+                    .await?
+        {
+            events.push(expired);
+            continue;
+        }
         let (result_kind, result_json) =
             invocation.settle_for_termination(transaction, run).await?;
         let event = end_for_termination(

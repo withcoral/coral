@@ -70,21 +70,20 @@ test('Coral leads the providers page, offers nothing to change, stops calls whil
         accessToken: await mcpToken(page, id),
         taskIntent: 'List the providers',
       })
+      const listing =
+        'try { await coral.workspace.listProviders({}); return "listed"; } catch (error) { return error.code; }'
       const listProviders = async () =>
-        (
-          await observeRun(
-            runner,
-            await runner.exec(
-              'try { await coral.workspace.listProviders({}); return "listed"; } catch (error) { return error.code; }',
-            ),
-          )
-        ).update.final_value
+        (await observeRun(runner, await runner.exec(listing))).update.final_value
       await step('A Program cannot call Coral while it is disabled', async () => {
         expect(await listProviders()).toEqual({ kind: 'value', value: 'listed' })
         await setProviderEnabled(alice.accessToken, `/${coral.name}`, false)
         await page.reload()
         await waitForProviderStatus(page, 'Coral', 'Provider disabled')
-        expect(await listProviders()).toEqual({ kind: 'value', value: 'tool_not_found' })
+        // Coral refuses the Program before it runs: it names a tool nobody can call.
+        expect(await runner.exec(listing)).toMatchObject({
+          isError: true,
+          structuredContent: { code: 'program_admission_failed' },
+        })
       })
       await step('A Program calls Coral again once it is restored', async () => {
         await setProviderEnabled(alice.accessToken, `/${coral.name}`, true)
@@ -96,11 +95,12 @@ test('Coral leads the providers page, offers nothing to change, stops calls whil
   await withBrowserSession(
     context,
     async ({ page, step }) => {
-      await step('A member sees Coral with listProviders and getPolicy only', async () => {
+      await step('A member sees Coral with listProviders, getPolicy and search only', async () => {
         await page.goto(providersPage)
         await waitForProviderStatus(page, 'Coral', 'Ready')
-        await page.getByRole('link', { name: 'listProviders', exact: true }).waitFor()
-        await page.getByRole('link', { name: 'getPolicy', exact: true }).waitFor()
+        for (const shown of ['listProviders', 'getPolicy', 'search']) {
+          await page.getByRole('link', { name: shown, exact: true }).waitFor()
+        }
         for (const hidden of ['addProvider', 'getProvider', 'updatePolicy']) {
           expect(await page.getByRole('link', { name: hidden, exact: true }).count()).toBe(0)
         }

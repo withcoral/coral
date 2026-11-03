@@ -263,11 +263,12 @@ impl WorkspaceModule {
         .await
     }
 
-    /// Rechecks live Principal/Registration authority for the Dispatch Fence,
-    /// holding the User's Organization authority row and the Workspace row
-    /// as `lock` says: shared in the fence, so concurrent fences read side by
-    /// side and an authority writer waits for them; none in a read snapshot
-    /// that only decides whether a held check is needed.
+    /// Rechecks live Principal/Registration authority for the Policy
+    /// Enforcement Point, holding the User's Organization authority row and the
+    /// Workspace row as `lock` says: shared in the enforcement point, so
+    /// concurrent enforcement checks read side by side and an authority writer
+    /// waits for them; none in a read snapshot that only decides whether a held
+    /// check is needed.
     ///
     /// # Errors
     ///

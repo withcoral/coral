@@ -125,4 +125,36 @@ describe('Table row cursor', () => {
     await userEvent.keyboard('{ArrowDown}{ArrowUp}')
     expect(filter).toHaveFocus()
   })
+
+  // A tab panel kept mounted while hidden must not take the arrows from the visible one.
+  it('leaves ↓ to the visible table when another table is hidden', async () => {
+    const Stub = createRoutesStub([{ path: '/', Component: HiddenAndVisible }])
+    render(<Stub initialEntries={['/']} />)
+    await userEvent.keyboard('{ArrowDown}')
+    expect(screen.getByRole('link', { name: 'visible' })).toHaveFocus()
+  })
 })
+
+function LinkTable({ name }: { name: string }) {
+  const table = useRowCursor()
+  return (
+    <Container ref={table} columns={[{ label: 'Name' }]}>
+      <Row to={`/${name}`}>
+        <Cell>
+          <RowLink to={`/${name}`}>{name}</RowLink>
+        </Cell>
+      </Row>
+    </Container>
+  )
+}
+
+function HiddenAndVisible() {
+  return (
+    <>
+      <div hidden>
+        <LinkTable name="hidden" />
+      </div>
+      <LinkTable name="visible" />
+    </>
+  )
+}

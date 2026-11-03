@@ -23,6 +23,7 @@ fn valid_arguments(tool: BuiltinTool) -> Vec<Value> {
         BuiltinTool::GetPolicy => super::get_policy::valid_arguments(),
         BuiltinTool::UpdatePolicy => super::update_policy::valid_arguments(),
         BuiltinTool::UpdateProvider => super::update_provider::tests::valid_arguments(),
+        BuiltinTool::Search => super::search::tests::valid_arguments(),
     }
 }
 
@@ -243,35 +244,25 @@ fn configured_providers() -> impl Iterator<Item = GetProviderResult> {
         })
 }
 
-/// What each Tool that publishes a Provider returns: the Provider, or
-/// the link where a person finishes it.
-fn publication_results() -> Vec<(BuiltinTool, serde_json::Value)> {
+/// What each Tool that prepares a Provider Setup returns: the link where a
+/// person finishes it, or the Provider a rename changed.
+fn setup_tool_results() -> Vec<(BuiltinTool, serde_json::Value)> {
     let mut results = facts()
-        .flat_map(|facts| {
-            [
-                (
-                    BuiltinTool::AddProvider,
-                    AddProviderResult::Published {
-                        namespace: "weather".to_owned(),
-                        facts: facts.clone(),
-                    }
-                    .into_tool_result(),
-                ),
-                (
-                    BuiltinTool::UpdateProvider,
-                    UpdateProviderResult::Published {
-                        namespace: "weather".to_owned(),
-                        facts,
-                    }
-                    .into_tool_result(),
-                ),
-            ]
+        .map(|facts| {
+            (
+                BuiltinTool::UpdateProvider,
+                UpdateProviderResult::Published {
+                    namespace: "weather".to_owned(),
+                    facts,
+                }
+                .into_tool_result(),
+            )
         })
         .collect::<Vec<_>>();
     results.extend([
         (
             BuiltinTool::AddProvider,
-            AddProviderResult::NeedsSignIn {
+            AddProviderResult::NeedsPerson {
                 url: "https://coral.example/workspaces/w/providers/new?setup=s".to_owned(),
                 namespace: "weather".to_owned(),
             }
@@ -279,7 +270,7 @@ fn publication_results() -> Vec<(BuiltinTool, serde_json::Value)> {
         ),
         (
             BuiltinTool::UpdateProvider,
-            UpdateProviderResult::NeedsSignIn {
+            UpdateProviderResult::NeedsPerson {
                 url: "https://coral.example/workspaces/w/providers/p/update?setup=s&task=refresh"
                     .to_owned(),
                 namespace: "weather".to_owned(),
@@ -323,7 +314,7 @@ fn policies() -> impl Iterator<Item = (BuiltinTool, Value)> {
 // Catches: a result that tells a typed Program something its declaration does not.
 #[test]
 fn each_result_meets_its_output_schema() {
-    let mut results = publication_results();
+    let mut results = setup_tool_results();
     results.push((
         BuiltinTool::ListProviders,
         ListProvidersResult {
@@ -385,6 +376,11 @@ fn each_result_meets_its_output_schema() {
         configured_providers().map(|saved| (BuiltinTool::GetProvider, saved.into_tool_result())),
     );
     results.extend(policies());
+    results.extend(
+        super::search::tests::results()
+            .into_iter()
+            .map(|result| (BuiltinTool::Search, result)),
+    );
     for (tool, result) in results {
         assert_eq!(
             result.get("metadata"),
@@ -398,5 +394,27 @@ fn each_result_meets_its_output_schema() {
             .map(|error| error.to_string())
             .collect::<Vec<_>>();
         assert!(errors.is_empty(), "{}: {data}: {errors:?}", tool.key());
+    }
+}
+
+// Catches: a search output schema that lets a missing path carry more
+// suggestions than its description promises and discovery returns.
+#[test]
+fn a_missing_path_carries_at_most_three_suggestions() {
+    let schema = validator(&definition(BuiltinTool::Search).output);
+    let missing = super::search::tests::results()
+        .into_iter()
+        .filter_map(|result| result.get("data").cloned())
+        .filter(|data| data.pointer("/missing/0/suggestions").is_some())
+        .collect::<Vec<_>>();
+    assert!(!missing.is_empty(), "some result names a missing path");
+    for data in missing {
+        for (count, valid) in [(3, true), (4, false)] {
+            let mut suggested = data.clone();
+            if let Some(suggestions) = suggested.pointer_mut("/missing/0/suggestions") {
+                *suggestions = json!(vec!["coral.providers.notion.retrieveAPage"; count]);
+            }
+            assert_eq!(schema.is_valid(&suggested), valid, "{count}: {suggested}");
+        }
     }
 }

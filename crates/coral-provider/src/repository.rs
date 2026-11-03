@@ -1053,33 +1053,83 @@ pub(super) async fn delete_provider(
     Ok(())
 }
 
-pub(super) async fn hold_provider_in_transaction(
-    transaction: &mut Transaction<'_>,
-    owner: &WorkspaceId,
-    provider_id: &ProviderId,
-) -> Result<bool, Error> {
-    let statement = Query::update()
-        .table(ProviderRecords::Table)
-        .value(ProviderRecords::State, Expr::col(ProviderRecords::State))
-        .and_where(exact_provider_owner(owner))
-        .and_where(Expr::col(ProviderRecords::Id).eq(provider_id.to_string()))
-        .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
+/// How [`current_provider`] holds the Provider row it returns, for the rest
+/// of the transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProviderHold {
+    /// A plain read, as in a read snapshot.
+    None,
+    /// A shared hold, for a decision that reads the Provider but never writes
+    /// it. [`coral_db::RowLock::Shared`] says what each backend does: on
+    /// Postgres, concurrent decisions read side by side and a change waits
+    /// for them; SQLite's writer lock already serializes them.
+    Shared,
+    /// The exclusive no-op `UPDATE` hold, for a change that writes the
+    /// Provider or must exclude every other change while it decides.
+    Exclusive,
 }
 
-pub(super) async fn provider_in_transaction(
+impl From<coral_db::RowLock> for ProviderHold {
+    fn from(lock: coral_db::RowLock) -> Self {
+        match lock {
+            coral_db::RowLock::None => Self::None,
+            coral_db::RowLock::Shared => Self::Shared,
+        }
+    }
+}
+
+/// Which of a Workspace's Providers [`current_provider`] reads.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ProviderKey<'a> {
+    /// The Provider with this id.
+    Id(&'a ProviderId),
+    /// The Provider at this Call Root, as admission resolves a Call Path.
+    CallRoot(&'a crate::ProviderCallRoot),
+}
+
+impl ProviderKey<'_> {
+    fn matches(self) -> sea_query::SimpleExpr {
+        match self {
+            Self::Id(id) => Expr::col(ProviderRecords::Id).eq(id.to_string()),
+            Self::CallRoot(call_root) => {
+                Expr::col(ProviderRecords::Namespace).eq(call_root.as_str())
+            }
+        }
+    }
+}
+
+/// Reads the Workspace's Provider at `key`, in any state, with its active
+/// Generation, holding its row as `hold` says. `None` means the Workspace has
+/// no such Provider.
+pub(super) async fn current_provider(
     transaction: &mut Transaction<'_>,
-    owner: &WorkspaceId,
-    provider_id: &ProviderId,
+    workspace_id: &WorkspaceId,
+    key: ProviderKey<'_>,
+    hold: ProviderHold,
 ) -> Result<Option<ProviderWithActiveGeneration>, Error> {
+    if hold == ProviderHold::Exclusive {
+        let statement = Query::update()
+            .table(ProviderRecords::Table)
+            .value(ProviderRecords::State, Expr::col(ProviderRecords::State))
+            .and_where(exact_provider_owner(workspace_id))
+            .and_where(key.matches())
+            .to_owned();
+        if transaction.execute(statement).await? != 1 {
+            return Ok(None);
+        }
+    }
     let row: Option<ProviderWithActiveGenerationRow> = transaction
-        .fetch_optional(
+        .fetch_optional_locked(
             Query::select()
                 .columns(stored_provider_columns())
                 .from(ProviderRecords::Table)
-                .and_where(exact_provider_owner(owner))
-                .and_where(Expr::col(ProviderRecords::Id).eq(provider_id.to_string()))
+                .and_where(exact_provider_owner(workspace_id))
+                .and_where(key.matches())
                 .to_owned(),
+            match hold {
+                ProviderHold::Shared => coral_db::RowLock::Shared,
+                ProviderHold::None | ProviderHold::Exclusive => coral_db::RowLock::None,
+            },
         )
         .await?;
     row.map(ProviderWithActiveGenerationRow::decode).transpose()
@@ -1197,88 +1247,6 @@ pub(super) async fn update_provider_state(
         return Err(Error::ProviderNotFound);
     }
     Ok(())
-}
-
-pub(super) async fn active_generation_for_configuration_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    provider_id: &ProviderId,
-) -> Result<Option<ProviderGenerationId>, Error> {
-    Ok(provider_for_workspace_in_transaction(
-        transaction,
-        workspace_id,
-        provider_id,
-        coral_db::RowLock::None,
-    )
-    .await?
-    .map(|provider| provider.generation_id))
-}
-
-/// Reads the Workspace's Provider at `call_root` with its active Generation,
-/// holding its row as `lock` says, as admission resolves a Call Path.
-pub(super) async fn provider_by_call_root_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    call_root: &crate::ProviderCallRoot,
-    lock: coral_db::RowLock,
-) -> Result<Option<ProviderWithActiveGeneration>, Error> {
-    let row: Option<ProviderWithActiveGenerationRow> = transaction
-        .fetch_optional_locked(
-            Query::select()
-                .columns(stored_provider_columns())
-                .from(ProviderRecords::Table)
-                .and_where(provider_owner_matches_workspace(workspace_id))
-                .and_where(Expr::col(ProviderRecords::Namespace).eq(call_root.as_str()))
-                .to_owned(),
-            lock,
-        )
-        .await?;
-    row.map(ProviderWithActiveGenerationRow::decode).transpose()
-}
-
-/// Reads one Provider of the Workspace with its active Generation, holding
-/// its row as `lock` says: a shared hold lets concurrent Dispatch Fences read
-/// it side by side while a Provider change waits for them.
-pub(super) async fn provider_for_workspace_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    provider_id: &ProviderId,
-    lock: coral_db::RowLock,
-) -> Result<Option<ProviderWithActiveGeneration>, Error> {
-    let row: Option<ProviderWithActiveGenerationRow> = transaction
-        .fetch_optional_locked(
-            Query::select()
-                .columns(stored_provider_columns())
-                .from(ProviderRecords::Table)
-                .and_where(provider_owner_matches_workspace(workspace_id))
-                .and_where(Expr::col(ProviderRecords::Id).eq(provider_id.to_string()))
-                .to_owned(),
-            lock,
-        )
-        .await?;
-    row.map(ProviderWithActiveGenerationRow::decode).transpose()
-}
-
-pub(super) async fn hold_active_provider_for_workspace_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    provider_id: &ProviderId,
-) -> Result<bool, Error> {
-    let statement = Query::update()
-        .table(ProviderRecords::Table)
-        .value(
-            ProviderRecords::ActiveGenerationId,
-            Expr::col(ProviderRecords::ActiveGenerationId),
-        )
-        .and_where(provider_owner_matches_workspace(workspace_id))
-        .and_where(Expr::col(ProviderRecords::Id).eq(provider_id.to_string()))
-        .and_where(Expr::col(ProviderRecords::State).eq(ProviderState::Active.as_storage_str()))
-        .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
-}
-
-fn provider_owner_matches_workspace(workspace_id: &WorkspaceId) -> sea_query::SimpleExpr {
-    Expr::col(ProviderRecords::WorkspaceId).eq(workspace_id.to_string())
 }
 
 pub(super) async fn insert_provider(

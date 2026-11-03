@@ -187,6 +187,24 @@ export interface PendingAction {
   action: ActionSummary
   run: Extract<ActivityRow, { kind: 'run' }>
 }
+/** An approval request that a person approved or declined, or whose deadline passed. It never
+ * holds arguments or a comment; the review reads those. */
+export interface SettledApproval {
+  name: string
+  outcome: 'approved' | 'declined' | 'expired'
+  /** When it settled. For an expired request, its deadline. */
+  settledAt: string
+  /** "You", the reviewer's name, or "Unavailable user". Empty when nobody decided. */
+  approverLabel: string
+  callPath: string
+  providerLabel: string
+  run: Extract<ActivityRow, { kind: 'run' }>
+}
+/** One page of settled approvals, newest first. `next` continues it; empty at the end. */
+export interface SettledPage {
+  approvals: SettledApproval[]
+  next: string
+}
 export type ActionSummary = Exclude<RequestReference, { kind: 'unknown' }> & {
   callPath: string
   providerLabel: string
@@ -219,6 +237,17 @@ export type RequestDetail =
       state: ConnectionState
       expiresAt: string | null
     }
+export type ApprovalDetail = Extract<RequestDetail, { kind: 'approval' }>
+/** What an approval review shows of the Run that waits on it. */
+export type ApprovalContext = Pick<RunDetail, 'run' | 'submission'>
+/** One exact Approval Request as its review reads it, outside any Activity selection. */
+export interface ApprovalReading {
+  detail: ApprovalDetail
+  /** The Run that waits on it, with the source that made the call. */
+  context: RunDetail
+  /** The call it decides, whose recorded location the source highlights. */
+  call: Extract<ActivityRow, { kind: 'invocation' }>
+}
 export interface InvocationDetail {
   kind: 'invocation'
   /** Independently authorized containing Run, for concurrent actions and Program context.
@@ -262,13 +291,6 @@ export interface ActivityBranch {
   unavailable: boolean
 }
 export interface ActivityPage {
-  pending?: {
-    /** One entry per pending request, most urgent first. */
-    actions: PendingAction[]
-    actionCount: string
-    next: string
-    unavailable: boolean
-  }
   rows: ActivityRow[]
   branches: Record<string, ActivityBranch>
   expanded: string[]
@@ -350,6 +372,21 @@ export interface LiveLatest {
    */
   newest?: string
   /**
+   * The newest record page live mode may follow when it has nothing else to follow, read
+   * only while no action waits and no Run runs. Its candidates are:
+   * - each standalone Run, timed by when Coral accepted it;
+   * - the newest child, as Coral orders them, of each Task that started `TAKS_MAX_AGE`
+   *   ago or less, timed by when its tool call started;
+   * - each such Task that has no child yet, timed by when it started.
+   *
+   * The one that started last wins, to the nanosecond, and at an equal time the newer
+   * top-level record. `root` is its top-level record, and `run` says the record is a Run.
+   * Absent unless the loader read every record and the newest child of every such Task.
+   * When it is absent and no held Run, action or running Run gives page live mode a
+   * target, page live mode keeps the record it shows.
+   */
+  latest?: { root: string; record: string; run: boolean }
+  /**
    * The loader read every top-level record and every Task it looked in, so `running`
    * names every Run that runs that page live mode may follow. A row or a Task window
    * of the list it did not refresh can lag its Run's end, so `running` wins over them.
@@ -402,7 +439,8 @@ export type DiscoveryContext =
       query: string | null
       provider: string | null
       limit: number
-      cursor: string | null
+      /** Ranked results the page skipped; 0 for the first page. */
+      offset: number
     }
   | { kind: 'describe'; callPath: string; types: string[] }
   | { kind: 'unknown' }

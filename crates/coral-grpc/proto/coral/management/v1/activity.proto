@@ -28,6 +28,10 @@ service ActivityService {
   rpc BrowseRequiredActions(BrowseRequiredActionsRequest) returns (BrowseRequiredActionsResponse);
   // Counts pending requests. A connection request shared by several Runs counts once.
   rpc CountRequiredActions(CountRequiredActionsRequest) returns (CountRequiredActionsResponse);
+  // Lists one Workspace's approved, declined and expired approval requests, newest
+  // first: the caller's own, plus Agent requests in Workspaces the caller owns. Rows
+  // never include arguments or comments; read those with InspectApproval.
+  rpc BrowseSettledApprovals(BrowseSettledApprovalsRequest) returns (BrowseSettledApprovalsResponse);
   // Sums the caller's recent work in one Workspace: call outcomes, stopped and
   // busiest Tools, approval decisions, and context impact. Counts the caller's
   // own work and, in a Workspace the caller owns, its Agents' work, like the
@@ -548,6 +552,9 @@ message InspectRunResponse {
   // The request's account_connection, if it belongs to this Run and its invoking User
   // can still see it; otherwise empty. Read its detail through the Accounts service.
   string account_connection = 13;
+  // W3C trace ID of a Run that failed, timed out or was interrupted, or empty.
+  // Give it to the operator to find the Run in Coral's telemetry.
+  string trace_id = 14;
 }
 // The Program finished.
 message ActivityRunSucceeded {
@@ -626,8 +633,18 @@ message CountRequiredActionsRequest {
 }
 // Number of pending requests. A failed read is an error, never a zero count.
 message CountRequiredActionsResponse {
-  // Pending requests. A connection request shared by several Runs counts once.
+  // Pending requests of every kind. A connection request shared by several Runs counts once.
   int64 action_count = 1;
+  // Pending Approval Requests.
+  int64 approval_count = 2;
+  // Pending Account Connection Requests.
+  int64 connection_count = 3;
+  // Opaque. Changes whenever the caller's pending Approval Requests change, and only then.
+  // Compare it for equality. It grants no authority.
+  string approval_revision = 4;
+  // Opaque. Changes whenever the caller's pending Account Connection Requests change, and
+  // only then. Compare it for equality. It grants no authority.
+  string connection_revision = 5;
 }
 // Selects the Workspace and the window to summarize.
 message SummarizeActivityRequest {
@@ -657,6 +674,9 @@ message SummarizeActivityResponse {
   // Net context bytes per invoking actor, most saved first. They add up to
   // context_impact_bytes.
   repeated ActivityContextShare actors = 7;
+  // Calls that ended in the window per invoking actor, busiest first. They add up
+  // to the calls outcomes.
+  repeated ActivityCallerCalls callers = 8;
 }
 // Ended Tool calls, by who acts next. The six counts add up to every ended call.
 message ActivityCallOutcomes {
@@ -692,6 +712,19 @@ message ActivityToolCalls {
   string call_path = 1;
   // Calls that ended in the window.
   int64 calls = 2;
+  // The same calls per invoking actor, busiest first. They add up to calls.
+  repeated ActivityCallerCalls callers = 3;
+}
+// Ended calls for one actor.
+message ActivityCallerCalls {
+  // Stable actor ID.
+  string key = 1;
+  // "You", the Agent's name, or an unavailable label.
+  string label = 2;
+  // workspaces/{workspace}/agents/{agent}, or empty for User work.
+  string agent = 3;
+  // Calls that ended in the window.
+  int64 calls = 4;
 }
 // Approval decisions in a window.
 message ActivityApprovalDecisions {
@@ -711,6 +744,15 @@ message ActivityContextShare {
   // Net bytes. Negative means saved.
   int64 bytes = 3;
 }
+// One kind of pending request.
+enum ActivityRequiredActionKind {
+  // Every kind.
+  ACTIVITY_REQUIRED_ACTION_KIND_UNSPECIFIED = 0;
+  // Approval Requests.
+  ACTIVITY_REQUIRED_ACTION_KIND_APPROVAL = 1;
+  // Account Connection Requests.
+  ACTIVITY_REQUIRED_ACTION_KIND_ACCOUNT_CONNECTION = 2;
+}
 // Selects a page of pending requests that wait on the caller.
 message BrowseRequiredActionsRequest {
   // Optional workspaces/{workspace}. Empty lists every Workspace the caller can access.
@@ -719,11 +761,14 @@ message BrowseRequiredActionsRequest {
   string after = 2;
   // 1 to 100; zero means 50.
   uint32 page_size = 3;
+  // Lists only this kind. Unspecified lists every kind. A cursor continues only the
+  // read that returned it, with the same kind.
+  ActivityRequiredActionKind kind = 4;
 }
 // A page of pending requests, most urgent first. Never includes arguments, comments,
 // source or Account details.
 message BrowseRequiredActionsResponse {
-  // Pending requests across the whole scope, not just this page.
+  // Pending requests of the selected kind across the whole scope, not just this page.
   int64 action_count = 1;
   // This page, ordered by deadline.
   repeated ActivityRequiredAction actions = 2;
@@ -738,6 +783,54 @@ message ActivityRequiredAction {
   // A Run that waits on the request. For a shared connection request, the Run whose
   // deadline comes first. Its action_page is absent.
   ActivityRun run = 2;
+}
+// How a settled approval request ended.
+enum ActivityApprovalOutcome {
+  // Unknown to this client.
+  ACTIVITY_APPROVAL_OUTCOME_UNSPECIFIED = 0;
+  // A person approved it.
+  ACTIVITY_APPROVAL_OUTCOME_APPROVED = 1;
+  // A person declined it.
+  ACTIVITY_APPROVAL_OUTCOME_DECLINED = 2;
+  // Its deadline passed with nobody deciding.
+  ACTIVITY_APPROVAL_OUTCOME_EXPIRED = 3;
+}
+// Selects a page of one Workspace's settled approval requests.
+message BrowseSettledApprovalsRequest {
+  // Required workspaces/{workspace}.
+  string workspace = 1;
+  // next_after from the previous page. Empty starts at the newest request.
+  string after = 2;
+  // 1 to 100; zero means 50.
+  uint32 page_size = 3;
+}
+// A page of settled approval requests, newest first. Requests Coral closed are left out.
+message BrowseSettledApprovalsResponse {
+  // This page.
+  repeated ActivitySettledApproval approvals = 1;
+  // Pass as after to get the next page; empty on the last page. A newer decision
+  // does not move a page already read.
+  string next_after = 2;
+}
+// One settled approval request. Never includes arguments, comments or where the
+// decision came from.
+message ActivitySettledApproval {
+  // workspaces/{workspace}/approvals/{approval}.
+  string name = 1;
+  // How it ended. New values may be added; treat unknown values as unspecified.
+  ActivityApprovalOutcome outcome = 2;
+  // When it settled. For an expired request, its deadline.
+  int64 settled_at_unix_nanos = 3;
+  // Principal whose decision won; empty for an expired request.
+  string approver = 4;
+  // Label for who decided: "You", their name, or "Unavailable user". Empty if nobody decided.
+  string approver_label = 5;
+  // Path the Program called.
+  string call_path = 6;
+  // The Provider's current display name, or "Unavailable provider" if it was removed.
+  string provider_label = 7;
+  // The Run that asked. Its action_page is absent.
+  ActivityRun run = 8;
 }
 // Approves or declines one request, after the caller has reviewed its arguments.
 message DecideApprovalRequest {
@@ -804,8 +897,11 @@ message ActivitySearchContext {
   optional string provider = 2;
   // Page size used, including the default when the caller gave none.
   uint32 limit = 3;
-  // Page cursor the caller passed. Absent for the first page.
-  optional string cursor = 4;
+  reserved 4;
+  reserved "cursor";
+  // Ranked results the page skipped. 0 for the first page, and for a page
+  // retained before pages had an offset.
+  uint32 offset = 5;
 }
 // The description a Task asked for.
 message ActivityDescribeContext {

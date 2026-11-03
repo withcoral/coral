@@ -19,6 +19,8 @@ pub(crate) enum DatabaseBackend {
     Sqlite {
         reads: SqlitePool,
         writes: SqlitePool,
+        /// Read-only handles name the same pool twice; observe it only once.
+        shared_pool: bool,
     },
     Postgres(PgPool),
 }

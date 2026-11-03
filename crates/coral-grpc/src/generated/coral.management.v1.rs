@@ -148,6 +148,16 @@ pub struct ListToolsRequest {
     #[prost(string, tag = "3")]
     pub page_token: ::prost::alloc::string::String,
 }
+/// Reads one Tool of the Provider's current administrative catalog.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetToolRequest {
+    /// Exact Provider resource.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    /// Tool path relative to the immutable Provider namespace.
+    #[prost(string, tag = "2")]
+    pub relative_path: ::prost::alloc::string::String,
+}
 /// Safe complete catalog metadata, including structurally unavailable Tools.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProviderTool {
@@ -2797,6 +2807,30 @@ pub mod provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Reads one current Tool by its path, with its full prose.
+        pub async fn get_tool(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetToolRequest>,
+        ) -> std::result::Result<tonic::Response<super::ProviderTool>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.ProviderService/GetTool",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("coral.management.v1.ProviderService", "GetTool"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -2881,6 +2915,11 @@ pub(crate) mod provider_service_server {
             tonic::Response<super::ListToolsResponse>,
             tonic::Status,
         >;
+        /// Reads one current Tool by its path, with its full prose.
+        async fn get_tool(
+            &self,
+            request: tonic::Request<super::GetToolRequest>,
+        ) -> std::result::Result<tonic::Response<super::ProviderTool>, tonic::Status>;
     }
     /// Workspace-owned Providers. Every mutation requires current Owner authority.
     #[derive(Debug)]
@@ -3459,6 +3498,51 @@ pub(crate) mod provider_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ListToolsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.ProviderService/GetTool" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetToolSvc<T: ProviderService>(pub Arc<T>);
+                    impl<
+                        T: ProviderService,
+                    > tonic::server::UnaryService<super::GetToolRequest>
+                    for GetToolSvc<T> {
+                        type Response = super::ProviderTool;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetToolRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ProviderService>::get_tool(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetToolSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -5871,6 +5955,10 @@ pub struct InspectRunResponse {
     /// can still see it; otherwise empty. Read its detail through the Accounts service.
     #[prost(string, tag = "13")]
     pub account_connection: ::prost::alloc::string::String,
+    /// W3C trace ID of a Run that failed, timed out or was interrupted, or empty.
+    /// Give it to the operator to find the Run in Coral's telemetry.
+    #[prost(string, tag = "14")]
+    pub trace_id: ::prost::alloc::string::String,
     /// How the Run ended. Absent while running, or for an outcome unknown to this client.
     #[prost(oneof = "inspect_run_response::Terminal", tags = "7, 8, 9, 10, 11")]
     pub terminal: ::core::option::Option<inspect_run_response::Terminal>,
@@ -5982,11 +6070,25 @@ pub struct CountRequiredActionsRequest {
     pub workspace: ::prost::alloc::string::String,
 }
 /// Number of pending requests. A failed read is an error, never a zero count.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CountRequiredActionsResponse {
-    /// Pending requests. A connection request shared by several Runs counts once.
+    /// Pending requests of every kind. A connection request shared by several Runs counts once.
     #[prost(int64, tag = "1")]
     pub action_count: i64,
+    /// Pending Approval Requests.
+    #[prost(int64, tag = "2")]
+    pub approval_count: i64,
+    /// Pending Account Connection Requests.
+    #[prost(int64, tag = "3")]
+    pub connection_count: i64,
+    /// Opaque. Changes whenever the caller's pending Approval Requests change, and only then.
+    /// Compare it for equality. It grants no authority.
+    #[prost(string, tag = "4")]
+    pub approval_revision: ::prost::alloc::string::String,
+    /// Opaque. Changes whenever the caller's pending Account Connection Requests change, and
+    /// only then. Compare it for equality. It grants no authority.
+    #[prost(string, tag = "5")]
+    pub connection_revision: ::prost::alloc::string::String,
 }
 /// Selects the Workspace and the window to summarize.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6027,6 +6129,10 @@ pub struct SummarizeActivityResponse {
     /// context_impact_bytes.
     #[prost(message, repeated, tag = "7")]
     pub actors: ::prost::alloc::vec::Vec<ActivityContextShare>,
+    /// Calls that ended in the window per invoking actor, busiest first. They add up
+    /// to the calls outcomes.
+    #[prost(message, repeated, tag = "8")]
+    pub callers: ::prost::alloc::vec::Vec<ActivityCallerCalls>,
 }
 /// Ended Tool calls, by who acts next. The six counts add up to every ended call.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6069,13 +6175,32 @@ pub struct ActivityStoppedTool {
     pub needs_setup: i64,
 }
 /// One Tool's ended calls.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ActivityToolCalls {
     /// Retained Program Call Path.
     #[prost(string, tag = "1")]
     pub call_path: ::prost::alloc::string::String,
     /// Calls that ended in the window.
     #[prost(int64, tag = "2")]
+    pub calls: i64,
+    /// The same calls per invoking actor, busiest first. They add up to calls.
+    #[prost(message, repeated, tag = "3")]
+    pub callers: ::prost::alloc::vec::Vec<ActivityCallerCalls>,
+}
+/// Ended calls for one actor.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityCallerCalls {
+    /// Stable actor ID.
+    #[prost(string, tag = "1")]
+    pub key: ::prost::alloc::string::String,
+    /// "You", the Agent's name, or an unavailable label.
+    #[prost(string, tag = "2")]
+    pub label: ::prost::alloc::string::String,
+    /// workspaces/{workspace}/agents/{agent}, or empty for User work.
+    #[prost(string, tag = "3")]
+    pub agent: ::prost::alloc::string::String,
+    /// Calls that ended in the window.
+    #[prost(int64, tag = "4")]
     pub calls: i64,
 }
 /// Approval decisions in a window.
@@ -6116,12 +6241,16 @@ pub struct BrowseRequiredActionsRequest {
     /// 1 to 100; zero means 50.
     #[prost(uint32, tag = "3")]
     pub page_size: u32,
+    /// Lists only this kind. Unspecified lists every kind. A cursor continues only the
+    /// read that returned it, with the same kind.
+    #[prost(enumeration = "ActivityRequiredActionKind", tag = "4")]
+    pub kind: i32,
 }
 /// A page of pending requests, most urgent first. Never includes arguments, comments,
 /// source or Account details.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BrowseRequiredActionsResponse {
-    /// Pending requests across the whole scope, not just this page.
+    /// Pending requests of the selected kind across the whole scope, not just this page.
     #[prost(int64, tag = "1")]
     pub action_count: i64,
     /// This page, ordered by deadline.
@@ -6141,6 +6270,59 @@ pub struct ActivityRequiredAction {
     /// A Run that waits on the request. For a shared connection request, the Run whose
     /// deadline comes first. Its action_page is absent.
     #[prost(message, optional, tag = "2")]
+    pub run: ::core::option::Option<ActivityRun>,
+}
+/// Selects a page of one Workspace's settled approval requests.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BrowseSettledApprovalsRequest {
+    /// Required workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub workspace: ::prost::alloc::string::String,
+    /// next_after from the previous page. Empty starts at the newest request.
+    #[prost(string, tag = "2")]
+    pub after: ::prost::alloc::string::String,
+    /// 1 to 100; zero means 50.
+    #[prost(uint32, tag = "3")]
+    pub page_size: u32,
+}
+/// A page of settled approval requests, newest first. Requests Coral closed are left out.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BrowseSettledApprovalsResponse {
+    /// This page.
+    #[prost(message, repeated, tag = "1")]
+    pub approvals: ::prost::alloc::vec::Vec<ActivitySettledApproval>,
+    /// Pass as after to get the next page; empty on the last page. A newer decision
+    /// does not move a page already read.
+    #[prost(string, tag = "2")]
+    pub next_after: ::prost::alloc::string::String,
+}
+/// One settled approval request. Never includes arguments, comments or where the
+/// decision came from.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ActivitySettledApproval {
+    /// workspaces/{workspace}/approvals/{approval}.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// How it ended. New values may be added; treat unknown values as unspecified.
+    #[prost(enumeration = "ActivityApprovalOutcome", tag = "2")]
+    pub outcome: i32,
+    /// When it settled. For an expired request, its deadline.
+    #[prost(int64, tag = "3")]
+    pub settled_at_unix_nanos: i64,
+    /// Principal whose decision won; empty for an expired request.
+    #[prost(string, tag = "4")]
+    pub approver: ::prost::alloc::string::String,
+    /// Label for who decided: "You", their name, or "Unavailable user". Empty if nobody decided.
+    #[prost(string, tag = "5")]
+    pub approver_label: ::prost::alloc::string::String,
+    /// Path the Program called.
+    #[prost(string, tag = "6")]
+    pub call_path: ::prost::alloc::string::String,
+    /// The Provider's current display name, or "Unavailable provider" if it was removed.
+    #[prost(string, tag = "7")]
+    pub provider_label: ::prost::alloc::string::String,
+    /// The Run that asked. Its action_page is absent.
+    #[prost(message, optional, tag = "8")]
     pub run: ::core::option::Option<ActivityRun>,
 }
 /// Approves or declines one request, after the caller has reviewed its arguments.
@@ -6241,9 +6423,10 @@ pub struct ActivitySearchContext {
     /// Page size used, including the default when the caller gave none.
     #[prost(uint32, tag = "3")]
     pub limit: u32,
-    /// Page cursor the caller passed. Absent for the first page.
-    #[prost(string, optional, tag = "4")]
-    pub cursor: ::core::option::Option<::prost::alloc::string::String>,
+    /// Ranked results the page skipped. 0 for the first page, and for a page
+    /// retained before pages had an offset.
+    #[prost(uint32, tag = "5")]
+    pub offset: u32,
 }
 /// The description a Task asked for.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6763,6 +6946,78 @@ impl ActivityRunFailureCode {
         }
     }
 }
+/// One kind of pending request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActivityRequiredActionKind {
+    /// Every kind.
+    Unspecified = 0,
+    /// Approval Requests.
+    Approval = 1,
+    /// Account Connection Requests.
+    AccountConnection = 2,
+}
+impl ActivityRequiredActionKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ACTIVITY_REQUIRED_ACTION_KIND_UNSPECIFIED",
+            Self::Approval => "ACTIVITY_REQUIRED_ACTION_KIND_APPROVAL",
+            Self::AccountConnection => "ACTIVITY_REQUIRED_ACTION_KIND_ACCOUNT_CONNECTION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACTIVITY_REQUIRED_ACTION_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "ACTIVITY_REQUIRED_ACTION_KIND_APPROVAL" => Some(Self::Approval),
+            "ACTIVITY_REQUIRED_ACTION_KIND_ACCOUNT_CONNECTION" => {
+                Some(Self::AccountConnection)
+            }
+            _ => None,
+        }
+    }
+}
+/// How a settled approval request ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActivityApprovalOutcome {
+    /// Unknown to this client.
+    Unspecified = 0,
+    /// A person approved it.
+    Approved = 1,
+    /// A person declined it.
+    Declined = 2,
+    /// Its deadline passed with nobody deciding.
+    Expired = 3,
+}
+impl ActivityApprovalOutcome {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ACTIVITY_APPROVAL_OUTCOME_UNSPECIFIED",
+            Self::Approved => "ACTIVITY_APPROVAL_OUTCOME_APPROVED",
+            Self::Declined => "ACTIVITY_APPROVAL_OUTCOME_DECLINED",
+            Self::Expired => "ACTIVITY_APPROVAL_OUTCOME_EXPIRED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACTIVITY_APPROVAL_OUTCOME_UNSPECIFIED" => Some(Self::Unspecified),
+            "ACTIVITY_APPROVAL_OUTCOME_APPROVED" => Some(Self::Approved),
+            "ACTIVITY_APPROVAL_OUTCOME_DECLINED" => Some(Self::Declined),
+            "ACTIVITY_APPROVAL_OUTCOME_EXPIRED" => Some(Self::Expired),
+            _ => None,
+        }
+    }
+}
 /// Generated client implementations.
 pub mod activity_service_client {
     #![allow(
@@ -7156,6 +7411,38 @@ pub mod activity_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Lists one Workspace's approved, declined and expired approval requests, newest
+        /// first: the caller's own, plus Agent requests in Workspaces the caller owns. Rows
+        /// never include arguments or comments; read those with InspectApproval.
+        pub async fn browse_settled_approvals(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BrowseSettledApprovalsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BrowseSettledApprovalsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.ActivityService/BrowseSettledApprovals",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.ActivityService",
+                        "BrowseSettledApprovals",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// Sums the caller's recent work in one Workspace: call outcomes, stopped and
         /// busiest Tools, approval decisions, and context impact. Counts the caller's
         /// own work and, in a Workspace the caller owns, its Agents' work, like the
@@ -7410,6 +7697,16 @@ pub(crate) mod activity_service_server {
             request: tonic::Request<super::CountRequiredActionsRequest>,
         ) -> std::result::Result<
             tonic::Response<super::CountRequiredActionsResponse>,
+            tonic::Status,
+        >;
+        /// Lists one Workspace's approved, declined and expired approval requests, newest
+        /// first: the caller's own, plus Agent requests in Workspaces the caller owns. Rows
+        /// never include arguments or comments; read those with InspectApproval.
+        async fn browse_settled_approvals(
+            &self,
+            request: tonic::Request<super::BrowseSettledApprovalsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BrowseSettledApprovalsResponse>,
             tonic::Status,
         >;
         /// Sums the caller's recent work in one Workspace: call outcomes, stopped and
@@ -7994,6 +8291,55 @@ pub(crate) mod activity_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = CountRequiredActionsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.ActivityService/BrowseSettledApprovals" => {
+                    #[allow(non_camel_case_types)]
+                    struct BrowseSettledApprovalsSvc<T: ActivityService>(pub Arc<T>);
+                    impl<
+                        T: ActivityService,
+                    > tonic::server::UnaryService<super::BrowseSettledApprovalsRequest>
+                    for BrowseSettledApprovalsSvc<T> {
+                        type Response = super::BrowseSettledApprovalsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BrowseSettledApprovalsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ActivityService>::browse_settled_approvals(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BrowseSettledApprovalsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -13008,22 +13354,57 @@ pub struct ToolPolicy {
     #[prost(bool, tag = "3")]
     pub explicit: bool,
 }
-/// Reads a bounded selection, including structurally unavailable Tools.
+/// Reads one page of a Provider's current administrative catalog.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetToolPoliciesRequest {
-    /// Exact Provider resource name.
+pub struct ListToolAccessRequest {
+    /// Exact Provider resource.
     #[prost(string, tag = "1")]
     pub parent: ::prost::alloc::string::String,
-    /// 1–100 distinct canonical Tool names for its Provider.
-    #[prost(string, repeated, tag = "2")]
-    pub tools: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Maximum results, bounded to 1000; zero selects the default.
+    #[prost(int32, tag = "2")]
+    pub page_size: i32,
+    /// Opaque continuation from the preceding page for this Provider.
+    #[prost(string, tag = "3")]
+    pub page_token: ::prost::alloc::string::String,
 }
-/// Effective decisions in request order.
+/// One Tool as a policy table lists it, including structurally unavailable Tools.
+/// `GetTool` reads its prose.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetToolPoliciesResponse {
-    /// Exact decisions.
+pub struct ToolAccess {
+    /// {provider}/tools/{encoded Tool Key}; not a separate entity identity.
+    #[prost(string, tag = "1")]
+    pub tool: ::prost::alloc::string::String,
+    /// Tool path relative to the immutable Provider namespace.
+    #[prost(string, tag = "2")]
+    pub relative_path: ::prost::alloc::string::String,
+    /// Structural invocability, independent of credentials and approval.
+    #[prost(bool, tag = "3")]
+    pub available: bool,
+    /// Safe structural diagnostics for unavailable Tools.
+    #[prost(message, repeated, tag = "4")]
+    pub diagnostics: ::prost::alloc::vec::Vec<ProviderDiagnostic>,
+    /// Safe upstream-authored grouping metadata.
+    #[prost(string, repeated, tag = "5")]
+    pub tags: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Declared effect hints.
+    #[prost(message, optional, tag = "6")]
+    pub hints: ::core::option::Option<ToolHints>,
+    /// Exact decision for the Tool.
+    #[prost(enumeration = "ToolAccessState", tag = "7")]
+    pub access_state: i32,
+    /// True when an exact stored rule, false when effect-based default.
+    #[prost(bool, tag = "8")]
+    pub explicit: bool,
+}
+/// One page of Tools and their decisions.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListToolAccessResponse {
+    /// Current Tools in canonical order.
     #[prost(message, repeated, tag = "1")]
-    pub policies: ::prost::alloc::vec::Vec<ToolPolicy>,
+    pub tools: ::prost::alloc::vec::Vec<ToolAccess>,
+    /// Empty when no further page remains.
+    #[prost(string, tag = "2")]
+    pub next_page_token: ::prost::alloc::string::String,
 }
 /// Atomic bounded update; any rejected target leaves all decisions unchanged.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -13171,12 +13552,12 @@ pub mod tool_policy_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        /// Reads 1–100 exact Tool decisions through one Provider.
-        pub async fn get_tool_policies(
+        /// Lists a Provider's Tools with their decisions, from one read per page.
+        pub async fn list_tool_access(
             &mut self,
-            request: impl tonic::IntoRequest<super::GetToolPoliciesRequest>,
+            request: impl tonic::IntoRequest<super::ListToolAccessRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::GetToolPoliciesResponse>,
+            tonic::Response<super::ListToolAccessResponse>,
             tonic::Status,
         > {
             self.inner
@@ -13189,14 +13570,14 @@ pub mod tool_policy_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.ToolPolicyService/GetToolPolicies",
+                "/coral.management.v1.ToolPolicyService/ListToolAccess",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new(
                         "coral.management.v1.ToolPolicyService",
-                        "GetToolPolicies",
+                        "ListToolAccess",
                     ),
                 );
             self.inner.unary(req, path, codec).await
@@ -13247,12 +13628,12 @@ pub(crate) mod tool_policy_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with ToolPolicyServiceServer.
     #[async_trait]
     pub trait ToolPolicyService: std::marker::Send + std::marker::Sync + 'static {
-        /// Reads 1–100 exact Tool decisions through one Provider.
-        async fn get_tool_policies(
+        /// Lists a Provider's Tools with their decisions, from one read per page.
+        async fn list_tool_access(
             &self,
-            request: tonic::Request<super::GetToolPoliciesRequest>,
+            request: tonic::Request<super::ListToolAccessRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::GetToolPoliciesResponse>,
+            tonic::Response<super::ListToolAccessResponse>,
             tonic::Status,
         >;
         /// Applies 1–100 distinct exact decisions atomically, including lifecycle evidence.
@@ -13341,25 +13722,25 @@ pub(crate) mod tool_policy_service_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/coral.management.v1.ToolPolicyService/GetToolPolicies" => {
+                "/coral.management.v1.ToolPolicyService/ListToolAccess" => {
                     #[allow(non_camel_case_types)]
-                    struct GetToolPoliciesSvc<T: ToolPolicyService>(pub Arc<T>);
+                    struct ListToolAccessSvc<T: ToolPolicyService>(pub Arc<T>);
                     impl<
                         T: ToolPolicyService,
-                    > tonic::server::UnaryService<super::GetToolPoliciesRequest>
-                    for GetToolPoliciesSvc<T> {
-                        type Response = super::GetToolPoliciesResponse;
+                    > tonic::server::UnaryService<super::ListToolAccessRequest>
+                    for ListToolAccessSvc<T> {
+                        type Response = super::ListToolAccessResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::GetToolPoliciesRequest>,
+                            request: tonic::Request<super::ListToolAccessRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ToolPolicyService>::get_tool_policies(&inner, request)
+                                <T as ToolPolicyService>::list_tool_access(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -13371,7 +13752,7 @@ pub(crate) mod tool_policy_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = GetToolPoliciesSvc(inner);
+                        let method = ListToolAccessSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -13473,6 +13854,337 @@ pub(crate) mod tool_policy_service_server {
     /// Generated gRPC service name
     pub const SERVICE_NAME: &str = "coral.management.v1.ToolPolicyService";
     impl<T> tonic::server::NamedService for ToolPolicyServiceServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
+    }
+}
+/// Asks for a published release newer than this runtime.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetNewerReleaseRequest {}
+/// A newer release, or none.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetNewerReleaseResponse {
+    /// Unset when the operator turned the check off, the feed has not answered,
+    /// or this runtime runs the newest release.
+    #[prost(message, optional, tag = "1")]
+    pub release: ::core::option::Option<NewerRelease>,
+}
+/// A published stable release newer than this runtime.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NewerRelease {
+    /// Semantic version without the `v` prefix, such as `1.4.0`.
+    #[prost(string, tag = "1")]
+    pub version: ::prost::alloc::string::String,
+    /// The release notes page.
+    #[prost(string, tag = "2")]
+    pub notes_url: ::prost::alloc::string::String,
+}
+/// Generated client implementations.
+pub mod release_service_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// Published Coral releases, as this runtime last read them.
+    #[derive(Debug, Clone)]
+    pub struct ReleaseServiceClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl ReleaseServiceClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> ReleaseServiceClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> ReleaseServiceClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            ReleaseServiceClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        /// Answers from memory and never waits for the release feed.
+        pub async fn get_newer_release(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetNewerReleaseRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetNewerReleaseResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.ReleaseService/GetNewerRelease",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.ReleaseService",
+                        "GetNewerRelease",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}
+/// Generated server implementations.
+#[allow(dead_code, unreachable_pub)]
+pub(crate) mod release_service_server {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    /// Generated trait containing gRPC methods that should be implemented for use with ReleaseServiceServer.
+    #[async_trait]
+    pub trait ReleaseService: std::marker::Send + std::marker::Sync + 'static {
+        /// Answers from memory and never waits for the release feed.
+        async fn get_newer_release(
+            &self,
+            request: tonic::Request<super::GetNewerReleaseRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetNewerReleaseResponse>,
+            tonic::Status,
+        >;
+    }
+    /// Published Coral releases, as this runtime last read them.
+    #[derive(Debug)]
+    pub struct ReleaseServiceServer<T> {
+        inner: Arc<T>,
+        accept_compression_encodings: EnabledCompressionEncodings,
+        send_compression_encodings: EnabledCompressionEncodings,
+        max_decoding_message_size: Option<usize>,
+        max_encoding_message_size: Option<usize>,
+    }
+    impl<T> ReleaseServiceServer<T> {
+        pub fn new(inner: T) -> Self {
+            Self::from_arc(Arc::new(inner))
+        }
+        pub fn from_arc(inner: Arc<T>) -> Self {
+            Self {
+                inner,
+                accept_compression_encodings: Default::default(),
+                send_compression_encodings: Default::default(),
+                max_decoding_message_size: None,
+                max_encoding_message_size: None,
+            }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
+        where
+            F: tonic::service::Interceptor,
+        {
+            InterceptedService::new(Self::new(inner), interceptor)
+        }
+        /// Enable decompressing requests with the given encoding.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.accept_compression_encodings.enable(encoding);
+            self
+        }
+        /// Compress responses with the given encoding, if the client supports it.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.send_compression_encodings.enable(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
+    }
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for ReleaseServiceServer<T>
+    where
+        T: ReleaseService,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
+    {
+        type Response = http::Response<tonic::body::Body>;
+        type Error = std::convert::Infallible;
+        type Future = BoxFuture<Self::Response, Self::Error>;
+        fn poll_ready(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, req: http::Request<B>) -> Self::Future {
+            match req.uri().path() {
+                "/coral.management.v1.ReleaseService/GetNewerRelease" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetNewerReleaseSvc<T: ReleaseService>(pub Arc<T>);
+                    impl<
+                        T: ReleaseService,
+                    > tonic::server::UnaryService<super::GetNewerReleaseRequest>
+                    for GetNewerReleaseSvc<T> {
+                        type Response = super::GetNewerReleaseResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetNewerReleaseRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ReleaseService>::get_newer_release(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetNewerReleaseSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
+            }
+        }
+    }
+    impl<T> Clone for ReleaseServiceServer<T> {
+        fn clone(&self) -> Self {
+            let inner = self.inner.clone();
+            Self {
+                inner,
+                accept_compression_encodings: self.accept_compression_encodings,
+                send_compression_encodings: self.send_compression_encodings,
+                max_decoding_message_size: self.max_decoding_message_size,
+                max_encoding_message_size: self.max_encoding_message_size,
+            }
+        }
+    }
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "coral.management.v1.ReleaseService";
+    impl<T> tonic::server::NamedService for ReleaseServiceServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
 }

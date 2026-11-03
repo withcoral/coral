@@ -83,6 +83,7 @@ export function commands(root, config, ambient) {
         '--strictPort',
       ],
       env: {
+        ...config.otelEnv,
         ...ambient,
         ...config.webEnv,
         NODE_ENV: 'development',

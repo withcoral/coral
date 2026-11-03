@@ -1,16 +1,27 @@
 //! Cross-crate telemetry helpers.
 //!
 //! This crate owns transport-neutral W3C propagation, safe telemetry utilities
-//! shared by application, domain, and adapter crates, and the filter that
-//! decides what spans may leave the host.
+//! shared by application, domain, and adapter crates, the safe fields, and
+//! the filters that decide what spans and log records may leave the host.
 
 mod export;
+mod field;
+pub mod metric;
+mod queue;
 mod request;
+mod run;
+pub mod safe;
+#[cfg(test)]
+mod source_scan;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
-pub use export::OtlpSpanFilter;
-pub use request::{REQUEST_TARGET, request_span, trace_grpc_routes, trace_http_routes};
+pub use export::{OtlpLogFilter, OtlpSpanFilter};
+pub use queue::{Queue, batch_log_processor, batch_span_processor, meter_provider};
+pub use request::{
+    REQUEST_TARGET, name_request_operation, request_span, trace_grpc_routes, trace_http_routes,
+};
+pub use run::RunTrace;
 
 use opentelemetry::Context;
 use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator as _};
@@ -68,16 +79,31 @@ const TRACESTATE_HEADER: &str = "tracestate";
 
 /// Prefix for host-only span attributes that must not be exported over OTLP.
 pub const LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX: &str = "coral.local.";
-/// Records a categorical failure without accepting caller-controlled message text.
-pub fn record_failure(
-    span: &tracing::Span,
-    error_type: impl AsRef<str>,
-    stable_message: &'static str,
-) {
-    span.record("status", "error");
-    span.record("error.type", error_type.as_ref());
-    span.record("exception.message", stable_message);
-    span.set_status(OtelStatus::error(stable_message));
+
+/// Marks `span` failed with the code `error_type` and no message text, so no
+/// caller-controlled text reaches its status. A span that succeeds leaves its
+/// status unset, as the OpenTelemetry conventions ask.
+pub fn record_failure(span: &tracing::Span, error_type: &'static str) {
+    span.record("error.type", safe::kind(error_type));
+    span.set_status(OtelStatus::error(""));
+}
+
+/// Marks `span`, a span whose success callers rely on, such as a process's,
+/// successful.
+pub fn record_success(span: &tracing::Span) {
+    span.set_status(OtelStatus::Ok);
+}
+
+/// Links `span`, a span not yet entered, to the current span, when there is
+/// one. Work that a request starts and does not wait for runs in a root span
+/// of its own, so it does not hold the request's span open, and keeps a path
+/// back to the request this way.
+pub fn link_to_current(span: &tracing::Span) {
+    let current = tracing::Span::current().context();
+    let current = current.span().span_context().clone();
+    if current.is_valid() {
+        span.add_link(current);
+    }
 }
 
 struct TraceHeaders<'a> {
@@ -161,8 +187,8 @@ fn set_parent_from_context(span: &tracing::Span, context: Option<Context>) {
     let Some(context) = context else {
         return;
     };
-    if let Err(error) = span.set_parent(context) {
-        tracing::debug!(%error, "failed to set parent trace context");
+    if span.set_parent(context).is_err() {
+        tracing::debug!(error.type = "set_parent", "failed to set parent trace context");
     }
 }
 
@@ -173,6 +199,27 @@ fn inject_context(context: &Context, injector: &mut dyn Injector) {
 /// Injects `span`'s OpenTelemetry context into a W3C trace-context carrier.
 pub fn inject_span_context(span: &tracing::Span, injector: &mut dyn Injector) {
     inject_context(&span.context(), injector);
+}
+
+const BAGGAGE_HEADER: &str = "baggage";
+
+/// Gives the headers of a request Coral sends in `span`, such as a Provider
+/// Tool dispatch, `span`'s W3C `traceparent` and no other trace context. A
+/// `traceparent`, `tracestate` or `baggage` header already there, such as one
+/// from Program arguments, never leaves, and outside a valid trace none is
+/// sent.
+pub fn set_outbound_trace_context(span: &tracing::Span, headers: &mut http::HeaderMap) {
+    for name in [TRACEPARENT_HEADER, TRACESTATE_HEADER, BAGGAGE_HEADER] {
+        headers.remove(name);
+    }
+    let mut carrier = std::collections::HashMap::new();
+    inject_span_context(span, &mut carrier);
+    if let Some(value) = carrier
+        .remove(TRACEPARENT_HEADER)
+        .and_then(|value| http::HeaderValue::from_str(&value).ok())
+    {
+        headers.insert(TRACEPARENT_HEADER, value);
+    }
 }
 
 /// Injects the current tracing span's OpenTelemetry context into a carrier.
@@ -226,10 +273,8 @@ mod tests {
             let span = tracing::info_span!(
                 "failure",
                 error.type = tracing::field::Empty,
-                exception.message = tracing::field::Empty,
-                status = tracing::field::Empty,
             );
-            record_failure(&span, "INVALID_ARGUMENT", "request failed");
+            record_failure(&span, "INVALID_ARGUMENT");
             span.in_scope(|| {});
         });
         let spans = capture.finished();
@@ -238,16 +283,11 @@ mod tests {
             .find(|span| span.name == "failure")
             .expect("failure span");
         let string_attribute = |name: &str| attribute(failure, name);
-        assert_eq!(string_attribute("status").as_deref(), Some("error"));
         assert_eq!(
             string_attribute("error.type").as_deref(),
             Some("INVALID_ARGUMENT")
         );
-        assert_eq!(
-            string_attribute("exception.message").as_deref(),
-            Some("request failed")
-        );
-        assert_eq!(failure.status, OtelStatus::error("request failed"));
+        assert_eq!(failure.status, OtelStatus::error(""));
     }
 
     #[test]
@@ -290,5 +330,70 @@ mod tests {
         );
         assert!(child.parent_span_is_remote);
         assert_eq!(child.span_context.trace_state().header(), "vendor=value");
+    }
+}
+
+#[cfg(test)]
+mod outbound_tests {
+    use super::set_outbound_trace_context;
+    use crate::testing::SpanCapture;
+
+    fn headers() -> http::HeaderMap {
+        let mut headers = http::HeaderMap::new();
+        for (name, value) in [
+            (
+                "traceparent",
+                "00-ffffffffffffffffffffffffffffffff-ffffffffffffffff-01",
+            ),
+            ("tracestate", "caller=value"),
+            ("baggage", "user=private"),
+            ("x-kept", "kept"),
+        ] {
+            headers.insert(name, http::HeaderValue::from_static(value));
+        }
+        headers
+    }
+
+    /// A request Coral sends carries only the trace context of the span it
+    /// sends it in: never a `traceparent`, `tracestate` or `baggage` that
+    /// came from elsewhere, and none at all outside a valid trace.
+    #[test]
+    fn only_the_sending_span_trace_context_leaves() {
+        let capture = SpanCapture::default();
+        let (inside, expected) = tracing::subscriber::with_default(capture.subscriber(), || {
+            let span = tracing::info_span!("client");
+            let mut headers = headers();
+            set_outbound_trace_context(&span, &mut headers);
+            let expected = {
+                use opentelemetry::trace::TraceContextExt as _;
+                use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+                let context = span.context();
+                let span = context.span();
+                format!(
+                    "00-{}-{}-01",
+                    span.span_context().trace_id(),
+                    span.span_context().span_id()
+                )
+            };
+            (headers, Some(expected))
+        });
+        let mut outside = headers();
+        set_outbound_trace_context(&tracing::Span::none(), &mut outside);
+        for (headers, expected) in [(inside, expected), (outside, None)] {
+            assert_eq!(
+                headers
+                    .get_all("traceparent")
+                    .iter()
+                    .map(|value| value.to_str().expect("ASCII").to_string())
+                    .collect::<Vec<_>>(),
+                expected.into_iter().collect::<Vec<_>>()
+            );
+            assert!(headers.get("tracestate").is_none());
+            assert!(headers.get("baggage").is_none());
+            assert_eq!(
+                headers.get("x-kept").map(http::HeaderValue::as_bytes),
+                Some(&b"kept"[..])
+            );
+        }
     }
 }

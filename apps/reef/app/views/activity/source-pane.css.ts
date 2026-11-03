@@ -32,3 +32,17 @@ export const missing = style({
   background: theme.content.warningBackground,
   color: theme.content.warning,
 })
+/** The pane's actions, compact, at its header's right. */
+export const actions = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 2,
+  marginInlineStart: 'auto',
+})
+/** Expanded, the source fills the dialog under its header and scrolls inside it. */
+export const expandedCode = style({
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
+})

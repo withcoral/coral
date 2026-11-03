@@ -7,11 +7,12 @@ import {
   useNavigation,
   useRevalidator,
 } from 'react-router'
+import { useEffect } from 'react'
 import { expect, waitFor, within } from 'storybook/test'
 import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { Activity } from './activity'
-import { TAKS_MAX_AGE } from './navigation'
+import { MIN_LIVE_RECORD_STAY_MS, TAKS_MAX_AGE } from './navigation'
 import { ActionReviewSession } from '../actions/review'
 import {
   activityPage,
@@ -46,6 +47,8 @@ interface RunModel {
 type Root =
   | {
       kind: 'task'
+      /** Orders it with the records of every Task: a Task with no record is this new. */
+      order: number
       row: Extract<ActivityRow, { kind: 'task' }>
       runs: RunModel[]
       /** Searches, Describes and exec submissions, ordered with the Runs by `order`. */
@@ -76,10 +79,11 @@ function newRun(id: string, task = '', order = 0): RunModel {
   }
 }
 /** A Task that started `age` milliseconds ago: just now, unless a story says otherwise. */
-function newTask(id: string, runs: RunModel[] = [], age = 0): Root {
+function newTask(id: string, runs: RunModel[] = [], age = 0, order = 0): Root {
   const startedAt = new Date(Date.now() - age).toISOString()
   return {
     kind: 'task',
+    order,
     row: { ...taskRow(id, `Task ${id}`), startedAt },
     runs,
     tools: [],
@@ -95,6 +99,9 @@ const world = {
   stale: {} as Record<string, ActivityRow[]>,
   /** Each loader read, in order: the record it opened and the Tasks whose kept window it served. */
   reads: [] as { record: string | null; kept: string[] }[],
+  /** The route's own reads and navigation, for a play while a modal covers its buttons. */
+  revalidate: () => {},
+  navigate: (_to: string) => {},
   reset(roots: Root[]) {
     this.roots = roots
     this.count = 0
@@ -125,7 +132,7 @@ const world = {
       | 'fail oldest',
   ) {
     const runs = this.runs()
-    if (kind === 'task') this.roots.unshift(newTask(`t${++this.count}`))
+    if (kind === 'task') this.roots.unshift(newTask(`t${++this.count}`, [], 0, this.count))
     if (kind === 'standalone')
       this.roots.unshift({ kind: 'run', run: newRun(`s${++this.count}`, '', this.count) })
     const task = this.roots.find((root) => root.kind === 'task')
@@ -227,18 +234,22 @@ function children(model: RunModel): ActivityRow[] {
       workspace,
       run: model.row.name,
       task: model.row.task,
-      label: 'final value',
+      label: 'return value',
       startedAt: at,
       eventKind: 'run.ended',
       agent: '',
     },
   ]
 }
+/** The records of a Task, its Runs and tools, each with its order, oldest first. */
+const orderedRecords = (root: Extract<Root, { kind: 'task' }>) =>
+  [
+    ...root.runs.map((model) => ({ order: model.order, row: runView(model) })),
+    ...root.tools,
+  ].toSorted((a, b) => a.order - b.order)
 /** The records of a Task: its Runs and tools, in order. */
 const taskRecords = (root: Extract<Root, { kind: 'task' }>) =>
-  [...root.runs.map((model) => ({ order: model.order, row: runView(model) })), ...root.tools]
-    .toSorted((a, b) => a.order - b.order)
-    .map(({ row }) => row)
+  orderedRecords(root).map(({ row }) => row)
 const branch = (rows: ActivityRow[]) => ({
   rows: rows.map((row, position) => ({ ...row, position })),
   total: String(rows.length),
@@ -278,9 +289,38 @@ function latestOf(): ActivityPage['liveLatest'] {
     }),
   )
   if (!world.roots.length) return undefined
+  // With nothing else to follow, the record that started last: a Task's newest record,
+  // the Task while it has none, or a standalone Run. At an equal order, the newer root.
+  const latest =
+    action || Object.keys(running).length
+      ? undefined
+      : roots
+          .map((root) => {
+            if (root.kind === 'run')
+              return {
+                root: root.run.row.name,
+                record: root.run.row.name,
+                run: true,
+                order: root.run.order,
+              }
+            const newest = orderedRecords(root).at(-1)
+            return newest
+              ? {
+                  root: root.row.name,
+                  record: newest.row.name,
+                  run: newest.row.kind === 'run',
+                  order: newest.order,
+                }
+              : { root: root.row.name, record: root.row.name, run: false, order: root.order }
+          })
+          .reduce<{ root: string; record: string; run: boolean; order: number } | undefined>(
+            (found, item) => (!found || item.order > found.order ? item : found),
+            undefined,
+          )
   return {
     ...(action && { action }),
     ...(Object.keys(running).length && { running }),
+    ...(latest && { latest: { root: latest.root, record: latest.record, run: latest.run } }),
     complete: true,
   }
 }
@@ -400,6 +440,10 @@ function ScopesRoute() {
     apply()
     void revalidator.revalidate()
   }
+  useEffect(() => {
+    world.revalidate = () => void revalidator.revalidate()
+    world.navigate = (to) => void navigate(to)
+  })
   const button = (label: string, apply: () => void) => (
     <button type="button" onClick={() => change(apply)}>
       {label}
@@ -472,6 +516,9 @@ export default meta
 type Story = StoryObj<typeof meta>
 type Play = Parameters<NonNullable<Story['play']>>[0]
 
+/** A wait long enough for page live mode to show the previous record for its minimum time. */
+const stays = { timeout: MIN_LIVE_RECORD_STAY_MS + 2000 }
+
 async function surface({ canvasElement, userEvent }: Play) {
   const canvas = within(canvasElement)
   const screen = within(canvasElement.ownerDocument.body)
@@ -482,28 +529,34 @@ async function surface({ canvasElement, userEvent }: Play) {
     canvas,
     rail,
     address,
-    /** The toggle above the list. */
-    latest: () => canvas.getByRole('button', { name: 'Follow latest activity' }),
+    /** The toggle above the list. A docked rail sits in the page too, so leave out its own. */
+    latest: () =>
+      canvas
+        .getAllByRole('button', { name: 'Live' })
+        .find((button) => !button.closest('[role="dialog"]'))!,
     railToggle: (name: string) => within(rail()).getByRole('button', { name }),
     press: (name: string) => userEvent.click(canvas.getByRole('button', { name })),
     idle: async () => {
       await waitFor(() => expect(canvas.getByLabelText('Navigation')).toHaveTextContent('idle'))
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     },
-    /** Waits until the rail heads with `heading` and the table selects `row`, and only it. */
+    /**
+     * Waits until the rail heads with `heading` and the table selects `row`, and only it,
+     * which live mode does once the record before showed long enough.
+     */
     selects: (heading: string, row: string) =>
       waitFor(() => {
         expect(within(rail()).getByRole('heading', { name: heading, level: 2 })).toBeVisible()
         const selected = [...table.querySelectorAll('[role="row"][aria-selected="true"]')]
         expect(selected.map((item) => item.querySelector('a[href]')?.textContent)).toEqual([row])
-      }),
+      }, stays),
     /** The rail reviews the approval of the call `call`, and the table selects it. */
     reviews: (call: string) =>
       waitFor(() => {
         expect(within(rail()).getByRole('region', { name: `Review ${call}` })).toBeVisible()
         const selected = [...table.querySelectorAll('[role="row"][aria-selected="true"]')]
         expect(selected.map((item) => item.querySelector('a[href]')?.textContent)).toEqual([call])
-      }),
+      }, stays),
     /** The rail is closed and nothing is selected. */
     closed: () =>
       waitFor(() => {
@@ -524,6 +577,11 @@ export const OpensActivityThenStaysOnIt: Story = {
     // With no record yet, live mode waits, and the rail stays closed.
     await userEvent.click(latest())
     await waitFor(() => expect(latest()).toHaveAttribute('aria-pressed', 'true'))
+    // Pressed, it keeps its label; its description says pressing it again stops.
+    await expect(latest()).toHaveTextContent(/^Live$/)
+    await expect(latest()).toHaveAccessibleDescription('Stop following the latest activity.')
+    // On, the target icon is filled in; off again, it opens.
+    await expect(latest().querySelector('svg')).toHaveClass('lucide-locate-fixed')
     await expect(address().get('live')).toBe('latest')
     await idle()
     await closed()
@@ -552,6 +610,7 @@ export const OpensActivityThenStaysOnIt: Story = {
     await closed()
     await expect(address().toString()).toBe(before)
     await waitFor(() => expect(latest()).toHaveAttribute('aria-pressed', 'false'))
+    await expect(latest().querySelector('svg')).toHaveClass('lucide-locate')
   },
 }
 
@@ -569,10 +628,10 @@ export const KeepsWhatYouExpanded: Story = {
     const { latest, address, press, selects, idle, canvas } = await surface(context)
     const task = kept
 
-    // The Task's newest record is its Run that ended: live mode opens it at its end.
+    // The Task's newest record is its Run that ended: live mode opens the Run itself.
     // Live mode owns only the Run it expanded.
     await userEvent.click(latest())
-    await selects('Run k1', 'final value')
+    await selects('Run k1', 'run k1')
     await expect(address().getAll('expand')).toEqual([task, runRow('k1', task).name])
     await expect(address().getAll('liveExpanded')).toEqual([runRow('k1', task).name])
 
@@ -581,10 +640,10 @@ export const KeepsWhatYouExpanded: Story = {
     await selects('Run r1', 'run r1')
     await expect(address().getAll('liveExpanded')).toEqual([runRow('r1', task).name])
 
-    // The Run's end shows its final value. A Run that runs elsewhere then takes over,
+    // The Run's end shows the Run itself. A Run that runs elsewhere then takes over,
     // although the Task has not ended, and live mode collapses only the Run it expanded.
     await press('End first running run')
-    await selects('Run r1', 'final value')
+    await selects('Run r1', 'run r1')
     await press('Add standalone run')
     await selects('Run s2', 'run s2')
     await expect(address().get('record')).toBe(runRow('s2', '').name)
@@ -679,9 +738,9 @@ export const MovesToNewerWorkOnceItsRunEnds: Story = {
 
     // With nothing else that runs, live mode stays on and rests on the ended Run.
     await press('End oldest running run')
-    await selects('Run s2', 'final value')
+    await selects('Run s2', 'run s2')
     await idle()
-    await expect(address().get('record')).toBe(finalOf(runRow('s2', '').name))
+    await expect(address().get('record')).toBe(runRow('s2', '').name)
     await expect(address().get('live')).toBe('latest')
     await expect(latest()).toHaveAttribute('aria-pressed', 'true')
 
@@ -725,36 +784,71 @@ export const FollowsTheRecordsOfATask: Story = {
     await selects('Run r4', 'run r4')
     await expect(address().get('record')).toBe(runRow('r4', alpha).name)
     await expect(address().getAll('expand')).toEqual([alpha, runRow('r4', alpha).name])
-    // Then the Run's first record.
-    await press('Add call')
-    await selects('call.r4-op-5', 'call.r4-op-5')
-    await expect(address().get('record')).toBe(invocationRow('', 'r4-op-5').name)
 
     // A newer Search or Describe of the Task never takes over the Run that runs.
     await press('Add search to newest task')
     await press('Add describe to newest task')
     await idle()
-    await selects('call.r4-op-5', 'call.r4-op-5')
-
-    // Once the Run ends, live mode follows the Task's newest record again.
-    await press('End oldest running run')
-    await selects('describe 7', 'describe 7')
-    await expect(address().get('record')).toBe(toolRow(alpha, 'describe-7').name)
+    await selects('Run r4', 'run r4')
     await expect(address().get('live')).toBe('latest')
+  },
+}
 
-    // An exec submission opens while Coral compiles it. Once Coral accepts it, its Run
-    // opens before the Run has any record, then the Run's first record.
-    await press('Submit exec to newest task')
-    await selects('exec 8', 'exec 8')
-    await press('Accept submission')
-    const accepted = runRow('e9', alpha).name
-    await waitFor(() => expect(address().get('record')).toBe(accepted))
-    await idle()
-    await selects('Run e9', 'exec 8')
-    await expect(address().get('record')).toBe(accepted)
+// A Run of the Task opens at its first record. A newer Search or Describe never takes
+// over while the Run runs, and once it ends, live mode follows the Task's newest record.
+export const FollowsARunsFirstRecordThenItsTask: Story = {
+  beforeEach: () => {
+    world.reset([newTask('alpha', [newRun('r1', alpha, 1)])])
+    // Each record the play adds is newer than the Run.
+    world.count = 1
+  },
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, idle } = await surface(context)
+    await userEvent.click(latest())
+    await selects('Run r1', 'run r1')
+
     await press('Add call')
-    await selects('call.e9-op-10', 'call.e9-op-10')
-    await expect(address().get('record')).toBe(invocationRow('', 'e9-op-10').name)
+    await selects('call.r1-op-2', 'call.r1-op-2')
+    await expect(address().get('record')).toBe(invocationRow('', 'r1-op-2').name)
+
+    await press('Add search to newest task')
+    await press('Add describe to newest task')
+    await idle()
+    await selects('call.r1-op-2', 'call.r1-op-2')
+
+    await press('End oldest running run')
+    await selects('describe 4', 'describe 4')
+    await expect(address().get('record')).toBe(toolRow(alpha, 'describe-4').name)
+    await expect(address().get('live')).toBe('latest')
+  },
+}
+
+// An exec submission opens while Coral compiles it. Once Coral accepts it, its Run opens
+// before the Run has any record, then the Run's first record.
+export const FollowsAnExecSubmissionIntoItsRun: Story = {
+  beforeEach: () => {
+    world.reset([newTask('alpha')])
+    world.change('search')
+    world.change('submit')
+  },
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, idle } = await surface(context)
+    await userEvent.click(latest())
+    await selects('exec 2', 'exec 2')
+    await expect(address().get('record')).toBe(toolRow(alpha, 'exec-2').name)
+
+    await press('Accept submission')
+    const accepted = runRow('e3', alpha).name
+    await waitFor(() => expect(address().get('record')).toBe(accepted), stays)
+    await idle()
+    await selects('Run e3', 'exec 2')
+    await expect(address().get('record')).toBe(accepted)
+
+    await press('Add call')
+    await selects('call.e3-op-4', 'call.e3-op-4')
+    await expect(address().get('record')).toBe(invocationRow('', 'e3-op-4').name)
   },
 }
 
@@ -772,10 +866,9 @@ export const ShowsTheNewestRecordUntilWorkRuns: Story = {
     const { userEvent } = context
     const { latest, address, press, selects } = await surface(context)
 
-    // Every Task and Run has ended: live mode shows the newest record, the end of the
-    // newest Run, and holds nothing.
+    // Every Task and Run has ended: live mode shows the newest Run itself and holds nothing.
     await userEvent.click(latest())
-    await selects('Run done', 'final value')
+    await selects('Run done', 'run done')
     await expect(latest()).toHaveAttribute('aria-pressed', 'true')
 
     // A new Run that runs opens.
@@ -820,8 +913,9 @@ export const AnApprovalHoldsItsRun: Story = {
 
     // The newest Run waits for your approval: live mode opens its review.
     await userEvent.click(latest())
-    await waitFor(() =>
-      expect(address().get('request')).toBe(approvalOf(invocationRow('', 'a1-op-1').name)),
+    await waitFor(
+      () => expect(address().get('request')).toBe(approvalOf(invocationRow('', 'a1-op-1').name)),
+      stays,
     )
     await reviews(waiting)
 
@@ -859,18 +953,18 @@ export const FollowsTheTaskYouOpen: Story = {
     await expect(railToggle('Follow this task')).toHaveAttribute('aria-pressed', 'true')
     await expect(latest()).toHaveAttribute('aria-pressed', 'false')
 
-    // When that Run ends, it stays open on its final value. It never moves on to the
+    // When that Run ends, it selects the Run itself. It never moves on to the
     // next Run, or to a new one.
     await press('End first running run')
-    await selects('Run w2', 'final value')
+    await selects('Run w2', 'run w2')
     await press('Add run to newest task')
     await idle()
-    await selects('Run w2', 'final value')
+    await selects('Run w2', 'run w2')
 
     // The pressed toggle turns it off in place.
     await userEvent.click(railToggle('Follow this task'))
     await waitFor(() => expect(address().has('live')).toBe(false))
-    await selects('Run w2', 'final value')
+    await selects('Run w2', 'run w2')
   },
 }
 
@@ -929,8 +1023,14 @@ export const StopsAtTheExpansionLimit: Story = {
     await expect(address().getAll('expand')).toHaveLength(19)
     await userEvent.hover(latest())
     await expect(
-      await screen.findByText('Collapse a record before you follow the latest activity.'),
+      // The tooltip itself, not the toggle's hidden description.
+      await screen.findByText('Collapse a record before you follow the latest activity.', {
+        selector: ':not([id])',
+      }),
     ).toBeVisible()
+    await expect(latest()).toHaveAccessibleDescription(
+      'Collapse a record before you follow the latest activity.',
+    )
     // Pressed, the toggle still turns live mode off.
     await expect(latest()).toHaveAttribute('aria-pressed', 'true')
     await userEvent.click(latest())
@@ -953,7 +1053,7 @@ export const HoldsOnlyARunThatRuns: Story = {
 
     // The Run that waits for your action opens first, at its review, not the newer Run.
     await userEvent.click(latest())
-    await waitFor(() => expect(address().get('request')).toBe(approvalOf(asked)))
+    await waitFor(() => expect(address().get('request')).toBe(approvalOf(asked)), stays)
     await reviews('call.b1-op-1')
     await expect(address().get('record')).toBe(asked)
 
@@ -975,8 +1075,8 @@ export const HoldsOnlyARunThatRuns: Story = {
 }
 
 const past = taskRow('past').name
-// Page live mode shows an old record, then follows each new piece of work with no
-// further click, and holds only a Run that runs.
+// Page live mode shows an old record, then follows new work with no further click, and
+// holds only a Run that runs.
 export const FollowsNewWorkFromWhatItShows: Story = {
   beforeEach: () => {
     const run = newRun('p1', past)
@@ -985,7 +1085,7 @@ export const FollowsNewWorkFromWhatItShows: Story = {
   },
   play: async (context) => {
     const { userEvent } = context
-    const { latest, address, press, selects, reviews, idle } = await surface(context)
+    const { latest, address, press, selects, idle } = await surface(context)
     const pressed = () => expect(latest()).toHaveAttribute('aria-pressed', 'true')
     const opened = async (heading: string, row: string, record: string) => {
       await selects(heading, row)
@@ -996,22 +1096,22 @@ export const FollowsNewWorkFromWhatItShows: Story = {
 
     // Nothing runs: live mode shows the newest record, in a Task that has not ended.
     await userEvent.click(latest())
-    await opened('Run p1', 'final value', finalOf(runRow('p1', past).name))
+    await opened('Run p1', 'run p1', runRow('p1', past).name)
 
-    // A new Task replaces it. You click nothing more.
+    // A new Task arrives with a Search, a Describe and a Run that calls an operation. You
+    // click nothing more. Once the old record showed long enough, live mode opens the
+    // newest of that work, the Run's call, and skips the records in between.
     await press('Add task')
-    const fresh = taskRow('t1').name
-    await opened('Task t1', 'Task t1', fresh)
     await press('Add search to newest task')
-    await opened('search 2', 'search 2', toolRow(fresh, 'search-2').name)
     await press('Add describe to newest task')
-    await opened('describe 3', 'describe 3', toolRow(fresh, 'describe-3').name)
-    // Its new Run opens before it has a record, then its first record.
     await press('Add run to newest task')
-    await opened('Run r4', 'run r4', runRow('r4', fresh).name)
     await press('Add call')
     const call = invocationRow('', 'r4-op-5').name
     await opened('call.r4-op-5', 'call.r4-op-5', call)
+    // The loader only ever opened the list, the old record and the call.
+    await expect(new Set(world.reads.map(({ record }) => record))).toEqual(
+      new Set([null, runRow('p1', past).name, call]),
+    )
 
     // The Run holds live mode while it runs: a newer Task, or a Run submitted later in
     // the old Task, never takes over.
@@ -1023,20 +1123,34 @@ export const FollowsNewWorkFromWhatItShows: Story = {
     // Once it ends, live mode finds the Run that runs in the old Task.
     await press('End first running run')
     await opened('Run r7', 'run r7', runRow('r7', past).name)
+  },
+}
 
-    // An action elsewhere waits while that Run runs. Once it ends, the action goes
-    // first, before a Run submitted later.
+// An action elsewhere waits while the Run page live mode holds runs. Once that Run
+// ends, the action goes first, before a Run submitted later.
+export const AnActionGoesFirstOnceItsRunEnds: Story = {
+  beforeEach: () => world.reset([newTask('past', [newRun('p0', past)])]),
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, reviews, idle } = await surface(context)
+    const held = runRow('p0', past).name
+    await userEvent.click(latest())
+    await selects('Run p0', 'run p0')
+
+    await press('Add task')
     await press('Add run to newest task')
     await press('Ask in newest running run')
     await press('Add standalone run')
     await idle()
-    await opened('Run r7', 'run r7', runRow('r7', past).name)
+    await selects('Run p0', 'run p0')
+    await expect(address().get('record')).toBe(held)
+
     await press('End oldest running run')
-    const waits = invocationRow('', 'r8-op-9').name
-    await waitFor(() => expect(address().get('request')).toBe(approvalOf(waits)))
-    await reviews('call.r8-op-9')
+    const waits = invocationRow('', 'r2-op-3').name
+    await waitFor(() => expect(address().get('request')).toBe(approvalOf(waits)), stays)
+    await reviews('call.r2-op-3')
     await expect(address().get('record')).toBe(waits)
-    await pressed()
+    await expect(address().get('live')).toBe('latest')
   },
 }
 
@@ -1052,7 +1166,7 @@ export const PassesARunThatAKeptWindowSaysRuns: Story = {
   beforeEach: () => {
     // `a` runs in the older Task, the newer Task has no record yet, and `a` was
     // submitted after every Run the newer Task will start.
-    world.reset([newTask('newer'), newTask('older', [newRun('a', keptTask, 9)])])
+    world.reset([newTask('newer', [], 0, 10), newTask('older', [newRun('a', keptTask, 9)])])
   },
   play: async (context) => {
     const { userEvent } = context
@@ -1087,11 +1201,11 @@ export const PassesARunThatAKeptWindowSaysRuns: Story = {
 
 /**
  * The Run you follow ends, then a new Run of the same Task starts without any record.
- * Live mode rests on the ended Run's newest record, `rests`, after you `press` the end.
- * It then opens the new Run itself, then its first record. This is the whole journey;
- * navigation.test.ts owns the target rule.
+ * Live mode rests on the ended Run itself after you `press` the end, then opens the new
+ * Run itself. navigation.test.ts owns the target rule, and
+ * FollowsARunsFirstRecordThenItsTask a Run's first record.
  */
-function endsThenANewRunStarts(press: string, rests: [heading: string, row: string]): Story {
+function endsThenANewRunStarts(press: string): Story {
   return {
     beforeEach: () => {
       const run = newRun('a1', alpha)
@@ -1104,10 +1218,11 @@ function endsThenANewRunStarts(press: string, rests: [heading: string, row: stri
       await userEvent.click(latest())
       await selects('call.a1-op-1', 'call.a1-op-1')
 
-      // The Run ends. Live mode stays on and rests on its newest record.
+      // The Run ends. Live mode stays on and rests on the Run itself.
       await click(press)
       await idle()
-      await selects(...rests)
+      await selects('Run a1', 'run a1')
+      await expect(address().get('record')).toBe(runRow('a1', alpha).name)
       await expect(address().get('live')).toBe('latest')
 
       // A new Run of the same Task opens before it has any record.
@@ -1116,20 +1231,219 @@ function endsThenANewRunStarts(press: string, rests: [heading: string, row: stri
       await idle()
       await selects('Run r2', 'run r2')
       await expect(address().get('record')).toBe(runRow('r2', alpha).name)
-
-      // Then its first record.
-      await click('Add call')
-      await selects('call.r2-op-3', 'call.r2-op-3')
-      await expect(address().get('record')).toBe(invocationRow('', 'r2-op-3').name)
+      await expect(address().get('live')).toBe('latest')
     },
   }
 }
-// A Run that succeeded rests on its final value; one that failed, on its call.
-export const ASucceededRunGivesWayToANewRun = endsThenANewRunStarts('End oldest running run', [
-  'Run a1',
-  'final value',
-])
-export const AFailedRunGivesWayToANewRun = endsThenANewRunStarts('Fail oldest running run', [
-  'call.a1-op-1',
-  'call.a1-op-1',
-])
+// Both successful and failed Runs return to the Run before later work arrives.
+export const ASucceededRunGivesWayToANewRun = endsThenANewRunStarts('End oldest running run')
+export const AFailedRunGivesWayToANewRun = endsThenANewRunStarts('Fail oldest running run')
+
+/** Opens the selected operation's `label`, its response by default, expanded, with `find`
+ * in Find when it has one. */
+async function inspect(
+  { canvasElement, userEvent }: Play,
+  find: string | null,
+  label = 'Provider response',
+) {
+  const page = within(canvasElement.ownerDocument.body)
+  const rail = page.getByRole('dialog', { name: 'Activity details' })
+  const expand = within(rail).getByRole('button', { name: `Expand ${label}` })
+  await userEvent.click(expand)
+  const viewer = await page.findByRole('dialog', { name: label })
+  if (find !== null) await userEvent.type(within(viewer).getByRole('searchbox'), find)
+  return { expand, viewer }
+}
+/** Lets the record you inspect show for its minimum time, so only the hold keeps it. */
+const outstay = () => new Promise((resolve) => setTimeout(resolve, MIN_LIVE_RECORD_STAY_MS))
+/**
+ * Live mode steps within a few frames of what arrives. So the record `shown` gives stays on
+ * `record` for a second, at every frame, or live mode moved on.
+ */
+async function keeps(shown: () => string | null, record: string | null) {
+  const end = performance.now() + 1000
+  while (performance.now() < end) {
+    expect(shown()).toBe(record)
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+  }
+}
+/** Changes what Coral holds while the expanded viewer covers the route's buttons. */
+function arrive(kind: Parameters<typeof world.change>[0]) {
+  world.change(kind)
+  world.revalidate()
+}
+
+// Catches: live mode moving on while you inspect a payload or the source expanded, which
+// swaps the record and closes the viewer; the list no longer taking new activity meanwhile;
+// or live mode staying held, or turned off, once you close the viewer.
+const holdsWhileYouInspect = (
+  label: string,
+  find: string | null,
+  /** Whether Expand stays once live mode moves on: the source pane stays for its Run. */
+  expandStays: boolean,
+): Story => ({
+  beforeEach: () => world.reset([]),
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, idle, canvas } = await surface(context)
+    const page = within(context.canvasElement.ownerDocument.body)
+    // The activity arrives first. Turned on, live mode opens its newest record at once.
+    await press('Add task')
+    await idle()
+    await press('Add run to newest task')
+    await idle()
+    await press('Add call')
+    await idle()
+    await userEvent.click(latest())
+    await selects('call.r2-op-3', 'call.r2-op-3')
+    const inspected = address().get('record')
+    const { expand, viewer } = await inspect(context, find, label)
+    await outstay()
+
+    // A new operation arrives and the Run ends. The list takes both; the record stays.
+    arrive('call')
+    await idle()
+    arrive('end')
+    await idle()
+    await waitFor(() =>
+      expect(canvas.getByRole('link', { name: 'call.r2-op-4', hidden: true })).toBeInTheDocument(),
+    )
+    await keeps(() => address().get('record'), inspected)
+    await expect(address().get('live')).toBe('latest')
+    // Behind the open viewer, the toggle stays pressed.
+    await expect(canvas.getByRole('button', { name: 'Live', hidden: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    // The same viewer stays open, as you left it.
+    await expect(page.getByRole('dialog', { name: label })).toBe(viewer)
+    if (find !== null) await expect(within(viewer).getByRole('searchbox')).toHaveValue(find)
+
+    // Closed, focus is back on Expand, then live mode moves on to the Run's newest record,
+    // once the record you inspected has shown for its minimum time.
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(page.queryByRole('dialog', { name: label })).toBeNull())
+    await waitFor(() => expect(address().get('record')).not.toBe(inspected), stays)
+    await expect(expand.isConnected).toBe(expandStays)
+    await expect(address().get('live')).toBe('latest')
+  },
+})
+export const HoldsWhileYouInspectAPayload = holdsWhileYouInspect('Provider response', 'x', false)
+export const HoldsWhileYouInspectTheSource = holdsWhileYouInspect('Accepted source', null, true)
+
+// Catches: a close that turns live mode back on after you turned it off meanwhile.
+const staysOffWhenLiveEnds = (label: string, find: string | null): Story => ({
+  beforeEach: () => world.reset([]),
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, idle } = await surface(context)
+    const page = within(context.canvasElement.ownerDocument.body)
+    await userEvent.click(latest())
+    await press('Add task')
+    await press('Add run to newest task')
+    await press('Add call')
+    await selects('call.r2-op-3', 'call.r2-op-3')
+    const inspected = address().get('record')
+    const { expand } = await inspect(context, find, label)
+    await outstay()
+    // Live mode ends while you inspect: its address drops it, as its toggle does.
+    const off = new URLSearchParams(address())
+    off.delete('live')
+    world.navigate(`?${off}`)
+    await waitFor(() => expect(address().has('live')).toBe(false))
+    arrive('call')
+    await idle()
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(expand).toHaveFocus())
+    await idle()
+    // Nothing moves on, and live mode stays off.
+    await keeps(() => address().get('record'), inspected)
+    await expect(latest()).toHaveAttribute('aria-pressed', 'false')
+    await expect(page.queryByRole('dialog', { name: label })).toBeNull()
+  },
+})
+export const StaysOffWhenLiveEndsWhileYouInspect = staysOffWhenLiveEnds('Provider response', 'a')
+export const StaysOffWhenLiveEndsWhileYouInspectTheSource = staysOffWhenLiveEnds(
+  'Accepted source',
+  null,
+)
+
+// Catches: a viewer that goes away open, as when you go back to another record, and leaves
+// live mode held for good.
+const resumesWhenTheViewerGoesAway = (
+  label: string,
+  find: string | null,
+  /** Where you go meanwhile: somewhere the open viewer is gone. */
+  away: (address: URLSearchParams) => void,
+): Story => ({
+  beforeEach: () => world.reset([]),
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, idle } = await surface(context)
+    const page = within(context.canvasElement.ownerDocument.body)
+    await userEvent.click(latest())
+    await press('Add task')
+    await press('Add run to newest task')
+    await press('Add call')
+    await selects('call.r2-op-3', 'call.r2-op-3')
+    await inspect(context, find, label)
+    const elsewhere = new URLSearchParams(address())
+    away(elsewhere)
+    world.navigate(`?${elsewhere}`)
+    await waitFor(() => expect(page.queryByRole('dialog', { name: label })).toBeNull())
+    await idle()
+    // Live mode holds no more: a new operation opens as it arrives.
+    await press('Add call')
+    await selects('call.r2-op-4', 'call.r2-op-4')
+    await expect(address().get('live')).toBe('latest')
+  },
+})
+// Another record of the Run opens, so the payload's viewer unmounts with its record.
+export const ResumesWhenTheOpenViewerGoesAway = resumesWhenTheViewerGoesAway(
+  'Provider response',
+  'a',
+  (address) => address.set('record', runRow('r2', '').name),
+)
+// The source stays for its Run, so the rail closes: its viewer unmounts with the rail.
+export const ResumesWhenTheOpenSourceGoesAway = resumesWhenTheViewerGoesAway(
+  'Accepted source',
+  null,
+  (address) => address.delete('record'),
+)
+
+// Catches: an approval request that arrives while you inspect a payload or the source
+// expanded taking you to its review, which swaps the record and closes the viewer.
+const holdsAnApproval = (label: string, find: string | null): Story => ({
+  beforeEach: () => world.reset([]),
+  play: async (context) => {
+    const { userEvent } = context
+    const { latest, address, press, selects, reviews, idle, canvas } = await surface(context)
+    const page = within(context.canvasElement.ownerDocument.body)
+    // The activity arrives first. Turned on, live mode opens its newest record at once.
+    await press('Add task')
+    await idle()
+    await press('Add run to newest task')
+    await idle()
+    await press('Add call')
+    await idle()
+    await userEvent.click(latest())
+    await selects('call.r2-op-3', 'call.r2-op-3')
+    const inspected = address().get('record')
+    const { viewer } = await inspect(context, find, label)
+    await outstay()
+    // An operation in the Run now waits for your approval. The list shows it; the record stays.
+    arrive('ask')
+    await idle()
+    await waitFor(() =>
+      expect(canvas.getByRole('link', { name: 'call.r2-op-4', hidden: true })).toBeInTheDocument(),
+    )
+    await keeps(() => address().get('record'), inspected)
+    await expect(address().has('request')).toBe(false)
+    await expect(page.getByRole('dialog', { name: label })).toBe(viewer)
+    // Closed, live mode opens the review.
+    await userEvent.keyboard('{Escape}')
+    await reviews('call.r2-op-4')
+  },
+})
+export const HoldsAnApprovalWhileYouInspect = holdsAnApproval('Provider response', 'x')
+export const HoldsAnApprovalWhileYouInspectTheSource = holdsAnApproval('Accepted source', null)

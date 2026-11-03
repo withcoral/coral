@@ -8,6 +8,7 @@ use coral_db::Transaction;
 use coral_functions::SavedFunctionModule;
 use coral_run::RunModule;
 use coral_search::{SearchIndex, SearchPage, SearchRequest, UniversalSearchModule as SearchModule};
+use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -127,7 +128,7 @@ impl TaskCommands {
                     .provider()
                     .map(|provider| coral_search::provider_filter_value(provider).to_owned()),
                 limit: request.limit().value(),
-                cursor: request.cursor().map(ToString::to_string),
+                offset: request.offset(),
             },
             response: coral_search::projection::search(&page),
         };
@@ -193,7 +194,7 @@ impl TaskCommands {
         // Outside the rejection path: indexing never undoes or rejects a
         // committed save.
         self.index
-            .index_function(coral_functions::SavedFunctionEntry::from_saved(&function));
+            .sync_function(function.workspace_id().clone(), function.id().clone());
         Ok(function)
     }
 
@@ -240,7 +241,13 @@ impl TaskCommands {
         }
         .await;
         match result {
-            Ok(value) => Ok(value),
+            Ok(deleted) => {
+                // The delete never touches the search tables. This only
+                // removes the function's rows sooner than a reconcile pass.
+                self.index
+                    .sync_function(call.workspace_id.clone(), deleted.clone());
+                Ok(deleted)
+            }
             Err(error) => Err(self.reject(call, &id, error).await),
         }
     }
@@ -434,6 +441,8 @@ impl TaskCommands {
         )
         .await?
         .ok_or(Error::TaskNotFound)?;
+        // The command runs in its caller's span, such as an MCP tool call's.
+        tracing::Span::current().record("coral.task.id", safe::id(&task.telemetry_id()));
         if task.outcome().is_some() {
             return Err(Error::TaskClosed);
         }

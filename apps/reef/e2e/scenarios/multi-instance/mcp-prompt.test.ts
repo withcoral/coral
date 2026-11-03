@@ -54,7 +54,7 @@ test('An MCP client on 2026-07-28 approves through the Coral Instance that does 
         expect(update.final_value).toEqual({
           kind: 'value',
           value: expect.objectContaining({
-            data: expect.objectContaining({ status: 'needs_sign_in' }),
+            data: expect.objectContaining({ status: 'needs_person' }),
           }),
         })
         expect(await instances.holder(run)).toBe(owner)

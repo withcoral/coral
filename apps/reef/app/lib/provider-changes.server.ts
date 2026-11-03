@@ -1,7 +1,13 @@
 import { data, redirect, type RouterContextProvider } from 'react-router'
 import { field, privateHeaders } from './management.server'
 import type { ManagementApi } from './management.server'
-import { providerName, providerFailure, uuidOr404 } from './providers.server'
+import {
+  blockerLabel,
+  providerName,
+  providerFailure,
+  toolName,
+  uuidOr404,
+} from './providers.server'
 import { authorizedWorkspace } from './workspace-route.server'
 import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
 import { decodeSelectedTools, selectionKey, type SelectedTool } from '@/views/providers/selection'
@@ -13,14 +19,13 @@ import type { ToolOutcome } from '@/views/providers/types'
  * parsed and checked: rename, enable or disable, remove, or tool policy.
  */
 export async function applyProviderChange(
-  request: Request,
   context: Readonly<RouterContextProvider>,
   params: { workspace: string },
   form: FormData,
 ) {
   const intent = field(form, 'intent')
   try {
-    const { api, workspace: w } = await authorizedWorkspace(request, context, params.workspace, {
+    const { api, workspace: w } = await authorizedWorkspace(context, params.workspace, {
       ownerOnly: true,
     })
     const providersPath = `${w.path}/providers`
@@ -93,6 +98,7 @@ export async function applyProviderChange(
           { api, workspace: w.name, accessState: states[access]! },
         )
         const failed = outcomes.filter((outcome) => outcome.status === 'failed')
+        const blockers = await currentBlockers(api, w.name, [...byProvider.keys()])
         const message =
           failed.length === 0
             ? `Tool policy saved for ${countLabel(selected.length, 'tool')}.`
@@ -103,6 +109,7 @@ export async function applyProviderChange(
             message,
             credential: null,
             tools: outcomes,
+            blockers,
           },
           { headers: privateHeaders },
         )
@@ -161,9 +168,10 @@ async function applyPolicyBatches(
         tool,
       }))
       try {
+        const parent = providerName(workspace, batch.provider)
         await api.policies.updateToolPolicies({
-          parent: providerName(workspace, batch.provider),
-          policies: batch.tools.map((tool) => ({ tool, accessState })),
+          parent,
+          policies: batch.tools.map((key) => ({ tool: toolName(parent, key), accessState })),
         })
         for (const target of targets) outcomes.push({ ...target, status: 'updated' })
       } catch (error) {
@@ -176,6 +184,30 @@ async function applyPolicyBatches(
     Array.from({ length: Math.min(POLICY_BATCH_CONCURRENCY, batches.length) }, worker),
   )
   return outcomes
+}
+
+/**
+ * Each provider's blockers, which a policy change can move: a provider whose
+ * tools are all disabled has none ready. Undefined when a read fails, which
+ * leaves the page to reload them, as the policy change itself succeeded.
+ */
+async function currentBlockers(api: ManagementApi, workspace: string, providers: string[]) {
+  try {
+    const entries: (readonly [string, string[]])[] = []
+    for (const batch of chunk(providers, POLICY_BATCH_CONCURRENCY)) {
+      entries.push(
+        ...(await Promise.all(
+          batch.map(async (id) => {
+            const provider = await api.providers.getProvider({ name: providerName(workspace, id) })
+            return [id, provider.blockers.map(blockerLabel)] as const
+          }),
+        )),
+      )
+    }
+    return Object.fromEntries(entries)
+  } catch {
+    return undefined
+  }
 }
 
 function failureReason(error: unknown) {

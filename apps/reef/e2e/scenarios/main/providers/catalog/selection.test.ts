@@ -65,7 +65,12 @@ test('A large catalog scrolls inside its table with aligned sticky rows', async 
       })
       expect(overflowingAncestors).toEqual([])
       await table.evaluate((element) => {
-        element.scrollTop = 600
+        // Scroll 600px into the large catalog, whatever Coral's own tools take above it.
+        const large = [...element.querySelectorAll('[role="row"][aria-level="1"]')].find((row) =>
+          row.textContent?.includes('Selection'),
+        )!
+        element.scrollTop =
+          large.getBoundingClientRect().top - element.getBoundingClientRect().top + 600
       })
       const geometry = await table.evaluate((element) => {
         const header = element.querySelector('[role="row"]')!

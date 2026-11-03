@@ -9,7 +9,7 @@ use super::*;
     reason = "one upgrade covers what a Run, its Invocation and a Saved Function stored"
 )]
 async fn upgrade_renames_the_tool_failures_runs_and_saved_functions_stored() {
-    let fixture = TestModules::before_migration(46, Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::without_migration(46, Arc::new(ImmediateEngine::default())).await;
     let saved_functions = SavedFunctionModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),

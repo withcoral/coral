@@ -12,13 +12,22 @@
 //!
 //! # Interface
 //!
-//! - [`UniversalSearchModule::search`] runs one ranked statement per Search
-//!   Entity kind, one retriever each, and fuses their windows by rank into
-//!   bounded pages of Search Hits with one status per retriever. An omitted
-//!   query lists current items in Call Path order and reads no index.
-//! - [`UniversalSearchModule::describe`] resolves one exact complete Call Path
-//!   and reads no index. `signature::abridge` shortens the declaration it
-//!   returns; search reads the complete one.
+//! - [`UniversalSearchModule::discover`] is the one discovery operation that
+//!   MCP `search` and `describe` and the Built-in Tool `coral.workspace.search`
+//!   all reach, each request in one read snapshot. A query runs one ranked
+//!   statement per Search Entity kind, one retriever each, and fuses their
+//!   windows by position, strong matches first, into bounded pages of Search
+//!   Hits with one status per retriever. An omitted query lists current items in Call Path order and
+//!   reads no index. Exact Call Paths resolve to their Authoring
+//!   Descriptions and read no index; `signature::abridge` shortens the
+//!   declaration each returns, while search reads the complete one. A path
+//!   that names nothing the caller can discover comes back missing, with
+//!   the nearest Discoverable Call Paths of its Call Root.
+//!   [`UniversalSearchModule::search`] and [`UniversalSearchModule::describe`]
+//!   are its query mode and its one-path mode.
+//! - [`projection`] turns what discovery found into the result types
+//!   coral-catalog declares for `coral.workspace.search`, which MCP returns
+//!   and Task history retains unchanged.
 //! - [`UniversalSearchModule::searchable_providers`] lists the Provider
 //!   Call Roots a search's filter accepts from the caller. A filter that names
 //!   another is refused with that list.
@@ -35,12 +44,12 @@
 //!   index on what the owners hold.
 //!
 //! The engine inside [`UniversalSearchModule`] normalizes the query, hands the
-//! same terms to every retriever, fuses by rank, pages, and encodes
-//! non-authorizing cursors. It never names a Search Entity kind. Every search
+//! same terms to every retriever, fuses by position, and pages by a plain
+//! offset that authorizes nothing. It never names a Search Entity kind. Every search
 //! page and exact description applies the owners' current visibility rules.
 //! Discovery never starts an interactive authorization or refreshes credentials.
 
-mod cursor;
+mod discovery;
 mod eligibility;
 mod error;
 mod evidence;
@@ -55,6 +64,7 @@ mod retriever;
 mod signature;
 mod snippet;
 mod storage;
+mod suggestion;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
 mod types;
@@ -62,34 +72,36 @@ use std::sync::Arc;
 
 use coral_db::{Database, Transaction};
 use coral_provider::LoadedGenerations;
+use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 
-use cursor::decode_cursor_position;
 use page::{Ranked, hydrate_page_in_transaction};
 use retriever::functions::SavedFunctionRetriever;
 use retriever::tools::ToolRetriever;
 use retriever::{
-    Answer, EntityRetriever, QueryError, QueryRequest, RequestContext, abandon_query, begin_query,
-    count, end_query,
+    Answer, EntityRetriever, QueryError, QueryRequest, RequestContext, WindowEntry, abandon_query,
+    begin_query, count, end_query,
 };
 
+pub use discovery::{Discovery, DiscoveryRequest, ExactLookup, ExactPaths, MissingPath};
 pub use error::Error;
 pub use index::SearchIndex;
 pub use storage::{StorageError, prepare_storage};
+pub use suggestion::SUGGESTIONS_MAX;
 pub use types::{
     ApprovalRequirement, AuthoringDescription, CallPath, EntityKind, ExactAuthoringDescription,
     ExactSavedFunctionDetail, ProviderCallRoot, ProviderId, RetrieverCoverage, RetrieverState,
-    RetrieverStatus, SEARCH_CURSOR_MAX_BYTES, SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX,
+    RetrieverStatus, SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX,
     SEARCH_EVIDENCE_PATH_MAX_BYTES, SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES,
     SEARCH_QUERY_MAX_BYTES, SEARCH_RESULT_LIMIT_MAX, SavedFunctionAuthoringDescription,
-    SearchCursor, SearchEvidence, SearchHit, SearchIndexFailure, SearchIndexState, SearchInput,
-    SearchLimit, SearchPage, SearchQuery, SearchRequest, ToolAuthoringDescription, ToolHit,
+    SearchEvidence, SearchHit, SearchIndexFailure, SearchIndexState, SearchInput, SearchLimit,
+    SearchPage, SearchQuery, SearchRequest, ToolAuthoringDescription, ToolHit,
     provider_filter_value,
 };
 
 /// How many ranked Search Entities each retriever hands the engine. The
-/// fused union of the windows is the result universe a cursor pages through.
+/// fused union of the windows is the result universe an offset pages through.
 const RETRIEVAL_WINDOW: usize = 100;
 
 /// Transport-neutral Universal Search Module.
@@ -97,8 +109,10 @@ const RETRIEVAL_WINDOW: usize = 100;
 pub struct UniversalSearchModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
-    /// One retriever per Search Entity kind. At equal rank, an earlier
-    /// retriever's Entity comes first: Saved Functions, then Tools.
+    /// One retriever per Search Entity kind. At equal mark and position, an
+    /// earlier retriever's Entity comes first: Tools, then Saved Functions.
+    /// A strong Saved Function therefore leads every Tool below its
+    /// position, but not the strong Tool at its own.
     retrievers: Arc<[Arc<dyn EntityRetriever>]>,
 }
 
@@ -149,23 +163,54 @@ impl UniversalSearchModule {
             database,
             workspaces,
             retrievers: Arc::new([
-                Arc::new(functions) as Arc<dyn EntityRetriever>,
-                Arc::new(tools),
+                Arc::new(tools) as Arc<dyn EntityRetriever>,
+                Arc::new(functions),
             ]),
         }
     }
 
-    /// Searches visible Search Entities and returns a page of Search Hits.
+    /// Discovers what the caller can call: a ranked page of Search Hits for
+    /// a query, or the exact descriptions of named Call Paths. Each request
+    /// reads one snapshot, so a page and the descriptions it holds come from
+    /// one catalog state.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::search`] for a query. For paths, authority and shared
+    /// persistence failures, and [`Error::UndeclaredTypes`] when `types`
+    /// names a type the one path does not declare. A path the caller cannot
+    /// discover is missing, not an error.
+    pub async fn discover(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        request: &DiscoveryRequest,
+    ) -> Result<Discovery, Error> {
+        match request {
+            DiscoveryRequest::Query(request) => self
+                .page(actor, workspace_id, request)
+                .await
+                .map(Discovery::Page),
+            DiscoveryRequest::Paths(paths) => self
+                .look_up(actor, workspace_id, paths)
+                .await
+                .map(Discovery::Exact),
+        }
+    }
+
+    /// Searches visible Search Entities and returns a page of Search Hits:
+    /// the query mode of [`Self::discover`].
     ///
     /// Each retriever applies current visibility and ranks its own kind; the
-    /// engine fuses the windows by position. Only the page's items are
-    /// hydrated, each into a hit with a signature line, snippets, and
-    /// evidence of why it matched. Every page carries one status per retriever. An omitted query
+    /// engine fuses the windows by position, strong matches first. Only the
+    /// page's items are hydrated, each into a hit with a signature line,
+    /// snippets, and evidence of why it matched. Every page carries one
+    /// status per retriever. An omitted query
     /// lists every visible Entity in Call Path order and reads no index.
     ///
     /// # Errors
     ///
-    /// Returns invalid cursor, authority, or shared persistence failures, and
+    /// Returns authority or shared persistence failures, and
     /// [`Error::ServiceUnavailable`] when every applied retriever fails to rank.
     pub async fn search(
         &self,
@@ -173,16 +218,18 @@ impl UniversalSearchModule {
         workspace_id: &WorkspaceId,
         request: &SearchRequest,
     ) -> Result<SearchPage, Error> {
-        let normalized = request
+        self.page(actor, workspace_id, request).await
+    }
+
+    async fn page(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        request: &SearchRequest,
+    ) -> Result<SearchPage, Error> {
+        let terms = request
             .search_query()
-            .map(|query| normalize_query(query.as_str()));
-        let cursor_position = decode_cursor_position(
-            request.cursor(),
-            actor,
-            workspace_id,
-            normalized.as_ref().map(|query| query.text.as_str()),
-            request.provider(),
-        )?;
+            .map(|query| query_terms(query.as_str()));
 
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
@@ -193,20 +240,20 @@ impl UniversalSearchModule {
             actor,
             authority: &authority,
             workspace_id,
-            terms: normalized.as_ref().map(|query| query.terms.as_slice()),
+            terms: terms.as_deref(),
             loaded: &loaded,
         };
-        let (ranked, statuses) = match &normalized {
+        let (ranked, statuses) = match &terms {
             None => {
                 self.list_in_transaction(&mut transaction, context, request.provider())
                     .await?
             }
-            Some(query) => {
+            Some(terms) => {
                 self.rank_in_transaction(
                     &mut transaction,
                     context,
                     &QueryRequest {
-                        terms: &query.terms,
+                        terms,
                         provider_filter: request.provider(),
                         window: RETRIEVAL_WINDOW,
                     },
@@ -219,10 +266,9 @@ impl UniversalSearchModule {
             context,
             &self.retrievers,
             &ranked,
-            cursor_position.min(ranked.len()),
+            usize::try_from(request.offset())
+                .map_or(ranked.len(), |offset| offset.min(ranked.len())),
             request.limit(),
-            normalized.as_ref().map(|query| query.text.as_str()),
-            request.provider(),
             statuses,
         )
         .await?;
@@ -308,7 +354,7 @@ impl UniversalSearchModule {
         context: RequestContext<'_>,
         request: &QueryRequest<'_>,
     ) -> Result<(Vec<Ranked>, Vec<RetrieverStatus>), Error> {
-        let mut fused = Vec::new();
+        let mut windows = Vec::with_capacity(self.retrievers.len());
         let mut statuses = Vec::with_capacity(self.retrievers.len());
         let mut applied = 0usize;
         let mut failed = 0usize;
@@ -319,15 +365,7 @@ impl UniversalSearchModule {
                 Ok(Answer { window, coverage }) => {
                     end_query(transaction).await?;
                     applied += 1;
-                    fused.extend(window.into_iter().enumerate().map(|(rank, entity)| {
-                        (
-                            rank,
-                            Ranked {
-                                retriever_index,
-                                entity,
-                            },
-                        )
-                    }));
+                    windows.push((retriever_index, window));
                     ranked_status(retriever.kind(), coverage)
                 }
                 Err(QueryError::Retriever(error)) => {
@@ -336,9 +374,9 @@ impl UniversalSearchModule {
                     failed += 1;
                     // TODO: attach an error monitor to failed rankings.
                     tracing::error!(
-                        retriever = ?retriever.kind(),
-                        workspace_id = %context.workspace_id,
-                        error = %error,
+                        coral.search.retriever = safe::kind(retriever.kind().as_str()),
+                        coral.workspace.id = safe::id(&context.workspace_id),
+                        error.type = safe::kind(error.code()),
                         "a Universal Search retriever could not rank"
                     );
                     RetrieverStatus::new(
@@ -354,23 +392,11 @@ impl UniversalSearchModule {
         if applied > 0 && failed == applied {
             return Err(Error::ServiceUnavailable);
         }
-        // Reciprocal-rank fusion with equal weights. No Entity comes from two
-        // retrievers, since Call Paths are kind-prefixed, so its fused score
-        // is 1 / (k + rank) and the fused order is the order of rank. At equal
-        // rank the earlier retriever comes first, then the Call Path.
-        fused.sort_by(|(left_rank, left), (right_rank, right)| {
-            left_rank
-                .cmp(right_rank)
-                .then_with(|| left.retriever_index.cmp(&right.retriever_index))
-                .then_with(|| left.entity.call_path().cmp(right.entity.call_path()))
-        });
-        Ok((
-            fused.into_iter().map(|(_rank, ranked)| ranked).collect(),
-            statuses,
-        ))
+        Ok((fuse(windows), statuses))
     }
 
-    /// Describes one exact complete current Call Path independently of relevance health.
+    /// Describes one exact complete current Call Path independently of
+    /// relevance health: the one-path mode of [`Self::discover`].
     ///
     /// The declaration is abridged. With `types`, it holds those types of the
     /// declaration instead, with their own nested types abridged the same
@@ -394,25 +420,77 @@ impl UniversalSearchModule {
         call_path: &CallPath,
         types: &[String],
     ) -> Result<ExactAuthoringDescription, Error> {
-        if types.len() > DESCRIBE_TYPES_MAX
-            || types
-                .iter()
-                .any(|name| name.len() > DESCRIBE_TYPE_NAME_MAX_BYTES)
-        {
-            return Err(Error::TypesLimit);
-        }
+        let paths = ExactPaths::one(call_path, types)?;
+        self.look_up(actor, workspace_id, &paths)
+            .await
+            .map_err(conceal_description_error)?
+            .descriptions
+            .into_iter()
+            .next()
+            .ok_or(Error::AuthoringDescriptionNotFound)
+    }
+
+    /// Describes each named path the caller can discover, in one read
+    /// snapshot, and reports the rest missing. A path that does not parse
+    /// is missing too: it names nothing.
+    async fn look_up(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        paths: &ExactPaths,
+    ) -> Result<ExactLookup, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
             .authorize(&mut transaction, actor, workspace_id)
-            .await
-            .map_err(conceal_description_error)?;
-        let exact = self
-            .describe_in_transaction(&mut transaction, actor, &authority, workspace_id, call_path)
-            .await
-            .map_err(conceal_description_error)?
-            .ok_or(Error::AuthoringDescriptionNotFound)?;
+            .await?;
+        let mut found = Vec::with_capacity(paths.paths().len());
+        let mut missing = Vec::new();
+        let loaded = LoadedGenerations::default();
+        let context = RequestContext {
+            actor,
+            authority: &authority,
+            workspace_id,
+            terms: None,
+            loaded: &loaded,
+        };
+        for written in paths.paths() {
+            let exact = match CallPath::parse(written) {
+                Ok(call_path) => self
+                    .describe_in_transaction(
+                        &mut transaction,
+                        actor,
+                        &authority,
+                        workspace_id,
+                        &call_path,
+                    )
+                    .await
+                    .map_err(conceal_description_error),
+                Err(_unparsable) => Ok(None),
+            };
+            match exact {
+                Ok(Some(exact)) => found.push(exact),
+                Ok(None) | Err(Error::AuthoringDescriptionNotFound) => {
+                    let suggestions = suggestion::suggestions(
+                        &mut transaction,
+                        context,
+                        &self.retrievers,
+                        written,
+                    )
+                    .await?;
+                    missing.push(MissingPath::new(written.clone(), suggestions));
+                }
+                Err(error) => return Err(error),
+            }
+        }
         transaction.commit().await?;
-        exact.abridge(types)
+        let descriptions = found
+            .into_iter()
+            .map(|exact| exact.abridge(paths.types()))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ExactLookup {
+            descriptions,
+            missing,
+        })
     }
 
     /// Checks exact owning-resource visibility before an attributed attempt begins.
@@ -524,17 +602,11 @@ impl UniversalSearchModule {
     }
 }
 
-/// The normalized query: its text binds the cursor, its terms go to every
-/// retriever.
-struct NormalizedQuery {
-    text: String,
-    terms: Vec<String>,
-}
-
-/// Trims, collapses whitespace, and lowercases the query, then splits it into
-/// terms on every character that is not alphanumeric or one of `_ - . # / @`.
-/// The whole query is one more term. Terms are sorted and deduplicated.
-fn normalize_query(query: &str) -> NormalizedQuery {
+/// The terms every retriever gets. Trims, collapses whitespace, and lowercases
+/// the query, then splits it into terms on every character that is not
+/// alphanumeric or one of `_ - . # / @`. The whole query is one more term.
+/// Terms are sorted and deduplicated.
+fn query_terms(query: &str) -> Vec<String> {
     let text = query
         .split_whitespace()
         .map(str::to_lowercase)
@@ -550,7 +622,36 @@ fn normalize_query(query: &str) -> NormalizedQuery {
         .collect::<Vec<_>>();
     terms.sort();
     terms.dedup();
-    NormalizedQuery { text, terms }
+    terms
+}
+
+/// Fuses the retrievers' windows, each `(retriever index, window)` in
+/// retriever order: the strong entries of every window by position, then the
+/// weak ones by position. At equal position the earlier retriever comes
+/// first. Each retriever marks its own entries by its own rule and signals,
+/// so only a position and that mark cross into the engine, and no score is
+/// compared across kinds. A weak entry is demoted below every strong one,
+/// never dropped.
+fn fuse(windows: Vec<(usize, Vec<WindowEntry>)>) -> Vec<Ranked> {
+    let mut entries = windows
+        .into_iter()
+        .flat_map(|(retriever_index, window)| {
+            window
+                .into_iter()
+                .enumerate()
+                .map(move |(position, entry)| (!entry.strong, position, retriever_index, entry))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(weak, position, retriever_index, _entry)| {
+        (*weak, *position, *retriever_index)
+    });
+    entries
+        .into_iter()
+        .map(|(_weak, _position, retriever_index, entry)| Ranked {
+            retriever_index,
+            entity: entry.entity,
+        })
+        .collect()
 }
 
 /// A ranked retriever's state follows from its coverage.

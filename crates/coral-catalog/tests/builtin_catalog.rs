@@ -60,8 +60,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 r#""displayName"?: string"#,
                 r#""namespace": string"#,
                 r#""source": ProviderSourceInput"#,
-                r#"{ "accountRequired": boolean; "authentication": "none" | "bearer" | "header_credentials" | "basic_auth" | "query_credentials" | "oauth_device_code" | "oauth_authorization_code"; "credentialRoute": "none" | "fixed" | "caller"; "displayName": string; "namespace": string; "status": "published"; "tools": number }"#,
-                r#"{ "namespace": string; "status": "needs_sign_in"; "url": string }"#,
+                r#"{ "namespace": string; "status": "needs_person"; "url": string }"#,
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
@@ -103,7 +102,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 r#""refresh"?: true"#,
                 r#""credentialRoute"?: "none" | "fixed" | "caller""#,
                 r#""status": "published""#,
-                r#""status": "needs_sign_in""#,
+                r#""status": "needs_person""#,
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
@@ -124,6 +123,25 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             &[
                 r#""namespace": string"#,
                 r#""tools": ({} & Record<string, "enabled" | "approval_required" | "disabled">)"#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
+        (
+            BuiltinTool::Search,
+            // Read-only, so the default Tool Access State is enabled.
+            ToolHints::new(Some(true), None, Some(true), None),
+            &[
+                // One overload per mode, each returning only its own result.
+                r#"export default function (input: { "limit"?: number; "offset"?: number; "provider"?: string; "query"?: string }): Promise<{ data: SearchResult; metadata: { kind: "builtin" } }>;"#,
+                r#"export default function (input: { "paths": Array<string> }): Promise<{ data: PathsResult; metadata: { kind: "builtin" } }>;"#,
+                r#"export default function (input: { "paths": [string]; "types": Array<string> }): Promise<{ data: PathsResult; metadata: { kind: "builtin" } }>;"#,
+                r#""hits": Array<SearchHit>"#,
+                r#""next_offset"?: number"#,
+                r#""signature_line": string"#,
+                r#""missing": Array<MissingPath>"#,
+                r#""suggestions": Array<string>"#,
+                r#""kind": "provider_tool""#,
+                r#""kind": "saved_function""#,
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
@@ -164,6 +182,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             "getPolicy",
             "getProvider",
             "listProviders",
+            "search",
             "updatePolicy",
             "updateProvider"
         ]
@@ -211,7 +230,6 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         assert!(paths.contains(&path), "{path} in {paths:?}");
     }
     assert!(paths.contains(&"result.data.url"), "{paths:?}");
-    assert!(paths.contains(&"result.data.tools"), "{paths:?}");
 
     assert_eq!(
         coral_catalog::credential_contract_in_transaction(&mut transaction, &first)

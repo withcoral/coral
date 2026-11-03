@@ -3,6 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tracing::Instrument as _;
+use tracing::instrument::WithSubscriber as _;
+
 use crate::execution::ExecutionStop;
 use crate::invocation::{InvocationHostError, ToolInvoker};
 use crate::program_output::{ProgramOutputWriteError, ProgramOutputWriter};
@@ -21,19 +24,35 @@ pub(crate) async fn execute(
 ) -> ExecutionCompletion {
     let host = Arc::new(RunProgramHost {
         runtime: tokio::runtime::Handle::current(),
+        span: tracing::Span::current(),
+        trace_id: invoker.trace_id(),
         value_limits,
         stop: stop.clone(),
         linked_snapshots,
         invoker,
         output,
     });
-    tokio::task::spawn_blocking(move || engine.execute(package, host, stop))
-        .await
-        .unwrap_or(ExecutionCompletion::ProgramHostTerminated)
+    // The Program's thread records its telemetry where this task does. Where
+    // this task has no dispatcher, it is left to find the global one, which
+    // may be set by then.
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
+    tokio::task::spawn_blocking(move || {
+        if dispatch.is::<tracing::subscriber::NoSubscriber>() {
+            engine.execute(package, host, stop)
+        } else {
+            tracing::dispatcher::with_default(&dispatch, || engine.execute(package, host, stop))
+        }
+    })
+    .await
+    .unwrap_or(ExecutionCompletion::ProgramHostTerminated)
 }
 
 struct RunProgramHost {
     runtime: tokio::runtime::Handle,
+    /// The Run's execute span: each Tool Invocation's span is its child.
+    span: tracing::Span,
+    /// The Run Trace identifier each Coral Failure names to the Program.
+    trace_id: Option<String>,
     value_limits: ValueLimits,
     stop: Arc<ExecutionStop>,
     /// Linked Saved Function path to the identity of the Run's snapshot.
@@ -81,6 +100,10 @@ impl coral_v8::ProgramHost for RunProgramHost {
         self.value_limits
     }
 
+    fn trace_id(&self) -> Option<String> {
+        self.trace_id.clone()
+    }
+
     fn invoke(
         self: Arc<Self>,
         call_path: String,
@@ -89,42 +112,53 @@ impl coral_v8::ProgramHost for RunProgramHost {
     ) -> coral_v8::ToolFuture {
         let source_location = self.source_location(location);
         let runtime = self.runtime.clone();
+        let span = self.span.clone();
+        let trace_id = self.trace_id.clone();
         // Start independently of V8 polling. Run termination owns cancellation
         // and durable child shutdown even if execution drops this JoinHandle.
-        let invocation = runtime.spawn(async move {
-            let _panic_guard = StopPanickingInvocation(self.stop.clone());
-            let arguments = serde_json::from_str(&arguments_json).map_err(|_error| {
-                coral_v8::ToolHostError::Rejected {
-                    code: CoralFailure::InvalidInput.code(),
-                    message: CoralFailure::InvalidInput.message().into(),
-                    trace_id: None,
-                }
-            })?;
-            self.invoker
-                .invoke(&call_path, arguments, source_location)
-                .await
-                .map_err(|error| match error {
-                    InvocationHostError::Rejected(failure) => coral_v8::ToolHostError::Rejected {
-                        code: failure.code(),
-                        message: failure.message(),
-                        trace_id: None,
-                    },
-                    InvocationHostError::Upstream {
-                        rejection,
-                        outcome_json,
-                    } => coral_v8::ToolHostError::Upstream {
-                        code: rejection.code(),
-                        message: rejection.message(),
-                        outcome_json,
-                    },
-                    InvocationHostError::Fatal(_private_error) => {
-                        // V8 may still be running noncooperative JavaScript,
-                        // rather than polling this Tool's completion.
-                        self.stop.request();
-                        coral_v8::ToolHostError::Fatal
+        let invocation = runtime.spawn(
+            async move {
+                let _panic_guard = StopPanickingInvocation(self.stop.clone());
+                let arguments = serde_json::from_str(&arguments_json).map_err(|_error| {
+                    coral_v8::ToolHostError::Rejected {
+                        code: CoralFailure::InvalidInput.code(),
+                        message: CoralFailure::InvalidInput.message().into(),
+                        trace_id: trace_id.clone(),
+                        suggestions: Vec::new(),
                     }
-                })
-        });
+                })?;
+                self.invoker
+                    .invoke(&call_path, arguments, source_location)
+                    .await
+                    .map_err(|error| match error {
+                        InvocationHostError::Rejected(failure) => {
+                            coral_v8::ToolHostError::Rejected {
+                                code: failure.code(),
+                                message: failure.message(),
+                                trace_id: trace_id.clone(),
+                                suggestions: failure.suggestions().to_vec(),
+                            }
+                        }
+                        InvocationHostError::Upstream {
+                            rejection,
+                            outcome_json,
+                        } => coral_v8::ToolHostError::Upstream {
+                            code: rejection.code(),
+                            message: rejection.message(),
+                            outcome_json,
+                        },
+                        InvocationHostError::Fatal(_private_error) => {
+                            // V8 may still be running noncooperative JavaScript,
+                            // rather than polling this Tool's completion.
+                            self.stop.request();
+                            coral_v8::ToolHostError::Fatal
+                        }
+                    })
+            }
+            .instrument(span)
+            // Records its telemetry where the Program's thread does.
+            .with_current_subscriber(),
+        );
         Box::pin(async move {
             invocation
                 .await

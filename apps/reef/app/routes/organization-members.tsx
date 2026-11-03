@@ -27,7 +27,7 @@ export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/man
 export async function loader({ request, context }: Route.LoaderArgs) {
   assertPeopleManagement(context)
   try {
-    const all = management(request, context)
+    const all = management(context)
     const api = all.organizationMemberships
     const [result, current, workspaces, candidates] = await Promise.all([
       api.listOrganizationMemberships({
@@ -81,7 +81,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (transferTo && !/^organizationMemberships\/[^/]+$/.test(transferTo))
     throw new Response('Invalid target', { status: 400 })
   try {
-    await management(request, context).organizationMemberships.deleteOrganizationMembership({
+    await management(context).organizationMemberships.deleteOrganizationMembership({
       name: field(form, 'name'),
       etag: field(form, 'etag'),
       transferTo,

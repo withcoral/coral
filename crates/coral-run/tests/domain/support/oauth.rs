@@ -1,5 +1,6 @@
 //! OAuth Account fixtures: a gated token endpoint and a User's connected
-//! caller Account on the fixture Provider, shared by the refresh and fence tests.
+//! caller Account on the fixture Provider, shared by the refresh and
+//! enforcement tests.
 use crate::tests::*;
 use axum::http::StatusCode;
 use coral_credentials::Secret;
@@ -138,7 +139,8 @@ pub(crate) async fn oauth_account(
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let authorization = accounts
         .start_user_authorization(
             &context,

@@ -396,11 +396,8 @@ export const SearchFailedCoverage = panel(
 /** A later page counts only its own results; nothing matched and nothing remains. */
 export const SearchLaterPageEmpty = panel(
   'Search · a later page with no results',
-  toolPage(
-    searchCall,
-    discovery({ ...searched, cursor: 'next-page' }, JSON.stringify({ hits: [], has_more: false })),
-  ),
-  { evidence: ['a later page, up to 5 results', 'Results (0)', 'This page has no results.'] },
+  toolPage(searchCall, discovery({ ...searched, offset: 20 }, JSON.stringify({ hits: [] }))),
+  { evidence: ['from result 21, up to 5 results', 'Results (0)', 'This page has no results.'] },
 )
 export const SearchMixedResults = panel(
   'Search · tools and saved functions',
@@ -1476,14 +1473,14 @@ const returned = '{"reminded":24,"owners":9,"totalOverdue":18450.70,"skipped":["
  */
 export const FinalValue: Story = {
   ...panel(
-    'Final value',
+    'Return value',
     runPage(
       runDetail(endedRun('succeeded'), { terminal: { kind: 'succeeded', finalValue: returned } }),
     ),
     { evidence: '"totalOverdue"' },
   ),
   // Literal, so Storybook's static index shows this name too.
-  name: 'Final value',
+  name: 'Return value',
   play: async (context) => {
     await meta.play(context)
     const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
@@ -1491,13 +1488,13 @@ export const FinalValue: Story = {
     await expect(
       within(header).getByRole('heading', { level: 2, name: 'Send invoice reminders' }),
     ).toBeVisible()
-    await expect(header).toHaveTextContent('program run')
+    await expect(header).not.toHaveTextContent('program run')
     await expect(within(header).getByText('succeeded', { exact: true })).toBeVisible()
     // The returned value shows directly in its own card, not behind a disclosure.
-    const value = within(dialog).getByRole('region', { name: 'Final value' })
+    const value = within(dialog).getByRole('region', { name: 'Return value' })
     await expect(value).toBeVisible()
-    await expect(value.textContent).toBe(value.querySelector('pre')!.textContent)
-    await expect(within(dialog).queryByText('Final value', { selector: 'summary' })).toBeNull()
+    await expect(within(value).getByRole('group', { name: 'Structure' })).toBeVisible()
+    await expect(within(dialog).queryByText('Return value', { selector: 'summary' })).toBeNull()
     for (const token of ['"reminded"', '24', '"owners"', '9', '18450.70', '"INV-4180"'])
       await expect(value).toHaveTextContent(token)
     // A returned value is not an emission: no emitted-output card or title. The Run's
@@ -1519,7 +1516,7 @@ export const RunSucceededWithoutFinalValue = lean({
   play: async (context) => {
     await meta.play(context)
     const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
-    await expect(within(dialog).queryByRole('region', { name: 'Final value' })).toBeNull()
+    await expect(within(dialog).queryByRole('region', { name: 'Return value' })).toBeNull()
   },
 })
 /** Text no record panel shows: boilerplate about absent evidence, outcome prose the badge
@@ -1687,8 +1684,8 @@ export const InvocationPendingOnConnection = panel(
   ),
   { evidence: 'coral.providers.linear.listIssues' },
 )
-/** A tool in a running Run ends with View in history and Cancel run. On a narrow screen
- * they keep a gap between them, and wrap rather than overflow. */
+/** A tool in a running Run ends at its own outcome, with no Run controls. On a narrow
+ * screen it does not overflow. */
 export const InvocationInRunningRunNarrow: Story = {
   ...panel(
     'Tool call · in a running Run, narrow screen',
@@ -1698,16 +1695,6 @@ export const InvocationInRunningRunNarrow: Story = {
   play: async (context) => {
     await meta.play(context)
     const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
-    const history = within(dialog).getByRole('link', { name: 'View in history' })
-    const cancel = within(dialog).getByRole('button', { name: 'Cancel run' })
-    await expect(history).toBeVisible()
-    await expect(cancel).toBeVisible()
-    const a = history.getBoundingClientRect()
-    const b = cancel.getBoundingClientRect()
-    // Apart on the same line, or on lines of their own: never touching.
-    const sameLine = a.bottom > b.top && b.bottom > a.top
-    if (sameLine) await expect(b.left - a.right).toBeGreaterThanOrEqual(8)
-    else await expect(b.top - a.bottom).toBeGreaterThanOrEqual(8)
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
   },
 }
@@ -2005,7 +1992,7 @@ export const ApprovalInlineOpenApiDocument: Story = {
     await expect(within(review).queryByRole('button', { name: /^Show / })).toBeNull()
     // Nothing crosses the drawer's edge, and the decision stays in reach.
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
-    await expect(within(review).getByRole('button', { name: 'Approve this call' })).toBeVisible()
+    await expect(within(review).getByRole('button', { name: 'Approve' })).toBeVisible()
   },
 }
 /** A typical addProvider call: plain JSON that round-trips exactly. */
@@ -2078,7 +2065,7 @@ export const ApprovalAddProviderOpenApi: Story = {
     await expect(review).not.toHaveTextContent('shown below')
     await expect(within(review).queryByRole('button', { name: /^Show / })).toBeNull()
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
-    for (const name of ['Deny this call', 'Approve this call'])
+    for (const name of ['Decline', 'Approve'])
       await expect(within(review).getByRole('button', { name })).toBeVisible()
   },
 }
@@ -2117,10 +2104,10 @@ const approvals = {
     'Checked the exact invoice recipient.',
   ),
   declined: approvalStory(
-    panel('Approval · denied, with comment', approvalPage(approval(settle('declined'))), {
+    panel('Approval · declined, with comment', approvalPage(approval(settle('declined'))), {
       evidence: 'This owner left the company.',
     }),
-    'Denied',
+    'Declined',
     'This owner left the company.',
   ),
   expired: approvalStory(
@@ -2137,7 +2124,7 @@ const approvals = {
   ),
 } satisfies Record<ApprovalState, Story>
 export const ApprovalApproved = approvals.approved
-export const ApprovalDenied = approvals.declined
+export const ApprovalDeclined = approvals.declined
 export const ApprovalExpired = approvals.expired
 export const ApprovalClosed = approvals.closed
 export const ApprovalPendingReconnecting = panel(
@@ -2183,7 +2170,7 @@ export const ApprovalWithoutNames: Story = {
     const requested = within(dialog).getByText('Requested by', { selector: 'dt' })
     await expect(requested.nextElementSibling!.textContent).toBe('Unknown agent')
     await expect(dialog).not.toHaveTextContent(/unavailable|Provider:|agents\//)
-    for (const name of ['Deny this call', 'Approve this call'])
+    for (const name of ['Decline', 'Approve'])
       await expect(within(dialog).getByRole('button', { name })).toBeVisible()
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
   },
@@ -2298,7 +2285,6 @@ function connectionStory(
       await expect(header.getByRole('heading', { level: 3 }).textContent).toBe(
         state === 'pending' ? 'Connect your Linear account' : 'Connect your account',
       )
-      await expect(header.getByText('account connection request')).toBeVisible()
       await expect(header.getByText(state.replaceAll('_', ' '))).toBeVisible()
       await expect(
         opened.queryAllByRole('button', { name: 'Close details' }).length,
@@ -2436,11 +2422,21 @@ function payloadCard(story: Story, card: string, title: string): Story {
       await expect(within(header).queryByText(/^(diagnostic|retained)$/)).toBeNull()
       const terms = within(dialog.querySelector('dl')!).getAllByRole('term')
       await expect(terms.map((term) => term.textContent)).toEqual(['Started'])
-      // The card shows only the payload; the facts above carry no heading.
-      await expect(region.textContent).toBe(region.querySelector('pre')!.textContent)
+      // The payload shows in its viewer; the facts above carry no heading.
+      await expect(
+        within(region).getByRole('group', { name: /^(Structure|Lines|Raw)$/ }),
+      ).toBeVisible()
       await expect(within(dialog).queryByRole('heading', { name: 'Context' })).toBeNull()
       await expect(dialog).not.toHaveTextContent('Technical details')
       await expect(dialog).not.toHaveTextContent('This log is not a user-facing result')
+      // The record ends at its payload: nothing, such as a link or a separator, shows below
+      // it. A detail leaving the split is not part of the record.
+      const selected = within(dialog).getByRole('region', { name: 'Selected record' })
+      const record = [...selected.children].find((child) => child.contains(region))!
+      const end = region.getBoundingClientRect().bottom
+      for (const element of record.querySelectorAll('*'))
+        if (!element.contains(region) && !region.contains(element))
+          await expect(element.getBoundingClientRect().bottom).toBeLessThanOrEqual(end + 0.5)
     },
   }
 }
@@ -2476,7 +2472,8 @@ export const EmittedLongNarrow = panel(
     ),
     'emission #7',
   ),
-  { narrow: true, evidence: 'owner-40@example.com' },
+  // A large value opens shallow: its list folds and states its size.
+  { narrow: true, evidence: '40 items' },
 )
 EmittedLongNarrow.play = payloadCard(EmittedLongNarrow, 'Emitted value', 'coral.emit #7').play
 const logged = (level: LogLevel, message: string) =>
@@ -2616,4 +2613,98 @@ export const UnknownEvent = events.unknown
 export const DetailUnavailable = panel(
   'Unavailable · record removed or concealed',
   panelPage(invocation(), null, { unavailable: true, selectedRow: null }),
+)
+
+// Large payloads ------------------------------------------------------------
+const largeResponse = JSON.stringify({
+  status: 200,
+  data: Array.from({ length: 150 }, (_, index) => ({
+    id: index,
+    title: `Release ${index}`,
+    body: `Notes for release ${index}. `.repeat(12),
+  })),
+  metadata: { kind: 'http' },
+  // An integer no JavaScript number holds: it must show exactly as retained.
+}).replace(/"id":\d+,/, '"id":9007199254740993123,')
+const largeResponsePage = invocationPage(
+  invocationDetail(endedInvocation('upstream_outcome'), {
+    // Enough arguments that the detail pane scrolls around the response too.
+    arguments: JSON.stringify(
+      Object.fromEntries(Array.from({ length: 30 }, (_, index) => [`field${index}`, index])),
+    ),
+    result: { kind: 'upstream_outcome', value: largeResponse },
+  }),
+)
+/** The scrolling element around `element`: the pane that owns its vertical scroll. */
+function scroller(element: HTMLElement) {
+  for (let node = element.parentElement; node; node = node.parentElement)
+    if (
+      /(auto|scroll)/.test(getComputedStyle(node).overflowY) &&
+      node.scrollHeight > node.clientHeight
+    )
+      return node
+  return null
+}
+/**
+ * A large response in the detail pane: it scrolls inside its card, not the pane, and Expand
+ * opens it from the keyboard. Closing the viewer returns focus, the record and both scroll
+ * positions as they were. Wax's PayloadViewer stories own what the viewer shows and finds.
+ */
+function largePayloadStory(story: Story): Story {
+  return {
+    ...story,
+    play: async (context) => {
+      await meta.play(context)
+      const { userEvent } = context
+      const body = within(context.canvasElement.ownerDocument.body)
+      const opened = await body.findByRole('dialog')
+      const response = within(opened).getByRole('region', { name: 'Provider response' })
+      const tree = within(response).getByRole('group', { name: 'Structure' })
+      // Opened, its list makes the card scroll.
+      await userEvent.click(within(tree).getByRole('button', { name: 'data: 150 items' }))
+      const content = within(response).getByRole('group', { name: 'Payload content' })
+      const actions = within(response).getByRole('group', { name: 'Payload actions' })
+      await expect(content.scrollHeight).toBeGreaterThan(content.clientHeight)
+      const pane = scroller(response)!
+      await expect(pane).not.toBeNull()
+      await expect(response.contains(pane)).toBe(false)
+      const paneBefore = pane.scrollTop
+      content.scrollTop = 200
+      await waitFor(() => expect(content.scrollTop).toBe(200))
+      await expect(pane.scrollTop).toBe(paneBefore)
+      await expect(opened.scrollWidth).toBeLessThanOrEqual(opened.clientWidth)
+      const heading = within(opened).getAllByRole('heading', { level: 2 })[0]!.textContent
+      // Scroll the pane, as you would to reach Expand under content above it.
+      const expand = within(actions).getByRole('button', { name: 'Expand Provider response' })
+      expand.scrollIntoView({ block: 'center' })
+      const position = pane.scrollTop
+      await expect(position).toBeGreaterThan(0)
+      // Keyboard: Enter on the focused Expand opens the viewer.
+      expand.focus()
+      await userEvent.keyboard('{Enter}')
+      const viewer = await body.findByRole('dialog', { name: 'Provider response' })
+      await waitFor(() =>
+        expect(within(viewer).getByRole('group', { name: 'Structure' })).toBeVisible(),
+      )
+      await userEvent.keyboard('{Escape}')
+      await waitFor(() =>
+        expect(body.queryByRole('dialog', { name: 'Provider response' })).toBeNull(),
+      )
+      await waitFor(() => expect(expand).toHaveFocus())
+      await expect(pane.scrollTop).toBe(position)
+      await expect(content.scrollTop).toBe(200)
+      await expect(within(opened).getAllByRole('heading', { level: 2 })[0]!).toHaveTextContent(
+        heading!,
+      )
+    },
+  }
+}
+export const InvocationLargeResponse = largePayloadStory(
+  panel('Operation call · large response', largeResponsePage, { evidence: '150 items' }),
+)
+export const InvocationLargeResponseNarrow = largePayloadStory(
+  panel('Operation call · large response, narrow screen', largeResponsePage, {
+    evidence: '150 items',
+    narrow: true,
+  }),
 )

@@ -16,8 +16,7 @@ use coral_catalog::{
 use coral_policy::{ExactToolRules, ToolPolicyModule};
 use coral_provider::account::AccountModule;
 use coral_provider::{
-    ManagementRequestId, ProviderModule, ProviderSetupId, PublishedProvider,
-    ResolvedInvocationTool, WorkspaceProviderPublisher,
+    ProviderModule, ProviderRenamer, ProviderSetupId, PublishedProvider, ResolvedInvocationTool,
 };
 use coral_workspace::{AuthenticatedPrincipal, ChangeContext, Principal, WorkspaceId};
 
@@ -31,6 +30,7 @@ mod add_provider;
 mod get_policy;
 mod get_provider;
 mod list_providers;
+mod search;
 mod setup_tool;
 mod update_policy;
 mod update_provider;
@@ -44,6 +44,7 @@ pub(crate) enum BuiltinCall {
     GetPolicy(get_policy::GetPolicy),
     UpdatePolicy(update_policy::UpdatePolicy),
     UpdateProvider(Box<update_provider::UpdateProvider>),
+    Search(Box<search::Search>),
 }
 
 impl BuiltinCall {
@@ -82,6 +83,9 @@ impl BuiltinCall {
                         update_provider::UpdateProvider::new(*arguments)
                             .map(|call| Self::UpdateProvider(Box::new(call)))
                     }
+                    BuiltinArguments::Search(arguments) => {
+                        search::Search::new(arguments).map(|call| Self::Search(Box::new(call)))
+                    }
                 }),
         )
     }
@@ -95,12 +99,13 @@ impl BuiltinCall {
             Self::GetPolicy(call) => call.perform(host).await,
             Self::UpdatePolicy(call) => call.perform(host).await,
             Self::UpdateProvider(call) => call.perform(host).await,
+            Self::Search(call) => call.perform(host).await,
         }
     }
 }
 
-/// How an Invocation whose worker was lost after the Dispatch Fence ends with
-/// its Run, from what its Tool left behind. `None` when the Tool
+/// How an Invocation whose worker was lost after the Policy Enforcement Point
+/// ends with its Run, from what its Tool left behind. `None` when the Tool
 /// leaves nothing Coral can read, as an upstream Tool does.
 pub(crate) async fn recover(
     transaction: &mut coral_db::Transaction<'_>,
@@ -119,9 +124,9 @@ pub(crate) async fn recover(
         return Ok(None);
     };
     match binding.tool() {
-        Some(BuiltinTool::AddProvider) => add_provider::recover(transaction, run, invocation)
-            .await
-            .map(Some),
+        // addProvider publishes nothing, so the Run ended first. Its Setup
+        // expires at its deadline.
+        Some(BuiltinTool::AddProvider) => Ok(Some((InvocationResultKind::RunTerminated, None))),
         Some(BuiltinTool::UpdateProvider) => update_provider::recover(transaction, run, invocation)
             .await
             .map(Some),
@@ -131,7 +136,8 @@ pub(crate) async fn recover(
             BuiltinTool::ListProviders
             | BuiltinTool::GetProvider
             | BuiltinTool::GetPolicy
-            | BuiltinTool::UpdatePolicy,
+            | BuiltinTool::UpdatePolicy
+            | BuiltinTool::Search,
         )
         | None => Ok(None),
     }
@@ -155,7 +161,7 @@ pub(crate) trait InvokingRun: Send + Sync {
 }
 
 /// What a Built-in Tool acts through: the invoking Principal in the
-/// Run's Workspace, the workflow Reef publishes with, and the Reef origin its
+/// Run's Workspace, the workflow Reef renames with, and the Reef origin its
 /// results link to.
 pub(crate) struct BuiltinHost<'a> {
     pub(crate) database: &'a coral_db::Database,
@@ -163,7 +169,9 @@ pub(crate) struct BuiltinHost<'a> {
     pub(crate) policies: &'a ToolPolicyModule,
     /// Where people sign in; without it, nobody can.
     pub(crate) accounts: Option<&'a AccountModule>,
-    pub(crate) publisher: Option<&'a dyn WorkspaceProviderPublisher>,
+    pub(crate) renamer: Option<&'a dyn ProviderRenamer>,
+    /// Where `search` discovers, as the invoking Principal.
+    pub(crate) search: &'a coral_search::UniversalSearchModule,
     pub(crate) actor: &'a AuthenticatedPrincipal,
     /// The invoking User's change context; `None` for an Agent, which
     /// reaches no Tool that changes the Workspace.
@@ -171,8 +179,6 @@ pub(crate) struct BuiltinHost<'a> {
     pub(crate) principal: &'a Principal,
     pub(crate) workspace_id: &'a WorkspaceId,
     pub(crate) human_interface: &'a HumanInterfaceUrl,
-    /// The Invocation's identity, which makes a repeated Publication an exact replay.
-    pub(crate) request_id: &'a ManagementRequestId,
     pub(crate) run: &'a dyn InvokingRun,
 }
 
@@ -220,7 +226,7 @@ fn setup_url(host: &BuiltinHost<'_>, setup: &ProviderSetupId) -> String {
 /// the Program can catch; anything else is a host defect.
 fn authority_error(error: coral_provider::Error) -> Error {
     match error {
-        coral_provider::Error::Workspace(error) if crate::fence::loses_authority(&error) => {
+        coral_provider::Error::Workspace(error) if crate::enforcement::loses_authority(&error) => {
             Error::InvocationRejected(CoralFailure::AuthorityLost.into())
         }
         other => other.into(),

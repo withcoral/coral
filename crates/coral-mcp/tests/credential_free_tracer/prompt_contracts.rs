@@ -70,7 +70,7 @@ impl ClientHandler for PromptingClient {
     }
 }
 
-struct Session {
+pub(super) struct Session {
     service: RunningService<RoleClient, PromptingClient>,
     prompts: Arc<Mutex<Vec<ElicitRequestParams>>>,
     prompted: tokio::sync::watch::Receiver<usize>,
@@ -78,7 +78,7 @@ struct Session {
 }
 
 impl Session {
-    async fn open(
+    pub(super) async fn open(
         endpoint: &str,
         version: &ProtocolVersion,
         answers: Vec<Option<ElicitationAction>>,
@@ -122,7 +122,7 @@ impl Session {
         }
     }
 
-    async fn call(&self, name: &'static str, arguments: Value) -> Value {
+    pub(super) async fn call(&self, name: &'static str, arguments: Value) -> Value {
         let result: CallToolResult = self
             .service
             .call_tool(
@@ -137,7 +137,7 @@ impl Session {
         result["structuredContent"].clone()
     }
 
-    async fn start_task(&self) -> String {
+    pub(super) async fn start_task(&self) -> String {
         self.call("start_task", json!({"intent":"Answer required actions"}))
             .await["task_id"]
             .as_str()
@@ -157,7 +157,7 @@ impl Session {
         .await
     }
 
-    async fn wait_terminal(&self, mut update: Value) -> Value {
+    pub(super) async fn wait_terminal(&self, mut update: Value) -> Value {
         while update["state"] == "running" {
             update = self
                 .call(
@@ -169,7 +169,11 @@ impl Session {
         update
     }
 
-    fn prompts(&self) -> Vec<ElicitRequestParams> {
+    pub(super) async fn close(self) {
+        self.service.cancel().await.expect("close MCP client");
+    }
+
+    pub(super) fn prompts(&self) -> Vec<ElicitRequestParams> {
         self.prompts.lock().expect("prompts").clone()
     }
 
@@ -260,6 +264,68 @@ async fn required_actions_end_the_initial_wait_and_replay_on_every_version() {
         &tracer.workspace_a,
     )
     .await;
+}
+
+/// A Program parked on a person cannot finish by waiting, so neither the
+/// default `exec` wait nor a full `wait` runs out: each returns the action as
+/// soon as it appears.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_required_action_ends_the_default_exec_wait_and_a_wait_early() {
+    let tracer = approval_tracer().await;
+    let client = tracer.sdk().await;
+    let task = super::start_task(&client, "Hand off to a person early").await;
+    let tools = client.list_all_tools().await.expect("list MCP tools");
+    let default_wait_ms = tools
+        .iter()
+        .find(|tool| tool.name == "exec")
+        .and_then(|tool| tool.input_schema.get("properties"))
+        .and_then(|properties| properties.pointer("/wait_ms/default"))
+        .and_then(Value::as_u64)
+        .expect("advertised default wait");
+    assert_eq!(default_wait_ms, 30_000);
+    let early = Duration::from_millis(default_wait_ms / 2);
+
+    let parked = tokio::time::timeout(
+        early,
+        super::call(
+            &client,
+            "exec",
+            json!({"task_id":task, "intent":"Park on an approval", "program":PROGRAM}),
+        ),
+    )
+    .await
+    .expect("a required action ends the exec wait before its default runs out");
+    let update = super::structured(&parked);
+    assert_eq!(update["state"], "running");
+    assert_eq!(update["required_actions"][0]["kind"], "invocation_approval");
+
+    let accepted = super::call(
+        &client,
+        "exec",
+        json!({
+            "task_id":task, "intent":"Log, then park on an approval", "wait_ms":0,
+            "program":format!("console.log('before approval'); {PROGRAM}")
+        }),
+    )
+    .await;
+    let accepted = super::structured(&accepted);
+    let parked = tokio::time::timeout(
+        early,
+        super::call(
+            &client,
+            "wait",
+            json!({
+                "run_id":accepted["run_id"], "cursor":accepted["next_cursor"],
+                "wait_ms":default_wait_ms
+            }),
+        ),
+    )
+    .await
+    .expect("a required action ends the wait before it runs out");
+    let update = super::structured(&parked);
+    assert_eq!(update["state"], "running");
+    assert_eq!(update["required_actions"][0]["kind"], "invocation_approval");
+    assert_eq!(update["events"].as_array().expect("output").len(), 1);
 }
 
 /// One call prompts each current action once. Accepting approves the
@@ -588,6 +654,22 @@ async fn a_raw_retry_completes_the_call_that_asked(endpoint: &str, version: &Pro
     assert_eq!(
         forged["message"], "inputResponses answer a request that was not asked",
         "{forged}"
+    );
+
+    let misdirected = session
+        .result(
+            "tools/call",
+            json!({
+                "name":"no-such-tool-canary", "arguments":{},
+                "requestState":asked["requestState"],
+            }),
+        )
+        .await
+        .expect_err("only exec and wait continue a Run");
+    assert_eq!(misdirected["code"], -32602, "{misdirected}");
+    assert_eq!(
+        misdirected["message"], "tool does not accept requestState",
+        "{misdirected}"
     );
 
     session.client_capabilities = json!({});

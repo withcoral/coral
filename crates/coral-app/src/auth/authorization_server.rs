@@ -17,6 +17,7 @@ use axum::extract::State;
 use axum::http::header;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use axum::serve::ListenerExt as _;
 use coral_auth::authorization_codes::AuthorizationCodes;
 use coral_auth::oauth_clients::OAuthClients;
 use coral_auth::{SessionTokenIssuer, UserDirectory};
@@ -33,8 +34,10 @@ mod provider_callback;
 mod query;
 mod registration;
 mod response;
+mod revoke;
 mod sign_in_cookie;
 mod token;
+mod web_session;
 mod workspace_choice;
 
 use self::client_metadata::{ClientMetadataResolver, HttpClientMetadataResolver};
@@ -162,7 +165,10 @@ impl CoralAuthorizationServer {
         start_listener(
             bind,
             health_routes(
-                coral_telemetry::trace_http_routes(provider_callback::router(accounts)),
+                coral_telemetry::trace_http_routes(
+                    provider_callback::router(accounts),
+                    coral_telemetry::metric::Interface::Auth,
+                ),
                 Some(readiness),
             ),
         )
@@ -228,7 +234,10 @@ impl CoralAuthorizationServer {
         start_listener(
             bind_addr,
             health_routes(
-                coral_telemetry::trace_http_routes(auth_router(state)),
+                coral_telemetry::trace_http_routes(
+                    auth_router(state),
+                    coral_telemetry::metric::Interface::Auth,
+                ),
                 self.readiness,
             ),
         )
@@ -247,6 +256,10 @@ fn auth_router(state: AuthorizationServerHttpState) -> Router {
             get(authorize::oauth_authorize_get).post(authorize::oauth_authorize_post),
         )
         .route("/oauth/token", post(token::oauth_token))
+        .route("/oauth/revoke", post(revoke::oauth_revoke))
+        .route("/oauth/session", post(web_session::start))
+        .route("/oauth/session/token", post(web_session::token))
+        .route("/oauth/session/end", post(web_session::end))
         .route("/oauth/register", post(registration::register))
         .route(OIDC_CALLBACK_PATH, get(callback::oidc_callback))
         .route(
@@ -287,6 +300,13 @@ async fn start_listener(
     let local_addr = listener.local_addr().map_err(AuthServerError::LocalAddr)?;
     let endpoint_uri = format!("http://{local_addr}");
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    // axum leaves Nagle's algorithm on, so a small write can wait for the
+    // client's delayed ACK.
+    let listener = listener.tap_io(|stream| {
+        if stream.set_nodelay(true).is_err() {
+            tracing::warn!("failed to set TCP_NODELAY on an accepted connection");
+        }
+    });
     let task = tokio::spawn(async move {
         axum::serve(listener, router)
             .with_graceful_shutdown(async {
@@ -364,9 +384,10 @@ impl Drop for RunningCoralAuthorizationServer {
 #[derive(Clone)]
 struct AuthorizationServerHttpState {
     settings: Arc<ResolvedAuthSettings>,
-    session_tokens: SessionTokenIssuer,
     /// Authorization codes awaiting redemption, shared by every process.
     codes: AuthorizationCodes,
+    /// Redeems codes and refresh tokens into access tokens.
+    tokens: coral_auth::user_tokens::UserTokens,
     provider_client: OidcProviderClient,
     authorization_resources: Arc<BTreeSet<String>>,
     workspace_resource_family: Option<Arc<WorkspaceMcpUrls>>,
@@ -431,10 +452,12 @@ impl AuthorizationServerHttpState {
         }
         let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
         let organization = coral_workspace::OrganizationModule::new(database.clone());
+        let tokens = coral_auth::user_tokens::UserTokens::new(database.clone(), session_tokens)
+            .with_refresh_grant_lifetime(settings.refresh_token_ttl());
         Ok(Self {
             settings,
-            session_tokens,
             codes: AuthorizationCodes::new(database),
+            tokens,
             provider_client: OidcProviderClient::new(outbound_policy)
                 .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
             authorization_resources,
@@ -566,8 +589,13 @@ async fn authorization_server_metadata(
         "authorization_endpoint": format!("{}/oauth/authorize", authorization_server.issuer),
         "token_endpoint": format!("{}/oauth/token", authorization_server.issuer),
         "registration_endpoint": format!("{}/oauth/register", authorization_server.issuer),
+        // Revocation accepts refresh tokens only; access tokens expire.
+        "revocation_endpoint": format!("{}/oauth/revoke", authorization_server.issuer),
+        "revocation_endpoint_auth_methods_supported": ["none"],
+        // Reef's web sessions; `/token` and `/end` sit beneath it.
+        "coral_web_session_endpoint": format!("{}/oauth/session", authorization_server.issuer),
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
         "client_id_metadata_document_supported": true,
@@ -858,8 +886,11 @@ mod tests {
                 "authorization_endpoint": "http://localhost:9080/oauth/authorize",
                 "token_endpoint": "http://localhost:9080/oauth/token",
                 "registration_endpoint": "http://localhost:9080/oauth/register",
+                "revocation_endpoint": "http://localhost:9080/oauth/revoke",
+                "revocation_endpoint_auth_methods_supported": ["none"],
+                "coral_web_session_endpoint": "http://localhost:9080/oauth/session",
                 "response_types_supported": ["code"],
-                "grant_types_supported": ["authorization_code"],
+                "grant_types_supported": ["authorization_code", "refresh_token"],
                 "code_challenge_methods_supported": ["S256"],
                 "token_endpoint_auth_methods_supported": ["none"],
                 "client_id_metadata_document_supported": true,
@@ -938,7 +969,10 @@ mod tests {
         assert_eq!(response.headers()["cache-control"], "no-store");
         assert_eq!(response.headers()["content-type"], "application/json");
         let registered: Value = response.json().await.unwrap();
-        assert_eq!(registered["grant_types"], json!(["authorization_code"]));
+        assert_eq!(
+            registered["grant_types"],
+            json!(["authorization_code", "refresh_token"])
+        );
         let id = registered["client_id"].as_str().unwrap();
         assert!(id.starts_with("dcr_"));
         for _ in 0..59 {

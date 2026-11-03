@@ -25,9 +25,10 @@
   bootstrap-resolved operator destination policy to domain modules. Identity and
   inbound listener selection do not determine outbound permissions. See
   [ADR 0008](docs/adr/0008-outbound-network-permissions.md) for composition defaults.
-- Keep cross-crate W3C propagation, safe telemetry fields, and export filtering
-  in `coral-telemetry`. Domain modules own signal timing. Application bootstrap
-  owns exporter configuration.
+- Keep cross-crate W3C propagation, safe telemetry fields, the `coral.*`
+  metric catalog, and export filtering in `coral-telemetry`. Domain modules own
+  signal timing and record metrics through `coral_telemetry::metric`.
+  Application bootstrap owns exporter configuration.
 - Keep generated files marked `linguist-generated` in `.gitattributes`.
 
 ### Persistence
@@ -47,9 +48,9 @@
 - Open read-only work with `Database::begin_read_snapshot` and non-holding
   checks. `Database::begin` takes SQLite's write lock at `BEGIN`, so it waits
   behind every other writer.
-- The Dispatch Fence and the held rechecks before it read the fact rows
-  they never write (a Workspace, a Provider, a policy rule, an Account) with
-  `RowLock::Shared`
+- The Policy Enforcement Point and the held rechecks before it read the fact
+  rows they never write (a Workspace, a Provider, a policy rule, an Account)
+  with `RowLock::Shared`
   (`Transaction::fetch_optional_locked`; `coral_db::RowLock` documents what
   each backend does). Other decisions still take the exclusive no-op `UPDATE`
   hold on those rows; a row the transaction goes on to write always keeps it.
@@ -64,7 +65,7 @@
   wake-up is a hint; the held recheck decides.
 - A nonterminal Run's row and Events are written only through its Run
   Owner: the Program paths (Emissions, Logs, Invocation admission, held
-  rechecks, the Dispatch Fence, Invocation completion), the outside
+  rechecks, the Policy Enforcement Point, Invocation completion), the outside
   requests (an approval decision, a cancellation) and the owner's timers
   (the Run deadline, each Approval Request's and connection request's
   deadline) alike. An Event is applied in owner memory, a row write is a
@@ -79,8 +80,8 @@
   before it finds the deadline passed),
   the owner's own writes read the
   clock only for their own sample (the start mark, the terminal write and a
-  recovered owner's one chunk date a timeout they find passed; the Dispatch
-  Fence judges an approved
+  recovered owner's one chunk date a timeout they find passed; the Policy
+  Enforcement Point judges an approved
   request's deadline at dispatch, contract line 3, and records no expiry),
   and no chunk commit is predicated on the clock (contract line 5). Nothing
   outside the owner compares `now` with those deadlines to write TimedOut
@@ -115,6 +116,10 @@
   own bounds do (suspect after one lease without a commit, self-interrupt
   after three, constants in `crates/coral-run/src/execution.rs`), and the
   supervisor of a panicked owner task writes the same one Interrupted chunk.
+- A write to a source never touches the Universal Search tables, and they keep
+  no foreign key to a source but the Workspace. Notify `SearchIndex` after the
+  commit with ids alone; its reconcile pass repairs what a notification missed
+  ([ADR 0017](docs/adr/0017-universal-search-never-gates-the-catalog.md)).
 - Give each independently identified entity one stable ID as its sole primary
   key. Use a composite primary key only when the tuple is the domain identity.
 - For Workspace-owned data, every externally influenced read or write must
@@ -145,6 +150,9 @@
 
 ### Reef and Desktop
 
+- `apps/reef/server-tracing.js` owns Reef's server spans. Keep their attributes
+  within the keys `coral-telemetry` exports (`crates/coral-telemetry/src/field.rs`);
+  no export filter runs in Reef, so a new attribute reaches the backend as written.
 - Wax (`apps/reef/app/wax`) owns reusable visual behavior and styling. Extend
   its primitives when a UI needs a missing capability; app-specific modules
   compose Wax and own layout, not a parallel set of controls or theme values.

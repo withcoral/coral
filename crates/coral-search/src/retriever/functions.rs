@@ -11,12 +11,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_functions::SavedFunctionSearchMaterial;
+use coral_telemetry::safe;
 
 use super::plan::QueryPlan;
 use super::repository;
 use super::{
     Answer, EntityRef, EntityRetriever, Hydrated, Listing, QueryError, QueryRequest,
-    RequestContext, SavedFunctionRef, count,
+    RequestContext, SavedFunctionRef, WindowEntry, count,
 };
 use crate::evidence::{EvidenceBuilder, EvidenceTerms};
 use crate::hit::{HitMaterial, hit_text};
@@ -117,16 +118,19 @@ impl EntityRetriever for SavedFunctionRetriever {
         let near_spellings: Arc<[String]> = ranked.near_spellings.into();
         let mut window = Vec::new();
         for function in ranked.entities.into_iter().take(request.window) {
-            // A row of a function deleted after the owner read cannot rank:
-            // the cascade removes it in the same snapshot.
+            // A function's delete leaves its row for a later write, so only
+            // what the owner holds now may answer.
             let Some(material) = functions.get(&function.saved_function_id) else {
                 continue;
             };
-            window.push(EntityRef::SavedFunction(SavedFunctionRef {
-                material: material.clone(),
-                call_path: function.call_path,
-                near_spellings: Arc::clone(&near_spellings),
-            }));
+            window.push(WindowEntry {
+                entity: EntityRef::SavedFunction(SavedFunctionRef {
+                    material: material.clone(),
+                    call_path: function.call_path,
+                    near_spellings: Arc::clone(&near_spellings),
+                }),
+                strong: strong_function(&plan, &function.matched),
+            });
         }
         Ok(Answer {
             coverage: RetrieverCoverage::new(
@@ -200,7 +204,8 @@ impl EntityRetriever for SavedFunctionRetriever {
         }
         let Some(matched) = evidence.build() else {
             tracing::debug!(
-                call_path = function.call_path.as_str(),
+                coral.saved_function.call_path =
+                    safe::id(&super::RankedCallPath(&function.call_path)),
                 "a ranked Saved Function has no evidence and leaves the page"
             );
             return Ok(Hydrated::Dropped);
@@ -245,6 +250,14 @@ impl EntityRetriever for SavedFunctionRetriever {
             exact.detail().clone(),
         )))
     }
+}
+
+/// Whether a ranked Saved Function is a strong match, by its retriever's own
+/// rule: a field holds the query's words in order, or a word of its path
+/// starts with a content word of the query. One that shares only description
+/// words with the query is weak, so it follows every strong Tool.
+fn strong_function(plan: &QueryPlan, matched: &repository::RowMatch) -> bool {
+    matched.phrase_points > 0 || plan.content_words_starting([matched.name.as_str()]) > 0
 }
 
 /// The Principal's current Saved Functions. Reads no source or declaration.

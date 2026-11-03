@@ -1,7 +1,7 @@
 use std::any::Any;
 
 use rmcp::ErrorData;
-use rmcp::model::{Tool, ToolAnnotations};
+use rmcp::model::{MetaObject, Tool, ToolAnnotations};
 use schemars::transform::{RestrictFormats, Transform as _};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::Deserialize;
@@ -22,9 +22,13 @@ const FUNCTION_PATH_DESCRIPTION: &str =
 const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible provider tools and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`, or `coral.workspace` for the Built-in Provider's tools. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows provider tools to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
 const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
-pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 10_000;
+pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 30_000;
 pub(crate) const DEFAULT_WAIT_MS: u64 = 0;
 pub(crate) const MAX_WAIT_MS: u64 = 30_000;
+
+/// Claude Code sends a tool with this `_meta` key in its first request instead
+/// of deferring it behind tool search. Other clients ignore the key.
+const ALWAYS_LOAD_META_KEY: &str = "anthropic/alwaysLoad";
 
 pub(crate) trait ToolArguments: DeserializeOwned + JsonSchema + Any {
     const NAME: &'static str;
@@ -74,10 +78,9 @@ pub(crate) struct SearchArguments {
     )]
     pub(crate) limit: Option<u16>,
     #[schemars(
-        length(min = 1),
-        description = "The next_cursor from the previous page, with the same query and provider."
+        description = "The next_offset from the previous page, with the same query and provider."
     )]
-    pub(crate) cursor: Option<String>,
+    pub(crate) offset: Option<u32>,
 }
 
 impl ToolArguments for SearchArguments {
@@ -187,7 +190,7 @@ pub(crate) struct ExecArguments {
     #[schemars(
         range(min = 0, max = MAX_WAIT_MS),
         extend("default" = DEFAULT_EXEC_WAIT_MS),
-        description = format!("How long this call waits for output before returning, in milliseconds. Default {DEFAULT_EXEC_WAIT_MS}. 0 returns at once.")
+        description = format!("Longest this call waits for the Run to end or for `required_actions` to change, in milliseconds. New output does not end the wait. Default {DEFAULT_EXEC_WAIT_MS}. 0 returns at once.")
     )]
     pub(crate) wait_ms: Option<u64>,
 }
@@ -213,7 +216,7 @@ pub(crate) struct WaitArguments {
     #[schemars(
         range(min = 0, max = MAX_WAIT_MS),
         extend("default" = DEFAULT_WAIT_MS),
-        description = format!("How long to wait for new output, a required action, or the end of the Run, in milliseconds. Default {DEFAULT_WAIT_MS}.")
+        description = format!("Longest this call waits for the Run to end or for `required_actions` to change, in milliseconds. New output does not end the wait. Default {DEFAULT_WAIT_MS}, which returns at once.")
     )]
     pub(crate) wait_ms: Option<u64>,
 }
@@ -273,12 +276,65 @@ pub(crate) fn parse<T>(arguments: Option<Map<String, Value>>) -> Result<T, Error
 where
     T: ToolArguments,
 {
-    serde_json::from_value(Value::Object(arguments.unwrap_or_default())).map_err(|error| {
+    let arguments = Value::Object(arguments.unwrap_or_default());
+    serde_path_to_error::deserialize(&arguments).map_err(|error| {
+        let failed_field = match error.path().iter().next() {
+            Some(serde_path_to_error::Segment::Map { key }) => Some(key.as_str()),
+            _ => None,
+        };
         ErrorData::invalid_params(
-            format!("invalid arguments for '{}': {error}", T::NAME),
+            format!(
+                "invalid arguments for '{}': {}",
+                T::NAME,
+                argument_problem(T::NAME, &arguments, failed_field)
+            ),
             None,
         )
     })
+}
+
+/// What is wrong with `arguments` to tool `name`, read from the schema Coral
+/// advertises. A deserializer's message quotes the value or key it rejected,
+/// which can be private, so none reaches the caller: the problem names only
+/// the tool's own fields. `failed_field` is the argument the deserializer
+/// failed inside, if any.
+fn argument_problem(name: &str, arguments: &Value, failed_field: Option<&str>) -> String {
+    let schema = TOOLS
+        .iter()
+        .find(|tool| tool.name == name)
+        .map(|tool| tool.input_schema.as_ref());
+    let properties = schema
+        .and_then(|schema| schema.get("properties"))
+        .and_then(Value::as_object);
+    let missing = schema
+        .and_then(|schema| schema.get("required"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .find(|field| arguments.get(field).is_none());
+    if let Some(field) = missing {
+        return format!("missing field `{field}`");
+    }
+    let is_tool_field =
+        |key: &str| properties.is_some_and(|properties| properties.contains_key(key));
+    if let Some(field) = failed_field.filter(|field| is_tool_field(field)) {
+        return format!("the value of `{field}` does not match the tool's input schema");
+    }
+    let unknown = arguments
+        .as_object()
+        .is_some_and(|arguments| arguments.keys().any(|key| !is_tool_field(key)));
+    match properties {
+        Some(properties) if unknown => format!(
+            "an argument is not one the tool takes. It takes: {}",
+            properties
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => "a value does not match the tool's input schema".to_owned(),
+    }
 }
 
 /// Every tool this Adapter serves, as `tools/list` advertises them.
@@ -297,21 +353,18 @@ pub(crate) fn served_name(name: &str) -> Option<&'static str> {
 
 static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
     vec![
-        tool::<StartTaskArguments, crate::projection::StartedTask>(
+        always_loaded(tool::<StartTaskArguments, crate::projection::StartedTask>(
             "Start one Coral Task for one unit of user work.",
             mutation_annotations("Start Task", false, false),
-        ),
-        tool::<SearchArguments, crate::projection::SearchResult>(
+        )),
+        always_loaded(tool::<SearchArguments, coral_catalog::SearchResult>(
             SEARCH_TOOL_DESCRIPTION,
             read_annotations("Search"),
-        ),
-        tool::<
-            DescribeArguments,
-            crate::projection::Description<Option<crate::projection::SavedDetail>>,
-        >(
+        )),
+        always_loaded(tool::<DescribeArguments, coral_catalog::Description>(
             "Describe one exact Call Path: the inputs and result types needed to call it. Result types beyond a size limit appear as field names only or are not shown; describe the same path with types to see them. To compare candidates, call describe for each of them in parallel.",
             read_annotations("Describe"),
-        ),
+        )),
         tool::<SaveFunctionArguments, crate::projection::SavedFunctionResult<'_>>(
             "Atomically create or replace one Saved Function. Programs call it as `coral.functions.<path>(...)`.",
             mutation_annotations("Save Function", true, false),
@@ -320,22 +373,26 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
             "Delete one Saved Function.",
             mutation_annotations("Delete Function", true, false),
         ),
-        tool::<ExecArguments, crate::projection::RunUpdateResult<'_>>(
-            "Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.",
-            mutation_annotations("Execute Program", true, true),
+        always_loaded(
+            tool::<ExecArguments, crate::projection::RunUpdateResult<'_>>(
+                "Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.",
+                mutation_annotations("Execute Program", true, true),
+            ),
         ),
-        tool::<WaitArguments, crate::projection::RunUpdateResult<'_>>(
-            "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Observing consumes nothing, so an earlier cursor reads the same output again.",
-            read_annotations("Wait for Run"),
+        always_loaded(
+            tool::<WaitArguments, crate::projection::RunUpdateResult<'_>>(
+                "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Returns when `required_actions` change, the Run ends, or `wait_ms` runs out, with the output that arrived by then. New output alone does not end the wait. Observing consumes nothing, so an earlier cursor reads the same output again.",
+                read_annotations("Wait for Run"),
+            ),
         ),
         tool::<CancelArguments, crate::projection::RunUpdateResult<'_>>(
             "Request cancellation of one Program Run.",
             mutation_annotations("Cancel Run", true, false),
         ),
-        tool::<EndTaskArguments, crate::projection::EndedTask>(
+        always_loaded(tool::<EndTaskArguments, crate::projection::EndedTask>(
             "Record one Task's success or failure outcome. The first call wins.",
             mutation_annotations("End Task", false, false),
-        ),
+        )),
     ]
 });
 
@@ -355,6 +412,14 @@ where
         Output,
     >()));
     tool
+}
+
+/// Marks a tool every Task uses, so its schema arrives before the first call.
+fn always_loaded(tool: Tool) -> Tool {
+    let mut meta = MetaObject::new();
+    meta.0
+        .insert(ALWAYS_LOAD_META_KEY.into(), Value::Bool(true));
+    tool.with_meta(meta)
 }
 
 pub(crate) fn uuid_schema(generator: &mut SchemaGenerator) -> Schema {
@@ -396,7 +461,72 @@ fn mutation_annotations(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+
+    /// A caller learns which of the tool's fields is missing or has a wrong
+    /// value, and which fields the tool takes, but a rejected value or key
+    /// does not come back in the error.
+    #[test]
+    fn invalid_arguments_name_the_tools_field_and_never_quote_the_caller() {
+        for (arguments, problem) in [
+            (json!({}), "missing field `task_id`"),
+            (
+                json!({"task_id": "t", "outcome": "value-canary"}),
+                "the value of `outcome` does not match the tool's input schema",
+            ),
+            (
+                json!({"task_id": ["value-canary"], "outcome": "success"}),
+                "the value of `task_id` does not match the tool's input schema",
+            ),
+            (
+                json!({"task_id": "t", "outcome": "success", "key-canary": 1}),
+                "an argument is not one the tool takes. It takes: task_id, outcome, feedback",
+            ),
+        ] {
+            let Value::Object(arguments) = arguments else {
+                panic!("object arguments");
+            };
+            let Err(error) = parse::<EndTaskArguments>(Some(arguments)) else {
+                panic!("rejected: {problem}");
+            };
+            assert_eq!(
+                error.message,
+                format!("invalid arguments for 'end_task': {problem}")
+            );
+        }
+    }
+
+    /// The tools every Task uses load in the first request, and the rest stay
+    /// deferred. A new tool fails here until it picks a side.
+    #[test]
+    fn only_the_core_tools_load_in_the_first_request() {
+        let advertised: BTreeMap<String, Option<Value>> = tools()
+            .iter()
+            .map(|tool| {
+                let advertised = serde_json::to_value(tool).expect("tool as JSON");
+                let always_load = advertised
+                    .get("_meta")
+                    .and_then(|meta| meta.get(ALWAYS_LOAD_META_KEY))
+                    .cloned();
+                (tool.name.to_string(), always_load)
+            })
+            .collect();
+        let expected = [
+            ("start_task", Some(json!(true))),
+            ("search", Some(json!(true))),
+            ("exec", Some(json!(true))),
+            ("wait", Some(json!(true))),
+            ("end_task", Some(json!(true))),
+            ("describe", Some(json!(true))),
+            ("save_function", None),
+            ("delete_function", None),
+            ("cancel", None),
+        ]
+        .map(|(name, always_load)| (name.to_owned(), always_load));
+        assert_eq!(advertised, BTreeMap::from(expected));
+    }
 
     /// The `types` schema caps the item count; the per-name byte limit is
     /// domain-validated and not advertised.

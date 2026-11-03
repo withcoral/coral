@@ -10,19 +10,25 @@ publish = false
 workspace = true
 
 [features]
-test-support = ["opentelemetry_sdk/testing"]
+test-support = ["dep:opentelemetry-appender-tracing", "opentelemetry_sdk/testing"]
 
 [dependencies]
 axum = { workspace = true, features = ["matched-path"] }
 http.workspace = true
 http-body.workspace = true
 opentelemetry.workspace = true
+opentelemetry-appender-tracing = { workspace = true, optional = true }
 opentelemetry_sdk.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix.workspace = true
 
 [dev-dependencies]
+opentelemetry-appender-tracing.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 tower = { workspace = true, features = ["util"] }

@@ -23,7 +23,7 @@ runs:
     - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # main after v2.9.2
       with:
         # Bump to drop every saved cache.
-        prefix-key: v1-rust
+        prefix-key: v2-rust
         shared-key: ${{ inputs.cache-key }}
         cache-on-failure: true
         save-if: ${{ github.event_name != 'pull_request' }}

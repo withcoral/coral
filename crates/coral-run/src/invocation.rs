@@ -1,20 +1,20 @@
-//! Run-bound Tool Invocation admission, dispatch fence, and completion,
-//! as Run Requests to the Run Owner.
+//! Run-bound Tool Invocation admission, Policy Enforcement Point, and
+//! completion, as Run Requests to the Run Owner.
 //!
 //! The [`ToolInvoker`] is private to one accepted Program Run. It resolves
 //! a Call Path outside the Run, admits it as one owner request (answered at
 //! Applied: the Invocation row and `invocation.started` ride the owner's next
 //! chunk), plans away from persistence, runs its held rechecks as row work
-//! inside the owner's chunk commits and the Dispatch Fence as one batched
-//! check per chunk commit ([`FenceBatch`], decided by [`crate::fence`]),
-//! decrypts and sends outside every lock after the pre-send check, and
-//! reports the terminal Invocation through the owner: an upstream result at
-//! Applied, a known failure once it is recorded. Operational failure is host-fatal rather than catchable. Known
-//! failures persist the same closed [`CoralFailure`] code and safe
-//! [`Rejection`] message projected to the Program, even during child shutdown. Only shutdown and
-//! recovery record lost dispatching work as indeterminate; a stop that
-//! reaches the owner before a fenced Invocation sends ends it as
-//! `run_terminated` instead.
+//! inside the owner's chunk commits and the Policy Enforcement Point as one
+//! batched check per chunk commit ([`EnforcementBatch`], decided by
+//! [`crate::enforcement`]), decrypts and sends outside every lock after the
+//! pre-send check, and reports the terminal Invocation through the owner: an
+//! upstream result at Applied, a known failure once it is recorded. Operational
+//! failure is host-fatal rather than catchable. Known failures persist the same
+//! closed [`CoralFailure`] code and safe [`Rejection`] message projected to the
+//! Program, even during child shutdown. Only shutdown and recovery record lost
+//! dispatching work as indeterminate; a stop that reaches the owner before a
+//! permitted Invocation sends ends it as `run_terminated` instead.
 
 use std::fmt;
 use std::sync::Arc;
@@ -23,21 +23,24 @@ use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_policy::ToolAccessState;
 use coral_provider::{InvocationCaller, ResolvedInvocationTool};
+use coral_telemetry::{metric, safe};
 use coral_upstream::{McpRejection, McpResources, ReadyDispatch, UpstreamOutcome};
 use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 use tokio::sync::oneshot;
+use tracing::Instrument as _;
 
+use crate::enforcement::{
+    self, ApprovalFact, Checked, Decision, EnforcementScope, EnforcementTarget, InvocationFacts,
+    Refusal, RunFacts, SharedFacts,
+};
 use crate::engine::Clock;
 use crate::execution::ExecutionStop;
-use crate::fence::{
-    self, ApprovalFact, Checked, Decision, FenceScope, FenceTarget, InvocationFacts, Refusal,
-    RunFacts, SharedFacts,
-};
 use crate::invocation_lifecycle::{FinishOutcome, InvocationState, UnfinishedInvocation};
 use crate::lifecycle::RunRecord;
 use crate::owner::{Check, ChunkWork, OwnerHandle, ParkedWait};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
+use crate::trace::{Gate, Step, gate_span, step_span};
 use crate::types::AcceptedRun;
 use crate::{
     CoralFailure, Error, InvocationId, InvocationResultKind, Rejection, RunId,
@@ -125,9 +128,9 @@ impl UpstreamSender for ProductionUpstream {
 pub(crate) trait InvocationObserver: Send + Sync {
     fn approval_authority_checked(&self) {}
 
-    async fn fence_checks_loaded(&self) {}
+    async fn enforcement_checks_loaded(&self) {}
 
-    fn fence_attempt_finished(&self, _permit_returned: bool, _durable_dispatch_start: bool) {}
+    fn enforcement_check_finished(&self, _permit_returned: bool, _durable_dispatch_start: bool) {}
 
     async fn approval_waiting(&self) -> Result<(), Error> {
         Ok(())
@@ -135,7 +138,7 @@ pub(crate) trait InvocationObserver: Send + Sync {
 
     fn wait_parked(&self) {}
 
-    async fn before_fence(&self) -> Result<(), Error> {
+    async fn before_enforcement(&self) -> Result<(), Error> {
         Ok(())
     }
 
@@ -186,7 +189,9 @@ pub(crate) struct ToolInvoker {
     accounts: Option<coral_provider::account::AccountModule>,
     providers: coral_provider::ProviderModule,
     policies: coral_policy::ToolPolicyModule,
-    provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
+    provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
+    /// What `coral.workspace.search` discovers through.
+    search: coral_search::UniversalSearchModule,
     human_interface: Option<crate::HumanInterfaceUrl>,
     database: Arc<coral_db::Database>,
     workspaces: WorkspaceModule,
@@ -205,6 +210,8 @@ pub(crate) struct ToolInvoker {
     mcp_resources: Arc<McpResources>,
     upstream: Arc<dyn UpstreamSender>,
     clock: Arc<dyn Clock>,
+    /// The Run's Run Trace, which each Coral Failure names to the Program.
+    trace: Option<coral_telemetry::RunTrace>,
     #[cfg(test)]
     observer: Arc<dyn InvocationObserver>,
 }
@@ -218,7 +225,7 @@ impl ToolInvoker {
         accounts: Option<coral_provider::account::AccountModule>,
         providers: coral_provider::ProviderModule,
         policies: coral_policy::ToolPolicyModule,
-        provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
+        provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
         human_interface: Option<crate::HumanInterfaceUrl>,
         database: Arc<coral_db::Database>,
         workspaces: WorkspaceModule,
@@ -234,7 +241,8 @@ impl ToolInvoker {
             accounts,
             providers,
             policies,
-            provider_publisher,
+            provider_renamer,
+            search: coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
             human_interface,
             database,
             workspaces,
@@ -251,9 +259,17 @@ impl ToolInvoker {
             mcp_resources: Arc::new(McpResources::default()),
             upstream,
             clock,
+            trace: accepted.trace.clone(),
             #[cfg(test)]
             observer,
         }
+    }
+
+    /// The Run Trace identifier each Coral Failure names to the Program.
+    pub(crate) fn trace_id(&self) -> Option<String> {
+        self.trace
+            .as_ref()
+            .map(|trace| trace.trace_id().as_str().to_string())
     }
 
     pub(crate) async fn invoke(
@@ -272,8 +288,14 @@ impl ToolInvoker {
                 })
             })?;
         let (target, policy, builtin) = self.resolve(call_path, &arguments).await?;
+        let id = InvocationId::generate();
+        let trace = crate::trace::InvocationTrace::begin(
+            &id,
+            target.call_path(),
+            target.provider_access().id(),
+        );
         let admitted = Arc::new(AdmittedInvocation {
-            id: InvocationId::generate(),
+            id,
             workspace_id: self.workspace_id.clone(),
             run_id: self.run_id.clone(),
             target,
@@ -281,19 +303,43 @@ impl ToolInvoker {
             arguments_json,
             source_location,
             admitted_at_unix_nanos: self.now()?.max(self.accepted_at_unix_nanos),
+            span: trace.span().clone(),
         });
-        self.owner
-            .admit(Box::new(AdmissionWork {
-                admitted: admitted.clone(),
-            }))
-            .await?;
+        let ended = async {
+            self.owner
+                .admit(Box::new(AdmissionWork {
+                    admitted: admitted.clone(),
+                }))
+                .await?;
+            trace.admitted(admitted.target.tool());
+            self.invoke_admitted(&admitted, &arguments, policy, builtin, &trace)
+                .await
+        }
+        .instrument(trace.span().clone())
+        .await;
+        trace.end(&ended);
+        ended
+    }
+
+    /// The admitted Invocation to its end, marked on `trace` once its
+    /// upstream send begins.
+    async fn invoke_admitted(
+        &self,
+        admitted: &Arc<AdmittedInvocation>,
+        arguments: &serde_json::Value,
+        policy: ToolAccessState,
+        builtin: Option<crate::builtin::BuiltinCall>,
+        trace: &crate::trace::InvocationTrace,
+    ) -> Result<String, InvocationHostError> {
+        let admitted = admitted.clone();
         let mut progress = InvocationProgress::default();
         if policy == ToolAccessState::Disabled {
             return Err(self
                 .finish_failure(&admitted, &progress, CoralFailure::ToolDisabled)
                 .await?);
         }
-        let mut ready = match self.dispatch(&admitted, &arguments, builtin.as_ref()) {
+        let planned = self.planned(&admitted, arguments, builtin.as_ref());
+        let mut ready = match planned {
             Ok(ready) => ready,
             Err(error) => {
                 let failure: Rejection = match error {
@@ -321,39 +367,49 @@ impl ToolInvoker {
             Err(error) => return Err(error.into()),
         }
         #[cfg(test)]
-        self.observer.before_fence().await?;
+        self.observer.before_enforcement().await?;
         // The slot this Invocation holds under the Fan-out Limit from the
-        // fence's decision on: dropped when the dispatch it decided is over,
-        // on every path out of here.
+        // enforcement point's decision on: dropped when the dispatch it decided
+        // is over, on every path out of here.
         let slot = loop {
-            let (outcome, slot) = self.fence(&admitted, &mut progress).await?;
+            let (outcome, slot) = self
+                .enforce(&admitted, &mut progress)
+                .instrument(step_span(&admitted.span, Step::Enforcement))
+                .await?;
             #[cfg(test)]
-            self.observe_fence_attempt(&admitted, &outcome).await?;
+            self.observe_enforcement_check(&admitted, &outcome).await?;
             match outcome {
-                FenceOutcome::Permitted => break slot,
+                EnforcementOutcome::Permitted => break slot,
                 // No dispatch start exists on a denied row: the slot is free
                 // before the failure is recorded.
-                FenceOutcome::Rejected(rejection) => {
+                EnforcementOutcome::Rejected(rejection) => {
                     drop(slot);
                     return Err(self.finish_failure(&admitted, &progress, rejection).await?);
                 }
                 // The finish finds the row ended and delivers that outcome;
                 // the failure named here is recorded only if the row were
-                // still pending, which a superseded fence has ruled out.
-                FenceOutcome::Superseded => {
+                // still pending, which a superseded enforcement check has ruled
+                // out.
+                EnforcementOutcome::Superseded => {
                     drop(slot);
                     return Err(self
                         .finish_failure(&admitted, &progress, CoralFailure::AuthorityLost)
                         .await?);
                 }
-                FenceOutcome::RunTerminated => return Err(Error::ProgramHostTerminated.into()),
-                FenceOutcome::RefreshRequired => {
+                EnforcementOutcome::RunTerminated => {
+                    return Err(Error::ProgramHostTerminated.into());
+                }
+                EnforcementOutcome::RefreshRequired => {
                     // No dispatch start exists, and the refresh is an account
-                    // wait: the slot is freed before the next fence. Prepare
-                    // the same authorization again, outside every lock; never
-                    // reselect an Account or replay JS.
+                    // wait: the slot is freed before the next enforcement
+                    // check. Prepare the same authorization again, outside
+                    // every lock; never reselect an Account or replay JS.
                     drop(slot);
-                    if let Err(error) = self.prepare_credentials(&admitted, &progress).await {
+                    if let Err(error) = self
+                        .prepare_credentials(&admitted, &progress)
+                        .instrument(step_span(&admitted.span, Step::Credentials))
+                        .await
+                    {
                         return match error {
                             Error::InvocationRejected(failure) => {
                                 Err(self.finish_failure(&admitted, &progress, failure).await?)
@@ -362,18 +418,38 @@ impl ToolInvoker {
                         };
                     }
                     ready = self
-                        .dispatch(&admitted, &arguments, builtin.as_ref())
+                        .planned(&admitted, arguments, builtin.as_ref())
                         .map_err(Error::from)?;
                 }
             }
         };
-        self.dispatch_and_finish(&admitted, &progress, ready, slot)
+        self.dispatch_and_finish(&admitted, &progress, ready, slot, trace)
             .await
     }
 
+    /// [`Self::dispatch`] in its plan span, recording the protocol it plans.
+    fn planned(
+        &self,
+        admitted: &AdmittedInvocation,
+        arguments: &serde_json::Value,
+        builtin: Option<&crate::builtin::BuiltinCall>,
+    ) -> Result<Dispatch, coral_upstream::Error> {
+        let planned = step_span(&admitted.span, Step::Plan)
+            .in_scope(|| self.dispatch(admitted, arguments, builtin))?;
+        let protocol = match &planned {
+            Dispatch::Upstream(ReadyDispatch::Http(_)) => "http",
+            Dispatch::Upstream(ReadyDispatch::Mcp(_)) => "mcp",
+            Dispatch::Builtin(_) => "builtin",
+        };
+        admitted
+            .span
+            .record("coral.provider.protocol", safe::kind(protocol));
+        Ok(planned)
+    }
+
     /// Resolves the Call Path's current Tool and policy, outside the Run:
-    /// the fence rechecks both before any dispatch. A Built-in Tool checks
-    /// its input here, before admission, so input it rejects, such as a
+    /// the enforcement point rechecks both before any dispatch. A Built-in Tool
+    /// checks its input here, before admission, so input it rejects, such as a
     /// credential, is never stored.
     async fn resolve(
         &self,
@@ -398,7 +474,10 @@ impl ToolInvoker {
         .await?
         else {
             transaction.rollback().await?;
-            return Err(Error::InvocationRejected(CoralFailure::ToolNotFound.into()));
+            return Err(Error::InvocationRejected(Rejection::tool_not_found(
+                call_path,
+                self.suggestions(call_path).await,
+            )));
         };
         let builtin = match crate::builtin::BuiltinCall::parse(&target, arguments) {
             Some(Ok(call)) => Some(call),
@@ -410,7 +489,7 @@ impl ToolInvoker {
         };
         let policy = coral_policy::invocation_decision_in_transaction(
             &mut transaction,
-            &fence::policy_target(&self.workspace_id, &target),
+            &enforcement::policy_target(&self.workspace_id, &target),
             target.tool().hints(),
             target.tool().http_method(),
             coral_db::RowLock::Shared,
@@ -421,14 +500,47 @@ impl ToolInvoker {
         Ok((target, policy, builtin))
     }
 
+    /// The Discoverable Call Paths near `call_path` in its Call Root,
+    /// nearest first. Discovery is advice: when it fails, the Program is
+    /// told the path names nothing, with nothing to call instead.
+    async fn suggestions(&self, call_path: &str) -> Vec<String> {
+        let Ok(paths) = coral_search::ExactPaths::new(vec![call_path.to_owned()], Vec::new())
+        else {
+            return Vec::new();
+        };
+        match self
+            .search
+            .discover(
+                &self.actor,
+                &self.workspace_id,
+                &coral_search::DiscoveryRequest::Paths(paths),
+            )
+            .await
+        {
+            Ok(coral_search::Discovery::Exact(lookup)) => lookup
+                .missing()
+                .first()
+                .map(|missing| missing.suggestions().to_vec())
+                .unwrap_or_default(),
+            Ok(coral_search::Discovery::Page(_)) => Vec::new(),
+            Err(_error) => {
+                tracing::warn!(
+                    error.type = coral_telemetry::safe::kind("suggestions_unavailable"),
+                    "Call Path suggestions are unavailable; the Program reads none"
+                );
+                Vec::new()
+            }
+        }
+    }
+
     #[cfg(test)]
-    async fn observe_fence_attempt(
+    async fn observe_enforcement_check(
         &self,
         admitted: &AdmittedInvocation,
-        outcome: &FenceOutcome,
+        outcome: &EnforcementOutcome,
     ) -> Result<(), Error> {
-        // Observe the committed fact outside the fence transaction, not an
-        // in-memory flag or an assertion against a persistence table layout.
+        // Observe the committed fact outside the enforcement transaction, not
+        // an in-memory flag or an assertion against a persistence table layout.
         let started = invocation_repository::has_dispatch_start(
             &self.database,
             &self.workspace_id,
@@ -437,31 +549,36 @@ impl ToolInvoker {
         )
         .await?;
         self.observer
-            .fence_attempt_finished(matches!(outcome, FenceOutcome::Permitted), started);
+            .enforcement_check_finished(matches!(outcome, EnforcementOutcome::Permitted), started);
         Ok(())
     }
 
-    /// Runs the dispatch the fence permitted and records its end. The slot
-    /// is held until then: the upstream result carries its release, and
-    /// every other end frees it as this returns.
+    /// Runs the dispatch the enforcement point permitted and records its end.
+    /// The slot is held until then: the upstream result carries its release,
+    /// and every other end frees it as this returns.
     async fn dispatch_and_finish(
         &self,
         admitted: &Arc<AdmittedInvocation>,
         progress: &InvocationProgress,
         mut ready: Dispatch,
         mut slot: DispatchSlot,
+        trace: &crate::trace::InvocationTrace,
     ) -> Result<String, InvocationHostError> {
         // The owner's own terminal state, before anything leaves the process:
-        // a stop that reached the owner ends this fenced Invocation as
+        // a stop that reached the owner ends this permitted Invocation as
         // `run_terminated` instead of sending.
         if self.owner.is_stopping() {
             self.end_before_send(admitted).await?;
             return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
         }
-        // The material the fence judged current is decrypted here, per
-        // dispatch, outside every lock; a failure to open it ends this
-        // Invocation and never fences again.
-        if let Err(error) = self.authorize(admitted, progress, &mut ready).await {
+        // The material the enforcement point judged current is decrypted here,
+        // per dispatch, outside every lock; a failure to open it ends this
+        // Invocation and never meets the enforcement point again.
+        if let Err(error) = self
+            .authorize(admitted, progress, &mut ready)
+            .instrument(step_span(&admitted.span, Step::Authorize))
+            .await
+        {
             return match error {
                 Error::InvocationRejected(failure) => {
                     Err(self.finish_failure(admitted, progress, failure).await?)
@@ -477,6 +594,7 @@ impl ToolInvoker {
                     .await;
             }
         };
+        trace.sending();
         let outcome = match self.upstream.send(ready, self.stop.clone()).await {
             Ok(outcome) => outcome,
             Err(UpstreamSendError::Canceled) => {
@@ -562,8 +680,8 @@ impl ToolInvoker {
         }
     }
 
-    /// What the fence will permit: a Built-in Tool that Coral performs
-    /// itself, or one planned upstream send.
+    /// What the enforcement point will permit: a Built-in Tool that Coral
+    /// performs itself, or one planned upstream send.
     fn dispatch(
         &self,
         admitted: &AdmittedInvocation,
@@ -577,8 +695,8 @@ impl ToolInvoker {
             .map(Dispatch::Upstream)
     }
 
-    /// Performs a Built-in Tool as the invoking Principal after the fence,
-    /// where an upstream send would run, and records its Tool Result as
+    /// Performs a Built-in Tool as the invoking Principal after the enforcement
+    /// point, where an upstream send would run, and records its Tool Result as
     /// the Upstream Outcome. Nothing is sent upstream.
     async fn perform_builtin(
         &self,
@@ -602,20 +720,18 @@ impl ToolInvoker {
             )),
             None => None,
         };
-        let request_id = coral_provider::ManagementRequestId::parse(&admitted.id.to_string())
-            .map_err(Error::from)?;
         let host = crate::builtin::BuiltinHost {
             database: &self.database,
             providers: &self.providers,
             policies: &self.policies,
             accounts: self.accounts.as_ref(),
-            publisher: self.provider_publisher.as_deref(),
+            renamer: self.provider_renamer.as_deref(),
+            search: &self.search,
             actor: &self.actor,
             context: context.as_ref(),
             principal: &self.principal,
             workspace_id: &self.workspace_id,
             human_interface,
-            request_id: &request_id,
             run: self,
         };
         match call.perform(&host).await {
@@ -627,9 +743,10 @@ impl ToolInvoker {
         }
     }
 
-    /// Decrypts the selected credentials outside every lock, after the fence
-    /// and the pre-send check, and authorizes the dispatch with them. A token
-    /// renewed since the fence is the one dispatched.
+    /// Decrypts the selected credentials outside every lock, after the
+    /// enforcement point and the pre-send check, and authorizes the dispatch
+    /// with them. A token renewed since the enforcement point is the one
+    /// dispatched.
     async fn authorize(
         &self,
         admitted: &AdmittedInvocation,
@@ -690,6 +807,23 @@ impl ToolInvoker {
         admitted: &Arc<AdmittedInvocation>,
         progress: &mut InvocationProgress,
     ) -> Result<(), Error> {
+        gate_span(&admitted.span, Gate::Account)
+            .instrument(self.account_gate(admitted, progress))
+            .await?;
+        gate_span(&admitted.span, Gate::Approval)
+            .instrument(self.approval_gate(admitted, progress))
+            .await?;
+        self.prepare_credentials(admitted, progress)
+            .instrument(step_span(&admitted.span, Step::Credentials))
+            .await
+    }
+
+    /// Selects the Account, waiting while a connection request is open.
+    async fn account_gate(
+        &self,
+        admitted: &Arc<AdmittedInvocation>,
+        progress: &mut InvocationProgress,
+    ) -> Result<(), Error> {
         loop {
             let (wake, woken) = oneshot::channel();
             match self
@@ -712,6 +846,16 @@ impl ToolInvoker {
                 SelectionOutcome::RunNotCurrent => return Err(Error::ProgramHostTerminated),
             }
         }
+        Ok(())
+    }
+
+    /// Finds the approval this Invocation needs, waiting while its Approval
+    /// Request is undecided.
+    async fn approval_gate(
+        &self,
+        admitted: &Arc<AdmittedInvocation>,
+        progress: &mut InvocationProgress,
+    ) -> Result<(), Error> {
         loop {
             let (wake, woken) = oneshot::channel();
             match self.approval_ready(admitted, progress, wake).await? {
@@ -729,7 +873,7 @@ impl ToolInvoker {
                 GateOutcome::RunNotCurrent => return Err(Error::ProgramHostTerminated),
             }
         }
-        self.prepare_credentials(admitted, progress).await
+        Ok(())
     }
 
     /// Waits, holding nothing, until the Run Owner sends this parked
@@ -748,9 +892,10 @@ impl ToolInvoker {
         }
     }
 
-    /// Renews the selected credentials outside every lock, after the fence
-    /// parked the Invocation on a refresh: the material is decrypted, and
-    /// refreshed when expired, by the Account Module; nothing is kept here.
+    /// Renews the selected credentials outside every lock, after the
+    /// enforcement point parked the Invocation on a refresh: the material is
+    /// decrypted, and refreshed when expired, by the Account Module; nothing is
+    /// kept here.
     async fn prepare_credentials(
         &self,
         admitted: &AdmittedInvocation,
@@ -832,7 +977,7 @@ impl ToolInvoker {
         if !self.run_is_current(run, now) {
             return Ok(SelectionOutcome::RunNotCurrent);
         }
-        let target = FenceTarget {
+        let target = EnforcementTarget {
             admitted,
             credential_evidence: None,
         };
@@ -932,9 +1077,9 @@ impl ToolInvoker {
         )
     }
 
-    /// The held approval gate: the fence's facts under their shared holds,
-    /// then the Approval Request this Invocation needs under the policy they
-    /// show, created, expired or closed here as the gate finds it.
+    /// The held approval gate: the enforcement point's facts under their shared
+    /// holds, then the Approval Request this Invocation needs under the policy
+    /// they show, created, expired or closed here as the gate finds it.
     async fn approval_ready_checked(
         &self,
         tx: &mut Transaction<'_>,
@@ -950,7 +1095,7 @@ impl ToolInvoker {
         if let Some(failure) = crate::approval::committed_failure(tx, admitted).await? {
             return Err(Error::InvocationRejected(failure.into()));
         }
-        let target = FenceTarget {
+        let target = EnforcementTarget {
             admitted,
             credential_evidence: progress.credential_evidence.as_ref(),
         };
@@ -979,20 +1124,32 @@ impl ToolInvoker {
         })
     }
 
-    /// The fence's shared facts for one Invocation, read under their shared
-    /// holds inside the owner's chunk commit and checked at a clock sample
-    /// taken after the reads: the policy and that sample, `None` when the Run
-    /// no longer takes Program work, the known failure when a fact refuses.
+    /// The enforcement point's shared facts for one Invocation, read under
+    /// their shared holds inside the owner's chunk commit and checked at a
+    /// clock sample taken after the reads: the policy and that sample, `None`
+    /// when the Run no longer takes Program work, the known failure when a fact
+    /// refuses.
     async fn held_checked(
         &self,
         tx: &mut Transaction<'_>,
         run: &RunRecord,
-        target: FenceTarget<'_>,
+        target: EnforcementTarget<'_>,
+    ) -> Result<Option<(Checked, i64)>, Error> {
+        gate_span(&target.admitted.span, Gate::Authority)
+            .instrument(self.held_checked_facts(tx, run, target))
+            .await
+    }
+
+    async fn held_checked_facts(
+        &self,
+        tx: &mut Transaction<'_>,
+        run: &RunRecord,
+        target: EnforcementTarget<'_>,
     ) -> Result<Option<(Checked, i64)>, Error> {
         let shared = SharedFacts::load(
             tx,
             coral_db::RowLock::Shared,
-            &self.fence_scope(),
+            &self.enforcement_scope(),
             self.now()?,
             std::slice::from_ref(&target),
         )
@@ -1007,35 +1164,38 @@ impl ToolInvoker {
         }
     }
 
-    /// Asks the owner for the Dispatch Fence: the request joins the batch of
-    /// a chunk commit and answers once that chunk is recorded, with the slot
-    /// the Invocation holds under the Fan-out Limit. A decision comes only
-    /// from a batch that committed, and every request of a batch holds a
+    /// Asks the owner for the Policy Enforcement Point: the request joins the
+    /// batch of a chunk commit and answers once that chunk is recorded, with
+    /// the slot the Invocation holds under the Fan-out Limit. A decision comes
+    /// only from a batch that committed, and every request of a batch holds a
     /// slot; a request the owner never batched (the Run ending, the owner
     /// gone) answers with an error and held none.
-    async fn fence(
+    async fn enforce(
         &self,
         admitted: &Arc<AdmittedInvocation>,
         progress: &mut InvocationProgress,
-    ) -> Result<(FenceOutcome, DispatchSlot), Error> {
+    ) -> Result<(EnforcementOutcome, DispatchSlot), Error> {
         let (sender, receiver) = oneshot::channel();
-        self.owner.fence(FenceRequest {
+        self.owner.enforce(EnforcementRequest {
             invoker: self.clone(),
-            fenced: FencedInvocation {
+            pending: PendingEnforcement {
                 admitted: admitted.clone(),
                 progress: progress.clone(),
                 reply: Replier::new(sender),
             },
         })?;
         let outcome = receiver.await.map_err(|_lost| Error::OwnerLost)??;
-        if matches!(outcome, FenceOutcome::Permitted) {
+        if matches!(outcome, EnforcementOutcome::Permitted) {
             progress.dispatch_started = true;
+            admitted
+                .span
+                .record("coral.invocation.dispatch_started", true);
         }
         Ok((outcome, DispatchSlot::new(self.owner.clone())))
     }
 
-    pub(crate) fn fence_scope(&self) -> FenceScope<'_> {
-        FenceScope {
+    pub(crate) fn enforcement_scope(&self) -> EnforcementScope<'_> {
+        EnforcementScope {
             workspaces: &self.workspaces,
             actor: &self.actor,
             workspace_id: &self.workspace_id,
@@ -1054,8 +1214,8 @@ impl ToolInvoker {
     /// Reports an upstream result: the owner decides it against the Run
     /// Output Budget and answers at Applied; the row and `invocation.ended`
     /// ride its next chunk. The result carries the slot's release, so the
-    /// Invocation that has waited longest fences in that same chunk, after
-    /// this row ends.
+    /// Invocation that has waited longest meets the enforcement point in that
+    /// same chunk, after this row ends.
     async fn finish_upstream(
         &self,
         admitted: &Arc<AdmittedInvocation>,
@@ -1077,12 +1237,15 @@ impl ToolInvoker {
         let applied = self
             .owner
             .invocation_result(result_json.len(), Box::new(work))
+            .instrument(step_span(&admitted.span, Step::Persist))
             .await;
         if applied.is_err() {
             // The owner applied nothing (the result is over budget, or the
             // Run takes no more work): the row is still dispatching and the
             // slot stays with this task until the row's end is recorded.
             slot.keep();
+        } else {
+            metric::output_kept(metric::OutputKind::Result, result_json.len());
         }
         applied
     }
@@ -1096,6 +1259,12 @@ impl ToolInvoker {
         failure: impl Into<Rejection>,
     ) -> Result<InvocationHostError, Error> {
         let failure: Rejection = failure.into();
+        if matches!(
+            failure.failure(),
+            CoralFailure::ResultTooLarge | CoralFailure::RunOutputTooLarge
+        ) {
+            metric::output_rejected(metric::OutputKind::Result);
+        }
         let completion = InvocationCompletion::Failure(failure.clone());
         #[cfg(test)]
         self.observer.before_failure_commit().await?;
@@ -1110,6 +1279,7 @@ impl ToolInvoker {
                     reply: Some(reply),
                 })
             })
+            .instrument(step_span(&admitted.span, Step::Persist))
             .await?;
         match outcome {
             FinishOutcome::Finished(_) | FinishOutcome::SameFailure => {}
@@ -1128,7 +1298,7 @@ impl ToolInvoker {
         Ok(InvocationHostError::Rejected(failure))
     }
 
-    /// Ends a fenced Invocation that never sent as `run_terminated`.
+    /// Ends a permitted Invocation that never sent as `run_terminated`.
     async fn end_before_send(&self, admitted: &Arc<AdmittedInvocation>) -> Result<(), Error> {
         self.ask(|reply| {
             Box::new(EndBeforeSendWork {
@@ -1148,12 +1318,12 @@ impl ToolInvoker {
     }
 }
 
-/// One slot under the Run's Fan-out Limit, held from the fence's decision
-/// until the dispatch it decided is over. An upstream result carries the
-/// release: the owner frees the slot as it applies the result, so the
-/// Invocation that has waited longest fences in the same chunk the ended
-/// row rides. Every other end (denied, superseded, parked on a refresh, a
-/// failure, the Run ending) frees it on drop, which tells the owner.
+/// One slot under the Run's Fan-out Limit, held from the enforcement point's
+/// decision until the dispatch it decided is over. An upstream result carries
+/// the release: the owner frees the slot as it applies the result, so the
+/// Invocation that has waited longest meets the enforcement point in the same
+/// chunk the ended row rides. Every other end (denied, superseded, parked on a
+/// refresh, a failure, the Run ending) frees it on drop, which tells the owner.
 struct DispatchSlot {
     owner: OwnerHandle,
     carried_by_result: bool,
@@ -1248,6 +1418,9 @@ pub(crate) struct AdmittedInvocation {
     pub(crate) arguments_json: String,
     pub(crate) source_location: Option<crate::SourceLocation>,
     pub(crate) admitted_at_unix_nanos: i64,
+    /// The Invocation's `coral.invocation` span. Its gates that run inside
+    /// the owner's chunk commits are its children too.
+    pub(crate) span: tracing::Span,
 }
 
 /// What one Invocation's lifecycle has settled so far: its account wait, its
@@ -1258,7 +1431,8 @@ pub(crate) struct InvocationProgress {
     pub(crate) connection_request: Option<coral_provider::account::ConnectionRequestId>,
     pub(crate) credential_evidence: Option<coral_provider::account::CredentialEvidence>,
     /// The Approval Request's decision as the gate recorded it, which the
-    /// fence decides on from owner memory: an approval never changes.
+    /// enforcement point decides on from owner memory: an approval never
+    /// changes.
     pub(crate) approval: ApprovalFact,
     pub(crate) dispatch_started: bool,
 }
@@ -1299,12 +1473,12 @@ enum GateOutcome {
 }
 
 #[derive(Debug)]
-pub(crate) enum FenceOutcome {
+pub(crate) enum EnforcementOutcome {
     RefreshRequired,
     Permitted,
     Rejected(Rejection),
-    /// An outside writer ended the Invocation row during the fence (a
-    /// decision, a cancel): its durable outcome stands, and the finish
+    /// An outside writer ended the Invocation row during the enforcement check
+    /// (a decision, a cancel): its durable outcome stands, and the finish
     /// delivers it.
     Superseded,
     RunTerminated,
@@ -1518,8 +1692,8 @@ struct ParkedTarget {
 }
 
 impl ParkedTarget {
-    fn target(&self) -> FenceTarget<'_> {
-        FenceTarget {
+    fn target(&self) -> EnforcementTarget<'_> {
+        EnforcementTarget {
             admitted: &self.admitted,
             credential_evidence: self.credential_evidence.as_ref(),
         }
@@ -1636,9 +1810,9 @@ impl PrecheckBatch {
     /// Reads the waits in one read snapshot with no hold and returns the
     /// serials of the parks it found ended or moot. A connection check reads
     /// each connection request once and finds the ones no longer pending. The
-    /// periodic precheck also reads the Dispatch Fence's facts with the
-    /// shared loader and decides each wait with the shared evaluator: a wait
-    /// it would not keep waiting is found. The Approval Requests and the
+    /// periodic precheck also reads the Policy Enforcement Point's facts with
+    /// the shared loader and decides each wait with the shared evaluator: a
+    /// wait it would not keep waiting is found. The Approval Requests and the
     /// Invocation rows are the owner's own (an outside writer touches none
     /// while the Run is nonterminal), so what the owner keeps of them stands:
     /// a request still pending, no failure recorded.
@@ -1686,7 +1860,7 @@ impl PrecheckBatch {
             &invoker.run_id,
         )
         .await?;
-        let targets: Vec<FenceTarget<'_>> = self
+        let targets: Vec<EnforcementTarget<'_>> = self
             .waits
             .iter()
             .map(|(_, parked)| parked.target())
@@ -1694,7 +1868,7 @@ impl PrecheckBatch {
         let shared = SharedFacts::load(
             &mut tx,
             coral_db::RowLock::None,
-            &invoker.fence_scope(),
+            &invoker.enforcement_scope(),
             now,
             &targets,
         )
@@ -1719,7 +1893,7 @@ impl PrecheckBatch {
                     },
                     ParkedWait::Connection { .. } => ApprovalFact::NotRequested,
                 };
-                let decision = fence::decide(
+                let decision = enforcement::decide(
                     &shared,
                     &run_facts,
                     &InvocationFacts {
@@ -1736,51 +1910,51 @@ impl PrecheckBatch {
     }
 }
 
-/// One Invocation's request for the Dispatch Fence, carrying what the fence
-/// decides it on from owner memory: its retained target, its selected
-/// credentials and the approval the gate found, and the invoker of its Run,
-/// which the batch keeps once.
-pub(crate) struct FenceRequest {
+/// One Invocation's request for the Policy Enforcement Point, carrying what the
+/// enforcement point decides it on from owner memory: its retained target, its
+/// selected credentials and the approval the gate found, and the invoker of its
+/// Run, which the batch keeps once.
+pub(crate) struct EnforcementRequest {
     invoker: ToolInvoker,
-    fenced: FencedInvocation,
+    pending: PendingEnforcement,
 }
 
 /// One Invocation inside a batch.
-struct FencedInvocation {
+struct PendingEnforcement {
     admitted: Arc<AdmittedInvocation>,
     progress: InvocationProgress,
-    reply: Replier<FenceOutcome>,
+    reply: Replier<EnforcementOutcome>,
 }
 
-impl FencedInvocation {
-    fn target(&self) -> FenceTarget<'_> {
-        FenceTarget {
+impl PendingEnforcement {
+    fn target(&self) -> EnforcementTarget<'_> {
+        EnforcementTarget {
             admitted: &self.admitted,
             credential_evidence: self.progress.credential_evidence.as_ref(),
         }
     }
 }
 
-impl fmt::Debug for FenceRequest {
+impl fmt::Debug for EnforcementRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("FenceRequest")
-            .field("invocation", &self.fenced.admitted.id)
+            .debug_struct("EnforcementRequest")
+            .field("invocation", &self.pending.admitted.id)
             .finish_non_exhaustive()
     }
 }
 
-impl FenceRequest {
+impl EnforcementRequest {
     /// A request for the owner's in-memory tests, which never run it.
     #[cfg(test)]
     pub(crate) fn for_apply_test(
         invoker: ToolInvoker,
         admitted: Arc<AdmittedInvocation>,
-        sender: oneshot::Sender<Result<FenceOutcome, Error>>,
+        sender: oneshot::Sender<Result<EnforcementOutcome, Error>>,
     ) -> Self {
         Self {
             invoker,
-            fenced: FencedInvocation {
+            pending: PendingEnforcement {
                 admitted,
                 progress: InvocationProgress::default(),
                 reply: Replier::new(sender),
@@ -1789,37 +1963,37 @@ impl FenceRequest {
     }
 }
 
-/// The Dispatch Fence of one chunk commit: every ready Invocation the owner
+/// The enforcement check of one chunk commit: every ready Invocation the owner
 /// collected for it, decided together. The shared facts are read once under
 /// their shared holds, the clock is sampled once after the last read, each
 /// Invocation is decided in memory, and every permitted row is moved from
 /// `pending` to `dispatching` in the same commit, which the owner predicates
-/// on its claim and the head. The fence writes no Event.
-pub(crate) struct FenceBatch {
+/// on its claim and the head. The enforcement point writes no Event.
+pub(crate) struct EnforcementBatch {
     invoker: ToolInvoker,
-    invocations: Vec<FencedInvocation>,
+    invocations: Vec<PendingEnforcement>,
 }
 
-impl fmt::Debug for FenceBatch {
+impl fmt::Debug for EnforcementBatch {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("FenceBatch")
+            .debug_struct("EnforcementBatch")
             .field("invocations", &self.invocation_ids())
             .finish()
     }
 }
 
-impl FenceBatch {
-    pub(crate) fn new(request: FenceRequest) -> Self {
+impl EnforcementBatch {
+    pub(crate) fn new(request: EnforcementRequest) -> Self {
         Self {
             invoker: request.invoker,
-            invocations: vec![request.fenced],
+            invocations: vec![request.pending],
         }
     }
 
     /// Adds `request`, whose Run is this batch's.
-    pub(crate) fn push(&mut self, request: FenceRequest) {
-        self.invocations.push(request.fenced);
+    pub(crate) fn push(&mut self, request: EnforcementRequest) {
+        self.invocations.push(request.pending);
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -1829,13 +2003,13 @@ impl FenceBatch {
     pub(crate) fn invocation_ids(&self) -> Vec<InvocationId> {
         self.invocations
             .iter()
-            .map(|fenced| fenced.admitted.id.clone())
+            .map(|pending| pending.admitted.id.clone())
             .collect()
     }
 }
 
 #[async_trait]
-impl ChunkWork for FenceBatch {
+impl ChunkWork for EnforcementBatch {
     async fn run(
         &mut self,
         transaction: &mut Transaction<'_>,
@@ -1843,21 +2017,21 @@ impl ChunkWork for FenceBatch {
         _now_unix_nanos: i64,
     ) -> Result<Vec<OwnedEvent>, Error> {
         let invoker = &self.invoker;
-        let targets: Vec<FenceTarget<'_>> = self
+        let targets: Vec<EnforcementTarget<'_>> = self
             .invocations
             .iter()
-            .map(FencedInvocation::target)
+            .map(PendingEnforcement::target)
             .collect();
         let shared = SharedFacts::load(
             transaction,
             coral_db::RowLock::Shared,
-            &invoker.fence_scope(),
+            &invoker.enforcement_scope(),
             invoker.now()?,
             &targets,
         )
         .await?;
         #[cfg(test)]
-        invoker.observer.fence_checks_loaded().await;
+        invoker.observer.enforcement_checks_loaded().await;
         // Every awaited read is done: one clock sample decides the batch and
         // dates every dispatch start it records.
         let now = invoker.now()?.max(run.accepted_at_unix_nanos);
@@ -1866,14 +2040,14 @@ impl ChunkWork for FenceBatch {
             .invocations
             .iter()
             .zip(&targets)
-            .map(|(fenced, target)| {
-                fence::decide(
+            .map(|(pending, target)| {
+                enforcement::decide(
                     &shared,
                     &run_facts,
                     &InvocationFacts {
                         target: *target,
                         connection_pending_until_unix_nanos: None,
-                        approval: fenced.progress.approval,
+                        approval: pending.progress.approval,
                     },
                     now,
                 )
@@ -1881,17 +2055,21 @@ impl ChunkWork for FenceBatch {
             .collect();
         drop(targets);
         let mut permitted = Vec::new();
-        for (fenced, decision) in self.invocations.iter_mut().zip(decisions) {
+        for (pending, decision) in self.invocations.iter_mut().zip(decisions) {
             match decision {
-                Decision::Dispatch => permitted.push(fenced.admitted.id.clone()),
+                Decision::Dispatch => permitted.push(pending.admitted.id.clone()),
                 Decision::Deny(failure) => {
-                    fenced.reply.record(FenceOutcome::Rejected(failure.into()));
+                    pending
+                        .reply
+                        .record(EnforcementOutcome::Rejected(failure.into()));
                 }
-                Decision::RefreshRequired => fenced.reply.record(FenceOutcome::RefreshRequired),
-                Decision::RunTerminated => fenced.reply.record(FenceOutcome::RunTerminated),
+                Decision::RefreshRequired => {
+                    pending.reply.record(EnforcementOutcome::RefreshRequired);
+                }
+                Decision::RunTerminated => pending.reply.record(EnforcementOutcome::RunTerminated),
                 // The gate records no pending request; a wait here means the
                 // policy now asks for a decision the Invocation never got.
-                Decision::Wait { .. } => fenced.reply.record(FenceOutcome::Rejected(
+                Decision::Wait { .. } => pending.reply.record(EnforcementOutcome::Rejected(
                     CoralFailure::ApprovalRequired.into(),
                 )),
             }
@@ -1904,24 +2082,24 @@ impl ChunkWork for FenceBatch {
             now,
         )
         .await?;
-        for fenced in &mut self.invocations {
-            if !permitted.contains(&fenced.admitted.id) {
+        for pending in &mut self.invocations {
+            if !permitted.contains(&pending.admitted.id) {
                 continue;
             }
-            fenced
+            pending
                 .reply
-                .record(if started.contains(&fenced.admitted.id) {
-                    FenceOutcome::Permitted
+                .record(if started.contains(&pending.admitted.id) {
+                    EnforcementOutcome::Permitted
                 } else {
-                    FenceOutcome::Superseded
+                    EnforcementOutcome::Superseded
                 });
         }
         Ok(Vec::new())
     }
 
     fn settle(self: Box<Self>, recorded: Result<(), Error>) {
-        for fenced in self.invocations {
-            fenced
+        for pending in self.invocations {
+            pending
                 .reply
                 .settle(recorded.as_ref().copied().map_err(lost_again));
         }
@@ -2013,7 +2191,7 @@ impl ChunkWork for FinishWork {
     }
 }
 
-/// Ends a fenced Invocation the owner's stop reached before it sent.
+/// Ends a permitted Invocation the owner's stop reached before it sent.
 struct EndBeforeSendWork {
     admitted: Arc<AdmittedInvocation>,
     reply: Replier<()>,
@@ -2094,8 +2272,8 @@ impl crate::builtin::InvokingRun for ToolInvoker {
     }
 }
 
-/// What the fence permits: one upstream send, or a Built-in Tool that
-/// Coral performs itself.
+/// What the enforcement point permits: one upstream send, or a Built-in Tool
+/// that Coral performs itself.
 enum Dispatch {
     Upstream(ReadyDispatch),
     Builtin(Box<crate::builtin::BuiltinCall>),

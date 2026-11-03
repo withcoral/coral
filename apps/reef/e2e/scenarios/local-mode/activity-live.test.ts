@@ -3,6 +3,7 @@ import { withBrowserSession } from '../../support/browser-session.ts'
 import { managementClients } from '../../support/management.ts'
 import { openApiDocument } from '../../support/provider-fixtures.ts'
 import { addProviderFromFile, programRunner, observeRun } from '../../support/providers.ts'
+import { shownPayload } from '../../support/payloads.ts'
 
 test('Local activity streams new records without a sign-in ceremony or a load button', async (context) => {
   const api = managementClients()
@@ -28,7 +29,7 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
         expect(response.status()).toBe(200)
         expect(response.headers()['content-type']).toContain('text/event-stream')
       }
-      await page.locator('pre').filter({ hasText: 'local-live-value' }).first().waitFor()
+      await shownPayload(page, 'local-live-value').waitFor()
       const second = programRunner(page, target, id, { taskIntent: 'Second local goal' })
       await observeRun(second, await second.exec('return 42;'))
       await page
@@ -54,7 +55,7 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
         'localActions',
       )
       const runner = programRunner(page, target, id, { waitMs: 1000 })
-      for (const decision of ['deny', 'queue', 'cancel']) {
+      for (const decision of ['decline', 'approvals-row', 'cancel']) {
         const waiting = await runner.exec(
           'try { await coral.providers.localActions.read({}); } catch (error) { return error.code; }',
         )
@@ -71,12 +72,12 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
         expect(new URL(required.run_status_url).pathname).toBe(`/${run}`)
         expect(Date.parse(required.deadline_at) - Date.now()).toBeGreaterThan(10 * 60_000)
         await page.goto(required.run_status_url)
-        if (decision === 'queue') {
-          // Decide from the queue row, without opening the review.
-          await page.goto(`/${workspace.name}/activity`)
+        if (decision === 'approvals-row') {
+          // Decide from the Approvals row, without opening the review.
+          await page.goto(`/${workspace.name}/approvals`)
           await page
-            .locator('[aria-label="Pending actions"]')
-            .getByRole('button', { name: /^Deny: / })
+            .getByRole('table', { name: 'Pending approvals', exact: true })
+            .getByRole('button', { name: /^Decline: / })
             .click()
           await expect
             .poll(
@@ -84,10 +85,10 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
                 (await runner.wait(observed.structuredContent)).structuredContent.final_value,
             )
             .toEqual({ kind: 'value', value: 'approval_declined' })
-        } else if (decision === 'deny') {
+        } else if (decision === 'decline') {
           await page.getByRole('link', { name: /^Review .*localActions\.read$/ }).click()
-          await page.getByRole('button', { name: 'Deny this call', exact: true }).click()
-          await page.getByText('Denied', { exact: true }).waitFor()
+          await page.getByRole('button', { name: 'Decline', exact: true }).click()
+          await page.getByText('Declined', { exact: true }).waitFor()
         } else {
           await page.getByRole('button', { name: 'Cancel run', exact: true }).click()
           await page

@@ -39,6 +39,10 @@ pub struct AuthorizationGrant {
     pub resource: String,
     /// The Workspace the User picked, for the Organization MCP Endpoint only.
     pub workspace_id: Option<coral_workspace::WorkspaceId>,
+    /// Whether the client declared the `refresh_token` grant, allowing
+    /// redemption to start a Refresh Grant when the User holds the authority
+    /// a refresh would need.
+    pub refresh_eligible: bool,
 }
 
 /// The request bindings a redemption presents.
@@ -75,6 +79,19 @@ pub enum AuthorizationCodeError {
     /// The database did not accept or answer the statement.
     #[error("authorization code storage is unavailable")]
     Unavailable,
+}
+
+impl AuthorizationCodeError {
+    /// The error's stable kind, for an event's `error.type`: a bounded
+    /// code that never carries the error's text.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::EmptySecret { .. } => "empty_secret",
+            Self::ClockOutOfRange { .. } => "clock_out_of_range",
+            Self::Unavailable { .. } => "unavailable",
+        }
+    }
 }
 
 /// Deployment-level store of authorization codes awaiting redemption.

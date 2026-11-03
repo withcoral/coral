@@ -17,17 +17,18 @@ import { ProviderAccountService } from '@/generated/coral/management/v1/account_
 import { ActivityService } from '@/generated/coral/management/v1/activity_pb'
 import { ToolPolicyService } from '@/generated/coral/management/v1/policy_pb'
 import { SavedFunctionService } from '@/generated/coral/management/v1/saved_function_pb'
+import { ReleaseService } from '@/generated/coral/management/v1/release_pb'
 import { managementTransportForRequest } from './coral-request.server'
 import { runtimeConfigContext } from './runtime-config.server'
 
 export const privateHeaders = { 'Cache-Control': 'private, no-store', Pragma: 'no-cache' }
-export function management(request: Request, context: Readonly<RouterContextProvider>) {
+export function management(context: Readonly<RouterContextProvider>) {
   const auth = context.get(requestAuthContext)
   const endpoint = context.get(runtimeConfigContext).endpoint
-  const transport = managementTransportForRequest(request, auth, endpoint)
+  const transport = managementTransportForRequest(auth, endpoint)
   // Provider requests include a bounded 30-second source fetch and synchronous catalog work.
   // Keep ordinary management requests short without cutting off supported Provider imports.
-  const providerTransport = managementTransportForRequest(request, auth, endpoint, 60_000)
+  const providerTransport = managementTransportForRequest(auth, endpoint, 60_000)
   return {
     workspaces: createClient(WorkspaceService, transport),
     activity: createClient(ActivityService, transport),
@@ -41,6 +42,7 @@ export function management(request: Request, context: Readonly<RouterContextProv
     accounts: createClient(ProviderAccountService, providerTransport),
     policies: createClient(ToolPolicyService, transport),
     savedFunctions: createClient(SavedFunctionService, transport),
+    releases: createClient(ReleaseService, transport),
   }
 }
 export type ManagementApi = ReturnType<typeof management>

@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, within } from 'storybook/test'
 
 import { BarChart } from '../bar-chart'
 import { LineChart } from '../line-chart'
@@ -86,6 +87,58 @@ export const LineWithLabels: StoryObj<typeof LineChart> = {
     series: [{ color: 'green', data: [10, 25, 18, 32], label: 'Revenue' }],
   },
   render: (args) => <LineChart {...args} />,
+}
+
+/** A dense series with missing samples: the line breaks at each null. */
+export const LineWithGaps: StoryObj<typeof LineChart> = {
+  args: {
+    ariaLabel: 'CPU usage over the last hour',
+    dots: false,
+    formatTick: (value) => value.toFixed(1),
+    labels: Array.from({ length: 60 }, (_, i) =>
+      i % 15 === 0 ? `10:${String(i).padStart(2, '0')}` : '',
+    ),
+    series: [
+      {
+        color: 'blue',
+        data: Array.from({ length: 60 }, (_, i) =>
+          (i > 20 && i < 26) || i === 40 ? null : 0.6 + Math.sin(i / 6) * 0.3,
+        ),
+        label: 'CPU',
+      },
+    ],
+  },
+  render: (args) => <LineChart {...args} />,
+  play: async ({ canvasElement }) => {
+    const chart = within(canvasElement).getByRole('img', { name: 'CPU usage over the last hour' })
+    // Two gaps make three runs, with no dots.
+    await expect(chart.querySelectorAll('polyline')).toHaveLength(3)
+    await expect(chart.querySelectorAll('circle')).toHaveLength(0)
+  },
+}
+
+/** Long tick labels widen the left gutter instead of running off the chart. */
+export const LineWideTicks: StoryObj<typeof LineChart> = {
+  args: {
+    ariaLabel: 'Monthly spend',
+    formatTick: (value) => value.toLocaleString('en-US', { currency: 'USD', style: 'currency' }),
+    labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
+    series: [
+      {
+        color: 'green',
+        data: [1_200_000, 1_850_000, 1_600_000, 2_400_000, 2_100_000, 2_750_000],
+        label: 'Spend',
+      },
+    ],
+  },
+  render: (args) => <LineChart {...args} />,
+  play: async ({ canvasElement }) => {
+    const chart = within(canvasElement).getByRole('img', { name: 'Monthly spend' })
+    const left = chart.getBoundingClientRect().left
+    for (const tick of chart.querySelectorAll('text')) {
+      await expect(tick.getBoundingClientRect().left).toBeGreaterThanOrEqual(left)
+    }
+  },
 }
 
 // --- Sparkline ---

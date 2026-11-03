@@ -7,9 +7,9 @@
 //! `run.started` and the Run's worker claim, and gives every launched Run one
 //! Run Owner (ADR 0018): the in-process actor that alone appends the Run
 //! Ledger on every path the Program takes, in chunks, and runs the Run-bound
-//! Tool Invocation and dispatch-fence choreography inside its commits. A
-//! Run accepted in a caller's transaction and never launched keeps its claim
-//! until the expired-lease sweep ends it.
+//! Tool Invocation and Policy Enforcement Point choreography inside its
+//! commits. A Run accepted in a caller's transaction and never launched keeps
+//! its claim until the expired-lease sweep ends it.
 //!
 //! # Interface
 //!
@@ -18,7 +18,8 @@
 //! - [`RunModule::prepare`], [`RunModule::accept_in_transaction`], and
 //!   [`RunModule::launch`] expose the same admission and execution behavior to
 //!   an upper-level transaction owner. Staged acceptance is not proof of commit;
-//!   launch reads durable evidence and retains normal worker and authority fences.
+//!   launch reads durable evidence and keeps the normal worker claim and Policy
+//!   Enforcement Point checks.
 //! - [`RunModule::observe`] replays bounded authored Emissions/Logs with current
 //!   Principal-filtered required actions and terminal data on the final output page.
 //!   Bounded waiting ignores internal lifecycle records. Initial observation batches
@@ -81,19 +82,20 @@
 //! renews the lease. Above the Applied cap on unrecorded output the Program
 //! waits for the chunk. Emissions and Logs remain observable after a later
 //! failure. Invocation admission retains its Provider target, arguments,
-//! child record, and `invocation.started` in one chunk. The Dispatch Fence is
-//! one batched check per chunk commit: inside the chunk's transaction it
-//! reads the Workspace, Agent/Registration, Provider, policy and Account
-//! facts the chunk's ready Invocations share once, holding their rows shared
-//! so fences of other Runs read beside it and an authority writer waits for
-//! it, decides each Invocation in memory against those facts, the Run row as
-//! the chunk read it and the approval its gate recorded, at one clock sample after
-//! the last read, and records every permitted dispatch start in the same
-//! commit; it reads the retained Tool by its Generation id and never
+//! child record, and `invocation.started` in one chunk. The Policy Enforcement
+//! Point is one batched check per chunk commit: inside the chunk's transaction
+//! it reads the Workspace, Agent/Registration, Provider, policy and Account
+//! facts the chunk's ready Invocations share once, holding their rows shared so
+//! enforcement checks of other Runs read beside it and an authority writer
+//! waits for it, decides each Invocation in memory against those facts, the Run
+//! row as the chunk read it and the approval its gate recorded, at one clock
+//! sample after the last read, and records every permitted dispatch start in
+//! the same commit; it reads the retained Tool by its Generation id and never
 //! the Account's material. Decryption and the upstream send run outside
 //! every lock, after the pre-send check; a stop that reaches the owner first
-//! ends a fenced Invocation as `run_terminated` instead of sending, and a
-//! fence not yet committed answers terminated at once. Missing User caller Accounts attach to durable shared connection
+//! ends a permitted Invocation as `run_terminated` instead of sending, and an
+//! enforcement check not yet committed answers terminated at once. Missing
+//! User caller Accounts attach to durable shared connection
 //! requests; each Invocation keeps its Run deadline and detaches on selection
 //! or terminal cleanup. Approval is requested only after Account selection and
 //! before credential resolution. Its first decision and safe lifecycle
@@ -136,12 +138,17 @@ pub use activity::{RunEntries, RunEntry, RunEntryAnchor, RunEntryWindow};
 pub use activity_observation::{ActivityObservation, ActivityWake};
 pub use admission::{PreparedRun, StagedRun};
 pub mod approval;
+mod approval_history;
+mod approval_history_repository;
+pub use approval_history::{
+    Approver, SettledApproval, SettledApprovals, SettledCursor, SettledOutcome,
+};
 mod approval_repository;
 mod builtin;
+mod enforcement;
 mod engine;
 mod error;
 mod execution;
-mod fence;
 mod history;
 mod human_interface;
 pub use history::{InvocationStatus, InvocationSummary, RunSummary};
@@ -173,6 +180,9 @@ mod source_location_repository;
 mod summary;
 mod summary_repository;
 mod termination;
+mod tool_result_shape;
+pub use tool_result_shape::{ToolResultShape, ToolResultShapes};
+mod trace;
 mod types;
 mod worker;
 
@@ -197,11 +207,12 @@ use invocation::{ProductionUpstream, UpstreamSender};
 use owner::Owners;
 pub use required_actions::{
     ActionCursor, ActionPage, ActionSummary, QueueCursor, QueuedAction, RequiredAction,
-    RequiredActionRequest, RequiredActions, RequiredActor,
+    RequiredActionCounts, RequiredActionKind, RequiredActionRequest, RequiredActionSetRevision,
+    RequiredActions, RequiredActor,
 };
 pub use summary::{
-    ActivitySummary, ActorContext, ApprovalDecisions, CallOutcomes, MAX_SUMMARY_DAYS, StoppedTool,
-    ToolCalls,
+    ActivitySummary, ActorContext, ApprovalDecisions, CallOutcomes, CallerCalls, MAX_SUMMARY_DAYS,
+    StoppedTool, ToolCalls,
 };
 pub use types::{
     AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, COMBINED_TYPESCRIPT_MAX_BYTES,
@@ -235,7 +246,7 @@ pub struct RunModule {
     accounts: Option<coral_provider::account::AccountModule>,
     providers: coral_provider::ProviderModule,
     policies: coral_policy::ToolPolicyModule,
-    provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
+    provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
     human_interface: Option<HumanInterfaceUrl>,
     database: Arc<Database>,
     workspaces: WorkspaceModule,
@@ -282,7 +293,7 @@ impl RunModule {
         Ok(Self {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
-            provider_publisher: None,
+            provider_renamer: None,
             human_interface: None,
             database,
             workspaces,
@@ -321,7 +332,7 @@ impl RunModule {
         Self {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
-            provider_publisher: None,
+            provider_renamer: None,
             human_interface: None,
             database,
             workspaces,
@@ -352,15 +363,15 @@ impl RunModule {
         self
     }
 
-    /// Lets `coral.workspace.addProvider` publish a Provider that needs nobody to
-    /// sign in, through the workflow Reef publishes with. Without it, such a
-    /// call fails with `tool_unavailable`.
+    /// Lets `coral.workspace.updateProvider` rename a Provider, through the
+    /// workflow Reef renames with. Without it, such a call fails with
+    /// `tool_unavailable`.
     #[must_use]
-    pub fn with_provider_publisher(
+    pub fn with_provider_renamer(
         mut self,
-        publisher: Arc<dyn coral_provider::WorkspaceProviderPublisher>,
+        renamer: Arc<dyn coral_provider::ProviderRenamer>,
     ) -> Self {
-        self.provider_publisher = Some(publisher);
+        self.provider_renamer = Some(renamer);
         self
     }
 

@@ -2,6 +2,7 @@ import classNames from 'classnames'
 import type { CSSProperties, MouseEvent, MouseEventHandler, PropsWithChildren, Ref } from 'react'
 import { useHref, useNavigate } from 'react-router'
 
+import { ROW_CONTROLS } from './constants'
 import * as styles from './table.css'
 
 export type RowProps = PropsWithChildren<{
@@ -39,9 +40,6 @@ export function Row({ to, preventScrollReset, ...props }: RowProps) {
   if (to === undefined) return <RowElement {...props} />
   return <LinkRow to={to} preventScrollReset={preventScrollReset} {...props} />
 }
-
-// A click on these keeps its own behavior and does not follow the row's link.
-const ROW_CONTROLS = 'a, button, input, select, textarea, label, [role="button"], [tabindex]'
 
 function LinkRow({ to, preventScrollReset, onClick, ...props }: RowProps & { to: string }) {
   const navigate = useNavigate()

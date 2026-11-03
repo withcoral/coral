@@ -4,7 +4,8 @@
 //! policy address and lifecycle. Publication materializes outside the write transaction,
 //! then commits configuration, provisional credential promotion, request replay evidence
 //! and lifecycle events atomically. Retained generations survive compatible catalog
-//! updates; account-setting changes independently fence pending dispatch.
+//! updates; account-setting changes independently block pending dispatch at the
+//! Policy Enforcement Point.
 //! Adapters supply current actors, Workspace, clock, tracing and destination policy.
 pub use coral_workspace::WorkspaceId;
 
@@ -19,6 +20,7 @@ mod builtin;
 #[cfg(test)]
 mod builtin_tests;
 mod change;
+pub use change::{Committed, SearchChange};
 #[cfg(test)]
 mod credential_lifecycle_tests;
 mod error;
@@ -29,9 +31,8 @@ pub use management::{ProviderSource, ProviderWithConfiguration};
 mod management_tests;
 mod publication;
 mod reach;
-pub use reach::{reaches, unreached_tools_in_transaction};
-mod runtime;
 pub use configuration::{ConfigurationDifference, SetupConfigurationReview};
+pub use reach::{reaches, unreached_tools_in_transaction};
 #[cfg(test)]
 mod configuration_tests;
 mod repository;
@@ -50,7 +51,7 @@ mod setup_input_tests;
 #[cfg(test)]
 mod setup_oauth_tests;
 pub use program_setup::{
-    PublishabilityRejection, PublishedProvider, SetupPublishability,
+    ProgramSetup, ProgramSetupError, ProgramSetupPurpose, ProgramSetupRequest, PublishedProvider,
     published_provider_in_transaction,
 };
 #[cfg(test)]
@@ -82,17 +83,15 @@ pub use error::Error;
 pub mod history_repository;
 
 pub use publication::{
-    ActivatedGeneration, MaterializedPublication, PreparedPublication, ProviderPublication,
-    ProviderPublicationId, ProviderPublicationOutcome, ProviderRegenerationPublication,
-    ProviderRegenerationRequest, PublicationEvidence, Published,
-    WorkspaceProviderPublicationRequest, WorkspaceProviderPublisher,
-    publication_for_request_in_transaction, regeneration_for_request_in_transaction,
+    ActivatedGeneration, ProviderPublication, ProviderPublicationId, ProviderPublicationOutcome,
+    ProviderRegenerationPublication, ProviderRegenerationRequest, ProviderRenamer,
+    WorkspaceProviderPublicationRequest,
 };
 pub use types::{
     AdministrativeLifecycleEvent, InvocationToolVerification, LifecycleAction, LifecycleActor,
     LifecycleOutcome, ManagementRequestId, Provider, ProviderDisplayName, ProviderId,
     ProviderSearchCatalog, ProviderSetup, ProviderSetupId, ProviderSetupState, ProviderState,
-    ResolvedInvocationTool, SetupRequest, ToolAuthoringMaterial,
+    ResolvedCallPath, ResolvedInvocationTool, SetupRequest, ToolAuthoringMaterial,
 };
 
 pub use access::{CredentialRoute, ProviderAccess, ProviderCallRoot, ProviderNamespace, RouteFit};
@@ -279,21 +278,9 @@ impl ProviderModule {
         .with_source(input_url, expires_at)
         .with_request(purpose.request().cloned());
         let mut transaction = self.database.begin().await?;
-        let authority_source = self
-            .check_owner_configuration_in_transaction(&mut transaction, context.actor(), owner)
+        let (authority_source, update) = self
+            .hold_for_setup(&mut transaction, context, owner, purpose.update_target())
             .await?;
-        let update = match purpose.update_target() {
-            Some(target) => Some(
-                change::hold_for_change(
-                    &mut transaction,
-                    owner,
-                    target,
-                    change::ProviderChange::Reconfigure,
-                )
-                .await?,
-            ),
-            None => None,
-        };
         repository::insert_setup(
             &mut transaction,
             repository::NewSetup {
@@ -399,12 +386,14 @@ impl ProviderModule {
             )
             .await?;
         require_owner(&evidence)?;
-        let generation_id = repository::active_generation_for_configuration_in_transaction(
+        let generation_id = repository::current_provider(
             &mut transaction,
             workspace_id,
-            provider_id,
+            repository::ProviderKey::Id(provider_id),
+            repository::ProviderHold::None,
         )
         .await?
+        .map(|stored| stored.generation_id)
         .ok_or(Error::ToolNotFound)?;
         let tool = coral_catalog::tool_in_transaction(&mut transaction, &generation_id, tool_key)
             .await?
@@ -417,7 +406,7 @@ impl ProviderModule {
     ///
     /// Disabling preserves the Provider, its Generation, Provider Accounts,
     /// and historical attribution while blocking new Invocation admission and
-    /// every pending pre-fence dispatch.
+    /// every pending dispatch not yet past the Policy Enforcement Point.
     ///
     /// # Errors
     ///
@@ -471,24 +460,16 @@ impl ProviderModule {
         next_state: ProviderState,
     ) -> Result<Provider, Error> {
         let mut transaction = self.database.begin().await?;
-        let workspace_id = owner;
-        let (workspace_id, authority_source) = {
-            let evidence = self
-                .workspaces
-                .check_configuration_in_transaction(&mut transaction, context.actor(), workspace_id)
-                .await?;
-            require_owner(&evidence)?;
-            (Some(workspace_id), evidence.authority_source())
-        };
-        let stored = change::hold_for_change(
-            &mut transaction,
-            owner,
-            provider_id,
-            change::ProviderChange::SetState,
-        )
-        .await?;
-        stored.provider.check_etag(context)?;
-        match (stored.provider.state(), next_state) {
+        let held = self
+            .hold_for_change(
+                &mut transaction,
+                context,
+                owner,
+                provider_id,
+                change::ProviderChange::SetState,
+            )
+            .await?;
+        match (held.current.provider.state(), next_state) {
             (ProviderState::Disabled, ProviderState::Disabled) => {
                 return Err(Error::ProviderAlreadyDisabled);
             }
@@ -503,26 +484,10 @@ impl ProviderModule {
             ProviderState::Active => LifecycleAction::ProviderRestored,
             ProviderState::Disabled => LifecycleAction::ProviderDisabled,
         };
-        let target_id = provider_id.to_string();
-        repository::insert_lifecycle_event(
-            &mut transaction,
-            repository::NewLifecycleEvent {
-                workspace_id,
-                actor: LifecycleActor::User {
-                    user_id: context.actor().user_id().clone(),
-                    authority_source,
-                },
-                action,
-                target_id: &target_id,
-                outcome: LifecycleOutcome::Accepted,
-                changed_field_paths: &["state"],
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
-                trace_id: context.trace_id(),
-            },
-        )
-        .await?;
+        held.record(&mut transaction, context, action, &["state"])
+            .await?;
         transaction.commit().await?;
-        Ok(stored.provider.with_state(next_state))
+        Ok(held.current.provider.with_state(next_state))
     }
 
     async fn check_owner_inspection_in_transaction(
@@ -679,12 +644,14 @@ pub async fn tool_hints_and_methods_batch_in_transaction(
     else {
         return Ok(std::collections::BTreeMap::new());
     };
-    let generation_id = repository::active_generation_for_configuration_in_transaction(
+    let generation_id = repository::current_provider(
         transaction,
         workspace_id,
-        &provider_id,
+        repository::ProviderKey::Id(&provider_id),
+        repository::ProviderHold::None,
     )
     .await?
+    .map(|stored| stored.generation_id)
     .ok_or_else(|| Error::CorruptData("Provider has no current Provider Generation".to_string()))?;
     Ok(
         coral_catalog::tool_hints_and_methods_in_transaction(
@@ -694,6 +661,49 @@ pub async fn tool_hints_and_methods_batch_in_transaction(
         )
         .await?,
     )
+}
+
+/// Reads one page of the catalog of a Provider that `evidence` may inspect, in
+/// Tool Key order, leaving out each Tool it does not reach. A full page still
+/// carries its one lookahead row. The caller owns the coherent read transaction.
+///
+/// # Errors
+/// Returns a Provider that `evidence` may not inspect as
+/// [`Error::ProviderNotFound`], or persistence or catalog corruption failures.
+pub async fn tool_listings_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    evidence: &WorkspaceEvidence,
+    provider_id: &ProviderId,
+    after: Option<&ToolKey>,
+    page_size: u32,
+) -> Result<Vec<coral_catalog::ToolListing>, Error> {
+    let stored = inspected_provider_in_transaction(transaction, evidence, provider_id).await?;
+    let call_root = stored.provider.call_root();
+    let role = Some(evidence.effective_role());
+    let lookahead = usize::try_from(page_size).unwrap_or(usize::MAX);
+    let mut tools = Vec::new();
+    let mut after = after.cloned();
+    // Read on past each Tool left out, so a full page keeps its lookahead row.
+    loop {
+        let page = coral_catalog::tool_listings_in_transaction(
+            transaction,
+            &stored.generation_id,
+            after.as_ref(),
+            page_size,
+        )
+        .await?;
+        let exhausted = page.len() <= lookahead;
+        after = page.last().map(|tool| tool.key.clone());
+        tools.extend(
+            page.into_iter()
+                .filter(|tool| reaches(call_root, &tool.key, role)),
+        );
+        if exhausted || tools.len() > lookahead {
+            break;
+        }
+    }
+    tools.truncate(lookahead.saturating_add(1));
+    Ok(tools)
 }
 
 /// Resolves the Provider under `coral.providers.<namespace>`, in any state,
@@ -711,11 +721,11 @@ pub async fn provider_tool_paths_in_transaction(
     workspace_id: &WorkspaceId,
     namespace: &ProviderNamespace,
 ) -> Result<Option<(ProviderId, Vec<coral_catalog::ToolPathAssignment>)>, Error> {
-    let Some(active) = repository::provider_by_call_root_in_transaction(
+    let Some(active) = repository::current_provider(
         transaction,
         workspace_id,
-        &ProviderCallRoot::Owner(namespace.clone()),
-        coral_db::RowLock::None,
+        repository::ProviderKey::CallRoot(&ProviderCallRoot::Owner(namespace.clone())),
+        repository::ProviderHold::None,
     )
     .await?
     else {
@@ -752,12 +762,14 @@ impl<'a> InvocationCaller<'a> {
         }
     }
 
-    /// The caller's current Workspace authority, holding it as the dispatch
-    /// fence does; `None` when the caller has none.
+    /// The caller's current Workspace authority, read with `lock`: held
+    /// shared as the policy enforcement point does, or plainly in a read
+    /// snapshot. `None` when the caller has none.
     async fn authority(
         self,
         transaction: &mut coral_db::Transaction<'_>,
         workspace_id: &WorkspaceId,
+        lock: coral_db::RowLock,
     ) -> Result<Option<coral_workspace::PrincipalWorkspaceEvidence>, Error> {
         match self
             .workspaces
@@ -766,7 +778,7 @@ impl<'a> InvocationCaller<'a> {
                 self.actor,
                 workspace_id,
                 self.now_unix_nanos,
-                coral_db::RowLock::Shared,
+                lock,
             )
             .await
         {
@@ -802,6 +814,52 @@ pub async fn resolve_invocation_tool_in_transaction(
     caller: InvocationCaller<'_>,
     call_path: &str,
 ) -> Result<Option<ResolvedInvocationTool>, Error> {
+    let reached = reached_tool(
+        transaction,
+        workspace_id,
+        caller,
+        call_path,
+        coral_db::RowLock::Shared,
+    )
+    .await?;
+    resolved(transaction, reached).await
+}
+
+/// Whether [`resolve_invocation_tool_in_transaction`] would resolve
+/// `call_path` for `caller` now, read in a read snapshot without holding
+/// any row: Program Admission's check of the Call Paths a Program names
+/// literally. A Tool that policy disables still resolves, so its call is
+/// recorded and refused when made.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-package failure.
+pub async fn resolves_invocation_tool_in_snapshot(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    caller: InvocationCaller<'_>,
+    call_path: &str,
+) -> Result<bool, Error> {
+    Ok(reached_tool(
+        transaction,
+        workspace_id,
+        caller,
+        call_path,
+        coral_db::RowLock::None,
+    )
+    .await?
+    .is_some())
+}
+
+/// The Tool `call_path` names that `caller` reaches, with its Provider and
+/// Generation, read with `lock`.
+async fn reached_tool(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    caller: InvocationCaller<'_>,
+    call_path: &str,
+    lock: coral_db::RowLock,
+) -> Result<Option<ReachedTool>, Error> {
     let Some((call_root, relative_path)) = access::ProviderCallRoot::split_call_path(call_path)
     else {
         return Ok(None);
@@ -810,16 +868,18 @@ pub async fn resolve_invocation_tool_in_transaction(
         // Every Principal reaches an Owner-added Provider's Tools, so
         // admission reads no Workspace authority for it and takes no hold.
         ProviderCallRoot::Owner(_) => None,
-        // Hold Workspace authority before the Provider, the order the dispatch fence uses.
-        ProviderCallRoot::Builtin => match caller.authority(transaction, workspace_id).await? {
+        // Read Workspace authority before the Provider, the order the policy
+        // enforcement point holds them in.
+        ProviderCallRoot::Builtin => match caller.authority(transaction, workspace_id, lock).await?
+        {
             Some(authority) => authority.effective_user_role(),
             None => return Ok(None),
         },
     };
     Ok(
-        resolve_reached_tool(transaction, workspace_id, &call_root, relative_path)
+        reached_tool_by_root(transaction, workspace_id, &call_root, relative_path, lock)
             .await?
-            .filter(|resolved| reaches(&call_root, resolved.tool().key(), role)),
+            .filter(|(_access, _generation, tool)| reaches(&call_root, tool.key(), role)),
     )
 }
 
@@ -849,37 +909,30 @@ pub async fn resolve_owner_tool_in_transaction(
         matches!(call_root, ProviderCallRoot::Owner(_)),
         "{call_path} needs a caller"
     );
-    resolve_reached_tool(transaction, workspace_id, &call_root, relative_path).await
-}
-
-async fn resolve_reached_tool(
-    transaction: &mut coral_db::Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    call_root: &ProviderCallRoot,
-    relative_path: &str,
-) -> Result<Option<ResolvedInvocationTool>, Error> {
-    // Admission reads the Provider shared, like the Dispatch Fence that
-    // rechecks it: concurrent admissions read side by side, and a Provider
-    // change waits for the admissions in flight.
-    let Some(stored) = crate::runtime::active_provider_by_call_root_in_transaction(
+    let reached = reached_tool_by_root(
         transaction,
         workspace_id,
-        call_root,
+        &call_root,
+        relative_path,
         coral_db::RowLock::Shared,
     )
-    .await?
-    else {
-        return Ok(None);
-    };
-    let provider_access = stored.provider.access().clone();
-    let generation_id = stored.generation_id;
-    let Some(tool) = coral_catalog::tool_by_relative_path_in_transaction(
-        transaction,
-        &generation_id,
-        relative_path,
-    )
-    .await?
-    else {
+    .await?;
+    resolved(transaction, reached).await
+}
+
+/// A Tool's Provider access, the Generation that holds it, and the Tool.
+type ReachedTool = (
+    ProviderAccess,
+    coral_catalog::ProviderGenerationId,
+    coral_catalog::MaterializedTool,
+);
+
+/// The reached Tool with the schema graph its Invocation plans against.
+async fn resolved(
+    transaction: &mut coral_db::Transaction<'_>,
+    reached: Option<ReachedTool>,
+) -> Result<Option<ResolvedInvocationTool>, Error> {
+    let Some((provider_access, generation_id, tool)) = reached else {
         return Ok(None);
     };
     let schema_graph =
@@ -892,10 +945,42 @@ async fn resolve_reached_tool(
     )))
 }
 
+async fn reached_tool_by_root(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    call_root: &ProviderCallRoot,
+    relative_path: &str,
+    lock: coral_db::RowLock,
+) -> Result<Option<ReachedTool>, Error> {
+    // Invocation admission holds the Provider shared, like the Policy
+    // Enforcement Point that rechecks it: concurrent admissions read side by
+    // side, and a Provider change waits for the admissions in flight. Program
+    // Admission only reads it, in a snapshot.
+    let Some(stored) = repository::current_provider(
+        transaction,
+        workspace_id,
+        repository::ProviderKey::CallRoot(call_root),
+        lock.into(),
+    )
+    .await?
+    .and_then(repository::ProviderWithActiveGeneration::into_active) else {
+        return Ok(None);
+    };
+    let provider_access = stored.provider.access().clone();
+    let generation_id = stored.generation_id;
+    Ok(coral_catalog::tool_by_relative_path_in_transaction(
+        transaction,
+        &generation_id,
+        relative_path,
+    )
+    .await?
+    .map(|tool| (provider_access, generation_id, tool)))
+}
+
 /// Rechecks exact retained Provider dispatch evidence, holding the Provider
-/// row as `lock` says: shared in the Dispatch Fence, so concurrent fences
-/// read side by side and a Provider change waits for them; none in a read
-/// snapshot that only decides whether a held check is needed.
+/// row as `lock` says: shared in the Policy Enforcement Point, so concurrent
+/// enforcement checks read side by side and a Provider change waits for them;
+/// none in a read snapshot that only decides whether a held check is needed.
 ///
 /// Provider active-Generation selection may change after admission; this
 /// facet verifies the retained Tool by its Generation id rather than
@@ -915,14 +1000,14 @@ pub async fn verify_invocation_tool_in_transaction(
     lock: coral_db::RowLock,
 ) -> Result<InvocationToolVerification, Error> {
     let provider_access = retained.provider_access();
-    let Some(stored) = crate::runtime::active_provider_for_workspace_in_transaction(
+    let Some(stored) = repository::current_provider(
         transaction,
         workspace_id,
-        provider_access.id(),
-        lock,
+        repository::ProviderKey::Id(provider_access.id()),
+        lock.into(),
     )
     .await?
-    else {
+    .and_then(repository::ProviderWithActiveGeneration::into_active) else {
         return Ok(InvocationToolVerification::AuthorityLost);
     };
     match access::verify_retained(stored.provider.access(), provider_access)? {
@@ -946,6 +1031,14 @@ pub async fn verify_invocation_tool_in_transaction(
     )
 }
 
+impl repository::ProviderWithActiveGeneration {
+    /// The Provider when it is active. A disabled Provider serves no call
+    /// and grants no Account work.
+    pub(crate) fn into_active(self) -> Option<Self> {
+        (self.provider.state() == ProviderState::Active).then_some(self)
+    }
+}
+
 fn require_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
     if evidence.effective_role() == WorkspaceRole::Owner {
         Ok(())
@@ -954,6 +1047,27 @@ fn require_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
             coral_workspace::Error::PermissionDenied("Workspace Owner authority is required")
                 .into(),
         )
+    }
+}
+
+/// Loads one Provider that `evidence` may inspect; anything else is absent.
+async fn inspected_provider_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    evidence: &WorkspaceEvidence,
+    provider_id: &ProviderId,
+) -> Result<repository::ProviderWithActiveGeneration, Error> {
+    let stored = repository::current_provider(
+        &mut *transaction,
+        evidence.workspace().id(),
+        repository::ProviderKey::Id(provider_id),
+        repository::ProviderHold::None,
+    )
+    .await?
+    .ok_or(Error::ProviderNotFound)?;
+    if inspects(transaction, evidence, &stored).await? {
+        Ok(stored)
+    } else {
+        Err(Error::ProviderNotFound)
     }
 }
 

@@ -64,7 +64,9 @@ impl UpdatePolicy {
                             .collect(),
                     ))
                 }
-                coral_policy::Error::Workspace(error) if crate::fence::loses_authority(&error) => {
+                coral_policy::Error::Workspace(error)
+                    if crate::enforcement::loses_authority(&error) =>
+                {
                     Error::InvocationRejected(CoralFailure::AuthorityLost.into())
                 }
                 other => other.into(),

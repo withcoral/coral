@@ -1,3 +1,8 @@
+import { CORAL_ICONS } from '@/views/providers/coral-icons'
+import type { ProviderMark } from '@/views/activity/call-tool'
+import { activityPageFetchKey } from './activity-page-fetch'
+import { recipeChoiceById } from './provider-recipes/library.server'
+import type { RecipeIcons } from './provider-recipes/choice'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { data } from 'react-router'
 import {
@@ -11,10 +16,11 @@ import {
   type Provider,
   type ProviderTool,
 } from '@/generated/coral/management/v1/provider_pb'
-import { ToolAccessState, type ToolPolicy } from '@/generated/coral/management/v1/policy_pb'
+import { ToolAccessState, type ToolAccess } from '@/generated/coral/management/v1/policy_pb'
 import type {
   AccountChoice,
   AccountLabel,
+  ToolDetailView,
   ToolHintsView,
   ToolView,
   ProviderSettingsView,
@@ -23,7 +29,6 @@ import type {
 } from '@/views/providers/types'
 import type { PersonalAccountState } from '@/views/accounts/types'
 import { accountLabels } from '@/views/providers/account-labels'
-import { toolCallPath } from './call-root'
 import { privateHeaders, type ManagementApi } from './management.server'
 import { OPENAPI_DOCUMENT_SIZE_LABEL } from './provider-input-limits'
 
@@ -39,22 +44,85 @@ export function providerName(workspace: string, id: string) {
 export function providerPath(workspacePath: string, name: string) {
   return `${workspacePath}/providers/${name.split('/').at(-1)}`
 }
+/** The Tool Key a tool's resource name encodes. */
+function toolKey(name: string) {
+  return Buffer.from(name.split('/').at(-1)!, 'base64url').toString()
+}
+/** A tool's resource name, from a Provider's resource name and a Tool Key. */
+export function toolName(provider: string, key: string) {
+  return `${provider}/tools/${Buffer.from(key).toString('base64url')}`
+}
 
 /** Follows page tokens to the end; the tree shows every Provider. */
-export async function listAllProviders(api: Pick<ManagementApi, 'providers'>, parent: string) {
+export async function listAllProviders(
+  api: Pick<ManagementApi, 'providers'>,
+  parent: string,
+  signal?: AbortSignal,
+) {
   const providers: Provider[] = []
   let pageToken = ''
   do {
-    const page = await api.providers.listProviders({
-      parent,
-      pageSize: 100,
-      pageToken,
-    })
+    const page = await api.providers.listProviders({ parent, pageSize: 100, pageToken }, { signal })
     providers.push(...page.providers)
     pageToken = page.nextPageToken
   } while (pageToken)
   return providers
 }
+/**
+ * Each provider of `workspace` with the logo that stands for it, as on the providers page:
+ * Coral's mark for the Built-in Provider, else the logo of the recipe whose id its namespace
+ * keeps. Logos only decorate, so none show while Coral cannot list the providers, and no
+ * page fails for them. A lapsed sign-in still fails, so you sign in again.
+ */
+async function providersWithLogos(
+  api: Pick<ManagementApi, 'providers'>,
+  workspace: string,
+  signal?: AbortSignal,
+): Promise<{ provider: Provider; icons?: RecipeIcons }[]> {
+  try {
+    return (await listAllProviders(api, workspace, signal)).map((provider) => ({
+      provider,
+      icons: provider.builtin ? CORAL_ICONS : recipeChoiceById(provider.namespace)?.icons,
+    }))
+  } catch (error) {
+    if (error instanceof ConnectError && error.code === Code.Unauthenticated) throw error
+    return []
+  }
+}
+/** Each provider's call root and name with its logo, to mark the calls it owns. */
+export async function providerMarks(
+  api: Pick<ManagementApi, 'providers'>,
+  workspace: string,
+  signal: AbortSignal,
+): Promise<ProviderMark[]> {
+  return (await providersWithLogos(api, workspace, signal)).map(({ provider, icons }) => ({
+    callRoot: provider.callRoot,
+    displayName: provider.displayName,
+    ...(icons && { icons }),
+  }))
+}
+/**
+ * The marks Activity names its calls by. A later page of a loaded list keeps the marks its
+ * route loaded, so it reads none. Without marks, a call shows its full Call Path.
+ */
+export async function activityProviderMarks(
+  api: Pick<ManagementApi, 'providers'>,
+  workspace: string,
+  request: Request,
+): Promise<ProviderMark[]> {
+  if (new URL(request.url).searchParams.get(activityPageFetchKey) === 'page') return []
+  return providerMarks(api, workspace, request.signal)
+}
+/** Each provider's logo by its canonical name. A provider without one is absent. */
+export async function providerLogos(
+  api: Pick<ManagementApi, 'providers'>,
+  workspace: string,
+  signal?: AbortSignal,
+): Promise<Map<string, RecipeIcons>> {
+  const logos = await providersWithLogos(api, workspace, signal)
+  return new Map(logos.flatMap(({ provider, icons }) => (icons ? [[provider.name, icons]] : [])))
+}
+
 export async function listAllTools(api: Pick<ManagementApi, 'providers'>, parent: string) {
   const tools: ProviderTool[] = []
   let pageToken = ''
@@ -174,35 +242,30 @@ export function toolGroup(o: { tags: readonly string[]; relativePath: string }) 
   return dot > 0 ? o.relativePath.slice(0, dot) : ''
 }
 
-export function toolView(
-  o: ProviderTool,
-  options: { callRoot: string; basePath: string; policy: ToolPolicy },
-): ToolView {
-  const hints = toolHints(o.hints)
+export function toolView(o: ToolAccess): ToolView {
   return {
-    name: o.name,
+    key: toolKey(o.tool),
     relativePath: o.relativePath,
-    callPath: options.callRoot ? toolCallPath(options.callRoot, o.relativePath) : o.relativePath,
-    summary: o.summary,
-    description: o.description,
-    hints,
-    policy: accessState(options.policy.accessState),
+    hints: toolHints(o.hints),
+    policy: accessState(o.accessState),
     available: o.available,
     reasons: o.diagnostics.map((d) => d.message),
     group: toolGroup(o),
-    path: `${options.basePath}/tools/${encodeURIComponent(o.relativePath)}`,
   }
 }
 
-async function toolPolicies(api: ManagementApi, parent: string, tools: readonly ProviderTool[]) {
-  if (tools.length === 0) return []
-  return (
-    await api.policies.getToolPolicies({
-      parent,
-      tools: tools.map((o) => o.name),
-    })
-  ).policies
+/** Reads the prose of the one tool the drawer shows. */
+export async function toolDetail(
+  api: Pick<ManagementApi, 'providers'>,
+  provider: string,
+  relativePath: string,
+): Promise<ToolDetailView> {
+  const { summary, description } = await api.providers.getTool({ parent: provider, relativePath })
+  return { relativePath, summary, description }
 }
+
+// Coral bounds a page of tools with their decisions to this many.
+const TOOL_ACCESS_PAGE_SIZE = 1000
 
 function enabled(state: ProviderState) {
   switch (state) {
@@ -249,35 +312,24 @@ export async function providerView(
   personalAccounts: ReadonlyMap<string, PersonalAccountState>,
 ): Promise<ProviderView> {
   const path = providerPath(workspacePath, provider.name)
-  const tools: ProviderTool[] = []
-  const policies = new Map<string, ToolPolicy>()
-  const readPage = (pageToken: string) =>
-    api.providers.listTools({ parent: provider.name, pageSize: 100, pageToken })
-  let page = await readPage('')
-  while (page) {
-    // Keep at most one policy read and one catalog read in flight per provider.
-    // Both promises are observed together, so either failure rejects the load.
-    const [decisions, next] = await Promise.all([
-      toolPolicies(api, provider.name, page.tools),
-      page.nextPageToken ? readPage(page.nextPageToken) : undefined,
-    ])
-    tools.push(...page.tools)
-    for (const policy of decisions) policies.set(policy.tool, policy)
-    if (!next) break
-    page = next
-  }
-  const toolViews = tools.map((tool) => {
-    // Coral decides every requested tool, so a gap is a broken response.
-    const policy = policies.get(tool.name)
-    if (!policy) throw new Error(`Coral returned no policy for ${tool.name}`)
-    return toolView(tool, { callRoot: provider.callRoot, basePath: path, policy })
-  })
+  const toolViews: ToolView[] = []
+  let pageToken = ''
+  do {
+    const page = await api.policies.listToolAccess({
+      parent: provider.name,
+      pageSize: TOOL_ACCESS_PAGE_SIZE,
+      pageToken,
+    })
+    for (const tool of page.tools) toolViews.push(toolView(tool))
+    pageToken = page.nextPageToken
+  } while (pageToken)
   const id = provider.name.split('/').at(-1)!
   const isEnabled = enabled(provider.state)
   return {
     id,
     displayName: provider.displayName,
     namespace: provider.namespace,
+    callRoot: provider.callRoot,
     builtin: provider.builtin,
     account: accountLabel(provider.credentialRoute),
     blockers: provider.blockers.map(blockerLabel),

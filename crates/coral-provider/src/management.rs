@@ -74,11 +74,11 @@ impl ProviderModule {
         let mut tx = self.database.begin_read_snapshot().await?;
         self.check_owner_inspection_in_transaction(&mut tx, actor, workspace)
             .await?;
-        let active = repository::provider_by_call_root_in_transaction(
+        let active = repository::current_provider(
             &mut tx,
             workspace,
-            &ProviderCallRoot::Owner(namespace.clone()),
-            coral_db::RowLock::None,
+            repository::ProviderKey::CallRoot(&ProviderCallRoot::Owner(namespace.clone())),
+            repository::ProviderHold::None,
         )
         .await?
         .ok_or(Error::ProviderNotFound)?;
@@ -128,9 +128,14 @@ impl ProviderModule {
         let mut tx = self.database.begin_read_snapshot().await?;
         self.check_owner_inspection_in_transaction(&mut tx, actor, workspace)
             .await?;
-        let stored = repository::provider_in_transaction(&mut tx, workspace, provider)
-            .await?
-            .ok_or(Error::ProviderNotFound)?;
+        let stored = repository::current_provider(
+            &mut tx,
+            workspace,
+            repository::ProviderKey::Id(provider),
+            repository::ProviderHold::None,
+        )
+        .await?
+        .ok_or(Error::ProviderNotFound)?;
         match stored.provider.call_root() {
             ProviderCallRoot::Owner(_) => {}
             ProviderCallRoot::Builtin => return Err(Error::BuiltinProviderManaged),
@@ -257,7 +262,7 @@ impl ProviderModule {
     ///
     /// # Errors
     /// Returns current Workspace authority or persistence failures.
-    pub async fn namespace_in_use(
+    pub(crate) async fn namespace_in_use(
         &self,
         actor: &AuthenticatedUser,
         workspace: &WorkspaceId,
@@ -338,6 +343,35 @@ impl ProviderModule {
         tx.rollback().await?;
         Ok(tools)
     }
+    /// Reads one Tool of the current catalog by its Tool-relative Call Path,
+    /// without exposing private execution bindings.
+    ///
+    /// # Errors
+    /// Returns current Workspace authority, a missing Provider, a Tool that
+    /// `actor` does not reach or that does not exist as [`Error::ToolNotFound`],
+    /// or catalog persistence failures.
+    pub async fn inspect_tool_summary(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+        provider: &ProviderId,
+        relative_path: &str,
+    ) -> Result<ToolSummary, Error> {
+        let mut tx = self.database.begin_read_snapshot().await?;
+        let (stored, role) = self
+            .inspected_provider(&mut tx, actor, workspace, provider)
+            .await?;
+        let tool = coral_catalog::tool_summary_by_relative_path_in_transaction(
+            &mut tx,
+            &stored.generation_id,
+            relative_path,
+        )
+        .await?
+        .filter(|tool| crate::reaches(stored.provider.call_root(), &tool.key, Some(role)))
+        .ok_or(Error::ToolNotFound)?;
+        tx.rollback().await?;
+        Ok(tool)
+    }
     pub(super) async fn management_authority(
         &self,
         tx: &mut coral_db::Transaction<'_>,
@@ -360,92 +394,63 @@ impl ProviderModule {
         provider: &ProviderId,
     ) -> Result<(repository::ProviderWithActiveGeneration, WorkspaceRole), Error> {
         let evidence = self.management_authority(tx, actor, workspace).await?;
-        let stored = repository::provider_in_transaction(&mut *tx, workspace, provider)
-            .await?
-            .ok_or(Error::ProviderNotFound)?;
-        if crate::inspects(tx, &evidence, &stored).await? {
-            Ok((stored, evidence.effective_role()))
-        } else {
-            Err(Error::ProviderNotFound)
-        }
+        let stored = crate::inspected_provider_in_transaction(tx, &evidence, provider).await?;
+        Ok((stored, evidence.effective_role()))
     }
 }
 
 impl ProviderModule {
-    /// Changes safe display metadata in the caller's transaction, retaining identity,
-    /// namespace, route and policy. An unchanged display name writes nothing.
+    /// Changes safe display metadata in its own transaction, retaining
+    /// identity, namespace, route and policy. An unchanged display name
+    /// writes nothing.
     ///
     /// # Errors
-    /// Requires current owner authority, an exact Provider and its current etag. Never commit
-    /// the transaction after an error.
-    pub async fn rename_provider_in_transaction(
-        &self,
-        tx: &mut coral_db::Transaction<'_>,
-        context: &coral_workspace::ChangeContext,
-        workspace: &WorkspaceId,
-        id: &ProviderId,
-        display_name: crate::ProviderDisplayName,
-    ) -> Result<Provider, Error> {
-        let authority = self
-            .check_owner_configuration_in_transaction(tx, context.actor(), workspace)
-            .await?;
-        let current = crate::change::hold_for_change(
-            tx,
-            workspace,
-            id,
-            crate::change::ProviderChange::Rename,
-        )
-        .await?
-        .provider;
-        current.check_etag(context)?;
-        if current.display_name() == display_name.as_str() {
-            return Ok(current);
-        }
-        repository::update_display_name(tx, &current, &display_name).await?;
-        repository::insert_lifecycle_event(
-            tx,
-            repository::NewLifecycleEvent {
-                workspace_id: Some(workspace),
-                actor: crate::LifecycleActor::User {
-                    user_id: context.actor().user_id().clone(),
-                    authority_source: authority,
-                },
-                action: crate::LifecycleAction::ProviderUpdated,
-                target_id: &id.to_string(),
-                outcome: crate::LifecycleOutcome::Accepted,
-                changed_field_paths: &["display_name"],
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
-                trace_id: context.trace_id(),
-            },
-        )
-        .await?;
-        let updated = repository::provider_in_transaction(tx, workspace, id)
-            .await?
-            .ok_or(Error::ProviderNotFound)?
-            .provider;
-        Ok(updated)
-    }
-}
-
-/// Provider-rule tests rename a Provider without the Provider workflow and its notifications.
-#[cfg(any(test, feature = "test-fixtures"))]
-impl ProviderModule {
-    /// Changes safe display metadata in its own transaction.
-    ///
-    /// # Errors
-    /// Returns the errors of [`Self::rename_provider_in_transaction`].
+    /// Requires current owner authority, an exact Provider and its current etag.
     pub async fn rename_provider(
         &self,
         context: &coral_workspace::ChangeContext,
         workspace: &WorkspaceId,
         id: &ProviderId,
         display_name: crate::ProviderDisplayName,
-    ) -> Result<Provider, Error> {
+    ) -> Result<crate::Committed<Provider>, Error> {
         let mut tx = self.database.begin().await?;
-        let updated = self
-            .rename_provider_in_transaction(&mut tx, context, workspace, id, display_name)
+        let held = self
+            .hold_for_change(
+                &mut tx,
+                context,
+                workspace,
+                id,
+                crate::change::ProviderChange::Rename,
+            )
             .await?;
+        if held.current.provider.display_name() == display_name.as_str() {
+            tx.rollback().await?;
+            return Ok(crate::Committed::unchanged(held.current.provider));
+        }
+        repository::update_display_name(&mut tx, &held.current.provider, &display_name).await?;
+        held.record(
+            &mut tx,
+            context,
+            crate::LifecycleAction::ProviderUpdated,
+            &["display_name"],
+        )
+        .await?;
+        let updated = repository::current_provider(
+            &mut tx,
+            workspace,
+            repository::ProviderKey::Id(id),
+            repository::ProviderHold::None,
+        )
+        .await?
+        .ok_or(Error::ProviderNotFound)?
+        .provider;
         tx.commit().await?;
-        Ok(updated)
+        Ok(crate::Committed::new(
+            updated,
+            crate::SearchChange::Refreshed {
+                workspace: workspace.clone(),
+                provider: id.clone(),
+            },
+        ))
     }
 }

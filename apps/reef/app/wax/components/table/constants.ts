@@ -20,6 +20,10 @@ export const GROUP_HEADING_HEIGHT_PX = {
   default: 44,
 } as const
 
+// Controls in a row. A click on one keeps its own behavior, and a row that holds
+// one shows hover.
+export const ROW_CONTROLS = 'a, button, input, select, textarea, label, [role="button"], [tabindex]'
+
 export const GROUP_DEPTH_PROPERTY = '--wax-table-group-depth'
 
 // Room a scroll table leaves after its last row, inside its own scroll port, so

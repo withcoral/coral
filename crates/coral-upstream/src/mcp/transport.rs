@@ -15,6 +15,7 @@ use rmcp::transport::streamable_http_client::{
 use serde_json::Value;
 
 use crate::Error;
+use crate::exchange::ExchangeBytes;
 
 type TransportError = StreamableHttpError<Error>;
 
@@ -86,6 +87,12 @@ pub(super) struct McpHttpClient {
     pub(super) client: coral_outbound::Client,
     pub(super) limit: usize,
     pub(super) result: Arc<Mutex<Option<Captured>>>,
+    /// The dispatch's client span, whose trace context every request of its
+    /// session carries.
+    pub(super) span: tracing::Span,
+    /// The dispatch the session's request and response bodies add to;
+    /// `None` for a session that is no Provider Tool dispatch.
+    pub(super) bytes: Option<Arc<ExchangeBytes>>,
 }
 
 impl StreamableHttpClient for McpHttpClient {
@@ -100,7 +107,8 @@ impl StreamableHttpClient for McpHttpClient {
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<StreamableHttpPostResponse, TransportError> {
         let request_json = serde_json::to_value(&message)?;
-        if serde_json::to_vec(&request_json)?.len() > self.limit {
+        let request_bytes = serde_json::to_vec(&request_json)?.len();
+        if request_bytes > self.limit {
             *self
                 .result
                 .lock()
@@ -109,6 +117,9 @@ impl StreamableHttpClient for McpHttpClient {
             return Err(TransportError::Client(Error::InputTooLarge));
         }
         let capture_request = result_request(&request_json);
+        if let Some(bytes) = &self.bytes {
+            bytes.sent(request_bytes);
+        }
         let mut request = self
             .client
             .post(uri.as_ref())
@@ -126,8 +137,9 @@ impl StreamableHttpClient for McpHttpClient {
         if let Some(token) = auth_header {
             request = request.bearer_auth(token);
         }
+        let request =
+            crate::traced(request.json(&message), &self.span).map_err(TransportError::Client)?;
         let mut response = request
-            .json(&message)
             .send()
             .await
             .map_err(|error| self.capture_destination(Error::send(error)))?;
@@ -170,6 +182,9 @@ impl StreamableHttpClient for McpHttpClient {
                         }
                         TransportError::Client(error)
                     })?;
+                if let Some(bytes) = &self.bytes {
+                    bytes.received(body.len());
+                }
                 let mut value = serde_json::from_slice(&body)?;
                 capture(&self.result, capture_request.as_ref(), &mut value)
                     .map_err(TransportError::Client)?;
@@ -207,7 +222,8 @@ impl StreamableHttpClient for McpHttpClient {
         if let Some(token) = auth_header {
             request = request.bearer_auth(token);
         }
-        request
+        crate::traced(request, &self.span)
+            .map_err(TransportError::Client)?
             .send()
             .await
             .map_err(|error| self.capture_destination(Error::send(error)))?;
@@ -265,8 +281,13 @@ impl McpHttpClient {
     ) -> BoxedSseResponse {
         // Bound bytes before parsing, including peers that never finish an event.
         let bytes = stream::try_unfold(
-            (response, self.limit, self.result.clone()),
-            |(mut response, remaining, result)| async move {
+            (
+                response,
+                self.limit,
+                self.result.clone(),
+                self.bytes.clone(),
+            ),
+            |(mut response, remaining, result, bytes)| async move {
                 let Some(chunk) = response.chunk().await.map_err(Error::Body)? else {
                     return Ok::<_, Error>(None);
                 };
@@ -276,7 +297,10 @@ impl McpHttpClient {
                     }
                     Error::ResultTooLarge
                 })?;
-                Ok(Some((chunk, (response, remaining, result))))
+                if let Some(bytes) = &bytes {
+                    bytes.received(chunk.len());
+                }
+                Ok(Some((chunk, (response, remaining, result, bytes))))
             },
         );
         let result = self.result.clone();

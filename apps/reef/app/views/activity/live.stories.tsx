@@ -104,7 +104,7 @@ const finalRow: Child = {
   ...output(program.name, 99, 'program.emitted').row,
   sourceLocation: undefined,
   name: `${program.name}/final`,
-  label: 'final value',
+  label: 'return value',
   eventKind: 'run.ended',
 }
 
@@ -496,10 +496,10 @@ export const FollowsNewRecords: Story = {
     await idle()
     await selects('mail.send', 'mail.send')
 
-    // The final value is the Run's last record.
+    // Completion returns to the Run itself, not its final value.
     await press('End run')
-    await selects('Send reminders', 'final value')
-    await expect(address().get('record')).toBe(`${program.name}/final`)
+    await selects('Send reminders', 'Reminder run')
+    await expect(address().get('record')).toBe(program.name)
     await following(true)
     // An ended Run changes nothing more: no step repeats and no load starts.
     await idle()
@@ -511,7 +511,7 @@ export const FollowsNewRecords: Story = {
     await following(false)
     await expect(address().toString()).toBe(filtered)
     await press('History forward')
-    await selects('Send reminders', 'final value')
+    await selects('Send reminders', 'Reminder run')
     await following(true)
   },
 }
@@ -611,17 +611,23 @@ export const ReadsTheEndOfALongRun: Story = {
   beforeEach: () =>
     world.reset(
       [1, 2, 3, 4, 5].map((sequence) => output(program.name, sequence, 'program.logged')),
-      { window: 2, ended: true },
+      { window: 2 },
     ),
   play: async (context) => {
     const { userEvent } = context
-    const { toggle, address, selects, following, idle } = await surface(context)
-    // The table holds the first two of six children; live mode reads the end. The
-    // Run has ended, so its final value is its newest record.
+    const { toggle, address, press, selects, following, idle } = await surface(context)
+    // The table holds the first two children; live mode reads the end while it runs.
     await userEvent.click(toggle())
     await following(true)
-    await selects('Send reminders', 'final value')
+    await selects('console.info #5', 'log #5')
     await expect(address().get(`offset.${program.name}`)).not.toBe('0')
+    const offset = address().get(`offset.${program.name}`)
+    // Completion selects the Run without loading another child window.
+    await press('End run')
+    await selects('Send reminders', 'Reminder run')
+    await expect(address().get('record')).toBe(program.name)
+    await expect(address().get(`offset.${program.name}`)).toBe(offset)
+    await following(true)
     await idle()
     await settled()
   },
@@ -714,7 +720,7 @@ export const FollowsInTheSourceSplit: Story = {
 
 /**
  * Each new tool, log or emission that live mode selects slides in by Run order,
- * and the final value replaces it at once. Detail motion owns the rule.
+ * and the finished Run replaces it at once. Detail motion owns the rule.
  */
 export const SlidesToEachNewRecord: Story = {
   beforeEach: () => world.reset([tool(program.name, 1, 'mail.list')]),
@@ -743,7 +749,7 @@ export const SlidesToEachNewRecord: Story = {
       await selects('coral.emit #4', 'emission #4')
       await expect(await starts()).toEqual(fromBelow)
       await press('End run')
-      await selects('Send reminders', 'final value')
+      await selects('Send reminders', 'Reminder run')
       await expect(await starts()).toEqual([])
     } finally {
       recorder.stop()
@@ -811,13 +817,13 @@ export const ActionsComeFirst: Story = {
 
     // Approving it reviews the next approval at once, with no stop at a newer record.
     world.visited = []
-    await userEvent.click(drawer().getByRole('button', { name: 'Approve this call' }))
+    await userEvent.click(drawer().getByRole('button', { name: 'Approve' }))
     await reviews(context, second)
     await following(true)
     await expect(world.visited).toEqual([second.name])
 
     // Denying the last one follows the newest record again.
-    await userEvent.click(drawer().getByRole('button', { name: 'Deny this call' }))
+    await userEvent.click(drawer().getByRole('button', { name: 'Decline' }))
     await selects('console.info #6', 'log #6')
     await following(true)
     await expect(address().has('request')).toBe(false)
@@ -843,7 +849,7 @@ export const ADecisionAdvancesWithLiveModeOff: Story = {
     await expect(toggle()).toHaveAttribute('aria-pressed', 'false')
 
     // Denying reviews the next approval and leaves live mode off. The review rests there.
-    await userEvent.click(within(rail()).getByRole('button', { name: 'Deny this call' }))
+    await userEvent.click(within(rail()).getByRole('button', { name: 'Decline' }))
     await reviews(context, second)
     await idle()
     await settled()
@@ -859,7 +865,7 @@ export const ADecisionAdvancesWithLiveModeOff: Story = {
 
     // Approving the last one reads the end of the program and selects its newest
     // record, still with live mode off.
-    await userEvent.click(within(rail()).getByRole('button', { name: 'Approve this call' }))
+    await userEvent.click(within(rail()).getByRole('button', { name: 'Approve' }))
     await selects('console.info #6', 'log #6')
     await expect(address().has('live')).toBe(false)
     await expect(toggle()).toHaveAttribute('aria-pressed', 'false')
@@ -882,7 +888,7 @@ export const AFailedOrUnfinishedDecisionHolds: Story = {
     const { rail, toggle, address, press, idle, following, selects } = await surface(context)
     await reviews(context, first)
     let held = address().toString()
-    const approve = () => within(rail()).getByRole('button', { name: 'Approve this call' })
+    const approve = () => within(rail()).getByRole('button', { name: 'Approve' })
     /** The approval stays selected while a record arrives and the page reads again. */
     const holds = async () => {
       await press('Add log')
@@ -973,11 +979,11 @@ export const AnOppositeDecisionThatWonHolds: Story = {
     await reviews(context, first)
     const held = address().toString()
 
-    // Another reviewer denied the call first. Your approval lost, so the review stays
+    // Another reviewer declined the call first. Your approval lost, so the review stays
     // and shows the decision that won.
     world.decision = 'lost'
-    await userEvent.click(within(rail()).getByRole('button', { name: 'Approve this call' }))
-    await expect(await within(rail()).findByText('Denied')).toBeVisible()
+    await userEvent.click(within(rail()).getByRole('button', { name: 'Approve' }))
+    await expect(await within(rail()).findByText('Declined')).toBeVisible()
     await idle()
     await settled()
     await expect(address().toString()).toBe(held)
@@ -1022,7 +1028,7 @@ export const YourPickDuringADecisionStays: Story = {
     // You pick a record while your decision is under way. Once it saves, the review
     // does not take the selection back.
     world.decision = 'held'
-    const approve = () => within(rail()).getByRole('button', { name: 'Approve this call' })
+    const approve = () => within(rail()).getByRole('button', { name: 'Approve' })
     await userEvent.click(approve())
     await waitFor(() => expect(approve()).toHaveAttribute('aria-busy', 'true'))
     await expect(approve()).toHaveAttribute('aria-disabled', 'true')

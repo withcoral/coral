@@ -1,6 +1,8 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { redirect } from 'react-router'
 import {
+  ActivityApprovalOutcome,
+  ActivityRequiredActionKind,
   ActivityRunState,
   ActivityInvocationState,
   ActivityInvocationOutcome,
@@ -17,6 +19,7 @@ import type {
   ActivityInvocation,
   ActivityProgramError,
   ActivityDiscovery,
+  InspectApprovalResponse,
   InspectInvocationResponse,
   ActivityRequestReference,
   ActivityRunEvent,
@@ -31,6 +34,8 @@ import type {
   DiscoveryView,
   ActivityPage,
   ActivityRow,
+  SettledApproval,
+  SettledPage,
   ActivityBranch,
   ExecutionRow,
   InvocationRow,
@@ -41,7 +46,8 @@ import type {
   InvocationState,
   InvocationOutcome,
   RequestReference,
-  RequestDetail,
+  ApprovalDetail,
+  ApprovalReading,
   RunEvent,
   RunTerminal,
   RunFailureCode,
@@ -156,7 +162,7 @@ function discoveryContextView({ context }: ActivityDiscovery): DiscoveryContext 
         query: context.value.query ?? null,
         provider: context.value.provider ?? null,
         limit: context.value.limit,
-        cursor: context.value.cursor ?? null,
+        offset: context.value.offset,
       }
     case 'describe':
       return { kind: 'describe', callPath: context.value.callPath, types: [...context.value.types] }
@@ -558,7 +564,7 @@ function unavailable(error: unknown) {
 }
 /** A passing Coral fault. Only optional context may leave it out; sign-in, validation and a
  * cancelled load still fail the read. */
-function transient(error: unknown) {
+export function transient(error: unknown) {
   return (
     error instanceof ConnectError &&
     (error.code === Code.Unavailable || error.code === Code.Internal)
@@ -625,6 +631,64 @@ function outputRow(
     task,
     agent,
     sourceLocation: sourceLocationView(event.sourceLocation),
+  }
+}
+
+/** A Run with its accepted source and outcome, and no request selected. */
+function runDetailView(value: InspectRunResponse, run: ExecutionRow): RunDetail {
+  return {
+    kind: 'run',
+    request: null,
+    requestUnavailable: false,
+    run,
+    source: value.submittedSource,
+    submission: value.submission ? interactionView(value.submission) : undefined,
+    linkedFunctions: value.linkedFunctions.map(({ savedFunction, path, source }) => ({
+      savedFunction,
+      path,
+      source,
+    })),
+    terminal: runTerminalView(value),
+  }
+}
+
+const APPROVAL_NAME = /^workspaces\/[^/]+\/approvals\/[^/]+$/
+
+function approvalView(request: InspectApprovalResponse): ApprovalDetail {
+  return {
+    kind: 'approval',
+    actionable: request.actionable,
+    name: request.name,
+    run: request.run,
+    invocation: request.invocation,
+    provider: request.provider,
+    providerLabel: request.providerLabel,
+    approverLabel: request.approverLabel,
+    callPath: request.callPath,
+    arguments: request.argumentsJson,
+    state: request.state,
+    deadline: timestamp(request.deadlineAtUnixNanos),
+    approver: request.approver,
+    decidedAt:
+      request.decidedAtUnixNanos === undefined ? null : timestamp(request.decidedAtUnixNanos),
+    comment: request.comment ?? null,
+  }
+}
+
+/** Adds why the Task started. The Run names its Task only when the caller can see it; an
+ * unavailable Task, or a passing fault on this optional read, leaves the intent out, not the
+ * review. */
+async function addTaskIntent(
+  review: ApprovalDetail,
+  api: Pick<ActivityApi, 'activity'>,
+  task: string,
+  signal: AbortSignal,
+) {
+  try {
+    const value = await api.activity.inspectTask({ name: task, pageSize: 1 }, { signal })
+    if (value.task?.intent) review.taskIntent = value.task.intent
+  } catch (error) {
+    if (!unavailable(error) && !transient(error)) throw error
   }
 }
 
@@ -731,20 +795,7 @@ async function selectedDetail(
             page.initialRequest = first.name
           }
         }
-        page.detail = {
-          kind: 'run',
-          request: null,
-          requestUnavailable: false,
-          run: row,
-          source: value.submittedSource,
-          submission: value.submission ? interactionView(value.submission) : undefined,
-          linkedFunctions: value.linkedFunctions.map(({ savedFunction, path, source }) => ({
-            savedFunction,
-            path,
-            source,
-          })),
-          terminal,
-        }
+        page.detail = runDetailView(value, row)
         page.selected = run
         page.selectedRow = {
           ...row,
@@ -795,7 +846,7 @@ async function selectedDetail(
       try {
         if (
           reference?.kind === 'approval' ||
-          (detail.kind === 'run' && /^workspaces\/[^/]+\/approvals\/[^/]+$/.test(selectedRequest))
+          (detail.kind === 'run' && APPROVAL_NAME.test(selectedRequest))
         ) {
           const request = await api.activity.inspectApproval(
             {
@@ -808,26 +859,7 @@ async function selectedDetail(
             (detail.kind === 'invocation' && request.invocation !== detail.invocation.name)
           )
             throw new ConnectError('unavailable', Code.NotFound)
-          const review: Extract<RequestDetail, { kind: 'approval' }> = {
-            kind: 'approval',
-            actionable: request.actionable,
-            name: request.name,
-            run: request.run,
-            invocation: request.invocation,
-            provider: request.provider,
-            providerLabel: request.providerLabel,
-            approverLabel: request.approverLabel,
-            callPath: request.callPath,
-            arguments: request.argumentsJson,
-            state: request.state,
-            deadline: timestamp(request.deadlineAtUnixNanos),
-            approver: request.approver,
-            decidedAt:
-              request.decidedAtUnixNanos === undefined
-                ? null
-                : timestamp(request.decidedAtUnixNanos),
-            comment: request.comment ?? null,
-          }
+          const review = approvalView(request)
           if (detail.kind === 'run') {
             // Approval belongs to this exact tool, not its containing Run.
             // Resolve it in this response rather than redirecting and rereading history.
@@ -871,19 +903,10 @@ async function selectedDetail(
             detail.context = context.detail
             detail.request = review
           }
-          // Approval review shows why the Task started. The Run names its Task only when the
-          // caller can see it; an unavailable Task, or a passing fault on this optional read,
-          // leaves the intent out, not the review.
+          // Approval review shows why the Task started.
           const owner =
             page.detail?.kind === 'invocation' ? page.detail.context?.run.task : undefined
-          if (owner) {
-            try {
-              const value = await api.activity.inspectTask({ name: owner, pageSize: 1 }, { signal })
-              if (value.task?.intent) review.taskIntent = value.task.intent
-            } catch (error) {
-              if (!unavailable(error) && !transient(error)) throw error
-            }
-          }
+          if (owner) await addTaskIntent(review, api, owner, signal)
         } else if (
           reference?.kind === 'account_connection' ||
           selectedRequest === retainedConnection
@@ -996,6 +1019,27 @@ async function oldestRunAction(
 }
 
 /**
+ * What one load read of Coral that page live mode reuses, with Coral's own times: when
+ * each top-level record started, and by Task, a read whose window holds its newest child.
+ */
+interface LoadEvidence {
+  /** By top-level record, when it started: a Task, or a standalone Run when accepted. */
+  roots: Map<string, bigint>
+  ends: Map<string, TaskRead>
+}
+type TaskRead = Awaited<ReturnType<ActivityApi['activity']['inspectTask']>>
+type RootRead = Awaited<ReturnType<ActivityApi['activity']['browseActivityRoots']>>['roots'][number]
+/** Notes when `root`, a top-level record Coral listed, started. */
+function noteRoot(seen: LoadEvidence, { record }: RootRead) {
+  if (record.value) seen.roots.set(record.value.name, record.value.startedAtUnixNanos)
+}
+/** Notes `value`, a read of the Task `task`, when its window holds the newest child. */
+function noteEnd(seen: LoadEvidence, task: string, value: TaskRead) {
+  if (Number(value.offset) + value.interactions.length >= Number(value.total))
+    seen.ends.set(task, value)
+}
+
+/**
  * What page live mode needs past the list and its loaded windows, while it follows the
  * newest activity with no Run that runs open. It reads every top-level record in the
  * list's scope, past the loaded list too, and only the Runs it may follow: a standalone
@@ -1004,8 +1048,8 @@ async function oldestRunAction(
  *   `oldestRunAction` times it, by the tool that waits on it, so the tool
  *   that started waiting first wins, not the request made first: Coral states no
  *   request time. The candidates are the Runs that run and wait on you that the list,
- *   a loaded window or your queue of required actions shows. Your queue lists a shared
- *   connection once, under one Run, so while it holds a connection, every Task whose
+ *   a loaded window or your pending requests show. Those list a shared connection
+ *   once, under one Run, so while they hold a connection, every Task whose
  *   row says a Run of it runs is read in full for the other Runs that wait. That read
  *   also finds its newest Run that runs, so no window is read twice. An archived
  *   workspace takes no action, so it reads none.
@@ -1013,6 +1057,10 @@ async function oldestRunAction(
  *   read back from its end one window at a time.
  * - `newest`: the newest top-level record, when the page does not hold it, such as a
  *   snapshot of only the records you watch.
+ * - `latest`: with no action and no Run that runs, the newest record it may follow, once
+ *   it read every record. A Task's top-level record says when the Task started, not when
+ *   its newest child did, so it reads the newest child of each such Task: from a window
+ *   of this load that holds the end, else with one read of one child.
  * - `complete`: it read every top-level record and every Task it looked in, so
  *   `running` names every Run that runs that it may follow.
  * It reads the Runs of a Task only while its row in the list says a child Run runs
@@ -1025,6 +1073,7 @@ async function oldestRunAction(
 async function liveLatestWork(
   page: ActivityPage,
   newestPage: ActivityRow[] | undefined,
+  seen: LoadEvidence,
   query: URLSearchParams,
   api: ActivityApi,
   scope: ActivityScope,
@@ -1059,12 +1108,12 @@ async function liveLatestWork(
       (await api.workspaces.getWorkspace({ name: scope.workspace }, { signal })).state !==
         WorkspaceState.ARCHIVED)
   if (actionable) {
-    const queue = tasks.length ? await requiredActions(page, query, api, scope, signal) : []
+    const waiting = tasks.length ? await pendingActions(api, scope.workspace, signal) : []
     const eligible = new Set(tasks.map((task) => task.name))
-    for (const { run } of queue)
+    for (const { run } of waiting)
       if (unfinishedRun(page, run) && (eligible.has(run.task) || asking.has(run.name)))
         asking.set(run.name, run.task)
-    if (queue.some(({ action }) => action.kind === 'account_connection'))
+    if (waiting.some(({ action }) => action.kind === 'account_connection'))
       for (const task of tasks) await readRuns(task.name, { waiting: true })
     const timed = await Promise.all(
       [...asking.keys()].map((run) => runActions(run, undefined, api, scope, signal)),
@@ -1081,8 +1130,53 @@ async function liveLatestWork(
     if (run) (found.running ??= {})[task.name] = run
   }
   if (roots[0] && !listed.has(roots[0].name)) found.newest = roots[0].name
+  if (!found.action && !found.running && complete && tasksRead)
+    found.latest = await newestRecordOf()
   if (complete && tasksRead && roots.length) found.complete = true
-  return found.action || found.running || found.newest || found.complete ? found : undefined
+  // Even empty, it says the loader looked past the list.
+  return found
+
+  /**
+   * The newest record page live mode may follow, as `LiveLatest.latest` names it. A
+   * Task's top-level record says when the Task started, not when its newest child did,
+   * so it reads the newest child of each such Task. Roots come newest first, so at an
+   * equal time the newer one wins. Undefined when Reef cannot read one of them, which
+   * could hold the newest.
+   */
+  async function newestRecordOf(): Promise<LiveLatest['latest']> {
+    let best: { root: string; record: string; run: boolean; at: bigint } | undefined
+    for (const root of roots) {
+      if (root.kind === 'task' && !recentTask(root, now)) continue
+      const started = seen.roots.get(root.name)
+      const child = root.kind === 'task' ? await newestChild(root.name) : undefined
+      if (child === null || started === undefined) return undefined
+      const record = child ?? { name: root.name, at: started, run: root.kind === 'run' }
+      if (!best || record.at > best.at)
+        best = { root: root.name, record: record.name, run: record.run, at: record.at }
+    }
+    return best && { root: best.root, record: best.record, run: best.run }
+  }
+
+  /**
+   * The newest child of `task` as Coral orders them, and when its tool call started: a
+   * Run by the call that submitted it. Undefined while it has none, and null when Reef
+   * cannot read it.
+   */
+  async function newestChild(
+    task: string,
+  ): Promise<{ name: string; at: bigint; run: boolean } | undefined | null> {
+    // A read of this load that reached the end holds it already. An offset past the end
+    // reads the last window.
+    const value = seen.ends.get(task) ?? (await taskRead(task, Number.MAX_SAFE_INTEGER, 1))
+    if (!value) return null
+    const item = value.interactions.at(-1)
+    if (!item) return undefined
+    return {
+      name: item.run ? item.run.name : item.name,
+      at: item.startedAtUnixNanos,
+      run: Boolean(item.run),
+    }
+  }
 
   /**
    * Reads the Runs of `task` from its newest back, once per snapshot, for its newest
@@ -1120,9 +1214,11 @@ async function liveLatestWork(
         if (!unavailable(error)) throw error
         return { roots: rows, complete: false }
       }
-      for (const { record } of value.roots) {
+      for (const root of value.roots) {
+        const { record } = root
         if (record.case === 'task') rows.push({ ...taskView(record.value), kind: 'task' })
         if (record.case === 'run') rows.push({ ...runView(record.value), kind: 'run' })
+        noteRoot(seen, root)
       }
       more = value.hasAfter && value.roots.length > 0
     }
@@ -1162,13 +1258,17 @@ async function liveLatestWork(
     return true
   }
 
-  /** The Task `name`, with its children from `offset`, or undefined when Reef cannot read it. */
-  async function taskRead(name: string, offset?: number) {
+  /**
+   * The Task `name`, with `size` children from `offset`, or undefined when Reef cannot
+   * read it. Without `offset`, its first child.
+   */
+  async function taskRead(name: string, offset?: number, size = ACTIVITY_CHILD_WINDOW) {
+    let value
     try {
-      return await api.activity.inspectTask(
+      value = await api.activity.inspectTask(
         {
           name,
-          pageSize: offset === undefined ? 1 : ACTIVITY_CHILD_WINDOW,
+          pageSize: offset === undefined ? 1 : size,
           scope,
           viewport:
             offset === undefined ? undefined : { offset: BigInt(offset), anchor: '', preceding: 0 },
@@ -1179,34 +1279,24 @@ async function liveLatestWork(
       if (!unavailable(error)) throw error
       return undefined
     }
+    noteEnd(seen, name, value)
+    return value
   }
 }
 
-/**
- * Every request in your queue of required actions in the workspace, with a Run that
- * waits on it. It takes the page the pending actions already read when that holds them
- * all, and reads the rest a page at a time otherwise.
- */
-async function requiredActions(
-  page: ActivityPage,
-  query: URLSearchParams,
-  api: ActivityApi,
-  scope: ActivityScope,
+/** Every pending request in `workspace` that waits on the caller, most urgent first, each
+ * with a Run that waits on it. A `kind` keeps only that kind. */
+export async function pendingActions(
+  api: Pick<ManagementApi, 'activity'>,
+  workspace: string,
   signal: AbortSignal,
+  kind = ActivityRequiredActionKind.UNSPECIFIED,
 ): Promise<PendingAction[]> {
-  const shown = page.pending
-  if (
-    shown &&
-    !shown.unavailable &&
-    !query.get('pendingAfter') &&
-    shown.actions.length >= Number(shown.actionCount)
-  )
-    return shown.actions
   const actions: PendingAction[] = []
   let after = ''
   do {
     const value = await api.activity.browseRequiredActions(
-      { workspace: scope.workspace, after, pageSize: 100 },
+      { workspace, after, pageSize: 100, kind },
       { signal },
     )
     for (const { action, run } of value.actions)
@@ -1216,6 +1306,70 @@ async function requiredActions(
     after = value.nextAfter
   } while (after)
   return actions
+}
+
+const settledOutcomes = {
+  [ActivityApprovalOutcome.APPROVED]: 'approved',
+  [ActivityApprovalOutcome.DECLINED]: 'declined',
+  [ActivityApprovalOutcome.EXPIRED]: 'expired',
+} as const satisfies Partial<Record<ActivityApprovalOutcome, SettledApproval['outcome']>>
+
+/** One page of `workspace`'s settled approvals that you can inspect, newest first, after
+ * `after` or from the newest. A row whose outcome this build does not know is left out. */
+export async function settledApprovals(
+  api: Pick<ManagementApi, 'activity'>,
+  workspace: string,
+  after: string,
+  signal: AbortSignal,
+): Promise<SettledPage> {
+  const value = await api.activity.browseSettledApprovals({ workspace, after }, { signal })
+  return {
+    approvals: value.approvals.flatMap((row): SettledApproval[] => {
+      const outcome = settledOutcomes[row.outcome as keyof typeof settledOutcomes]
+      if (!outcome || !row.run) return []
+      return [
+        {
+          name: row.name,
+          outcome,
+          settledAt: timestamp(row.settledAtUnixNanos),
+          approverLabel: row.approverLabel,
+          callPath: row.callPath,
+          providerLabel: row.providerLabel,
+          run: { ...runView(row.run), kind: 'run' },
+        },
+      ]
+    }),
+    next: value.nextAfter,
+  }
+}
+
+/**
+ * The review of `name`, read as the caller. Null when `name` is no approval of `workspace` or
+ * Coral conceals it or its Run: an address grants no authority. Coral keeps every state of a
+ * retained request readable, so a settled one still has its review.
+ */
+export async function approvalReading(
+  api: Pick<ManagementApi, 'activity'>,
+  workspace: string,
+  name: string,
+  signal: AbortSignal,
+): Promise<ApprovalReading | null> {
+  if (!APPROVAL_NAME.test(name) || !name.startsWith(`${workspace}/`)) return null
+  try {
+    const request = await api.activity.inspectApproval({ name }, { signal })
+    const [call, run] = await Promise.all([
+      api.activity.inspectInvocation({ name: request.invocation }, { signal }),
+      api.activity.inspectRun({ name: request.run, pageSize: 1, actionAfter: '' }, { signal }),
+    ])
+    if (!run.run || call.invocation?.run !== request.run) return null
+    const context = runDetailView(run, runView(run.run))
+    const detail = approvalView(request)
+    if (context.run.task) await addTaskIntent(detail, api, context.run.task, signal)
+    return { detail, context, call: { ...invocationView(call.invocation), kind: 'invocation' } }
+  } catch (error) {
+    if (unavailable(error)) return null
+    throw error
+  }
 }
 
 /**
@@ -1415,6 +1569,7 @@ export async function loadActivity(
 ): Promise<ActivityPage> {
   const query = new URL(request.url).searchParams
   const { signal } = request
+  const seen: LoadEvidence = { roots: new Map(), ends: new Map() }
   // Observation names its reading window directly; navigation names only an anchor.
   const reading = options.reading
   if (
@@ -1532,34 +1687,6 @@ export async function loadActivity(
     for (const name of [task, run])
       if (name && !page.expanded.includes(name)) page.expanded.push(name)
   }
-  if (!scope.agent) {
-    try {
-      const value = await api.activity.browseRequiredActions(
-        {
-          workspace: scope.workspace,
-          after: query.get('pendingAfter') ?? '',
-          pageSize: 10,
-        },
-        { signal },
-      )
-      page.pending = {
-        actions: value.actions.flatMap(({ action, run }) =>
-          action && run
-            ? actionSummaryView(action).map((summary) => ({
-                action: summary,
-                run: { ...runView(run), kind: 'run' as const },
-              }))
-            : [],
-        ),
-        actionCount: value.actionCount.toString(),
-        next: value.nextAfter,
-        unavailable: false,
-      }
-    } catch (error) {
-      if (!unavailable(error)) throw error
-      page.pending = { actions: [], actionCount: '0', next: '', unavailable: true }
-    }
-  }
   try {
     const value = await api.activity.browseActivityRoots(
       {
@@ -1573,6 +1700,7 @@ export async function loadActivity(
       },
       { signal },
     )
+    for (const root of value.roots) noteRoot(seen, root)
     page.rows = value.roots.flatMap(({ record }): ActivityRow[] => {
       if (record.case === 'task') return [{ ...taskView(record.value), kind: 'task' }]
       if (record.case === 'run') return [{ ...runView(record.value), kind: 'run' }]
@@ -1631,7 +1759,7 @@ export async function loadActivity(
           event.name !== page.selected &&
           event.name !== anchor(row.name)
         )
-          return [{ ...event, name: `${row.name}/final`, label: 'final value' }]
+          return [{ ...event, name: `${row.name}/final`, label: 'return value' }]
         return [event]
       }),
     }
@@ -1640,6 +1768,7 @@ export async function loadActivity(
     if (row.kind !== 'task' || !page.expanded.includes(row.name)) continue
     try {
       const value = await taskPage(row.name)
+      noteEnd(seen, row.name, value)
       page.branches[row.name] = {
         total: value.total.toString(),
         offset: Number(value.offset),
@@ -1664,7 +1793,7 @@ export async function loadActivity(
   }
   // A snapshot of the records you watch holds only those, not the newest page.
   const newestPage = reading && !reading.followRoot ? undefined : page.rows
-  const liveLatest = await liveLatestWork(page, newestPage, query, api, scope, signal)
+  const liveLatest = await liveLatestWork(page, newestPage, seen, query, api, scope, signal)
   if (liveLatest) page.liveLatest = liveLatest
   // Expanded executions stay represented even outside their Task's active child viewport.
   // Their owning read supplies the authorized association and ordinal; references never pin content.

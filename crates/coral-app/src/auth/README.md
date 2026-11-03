@@ -378,7 +378,7 @@ access at the identity provider does not immediately invalidate existing Coral
 access. Coral-side disablement blocks subsequent authenticated requests and
 later Run dispatches without deleting retained history or disabling Agents
 merely because that User created or provisioned them. It does not retroactively
-undo a fenced dispatch or introduce a new Run-termination policy.
+undo a permitted dispatch or introduce a new Run-termination policy.
 
 ## Listener health and private audiences
 

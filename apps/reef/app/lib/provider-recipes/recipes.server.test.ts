@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SetupView } from '@/views/providers/types'
 
-import { byService } from './choice'
+import { byService, sourceButtonLabel } from './choice'
 import { CLIENT_CONFIG_HINT_GENERATORS } from './client-config-hints'
 import {
   recipeConfiguration as configurationFor,
@@ -123,8 +123,9 @@ inputs:
   })
 
   // A card takes its name and icon from the recipe named after the service,
-  // tells its buttons apart only as MCP and API, and names the provider alike from either.
-  it('gives every shared service a recipe of its own name, one recipe for each kind and one display name', () => {
+  // tells its buttons apart as MCP, API or a recipe's own button label, and
+  // names the provider alike from any of them.
+  it('gives every shared service a recipe of its own name, a distinct word on each button and one display name', () => {
     for (const choice of RECIPE_CHOICES) {
       if (choice.service) expect(recipeById(choice.service)?.id, choice.id).toBe(choice.service)
     }
@@ -132,7 +133,8 @@ inputs:
     expect(shared.length).toBeGreaterThan(0)
     for (const { service, shown, choices } of shared) {
       expect(shown.id, service).toBe(service)
-      expect(choices.map((choice) => choice.kind).toSorted(), service).toEqual(['mcp', 'openapi'])
+      const labels = choices.map(sourceButtonLabel)
+      expect(new Set(labels).size, `${service}: ${labels.join(', ')}`).toBe(labels.length)
       expect(new Set(choices.map((choice) => choice.displayName)), service).toEqual(
         new Set([shown.displayName]),
       )
@@ -1040,6 +1042,25 @@ describe('recipeConfiguration', () => {
     ])('adds $name', ({ recipe, hint }) => {
       const configuration = recipeConfiguration(recipe(), mcpSetup(false))
       expect(configuration?.clientConfigHintMarkdown).toBe(hint)
+    })
+
+    it('gives a hint generator the sign-in URL Coral discovered', () => {
+      const recipe = mcpRecipe('      client_config_hint_generator: datadog_mcp_redirect_allowlist')
+      const setup = setupWith(
+        {
+          authenticationMethods: ['oauth'],
+          values: {
+            authorizationUrl: 'https://app.datadoghq.eu/oauth2/v1/authorize',
+          } as NonNullable<SetupView['configuration']>['values'],
+        },
+        'mcp',
+      )
+      expect(recipeConfiguration(recipe, setup)?.clientConfigHintMarkdown).toBe(
+        CLIENT_CONFIG_HINT_GENERATORS.datadog_mcp_redirect_allowlist({
+          ...hintContext,
+          signInUrl: 'https://app.datadoghq.eu/oauth2/v1/authorize',
+        }),
+      )
     })
 
     it('asks for your own application when Coral cannot register one', () => {

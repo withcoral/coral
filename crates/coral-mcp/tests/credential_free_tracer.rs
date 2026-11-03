@@ -19,7 +19,7 @@ use coral_provider::{ManagementRequestId, ProviderModule, WorkspaceProviderPubli
 use coral_run::RunModule;
 use coral_search::UniversalSearchModule;
 use coral_task::TaskModule;
-use coral_telemetry::testing::SpanCapture;
+use coral_telemetry::testing::{ExportCapture, SpanCapture};
 use coral_test_support::TestDatabase;
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, TraceId, WorkspaceDisplayName, WorkspaceId, WorkspaceModule,
@@ -35,10 +35,12 @@ use rmcp::{ClientLifecycleMode, ClientServiceExt as _, ServiceExt as _};
 use schemars as _;
 use serde as _;
 use serde_json::{Map, Value, json};
+use serde_path_to_error as _;
 use thiserror as _;
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, oneshot};
 use tower as _;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
 use uuid as _;
 
@@ -154,6 +156,23 @@ impl TestUpstream {
             signals.release_worker.notified().await;
             json_response(r#"{"released":true}"#)
         }
+        /// A Result and a response header that hold private data.
+        async fn private_record() -> ([(header::HeaderName, &'static str); 2], &'static str) {
+            (
+                [
+                    (header::CONTENT_TYPE, "application/json"),
+                    (header::SET_COOKIE, "session=response-header-c0ral-private"),
+                ],
+                r#"{"record":"result-c0ral-private"}"#,
+            )
+        }
+        /// Records of two kinds whose titles live in different places, and a
+        /// third whose title is text: a Program that guesses one shape crashes.
+        async fn search_records() -> ([(header::HeaderName, &'static str); 1], &'static str) {
+            json_response(
+                r#"{"object":"list","results":[{"object":"page","id":"page-c0ral-1","properties":{"Name":{"title":[{"plain_text":"Plan c0ral"}]}}},{"object":"data_source","id":"source-c0ral-2","title":[{"plain_text":"Roadmap c0ral"}]},{"object":"data_source","id":"source-c0ral-3","title":"Legacy c0ral"}],"has_more":false,"next_cursor":null}"#,
+            )
+        }
         fn json_response(
             body: &'static str,
         ) -> ([(header::HeaderName, &'static str); 1], &'static str) {
@@ -166,6 +185,8 @@ impl TestUpstream {
             .route("/disconnected-first", get(disconnected_first))
             .route("/disconnected-second", get(disconnected_second))
             .route("/lost-worker", get(lost_worker))
+            .route("/private-record", get(private_record))
+            .route("/search-records", get(search_records))
             .with_state(signals.clone());
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .await
@@ -378,13 +399,18 @@ impl Tracer {
 
     /// Makes `getForecast` wait for the invoking User's approval.
     async fn require_approval(&self) {
+        self.require_approval_of("getForecast").await;
+    }
+
+    /// Makes `tool` wait for the invoking User's approval.
+    async fn require_approval_of(&self, tool: &str) {
         self.policies
             .set_access_state(
                 &change(self.local_user.clone(), 50, 'a'),
                 ToolPolicyTarget::new(
                     self.workspace_a.clone(),
                     self.provider_id.clone(),
-                    ToolKey::parse("getForecast").expect("Tool Key"),
+                    ToolKey::parse(tool).expect("Tool Key"),
                 ),
                 ToolAccessState::ApprovalRequired,
             )
@@ -628,7 +654,7 @@ async fn advertised_schemas_defaults_and_output_contracts_hold_on_every_version(
             .clone()
     };
     let search_properties = properties("search");
-    for property in ["query", "provider", "limit", "cursor"] {
+    for property in ["query", "provider", "limit", "offset"] {
         assert!(search_properties.contains_key(property));
     }
     let exec_properties = properties("exec");
@@ -776,6 +802,7 @@ async fn check_raw_oversized_items(endpoint: &str, task: &str, version: &Protoco
     reason = "one table of failure projections: Program, Tool, aggregate, and Saved Function errors"
 )]
 async fn program_failures_are_run_updates_with_existing_error_facts() {
+    capture();
     let tracer = Tracer::start().await;
     let client_a = tracer.sdk().await;
     let task_id = start_task(&client_a, "Explain Program failures").await;
@@ -794,8 +821,18 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
     )
     .await;
     assert_eq!(failed.is_error, Some(false));
+    let run_trace = structured(&failed)["trace_id"]
+        .as_str()
+        .expect("a failed Run names its Run Trace")
+        .to_string();
+    assert!(TraceId::parse(&run_trace).is_ok(), "{run_trace}");
     let failure = &structured(&failed)["failure"];
     assert_eq!(failure["code"], "program_rejected");
+    assert_eq!(
+        failure.get("tool_result_shapes"),
+        None,
+        "a Program that called no Tool received no Tool Result"
+    );
     assert_eq!(
         failure.pointer("/error/name").unwrap_or(&Value::Null),
         "TypeError"
@@ -845,10 +882,30 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
         structured(&observed)["failure"]
     );
 
+    // A literal path that names no Tool is refused before a Run exists.
+    let refused = call(
+        &client_a,
+        "exec",
+        json!({
+            "task_id": task_id, "intent": "Call a Tool that does not exist", "wait_ms": 0,
+            "program": "await coral.providers.missing.tool();"
+        }),
+    )
+    .await;
+    assert_eq!(refused.is_error, Some(true));
+    assert_eq!(structured(&refused)["code"], "program_admission_failed");
+    assert_eq!(
+        structured(&refused)["message"],
+        "Program admission failed: Program:1:7: coral.providers.missing.tool names no Tool \
+         that you can call. Find one with coral.workspace.search."
+    );
+
+    // A path built as the Program runs fails when called.
+    let missing = r#"coral.providers.missing[["tool"].join("")]"#;
     for program in [
-        "await coral.providers.missing.tool();",
-        "void coral.providers.missing.tool();",
-        "const pending = Array.from({length: 16}, () => coral.providers.missing.tool()); void coral.providers.missing.tool(); await coral.providers.missing.tool().catch(() => {}); await Promise.all(pending.map(p => p.catch(() => {})));",
+        "await MISSING();".replace("MISSING", missing),
+        "void MISSING();".replace("MISSING", missing),
+        "const pending = Array.from({length: 16}, () => MISSING()); void MISSING(); await MISSING().catch(() => {}); await Promise.all(pending.map(p => p.catch(() => {})));".replace("MISSING", missing),
     ] {
         let failed = call(
             &client_a,
@@ -867,7 +924,11 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
             error.pointer("/tool/code").unwrap_or(&Value::Null),
             "tool_not_found"
         );
-        assert_eq!(error["message"], "Tool Call Path was not found");
+        assert_eq!(
+            error["message"],
+            "coral.providers.missing.tool names no Tool that you can call. Find one with \
+             coral.workspace.search."
+        );
         assert_eq!(
             error.pointer("/frames/0/source").unwrap_or(&Value::Null),
             "Program"
@@ -1017,7 +1078,7 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
 
     let forged_trace = call(&client_a, "exec", json!({
         "task_id":task_id, "intent":"Preserve host-issued Tool fields", "wait_ms":5000,
-        "program":"try { await coral.providers.missing.tool(); } catch(e) {e.traceId = 'forged'.repeat(10000); throw e;}"
+        "program":"try { await coral.providers.missing[['tool'].join('')](); } catch(e) {e.traceId = 'forged'.repeat(10000); throw e;}"
     })).await;
     assert_eq!(forged_trace.is_error, Some(false));
     assert!(
@@ -1123,8 +1184,7 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         );
     }
     assert!(first_search_result.get("summary").is_none());
-    assert_eq!(structured(&searched)["has_more"], false);
-    assert!(structured(&searched).get("next_cursor").is_none());
+    assert!(structured(&searched).get("next_offset").is_none());
     assert!(first_search_result.get("score").is_none());
     assert!(
         serde_json::to_vec(structured(&searched))
@@ -1278,7 +1338,6 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
             "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
             "invalid_input",
         ),
-        ("cursor", "!", "invalid_cursor"),
     ] {
         let rejected = call(
             &client_a,
@@ -1444,107 +1503,150 @@ async fn an_abandoned_exec_request_does_not_cancel_accepted_work() {
     .expect("accepted Run continues to its second Tool after request loss");
 }
 
-/// Private Program content reaches authorized readers only, never telemetry.
+/// A Program that crashes on a guessed result shape gets the shapes of the
+/// Tool Results it received, in call order, so its next Program can fix the
+/// guess without a turn spent exploring the data. Keys and types, never values.
 #[tokio::test(flavor = "multi_thread")]
-async fn private_program_content_stays_out_of_traces_and_logs() {
-    let capture = capture();
-    tracing::info_span!(target: "coral_mcp::failure_test", "capture_ready")
-        .in_scope(|| tracing::info!(target: "coral_mcp::failure_test", "capture ready"));
+async fn a_failed_program_carries_the_shapes_of_the_tool_results_it_received() {
     let tracer = Tracer::start().await;
     let client = tracer.sdk().await;
-    let task_id = start_task(&client, "Keep private content out of telemetry").await;
-    for program in [
-        "throw new TypeError('Customer address is missing');",
-        "return {toJSON() { throw new Error('Invoice cannot be serialized'); }};",
-        "throw Object.assign(new Error('authored'), {name:'ToolError', code:'account_required', credential:'attached-canary'});",
-    ] {
-        let failed = call(&client, "exec", json!({
-            "task_id": task_id, "intent": "Fail with private content", "wait_ms": 5000, "program": program
-        })).await;
-        assert_eq!(structured(&failed)["state"], "failed");
-    }
-    call(
-        &client,
-        "save_function",
-        json!({
-            "task_id":task_id, "intent":"Fail inside a Saved Function",
-            "path":"diagnostics.fail", "description":"Fail with an authored message",
-            "source":"export default function fail() { throw new Error('saved-function-canary'); }"
-        }),
-    )
-    .await;
-    let linked = call(
+    let task = start_task(&client, "Read record titles").await;
+    let failed = call(
         &client,
         "exec",
         json!({
-            "task_id":task_id, "intent":"Observe the Saved Function failure", "wait_ms":5000,
-            "program":"return coral.functions.diagnostics.fail();"
+            "task_id": task, "intent": "List record titles", "wait_ms": 5000,
+            "program": "await coral.providers.weather.getForecast(); await coral.providers.weather.searchRecords(); const found = await coral.providers.weather.searchRecords(); return found.data.results.map((record) => record.title.map((part) => part.plain_text));"
         }),
     )
     .await;
-    assert_eq!(structured(&linked)["state"], "failed");
-    let ended = call(
-        &client,
-        "end_task",
-        json!({"task_id": task_id, "outcome": "success", "feedback": "  Completed the tracer 🪸\n"}),
-    )
-    .await;
-    assert_eq!(structured(&ended)["outcome"], "success");
-    client.service.cancel().await.expect("close MCP client");
-    tracer.server.shutdown().await.expect("stop MCP server");
-    let spans = capture.spans.finished();
-    assert!(!spans.is_empty(), "capture is active");
-    let exported = format!("{spans:?}");
-    let logs = capture.logs.0.lock().expect("captured logs");
-    let logs = String::from_utf8_lossy(&logs);
-    for canary in [
-        "Customer address is missing",
-        "saved-function-canary",
-        "Invoice cannot be serialized",
-        "attached-canary",
-        "Completed the tracer 🪸",
-    ] {
-        assert!(
-            !exported.contains(canary),
-            "Private content must not reach traces"
-        );
-        assert!(
-            !logs.contains(canary),
-            "Private content must not reach operational logs"
-        );
+    let failure = &structured(&failed)["failure"];
+    assert_eq!(failure["code"], "program_rejected");
+    assert_eq!(failure.pointer("/error/name"), Some(&json!("TypeError")));
+    assert_eq!(
+        failure["tool_result_shapes"],
+        json!([
+            {
+                "call_path": "coral.providers.weather.getForecast",
+                "invocations": 1,
+                "data": "{ temperatureC: number }"
+            },
+            {
+                "call_path": "coral.providers.weather.searchRecords",
+                "invocations": 2,
+                "data": "{ object: string; results: Array<{ object: string; id: string; properties?: { Name: { title: Array<{ plain_text: string }> } }; title?: Array<{ plain_text: string }> | string }>; has_more: boolean; next_cursor: null }"
+            }
+        ])
+    );
+    let shapes = failure["tool_result_shapes"].to_string();
+    for value in ["c0ral", "list", "page", "data_source", "18"] {
+        assert!(!shapes.contains(value), "{value} is a value: {shapes}");
     }
 }
 
-/// The process-wide trace and log capture of the production Adapter and domain
-/// targets, not the test client's wire dumps. It installs once per process.
+/// A Program that logs through a long read does not make the agent spend a
+/// turn on each Log: `wait` holds them until its `wait_ms` runs out or the Run
+/// ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_log_does_not_end_wait_and_the_end_of_the_run_does() {
+    const WAIT_MS: u64 = 1_000;
+    let tracer = Tracer::start().await;
+    let client = tracer.sdk().await;
+    let task = start_task(&client, "Batch output through wait").await;
+    let accepted = call(
+        &client,
+        "exec",
+        json!({
+            "task_id":task, "intent":"Log, then read for a long time", "wait_ms":0,
+            "program":"console.log('before the read'); await coral.providers.weather.disconnectedFirst(); return 7;"
+        }),
+    )
+    .await;
+    let accepted = structured(&accepted);
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        tracer.upstream.signals.first_arrived.notified(),
+    )
+    .await
+    .expect("the Program logs and reaches the gated upstream");
+    // The gate stays shut until this reply arrives, so the handler has to see
+    // a running Run, however late the request reaches it. Load can only delay
+    // the reply, so this lower bound cannot flake.
+    let started = tokio::time::Instant::now();
+    let held = call(
+        &client,
+        "wait",
+        json!({"run_id":accepted["run_id"], "cursor":accepted["next_cursor"], "wait_ms":WAIT_MS}),
+    )
+    .await;
+    assert!(
+        started.elapsed() >= Duration::from_millis(WAIT_MS),
+        "a Log alone does not end the wait: {:?}",
+        started.elapsed()
+    );
+    let held = structured(&held);
+    assert_eq!(held["state"], "running");
+    assert_eq!(held["events"].as_array().expect("output").len(), 1);
+
+    tracer.upstream.signals.release.notify_one();
+    let finished = tokio::time::timeout(
+        Duration::from_secs(10),
+        call(
+            &client,
+            "wait",
+            json!({"run_id":held["run_id"], "cursor":held["next_cursor"], "wait_ms":30_000}),
+        ),
+    )
+    .await
+    .expect("the end of the Run ends the wait");
+    let finished = structured(&finished);
+    assert_eq!(finished["state"], "succeeded");
+    assert_eq!(finished["final_value"], json!({"kind":"value", "value":7}));
+}
+
+/// The process-wide capture of every span, the metrics, Coral's events before
+/// the export filter, not the test client's wire dumps or the body targets
+/// that stay home, and what leaves the host. It installs once per process.
 struct Capture {
     spans: SpanCapture,
     logs: LogCapture,
+    metrics: coral_telemetry::testing::MetricCapture,
+    exported: ExportCapture,
 }
 
 fn capture() -> &'static Capture {
     static CAPTURE: std::sync::OnceLock<Capture> = std::sync::OnceLock::new();
     CAPTURE.get_or_init(|| {
-        let spans = SpanCapture::default();
+        let exported = ExportCapture::default();
+        let spans = SpanCapture::exporting_to(&exported);
         let logs = LogCapture::default();
+        let metrics = coral_telemetry::testing::MetricCapture::default();
         let log_writer = logs.clone();
+        // Every crate and library. TRACE adds only libraries' per-frame HTTP
+        // noise, which would fill the capture.
         tracing_subscriber::Registry::default()
-            .with(
-                tracing_subscriber::filter::Targets::new()
-                    .with_target(coral_telemetry::REQUEST_TARGET, tracing::Level::TRACE)
-                    .with_target("coral_mcp", tracing::Level::TRACE)
-                    .with_target("coral_run", tracing::Level::TRACE)
-                    .with_target("coral_v8", tracing::Level::TRACE),
-            )
-            .with(spans.layer())
+            .with(spans.layer().with_filter(LevelFilter::DEBUG))
+            .with(metrics.layer())
+            .with(exported.log_layer().with_filter(LevelFilter::DEBUG))
             .with(
                 tracing_subscriber::fmt::layer()
                     .with_ansi(false)
-                    .with_writer(move || log_writer.clone()),
+                    .with_writer(move || log_writer.clone())
+                    .with_filter(
+                        tracing_subscriber::filter::Targets::new()
+                            .with_target("coral", tracing::Level::TRACE)
+                            .with_target("coral.http.body", LevelFilter::OFF)
+                            .with_target("coral.mcp.body", LevelFilter::OFF),
+                    ),
             )
             .try_init()
             .expect("install telemetry capture");
-        Capture { spans, logs }
+        Capture {
+            spans,
+            logs,
+            metrics,
+            exported,
+        }
     })
 }
 
@@ -1845,6 +1947,8 @@ mod client_visible_contracts;
 mod default_contracts;
 #[path = "credential_free_tracer/input_contracts.rs"]
 mod input_contracts;
+#[path = "credential_free_tracer/private_data_contracts.rs"]
+mod private_data_contracts;
 #[path = "credential_free_tracer/prompt_contracts.rs"]
 mod prompt_contracts;
 #[path = "credential_free_tracer/trace_contracts.rs"]
@@ -2371,13 +2475,18 @@ impl RawSession {
         headers: &[(&str, &str)],
     ) -> Value {
         let params = json!({"name":tool, "arguments":arguments});
-        let mut request = self.request("tools/call", params.clone(), Some(2));
+        let message = self.tool_answer(params.clone(), headers).await;
+        self.interpret("tools/call", &params, &message)
+            .unwrap_or_else(|error| panic!("raw tool {tool} failed: {error}"))
+    }
+
+    /// The whole JSON-RPC answer to one `tools/call`, accepted or not.
+    async fn tool_answer(&self, params: Value, headers: &[(&str, &str)]) -> Value {
+        let mut request = self.request("tools/call", params, Some(2));
         for (name, value) in headers {
             request = request.header(*name, *value);
         }
-        let message = parse_message(request.send().await.expect("raw request")).await;
-        self.interpret("tools/call", &params, &message)
-            .unwrap_or_else(|error| panic!("raw tool {tool} failed: {error}"))
+        parse_message(request.send().await.expect("raw request")).await
     }
 
     /// Like [`Self::tool`], but `None` for a transient server failure (a 5xx
@@ -2795,26 +2904,12 @@ async fn publish_tools(
     workspace_id: &WorkspaceId,
     upstream_url: &str,
 ) -> coral_provider::ProviderId {
-    let tool = |id: &str, property: &str| {
-        json!({
-            "operationId": id,
-            "summary": format!("Tracer Tool {id}"),
-            "responses": {
-                "200": {
-                    "description": "Tracer response",
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "type": "object",
-                                "properties": {(property): {"type": if property == "temperatureC" {"number"} else {"boolean"}}},
-                                "required": [property]
-                            }
-                        }
-                    }
-                }
-            }
-        })
-    };
+    let tool = tracer_operation;
+    let mut private_record = tool("getPrivateRecord", "record");
+    private_record.as_object_mut().expect("operation").insert(
+        "parameters".to_owned(),
+        json!([{"name": "token", "in": "query", "schema": {"type": "string"}}]),
+    );
     let document = json!({
         "openapi": "3.1.0",
         "info": {"title": "Weather Tracer", "version": "1"},
@@ -2824,7 +2919,9 @@ async fn publish_tools(
             "/forecast": {"get": tool("getForecast", "temperatureC")},
             "/disconnected-first": {"get": tool("disconnectedFirst", "first")},
             "/disconnected-second": {"get": tool("disconnectedSecond", "second")},
-            "/lost-worker": {"get": tool("lostWorker", "released")}
+            "/lost-worker": {"get": tool("lostWorker", "released")},
+            "/private-record": {"get": private_record},
+            "/search-records": {"get": tool("searchRecords", "")}
         }
     });
     let setup = providers
@@ -2850,6 +2947,7 @@ async fn publish_tools(
         .await
         .expect("publish tracer Provider");
     let provider_id = publication
+        .skip_search()
         .published_provider()
         .expect("successful Provider publication")
         .id()
@@ -2859,6 +2957,8 @@ async fn publish_tools(
         "disconnectedFirst",
         "disconnectedSecond",
         "lostWorker",
+        "getPrivateRecord",
+        "searchRecords",
     ]
     .into_iter()
     .enumerate()
@@ -2868,7 +2968,7 @@ async fn publish_tools(
                 &change(
                     user.clone(),
                     30 + i64::try_from(index).expect("small fixture index"),
-                    char::from_digit(u32::try_from(index + 5).expect("trace digit"), 10)
+                    char::from_digit(u32::try_from(index + 5).expect("trace digit"), 16)
                         .expect("trace digit character"),
                 ),
                 ToolPolicyTarget::new(
@@ -2882,6 +2982,34 @@ async fn publish_tools(
             .expect("enable tracer Tool");
     }
     provider_id
+}
+
+/// A tracer operation whose result has one required `property`, or no
+/// declared shape when `property` is empty.
+fn tracer_operation(id: &str, property: &str) -> Value {
+    let schema = if property.is_empty() {
+        json!({"type": "object"})
+    } else {
+        json!({
+            "type": "object",
+            "properties": {(property): {"type": match property {
+                "temperatureC" => "number",
+                "record" => "string",
+                _ => "boolean",
+            }}},
+            "required": [property]
+        })
+    };
+    json!({
+        "operationId": id,
+        "summary": format!("Tracer Tool {id}"),
+        "responses": {
+            "200": {
+                "description": "Tracer response",
+                "content": {"application/json": {"schema": schema}}
+            }
+        }
+    })
 }
 
 fn change(

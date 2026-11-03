@@ -91,9 +91,9 @@ impl McpServer {
         if prompting.continued_run().is_some()
             && !matches!(name, ExecArguments::NAME | WaitArguments::NAME)
         {
-            return Err(invalid_input_message(format!(
-                "tool '{name}' does not accept requestState"
-            )));
+            return Err(invalid_input_message(
+                "tool does not accept requestState".to_owned(),
+            ));
         }
         let complete = match name {
             StartTaskArguments::NAME => {
@@ -133,7 +133,7 @@ impl McpServer {
                 self.end_task(arguments).await
             }
             _ => Err(DispatchError::Protocol(ErrorData::invalid_params(
-                format!("tool '{name}' not found"),
+                "tool not found",
                 None,
             ))),
         };
@@ -165,7 +165,7 @@ impl McpServer {
             )
             .await
             .map_err(task_failure)?;
-        tool_call::record_task(task.id());
+        tool_call::record_task(task.telemetry_id());
         projection::success(projection::StartedTask {
             task_id: task.id().to_string(),
             providers: providers
@@ -182,7 +182,7 @@ impl McpServer {
             query: arguments.query,
             provider: arguments.provider,
             limit: arguments.limit,
-            cursor: arguments.cursor,
+            offset: arguments.offset,
         };
         let results = self
             .runtime
@@ -191,9 +191,7 @@ impl McpServer {
             .search(&call, request)
             .await
             .map_err(task_failure)?;
-        projection::search(&results)
-            .and_then(projection::success)
-            .map_err(DispatchError::Tool)
+        projection::success(projection::search(&results)).map_err(DispatchError::Tool)
     }
 
     async fn describe(
@@ -286,10 +284,18 @@ impl McpServer {
                 .map(Into::into)
                 .map_err(DispatchError::Tool);
         }
-        let observation =
-            RunObservation::initial(Duration::from_millis(wait_ms)).map_err(invalid_input)?;
-        self.observe_prompting(accepted.run_id(), &observation, &reread, prompting)
-            .await
+        // This request accepted the Run, so acceptance already linked it to
+        // the Run Trace.
+        let observation = RunObservation::initial(Duration::from_millis(wait_ms))
+            .map_err(invalid_input)?
+            .by_acceptor();
+        self.observe_prompting(
+            accepted.run_id(),
+            &observation,
+            &reread.by_acceptor(),
+            prompting,
+        )
+        .await
     }
 
     async fn wait(
@@ -317,6 +323,7 @@ impl McpServer {
             Some(_) => reread.clone(),
             None => reread
                 .clone()
+                .batching_output()
                 .with_wait(Duration::from_millis(wait_ms))
                 .map_err(invalid_input)?,
         };
@@ -505,7 +512,6 @@ impl McpServer {
 
     async fn end_task(&self, arguments: EndTaskArguments) -> Result<CallToolResult, DispatchError> {
         let task_id = TaskId::parse(&arguments.task_id).map_err(invalid_input)?;
-        tool_call::record_task(&task_id);
         let outcome = match arguments.outcome {
             TaskOutcomeArgument::Success => TaskOutcome::Success,
             TaskOutcomeArgument::Failure => TaskOutcome::Failure,
@@ -524,6 +530,7 @@ impl McpServer {
             )
             .await
             .map_err(task_failure)?;
+        tool_call::record_task(task.telemetry_id());
         let durable_outcome = task
             .outcome()
             .ok_or_else(|| DispatchError::Tool(ToolFailure::internal()))?;
@@ -549,7 +556,6 @@ impl McpServer {
         intent: &str,
     ) -> Result<coral_task::AttributedCommand, DispatchError> {
         let task_id = TaskId::parse(task_id).map_err(invalid_input)?;
-        tool_call::record_task(&task_id);
         Ok(coral_task::AttributedCommand::new(
             self.runtime.principal.clone(),
             self.workspace_id.clone(),
@@ -590,10 +596,16 @@ impl ServerHandler for McpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let carrier = context
-            .extensions
-            .get::<axum::http::request::Parts>()
-            .and_then(|parts| coral_telemetry::request_span(&parts.extensions));
+        let parts = context.extensions.get::<axum::http::request::Parts>();
+        if let Some(parts) = parts {
+            // Each tool call records its request's duration under its tool.
+            coral_telemetry::name_request_operation(
+                &parts.extensions,
+                "tools/call",
+                crate::arguments::served_name(request.name.as_ref()),
+            );
+        }
+        let carrier = parts.and_then(|parts| coral_telemetry::request_span(&parts.extensions));
         let call = ToolCall::open(
             request.name.as_ref(),
             carrier,

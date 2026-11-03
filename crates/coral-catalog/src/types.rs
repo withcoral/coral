@@ -43,6 +43,10 @@ macro_rules! uuid_id {
                 write!(formatter, "{}", self.0.hyphenated())
             }
         }
+
+        /// A UUID Coral generated, or one parsed in its canonical form: it holds
+        /// no text.
+        impl coral_telemetry::safe::Identifier for $name {}
     };
 }
 
@@ -171,9 +175,19 @@ impl ProviderSetupInputDigest {
     }
 }
 
+/// The bounded `snake_case` code of a Catalog diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-struct DiagnosticCode(String);
+pub struct DiagnosticCode(String);
+
+impl fmt::Display for DiagnosticCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// Coral defines every diagnostic code, and writes each one it stores.
+impl coral_telemetry::safe::Identifier for DiagnosticCode {}
 
 impl DiagnosticCode {
     fn parse(value: String) -> Result<Self, Error> {
@@ -276,6 +290,12 @@ impl CatalogDiagnostic {
     #[must_use]
     pub fn code(&self) -> &str {
         &self.code.0
+    }
+
+    /// Returns the code as a span field takes it.
+    #[must_use]
+    pub const fn diagnostic_code(&self) -> &DiagnosticCode {
+        &self.code
     }
 
     /// Returns the safe message.

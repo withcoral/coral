@@ -113,11 +113,15 @@ impl Fixture {
         Self::with_session_auth(true).await
     }
 
+    async fn with_session_auth(enabled: bool) -> Self {
+        Self::compose(enabled, None).await
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "composes the real domain graph and authenticated test principals once"
     )]
-    async fn with_session_auth(enabled: bool) -> Self {
+    async fn compose(enabled: bool, releases: Option<coral_release::ReleaseCheck>) -> Self {
         let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let database = fixture.database();
         let issuer = SessionTokenIssuer::new(
@@ -210,7 +214,6 @@ impl Fixture {
                     workspaces.clone(),
                 ),
                 provider_workflow: coral_administration::ProviderWorkflow::new(
-                    database.clone(),
                     providers.clone(),
                     search_index.clone(),
                 ),
@@ -230,6 +233,7 @@ impl Fixture {
                     database.clone(),
                     workspaces.clone(),
                 ),
+                releases,
             },
             coral_grpc::TransportContext {
                 authentication,
@@ -270,7 +274,8 @@ impl Fixture {
         self.provider_module
             .install_builtin_in_transaction(&mut tx, &change(&self.owner), self.workspace.id())
             .await
-            .unwrap();
+            .unwrap()
+            .skip_search();
         tx.commit().await.unwrap();
     }
 
@@ -375,6 +380,10 @@ impl Fixture {
         management::tool_policy_service_client::ToolPolicyServiceClient::new(self.channel.clone())
     }
 
+    fn releases(&self) -> management::release_service_client::ReleaseServiceClient<Channel> {
+        management::release_service_client::ReleaseServiceClient::new(self.channel.clone())
+    }
+
     fn organization_workspaces(
         &self,
     ) -> management::organization_workspace_service_client::OrganizationWorkspaceServiceClient<
@@ -415,18 +424,26 @@ impl Fixture {
         tx.commit().await.unwrap();
     }
 
-    /// Waits on the Run's change notifications, not a poll, until it is terminal.
+    /// Waits on the Run's change notifications, not a poll, until it is terminal. An
+    /// observation also returns while a request waits on a person, so it observes again.
     async fn settle(&self, actor: &AuthenticatedPrincipal, run: &coral_run::RunId) {
-        let settled = self
-            .runs
-            .observe(
-                actor,
-                self.workspace.id(),
-                run,
-                &coral_run::RunObservation::initial(std::time::Duration::from_secs(30)).unwrap(),
-            )
-            .await
-            .unwrap();
+        let observe = async || {
+            self.runs
+                .observe(
+                    actor,
+                    self.workspace.id(),
+                    run,
+                    &coral_run::RunObservation::initial(std::time::Duration::from_secs(30))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        };
+        let mut settled = observe().await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !settled.state().is_terminal() && tokio::time::Instant::now() < deadline {
+            settled = observe().await;
+        }
         assert!(settled.state().is_terminal(), "{:?}", settled.state());
     }
 
@@ -1075,4 +1092,60 @@ async fn task_concealment_and_live_membership_survive_both_audiences() {
             .code(),
         tonic::Code::NotFound
     );
+}
+
+/// The release projection names what the check found, and nothing when the
+/// operator turned the check off. Only a signed-in User may ask.
+#[tokio::test]
+async fn release_inspection_projects_the_newer_release() {
+    let feed = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "tag_name": "v99.0.0" })),
+        )
+        .mount(&feed)
+        .await;
+    let check = coral_release::ReleaseCheck::new(
+        coral_outbound::Client::new(
+            DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap(),
+        url::Url::parse(&feed.uri()).unwrap(),
+        semver::Version::parse("1.0.0").unwrap(),
+    );
+    check.refresh().await.unwrap();
+
+    let on = Fixture::compose(true, Some(check)).await;
+    let off = Fixture::new().await;
+    for (fixture, expected) in [
+        (
+            &on,
+            Some(management::NewerRelease {
+                version: "99.0.0".into(),
+                notes_url: "https://github.com/withcoral/coral/releases/tag/v99.0.0".into(),
+            }),
+        ),
+        (&off, None),
+    ] {
+        let answer = fixture
+            .releases()
+            .get_newer_release(request(
+                management::GetNewerReleaseRequest {},
+                &fixture.token(&fixture.member, "reef"),
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(answer.release, expected);
+    }
+
+    let denied = on
+        .releases()
+        .get_newer_release(tonic::Request::new(management::GetNewerReleaseRequest {}))
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), tonic::Code::Unauthenticated);
 }

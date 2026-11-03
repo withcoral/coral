@@ -164,6 +164,7 @@ async fn insert_record(
             ProgramRunRecords::WorkerClaimId,
             ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
             ProgramRunRecords::HolderInstanceId,
+            ProgramRunRecords::TraceParent,
             ProgramRunRecords::ValueLimitsJson,
             ProgramRunRecords::NextEventSequence,
             ProgramRunRecords::AccumulatedOutputBytes,
@@ -183,6 +184,7 @@ async fn insert_record(
             Expr::val(run.claim_id.as_str()),
             Expr::val(run.worker_claim_expires_at_unix_nanos),
             Expr::val(holder.as_str()),
+            Expr::val(run.trace.as_ref().map(|trace| trace.as_str().to_string())),
             Expr::val(serde_json::to_string(&run.value_limits).map_err(Error::ProgramValueJson)?),
             // The previous release's Event counter: this release advances it per
             // chunk for that release's writers and never reads it.

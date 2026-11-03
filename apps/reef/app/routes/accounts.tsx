@@ -12,7 +12,9 @@ export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/man
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
-    return data(await loadUserAccounts(request, context, params), { headers: accountHeaders })
+    return data(await loadUserAccounts(context, params, request.signal), {
+      headers: accountHeaders,
+    })
   } catch (error) {
     accountFailure(error)
   }
@@ -20,7 +22,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 export async function action({ request, context, params }: Route.ActionArgs) {
   const form = await mutationForm(request, context)
   try {
-    return await userAccountsAction(request, context, params, form)
+    return await userAccountsAction(context, params, form)
   } catch (error) {
     accountFailure(error)
   }

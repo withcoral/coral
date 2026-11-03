@@ -23,7 +23,8 @@
           "__coralPrepareSavedFunction",
           "__coralProgramEmit",
           "__coralProgramLog",
-          "__coralTypeScriptVersion"
+          "__coralTypeScriptVersion",
+          "__coralUnknownToolCalls"
         ]
       }
     ]

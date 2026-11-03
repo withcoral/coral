@@ -5,9 +5,9 @@ import { expect, it, onTestFinished, vi } from 'vitest'
 import { markupRoute, renderLivePage, renderRoute } from '@/test-support/route'
 import { Activity, duration } from './activity'
 import { ActivityArchivedContext } from './live'
-import { revealHref } from './navigation'
+import { ProviderMarksContext } from './call-tool'
 import { ActionReviewSession } from '../actions/review'
-import { activityPage, approval, approvalRequest, run as waiting, workspace } from './fixtures'
+import { activityPage, approvalRequest, run as waiting, taskRow, workspace } from './fixtures'
 import type { ActivityPage, ActivityRow, ActivityViewProps } from './types'
 
 const startedAt = '2026-09-18T14:02:00.000Z'
@@ -124,6 +124,33 @@ it.each(['program.logged', 'program.emitted', 'run.started'])(
   },
 )
 
+// Catches: a call that names its tool by the full Call Path while the workspace still has its
+// provider, or a call whose provider is gone that loses its kind and its path.
+it.each([
+  [
+    'its provider',
+    [{ callRoot: 'coral.providers.linear', displayName: 'Linear' }],
+    'Linear listIssues',
+    false,
+  ],
+  [
+    'no provider that owns it',
+    [{ callRoot: 'coral.providers.mail', displayName: 'Mail' }],
+    'coral.providers.linear.listIssues',
+    true,
+  ],
+])('names a call by the logo and tool of %s', (_, providers, name, kindShown) => {
+  renderRoute(
+    <ProviderMarksContext value={providers}>
+      <Activity page={activityPage({ rows: [invocation] })} />
+    </ProviderMarksContext>,
+    { entry: '/activity' },
+  )
+  expect(screen.getByRole('link', { name })).toBeInTheDocument()
+  expect(screen.getByTitle(invocation.callPath)).toBeInTheDocument()
+  expect(screen.queryAllByRole('img', { name: 'tool' })).toHaveLength(kindShown ? 1 : 0)
+})
+
 it('marks only the tool call as needing action, never its containing Run', () => {
   expect(render({ ...run, state: 'running', requiresAction: true })).not.toContain('needs action')
   expect(render({ ...invocation, state: 'pending', requiresAction: true })).toContain(
@@ -131,18 +158,12 @@ it('marks only the tool call as needing action, never its containing Run', () =>
   )
 })
 
-it('retains the selected review and draft across pending reorder and removal, but conceals access loss', async () => {
+it('retains the selected review and draft across a live refresh, but conceals access loss', async () => {
   const user = userEvent.setup()
   const initial = activityPage({
     rows: [waiting],
     selected: waiting.name,
     selectedRow: waiting,
-    pending: {
-      actions: [{ action: approval, run: waiting }],
-      actionCount: '1',
-      next: '',
-      unavailable: false,
-    },
     detail: {
       kind: 'run',
       run: waiting,
@@ -165,10 +186,9 @@ it('retains the selected review and draft across pending reorder and removal, bu
   const comment = screen.getByRole('textbox', { name: 'Comment (optional)' })
   await user.type(comment, 'Keep this draft')
 
-  await publish({
-    ...initial,
-    pending: { actions: [], actionCount: '0', next: '', unavailable: false },
-  })
+  // A newer record arrives above the waiting Run.
+  await publish({ ...initial, rows: [taskRow('newer', 'A newer goal'), waiting] })
+  expect(document.body).toHaveTextContent('A newer goal')
   expect(document.body).toHaveTextContent('exact-recipient')
   expect(screen.getByRole('textbox', { name: 'Comment (optional)' })).toBe(comment)
   expect(comment).toHaveValue('Keep this draft')
@@ -178,10 +198,9 @@ it('retains the selected review and draft across pending reorder and removal, bu
     detail: null,
     selectedRow: null,
     unavailable: true,
-    pending: { actions: [], actionCount: '0', next: '', unavailable: true },
   })
   expect(document.body).not.toHaveTextContent('exact-recipient')
-  expect(screen.queryByRole('button', { name: 'Approve this call' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
 })
 
 // Catches: a Workspace without an advertised endpoint showing a button that
@@ -402,6 +421,25 @@ it('names the day of a selected record that sits outside every day group', () =>
   expect(within(row).getByText('Fri 18 Sep 2026')).toBeInTheDocument()
 })
 
+// Catches: a "Reveal record" link below the detail of a record the list does not show. Its
+// row above the table already leads to it.
+it('ends the detail of a record outside the list without a link back to it', () => {
+  renderRoute(
+    <Activity
+      page={activityPage({
+        rows: [],
+        selected: goal.name,
+        selectedRow: goal,
+        detail: { kind: 'task', task: goal },
+      })}
+    />,
+    { entry: '/activity?record=x' },
+  )
+  const drawer = screen.getByRole('dialog', { name: 'Activity details' })
+  expect(within(drawer).getByRole('heading', { level: 2, name: goal.intent })).toBeInTheDocument()
+  expect(within(drawer).queryByRole('link', { name: 'Reveal record' })).toBeNull()
+})
+
 const headingLevel = (name: string) =>
   screen
     .getAllByRole('row')
@@ -550,17 +588,49 @@ const splitContext = {
   request: null,
   requestUnavailable: false,
 }
+const emission = {
+  kind: 'output' as const,
+  name: `${run.name}/events/3`,
+  workspace,
+  run: run.name,
+  label: 'output #3',
+  startedAt,
+  eventKind: 'program.emitted',
+  agent: '',
+}
 // Catches: a fixed Run header kept above the split, so a Run's header showed twice and an
-// tool call showed its parent Run's header above its own, or the close control left the
-// selected record's own header.
+// tool call showed its parent Run's header above its own, the close control left the
+// selected record's own header, or any record ended in a "View in history" link.
 it.each([
   [
-    'a Run',
-    { ...run, intent: 'Send invoice reminders' },
-    splitContext,
-    'Send invoice reminders',
-    'program run',
+    'an emission',
+    emission,
+    {
+      kind: 'output',
+      run: run.name,
+      event: { kind: 'program.emitted', value: '1', sequence: '3', occurredAt: startedAt },
+      context: splitContext,
+    },
+    'coral.emit #3',
   ],
+  [
+    'a log',
+    { ...emission, eventKind: 'program.logged' },
+    {
+      kind: 'output',
+      run: run.name,
+      event: {
+        kind: 'program.logged',
+        level: 'info',
+        message: 'sent 1',
+        sequence: '3',
+        occurredAt: startedAt,
+      },
+      context: splitContext,
+    },
+    'console.info #3',
+  ],
+  ['a Run', { ...run, intent: 'Send invoice reminders' }, splitContext, 'Send invoice reminders'],
   [
     'a tool',
     invocation,
@@ -575,11 +645,10 @@ it.each([
       context: splitContext,
     },
     'coral.providers.linear.listIssues',
-    'tool',
   ],
-] satisfies [string, ActivityRow, ActivityPage['detail'], string, string][])(
+] satisfies [string, ActivityRow, ActivityPage['detail'], string][])(
   'heads %s selection in the split with its own header alone',
-  (_, selectedRow, detail, title, kind) => {
+  (_, selectedRow, detail, title) => {
     renderRoute(
       <Activity
         page={activityPage({
@@ -602,62 +671,10 @@ it.each([
     expect(others).toHaveLength(0)
     expect(heading).toHaveTextContent(title)
     const header = heading!.closest('header')!
-    expect(header).toHaveTextContent(kind)
     expect(within(drawer).getAllByRole('button', { name: 'Close details' })).toEqual([
       within(header).getByRole('button', { name: 'Close details' }),
     ])
-  },
-)
-
-// Catches: an output inside the split offering a "Reveal record" link below it, an emitted
-// output outside the loaded list losing its only way back to its place in history, or a
-// program log showing "View in history" below its payload.
-it.each([
-  ['program.emitted', { kind: 'program.emitted', value: '1' }, 'coral.emit #1', true],
-  [
-    'program.logged',
-    { kind: 'program.logged', level: 'info', message: 'sent 1' },
-    'console.info #1',
-    false,
-  ],
-] as const)(
-  'leads a %s output outside the list back to history only when it is not a log',
-  (eventKind, payload, title, linked) => {
-    const output = {
-      kind: 'output' as const,
-      name: `${run.name}/events/1`,
-      workspace,
-      run: run.name,
-      label: 'output #1',
-      startedAt,
-      eventKind,
-      agent: '',
-    }
-    renderRoute(
-      <Activity
-        page={activityPage({
-          rows: [goal],
-          selected: output.name,
-          selectedRow: output,
-          detail: {
-            kind: 'output',
-            run: run.name,
-            event: { ...payload, sequence: '1', occurredAt: startedAt },
-            context: splitContext,
-          },
-        })}
-      />,
-      { entry: '/activity?record=two' },
-    )
-    const drawer = screen.getByRole('dialog')
-    expect(within(drawer).queryByRole('link', { name: 'Reveal record' })).toBeNull()
-    expect(within(drawer).getAllByRole('button', { name: 'Close details' })).toHaveLength(1)
-    // The split, its source and the record's own header stay.
-    expect(within(drawer).getByRole('region', { name: 'Accepted source' })).toBeInTheDocument()
-    const selected = within(drawer).getByRole('region', { name: 'Selected record' })
-    expect(within(selected).getByRole('heading', { level: 2 })).toHaveTextContent(title)
-    const history = within(selected).queryByRole('link', { name: 'View in history' })
-    if (linked) expect(history).toHaveAttribute('href', revealHref(output, { select: false }))
-    else expect(history).toBeNull()
+    for (const name of ['View in history', 'Reveal record'])
+      expect(within(drawer).queryByRole('link', { name })).toBeNull()
   },
 )

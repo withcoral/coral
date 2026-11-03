@@ -9,8 +9,9 @@ use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 use crate::lifecycle::RunRecord;
 use crate::{
-    Error, RequiredAction, RunCursor, RunEvent, RunId, RunModule, RunObservation, RunUpdate,
-    required_actions, run_repository,
+    Error, RequiredAction, RunCursor, RunEvent, RunFailureCode, RunId, RunModule, RunObservation,
+    RunTerminalOutcome, RunUpdate, invocation_repository, required_actions, run_repository,
+    tool_result_shape,
 };
 
 /// Minimum spacing between one waiter's rereads.
@@ -70,6 +71,21 @@ impl RunModule {
         run_id: &RunId,
         observation: &RunObservation,
     ) -> Result<RunUpdate, Error> {
+        let link = !observation.is_by_acceptor();
+        self.observe_linking(actor, workspace_id, run_id, observation, link)
+            .await
+    }
+
+    /// [`Self::observe`]; `link` links the current request to the Run Trace
+    /// at the first snapshot, unless the caller already has.
+    pub(crate) async fn observe_linking(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        run_id: &RunId,
+        observation: &RunObservation,
+        link: bool,
+    ) -> Result<RunUpdate, Error> {
         validate_cursor(run_id, observation)?;
         let deadline = tokio::time::Instant::now() + observation.wait();
         // Subscribe before the first snapshot so a commit during it still wakes this wait.
@@ -86,6 +102,10 @@ impl RunModule {
                 .observe_snapshot(actor, workspace_id, run_id, observation)
                 .await?;
             let read_at = tokio::time::Instant::now();
+            if link && seen_sequence.is_none() {
+                // The caller may see the Run: this request links to its trace once.
+                crate::trace::link_request(update.run_trace.as_ref());
+            }
             let seen_sequence =
                 *seen_sequence.get_or_insert_with(|| observation.seen_sequence(&update));
             if observation.is_ready(&update, seen_sequence) || read_at >= deadline {
@@ -163,6 +183,25 @@ async fn read_update(
     } else {
         last_sequence
     };
+    let trace_id = run.diagnostic_trace_id();
+    let run_trace = run.trace.clone();
+    // Only the page that carries the failure reads what the Program received.
+    let tool_result_shapes = match &run.terminal_outcome {
+        Some(RunTerminalOutcome::Failed(failure))
+            if !has_more && failure.code() == RunFailureCode::ProgramRejected =>
+        {
+            let (received, unread) = invocation_repository::received_results(
+                transaction,
+                &run.workspace_id,
+                &run.id,
+                tool_result_shape::RESULTS_READ,
+                tool_result_shape::RESULTS_READ_MAX_BYTES,
+            )
+            .await?;
+            tool_result_shape::sketch(received, unread)
+        }
+        _ => crate::ToolResultShapes::default(),
+    };
     let mut update = RunUpdate::new(
         run.id.clone(),
         run.state,
@@ -173,6 +212,9 @@ async fn read_update(
         run.value_limits,
     )?;
     update.required_actions = actions;
+    update.tool_result_shapes = tool_result_shapes;
+    update.trace_id = trace_id;
+    update.run_trace = run_trace;
     Ok(update)
 }
 

@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
 use uuid::Uuid;
 
@@ -111,7 +112,7 @@ impl RunModule {
             return false;
         };
         let claim_id = Uuid::new_v4().hyphenated().to_string();
-        let (handle, mailbox) = OwnerHandle::new(run.id.clone(), claim_id.clone());
+        let (handle, mailbox) = OwnerHandle::new(run.held_id(), claim_id.clone());
         for message in queued {
             handle.send(message);
         }
@@ -120,8 +121,8 @@ impl RunModule {
             return false;
         };
         tracing::info!(
-            run_id = %run.id,
-            claim_id = %claim_id,
+            coral.run.id = safe::id(&run.held_id()),
+            coral.run.claim.id = crate::trace::claim(&claim_id).as_ref().map(safe::id),
             "expired-lease sweep recreates the Run Owner of a Run no process owns"
         );
         // The Run as its owner needs it; a recovered owner starts no Program,
@@ -139,8 +140,9 @@ impl RunModule {
                 .worker_claim_expires_at_unix_nanos
                 .unwrap_or(run.accepted_at_unix_nanos),
             linked_snapshots: HashMap::new(),
+            trace: run.trace.clone(),
         };
-        let run_id = run.id.clone();
+        let run_id = run.held_id();
         let owner_task = tokio::spawn(owner::host(
             self.clone(),
             accepted,
@@ -157,8 +159,8 @@ impl RunModule {
         tokio::spawn(async move {
             if let Err(ended) = owner_task.await {
                 tracing::error!(
-                    run_id = %run_id,
-                    ended = %ended,
+                    coral.run.id = safe::id(&run_id),
+                    error.type = safe::kind(crate::worker::owner_task_end_code(&ended)),
                     "recovered Run Owner ended without retiring; the next sweep recovers its Run"
                 );
             }
@@ -253,7 +255,7 @@ impl RunModule {
         }
         // A cancellation's Event comes after the steps': a decision applied
         // after it only closes its request, which writes no Event.
-        end_in_one_chunk(
+        let kind = end_in_one_chunk(
             &mut transaction,
             &run,
             recovery.recovered.termination.clone(),
@@ -274,6 +276,7 @@ impl RunModule {
             )
             .await?;
         transaction.commit().await?;
+        crate::trace::record_run_end(&run, &crate::trace::RunEnd::Recovered(&kind.outcome()), now);
         Ok(())
     }
 }

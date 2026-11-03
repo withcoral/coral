@@ -326,9 +326,11 @@ impl Scan<'_> {
             TSType::TSParenthesizedType(inner) => self.type_(&inner.type_annotation),
             TSType::TSLiteralType(literal) => match &literal.literal {
                 // One quote style, so `'a'` and `"a"` read the same.
-                TSLiteral::StringLiteral(string) => {
-                    serde_json::to_string(string.value.as_str()).map_or(Type::Opaque, Type::Plain)
-                }
+                TSLiteral::StringLiteral(string) => string
+                    .value
+                    .as_str()
+                    .and_then(|value| serde_json::to_string(value).ok())
+                    .map_or(Type::Opaque, Type::Plain),
                 TSLiteral::TemplateLiteral(_) => Type::Opaque,
                 other => Type::Plain(self.source(other.span()).to_string()),
             },
@@ -442,7 +444,7 @@ fn property_name(key: &PropertyKey<'_>) -> Option<String> {
         PropertyKey::StaticIdentifier(identifier) => Some(identifier.name.to_string()),
         other => match other.as_expression()? {
             Expression::StringLiteral(string) => {
-                let value = string.value.as_str();
+                let value = string.value.as_str()?;
                 let plain =
                     value.chars().next().is_some_and(|first| {
                         !first.is_ascii_digit() && is_identifier_character(first)

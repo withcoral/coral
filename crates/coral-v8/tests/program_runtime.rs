@@ -1,5 +1,7 @@
 //! Interface tests for isolated Program compilation and execution.
 
+use coral_telemetry as _;
+use coral_telemetry::metric::CompilerRole;
 use coral_value as _;
 
 use std::sync::{Arc, Mutex};
@@ -10,10 +12,13 @@ use coral_v8::{
     ProgramHost, ProgramOutputHostError, SavedFunctionReference, TYPESCRIPT_PROFILE, ToolHostError,
 };
 use deno_core_icudata as _;
+#[cfg(unix)]
+use rustix as _;
 use serde as _;
 use serde_json as _;
 use sourcemap as _;
 use thiserror as _;
+use tracing as _;
 use v8 as _;
 
 fn compilation_deadline() -> std::time::Instant {
@@ -36,7 +41,8 @@ fn reference_paths(references: &[SavedFunctionReference]) -> Vec<&str> {
 
 #[test]
 fn typescript_program_executes_as_javascript_in_v8() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let program = compiler
         .compile(
             compilation_deadline(),
@@ -69,7 +75,7 @@ fn typescript_program_executes_as_javascript_in_v8() {
 
 #[test]
 fn execution_control_terminates_noncooperative_javascript() {
-    let program = ProgramCompiler::new(IsolateLimits::default())
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
         .compile(compilation_deadline(), "while (true) {}")
         .expect("compile infinite Program");
@@ -94,7 +100,8 @@ fn execution_control_terminates_noncooperative_javascript() {
 
 #[test]
 fn execution_distinguishes_no_final_value_from_explicit_null() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let no_value = compiler
         .compile(compilation_deadline(), "")
         .expect("compile empty body");
@@ -134,7 +141,8 @@ fn execution_distinguishes_no_final_value_from_explicit_null() {
 
 #[test]
 fn final_values_follow_native_json_serialization() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let cases = [
         ("non-finite number", "return Number.NaN;", "null"),
         (
@@ -178,7 +186,8 @@ fn final_values_follow_native_json_serialization() {
 
 #[test]
 fn final_value_serialization_rejects_native_json_failures() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let invalid_values = [
         (
             "cyclic object",
@@ -210,7 +219,8 @@ fn final_value_serialization_rejects_native_json_failures() {
 
 #[test]
 fn program_cannot_replace_the_pinned_json_serializer() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let program = compiler
         .compile(
             compilation_deadline(),
@@ -232,7 +242,8 @@ fn program_cannot_replace_the_pinned_json_serializer() {
 
 #[test]
 fn profile_accepts_javascript_and_exposes_the_bounded_ecmascript_surface() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let program = compiler
         .compile(
             compilation_deadline(),
@@ -307,7 +318,8 @@ fn profile_accepts_javascript_and_exposes_the_bounded_ecmascript_surface() {
 
 #[test]
 fn program_syntax_diagnostics_use_authored_locations_without_a_semantic_gate() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let error = compiler
         .compile(compilation_deadline(), "\nconst answer: = 42;")
         .expect_err("syntax failure must block admission");
@@ -332,7 +344,8 @@ fn program_syntax_diagnostics_use_authored_locations_without_a_semantic_gate() {
 
 #[test]
 fn saved_function_reference_analysis_is_static_and_runtime_only() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let paths = compiler
         .saved_function_paths(compilation_deadline(),
             r"
@@ -433,7 +446,8 @@ fn saved_function_reference_analysis_is_static_and_runtime_only() {
 
 #[test]
 fn reference_analysis_preserves_transparent_wrappers_and_ordinary_globals() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     for source in [
         "return ((coral)).functions.alpha.one();",
         "return (coral as any).functions.alpha.one();",
@@ -457,7 +471,8 @@ fn reference_analysis_preserves_transparent_wrappers_and_ordinary_globals() {
 
 #[test]
 fn authored_source_cannot_reach_private_linker_bindings() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let error = compiler
         .compile_with_saved_functions(compilation_deadline(),
             "__coralSavedFunctionDefaults[0] = () => (() => 'changed'); return coral.functions.safe.value();",
@@ -545,7 +560,8 @@ fn authored_source_cannot_reach_private_linker_bindings() {
 
 #[test]
 fn forbidden_capabilities_block_programs_and_saved_functions() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     for source in [
         "await import('node:fs');",
         "const moduleName = 'node:fs'; await import(moduleName);",
@@ -601,7 +617,7 @@ fn forbidden_capabilities_block_programs_and_saved_functions() {
 
 #[test]
 fn authored_comments_cannot_collide_with_linker_source_mapping_boundaries() {
-    let program = ProgramCompiler::new(IsolateLimits::default())
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
         .compile_with_saved_functions(compilation_deadline(),
             "return coral.functions.safe.value();",
@@ -629,7 +645,8 @@ fn authored_comments_cannot_collide_with_linker_source_mapping_boundaries() {
     reason = "one compact corpus covers callable-rooted declaration projection"
 )]
 fn saved_function_declaration_fields_follow_the_callable_contract() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let compilation = compiler
         .prepare_saved_function(compilation_deadline(),
             r#"
@@ -754,7 +771,8 @@ fn saved_function_declaration_fields_follow_the_callable_contract() {
 
 #[test]
 fn saved_function_authoring_types_the_coral_host_root() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let typed = compiler
         .prepare_saved_function(
             compilation_deadline(),
@@ -825,7 +843,8 @@ fn saved_function_authoring_types_the_coral_host_root() {
 
 #[test]
 fn declaration_projection_uses_resolved_public_instance_types() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let compilation = compiler
         .prepare_saved_function(
             compilation_deadline(),
@@ -893,7 +912,8 @@ fn declaration_projection_uses_resolved_public_instance_types() {
 
 #[test]
 fn tool_paths_are_not_thenables() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let program = compiler.compile(compilation_deadline(),
         "const tool = await Promise.resolve(coral.providers.widgets.create); return await tool({ id: 1 });",
     ).expect("compile path value");
@@ -914,7 +934,8 @@ fn tool_paths_are_not_thenables() {
 // call that fails only when the Run ends, instead of throwing where it is used.
 #[test]
 fn programs_call_every_call_root_under_coral_by_its_complete_path() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let program = compiler
         .compile(
             compilation_deadline(),
@@ -949,7 +970,8 @@ fn programs_call_every_call_root_under_coral_by_its_complete_path() {
 
 #[test]
 fn execution_has_no_forbidden_ambient_capability() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let program = compiler
         .compile(
             compilation_deadline(),
@@ -1015,7 +1037,7 @@ fn execution_has_no_forbidden_ambient_capability() {
 
 #[test]
 fn runtime_also_disables_dynamic_code_for_previously_accepted_packages() {
-    let source_map = ProgramCompiler::new(IsolateLimits::default())
+    let source_map = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
         .compile(compilation_deadline(), "return true;")
         .expect("compile source-map fixture")
@@ -1051,7 +1073,8 @@ fn runtime_also_disables_dynamic_code_for_previously_accepted_packages() {
 
 #[test]
 fn runtime_rejects_buffers_in_previously_accepted_packages() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let fixture = compiler
         .compile(compilation_deadline(), "return 42;")
         .expect("compile source-map fixture");
@@ -1087,7 +1110,8 @@ fn compiler_and_fresh_execution_isolates_share_no_mutable_state() {
     fn assert_send_and_sync<T: Send + Sync>() {}
     assert_send_and_sync::<ProgramCompiler>();
 
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let program = compiler
         .compile(
             compilation_deadline(),
@@ -1113,7 +1137,8 @@ fn compiler_and_fresh_execution_isolates_share_no_mutable_state() {
 
 #[test]
 fn program_cannot_replace_the_host_observed_entry_promise() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let program = compiler
         .compile(
             compilation_deadline(),
@@ -1179,7 +1204,7 @@ impl ProgramHost for CapturingToolHost {
 
 #[test]
 fn tool_call_passes_one_logical_argument_object_to_the_host() {
-    let program = ProgramCompiler::new(IsolateLimits::default())
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
         .compile(
             compilation_deadline(),
@@ -1217,12 +1242,24 @@ impl ProgramHost for RejectingToolHost {
         _location: Option<AuthoredLocation>,
     ) -> coral_v8::ToolFuture {
         Box::pin(async move {
+            if call_path.ends_with(".retrievePage") {
+                return Err(ToolHostError::Rejected {
+                    code: "tool_not_found",
+                    message: "Tool Call Path was not found".into(),
+                    trace_id: None,
+                    suggestions: vec![
+                        "coral.providers.notion.retrieveAPage".to_string(),
+                        "coral.providers.notion.updatePage".to_string(),
+                    ],
+                });
+            }
             Err(ToolHostError::Rejected {
                 code: "upstream_incomplete",
                 message: "durable Tool failure".into(),
                 trace_id: call_path
                     .ends_with(".traced")
                     .then(|| "0123456789abcdef0123456789abcdef".to_string()),
+                suggestions: Vec::new(),
             })
         })
     }
@@ -1294,7 +1331,7 @@ impl ProgramHost for UpstreamRejectingHost {
 
 #[test]
 fn an_upstream_tool_error_carries_its_outcome_read_only() {
-    let program = ProgramCompiler::new(IsolateLimits::default())
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("compiler")
         .compile(
             compilation_deadline(),
@@ -1366,7 +1403,7 @@ fn an_upstream_tool_error_carries_its_outcome_read_only() {
 #[test]
 fn an_uncaught_error_response_retains_its_status_and_a_bounded_body() {
     let rejected = |data: serde_json::Value, source: &str| {
-        let program = ProgramCompiler::new(IsolateLimits::default())
+        let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
             .expect("compiler")
             .compile(compilation_deadline(), source)
             .expect("compile");
@@ -1457,7 +1494,8 @@ impl ProgramHost for FatalToolHost {
     reason = "one table of every authored frame shape"
 )]
 fn failure_stacks_name_only_authored_locations() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
     let fail = linked_source(
         &["debug", "fail"],
         "\ninterface Marker { value: number }\n\nexport default function fail(): never {\n\n    throw new Error('private linked canary');\n}",
@@ -1589,7 +1627,7 @@ fn failure_stacks_name_only_authored_locations() {
 
 #[test]
 fn rejected_tool_host_failure_is_catchable() {
-    let program = ProgramCompiler::new(IsolateLimits::default())
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
         .compile(
             compilation_deadline(),
@@ -1638,7 +1676,7 @@ fn rejected_tool_host_failure_is_catchable() {
 
 #[test]
 fn tool_error_preserves_optional_trace_and_resists_program_replacement() {
-    let program = ProgramCompiler::new(IsolateLimits::default())
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("compiler")
         .compile(
             compilation_deadline(),
@@ -1675,9 +1713,165 @@ fn tool_error_preserves_optional_trace_and_resists_program_replacement() {
     );
 }
 
+/// The Tool fields of a retained Program error that the previous release
+/// reads, denying the ones it does not know.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[expect(dead_code, reason = "only decoding the retained fields is tested")]
+struct PreviousReleaseToolFields {
+    code: String,
+    trace_id: Option<String>,
+    #[serde(default)]
+    status: Option<u16>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    body_truncated: bool,
+}
+
+// Catches: suggestions a Program cannot read from the error it caught or
+// can change, or an uncaught error whose retained Tool fields an older
+// Coral cannot read during a rolling update.
+#[test]
+fn a_tool_not_found_error_carries_the_suggested_paths() {
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
+    let program = compiler
+        .compile(
+            compilation_deadline(),
+            r#"
+        try { await coral.providers.notion.retrievePage({}); }
+        catch (error) {
+            try { error.suggestions.push("coral.providers.forged.path"); } catch {}
+            try { error.suggestions = []; } catch {}
+            return {code: error.code, suggestions: error.suggestions,
+                frozen: Object.isFrozen(error.suggestions)};
+        }
+    "#,
+        )
+        .expect("compile");
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, Arc::new(RejectingToolHost))
+        .expect("handled");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(output.final_value_json().expect("value"))
+            .expect("JSON"),
+        serde_json::json!({
+            "code": "tool_not_found",
+            "suggestions": [
+                "coral.providers.notion.retrieveAPage",
+                "coral.providers.notion.updatePage",
+            ],
+            "frozen": true,
+        })
+    );
+
+    let program = compiler
+        .compile(
+            compilation_deadline(),
+            "return await coral.providers.notion.retrievePage({});",
+        )
+        .expect("compile");
+    let error = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, Arc::new(RejectingToolHost))
+        .expect_err("an uncaught Tool error fails the Program");
+    let Error::ProgramRejected(error) = error else {
+        panic!("{error}");
+    };
+    // The failure's message names the suggestions instead.
+    let retained = serde_json::to_value(&*error).expect("encode the retained error");
+    let tool = retained
+        .get("tool")
+        .cloned()
+        .map(serde_json::from_value::<PreviousReleaseToolFields>)
+        .expect("trusted Tool fields")
+        .unwrap_or_else(|decode| panic!("an older Coral reads {retained}: {decode}"));
+    assert_eq!(tool.code, "tool_not_found");
+}
+
+/// Names a trace and lets each value crossing to it encode to at most
+/// `TRACED_HOST_BYTES`.
+struct TracedHost;
+
+const TRACED_HOST_BYTES: usize = 512;
+
+impl ProgramHost for TracedHost {
+    fn value_limits(&self) -> coral_value::ValueLimits {
+        coral_value::ValueLimits::new(1024, TRACED_HOST_BYTES, 1024, 1024).expect("limits")
+    }
+
+    fn trace_id(&self) -> Option<String> {
+        Some("0123456789abcdef0123456789abcdef".to_string())
+    }
+
+    fn invoke(
+        self: Arc<Self>,
+        _call_path: String,
+        _arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::ToolFuture {
+        Box::pin(async { Ok(r#"{"data":null,"metadata":{"kind":"http"}}"#.to_string()) })
+    }
+
+    fn emit(
+        &self,
+        _value_json: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        Ok(())
+    }
+
+    fn log(
+        &self,
+        _level: ConsoleLevel,
+        _message: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn tool_errors_decided_before_the_host_name_its_trace() {
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
+        .expect("compiler")
+        .compile(
+            compilation_deadline(),
+            &format!(
+                r#"
+        const seen = [];
+        for (const call of [
+            () => coral.providers.weather.getForecast(1n),
+            () => coral.providers.weather.getForecast({{}}, {{}}),
+            () => coral.providers.weather.getForecast({{ body: "x".repeat({TRACED_HOST_BYTES}) }}),
+        ]) {{
+            try {{ await call(); seen.push("accepted"); }}
+            catch (error) {{ seen.push([error.code, error.traceId]); }}
+        }}
+        return seen;
+    "#
+            ),
+        )
+        .expect("compile");
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, Arc::new(TracedHost))
+        .expect("handled");
+    let trace = "0123456789abcdef0123456789abcdef";
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(output.final_value_json().expect("value"))
+            .expect("JSON"),
+        serde_json::json!([
+            ["invalid_input", trace],
+            ["invalid_input", trace],
+            ["tool_input_too_large", trace],
+        ])
+    );
+}
+
 #[test]
 fn unhandled_tool_errors_fail_execution_even_without_await() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
     for source in [
         "coral.providers.weather.getForecast(); return 42;",
         "return {toJSON() { coral.providers.weather.getForecast(); return 42; }};",
@@ -1698,7 +1892,7 @@ fn unhandled_tool_errors_fail_execution_even_without_await() {
 
 #[test]
 fn invalid_tool_host_values_reject_without_invoking_the_host() {
-    let program = ProgramCompiler::new(IsolateLimits::default()).expect("compiler").compile(compilation_deadline(), r#"
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler").compile(compilation_deadline(), r#"
         const cycle = {}; cycle.self = cycle;
         const calls = [() => coral.providers.widgets.create(undefined),
             () => coral.providers.widgets.create(1n),
@@ -1722,7 +1916,7 @@ fn invalid_tool_host_values_reject_without_invoking_the_host() {
 
 #[test]
 fn fatal_tool_host_failure_during_final_value_serialization_stays_fatal() {
-    let program = ProgramCompiler::new(IsolateLimits::default())
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
         .compile(
             compilation_deadline(),
@@ -1750,7 +1944,7 @@ fn fatal_tool_host_failure_during_final_value_serialization_stays_fatal() {
 
 #[test]
 fn fatal_tool_host_failure_cannot_be_caught_by_the_program() {
-    let program = ProgramCompiler::new(IsolateLimits::default())
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
         .compile(
             compilation_deadline(),
@@ -1774,7 +1968,8 @@ fn fatal_tool_host_failure_cannot_be_caught_by_the_program() {
 
 #[test]
 fn source_cannot_escape_the_private_async_wrapper() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let escapes = [
         (
             "two top-level IIFEs",
@@ -1806,7 +2001,8 @@ fn source_cannot_escape_the_private_async_wrapper() {
 
 #[test]
 fn a_single_microtask_checkpoint_drains_deep_continuations() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let chains = [
         (
             "sequential awaits",
@@ -1904,7 +2100,8 @@ impl ProgramHost for GatedToolHost {
 
 #[test]
 fn tools_progress_concurrently_and_unawaited_work_is_drained() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
     for source in [
         "const results = await Promise.all([coral.providers.test.first(), coral.providers.test.second()]); return results[0].data + results[1].data;",
         "coral.providers.test.first(); coral.providers.test.second(); return 84;",
@@ -1949,7 +2146,7 @@ fn tools_progress_concurrently_and_unawaited_work_is_drained() {
 
 #[test]
 fn cancellation_wakes_execution_waiting_for_a_tool() {
-    let program = ProgramCompiler::new(IsolateLimits::default())
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("compiler")
         .compile(compilation_deadline(), "await coral.providers.test.wait();")
         .expect("compile");
@@ -1984,7 +2181,8 @@ fn cancellation_wakes_execution_waiting_for_a_tool() {
 
 #[test]
 fn a_program_awaiting_an_absent_event_source_is_pending_rather_than_hanging() {
-    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compiler =
+        ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let program = compiler
         .compile(
             compilation_deadline(),
@@ -2085,7 +2283,7 @@ fn run_linked_with_recording_host(
     source: &str,
     functions: &[LinkedSavedFunctionSource],
 ) -> (Option<String>, Arc<RecordingHost>) {
-    let program = ProgramCompiler::new(IsolateLimits::default())
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
         .compile_with_saved_functions(compilation_deadline(), source, functions)
         .expect("compile output probe");
@@ -2541,7 +2739,7 @@ fn oversized_or_invalid_host_values_reject_without_reaching_the_host() {
 
 /// Runs `source` to its rejection and returns the retained error and the host.
 fn rejection(source: &str) -> (coral_v8::ProgramError, Arc<RecordingHost>) {
-    let program = ProgramCompiler::new(IsolateLimits::default())
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
         .compile(compilation_deadline(), source)
         .expect(source);
@@ -2630,7 +2828,7 @@ fn reading_a_program_error_runs_no_program_code() {
 
 #[test]
 fn private_linker_source_maps_to_no_authored_source() {
-    let program = ProgramCompiler::new(IsolateLimits::default())
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
         .compile_with_saved_functions(
             compilation_deadline(),
@@ -2694,7 +2892,7 @@ fn private_linker_source_maps_to_no_authored_source() {
 
 #[test]
 fn source_maps_name_only_authored_sources_and_embed_no_text() {
-    let program = ProgramCompiler::new(IsolateLimits::default())
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
         .compile(compilation_deadline(), "return 1;")
         .expect("compile");

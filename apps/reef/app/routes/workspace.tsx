@@ -18,6 +18,8 @@ import {
 import { agentView, membershipView, ownerView } from '@/lib/management-views.server'
 import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
 import { blockerLabel, listAllProviders, providerPath } from '@/lib/providers.server'
+import { runtimeConfigContext } from '@/lib/runtime-config.server'
+import { consumeWorkspaceOnboarding } from '@/lib/workspace-onboarding.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { ActivitySummary } from '@/views/activity/summary/summary'
 import { GLIMPSE_FETCH, WorkspaceOverview } from '@/views/management/workspace-overview'
@@ -33,7 +35,7 @@ const SUMMARY_REFRESH_MS = 30_000
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
-    const { api, workspace: w } = await authorizedWorkspace(request, context, params.workspace)
+    const { api, workspace: w } = await authorizedWorkspace(context, params.workspace)
     // An archived Workspace has only its history to show.
     if (w.state === 'archived') return redirect(`${w.path}/activity`, { headers: privateHeaders })
     const owner = w.effectiveRole === 'owner'
@@ -70,6 +72,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       ],
       icons: RECIPE_CHOICES.find((r) => r.id === provider.namespace)?.icons,
     }))
+    // Onboarding needs the MCP endpoint, so a workspace without one keeps the onboarding cookie.
+    const { onboarding, setCookie } = w.mcpEndpoint
+      ? await consumeWorkspaceOnboarding(request, w.name, context)
+      : { onboarding: false, setCookie: null }
     return data(
       {
         workspace: w,
@@ -92,8 +98,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
             icons,
           })),
         },
+        onboarding,
+        clientsWithAvailablePlugins: context.get(runtimeConfigContext).clientsWithAvailablePlugins,
       },
-      { headers: privateHeaders },
+      { headers: setCookie ? { ...privateHeaders, 'Set-Cookie': setCookie } : privateHeaders },
     )
   } catch (error) {
     managementFailure(error)
@@ -116,7 +124,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const form = await mutationForm(request, context)
   const intent = field(form, 'intent')
   if (!Object.hasOwn(saved, intent)) throw new Response('Invalid action', { status: 400 })
-  const api = management(request, context).workspaces
+  const api = management(context).workspaces
   const name = workspaceName(params.workspace)
   const etag = field(form, 'etag')
   try {

@@ -15,20 +15,20 @@ use axum::http::StatusCode;
 
 /// How long a call that must not move is watched before it is called still.
 const STILL: Duration = Duration::from_millis(300);
-/// How long a call may take to reach the fence once its owner wakes its
-/// parked wait, on a loaded test machine.
-const UNTIL_FENCED: Duration = Duration::from_secs(10);
+/// How long a call may take to reach the enforcement point once its owner wakes
+/// its parked wait, on a loaded test machine.
+const UNTIL_ENFORCED: Duration = Duration::from_secs(10);
 
 const WEATHER: &str = "coral.providers.weather.getForecast";
 const ALERTS: &str = "coral.providers.alerts.getItems";
 
-/// How a [`FanOutRun`] is arranged: the Fan-out Limit, the fence observer,
-/// whether the `weather` Tool waits for an approval, and whether its
+/// How a [`FanOutRun`] is arranged: the Fan-out Limit, the enforcement
+/// observer, whether the `weather` Tool waits for an approval, and whether its
 /// Provider is an OAuth Provider.
 struct Setup {
     user: &'static str,
     limit: usize,
-    latch: Arc<FenceLatch>,
+    latch: Arc<EnforcementLatch>,
     approval_required: bool,
     oauth: Option<OAuth>,
 }
@@ -45,7 +45,7 @@ impl Setup {
         Self {
             user,
             limit: 2,
-            latch: FenceLatch::counting(),
+            latch: EnforcementLatch::counting(),
             approval_required: false,
             oauth: None,
         }
@@ -60,7 +60,7 @@ struct FanOutRun {
     fixture: TestModules,
     runs: RunModule,
     upstream: Arc<SequencedUpstream>,
-    latch: Arc<FenceLatch>,
+    latch: Arc<EnforcementLatch>,
     calls: ScriptedCalls,
     tool: ToolFixture,
     run_id: crate::RunId,
@@ -163,14 +163,14 @@ impl FanOutRun {
     }
 
     /// Starts one call and waits until its send reached the upstream, which
-    /// a dispatch does only after its fence committed.
+    /// a dispatch does only after its enforcement check committed.
     async fn dispatch(&self, call_path: &str, sent_so_far: usize) {
         self.calls.invoke(call_path);
         self.upstream.until_sent(sent_so_far + 1).await;
     }
 
     /// A call that waits for a slot sits still: `pending` with no dispatch
-    /// start, no new Event over [`STILL`], no fence attempt past
+    /// start, no new Event over [`STILL`], no enforcement check past
     /// `attempts_so_far`, and no required action.
     async fn assert_slot_wait_is_silent(&self, waiting: &[&str], attempts_so_far: usize) {
         let events = self.events().await.len();
@@ -185,9 +185,9 @@ impl FanOutRun {
             "a slot wait writes no Event"
         );
         assert_eq!(
-            self.latch.fences.len(),
+            self.latch.enforcement_checks.len(),
             attempts_so_far,
-            "no fence ran for a waiting call"
+            "no enforcement check ran for a waiting call"
         );
         assert!(
             self.observe().await.required_actions().is_empty(),
@@ -252,9 +252,9 @@ async fn ready_calls_above_the_limit_wait_in_memory_and_dispatch_in_readiness_or
     run.dispatch(WEATHER, 1).await;
     // The third (alerts) and the fourth (weather) become ready in this order.
     run.admit(ALERTS, 2).await;
-    run.latch.until_arrived_within(3, UNTIL_FENCED).await;
+    run.latch.until_arrived_within(3, UNTIL_ENFORCED).await;
     run.admit(WEATHER, 3).await;
-    run.latch.until_arrived_within(4, UNTIL_FENCED).await;
+    run.latch.until_arrived_within(4, UNTIL_ENFORCED).await;
     run.assert_slot_wait_is_silent(&[ALERTS, WEATHER], 2).await;
     let rows = run.rows().await;
     assert_eq!(paths(&in_state(&rows, "dispatching")), [WEATHER, WEATHER]);
@@ -292,7 +292,7 @@ async fn ready_calls_above_the_limit_wait_in_memory_and_dispatch_in_readiness_or
     assert_eq!(in_state(&rows, "ended").len(), 2, "{rows:?}");
     assert_eq!(paths(&in_state(&rows, "dispatching")), [ALERTS, WEATHER]);
     assert!(in_state(&rows, "pending").is_empty(), "{rows:?}");
-    assert_eq!(run.latch.fences.len(), 4);
+    assert_eq!(run.latch.enforcement_checks.len(), 4);
 
     run.upstream.release_all();
     assert_succeeded(&run.finish().await, &["ok", "ok", "ok", "ok"]);
@@ -348,7 +348,11 @@ async fn a_call_parked_on_approval_holds_no_slot_and_its_request_stays_visible()
         "the Approval Request is visible while both slots are taken"
     );
     assert_eq!(run.observe().await.required_actions().len(), 1);
-    assert_eq!(run.latch.fences.len(), 2, "the parked call never fenced");
+    assert_eq!(
+        run.latch.enforcement_checks.len(),
+        2,
+        "the parked call never reached the enforcement point"
+    );
 
     // Approved, the call is ready: it waits for a slot, with nothing to see.
     approvals
@@ -362,7 +366,7 @@ async fn a_call_parked_on_approval_holds_no_slot_and_its_request_stays_visible()
         )
         .await
         .expect("approve the call");
-    run.latch.until_arrived_within(3, UNTIL_FENCED).await;
+    run.latch.until_arrived_within(3, UNTIL_ENFORCED).await;
     run.assert_slot_wait_is_silent(&[WEATHER], 2).await;
     assert_eq!(
         paths(&in_state(&run.rows().await, "dispatching")),
@@ -388,7 +392,7 @@ async fn a_run_terminated_while_a_call_waits_for_a_slot_ends_it_as_run_terminate
     run.dispatch(WEATHER, 0).await;
     run.dispatch(WEATHER, 1).await;
     run.admit(ALERTS, 2).await;
-    run.latch.until_arrived_within(3, UNTIL_FENCED).await;
+    run.latch.until_arrived_within(3, UNTIL_ENFORCED).await;
     run.assert_slot_wait_is_silent(&[ALERTS], 2).await;
 
     let canceled = run
@@ -450,22 +454,23 @@ async fn a_run_terminated_while_a_call_waits_for_a_slot_ends_it_as_run_terminate
     );
 }
 
-/// A refresh wait parked by the fence holds no slot: under a limit of one, a
-/// call whose token the fence found expired frees its slot while it refreshes
-/// outside every lock, a later ready call dispatches meanwhile, and the
-/// refreshed call then waits for that slot like any ready call.
+/// A refresh wait parked by the enforcement point holds no slot: under a limit
+/// of one, a call whose token the enforcement point found expired frees its
+/// slot while it refreshes outside every lock, a later ready call dispatches
+/// meanwhile, and the refreshed call then waits for that slot like any ready
+/// call.
 #[tokio::test]
-async fn a_refresh_wait_parked_by_the_fence_holds_no_slot() {
+async fn a_refresh_wait_parked_by_the_enforcement_point_holds_no_slot() {
     /// The token expires this long after the connection; the Run deadline is
     /// a minute away.
     const TOKEN_LIFETIME_SECS: u64 = 1;
     let endpoint = TokenEndpoint::with_initial_expiry(StatusCode::OK, TOKEN_LIFETIME_SECS).await;
-    // Arrivals are held before their fence once: the token expires while the
-    // first call stands there with its credentials prepared, so the fence,
-    // not the selection before it, finds the token expired.
+    // Arrivals are held before their enforcement point once: the token expires
+    // while the first call stands there with its credentials prepared, so the
+    // enforcement point, not the selection before it, finds the token expired.
     let run = FanOutRun::start(Setup {
         limit: 1,
-        latch: FenceLatch::holding_arrivals(),
+        latch: EnforcementLatch::holding_arrivals(),
         oauth: Some(OAuth {
             server: MockServer::start().await,
             token_url: endpoint.url.clone(),
@@ -474,7 +479,8 @@ async fn a_refresh_wait_parked_by_the_fence_holds_no_slot() {
     })
     .await;
 
-    // The fence parks the OAuth call on its refresh, which the endpoint holds.
+    // The enforcement point parks the OAuth call on its refresh, which the
+    // endpoint holds.
     run.calls.invoke(WEATHER);
     run.latch.until_arrived(1).await;
     run.fixture.clock.next.store(
@@ -484,7 +490,7 @@ async fn a_refresh_wait_parked_by_the_fence_holds_no_slot() {
     run.latch.release_arrivals();
     tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
         .await
-        .expect("the parked call refreshes its token outside the fence");
+        .expect("the parked call refreshes its token outside the enforcement point");
     // The one slot is free: a ready call dispatches while the refresh is held.
     run.dispatch(ALERTS, 0).await;
     let rows = run.rows().await;
@@ -509,8 +515,8 @@ async fn a_refresh_wait_parked_by_the_fence_holds_no_slot() {
     run.upstream.release_all();
     assert_succeeded(&run.finish().await, &["ok", "ok"]);
     assert_eq!(
-        run.latch.fences.pairs(),
+        run.latch.enforcement_checks.pairs(),
         [(false, false), (true, true), (true, true)],
-        "the refresh fence, the ready call's fence, the refreshed call's fence"
+        "the refresh enforcement check, the ready call's, the refreshed call's"
     );
 }

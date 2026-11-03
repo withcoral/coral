@@ -16,7 +16,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     throw new Response('Invalid authorization callback', { status: 400, headers })
   let completion
   try {
-    completion = await management(request, context).accounts.completeProviderSetupAuthorization({
+    completion = await management(context).accounts.completeProviderSetupAuthorization({
       query: new URL(request.url).search.slice(1),
     })
   } catch (error) {

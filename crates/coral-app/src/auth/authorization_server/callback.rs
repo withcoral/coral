@@ -12,6 +12,7 @@ use super::response::{TrustedRedirect, direct_error};
 use super::{AuthorizationServerHttpState, query, sign_in_cookie};
 use coral_auth::authorization_codes::{AuthorizationGrant, CodeIssue};
 use coral_auth::{LoginProvisioning, UserDirectory, VerifiedOidcLogin};
+use coral_telemetry::safe;
 use coral_workspace::UserId;
 
 pub(super) async fn oidc_callback(
@@ -85,7 +86,10 @@ async fn complete(
     {
         Ok(exchange) => exchange,
         Err(error) => {
-            tracing::warn!(%error, "OIDC callback could not exchange the provider code");
+            tracing::warn!(
+                error.type = safe::kind(error.code()),
+                "OIDC callback could not exchange the provider code"
+            );
             return trusted.error("server_error", "authorization failed");
         }
     };
@@ -100,7 +104,10 @@ async fn complete(
     {
         Ok(identity) => identity,
         Err(error) => {
-            tracing::warn!(%error, "OIDC callback could not validate the provider identity");
+            tracing::warn!(
+                error.type = safe::kind(error.code()),
+                "OIDC callback could not validate the provider identity"
+            );
             return trusted.error("server_error", "authorization failed");
         }
     };
@@ -166,7 +173,10 @@ pub(super) async fn issue_code(
             trusted.error("invalid_request", "authorization was already completed")
         }
         Err(error) => {
-            tracing::warn!(%error, "Sign-in could not store the authorization code");
+            tracing::warn!(
+                error.type = safe::kind(error.code()),
+                "Sign-in could not store the authorization code"
+            );
             trusted.error("server_error", "authorization failed")
         }
     }
@@ -406,6 +416,7 @@ mod tests {
                 client_state: Some(CLIENT_STATE.into()),
                 code_challenge: "client-code-challenge".into(),
                 resource: RESOURCE.into(),
+                refresh_eligible: false,
             },
             client_name: None,
         }
@@ -988,6 +999,7 @@ mod tests {
         SignInSession {
             request: ClientRequest {
                 resource: ORGANIZATION_RESOURCE.into(),
+                refresh_eligible: false,
                 ..session().request
             },
             client_name: Some("Claude <b>".into()),

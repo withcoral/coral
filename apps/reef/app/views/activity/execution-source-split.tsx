@@ -1,5 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import * as Card from '@/wax/components/card'
+import * as Dialog from '@/wax/components/dialog'
 import { Divider } from '@/wax/components/divider'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { DetailMotion } from './detail-motion'
@@ -145,7 +146,9 @@ export function ExecutionSourceSplit({
             </section>
           </DetailMotion>
         </section>
+        {/* The divider spans the drawer from edge to edge, through its padding. */}
         <Divider
+          className={Dialog.flushInlineClassName}
           label="Resize detail and source panes"
           onResize={resizeSplit}
           percent={splitRatio * 100}

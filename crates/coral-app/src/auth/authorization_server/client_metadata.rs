@@ -325,9 +325,14 @@ fn validate_document(
     {
         return Err(ClientMetadataError::InvalidMetadata);
     }
+    // Refresh is opt-in: only a document that names the grant gets it.
+    let refresh_eligible = document
+        .grant_types
+        .is_some_and(|grants| grants.iter().any(|grant| grant == "refresh_token"));
     Ok(OAuthClientRegistration {
         redirect_uris,
         client_name: document.client_name,
+        refresh_eligible,
     })
 }
 
@@ -858,35 +863,36 @@ mod tests {
         );
     }
 
+    /// Each optional field keeps public-code semantics; only a document that
+    /// lists `refresh_token` among its grants is refresh-eligible.
     #[test]
     fn optional_metadata_fields_match_cloud_compatible_public_code_semantics() {
+        let rejected = Err(ClientMetadataError::InvalidMetadata);
         for (field, value, expected) in [
-            ("token_endpoint_auth_method", Value::Null, None),
-            ("token_endpoint_auth_method", json!("none"), None),
+            ("token_endpoint_auth_method", Value::Null, Ok(true)),
+            ("token_endpoint_auth_method", json!("none"), Ok(true)),
             (
                 "token_endpoint_auth_method",
                 json!("client_secret_basic"),
-                Some(ClientMetadataError::InvalidMetadata),
+                rejected,
             ),
-            ("grant_types", Value::Null, None),
-            ("grant_types", json!(["authorization_code"]), None),
+            ("grant_types", Value::Null, Ok(false)),
+            ("grant_types", json!(["authorization_code"]), Ok(false)),
             (
                 "grant_types",
-                json!(["refresh_token"]),
-                Some(ClientMetadataError::InvalidMetadata),
+                json!(["authorization_code", "refresh_token"]),
+                Ok(true),
             ),
-            ("response_types", Value::Null, None),
-            ("response_types", json!(["code", "token"]), None),
-            (
-                "response_types",
-                json!(["token"]),
-                Some(ClientMetadataError::InvalidMetadata),
-            ),
+            ("grant_types", json!(["refresh_token"]), rejected),
+            ("response_types", Value::Null, Ok(true)),
+            ("response_types", json!(["code", "token"]), Ok(true)),
+            ("response_types", json!(["token"]), rejected),
         ] {
             let mut document = document();
             document[field] = value;
-            let result = validate_document(CLIENT_ID, parsed(document));
-            assert_eq!(result.err(), expected, "field {field}");
+            let result = validate_document(CLIENT_ID, parsed(document))
+                .map(|registration| registration.refresh_eligible);
+            assert_eq!(result, expected, "field {field}");
         }
     }
 

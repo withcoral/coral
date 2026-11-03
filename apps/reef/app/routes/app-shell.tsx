@@ -14,7 +14,7 @@ import { ContentContainer } from '@/components/content-container'
 import { Sidebar } from '@/components/sidebar'
 import { loadActionCounts } from '@/lib/action-count.server'
 import { LocalDeploymentContext } from '@/lib/deployment'
-import { useActionCounts } from '@/lib/use-action-count'
+import { ActionSignalContext, useActionSignal } from '@/lib/use-action-signal'
 import { memberWorkspaces } from '@/lib/workspace-route.server'
 import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { ShellFormContext } from '@/views/management/forms'
@@ -28,18 +28,24 @@ import * as styles from './app-shell.css'
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   try {
-    const api = management(request, context)
-    const [all, membership] = await Promise.all([
+    const api = management(context)
+    const [all, membership, release] = await Promise.all([
       memberWorkspaces(api).catch(() => []),
       api.organizationMemberships.getCurrentOrganizationMembership({}).catch(() => null),
+      api.releases.getNewerRelease({}).catch(() => null),
     ])
+    const organizationOwner = membership?.role === OrganizationRole.OWNER
     const workspaces = all.filter((w) => w.state === WorkspaceState.ACTIVE)
     const archived = all.filter((w) => w.state === WorkspaceState.ARCHIVED)
     const profile = membership?.profile
     return data(
       {
         actionCounts: await loadActionCounts(api, workspaces, request.signal).catch(() => null),
-        organizationOwner: membership?.role === OrganizationRole.OWNER,
+        organizationOwner,
+        newerRelease:
+          organizationOwner && release?.release
+            ? { version: release.release.version, notesUrl: release.release.notesUrl }
+            : undefined,
         auth: browserAuth(context.get(requestAuthContext)),
         userName: profile?.displayName.trim() || profile?.email.trim() || undefined,
         workspaces: workspaces.map(sidebarWorkspaceView),
@@ -67,6 +73,13 @@ export function shouldRevalidate({
   const next = providerPath.exec(nextUrl.pathname)
   if (current && next && current[1] === next[1] && currentUrl.search === nextUrl.search)
     return false
+  // The Approvals page's selection is URL state too; its own loader reads the review.
+  if (
+    currentUrl.pathname === nextUrl.pathname &&
+    currentUrl.search !== nextUrl.search &&
+    /^\/workspaces\/[^/]+\/approvals$/.test(nextUrl.pathname)
+  )
+    return false
   return defaultShouldRevalidate
 }
 function browserAuth(auth: RequestAuth): BrowserAuth {
@@ -75,7 +88,7 @@ function browserAuth(auth: RequestAuth): BrowserAuth {
     : { mode: 'disabled' }
 }
 export default function AppShell({ loaderData }: Route.ComponentProps) {
-  const actionCounts = useActionCounts(loaderData.actionCounts)
+  const actionSignal = useActionSignal(loaderData.actionCounts)
   const rootData = useRouteLoaderData('root') as { sidebarIsMinimized: boolean } | undefined
   const location = useLocation()
   const matches = useMatches()
@@ -88,9 +101,10 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
         <NavigationRoot>
           <div className={styles.layout}>
             <Sidebar
-              actionCounts={actionCounts}
+              actionCounts={actionSignal.counts}
               auth={loaderData.auth}
               organizationOwner={loaderData.organizationOwner}
+              newerRelease={loaderData.newerRelease}
               userName={loaderData.userName}
               initialIsMinimized={rootData?.sidebarIsMinimized ?? false}
               workspaces={loaderData.workspaces}
@@ -113,7 +127,9 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
                     : null
                 }
               >
-                <Outlet />
+                <ActionSignalContext value={actionSignal}>
+                  <Outlet />
+                </ActionSignalContext>
               </BreadcrumbRoot>
             </ContentContainer>
           </div>

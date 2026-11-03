@@ -13,6 +13,7 @@ workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }
+coral-catalog.workspace = true
 coral-run.workspace = true
 coral-functions.workspace = true
 coral-identifier.workspace = true
@@ -24,6 +25,7 @@ rmcp = { workspace = true, features = ["elicitation"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tower.workspace = true
@@ -36,7 +38,6 @@ coral-outbound.workspace = true
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-search = { workspace = true, features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
-coral-catalog.workspace = true
 jsonschema.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

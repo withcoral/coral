@@ -24,9 +24,10 @@
 //! - [`OrganizationModule`] owns login provisioning, current Organization roles,
 //!   disablement, and safe administration evidence shared by every authority check.
 //! - [`WorkspaceModule::check_dispatch_in_transaction`] reads that current User
-//!   authority or live Agent/Registration authority for the Run-owned Dispatch
-//!   Fence, holding the User and Workspace rows shared when asked to; missing
-//!   User evidence fails closed, never falling back to accepted Run claims.
+//!   authority or live Agent/Registration authority for the Run-owned Policy
+//!   Enforcement Point, holding the User and Workspace rows shared when asked
+//!   to; missing User evidence fails closed, never falling back to accepted Run
+//!   claims.
 //! - [`WorkspaceModule::check_in_transaction`] checks an action inside the
 //!   caller's transaction without a hold, so read snapshots can use it.
 //! - [`WorkspaceModule::update_display_name`], [`WorkspaceModule::archive`], and
@@ -117,7 +118,9 @@ pub use agent_types::{
 };
 pub use coral_telemetry::TraceId;
 pub use error::Error;
-pub use principal::{AuthenticatedPrincipal, Principal, PrincipalId, PrincipalKind};
+pub use principal::{
+    AuthenticatedPrincipal, AuthenticatedPrincipalId, Principal, PrincipalId, PrincipalKind,
+};
 pub use principal_authority::PrincipalWorkspaceEvidence;
 pub use types::{
     AdministrativeLifecycleEvent, AuthenticatedUser, AuthoritySource, ChangeContext,

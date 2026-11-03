@@ -1,3 +1,4 @@
+import type { RecipeIcons } from '@/lib/provider-recipes/choice'
 import type { Crumb, FormContext, ActionResult, WorkspaceView } from '@/views/management/types'
 import type { CredentialFieldView } from '@/views/providers/types'
 export type { FormContext, ActionResult }
@@ -59,12 +60,19 @@ export type ConnectionState =
   | 'expired'
   | 'route_changed'
   | 'authorization_changed'
+/** Your pending Account Connection Request for one provider. */
+export interface ConnectionRequest {
+  name: string
+  expiresAt: string
+}
 /** Your own account state for one separate-account provider. */
 export type PersonalAccountState = 'connected' | 'not_connected' | 'needs_reconnect'
 /** One row of your Accounts page. */
 export interface UserAccountRow {
   provider: string
   name: string
+  /** The provider's logo; its initial shows without one. */
+  icons?: RecipeIcons
   state: PersonalAccountState
   accountId?: string
   /** OAuth signs in at the provider in one click; secrets open a dialog here. */
@@ -72,8 +80,8 @@ export interface UserAccountRow {
   /** You can start a connection or a reconnect now. */
   canConnect: boolean
   canDisconnect: boolean
-  /** Deadline of your pending connection request, if any. */
-  waitingUntil?: string
+  /** Your pending connection request, if any. */
+  connectionRequest?: ConnectionRequest
   connectPath: string
   /** Account detail: granted permissions, reconnect, and disconnect. */
   detailPath: string
@@ -81,6 +89,8 @@ export interface UserAccountRow {
 export interface UserAccountsView {
   workspace: WorkspaceView
   path: string
+  /** The connection revision read before the rows; undefined when Coral could not count. */
+  revision?: string
   accounts: UserAccountRow[]
   form: FormContext
 }

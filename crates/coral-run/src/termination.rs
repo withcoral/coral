@@ -13,6 +13,7 @@ use crate::observation::read_until;
 use crate::observation::validate_cursor;
 use crate::run_inbox::{InboxRequest, OutsideRequest};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
+use crate::trace::RunEnd;
 use crate::{
     Error, RunId, RunModule, RunObservation, RunState, RunUpdate, invocation_lifecycle,
     invocation_repository, run_repository,
@@ -63,6 +64,9 @@ impl RunModule {
             .visible_run_in_transaction(&mut snapshot, actor, workspace_id, run_id)
             .await?;
         snapshot.commit().await?;
+        // The caller may see the Run: this request links to its trace once,
+        // whether or not the owner records it within the wait.
+        crate::trace::link_request(run.trace.as_ref());
         if !run.state.is_terminal() {
             // The caller's access is read again in the transaction that
             // inserts the row, which holds no Run row.
@@ -88,7 +92,8 @@ impl RunModule {
             })
             .await?;
         }
-        self.observe(actor, workspace_id, run_id, observation).await
+        self.observe_linking(actor, workspace_id, run_id, observation, false)
+            .await
     }
 
     /// The Run as `actor` may see it, read in `transaction`.
@@ -167,6 +172,18 @@ impl RunModule {
                 Err(Error::HeadMismatch) => return Ok(false),
                 Err(error) => return Err(error),
             }
+            transaction.commit().await?;
+            if let Some(termination) = run.termination {
+                crate::trace::record_run_end(
+                    &run,
+                    &RunEnd::Stopped {
+                        outcome: &termination.kind.outcome(),
+                        reason: termination.kind,
+                    },
+                    terminal_at,
+                );
+            }
+            return Ok(true);
         }
         transaction.commit().await?;
         Ok(true)
@@ -211,6 +228,7 @@ impl RunModule {
         let events = invocation_lifecycle::end_nonterminal_invocations(
             transaction,
             run,
+            termination.kind,
             terminal_at_unix_nanos,
         )
         .await?;
@@ -226,8 +244,8 @@ impl RunModule {
 
     /// Interrupts the Run `claim_id` owns in one chunk: the Program's pending
     /// Invocations end `run_terminated`, dispatching ones `indeterminate`,
-    /// their Approval Requests close, and the Run ends `interrupted` (or
-    /// `timed_out` past its deadline), or with the termination already
+    /// their Approval Requests close (a timeout expires them), and the Run
+    /// ends `interrupted` (or `timed_out` past its deadline), or with the termination already
     /// recorded (a cancellation wins). The self-interrupt path of a Run
     /// Owner that cannot commit, and of the supervisor that takes over a Run
     /// whose owner task ended without retiring; `takeover_claim_id` is the
@@ -268,7 +286,7 @@ impl RunModule {
             return Err(Error::ClaimMismatch);
         }
         let now = self.now()?.max(run.accepted_at_unix_nanos);
-        end_in_one_chunk(
+        let kind = end_in_one_chunk(
             &mut transaction,
             &run,
             None,
@@ -281,6 +299,14 @@ impl RunModule {
         )
         .await?;
         transaction.commit().await?;
+        crate::trace::record_run_end(
+            &run,
+            &RunEnd::Stopped {
+                outcome: &kind.outcome(),
+                reason: kind,
+            },
+            now,
+        );
         Ok(())
     }
 
@@ -292,11 +318,12 @@ impl RunModule {
     pub(crate) async fn record_interruption(
         &self,
         workspace_id: &WorkspaceId,
-        run_id: &RunId,
+        held: &crate::types::HeldRunId,
         claim_id: &str,
         takeover_claim_id: Option<&str>,
     ) -> Result<(), Error> {
-        let mut backoff = crate::execution::Backoff::new(run_id, "interruption");
+        let run_id = held.run_id();
+        let mut backoff = crate::execution::Backoff::new(held, "interruption");
         loop {
             match self
                 .interrupt_owned_run(workspace_id, run_id, claim_id, takeover_claim_id)
@@ -317,10 +344,11 @@ impl RunModule {
 /// `now_unix_nanos` past its deadline (as every deadline path records), else
 /// interrupted then. Every nonterminal Invocation ends (`run_terminated`
 /// before its dispatch, `indeterminate` once dispatching) with its Approval
-/// Request closed, then `run.ended`, never before the termination. The
+/// Request closed (a timeout expires it and fails the Invocation
+/// `approval_expired`), then `run.ended`, never before the termination. The
 /// worker claim is released and, for a started Run, the execution claim
 /// taken over by `takeover`. One head move, predicated on the claim and the
-/// head `run` shows.
+/// head `run` shows. Returns the termination it wrote.
 pub(crate) async fn end_in_one_chunk(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
@@ -328,7 +356,7 @@ pub(crate) async fn end_in_one_chunk(
     mut events: Vec<OwnedEvent>,
     takeover: Option<run_repository::Takeover<'_>>,
     now_unix_nanos: i64,
-) -> Result<(), Error> {
+) -> Result<RunTerminationKind, Error> {
     let termination = match (run.termination, cancellation) {
         (Some(recorded), _) => RequestedTermination::recorded(recorded),
         (None, Some(cancellation)) => {
@@ -347,8 +375,13 @@ pub(crate) async fn end_in_one_chunk(
     };
     let ended_at_unix_nanos = now_unix_nanos.max(termination.termination.started_at_unix_nanos);
     events.extend(
-        invocation_lifecycle::end_nonterminal_invocations(transaction, run, ended_at_unix_nanos)
-            .await?,
+        invocation_lifecycle::end_nonterminal_invocations(
+            transaction,
+            run,
+            termination.termination.kind,
+            ended_at_unix_nanos,
+        )
+        .await?,
     );
     run_repository::interrupt_run(
         transaction,
@@ -358,7 +391,8 @@ pub(crate) async fn end_in_one_chunk(
         takeover,
         ended_at_unix_nanos,
     )
-    .await
+    .await?;
+    Ok(termination.termination.kind)
 }
 
 /// A recorded termination to settle: which Run, and until when its

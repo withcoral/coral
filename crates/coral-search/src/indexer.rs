@@ -74,6 +74,21 @@ pub(crate) enum IndexError {
 }
 
 impl IndexError {
+    /// The error's kind, for a span's `error.type`.
+    pub(crate) const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidEntry(_) => "invalid_entry",
+            Self::TimedOut(_) => "timed_out",
+            Self::Overran(_) => "overran",
+            Self::WriterBusy(_) => "writer_busy",
+            Self::Clock => "clock",
+            Self::Corrupt(_) => "corrupt",
+            Self::Provider(_) => "provider",
+            Self::SavedFunctions(_) => "saved_functions",
+            Self::Database(_) => "database",
+        }
+    }
+
     /// The kind a failed Generation attempt records. A Saved Function error
     /// never fails a Generation.
     pub(crate) const fn failure(&self) -> Option<SearchIndexFailure> {
@@ -100,6 +115,34 @@ impl IndexError {
     }
 }
 
+/// Evidence emitted only after the caller commits the index transaction.
+pub(crate) enum IndexEffect {
+    Updated,
+    FirstVisible {
+        target: IndexedCatalog,
+        published_at_unix_nanos: i64,
+        path: coral_telemetry::metric::VisibilityPath,
+    },
+    Recovered {
+        target: IndexedCatalog,
+        unavailable_since_unix_nanos: i64,
+    },
+}
+
+/// Owner identity used to verify an observation after the projection commits.
+pub(crate) struct IndexedCatalog {
+    pub provider_id: coral_provider::ProviderId,
+    pub generation_id: coral_catalog::ProviderGenerationId,
+}
+impl IndexEffect {
+    pub(crate) const fn catalog(&self) -> Option<&IndexedCatalog> {
+        match self {
+            Self::Updated => None,
+            Self::FirstVisible { target, .. } | Self::Recovered { target, .. } => Some(target),
+        }
+    }
+}
+
 /// Writes one Search Entity kind into the search-owned tables.
 #[async_trait]
 pub(crate) trait EntityIndexer: Send + Sync {
@@ -109,7 +152,7 @@ pub(crate) trait EntityIndexer: Send + Sync {
     type Rows<'e>: Send + Sync
     where
         Self: 'e;
-    /// What a removal names; `Infallible` when a database cascade removes.
+    /// What a removal names.
     type Removal: Send + Sync;
     /// What the reconcile task compares the index against.
     type Expected: Send + Sync;
@@ -124,24 +167,28 @@ pub(crate) trait EntityIndexer: Send + Sync {
     fn rows<'e>(&self, entry: &'e Self::Entry) -> Result<Self::Rows<'e>, IndexError>;
 
     /// Writes `rows`, the entry's rows, and the entry's state, all or nothing
-    /// within the transaction, and stamps each row with the time it writes
-    /// them. Writing the same entry again leaves the same rows. The caller
-    /// holds the entry's Workspace lock, so the stamp is later than each
-    /// stamp before it while the clock moves forward, and the write's
-    /// statistics count sees every write of that Workspace before it.
+    /// within the transaction, each row in one statement, and stamps each row
+    /// with the time it writes them. Writing the same entry again
+    /// leaves the same rows. The caller holds the entry's Workspace lock, so
+    /// the stamp is later than each stamp a statistics count saw before it
+    /// while the clock moves forward. The write counts no statistics: once it
+    /// commits, the caller schedules the Workspace's recount, or, in a
+    /// reconcile pass, leaves it to the pass's statistics step.
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
         entry: &Self::Entry,
         rows: &Self::Rows<'_>,
-    ) -> Result<(), IndexError>;
+    ) -> Result<IndexEffect, IndexError>;
 
-    /// Removes the rows and state the removal names.
+    /// Removes the rows and state the removal names. Returns the Workspace
+    /// whose search rows it removed, `None` when it removed none, a state row
+    /// alone, or did not know the Workspace.
     async fn remove(
         &self,
         transaction: &mut Transaction<'_>,
         removal: &Self::Removal,
-    ) -> Result<(), IndexError>;
+    ) -> Result<Option<WorkspaceId>, IndexError>;
 
     /// Compares the index with `expected`, everything the owners hold now,
     /// and returns what `expected` holds and the index lacks, holds stale, or
@@ -183,7 +230,7 @@ pub(crate) async fn check_statistics(
     let workspaces_checked = watermarks.len();
     let stale = watermarks
         .into_iter()
-        .filter(|workspace| workspace.counted != Some(workspace.current))
+        .filter(is_stale)
         .map(|workspace| workspace.workspace_id)
         .collect();
     Ok(StatisticsCheck {
@@ -201,14 +248,46 @@ pub(crate) async fn lock_workspace(
     Ok(repository::lock_workspace(transaction, workspace_id).await?)
 }
 
-/// On Postgres, takes the Workspace's lock and rewrites its ranking
-/// statistics from its rows. Returns the statistics rows written or deleted.
-pub(crate) async fn refresh_statistics(
+/// Whether a Workspace's rows changed after its last count, or no count with
+/// a watermark wrote its statistics.
+fn is_stale(watermarks: &repository::WorkspaceWatermarks) -> bool {
+    watermarks.counted != Some(watermarks.current)
+}
+
+/// When a recount counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Recount {
+    /// Always: a write changed the Workspace's rows. Its stamps alone may not
+    /// show it, since another host's clock may run ahead.
+    Always,
+    /// Only when the Workspace's rows changed after the last count, as
+    /// [`check_statistics`] compares them: a reconcile pass, which has no
+    /// other sign of a change.
+    IfStale,
+}
+
+/// On Postgres, takes the Workspace's statistics lock and rewrites its
+/// ranking statistics from its rows, as `when` decides. Takes no write lock,
+/// so no index write waits for it. Returns the statistics rows written or
+/// deleted, `None` when the statistics were current. `SQLite` keeps no
+/// statistics, so it counts nothing.
+pub(crate) async fn recount_statistics(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-) -> Result<u64, IndexError> {
-    repository::lock_workspace(transaction, workspace_id).await?;
-    Ok(repository::refresh_workspace_statistics(transaction, workspace_id).await?)
+    when: Recount,
+) -> Result<Option<u64>, IndexError> {
+    repository::lock_statistics(transaction, workspace_id).await?;
+    if when == Recount::IfStale {
+        let stale = repository::workspace_watermark(transaction, workspace_id)
+            .await?
+            .is_some_and(|watermarks| is_stale(&watermarks));
+        if !stale {
+            return Ok(None);
+        }
+    }
+    Ok(Some(
+        repository::recount_workspace_statistics(transaction, workspace_id).await?,
+    ))
 }
 
 fn now_unix_nanos() -> Result<i64, IndexError> {
@@ -280,4 +359,66 @@ pub(crate) fn compact_identifier_variant(value: &str) -> Option<String> {
         .filter(|character| character.is_alphanumeric())
         .collect::<String>();
     (!compact.is_empty() && compact != normalized).then_some(compact)
+}
+
+/// A snapshot of all non-current projections, including catalogs awaiting first visibility.
+pub(crate) struct ProjectionBacklog {
+    pub catalogs: u64,
+    pub functions: u64,
+    /// None when a legacy failed row has unknown visibility history.
+    pub first_visibility: Option<Vec<coral_catalog::ProviderGenerationId>>,
+}
+
+pub(crate) async fn projection_backlog(
+    transaction: &mut Transaction<'_>,
+    providers: &[coral_provider::ActiveGeneration],
+    functions: &[coral_functions::SavedFunctionIndexRevision],
+) -> Result<ProjectionBacklog, IndexError> {
+    let generations = repository::recorded_generations(transaction)
+        .await?
+        .into_iter()
+        .map(|state| (state.generation.clone(), state))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut catalogs = 0;
+    let mut first_visibility = Some(Vec::new());
+    for provider in providers {
+        let key = repository::WorkspaceGeneration {
+            workspace_id: provider.workspace_id().clone(),
+            generation_id: provider.generation_id().clone(),
+        };
+        let state = generations.get(&key);
+        if state.is_some_and(|state| tools::current_projection(state, provider)) {
+            continue;
+        }
+        catalogs += 1;
+        match state.map(|state| state.visibility) {
+            None | Some(repository::RecordedVisibility::NeverVisible) => {
+                if let Some(missing) = &mut first_visibility {
+                    missing.push(provider.generation_id().clone());
+                }
+            }
+            Some(repository::RecordedVisibility::Unknown) => first_visibility = None,
+            Some(repository::RecordedVisibility::Visible { .. }) => {}
+        }
+    }
+    let recorded = repository::recorded_functions(transaction)
+        .await?
+        .into_iter()
+        .map(|row| (row.function, row.fingerprint))
+        .collect::<std::collections::HashMap<_, _>>();
+    let missing_functions = functions
+        .iter()
+        .filter(|entry| {
+            let key = repository::WorkspaceFunction {
+                workspace_id: entry.workspace_id().clone(),
+                function_id: entry.id().clone(),
+            };
+            recorded.get(&key) != Some(&repository::function_fingerprint(entry.revision()))
+        })
+        .count();
+    Ok(ProjectionBacklog {
+        catalogs,
+        functions: u64::try_from(missing_functions).unwrap_or(u64::MAX),
+        first_visibility,
+    })
 }

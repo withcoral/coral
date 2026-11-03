@@ -45,6 +45,7 @@ async fn acceptance_records_its_coral_instance_and_a_taken_identifier_writes_not
         claim_id: format!("claim-{accepted_at_unix_nanos}"),
         worker_claim_expires_at_unix_nanos: accepted_at_unix_nanos + 1_000,
         linked_snapshots: std::collections::HashMap::new(),
+        trace: None,
     };
     let taken = "height-word-database-library";
 

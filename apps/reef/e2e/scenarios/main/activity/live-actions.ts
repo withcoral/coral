@@ -28,6 +28,8 @@ const program = [
   "console.info('newer log 1')",
   "console.info('newer log 2')",
   'coral.emit((await results).map((result) => result.status))',
+  'for (let i = 0; i < 250; i++) console.info(`long history ${i}`)',
+  'await coral.providers.actionFixture.gate({})',
   "return 'ok'",
 ].join('\n')
 
@@ -84,19 +86,19 @@ export async function liveActions(context: TestContext) {
     expect(accepted.isError).not.toBe(true)
     const run = `workspaces/${workspace}/runs/${accepted.structuredContent.run_id}`
     const task = `workspaces/${workspace}/tasks/${execute.taskId()}`
-    const entries = async () =>
-      (await api.activity.browseRunEntries({ name: run, pageSize: 100 })).entries
+    const entries = async (name = run) =>
+      (await api.activity.browseRunEntries({ name, pageSize: 100 })).entries
     const logs = async () =>
       (await entries()).filter(
         ({ record }) => record.case === 'event' && record.value.kind === 'program.logged',
       ).length
     /** The Run's newest record, as Activity names it. */
-    const newest = async () => {
-      const last = (await entries()).at(-1)?.record
+    const newest = async (name = run) => {
+      const last = (await entries(name)).at(-1)?.record
       return last?.case === 'invocation'
         ? last.value.name
         : last?.case === 'event'
-          ? `${run}/events/${last.value.sequence}`
+          ? `${name}/events/${last.value.sequence}`
           : undefined
     }
 
@@ -200,7 +202,7 @@ export async function liveActions(context: TestContext) {
     })
 
     await step('Approve it: the review advances to the next approval', async () => {
-      await rail.getByRole('button', { name: 'Approve this call', exact: true }).click()
+      await rail.getByRole('button', { name: 'Approve', exact: true }).click()
       await reviews(1)
       await following(true)
       expect((await api.activity.inspectApproval({ name: waits[0]!.approval })).state).toBe(
@@ -208,20 +210,25 @@ export async function liveActions(context: TestContext) {
       )
     })
 
-    await step('Turn live mode off and deny the next approval: the review advances', async () => {
-      await toggle.click()
-      await following(false)
-      await rail.getByRole('button', { name: 'Deny this call', exact: true }).click()
-      await reviews(2)
-      await following(false)
-      expect((await api.activity.inspectApproval({ name: waits[1]!.approval })).state).toBe(
-        'declined',
-      )
-    })
+    await step(
+      'Turn live mode off and decline the next approval: the review advances',
+      async () => {
+        await toggle.click()
+        await following(false)
+        await rail.getByRole('button', { name: 'Decline', exact: true }).click()
+        await reviews(2)
+        await following(false)
+        expect((await api.activity.inspectApproval({ name: waits[1]!.approval })).state).toBe(
+          'declined',
+        )
+      },
+    )
 
     await step('Approve the last one: the review selects the newest record', async () => {
-      await rail.getByRole('button', { name: 'Approve this call', exact: true }).click()
-      await expect.poll(() => address().get('record')).not.toBe(waits[2]!.invocation)
+      await rail.getByRole('button', { name: 'Approve', exact: true }).click()
+      // The advance waits for the decision and Activity's reload after it, so wait for
+      // its navigation rather than a fixed second.
+      await page.waitForURL((url) => url.searchParams.get('record') !== waits[2]!.invocation)
       // The approved calls wait on the held fixture, so the newest record stays put.
       expect(await newest()).toBe(address().get('record'))
       expect(address().has('request')).toBe(false)
@@ -230,6 +237,91 @@ export async function liveActions(context: TestContext) {
       expect((await api.activity.inspectApproval({ name: waits[2]!.approval })).state).toBe(
         'approved',
       )
+    })
+
+    // The page's own live toggle, above the list.
+    const latest = page.getByRole('button', { name: 'Live', exact: true })
+    /** Reads deep into the long Run's records, away from the newest top-level records. */
+    const readDeep = async () => {
+      await table.evaluate((port) => {
+        port.scrollTop = port.scrollHeight
+      })
+      // Away from the top, Coral's snapshots hold only the records near the viewport.
+      await expect.poll(() => table.evaluate((port) => port.scrollTop)).toBeGreaterThan(1)
+    }
+    /** Starts a Task whose Run holds on the gate. Returns the Run and its held call. */
+    const startHeldTask = async (intent: string) => {
+      const waiting = held.gate.length
+      const next = programRunner(page, target, workspace, {
+        waitMs: 1,
+        accessToken: issued.credential,
+        taskIntent: `${intent} ${crypto.randomUUID()}`,
+      })
+      const started = await next.exec("await coral.providers.actionFixture.gate({})\nreturn 'ok'")
+      expect(started.isError).not.toBe(true)
+      await expect.poll(() => held.gate.length, { timeout: 15_000 }).toBe(waiting + 1)
+      const name = `workspaces/${workspace}/runs/${started.structuredContent.run_id}`
+      // Its only record is the call that waits on the gate.
+      await expect.poll(() => newest(name), { timeout: 15_000 }).toMatch(/\/invocations\//)
+      return { run: name, call: (await newest(name))!, gate: held.gate.splice(waiting) }
+    }
+    /** Page live mode selects `record` in the table, without a click or a scroll. */
+    const selects = async (record: string) => {
+      await expect.poll(() => address().get('record'), { timeout: 15_000 }).toBe(record)
+      await expect.poll(selectedKey).toBe(record)
+      expect(address().get('live')).toBe('latest')
+      expect(await latest.getAttribute('aria-pressed')).toBe('true')
+    }
+
+    await step('Follow a long Run back to its own row when it ends', async () => {
+      await latest.click()
+      release(held.charge)
+      // The second gate holds the Run after enough logs to pass the first child window.
+      await expect.poll(() => held.gate.length, { timeout: 15_000 }).toBe(1)
+      await expect
+        .poll(() => Number(address().get(`offset.${run}`)), { timeout: 15_000 })
+        .toBeGreaterThan(100)
+      await expect
+        .poll(() => address().get('record'), { timeout: 15_000 })
+        .toMatch(/\/invocations\//)
+      await expect.poll(selectedKey).toBe(address().get('record'))
+      await readDeep()
+      release(held.gate)
+      await selects(run)
+      const row = table.locator(`[data-record-key="${run}"]`)
+      // Selection must bring the row back into the viewport, not just change the rail.
+      await expect
+        .poll(() =>
+          row.evaluate((element) => {
+            const box = element.getBoundingClientRect()
+            const port = element.closest('[role=table]')!.getBoundingClientRect()
+            return box.top >= port.top && box.bottom <= port.bottom
+          }),
+        )
+        .toBe(true)
+    })
+
+    // Live mode finds new work across the list whatever part of it the table shows.
+    let next: Awaited<ReturnType<typeof startHeldTask>>
+    await step('Follow a new Task that arrives while you read deep in the ended Run', async () => {
+      await readDeep()
+      next = await startHeldTask('Next live task')
+      await selects(next.call)
+    })
+
+    await step('A Task that arrives while the followed Run runs waits until it ends', async () => {
+      await readDeep()
+      const later = await startHeldTask('Later live task')
+      // The followed Run still holds live mode. routes/activity-live.test.tsx proves it
+      // holds through the snapshot of the arrival; here the arrival moves nothing at once.
+      expect(address().get('record')).toBe(next.call)
+      expect(await table.evaluate((port) => port.scrollTop)).toBeGreaterThan(1)
+      // The followed Run ends: live mode moves to the later Task's Run, which runs.
+      release(next.gate)
+      await selects(later.call)
+      // That Run ends too: live mode rests on the Run itself.
+      release(later.gate)
+      await selects(later.run)
     })
   })
 }

@@ -985,3 +985,142 @@ async fn mcp_tools_send_confirmed_service_headers_without_credentials() {
         assert!(!request.headers.contains_key("authorization"));
     }
 }
+
+/// An MCP dispatch is one client span of the Invocation that sends it, and
+/// every request of its session carries that span's `traceparent` and no
+/// other trace context. A tool result with `isError: true` marks only the
+/// client span as an error.
+#[tokio::test]
+async fn an_mcp_dispatch_carries_only_its_client_span_trace_context() {
+    use coral_telemetry::testing::attribute;
+    use opentelemetry::trace::{SpanKind, Status};
+    use tracing::Instrument as _;
+
+    let capture = coral_telemetry::testing::process_spans();
+    let server = server(json!({"content": [], "isError": true})).await;
+    let invocation = tracing::info_span!("coral.invocation");
+    let trace = {
+        use opentelemetry::trace::TraceContextExt as _;
+        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+        invocation.context().span().span_context().trace_id()
+    };
+    call_once(&server, 16 * 1024 * 1024)
+        .instrument(invocation.clone())
+        .await
+        .expect("a complete isError outcome");
+    drop(invocation);
+
+    // The SDK's session task ends, and drops its spans, after the call returns.
+    let mut spans = capture.finished();
+    for _ in 0..200 {
+        if spans
+            .iter()
+            .any(|span| span.span_context.trace_id() == trace)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        spans = capture.finished();
+    }
+    let parent = spans
+        .iter()
+        .find(|span| span.span_context.trace_id() == trace && span.name == "coral.invocation")
+        .expect("Invocation span");
+    let client = spans
+        .iter()
+        .find(|span| span.span_context.trace_id() == trace && span.span_kind == SpanKind::Client)
+        .expect("MCP client span");
+    assert_eq!(client.name, "tools/call mixed");
+    assert_eq!(client.parent_span_id, parent.span_context.span_id());
+    for (key, value) in [
+        ("mcp.method.name", "tools/call"),
+        ("gen_ai.tool.name", "mixed"),
+        ("server.address", "127.0.0.1"),
+        ("error.type", "tool_error"),
+    ] {
+        assert_eq!(attribute(client, key).as_deref(), Some(value), "{key}");
+    }
+    assert!(attribute(client, "server.port").is_some());
+    assert!(matches!(client.status, Status::Error { .. }));
+
+    let expected = format!(
+        "00-{}-{}-01",
+        client.span_context.trace_id(),
+        client.span_context.span_id()
+    );
+    let posts = server.received_requests().await.expect("requests");
+    let posts = posts
+        .iter()
+        .filter(|request| request.method == "POST")
+        .collect::<Vec<_>>();
+    assert_eq!(posts.len(), 3);
+    for request in posts {
+        assert_eq!(
+            request
+                .headers
+                .get_all("traceparent")
+                .iter()
+                .map(|value| value.to_str().expect("ASCII"))
+                .collect::<Vec<_>>(),
+            vec![expected.as_str()]
+        );
+        assert!(request.headers.get("tracestate").is_none());
+        assert!(request.headers.get("baggage").is_none());
+    }
+}
+
+/// An MCP dispatch records one exchange: its whole session's request and
+/// response body bytes, and a complete outcome, even one with `isError`.
+#[tokio::test]
+async fn an_mcp_dispatch_records_its_exchange() {
+    // Installed before the scoped capture, so no thread keeps none.
+    coral_telemetry::testing::process_spans();
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _metrics = tracing::subscriber::set_default(metrics.subscriber());
+    let server = server(json!({"content": [], "isError": true})).await;
+    call_once(&server, 16 * 1024 * 1024)
+        .await
+        .expect("a complete isError outcome");
+
+    let sent = server
+        .received_requests()
+        .await
+        .expect("requests")
+        .iter()
+        .filter(|request| request.method == "POST")
+        .map(|request| request.body.len())
+        .sum::<usize>();
+    let points = |name: &str| {
+        metrics
+            .named(name)
+            .into_iter()
+            .map(|point| (point.attributes, point.count, point.value))
+            .collect::<Vec<_>>()
+    };
+    let protocol = |extra: &[(&str, &str)]| {
+        [("provider.protocol", "mcp")]
+            .iter()
+            .chain(extra)
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let durations = points("coral.upstream.duration");
+    let [(attributes, 1, _)] = durations.as_slice() else {
+        panic!("one exchange");
+    };
+    assert_eq!(*attributes, protocol(&[("outcome", "response")]));
+    assert_eq!(
+        points("coral.upstream.request.size"),
+        [(
+            protocol(&[]),
+            1,
+            f64::from(u32::try_from(sent).expect("small"))
+        )]
+    );
+    let responses = points("coral.upstream.response.size");
+    let [(attributes, 1, received)] = responses.as_slice() else {
+        panic!("one response size");
+    };
+    assert_eq!(*attributes, protocol(&[]));
+    assert!(*received > 0.0);
+}

@@ -11,7 +11,7 @@ const providers = [
 it('joins a stopped tool that is not among the busiest, with its stops as its calls', () => {
   const rows = toolRows(
     {
-      tools: [{ callPath: 'coral.providers.github.getIssue', calls: 9 }],
+      tools: [{ callPath: 'coral.providers.github.getIssue', calls: 9, callers: [] }],
       stopped: [
         { callPath: 'coral.providers.github.getIssue', blocked: 1, notAllowed: 0, needsSetup: 0 },
         { callPath: 'coral.providers.slack.post', blocked: 2, notAllowed: 1, needsSetup: 0 },
@@ -36,7 +36,7 @@ it.each([
 ])(
   'names %s as provider %s, namespace %s and tool %s',
   (callPath, provider, namespace, tool, path) => {
-    const [row] = toolRows({ tools: [{ callPath, calls: 1 }], stopped: [] }, providers)
+    const [row] = toolRows({ tools: [{ callPath, calls: 1, callers: [] }], stopped: [] }, providers)
     expect(row).toMatchObject({ provider, namespace, tool })
     expect(row.pages).toEqual(
       path && { tool: `${path}/tools/${tool}`, settings: `${path}/settings` },

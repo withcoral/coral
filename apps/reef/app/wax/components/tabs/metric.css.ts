@@ -32,6 +32,28 @@ export const metricTab = style({
 
 export const metricLabel = style({ display: 'inline-flex', alignItems: 'center', gap: 4 })
 
+export const metricFigures = style({ display: 'flex', gap: 16, maxWidth: '100%', minWidth: 0 })
+
+// Each part after the first follows a short rule beside its number.
+export const metricFigure = style({
+  position: 'relative',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  minWidth: 0,
+  selectors: {
+    '& + &': { paddingInlineStart: 16 },
+    '& + &::before': {
+      content: '""',
+      position: 'absolute',
+      insetInlineStart: 0,
+      top: 8,
+      height: 16,
+      borderInlineStart: `1px solid ${theme.stroke.secondary}`,
+    },
+  },
+})
+
 export const metricDetail = style({
   maxWidth: '100%',
   overflow: 'hidden',

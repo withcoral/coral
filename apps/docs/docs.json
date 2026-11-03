@@ -77,13 +77,8 @@
         "group": "Guides",
         "pages": [
           "guides/concepts",
-          "guides/query-databases",
-          {
-            "group": "Providers",
-            "pages": [
-              "guides/providers/slack"
-            ]
-          }
+          "guides/providers",
+          "guides/database-providers"
         ]
       },
       {
@@ -108,6 +103,11 @@
     {
       "source": "/guides/deploy-on-kubernetes",
       "destination": "/getting-started/self-host",
+      "permanent": true
+    },
+    {
+      "source": "/guides/query-databases",
+      "destination": "/guides/database-providers",
       "permanent": true
     }
   ],

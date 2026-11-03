@@ -25,7 +25,7 @@ impl ProgramEngine for ClosureReadGateEngine {
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, String> {
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         test_saved_function_reference("closure.root").map(|reference| vec![reference])
     }
 
@@ -34,7 +34,7 @@ impl ProgramEngine for ClosureReadGateEngine {
         _deadline: std::time::Instant,
         _path: &SavedFunctionPath,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, String> {
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         if !source.contains("root-v1") {
             return Ok(Vec::new());
         }
@@ -51,7 +51,7 @@ impl ProgramEngine for ClosureReadGateEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
     }
 
@@ -60,7 +60,7 @@ impl ProgramEngine for ClosureReadGateEngine {
         _deadline: std::time::Instant,
         source: &str,
         _linked: &[SavedFunctionSelection],
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
     }
 
@@ -98,7 +98,7 @@ impl ProgramEngine for SnapshotEngine {
         &self,
         _deadline: std::time::Instant,
         _source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, String> {
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         test_saved_function_reference("snapshots.value").map(|reference| vec![reference])
     }
 
@@ -106,7 +106,7 @@ impl ProgramEngine for SnapshotEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
     }
 
@@ -115,7 +115,7 @@ impl ProgramEngine for SnapshotEngine {
         _deadline: std::time::Instant,
         _source: &str,
         linked: &[SavedFunctionSelection],
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         let linked = linked
             .first()
             .ok_or_else(|| "Saved Function snapshot is missing".to_string())?;
@@ -158,9 +158,11 @@ impl ProgramEngine for ImmediateEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         if source == "compile-error" {
-            return Err("scripted compilation failure".to_string());
+            return Err(CompileFailure::Rejected(
+                "scripted compilation failure".to_string(),
+            ));
         }
         let mut package = ProgramPackage::scripted(source);
         if source == "oversized-package" {
@@ -189,6 +191,56 @@ impl ProgramEngine for ImmediateEngine {
     }
 }
 
+/// Fails the compile stage a source names as `<stage>:<failure>`.
+pub(crate) struct FailingCompileEngine;
+
+impl FailingCompileEngine {
+    fn fail_at(stage: &str, source: &str) -> Result<(), CompileFailure> {
+        let Some(failure) = source
+            .strip_prefix(stage)
+            .and_then(|rest| rest.strip_prefix(':'))
+        else {
+            return Ok(());
+        };
+        Err(match failure {
+            "busy" => CompileFailure::Busy,
+            "timed-out" => CompileFailure::TimedOut,
+            "stopped" => CompileFailure::Stopped,
+            "failed" => CompileFailure::Failed("engine"),
+            _ => CompileFailure::Rejected("scripted rejection".to_string()),
+        })
+    }
+}
+
+impl ProgramEngine for FailingCompileEngine {
+    fn program_saved_function_references(
+        &self,
+        _deadline: std::time::Instant,
+        source: &str,
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
+        Self::fail_at("analysis", source)?;
+        Ok(Vec::new())
+    }
+
+    fn compile(
+        &self,
+        _deadline: std::time::Instant,
+        source: &str,
+    ) -> Result<ProgramPackage, CompileFailure> {
+        Self::fail_at("compile", source)?;
+        Ok(ProgramPackage::scripted(source))
+    }
+
+    fn execute(
+        &self,
+        _package: ProgramPackage,
+        _host: Arc<dyn coral_v8::ProgramHost>,
+        _stop: Arc<crate::execution::ExecutionStop>,
+    ) -> ExecutionCompletion {
+        ExecutionCompletion::Succeeded(FinalValue::Absent)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct InvokingEngine {
     pub(crate) call_path: String,
@@ -207,7 +259,7 @@ impl ProgramEngine for InvokingEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
     }
 
@@ -272,7 +324,7 @@ impl ProgramEngine for StaleClaimEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
     }
 
@@ -324,7 +376,7 @@ impl ProgramEngine for CompletionAttemptingEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
     }
 
@@ -360,7 +412,7 @@ impl ProgramEngine for StopAwareEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
     }
 
@@ -412,7 +464,7 @@ impl ProgramEngine for BlockingEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
     }
 
@@ -461,7 +513,7 @@ impl ProgramEngine for CompileGateEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         self.compiling.store(true, Ordering::SeqCst);
         self.release
             .lock()
@@ -489,7 +541,7 @@ impl ProgramEngine for CompileGateEngine {
 pub(crate) struct ReferenceScanningEngine;
 
 impl ReferenceScanningEngine {
-    fn references(source: &str) -> Result<Vec<SavedFunctionReference>, String> {
+    fn references(source: &str) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         const PREFIX: &str = "coral.functions.";
         source
             .match_indices(PREFIX)
@@ -513,7 +565,7 @@ impl ProgramEngine for ReferenceScanningEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, String> {
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         Self::references(source)
     }
 
@@ -522,7 +574,7 @@ impl ProgramEngine for ReferenceScanningEngine {
         _deadline: std::time::Instant,
         _path: &SavedFunctionPath,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, String> {
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         Self::references(source)
     }
 
@@ -530,7 +582,7 @@ impl ProgramEngine for ReferenceScanningEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
     }
 
@@ -539,7 +591,7 @@ impl ProgramEngine for ReferenceScanningEngine {
         _deadline: std::time::Instant,
         _source: &str,
         linked: &[SavedFunctionSelection],
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(&linked.len().to_string()))
     }
 
@@ -556,7 +608,9 @@ impl ProgramEngine for ReferenceScanningEngine {
     }
 }
 
-pub(crate) fn test_saved_function_reference(path: &str) -> Result<SavedFunctionReference, String> {
+pub(crate) fn test_saved_function_reference(
+    path: &str,
+) -> Result<SavedFunctionReference, CompileFailure> {
     Ok(SavedFunctionReference {
         path: SavedFunctionPath::parse(path).map_err(|error| error.to_string())?,
         line: 1,
@@ -617,7 +671,7 @@ impl ProgramEngine for ScriptedCallsEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
     }
 

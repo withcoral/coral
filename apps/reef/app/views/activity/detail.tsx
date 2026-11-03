@@ -24,12 +24,13 @@ import { RunActions } from '../actions/run-actions'
 import { Arguments } from '../actions/arguments'
 import { DescribeParameters, DiscoveryEvidence, SearchParameters } from './discovery/discovery'
 import { DetailHeader, StateBadge } from './detail-header'
+import { useCallProvider } from './call-tool'
 import { ContextImpact } from './context-impact'
 import { Instant } from './instant'
-import { ValueCard } from './value-card'
+import { PayloadViewer, type PayloadViewerProps } from '@/wax/components/payload-viewer'
 import { invocationOutcomeLabels, requestedBy, resultUnknown } from './labels'
 import { Panel } from './panel'
-import { useActivityConnected } from './live'
+import { useActivityConnected, useActivityInspect } from './live'
 import { useActivityNavigation } from './navigation'
 import * as styles from './task-activity.css'
 
@@ -44,19 +45,12 @@ export function runContextOf(detail: ActivityPage['detail']): RunDetail | undefi
   return undefined
 }
 
-export function ActivityDetail({
-  page,
-  sourceShown = false,
-}: {
-  page: ActivityPage
-  /** The caller shows the Run's accepted source beside this detail, so it does not repeat it. */
-  sourceShown?: boolean
-}) {
+export function ActivityDetail({ page }: { page: ActivityPage }) {
   const detail = page.detail
   if (!detail) return null
   // An approval is always reviewed inside its Run; any other selected call leads with itself.
   if (detail.kind === 'invocation' && detail.request?.kind !== 'approval') {
-    return <InvocationDetailView page={page} detail={detail} sourceShown={sourceShown} />
+    return <InvocationDetailView page={page} detail={detail} />
   }
   const context =
     detail.kind === 'run' ? detail : detail.kind === 'invocation' ? detail.context : undefined
@@ -64,7 +58,7 @@ export function ActivityDetail({
     const tool = detail.kind === 'invocation' ? detail : null
     return <ExecutionDetail page={page} detail={context} tool={tool} />
   }
-  return <RecordDetail page={page} sourceShown={sourceShown} />
+  return <RecordDetail page={page} />
 }
 
 function ExecutionDetail({
@@ -119,7 +113,6 @@ function ExecutionDetail({
           <DetailHeader
             title={detail.submission?.intent || detail.run.intent || 'Program run'}
             status={detail.run.state}
-            kind="program run"
           />
           {/* Its times together, last. */}
           <DescriptionList.List>
@@ -176,43 +169,16 @@ function ExecutionDetail({
   )
 }
 
-/** The program a Run accepted, with the saved-function snapshots it linked. */
-function AcceptedSource({ detail }: { detail: RunDetail }) {
-  return (
-    <>
-      <Disclosure title="Accepted program source">
-        <Native value={detail.source} format="typescript" />
-      </Disclosure>
-      {detail.linkedFunctions.map((source) => (
-        <Disclosure key={source.savedFunction} title={`Saved-function snapshot: ${source.path}`}>
-          <Typography.BodySmall>
-            Accepted for this execution. This is not the current saved function.
-          </Typography.BodySmall>
-          <Native value={source.source} format="typescript" />
-        </Disclosure>
-      ))}
-    </>
-  )
-}
-
-/** One exact call, leading with its own identity. Its Run, when retained, is context: the Run's
- * intent and outcome, its accepted source in Details unless the split already shows it, and its
- * whole-run controls. Raw IDs and the Run's own times stay out: the Run's panel holds them. */
-function InvocationDetailView({
-  page,
-  detail,
-  sourceShown,
-}: {
-  page: ActivityPage
-  detail: InvocationDetail
-  sourceShown: boolean
-}) {
-  const { recordHref, revealHref, href } = useActivityNavigation(page)
+/** One exact call, leading with its own identity and ending with its own outcome. Its Run, when
+ * retained, adds only its intent. The Run's state, outcome, source, raw IDs, times and controls
+ * stay out: the Run's panel holds them, and a Run's lifecycle is not this call's. */
+function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: InvocationDetail }) {
+  const { href } = useActivityNavigation(page)
   const connected = useActivityConnected()
   const context = detail.context
   const call = detail.invocation
   const runIntent = context?.submission?.intent || context?.run.intent
-  const running = context?.run.state === 'running'
+  const provider = useCallProvider(call.callPath)
   // A connection request belongs to the call's Run, which is where you connect or decline.
   const connectionHref = (name: string) => href({ record: call.run, request: name })
   const expiresId = useId()
@@ -244,7 +210,7 @@ function InvocationDetailView({
               ? answeredStatus(detail.result)
               : invocationOutcomeLabels[detail.invocation.outcome]
         }
-        kind="tool"
+        provider={provider}
       />
       {/* What the call belongs to and how it waited, then its times together, last. */}
       <DescriptionList.List>
@@ -307,15 +273,6 @@ function InvocationDetailView({
         </List.Container>
       )}
       <InvocationOutcome detail={detail} />
-      {/* The Run's own outcome, apart from this call's: a Run can fail after a call succeeds. */}
-      {context && (
-        <>
-          <div>
-            <StateBadge entity="program run" state={context.run.state} />
-          </div>
-          <TerminalEvidence terminal={context.terminal} />
-        </>
-      )}
       {!!otherRequests.length && (
         <List.Container as="ul" aria-label="Requests for this call">
           {otherRequests.map((request, index) => (
@@ -338,54 +295,30 @@ function InvocationDetailView({
           ))}
         </List.Container>
       )}
-      {context && (
-        <>
-          {/* Beside the split, the Run's source shows once, in its own pane. */}
-          {(context.submission || !sourceShown) && (
-            <Disclosure title="Details">
-              {context.submission && (
-                <Link to={recordHref(context.submission.name)} preventScrollReset>
-                  Inspect original exec submission
-                </Link>
-              )}
-              {!sourceShown && <AcceptedSource detail={context} />}
-            </Disclosure>
-          )}
-          <div className={styles.endActions}>
-            <Link
-              to={revealHref({ ...detail.invocation, kind: 'invocation' }, { select: false })}
-              preventScrollReset
-            >
-              View in history
-            </Link>
-            {running && <CancelRun name={context.run.name} variant="destructive" />}
-          </div>
-        </>
-      )}
     </Panel>
   )
 }
 
 /** Records without a Run context. An approval always has one, so none is reviewed here.
  * A selected tool invocation leads with itself, so none is reviewed here either. */
-function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: boolean }) {
-  const { recordHref, revealHref } = useActivityNavigation(page)
+function RecordDetail({ page }: { page: ActivityPage }) {
+  const { recordHref } = useActivityNavigation(page)
   const connected = useActivityConnected()
   const detail = page.detail
   const row = page.selectedRow
   if (!detail || detail.kind === 'run' || detail.kind === 'invocation') return null
-  const { title, kind } =
+  const title =
     detail.kind === 'task'
-      ? { title: detail.task.intent, kind: 'task' }
+      ? detail.task.intent
       : detail.kind === 'tool'
-        ? toolHeading(detail.interaction, detail.evidence)
-        : eventHeading(detail.event)
+        ? toolTitle(detail.interaction, detail.evidence)
+        : eventTitle(detail.event)
   const status =
     detail.kind === 'task'
       ? detail.task.outcome
       : detail.kind === 'tool'
         ? detail.interaction.outcome
-        : // An output's title and kind name it; a status would say nothing more.
+        : // An output's title names it; a status would say nothing more.
           null
   const label = detail.kind === 'tool' && status === 'unknown' ? resultUnknown : undefined
   // A run event states its own time when no row does.
@@ -441,7 +374,6 @@ function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: 
         title={title}
         status={status ?? 'output'}
         label={label}
-        kind={kind}
         showStatus={status !== null}
       />
       {/* A Task and a tool call state their own facts in their lists below. */}
@@ -557,18 +489,7 @@ function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: 
           )}
         </>
       )}
-      {detail.kind === 'output' && (
-        <>
-          <EventEvidence event={detail.event} recordHref={recordHref} />
-          {/* Inside its Run's split, an emitted output leads back to history itself, as an
-              tool does. A program log ends at its payload. */}
-          {sourceShown && row && detail.event.kind !== 'program.logged' && (
-            <Link to={revealHref(row, { select: false })} preventScrollReset>
-              View in history
-            </Link>
-          )}
-        </>
-      )}
+      {detail.kind === 'output' && <EventEvidence event={detail.event} recordHref={recordHref} />}
     </Panel>
   )
 }
@@ -582,7 +503,7 @@ const toolKinds: Record<string, string> = {
 /** The most specific retained name for a tool call: a search's intent, then its query; what a
  * describe call described; otherwise its intent, then the Run it started. The tool only when
  * nothing else is retained. */
-function toolHeading(interaction: InteractionRow, evidence: InteractionEvidence) {
+function toolTitle(interaction: InteractionRow, evidence: InteractionEvidence) {
   const context = evidence.kind === 'discovery' ? evidence.context : null
   const name =
     context?.kind === 'search'
@@ -594,36 +515,30 @@ function toolHeading(interaction: InteractionRow, evidence: InteractionEvidence)
   // A save or a delete retains only a function ID that no page opens, so its tool titles it.
   const functionTool =
     interaction.tool === 'save_function' || interaction.tool === 'delete_function'
-  return {
-    title: name || (functionTool ? kind[0]!.toUpperCase() + kind.slice(1) : interaction.tool),
-    kind,
-  }
+  return name || (functionTool ? kind[0]!.toUpperCase() + kind.slice(1) : interaction.tool)
 }
 /** A retained event's identity. A log message or an emitted value is the program's own
  * content, so it stays in the body and never becomes the title. */
-function eventHeading(event: RunEvent): { title: string; kind: string } {
+function eventTitle(event: RunEvent): string {
   switch (event.kind) {
     // The stored level names the console method; `log` is stored as `info`.
     case 'program.logged':
-      return { title: `console.${event.level} #${event.sequence}`, kind: 'program log' }
+      return `console.${event.level} #${event.sequence}`
     case 'program.emitted':
-      return { title: `coral.emit #${event.sequence}`, kind: 'program output' }
+      return `coral.emit #${event.sequence}`
     case 'run.started':
-      return { title: 'Program run started', kind: 'run event' }
+      return 'Program run started'
     case 'run.ended':
-      return { title: `Program run ended: ${event.state.replaceAll('_', ' ')}`, kind: 'run event' }
+      return `Program run ended: ${event.state.replaceAll('_', ' ')}`
     case 'run.cancellation_requested':
-      return { title: 'Cancellation requested', kind: 'run event' }
+      return 'Cancellation requested'
     case 'invocation.started':
-      return { title: 'Tool call started', kind: 'run event' }
+      return 'Tool call started'
     case 'invocation.ended':
-      return {
-        // The event holds no response to tell, so a complete one reads only as completed.
-        title: `Tool call ended: ${invocationOutcomeLabels[event.outcome]}`,
-        kind: 'run event',
-      }
+      // The event holds no response to tell, so a complete one reads only as completed.
+      return `Tool call ended: ${invocationOutcomeLabels[event.outcome]}`
     default:
-      return { title: 'Unknown run event', kind: 'run event' }
+      return 'Unknown run event'
   }
 }
 /**
@@ -654,7 +569,7 @@ function InvocationOutcome({ detail }: { detail: InvocationDetail }) {
   switch (detail.result.kind) {
     case 'upstream_outcome':
       // What the provider answered, which says nothing of whether the goal succeeded.
-      return <ValueCard value={detail.result.value} format="json" label="Provider response" />
+      return <Payload value={detail.result.value} format="json" label="Provider response" />
     case 'coral_failure':
       return (
         <ErrorCard
@@ -795,9 +710,9 @@ function EventEvidence({
   recordHref: (name: string) => string
 }) {
   if (event.kind === 'program.logged')
-    return <ValueCard value={event.message} format="text" label="Log message" />
+    return <Payload value={event.message} format="text" label="Log message" />
   if (event.kind === 'program.emitted')
-    return <ValueCard value={event.value} format="json" label="Emitted value" />
+    return <Payload value={event.value} format="json" label="Emitted value" />
   // Its time is in the list above.
   return (
     <>
@@ -827,7 +742,7 @@ function TerminalEvidence({ terminal }: { terminal: RunTerminal }) {
     case 'succeeded':
       // A program's return value, apart from anything it emitted while it ran.
       return terminal.finalValue === null ? null : (
-        <ValueCard value={terminal.finalValue} format="json" label="Final value" />
+        <Payload value={terminal.finalValue} format="json" label="Return value" />
       )
     case 'failed':
       return (
@@ -854,7 +769,14 @@ const runFailureHeadings = {
   run_authority_lost: 'The run lost the access it needed',
   unknown: 'The run failed',
 } satisfies Record<RunFailureCode, string>
-function ErrorDetail({ error }: { error: ProgramError }) {
+/**
+ * One Program error, its cause and its grouped errors. `place` says where it sits, such as
+ * "cause of ToolError", so the upstream data of each error in a chain has its own name.
+ */
+function ErrorDetail({ error, place }: { error: ProgramError; place?: string }) {
+  const named = [error.name, place].filter(Boolean).join(', ')
+  // What a cause or a grouped error says it belongs to: an error with no name is "the error".
+  const parent = named || 'the error'
   return (
     <div className={styles.stack}>
       <Typography.BodySmallStrong>Program error: {error.name}</Typography.BodySmallStrong>
@@ -875,10 +797,12 @@ function ErrorDetail({ error }: { error: ProgramError }) {
       {error.toolBody && (
         <>
           <Typography.BodySmallStrong>Upstream response data</Typography.BodySmallStrong>
-          <Native value={error.toolBody} format="json" />
-          {error.toolBodyTruncated && (
-            <Typography.Body>This is the start of the data.</Typography.Body>
-          )}
+          <Payload
+            value={error.toolBody}
+            format="json"
+            label={named ? `Upstream response data for ${named}` : 'Upstream response data'}
+            truncated={error.toolBodyTruncated}
+          />
         </>
       )}
       {error.truncated && (
@@ -891,14 +815,19 @@ function ErrorDetail({ error }: { error: ProgramError }) {
       )}
       {error.cause && (
         <Disclosure title="Cause" open>
-          <ErrorDetail error={error.cause} />
+          <ErrorDetail error={error.cause} place={`cause of ${parent}`} />
         </Disclosure>
       )}
       {error.errors.map((member, index) => (
         <Disclosure key={index} title={`Grouped error ${index + 1}`}>
-          <ErrorDetail error={member} />
+          <ErrorDetail error={member} place={`grouped error ${index + 1} of ${parent}`} />
         </Disclosure>
       ))}
     </div>
   )
+}
+
+/** A payload in its viewer. Live mode holds while you inspect it expanded. */
+function Payload(props: PayloadViewerProps) {
+  return <PayloadViewer {...props} onExpandedChange={useActivityInspect()} />
 }

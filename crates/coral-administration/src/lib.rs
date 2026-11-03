@@ -1,12 +1,22 @@
-//! Transport-neutral workflows that own one transaction across or above domain Modules.
+//! Transport-neutral workflows above domain Modules. A workflow owns a
+//! transaction only when one atomic write spans Modules; a change that stays
+//! inside one Module commits there. A workflow tells Universal Search what a
+//! committed change altered, because `coral-search` depends on the domain
+//! Modules and they cannot call it.
 //!
 //! # Interface
 //!
-//! [`ProviderWorkflow`] owns the transaction for Provider publication, removal,
-//! and rename. Provider prepares and writes; the workflow begins and commits.
+//! [`ProviderWorkflow`] runs each Provider change that search indexes:
+//! publication, regeneration, removal, rename, and the Built-in Provider's
+//! install and catalog update at boot. Provider owns each change's transaction
+//! and returns the [`coral_provider::SearchChange`] it committed. The workflow
+//! hands it to search after the commit, through the one mapping every
+//! workflow here shares.
 //!
 //! [`WorkspaceWorkflow`] owns the transaction that creates a Workspace together
 //! with its Built-in Provider. It is the only production Workspace creation path.
+//! Provider joins that transaction and returns its search change, which the
+//! workflow hands on after the commit.
 //!
 //! [`AccessLifecycleModule`] removes Workspace Membership (including self-service
 //! leave), Organization Membership, or an exact Workspace-owned Agent. Callers
@@ -14,7 +24,8 @@
 //!
 //! Workspace authorizes and locks the mutation and prepares transaction-bound
 //! lost-access evidence. Provider retires credentials and pending workflows;
-//! Functions removes current definitions and writes private deletion evidence.
+//! Functions removes current definitions and writes private deletion evidence;
+//! Auth retires the Refresh Grants for the access being removed.
 //! Workspace then removes authority in the caller's transaction. Standalone
 //! commands open and commit that transaction; [`AccessLifecycleModule::apply_in_transaction`]
 //! joins an existing one without committing. Any failed facet or lifecycle event
@@ -22,10 +33,11 @@
 //! ends access there and always runs cleanup. Organization removal hands each
 //! Workspace the User solely owns to a transfer target in the same transaction.
 //!
-//! This Module depends on Workspace, Provider, Functions, and the private database
+//! This Module depends on Workspace, Provider, Functions, Auth, and the private database
 //! foundation. It never calls Run or Task, deletes retained history, initializes a
 //! compiler, or performs network revocation. Current authority at the commit is
-//! sufficient to fence later dispatch; no post-commit cleanup is required.
+//! sufficient to block later dispatch at the Policy Enforcement Point; no
+//! post-commit cleanup is required.
 mod providers;
 mod workspaces;
 
@@ -146,6 +158,8 @@ impl AccessLifecycleModule {
             .await?;
         coral_functions::delete_current_for_access_removal_in_transaction(tx, context, &prepared)
             .await?;
+        coral_auth::user_tokens::retire_for_access_removal_in_transaction(tx, context, &prepared)
+            .await?;
         self.workspaces
             .apply_access_removal_in_transaction(tx, context, prepared)
             .await?;
@@ -167,9 +181,14 @@ pub enum Error {
     /// Current function cleanup failed.
     #[error(transparent)]
     Functions(#[from] coral_functions::Error),
+    /// Refresh Grant retirement failed.
+    #[error(transparent)]
+    Auth(#[from] coral_auth::Error),
 }
 #[cfg(test)]
 mod organization_rejoin_tests;
+#[cfg(test)]
+mod refresh_grant_tests;
 #[cfg(test)]
 mod tests;
 

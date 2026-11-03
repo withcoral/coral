@@ -27,12 +27,17 @@ pub struct OAuthClientRegistration {
     pub redirect_uris: Vec<String>,
     /// Unverified display name. Presentation must escape it, never trust it.
     pub client_name: String,
+    /// Whether the client declared the `refresh_token` grant, so a sign-in
+    /// it starts may also start a Refresh Grant.
+    #[serde(skip)]
+    pub refresh_eligible: bool,
 }
 
 impl std::fmt::Debug for OAuthClientRegistration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OAuthClientRegistration")
             .field("redirect_uri_count", &self.redirect_uris.len())
+            .field("refresh_eligible", &self.refresh_eligible)
             .finish_non_exhaustive()
     }
 }
@@ -69,7 +74,7 @@ pub struct RegisteredClient {
     #[serde(flatten)]
     metadata: OAuthClientRegistration,
     token_endpoint_auth_method: &'static str,
-    grant_types: [&'static str; 1],
+    grant_types: &'static [&'static str],
     response_types: [&'static str; 1],
     scope: &'static str,
 }
@@ -101,12 +106,17 @@ impl OAuthClients {
             return Err(RegistrationError::Unavailable);
         }
         let metadata = request.validate()?;
+        let grant_types: &'static [&'static str] = if metadata.refresh_eligible {
+            &["authorization_code", "refresh_token"]
+        } else {
+            &["authorization_code"]
+        };
         let registered = RegisteredClient {
             client_id: format!("dcr_{}", uuid::Uuid::new_v4().simple()),
             client_id_issued_at: now,
             metadata,
             token_endpoint_auth_method: "none",
-            grant_types: ["authorization_code"],
+            grant_types,
             response_types: ["code"],
             scope: "",
         };
@@ -201,6 +211,9 @@ impl RegistrationRequest {
         Ok(OAuthClientRegistration {
             client_name,
             redirect_uris: self.redirect_uris,
+            refresh_eligible: self
+                .grant_types
+                .is_some_and(|grants| grants.iter().any(|grant| grant == "refresh_token")),
         })
     }
 }
@@ -290,4 +303,23 @@ pub enum ClientMetadataError {
     /// Unsupported CIMD profile.
     #[error("OAuth client metadata document is not supported")]
     InvalidMetadata,
+}
+
+impl ClientMetadataError {
+    /// The error's stable kind, for an event's `error.type`: a bounded
+    /// code that never carries the error's text.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidClientId { .. } => "invalid_client_id",
+            Self::InvalidConfiguration { .. } => "invalid_configuration",
+            Self::ClientBuild { .. } => "client_build",
+            Self::Fetch { .. } => "fetch",
+            Self::Redirect { .. } => "redirect",
+            Self::HttpStatus { .. } => "http_status",
+            Self::BodyTooLarge { .. } => "body_too_large",
+            Self::InvalidJson { .. } => "invalid_json",
+            Self::InvalidMetadata { .. } => "invalid_metadata",
+        }
+    }
 }

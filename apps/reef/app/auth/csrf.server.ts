@@ -1,10 +1,13 @@
-import { createHash, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
 import { createCookie } from 'react-router'
 
 import { authCookieSecure } from './config.server'
 import { randomToken } from './session.server'
 import type { AuthSession, RequiredAuthConfig } from './types'
+
+/** The part of a session CSRF evidence binds to. */
+type SessionBinding = Pick<AuthSession, 'handle'>
 
 const CLOCK_SKEW_SECONDS = 30
 
@@ -22,12 +25,12 @@ interface CsrfTokenResult {
 export async function csrfTokenForRequest(
   request: Request,
   config: RequiredAuthConfig,
-  session: AuthSession,
+  session: SessionBinding,
 ): Promise<CsrfTokenResult> {
   const existing = await readCsrfCookie(request, config)
   const binding = sessionBinding(session)
   if (existing && isFresh(existing, config) && safeEqual(existing.sessionBinding, binding)) {
-    return { setCookie: null, token: existing.token }
+    return { setCookie: null, token: maskCsrfToken(existing.token) }
   }
 
   const value = {
@@ -37,14 +40,39 @@ export async function csrfTokenForRequest(
   } satisfies CsrfCookieValue
   return {
     setCookie: await csrfCookie(config).serialize(value),
-    token: value.token,
+    token: maskCsrfToken(value.token),
   }
+}
+
+/**
+ * The token as one response carries it: a fresh pad, and the token XORed with
+ * it. Reef compresses its pages, so a token that repeated in each one could be
+ * read a byte at a time from the sizes of pages that also reflect an attacker's
+ * input (BREACH). Different bytes in every response leave nothing to match.
+ */
+function maskCsrfToken(token: string): string {
+  const secret = Buffer.from(token)
+  const pad = randomBytes(secret.length)
+  return `${pad.toString('base64url')}.${xor(secret, pad).toString('base64url')}`
+}
+
+function unmaskCsrfToken(masked: string): string | null {
+  const [pad, secret, ...rest] = masked.split('.')
+  if (!pad || !secret || rest.length > 0) return null
+  const padBytes = Buffer.from(pad, 'base64url')
+  const secretBytes = Buffer.from(secret, 'base64url')
+  if (padBytes.length !== secretBytes.length) return null
+  return xor(secretBytes, padBytes).toString()
+}
+
+function xor(value: Buffer, pad: Buffer): Buffer {
+  return Buffer.from(value.map((byte, index) => byte ^ pad[index]!))
 }
 
 export async function validateCsrfToken(
   request: Request,
   config: RequiredAuthConfig,
-  session: AuthSession,
+  session: SessionBinding,
 ): Promise<boolean> {
   const cookie = await readCsrfCookie(request, config)
   if (
@@ -63,7 +91,9 @@ export async function validateCsrfToken(
   }
 
   const submitted = formData.get('csrf')
-  return typeof submitted === 'string' && safeEqual(submitted, cookie.token)
+  if (typeof submitted !== 'string') return false
+  const token = unmaskCsrfToken(submitted)
+  return token !== null && safeEqual(token, cookie.token)
 }
 
 export async function clearCsrfToken(config: RequiredAuthConfig): Promise<string> {
@@ -110,8 +140,13 @@ function isFresh(value: CsrfCookieValue, config: RequiredAuthConfig): boolean {
   )
 }
 
-function sessionBinding(session: AuthSession): string {
-  return createHash('sha256').update(session.accessToken).digest('hex')
+/**
+ * CSRF evidence binds to the session's handle, which stays the same while
+ * Coral mints new access tokens, so a form opened before a renewal still
+ * submits. Another session, or a new sign-in, has another handle.
+ */
+function sessionBinding(session: SessionBinding): string {
+  return createHash('sha256').update(session.handle).digest('hex')
 }
 
 function safeEqual(left: string, right: string): boolean {

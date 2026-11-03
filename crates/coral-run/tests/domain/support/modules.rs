@@ -135,10 +135,16 @@ impl TestModules {
         .await
     }
 
-    /// Modules over a database that the migrations before `version` built, as
-    /// one from before that migration's upgrade.
-    pub(crate) async fn before_migration(version: i64, engine: Arc<dyn ProgramEngine>) -> Self {
-        let plan = coral_test_support::migration_plan_before(version);
+    /// Modules over a database that every migration but `version` built: one
+    /// from before that migration's upgrade, with the columns this release's
+    /// Runs write, so the test can fill it through the modules.
+    pub(crate) async fn without_migration(version: i64, engine: Arc<dyn ProgramEngine>) -> Self {
+        let plan = coral_test_support::edited_migration_plan(|migrations| {
+            migrations
+                .into_iter()
+                .filter(|migration| migration.version != version)
+                .collect()
+        });
         Self::on_plan(
             &plan,
             engine,
@@ -322,7 +328,8 @@ impl TestModules {
                 ),
             )
             .await
-            .expect("publish the second Provider");
+            .expect("publish the second Provider")
+            .skip_search();
         let provider = publication
             .published_provider()
             .expect("the second Provider published");
@@ -338,8 +345,8 @@ impl TestModules {
         target
     }
 
-    /// Every Invocation row of a Run, in admission order: the fence's
-    /// durable evidence as persistence holds it.
+    /// Every Invocation row of a Run, in admission order: the enforcement
+    /// point's durable evidence as persistence holds it.
     pub(crate) async fn invocation_rows(
         &self,
         workspace_id: &coral_workspace::WorkspaceId,
@@ -638,7 +645,8 @@ impl TestModules {
                 ),
             )
             .await
-            .expect("publish Provider");
+            .expect("publish Provider")
+            .skip_search();
         let published = publication
             .published_provider()
             .expect("successful Publication");
@@ -908,7 +916,8 @@ pub(crate) async fn configure_authored_provider(
         .providers
         .delete_provider(&context, &tool.workspace_id, &tool.provider_id)
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let setup = fixture
         .providers
         .prepare_openapi_fixture(
@@ -966,7 +975,8 @@ pub(crate) async fn configure_authored_provider(
             .with_account_grant(grant.provisional_grant_id.expect("provisional grant")),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let provider = publication.published_provider().expect("published").clone();
     tool.provider_id = provider.id().clone();
     tool.policy_target = ToolPolicyTarget::new(
@@ -998,7 +1008,8 @@ pub(crate) async fn configure_shared_provider(
         .providers
         .delete_provider(&context, &tool.workspace_id, &tool.provider_id)
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let provider = fixture
         .providers
         .publish_shared_fixture(
@@ -1066,7 +1077,8 @@ pub(crate) async fn configure_user_caller(
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     fixture.accounts()
 }
 
@@ -1174,7 +1186,7 @@ pub(crate) async fn wait_for_connection(
     .expect("Invocation waits on durable connection")
 }
 
-/// One Invocation row's fence evidence.
+/// One Invocation row's enforcement evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InvocationRow {
     pub(crate) id: crate::InvocationId,
@@ -1477,11 +1489,12 @@ pub(crate) async fn admitted_invocation(
         arguments_json: "{}".to_string(),
         source_location: None,
         admitted_at_unix_nanos: now,
+        span: tracing::Span::none(),
     })
 }
 
 /// A Tool invoker bound to `run` as its owner would build it, for
-/// tests that call the fence's pieces directly.
+/// tests that call the enforcement point's pieces directly.
 pub(crate) fn test_invoker(
     fixture: &TestModules,
     tool: &ToolFixture,
@@ -1505,8 +1518,9 @@ pub(crate) fn test_invoker(
             .worker_claim_expires_at_unix_nanos
             .unwrap_or(run.deadline_at_unix_nanos),
         linked_snapshots: std::collections::HashMap::new(),
+        trace: run.trace.clone(),
     };
-    let (owner, _mailbox) = crate::owner::OwnerHandle::new(run.id.clone(), claim_id);
+    let (owner, _mailbox) = crate::owner::OwnerHandle::new(accepted.held_id(), claim_id);
     crate::invocation::ToolInvoker::new(
         None,
         fixture.providers.clone(),

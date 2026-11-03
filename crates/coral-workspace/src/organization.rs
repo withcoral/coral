@@ -3,9 +3,10 @@
 //! Login provisioning is host-only: the authentication Adapter
 //! selects Member or the explicitly configured bootstrap Owner. Administration
 //! requires current Owner authority and an exact revision. Both use the same
-//! record read by Workspace authorization and held by the dispatch fence.
-//! Removal retains revision continuity; login can rejoin only removed Membership.
-//! No protocol work, remote synchronization, or destructive cleanup lives here.
+//! record read by Workspace authorization and held by the Policy Enforcement
+//! Point. Removal retains revision continuity; login can rejoin only removed
+//! Membership. No protocol work, remote synchronization, or destructive cleanup
+//! lives here.
 
 #[path = "organization_repository.rs"]
 mod repository;
@@ -235,6 +236,22 @@ impl OrganizationModule {
             .ok_or(Error::PermissionDenied(
                 "current Organization Membership is required",
             ))
+    }
+
+    /// Holds current enabled Organization Membership of any role through the
+    /// caller's commit, so removal and disablement wait for the decision.
+    /// # Errors
+    /// Denies missing and disabled Membership; never commits independently.
+    pub async fn hold_member_in_transaction(
+        &self,
+        tx: &mut Transaction<'_>,
+        user_id: &UserId,
+    ) -> Result<AuthenticatedUser, Error> {
+        let current = hold_user(tx, user_id).await?;
+        if current.organization_role().is_none() {
+            return Err(Error::PermissionDenied("User is disabled"));
+        }
+        Ok(current)
     }
 
     /// Holds current Owner authority through the caller's administrative commit.

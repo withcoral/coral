@@ -19,10 +19,21 @@ export type StopReason = 'blocked' | 'notAllowed' | 'needsSetup'
 
 /** One tool's stopped calls, split by who must act. */
 export type StoppedTool = { callPath: string } & Record<StopReason, number>
+/** One caller's ended calls. */
+export interface CallerCalls {
+  key: string
+  /** "You", the agent's name, or an unavailable label. */
+  label: string
+  /** The agent's page. Absent for your own calls. */
+  agentPath?: string
+  calls: number
+}
 /** One tool's ended calls. */
 export interface ToolCalls {
   callPath: string
   calls: number
+  /** The same calls per caller, busiest first. */
+  callers: readonly CallerCalls[]
 }
 /** Approval decisions made in the window. */
 export interface ApprovalDecisions {
@@ -51,6 +62,8 @@ export interface ActivitySummaryData {
   contextImpactPartial?: boolean
   /** Net bytes per caller, most saved first. They add up to `contextImpactBytes`. */
   contextActors?: readonly ContextEntry[]
+  /** Ended calls per caller, busiest first. They add up to `calls`. */
+  callers: readonly CallerCalls[]
 }
 
 /** Days a summary can cover. */

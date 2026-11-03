@@ -928,6 +928,26 @@ impl<'a> TypeScriptProjector<'a> {
         self.project_id(id, direction, false)
     }
 
+    /// Projects each branch of the root's `anyOf` on its own, for a
+    /// callable declared as one overload per branch.
+    pub(super) fn project_branches(
+        &mut self,
+        id: &SchemaId,
+        direction: Direction,
+    ) -> Result<Vec<String>, CatalogDiagnostic> {
+        let graph = self.graph;
+        let branches = graph
+            .schema(id)
+            .and_then(|schema| schema.get("anyOf"))
+            .and_then(Value::as_array)
+            .filter(|branches| !branches.is_empty())
+            .ok_or_else(invalid_schema)?;
+        branches
+            .iter()
+            .map(|branch| self.project_schema(branch, direction))
+            .collect()
+    }
+
     fn project_id(
         &mut self,
         id: &SchemaId,

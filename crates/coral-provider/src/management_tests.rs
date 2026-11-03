@@ -74,6 +74,7 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap()
         .clone();
@@ -87,7 +88,8 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
             crate::ProviderDisplayName::parse("Renamed").unwrap(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let current = providers
         .inspect_providers(&owner, &scope)
         .await
@@ -224,7 +226,8 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
             request,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(regenerated.outcome(), ProviderPublicationOutcome::Succeeded);
     let after = providers
         .inspect_providers(&owner, &scope)
@@ -253,7 +256,8 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
             provider.id(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
 }
 
 coral_test_support::provider_setup_fixtures!(crate);
@@ -462,7 +466,8 @@ async fn an_owner_reads_a_providers_configuration_by_namespace() {
     providers
         .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
     let other = workspaces
         .create(&context, WorkspaceDisplayName::parse("Other").unwrap())
@@ -490,7 +495,8 @@ async fn an_owner_reads_a_providers_configuration_by_namespace() {
             crate::ProviderDisplayName::parse("Forecasts").unwrap(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let disabled = providers
         .disable_provider(
             &with_etag(change_context(owner.clone(), 12, 'c'), &renamed.etag()),
@@ -604,7 +610,8 @@ async fn active_provider_names_cover_only_inspectable_workspaces() {
     providers
         .install_builtin_in_transaction(&mut transaction, &context, used.id())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
     for (workspace, title, namespace) in [
         (&used, "Zebra", "zebra"),
@@ -664,4 +671,96 @@ async fn active_provider_names_cover_only_inspectable_workspaces() {
             .unwrap()
             .is_empty()
     );
+}
+
+// Catches: a Provider change that a Workspace Member, not an Owner, can make,
+// or a refused change that still writes the Provider or an event.
+#[tokio::test]
+async fn a_member_cannot_change_a_provider_and_the_refusal_changes_nothing() {
+    let (db, workspaces, providers) = test_modules().await;
+    let owner =
+        organization_user(db.database(), "user:change-owner", OrganizationRole::Owner).await;
+    let member = organization_user(
+        db.database(),
+        "user:change-member",
+        OrganizationRole::Member,
+    )
+    .await;
+    let context = change_context(owner.clone(), 1, '1');
+    let workspace = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Changes").unwrap())
+        .await
+        .unwrap();
+    workspaces
+        .set_membership(
+            &context,
+            workspace.id(),
+            &member,
+            coral_workspace::WorkspaceRole::Member,
+        )
+        .await
+        .unwrap();
+    let provider = super::tests::publish_provider(
+        &providers,
+        &context,
+        workspace.id(),
+        super::tests::CREDENTIAL_FREE_OPENAPI,
+        "member_change",
+        CredentialRoute::None,
+    )
+    .await;
+    let stored = || async {
+        let inspected = providers
+            .inspect_provider(&owner, workspace.id(), provider.id())
+            .await
+            .unwrap();
+        let events = providers
+            .list_lifecycle_events(&owner, workspace.id())
+            .await
+            .unwrap();
+        (inspected.etag(), inspected.state(), events)
+    };
+    let before = stored().await;
+
+    let by_member = change_context(member.clone(), 2, '2');
+    for (change, result) in [
+        (
+            "rename",
+            providers
+                .rename_provider(
+                    &by_member,
+                    workspace.id(),
+                    provider.id(),
+                    crate::ProviderDisplayName::parse("Taken over").unwrap(),
+                )
+                .await
+                .map(|committed| committed.skip_search().etag()),
+        ),
+        (
+            "disable",
+            providers
+                .disable_provider(&by_member, workspace.id(), provider.id())
+                .await
+                .map(|disabled| disabled.etag()),
+        ),
+        (
+            "delete",
+            providers
+                .delete_provider(&by_member, workspace.id(), provider.id())
+                .await
+                .map(crate::Committed::skip_search)
+                .map(|()| String::new()),
+        ),
+    ] {
+        assert!(
+            matches!(
+                result,
+                Err(Error::Workspace(coral_workspace::Error::PermissionDenied(
+                    _
+                )))
+            ),
+            "{change}: {result:?}"
+        );
+        assert_eq!(stored().await, before, "{change} changed nothing");
+    }
 }

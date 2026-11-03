@@ -397,7 +397,7 @@ export interface OAuthKnobs {
   expiresIn: number
   /** Refreshed material differs from the authorization grant. */
   refreshAccess?: string
-  /** Exercise material expiring again before the final dispatch fence. */
+  /** Exercise material expiring again before the final Policy Enforcement Point. */
   firstRefreshExpiresIn?: number
   /** Reject authorization exchanges without changing the active grant. */
   tokenError?: string

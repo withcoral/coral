@@ -55,6 +55,8 @@ service ProviderService {
   rpc DeleteProvider(DeleteProviderRequest) returns (google.protobuf.Empty);
   // Lists current catalog metadata, including unavailable Tools.
   rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
+  // Reads one current Tool by its path, with its full prose.
+  rpc GetTool(GetToolRequest) returns (ProviderTool);
 }
 
 // Reversible lifecycle, separate from caller-specific readiness.
@@ -231,6 +233,14 @@ message ListToolsRequest {
   int32 page_size = 2;
   // Opaque continuation from the preceding page for this Provider.
   string page_token = 3;
+}
+
+// Reads one Tool of the Provider's current administrative catalog.
+message GetToolRequest {
+  // Exact Provider resource.
+  string parent = 1;
+  // Tool path relative to the immutable Provider namespace.
+  string relative_path = 2;
 }
 
 // Safe complete catalog metadata, including structurally unavailable Tools.

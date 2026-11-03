@@ -55,6 +55,9 @@ pub struct RunDetail {
     pub has_more_events: bool,
     /// Retained terminal result, independent of Event pagination.
     pub terminal: Option<RunTerminalOutcome>,
+    /// The Run Trace identifier of a Run that failed, timed out or was
+    /// interrupted, for operator correlation.
+    pub trace_id: Option<coral_telemetry::TraceId>,
 }
 /// One exact Event and its source-free authorized parent, read in one snapshot.
 pub struct RunEventDetail {
@@ -79,7 +82,8 @@ pub enum InvocationOutcome {
     },
     /// Run termination won before dispatch.
     RunTerminated,
-    /// Dispatch crossed its fence without a durable complete result.
+    /// Dispatch crossed its enforcement point without a durable complete
+    /// result.
     Indeterminate,
 }
 /// Exact Invocation evidence. Outcome kind remains in its summary.
@@ -237,6 +241,7 @@ impl RunModule {
             linked_functions,
             events,
             has_more_events,
+            trace_id: run.diagnostic_trace_id(),
             terminal: run.terminal_outcome,
         })
     }

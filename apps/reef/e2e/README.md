@@ -439,6 +439,7 @@ scenarios/
     accounts/
     activity/
     agents/
+    approvals/
     identity/
     organization/
     providers/
@@ -462,6 +463,7 @@ Group `scenarios/main/` by the product behavior being proved:
   `policy/`, and `updates/` for focused scenarios.
 - `accounts/`: scoped Account lifecycle, authority, renewal, and connection requests.
 - `activity/`: execution history and its navigation.
+- `approvals/`: the Approvals page and its live updates.
 - `topology/`: what a composed deployment does not expose.
 
 Keep authority tests beside their feature. Place OAuth and MCP scenarios by the
@@ -585,6 +587,9 @@ Owner behavior; neither replaces the product Workspace/Agent journeys.
   no public listener serves a private gRPC method. Audience rejection stays tested in `crates/coral-grpc`.
 - `activity/binary-output`: a binary Final Value reaches an MCP client as an image
   block and shows unchanged on Reef's Run Status Page.
+- `workspaces/onboarding`: a new workspace's overview opens onboarding once. Copy
+  prompt copies the whole prompt with the workspace's name and MCP URL. After Dismiss,
+  a reload or a later visit does not open it.
 
 Maintained management recordings:
 
@@ -594,9 +599,11 @@ Maintained management recordings:
   lockout, restoration, sidebar Workspace creation, tree expansion without
   navigation, direct links, and browser Back/Forward. The sidebar tree is the only
   Workspace listing.
+- `workspaces/onboarding`: the onboarding a new Workspace's overview opens once, in
+  both topologies (see above).
 - `workspaces/first-workspace`: a User without a Workspace creates one from the
-  home empty state, copies `/mcp` from the empty Activity, and the first MCP
-  call replaces that empty state live.
+  home empty state, dismisses its onboarding, copies `/mcp` from the empty
+  Activity, and the first MCP call replaces that empty state live.
 - `workspaces/authority`: an Organization Owner denied without a Membership, Owner
   assignment from the organization Workspaces page, one-submit
   exact-email grants, designated Memberships, concealed unrelated Workspaces,

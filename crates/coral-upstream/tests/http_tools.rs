@@ -702,6 +702,179 @@ fn a_path_argument_cannot_become_a_dot_segment() {
     );
 }
 
+/// One `POST` Tool with `parameters` query parameters, and optionally a body.
+fn query_tool(parameters: &[String], body: bool) -> PreparedProviderCatalog {
+    let parameters = parameters
+        .iter()
+        .map(|name| {
+            format!("        - {{ name: {name}, in: query, schema: {{ type: string }} }}\n")
+        })
+        .collect::<Vec<_>>()
+        .concat();
+    let parameters = if parameters.is_empty() {
+        String::new()
+    } else {
+        format!("      parameters:\n{parameters}")
+    };
+    let body = if body {
+        r#"      requestBody: { content: { "application/json": { schema: { type: object } } } }
+"#
+    } else {
+        ""
+    };
+    ready(&format!(
+        r#"openapi: 3.1.0
+info: {{ title: Query arguments, version: "1" }}
+servers: [{{ url: "https://api.example.test/v1" }}]
+paths:
+  /items:
+    post:
+      operationId: create
+{parameters}{body}      responses:
+        "204": {{ description: done }}
+"#
+    ))
+}
+
+fn rejection_of(prepared: &PreparedProviderCatalog, argument: &str) -> String {
+    let arguments = serde_json::json!({argument: "secret-canary"});
+    match try_plan(prepared, &arguments) {
+        Err(coral_upstream::Error::InvalidArguments(reason)) => reason,
+        Err(error) => panic!("{error}"),
+        Ok(_dispatch) => panic!("an undeclared argument must be rejected"),
+    }
+}
+
+fn undeclared_reason(prepared: &PreparedProviderCatalog) -> String {
+    rejection_of(prepared, "query")
+}
+
+#[test]
+fn an_undeclared_argument_lists_what_the_tool_declares() {
+    let names = ["cursor".to_string(), "limit".to_string()];
+    for (prepared, argument, expected) in [
+        (
+            query_tool(&names, false),
+            "query",
+            "Tool argument `query` is not declared. It declares: `cursor`, `limit`.",
+        ),
+        (
+            query_tool(&names, true),
+            "query",
+            "Tool argument `query` is not declared. It declares: `body`, `cursor`, `limit`.",
+        ),
+        (
+            query_tool(&[], false),
+            "query",
+            "Tool argument `query` is not declared. This Tool declares no arguments.",
+        ),
+        (
+            query_tool(&names, false),
+            "body",
+            "Tool argument `body` is not declared. It declares: `cursor`, `limit`.",
+        ),
+        (
+            query_tool(&[], false),
+            "body",
+            "Tool argument `body` is not declared. This Tool declares no arguments.",
+        ),
+    ] {
+        assert_eq!(rejection_of(&prepared, argument), expected);
+    }
+}
+
+#[test]
+fn a_parameter_named_body_is_a_declared_argument() {
+    let prepared = query_tool(&["body".to_string()], false);
+    let dispatch = plan(&prepared, &serde_json::json!({"body": "value"}));
+    assert_eq!(dispatch.url().query(), Some("body=value"));
+    assert_eq!(dispatch.body(), None);
+}
+
+#[test]
+fn the_declared_list_is_capped_and_says_how_many_it_left_out() {
+    // A Program that does not catch the failure reads at most this much of it.
+    const PROGRAM_ERROR_MESSAGE_BYTES: usize = 1024;
+    let prefix = "Tool arguments are invalid: ";
+    let long = (0..300)
+        .map(|index| format!("parameter_{index:03}"))
+        .collect::<Vec<_>>();
+    // Quoting and commas outweigh a short name, so these fill the cap fastest.
+    let short = (0..300)
+        .map(|index| format!("p{index:03}"))
+        .collect::<Vec<_>>();
+    for (names, body, start, last_shown, first_cut, ending) in [
+        (
+            &long,
+            true,
+            "`body`, `parameter_000`,",
+            "`parameter_028`",
+            "`parameter_029`",
+            ", and 271 more.",
+        ),
+        (
+            &short,
+            true,
+            "`body`, `p000`,",
+            "`p062`",
+            "`p063`",
+            ", and 237 more.",
+        ),
+        (
+            &short,
+            false,
+            "`p000`, `p001`,",
+            "`p063`",
+            "`p064`",
+            ", and 236 more.",
+        ),
+    ] {
+        let reason = undeclared_reason(&query_tool(names, body));
+        assert!(
+            reason.starts_with(&format!(
+                "Tool argument `query` is not declared. It declares: {start}"
+            )),
+            "{reason}"
+        );
+        assert!(reason.contains(last_shown), "{reason}");
+        assert!(!reason.contains(first_cut), "{reason}");
+        assert!(reason.ends_with(ending), "{reason}");
+        assert!(!reason.contains("secret-canary"), "{reason}");
+        assert!(
+            prefix.len() + reason.len() <= PROGRAM_ERROR_MESSAGE_BYTES,
+            "{reason}"
+        );
+    }
+}
+
+#[test]
+fn the_declared_list_fills_the_cap_exactly_and_leaves_no_empty_list() {
+    let (a, b) = ("a".repeat(253), "b".repeat(253));
+    let (longer_b, n) = ("b".repeat(254), "n".repeat(510));
+    let not_declared = "Tool argument `query` is not declared.";
+    for (names, expected) in [
+        // Each pair renders to 512 bytes, then to 513.
+        (
+            vec![n.clone()],
+            format!("{not_declared} It declares: `{n}`."),
+        ),
+        (
+            vec![format!("{n}n")],
+            format!("{not_declared} Its declared argument names are too long to list."),
+        ),
+        (
+            vec![a.clone(), b.clone()],
+            format!("{not_declared} It declares: `{a}`, `{b}`."),
+        ),
+        (
+            vec![a.clone(), longer_b],
+            format!("{not_declared} It declares: `{a}`, and 1 more."),
+        ),
+    ] {
+        assert_eq!(undeclared_reason(&query_tool(&names, false)), expected);
+    }
+}
+
 #[tokio::test]
 async fn a_traversal_argument_never_reaches_an_undeclared_endpoint() {
     let server = MockServer::start().await;
@@ -2191,6 +2364,201 @@ async fn echoed_credentials_never_reach_the_result() {
         assert_eq!(
             retained,
             [(sent.0.to_ascii_lowercase(), expected.to_string())]
+        );
+    }
+}
+
+/// An HTTP dispatch is one client span of the Invocation that sends it, and
+/// the upstream receives that span's `traceparent` and nothing else of the
+/// trace context: not one a Program argument names, nor `baggage` or
+/// `tracestate`. The span holds the route template, never the filled path,
+/// and an error status marks only the span.
+#[tokio::test]
+async fn an_http_dispatch_carries_only_its_client_span_trace_context() {
+    use coral_telemetry::testing::attribute;
+    use opentelemetry::trace::{SpanKind, Status};
+    use tracing::Instrument as _;
+
+    let capture = coral_telemetry::testing::process_spans();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let prepared = ready(&format!(
+        r#"
+openapi: 3.1.0
+info: {{title: Trace context, version: "1"}}
+servers: [{{url: {}}}]
+paths:
+  /items/{{id}}:
+    get:
+      operationId: read
+      parameters:
+        - {{name: id, in: path, required: true, schema: {{type: string}}}}
+        - {{name: traceparent, in: header, schema: {{type: string}}}}
+        - {{name: baggage, in: header, schema: {{type: string}}}}
+      responses:
+        "200": {{description: done}}
+"#,
+        server.uri()
+    ));
+    let invocation = tracing::info_span!("coral.invocation");
+    let trace = {
+        use opentelemetry::trace::TraceContextExt as _;
+        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+        invocation.context().span().span_context().trace_id()
+    };
+    let outcome = send(plan(
+        &prepared,
+        &serde_json::json!({
+            "id": "private-42",
+            "traceparent": "00-ffffffffffffffffffffffffffffffff-ffffffffffffffff-01",
+            "baggage": "user=private",
+        }),
+    ))
+    .instrument(invocation.clone())
+    .await
+    .expect("a complete response");
+    assert_eq!(outcome.status(), 404);
+    drop(invocation);
+
+    let spans = capture.finished();
+    let parent = spans
+        .iter()
+        .find(|span| span.span_context.trace_id() == trace && span.name == "coral.invocation")
+        .expect("Invocation span");
+    let client = spans
+        .iter()
+        .find(|span| span.span_context.trace_id() == trace && span.span_kind == SpanKind::Client)
+        .expect("HTTP client span");
+    assert_eq!(client.name, "GET /items/{id}");
+    assert_eq!(client.parent_span_id, parent.span_context.span_id());
+    for (key, value) in [
+        ("http.request.method", "GET"),
+        ("url.scheme", "http"),
+        ("server.address", "127.0.0.1"),
+        ("url.template", "/items/{id}"),
+        ("http.response.status_code", "404"),
+        ("error.type", "404"),
+    ] {
+        assert_eq!(attribute(client, key).as_deref(), Some(value), "{key}");
+    }
+    assert!(attribute(client, "server.port").is_some());
+    assert!(
+        client
+            .attributes
+            .iter()
+            .all(|kv| !kv.value.to_string().contains("private")),
+        "no filled path or argument reaches the span"
+    );
+    assert!(matches!(client.status, Status::Error { .. }));
+
+    let requests = server.received_requests().await.expect("requests");
+    let [request] = requests.as_slice() else {
+        panic!("one request: {requests:?}");
+    };
+    let headers = &request.headers;
+    assert_eq!(
+        headers
+            .get_all("traceparent")
+            .iter()
+            .map(|value| value.to_str().expect("ASCII").to_string())
+            .collect::<Vec<_>>(),
+        vec![format!(
+            "00-{}-{}-01",
+            client.span_context.trace_id(),
+            client.span_context.span_id()
+        )]
+    );
+    assert!(headers.get("tracestate").is_none());
+    assert!(headers.get("baggage").is_none());
+}
+
+/// An HTTP dispatch records one exchange by how it ended: a complete
+/// response, whatever its status, with its request and response body
+/// sizes, or a failure without a response.
+#[tokio::test]
+async fn an_http_dispatch_records_its_exchange() {
+    // Installed before the scoped capture, so no thread keeps none.
+    coral_telemetry::testing::process_spans();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind")
+        .local_addr()
+        .expect("address");
+    let server = MockServer::start().await;
+    let response = br#"{"ok": false}"#;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500).set_body_raw(response, "application/json"))
+        .mount(&server)
+        .await;
+    let response_size = f64::from(u32::try_from(response.len()).expect("small"));
+    for (uri, outcome, response_bytes) in [
+        (server.uri(), "response", Some(response_size)),
+        (format!("http://{closed}"), "failed", None),
+    ] {
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let _metrics = tracing::subscriber::set_default(metrics.subscriber());
+        let prepared = ready(&format!(
+            r#"
+openapi: 3.1.0
+info: {{title: Exchange, version: "1"}}
+servers: [{{url: {uri}}}]
+paths:
+  /items:
+    post:
+      operationId: create
+      requestBody:
+        required: true
+        content: {{application/json: {{schema: {{type: object}}}}}}
+      responses:
+        "200": {{description: done}}
+"#
+        ));
+        let dispatch = plan(
+            &prepared,
+            &serde_json::json!({"body": {"mediaType": "application/json", "data": {"name": "x"}}}),
+        );
+        let sent = send(dispatch).await;
+        assert_eq!(sent.is_ok(), outcome == "response", "{uri}");
+        let durations = metrics.named("coral.upstream.duration");
+        let [duration] = durations.as_slice() else {
+            panic!("{uri}: one exchange: {durations:?}");
+        };
+        assert_eq!(
+            duration.attributes.get("outcome").map(String::as_str),
+            Some(outcome),
+            "{uri}"
+        );
+        assert_eq!(
+            duration
+                .attributes
+                .get("provider.protocol")
+                .map(String::as_str),
+            Some("http")
+        );
+        let sizes = |name: &str| {
+            metrics
+                .named(name)
+                .into_iter()
+                .map(|point| point.value)
+                .collect::<Vec<_>>()
+        };
+        // The body the server received; the failed dispatch planned the same.
+        let received = server.received_requests().await.expect("requests");
+        let [request] = received.as_slice() else {
+            panic!("one request reached the server");
+        };
+        assert_eq!(
+            sizes("coral.upstream.request.size"),
+            [f64::from(u32::try_from(request.body.len()).expect("small"))],
+            "{uri}"
+        );
+        assert_eq!(
+            sizes("coral.upstream.response.size"),
+            response_bytes.into_iter().collect::<Vec<_>>(),
+            "{uri}"
         );
     }
 }

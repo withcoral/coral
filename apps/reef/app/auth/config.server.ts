@@ -2,7 +2,8 @@ import { isExplicitLoopbackUrl, isLocalhostSubdomain } from '@/lib/loopback.serv
 import type { AuthConfig, RequiredAuthConfig } from './types'
 
 const DEFAULT_COOKIE_NAME = 'coral_web_session'
-const DEFAULT_SESSION_MAX_AGE_SECONDS = 60 * 60
+// Matches Coral's default refresh_token_ttl_seconds, which also bounds a session.
+const DEFAULT_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 
 // RFC 6265 gives a cookie name the RFC 9110 `token` grammar: letters, digits,
 // and `!#$%&'*+-.^_`|~`. Serialization does not enforce it — a name outside the
@@ -95,6 +96,25 @@ export function providerSetupRedirectUri(config: RequiredAuthConfig): string {
 
 export function authCookieSecure(config: RequiredAuthConfig): boolean {
   return isSecureOrigin(config.publicUrl)
+}
+
+/**
+ * Whether `endpoint` is an absolute HTTP(S) URL on the issuer's own origin,
+ * with no credentials, so nothing Reef sends there can leave the issuer.
+ */
+export function isIssuerEndpoint(endpoint: string, issuer: string): boolean {
+  let url: URL
+  try {
+    url = new URL(endpoint)
+  } catch {
+    return false
+  }
+  return (
+    (url.protocol === 'http:' || url.protocol === 'https:') &&
+    url.origin === new URL(issuer).origin &&
+    !url.username &&
+    !url.password
+  )
 }
 
 /**

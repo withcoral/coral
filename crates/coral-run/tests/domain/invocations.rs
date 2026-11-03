@@ -112,7 +112,7 @@ async fn coral_failure_is_coded_and_durable_before_program_continues() {
     for (argument, message) in [
         (
             r#"{unexpected: "secret-canary"}"#,
-            "Tool arguments are invalid: Tool argument `unexpected` is not declared",
+            "Tool arguments are invalid: Tool argument `unexpected` is not declared. It declares: `city`.",
         ),
         (
             "null",
@@ -175,7 +175,8 @@ async fn builtin_scope(
             &workspace_id,
         )
         .await
-        .expect("install the Built-in Provider");
+        .expect("install the Built-in Provider")
+        .skip_search();
     transaction.commit().await.unwrap();
     (workspace_id, owner)
 }
@@ -661,7 +662,7 @@ async fn upstream_send_holds_no_database_transaction_or_lock() {
     )
     .await
     .expect("policy change must not wait for an upstream-held database lock")
-    .expect("post-fence policy change commits");
+    .expect("post-enforcement policy change commits");
     upstream.release.store(true, Ordering::SeqCst);
 
     let terminal = wait_for_terminal(

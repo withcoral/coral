@@ -24,14 +24,14 @@
 //! subscribes to the content-free change signal and, per coalesced ring and
 //! at most once per wake gap, reads just its pending connection requests in a
 //! snapshot. A periodic snapshot precheck of every parked wait against the
-//! Dispatch Fence's facts finds the waits that ended or became moot without
-//! a wake-up. A wake-up and a precheck are hints; the held recheck and the
-//! fence decide.
+//! Policy Enforcement Point's facts finds the waits that ended or became moot
+//! without a wake-up. A wake-up and a precheck are hints; the held recheck and
+//! the enforcement point decide.
 //!
 //! Row work that must join a chunk (an Invocation's admission, its held
-//! rechecks, the Dispatch Fence, its completion, a decision) implements
-//! [`ChunkWork`]: it runs inside the commit transaction and learns the
-//! chunk's fate once the transaction ends. A chunk commit is one short
+//! rechecks, the Policy Enforcement Point, its completion, a decision)
+//! implements [`ChunkWork`]: it runs inside the commit transaction and learns
+//! the chunk's fate once the transaction ends. A chunk commit is one short
 //! transaction: the Run row read without a hold, the row work, the Events,
 //! the head update that asserts the owner's claim and the head it tracks in
 //! memory, carries the termination intent, and renews its lease.
@@ -48,7 +48,7 @@ mod state;
 
 pub(crate) use chunk::ChunkWork;
 #[cfg(test)]
-pub(crate) use chunk::{CHUNK_WORK_CAP, ChunkBuildView, FENCE_BATCH_CAP};
+pub(crate) use chunk::{CHUNK_WORK_CAP, ChunkBuildView, ENFORCEMENT_BATCH_CAP};
 pub(crate) use handle::{
     Check, DecisionRequest, Message, OwnerHandle, Owners, ParkedWait, StartedExecution, Timer,
 };

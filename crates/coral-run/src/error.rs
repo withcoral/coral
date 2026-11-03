@@ -116,7 +116,7 @@ impl CoralFailure {
             Self::ProviderUnavailable => "Provider is unavailable",
             Self::ProviderNamespaceConflict => "Provider namespace is already in use",
             Self::ProviderNotFound => "Provider was not found",
-            Self::ProviderPublicationFailed => "Coral could not publish the Provider",
+            Self::ProviderPublicationFailed => "Coral could not change the Provider",
             Self::CredentialRouteChanged => "Tool credential route changed",
             Self::AccountRequired => "Tool requires a Provider Account",
             Self::CredentialRefreshFailed => "Tool credential refresh failed",
@@ -190,11 +190,23 @@ impl std::fmt::Display for CoralFailure {
 pub struct Rejection {
     failure: CoralFailure,
     problems: Vec<InputProblem>,
+    /// For `tool_not_found`, the Call Path the Program wrote and the nearest
+    /// Discoverable Call Paths of its Call Root.
+    not_found: Option<NotFound>,
+}
+
+/// A Call Path that names no Tool the caller can call, and what it can call
+/// near it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NotFound {
+    call_path: String,
+    suggestions: Vec<String>,
 }
 
 /// One argument to correct. Coral writes each reason; it never holds a
 /// submitted value, upstream content or a host diagnostic. A field or key name
-/// the Program wrote can appear, since it says what to correct.
+/// the Program wrote can appear, since it says what to correct, and so can the
+/// argument names the Tool declares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InputProblem {
     field: String,
@@ -226,7 +238,34 @@ impl Rejection {
     /// `failure` naming each argument that caused it, such as each Call Path
     /// that names no Tool.
     pub(crate) const fn naming(failure: CoralFailure, problems: Vec<InputProblem>) -> Self {
-        Self { failure, problems }
+        Self {
+            failure,
+            problems,
+            not_found: None,
+        }
+    }
+
+    /// `tool_not_found` for the Call Path the Program wrote, with up to
+    /// three Discoverable Call Paths near it, nearest first. The path is code
+    /// the Program wrote, not a value it submitted, so the message repeats it.
+    pub(crate) fn tool_not_found(call_path: &str, suggestions: Vec<String>) -> Self {
+        Self {
+            failure: CoralFailure::ToolNotFound,
+            problems: Vec::new(),
+            not_found: Some(NotFound {
+                call_path: call_path.to_owned(),
+                suggestions,
+            }),
+        }
+    }
+
+    /// The Call Paths near the one that names no Tool, nearest first; empty
+    /// for every other failure.
+    #[must_use]
+    pub fn suggestions(&self) -> &[String] {
+        self.not_found
+            .as_ref()
+            .map_or(&[], |not_found| not_found.suggestions.as_slice())
     }
 
     /// The durable failure.
@@ -244,6 +283,17 @@ impl Rejection {
     /// Safe, bounded message, naming each argument to correct when Coral knows it.
     #[must_use]
     pub fn message(&self) -> std::borrow::Cow<'static, str> {
+        if let Some(NotFound {
+            call_path,
+            suggestions,
+        }) = &self.not_found
+        {
+            return coral_v8::bounded_diagnostic_message(&unknown_call_path_message(
+                call_path,
+                suggestions,
+            ))
+            .into();
+        }
         let message = match self.problems.as_slice() {
             [] => return self.failure.message().into(),
             [InputProblem { field, reason }] if !field.is_empty() => {
@@ -270,10 +320,36 @@ impl Rejection {
 
 impl From<CoralFailure> for Rejection {
     fn from(failure: CoralFailure) -> Self {
-        Self {
-            failure,
-            problems: Vec::new(),
+        Self::naming(failure, Vec::new())
+    }
+}
+
+/// What a Program reads when `call_path` names no Tool it can call: the
+/// path, cut to the longest a lookup accepts, and what to call instead.
+///
+/// A Program can compute the path, or write a literal segment that holds
+/// any string, so each control character and line separator in it is
+/// escaped and the message stays one line.
+pub(crate) fn unknown_call_path_message(call_path: &str, suggestions: &[String]) -> String {
+    let mut end = call_path.len().min(coral_catalog::SEARCH_PATH_MAX_BYTES);
+    while !call_path.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut written = String::with_capacity(end);
+    for character in call_path.get(..end).unwrap_or_default().chars() {
+        if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
+            written.extend(character.escape_default());
+        } else {
+            written.push(character);
         }
+    }
+    if suggestions.is_empty() {
+        format!("{written} names no Tool that you can call. Find one with coral.workspace.search.")
+    } else {
+        format!(
+            "{written} names no Tool that you can call. Nearest: {}.",
+            suggestions.join(", ")
+        )
     }
 }
 
@@ -307,6 +383,9 @@ pub enum Error {
     /// Compilation exceeded the fixed authoring deadline.
     #[error("Program compilation exceeded the two-second deadline")]
     CompilationTimedOut,
+    /// The compiler queue was full, so the Program was not judged. Retryable.
+    #[error("Program compiler is busy; retry shortly")]
+    CompilerBusy,
     /// The emitted package exceeded a fixed authoring limit.
     #[error("Program package exceeds the {component} limit of {maximum_bytes} bytes")]
     PackageTooLarge {
@@ -398,6 +477,46 @@ pub enum Error {
 }
 
 impl Error {
+    /// The error's stable kind, for an event's `error.type`: a bounded
+    /// code that never carries the error's text.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidInput { .. } => "invalid_input",
+            Self::RunNotFound { .. } => "run_not_found",
+            Self::ApprovalNotFound { .. } => "approval_not_found",
+            Self::ProgramAdmission { .. } => "program_admission",
+            Self::Functions { .. } => "functions",
+            Self::PermissionDenied { .. } => "permission_denied",
+            Self::CompilationTimedOut { .. } => "compilation_timed_out",
+            Self::CompilerBusy { .. } => "compiler_busy",
+            Self::PackageTooLarge { .. } => "package_too_large",
+            Self::ProgramRuntimeUnavailable { .. } => "program_runtime_unavailable",
+            Self::ProgramWorkerStopped { .. } => "program_worker_stopped",
+            Self::Clock { .. } => "clock",
+            Self::IdentifierIssuance { .. } => "identifier_issuance",
+            Self::ProgramValueTooLarge { .. } => "program_value_too_large",
+            Self::InvalidProgramValue { .. } => "invalid_program_value",
+            Self::ProgramValueJson { .. } => "program_value_json",
+            Self::InvocationRejected { .. } => "invocation_rejected",
+            Self::InvocationPersistence { .. } => "invocation_persistence",
+            Self::RunEventPersistence { .. } => "run_event_persistence",
+            Self::ClaimMismatch { .. } => "claim_mismatch",
+            Self::HeadMismatch { .. } => "head_mismatch",
+            Self::RunEnded { .. } => "run_ended",
+            Self::OwnerLost { .. } => "owner_lost",
+            Self::RunRequestNotYetRecorded { .. } => "run_request_not_yet_recorded",
+            Self::ShuttingDown { .. } => "shutting_down",
+            Self::ProgramHostTerminated { .. } => "program_host_terminated",
+            Self::Provider { .. } => "provider",
+            Self::Policy { .. } => "policy",
+            Self::Upstream { .. } => "upstream",
+            Self::Workspace { .. } => "workspace",
+            Self::CorruptData { .. } => "corrupt_data",
+            Self::Database { .. } => "database",
+        }
+    }
+
     /// Whether the database gave no answer to a write (a lost connection, a
     /// pool timeout, a lock or serialization race): the write may or may not
     /// have taken effect, and a reread decides. Every other error, a
@@ -465,6 +584,7 @@ impl Error {
             Self::InvalidInput(_) => "invalid_input",
             Self::ProgramAdmission(_) => "program_admission_failed",
             Self::CompilationTimedOut => "program_compilation_timed_out",
+            Self::CompilerBusy => "program_compiler_busy",
             Self::PackageTooLarge { .. } => "program_package_too_large",
             Self::Functions(error) => return error.safe_rejection(),
             Self::PermissionDenied(_) => "permission_denied",
@@ -549,6 +669,27 @@ mod tests {
             Some(CoralFailure::ResultTooLarge)
         );
         assert_eq!(CoralFailure::from_code("unknown"), None);
+    }
+
+    // Catches: a Call Path a Program computed, or wrote as a literal
+    // segment, putting a line break or another control character into the
+    // durable ToolError message or an admission refusal.
+    #[test]
+    fn a_call_path_names_its_control_characters_escaped() {
+        let rejection = super::Rejection::tool_not_found(
+            "coral.providers.notion.retrieve\nPage\u{1b}[31m\u{2028}",
+            vec!["coral.providers.notion.retrieveAPage".to_owned()],
+        );
+        assert_eq!(
+            rejection.message(),
+            "coral.providers.notion.retrieve\\nPage\\u{1b}[31m\\u{2028} names no Tool \
+             that you can call. Nearest: coral.providers.notion.retrieveAPage."
+        );
+        assert_eq!(
+            super::Rejection::tool_not_found("coral.providers.a\tb", Vec::new()).message(),
+            "coral.providers.a\\tb names no Tool that you can call. Find one with \
+             coral.workspace.search."
+        );
     }
 
     #[test]

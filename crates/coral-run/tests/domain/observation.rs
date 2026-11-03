@@ -80,6 +80,53 @@ async fn internal_invocations_do_not_end_waits_and_initial_wait_batches_authored
     );
 }
 
+/// A Program that logs while it runs does not end a batching wait, and the
+/// wait still returns the Logs that arrived by the time it ran out.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_batching_wait_does_not_end_on_a_log() {
+    let upstream = SequencedUpstream::new(HttpOutcome::new(200, serde_json::json!({})));
+    let fixture = TestModules::with_upstream(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        upstream.clone(),
+    )
+    .await;
+    let tool = fixture
+        .user_tool("user:batched-wait", "Batched waits")
+        .await;
+    let actor = &tool.principal;
+    let workspace = &tool.workspace_id;
+    let accepted = fixture
+        .runs
+        .start(
+            actor,
+            workspace,
+            submission(
+                "console.log('first'); console.log('second'); await coral.providers.weather.getForecast({}); return 7;",
+            ),
+        )
+        .await
+        .unwrap();
+    upstream.until_sent(1).await;
+    let wait = Duration::from_millis(300);
+    let started = tokio::time::Instant::now();
+    let update = fixture
+        .runs
+        .observe(
+            actor,
+            workspace,
+            accepted.run_id(),
+            &immediate(Some(accepted.next_cursor().clone()), 100)
+                .batching_output()
+                .with_wait(wait)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(started.elapsed() >= wait, "{:?}", started.elapsed());
+    assert!(!update.state().is_terminal());
+    assert_eq!(update.events().len(), 2);
+}
+
 /// An agent that omits the cursor gets the earlier output back, but only later output ends its wait.
 #[tokio::test(flavor = "multi_thread")]
 async fn cursorless_wait_replays_earlier_output_and_ends_only_on_later_output() {
@@ -302,4 +349,136 @@ async fn waiting_observation_falls_back_to_polling_during_a_notification_outage(
         .expect("polling observes the decision")
         .expect("an outage does not fail the wait");
     assert!(update.required_actions().is_empty());
+}
+
+/// A Program that threw gets the shapes of the Tool Results it received with
+/// its failure, on the final page only. Other failures, and a Program that
+/// received no Tool Result, get none.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_thrown_program_gets_the_shapes_of_its_tool_results_with_its_failure() {
+    let fixture = TestModules::with_upstream(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        Arc::new(ScriptedUpstream::json(
+            200,
+            serde_json::json!({"items": [{"id": "c0ral-1"}, {"id": 2, "next": null}]}),
+        )),
+    )
+    .await;
+    let tool = fixture
+        .user_tool("user:result-shapes", "Result shapes")
+        .await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    let shape = (
+        "coral.providers.weather.getForecast".to_string(),
+        2,
+        "{ items: Array<{ id: string | number; next?: null }> }".to_string(),
+    );
+    for (program, expected) in [
+        (
+            "await coral.emit(1); await coral.emit(2); await coral.providers.weather.getForecast({}); await coral.providers.weather.getForecast({}); throw new Error('guessed');",
+            Some(vec![shape]),
+        ),
+        (
+            "await coral.emit(1); await coral.emit(2); throw new Error('no Tool');",
+            None,
+        ),
+        (
+            "await coral.emit(1); await coral.emit(2); await coral.providers.weather.getForecast({}); return { toJSON() { throw new Error('unserializable'); } };",
+            None,
+        ),
+    ] {
+        let accepted = fixture
+            .runs
+            .start(actor, workspace, submission(program))
+            .await
+            .unwrap();
+        wait_for_terminal(&fixture.runs, actor, workspace, accepted.run_id()).await;
+        let first = fixture
+            .runs
+            .observe(actor, workspace, accepted.run_id(), &immediate(None, 1))
+            .await
+            .unwrap();
+        assert!(first.has_more(), "{program}");
+        assert_eq!(first.tool_result_shapes(), None, "{program}");
+        let last = fixture
+            .runs
+            .observe(
+                actor,
+                workspace,
+                accepted.run_id(),
+                &immediate(Some(first.next_cursor().clone()), 1),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(last.terminal_outcome(), Some(RunTerminalOutcome::Failed(_))),
+            "{program}"
+        );
+        let shapes = last.tool_result_shapes().map(|shapes| {
+            assert_eq!(shapes.unsketched(), 0);
+            shapes
+                .shapes()
+                .iter()
+                .map(|shape| {
+                    (
+                        shape.call_path().to_string(),
+                        shape.invocations(),
+                        shape.data().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(shapes, expected, "{program}");
+    }
+}
+
+/// Reading the shapes parses a bounded number of retained bytes: the latest
+/// Tool Results that fit, newest first. A result too large to fit is left
+/// undescribed and counted, so the failure read stays cheap however large
+/// the Tool Results were.
+#[tokio::test(flavor = "multi_thread")]
+async fn shapes_read_only_the_latest_tool_results_that_fit_the_read_budget() {
+    let large =
+        "x".repeat(usize::try_from(crate::tool_result_shape::RESULTS_READ_MAX_BYTES).unwrap());
+    let fixture = TestModules::with_upstream(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        Arc::new(RotatingUpstream::json([
+            serde_json::json!({"items": []}),
+            serde_json::json!({"blob": large}),
+            serde_json::json!({"next": null}),
+        ])),
+    )
+    .await;
+    let tool = fixture
+        .user_tool("user:result-budget", "Result budget")
+        .await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    let accepted = fixture
+        .runs
+        .start(
+            actor,
+            workspace,
+            submission(
+                "for (let i = 0; i < 3; i++) await coral.providers.weather.getForecast({}); throw new Error('guessed');",
+            ),
+        )
+        .await
+        .unwrap();
+    wait_for_terminal(&fixture.runs, actor, workspace, accepted.run_id()).await;
+    let last = fixture
+        .runs
+        .observe(actor, workspace, accepted.run_id(), &immediate(None, 100))
+        .await
+        .unwrap();
+    assert!(!last.has_more());
+    let shapes = last
+        .tool_result_shapes()
+        .expect("the Program received results");
+    let sketched: Vec<_> = shapes
+        .shapes()
+        .iter()
+        .map(|shape| (shape.invocations(), shape.data()))
+        .collect();
+    assert_eq!(sketched, [(1, "{ items: [] }"), (1, "{ next: null }")]);
+    assert_eq!(shapes.unsketched(), 1);
 }

@@ -1,7 +1,5 @@
 use std::collections::HashSet;
-use std::fmt;
 
-use base64::Engine as _;
 use coral_catalog::{ToolHints, ToolPresentation};
 pub use coral_provider::ProviderId;
 pub use coral_provider::access::ProviderCallRoot;
@@ -22,8 +20,6 @@ pub const SEARCH_DEFAULT_LIMIT: u16 = 10;
 pub const SEARCH_RESULT_LIMIT_MAX: u16 = 50;
 /// Conservative transport-neutral response budget for one search page.
 pub const SEARCH_PAGE_MAX_BYTES: usize = 2 * 1024 * 1024;
-/// Maximum accepted opaque cursor size.
-pub const SEARCH_CURSOR_MAX_BYTES: usize = 8 * 1024;
 /// Maximum metadata field names retained as evidence for one match.
 pub const SEARCH_EVIDENCE_FIELDS_MAX: usize = 16;
 /// Maximum declaration paths retained as evidence for one match.
@@ -94,59 +90,13 @@ impl Default for SearchLimit {
     }
 }
 
-/// Opaque query-bound Universal Search continuation state.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchCursor(String);
-
-impl SearchCursor {
-    /// Strictly validates one canonical unpadded base64url cursor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidCursor`] for empty, oversized, noncanonical, or
-    /// malformed data.
-    pub fn parse(value: &str) -> Result<Self, Error> {
-        if value.is_empty()
-            || value.len() > SEARCH_CURSOR_MAX_BYTES
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        {
-            return Err(Error::InvalidCursor);
-        }
-        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(value)
-            .map_err(|_error| Error::InvalidCursor)?;
-        if base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(decoded) != value {
-            return Err(Error::InvalidCursor);
-        }
-        Ok(Self(value.to_string()))
-    }
-
-    pub(crate) fn encoded(value: &str) -> Result<Self, Error> {
-        Self::parse(value)
-    }
-
-    /// Returns the opaque transport value.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for SearchCursor {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
 /// One bounded Universal Search request.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchRequest {
     query: Option<SearchQuery>,
     provider: Option<ProviderCallRoot>,
     limit: SearchLimit,
-    cursor: Option<SearchCursor>,
+    offset: u32,
 }
 
 /// Unvalidated operation input. The owner validates this after attributed admission begins.
@@ -159,8 +109,9 @@ pub struct SearchInput {
     pub provider: Option<String>,
     /// Optional requested page size.
     pub limit: Option<u16>,
-    /// Optional continuation from an earlier page.
-    pub cursor: Option<String>,
+    /// Optional count of ranked results to skip: the `next_offset` of an
+    /// earlier page. Absent for the first page.
+    pub offset: Option<u32>,
 }
 
 impl TryFrom<SearchInput> for SearchRequest {
@@ -176,8 +127,8 @@ impl TryFrom<SearchInput> for SearchRequest {
         if let Some(limit) = input.limit {
             request = request.with_limit(SearchLimit::parse(limit)?);
         }
-        if let Some(cursor) = input.cursor {
-            request = request.with_cursor(SearchCursor::parse(&cursor)?);
+        if let Some(offset) = input.offset {
+            request = request.with_offset(offset);
         }
         Ok(request)
     }
@@ -239,10 +190,11 @@ impl SearchRequest {
         self
     }
 
-    /// Continues one exactly matching prior request.
+    /// Starts the page after this many ranked results. An offset past the
+    /// end gives an empty final page.
     #[must_use]
-    pub fn with_cursor(mut self, cursor: SearchCursor) -> Self {
-        self.cursor = Some(cursor);
+    pub const fn with_offset(mut self, offset: u32) -> Self {
+        self.offset = offset;
         self
     }
 
@@ -264,10 +216,10 @@ impl SearchRequest {
         self.limit
     }
 
-    /// Returns optional opaque continuation state.
+    /// Returns how many ranked results the page skips; 0 for the first page.
     #[must_use]
-    pub const fn cursor(&self) -> Option<&SearchCursor> {
-        self.cursor.as_ref()
+    pub const fn offset(&self) -> u32 {
+        self.offset
     }
 }
 
@@ -335,6 +287,16 @@ pub enum EntityKind {
     ProviderTool,
     /// One current Principal-owned Saved Function.
     SavedFunction,
+}
+
+impl EntityKind {
+    /// The kind's stable name, as search results and telemetry spell it.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProviderTool => "provider_tool",
+            Self::SavedFunction => "saved_function",
+        }
+    }
 }
 
 /// Current approval fact exposed for one visible Tool.
@@ -896,22 +858,19 @@ impl RetrieverStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchPage {
     hits: Vec<SearchHit>,
-    next_cursor: Option<SearchCursor>,
-    has_more: bool,
+    next_offset: Option<u32>,
     retriever_statuses: Vec<RetrieverStatus>,
 }
 
 impl SearchPage {
     pub(crate) const fn new(
         hits: Vec<SearchHit>,
-        next_cursor: Option<SearchCursor>,
-        has_more: bool,
+        next_offset: Option<u32>,
         retriever_statuses: Vec<RetrieverStatus>,
     ) -> Self {
         Self {
             hits,
-            next_cursor,
-            has_more,
+            next_offset,
             retriever_statuses,
         }
     }
@@ -928,16 +887,11 @@ impl SearchPage {
         &self.hits
     }
 
-    /// Returns opaque continuation state when current results remain.
+    /// Returns the offset of the next page while the current result universe
+    /// has another candidate.
     #[must_use]
-    pub const fn next_cursor(&self) -> Option<&SearchCursor> {
-        self.next_cursor.as_ref()
-    }
-
-    /// Returns whether the current result universe has another candidate.
-    #[must_use]
-    pub const fn has_more(&self) -> bool {
-        self.has_more
+    pub const fn next_offset(&self) -> Option<u32> {
+        self.next_offset
     }
 }
 

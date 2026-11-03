@@ -1,10 +1,13 @@
 //! Complete bounded HTTP response capture and decoding.
 
 use coral_catalog::{HttpExecutionBinding, HttpRedirectPolicy, SchemaGraph, SuccessSelection};
+use coral_telemetry::safe;
 use serde_json::Value;
+use tracing::Instrument as _;
 use url::Url;
 
 use super::response_headers::{CredentialNames, safe_response_headers};
+use crate::span_field::{self, Declared};
 use crate::{
     Error, OutcomeClass, ReadyHttpDispatch, is_json_media_type, media_type_essence,
     read_bounded_body,
@@ -211,15 +214,40 @@ impl HttpUpstream {
     ///
     /// Returns only when no complete response was received or the complete
     /// response crossed its finite size bound.
+    pub async fn send(&self, dispatch: ReadyHttpDispatch) -> Result<HttpOutcome, Error> {
+        // A dispatch missing its credential sends nothing.
+        if dispatch.credential_contract != coral_catalog::ProviderCredentialContract::NONE
+            && dispatch.credentials.is_empty()
+            && dispatch.query_credentials.is_empty()
+        {
+            return Err(Error::CredentialRequired);
+        }
+        let measure = crate::exchange::ExchangeMeasure::start(
+            coral_telemetry::metric::ProviderProtocol::Http,
+        );
+        if let Some(body) = &dispatch.body {
+            measure.bytes().sent(body.len());
+        }
+        let sent = self.exchange(dispatch, measure.bytes()).await;
+        measure.end(sent.as_ref().map(|_outcome| ()));
+        sent
+    }
+
+    /// [`Self::send`], adding the body of the response it reads to
+    /// `bytes`.
     #[expect(
         clippy::too_many_lines,
         reason = "one bounded protocol-continuation loop owns credential stripping and complete response capture"
     )]
-    pub async fn send(&self, dispatch: ReadyHttpDispatch) -> Result<HttpOutcome, Error> {
+    async fn exchange(
+        &self,
+        dispatch: ReadyHttpDispatch,
+        bytes: &crate::exchange::ExchangeBytes,
+    ) -> Result<HttpOutcome, Error> {
         let ReadyHttpDispatch {
             mut credentials,
             mut query_credentials,
-            credential_contract,
+            credential_contract: _credential_contract,
             mut method,
             mut url,
             mut headers,
@@ -231,12 +259,6 @@ impl HttpUpstream {
             schema_graph,
             limits,
         } = dispatch;
-        if credential_contract != coral_catalog::ProviderCredentialContract::NONE
-            && credentials.is_empty()
-            && query_credentials.is_empty()
-        {
-            return Err(Error::CredentialRequired);
-        }
         // Kept past a cross-origin redirect: a later service may still echo them.
         let credential_names = CredentialNames::new(&credentials, &query_credentials);
         let mut redirects = Vec::new();
@@ -265,8 +287,27 @@ impl HttpUpstream {
             if let Some(body) = &body {
                 request = request.body(body.clone());
             }
-            let mut response = request.send().await.map_err(Error::send)?;
+            // Only the first request follows the route template; a redirect
+            // target has none.
+            let span = client_span(
+                &method,
+                &url,
+                redirects
+                    .is_empty()
+                    .then(|| Declared::path_template(&binding)),
+                body.as_ref().map(Vec::len),
+            );
+            let request = crate::traced(request, &span)?;
+            let mut response = request
+                .send()
+                .instrument(span.clone())
+                .await
+                .map_err(Error::send)?;
             let status = response.status().as_u16();
+            span.record("http.response.status_code", safe::number(status));
+            if status >= 400 {
+                coral_telemetry::record_failure(&span, safe::http_status_code(status));
+            }
             if binding.redirect_policy() == HttpRedirectPolicy::Follow
                 && redirects.len() < MAX_REDIRECTS
                 && let Some(next_method) = redirect_method(status, &method)
@@ -328,6 +369,8 @@ impl HttpUpstream {
                 content_length_describes_body,
             )
             .await?;
+            span.record("http.response.body.size", safe::number(response_body.len()));
+            bytes.received(response_body.len());
             let content_type =
                 selected_decode_facts(&binding, status, !response_body.is_empty(), content_type);
             let (data, decode_diagnostics) = decode_response_body(
@@ -628,4 +671,29 @@ fn push_diagnostic(
     if !diagnostics.iter().any(|diagnostic| diagnostic.code == code) {
         diagnostics.push(HttpDecodeDiagnostic::new(code, message));
     }
+}
+
+/// The OpenTelemetry HTTP client span of one request: method, scheme,
+/// server address and port, the route `template` when the request follows
+/// one, and sizes. Never the full URL, a filled path, a query or a header.
+fn client_span(
+    method: &reqwest::Method,
+    url: &url::Url,
+    template: Option<Declared<'_>>,
+    request_body_size: Option<usize>,
+) -> tracing::Span {
+    tracing::info_span!(
+        "http.client",
+        otel.name = safe::http_span_name(method, template.as_ref()),
+        otel.kind = "client",
+        http.request.method = safe::http_method(method),
+        url.scheme = safe::kind(span_field::scheme(url)),
+        server.address = span_field::host(url).as_ref().map(safe::id),
+        server.port = url.port_or_known_default().map(safe::number),
+        url.template = template.as_ref().map(safe::id),
+        http.request.body.size = request_body_size.map(safe::number),
+        http.response.status_code = tracing::field::Empty,
+        http.response.body.size = tracing::field::Empty,
+        error.type = tracing::field::Empty,
+    )
 }

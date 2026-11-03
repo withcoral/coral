@@ -1,25 +1,29 @@
-//! Indexing a Provider Generation through `SearchIndex`.
+//! Indexing Provider Generations and Saved Functions through `SearchIndex`.
 //!
 //! Every test publishes through the real Provider Module, then either notifies
 //! `SearchIndex` with the Generation's ids, as publication does after its
-//! commit, or lets a reconcile pass find the Generation. Until the read
-//! side lands, the tests observe the index
-//! through a test-only read of the search-owned tables: membership, text
-//! columns, and state, never counts, scores, or weights.
+//! commit, or lets a reconcile pass find the Generation. The tests observe the
+//! index through a test-only read of the search-owned tables: membership, text
+//! columns, and state, never scores or weights. A test of what a reader sees
+//! asks the real search.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use coral_db::DatabaseSystem;
-use coral_provider::GenerationEntries;
+use coral_provider::{ActiveGeneration, GenerationEntries};
+use coral_telemetry::testing::{SpanCapture, attribute};
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
+use opentelemetry::trace::SpanId;
+use opentelemetry_sdk::trace::SpanData;
 use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
 use tracing_subscriber::layer::SubscriberExt as _;
 use wiremock::MockServer;
 
 use super::{TestModules, change, organization_user};
-use crate::SearchIndex;
 use crate::indexer::INDEXER_REVISION;
+use crate::indexer::tools::ToolIndexer;
+use crate::{SearchIndex, SearchQuery, SearchRequest};
 
 const USER: &str = "user:search-index";
 
@@ -28,6 +32,489 @@ const INJECTED_FAULT: &str = "injected index fault";
 /// The reconcile interval of the tests' index: long enough that a `failed`
 /// state a test just wrote is newer than it.
 const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(5);
+
+#[tokio::test]
+async fn indexing_reports_visibility_lag_once_and_backlog_includes_failed_retries() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    world.reject_complete_states().await;
+    world.reconcile_and_settle().await;
+    // Start sampling only after the failed attempt has committed its state.
+    let background = world.index.spawn_reconcile_task();
+    let backlog = || {
+        metrics
+            .named("coral.search.index.backlog")
+            .iter()
+            .map(|point| point.value)
+            .sum::<f64>()
+    };
+    wait_for_observation(|| backlog() >= 1.0).await;
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .is_empty(),
+        "a failed commit reports no visibility"
+    );
+    world.reconcile_and_settle().await;
+    assert!(backlog() >= 1.0, "a retry not yet due is still backlog");
+    world.allow_complete_states().await;
+    world.make_retries_due().await;
+    world.reconcile_and_settle().await;
+    wait_for_observation(|| {
+        !metrics.named("coral.search.index.backlog").is_empty() && backlog() < 1.0
+    })
+    .await;
+    let samples = || {
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .iter()
+            .map(|point| point.count)
+            .sum::<u64>()
+    };
+    let first = samples();
+    assert!(first > 0);
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .iter()
+            .all(|point| point.attributes.get("outcome").map(String::as_str) == Some("retried"))
+    );
+    world.reconcile_and_settle().await;
+    assert_eq!(
+        samples(),
+        first,
+        "an unchanged pass does not repeat publication latency"
+    );
+    background.abort();
+    let _stopped = background.await;
+}
+
+#[tokio::test]
+async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() {
+    for rename in [true, false] {
+        let upstream = MockServer::start().await;
+        let world = World::publish_tracer(&upstream).await;
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let _measured = tracing::subscriber::set_default(metrics.subscriber());
+        world.reconcile_and_settle().await;
+        let visibility = || metrics.named("coral.search.publication.visibility.duration");
+        let recovery = || metrics.named("coral.search.index.recovery.duration");
+        let samples = || visibility().iter().map(|point| point.count).sum::<u64>();
+        let first = samples();
+        assert!(first > 0);
+        assert!(
+        visibility()
+            .iter()
+            .all(|point| point.attributes.get("outcome").map(String::as_str) == Some("initial"))
+    );
+
+        // An older writer can complete a projection without clearing the new
+        // outage column. The current complete state must remain authoritative.
+        world.set_outage_start(1).await;
+        // Exercise a real complete rewrite, not a reconcile pass that skips it.
+        world
+            .index
+            .index_active_generation(world.workspace.clone(), world.tracer.clone());
+        world.index.settled().await;
+        assert_eq!(samples(), first);
+
+        assert!(recovery().is_empty());
+        world.set_outage_start(1).await;
+
+        if rename {
+            world
+                .modules
+                .providers
+                .rename_provider(
+                    &change(world.user.clone(), 70, '7'),
+                    &world.workspace,
+                    &world.tracer,
+                    coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
+                )
+                .await
+                .unwrap()
+                .skip_search();
+        } else {
+            world
+                .modules
+                .fixture
+                .execute_fixture_sql(
+                    "UPDATE search_index_states SET indexer_revision = 0 WHERE kind = 'provider_tool'",
+                )
+                .await
+                .unwrap();
+        }
+        world.reject_complete_states().await;
+        world.reconcile_and_settle().await;
+        let states = world.search_index_states(Some(&world.tracer)).await;
+        assert!(
+            matches!(
+                states.get(&world.tracer),
+                Some(crate::SearchIndexState::Failed { .. })
+            ),
+            "rebuild failed: {states:?}"
+        );
+        let background = world.index.spawn_reconcile_task();
+        wait_for_observation(|| {
+            !metrics
+                .named("coral.search.index.first_visibility.age")
+                .is_empty()
+        })
+        .await;
+        assert!(
+            metrics
+                .values("coral.search.index.first_visibility.age")
+                .iter()
+                .all(|age| *age < 0.001),
+            "a previously visible catalog is not awaiting first visibility"
+        );
+        assert!(
+            metrics
+                .values("coral.search.index.backlog")
+                .iter()
+                .any(|count| *count >= 1.0),
+            "rebuild remains backlog (rename: {rename})"
+        );
+        background.abort();
+        let _stopped = background.await;
+
+        // Repeated failures retain the original outage clock.
+        let five_seconds_ago = crate::unix_now_nanos().unwrap() - 5_000_000_000;
+        world.set_outage_start(five_seconds_ago).await;
+        world.make_retries_due().await;
+        world.reconcile_and_settle().await;
+        // A fresh index handle reads the durable history on recovery.
+        world.allow_complete_states().await;
+        world.make_retries_due().await;
+        let restarted = SearchIndex::new(world.modules.search.database.clone(), RECONCILE_INTERVAL);
+        restarted.reconcile().await;
+        restarted.settled().await;
+        assert_eq!(samples(), first);
+        let recovery = recovery();
+        assert!(!recovery.is_empty());
+        assert!(
+            recovery
+                .iter()
+                .all(|point| point.value >= 5.0 && point.value < 60.0),
+            "recovery measures this outage rather than the original publication's age"
+        );
+    }
+}
+
+#[tokio::test]
+async fn upgrading_preserves_visibility_even_when_an_older_writer_later_records_failure() {
+    let upstream = MockServer::start().await;
+    let modules = TestModules::with_plan(&coral_test_support::migration_plan_before(48)).await;
+    let world = World::publish_with_modules(modules, &upstream).await;
+    world.modules.fixture.execute_fixture_sql(
+        "INSERT INTO search_index_states (workspace_id, target_id, kind, provider_id, provider_generation_id, provider_display_name, state, attempted_at_unix_nanos, indexer_revision) SELECT workspace_id, active_generation_id, 'provider_tool', id, active_generation_id, display_name, 'complete', 1, 1 FROM provider_records WHERE active_generation_id IS NOT NULL"
+    ).await.unwrap();
+    world
+        .modules
+        .search
+        .database
+        .migrate(coral_db::migration_plan())
+        .await
+        .unwrap();
+    // An older writer updates only columns it knows. Backfilled visibility
+    // survives, but no precise outage clock can be invented for that writer.
+    world.modules.fixture.execute_fixture_sql(&format!(
+        "UPDATE search_index_states SET state = 'failed', error = 'older writer', failed_attempts = 1, retry_after_unix_nanos = 9223372036854775807, failed_coral_version = '{}' WHERE kind = 'provider_tool'", env!("CARGO_PKG_VERSION")
+    )).await.unwrap();
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let background = world.index.spawn_reconcile_task();
+    wait_for_observation(|| {
+        !metrics
+            .named("coral.search.index.first_visibility.age")
+            .is_empty()
+    })
+    .await;
+    assert!(
+        metrics
+            .values("coral.search.index.first_visibility.age")
+            .iter()
+            .all(|value| value.abs() < f64::EPSILON)
+    );
+    assert!(
+        metrics
+            .values("coral.search.index.backlog")
+            .iter()
+            .any(|value| *value >= 1.0)
+    );
+    background.abort();
+    let _stopped = background.await;
+    world
+        .index
+        .index_active_generation(world.workspace.clone(), world.tracer.clone());
+    world.index.settled().await;
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .is_empty()
+    );
+    assert!(
+        metrics
+            .named("coral.search.index.recovery.duration")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn legacy_failed_projections_keep_visibility_unknown_until_a_successful_commit() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world.reject_complete_states().await;
+    world.reconcile_and_settle().await;
+    // Older releases left failed rows without first-visibility evidence.
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql(
+            "UPDATE search_index_states SET ever_visible = NULL WHERE state = 'failed'",
+        )
+        .await
+        .unwrap();
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let background = world.index.spawn_reconcile_task();
+    wait_for_observation(|| !metrics.named("coral.search.index.backlog").is_empty()).await;
+    assert!(
+        metrics
+            .values("coral.search.index.backlog")
+            .iter()
+            .any(|value| *value >= 1.0)
+    );
+    assert!(
+        metrics
+            .named("coral.search.index.first_visibility.age")
+            .is_empty()
+    );
+    background.abort();
+    let _stopped = background.await;
+    world.allow_complete_states().await;
+    world.make_retries_due().await;
+    world.reconcile_and_settle().await;
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .is_empty(),
+        "unknown history must not invent first visibility"
+    );
+    assert!(
+        metrics
+            .named("coral.search.index.recovery.duration")
+            .is_empty(),
+        "unknown history must not invent an outage start"
+    );
+    let restarted = SearchIndex::new(world.modules.search.database.clone(), RECONCILE_INTERVAL);
+    let background = restarted.spawn_reconcile_task();
+    wait_for_observation(|| {
+        !metrics
+            .named("coral.search.index.first_visibility.age")
+            .is_empty()
+    })
+    .await;
+    assert!(
+        metrics
+            .values("coral.search.index.first_visibility.age")
+            .iter()
+            .all(|value| value.abs() < f64::EPSILON)
+    );
+    background.abort();
+    let _stopped = background.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn backlog_sampling_continues_while_synchronous_index_work_is_held() {
+    let upstream = MockServer::start().await;
+    let mut world = World::publish_tracer(&upstream).await;
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let hold = world.index.hold_row_building();
+    let background = world.index.spawn_reconcile_task();
+    tokio::time::timeout(std::time::Duration::from_secs(5), hold.entered())
+        .await
+        .expect("row work starts");
+    // Any snapshot taken before the hold is now too old to satisfy this.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let fresh = eventually(std::time::Duration::from_secs(2), async || {
+        metrics
+            .values("coral.search.index.backlog.sample.age")
+            .iter()
+            .any(|age| *age < 0.15)
+    })
+    .await;
+    drop(hold);
+    background.abort();
+    let _stopped = background.await;
+    assert!(
+        fresh,
+        "synchronous reconciliation cannot stop the observer from refreshing"
+    );
+}
+
+#[tokio::test]
+async fn an_observer_panic_does_not_stop_reconciliation_and_the_observer_restarts() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE search_index_states RENAME TO unavailable_index_states")
+        .await
+        .unwrap();
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let logs = CapturedLogs::default();
+    let armed = Arc::new(AtomicBool::new(true));
+    let _measured = tracing::subscriber::set_default(
+        tracing_subscriber::Registry::default()
+            .with(metrics.layer())
+            .with(logs.clone())
+            .with(PanicObserverOnce(armed.clone())),
+    );
+    let index = SearchIndex::new(
+        world.modules.search.database.clone(),
+        std::time::Duration::from_millis(20),
+    );
+    let background = index.spawn_reconcile_task();
+    wait_for_observation(|| !armed.load(Ordering::SeqCst)).await;
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE unavailable_index_states RENAME TO search_index_states")
+        .await
+        .unwrap();
+    let reconciled = eventually(std::time::Duration::from_secs(5), async || {
+        let states = world.search_index_states(Some(&world.tracer)).await;
+        matches!(
+            states.get(&world.tracer),
+            Some(crate::SearchIndexState::Indexed)
+        )
+    })
+    .await;
+    if reconciled {
+        wait_for_observation(|| !metrics.named("coral.search.index.backlog").is_empty()).await;
+    }
+    background.abort();
+    let _stopped = background.await;
+    assert!(reconciled, "observer failure must not stop reconciliation");
+    assert!(
+        logs.events()
+            .iter()
+            .any(|event| event.fields.get("error.type").map(String::as_str)
+                == Some("\"background_task_panicked\"")
+                && event
+                    .fields
+                    .get("coral.search.background.task")
+                    .map(String::as_str)
+                    == Some("\"observer\"")),
+        "the supervisor identifies the task and safe failure kind"
+    );
+}
+
+/// Fault injection at the subscriber boundary, as an exporter or layer can
+/// panic while handling a real failed snapshot. No production panic hook.
+struct PanicObserverOnce(Arc<std::sync::atomic::AtomicBool>);
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for PanicObserverOnce {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _context: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if event.metadata().target().ends_with("index::telemetry")
+            && self.0.swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            panic!("injected observer subscriber failure");
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_unreadable_backlog_reports_unknown_and_recovers_after_the_next_snapshot() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let logs = CapturedLogs::default();
+    let _measured = tracing::subscriber::set_default(
+        tracing_subscriber::Registry::default()
+            .with(metrics.layer())
+            .with(logs.clone()),
+    );
+    let background = world.index.spawn_reconcile_task();
+    world.reconcile_and_settle().await;
+    wait_for_observation(|| !metrics.named("coral.search.index.backlog").is_empty()).await;
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE search_index_states RENAME TO unavailable_index_states")
+        .await
+        .unwrap();
+    world.reconcile_and_settle().await;
+    wait_for_observation(|| metrics.named("coral.search.index.backlog").is_empty()).await;
+    assert!(
+        metrics
+            .named("coral.search.index.first_visibility.age")
+            .is_empty()
+    );
+    assert!(
+        logs.events()
+            .iter()
+            .any(|event| event.target.ends_with("index::telemetry")
+                && event.fields.get("error.type").map(String::as_str) == Some("\"database\"")),
+        "the missing snapshot has a safe diagnostic reason"
+    );
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE unavailable_index_states RENAME TO search_index_states")
+        .await
+        .unwrap();
+    world.reconcile_and_settle().await;
+    wait_for_observation(|| !metrics.named("coral.search.index.backlog").is_empty()).await;
+    assert!(
+        metrics
+            .named("coral.search.index.backlog")
+            .iter()
+            .all(|point| point.value < 1.0)
+    );
+    assert!(
+        !metrics.named("coral.search.index.backlog").is_empty(),
+        "a successful empty snapshot is a known zero"
+    );
+    background.abort();
+    let _stopped = background.await;
+    wait_for_observation(|| metrics.named("coral.search.index.backlog").is_empty()).await;
+    assert!(
+        metrics
+            .named("coral.search.index.backlog.sample.age")
+            .is_empty(),
+        "a stopped observer must not keep publishing its last snapshot"
+    );
+}
+
+async fn wait_for_observation(ready: impl Fn() -> bool) {
+    assert!(
+        eventually(std::time::Duration::from_secs(5), async || ready()).await,
+        "background backlog observation converges"
+    );
+}
+
+/// Checks `ready` every 10 ms until it holds or `limit` passes, and answers
+/// whether it held: what a background write or observation leaves shows a
+/// moment after the call that starts it returns.
+async fn eventually(limit: std::time::Duration, mut ready: impl AsyncFnMut() -> bool) -> bool {
+    tokio::time::timeout(limit, async {
+        while !ready().await {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok()
+}
 
 #[tokio::test]
 async fn one_reconcile_pass_indexes_a_published_generation_and_a_second_changes_nothing() {
@@ -66,6 +553,183 @@ async fn one_reconcile_pass_indexes_a_published_generation_and_a_second_changes_
         versions,
         "a second pass writes no row"
     );
+}
+
+/// `SQLite` writers queue in arrival order for one connection, so a pass that
+/// took the writer to find nothing would hold back every write in the process
+/// on each interval.
+#[tokio::test]
+async fn a_pass_that_finds_nothing_to_do_does_not_wait_for_the_writer() {
+    coral_test_support::database_only!(Sqlite);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world.index.reconcile().await;
+
+    let writer = world.modules.search.database.begin().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), world.index.reconcile())
+        .await
+        .expect("a pass with nothing to do reads and returns");
+    writer.rollback().await.unwrap();
+}
+
+/// A pass reads what is stale at its start, and under load the notifications
+/// for the same Generations arrive while it writes. Neither side may index a
+/// Generation the other just finished: the repeat would queue for the writer
+/// again and lengthen the backlog that made the two overlap.
+#[tokio::test]
+async fn a_pass_and_its_overlapping_notifications_index_each_generation_once() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let tracer_entries = world.stored_entries(&world.tracer).await;
+    let ledger_entries = world.stored_entries(&ledger).await;
+    let index = world
+        .index
+        .clone()
+        .with_stall_before_write(std::time::Duration::from_millis(50));
+
+    let spans = CapturedSpans::default();
+    {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(spans.clone()),
+        );
+        tokio::join!(index.reconcile(), async {
+            notify(&index, &tracer_entries);
+            notify(&index, &ledger_entries);
+        });
+        index.settled().await;
+    }
+
+    let writes = spans
+        .recorded()
+        .into_iter()
+        .filter(|span| span.fields.contains_key("coral.search.writer_wait_ms"))
+        .count();
+    assert_eq!(writes, 2, "one write per Generation");
+    assert_eq!(world.indexed_generations().await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_notice_for_an_indexed_generation_writes_nothing() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let entries = world.stored_entries(&world.tracer).await;
+    world.index.reconcile().await;
+
+    let write = world.traced_notice(|index| notify(index, &entries)).await;
+
+    assert_eq!(
+        attribute(&write, "coral.search.skipped").as_deref(),
+        Some("already_indexed")
+    );
+}
+
+/// A pass reads its stale functions once and releases the mutex between
+/// items, so a notified write of a newer revision can land first. Writing the
+/// pass's older copy after it would put the old text back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pass_leaves_a_function_that_a_notified_write_indexed_at_a_newer_revision() {
+    let upstream = MockServer::start().await;
+    let mut world = World::publish_tracer(&upstream).await;
+    world.index.reconcile().await;
+    let principal = AuthenticatedPrincipal::user(world.user.clone());
+    for (path, description, at) in [
+        ("internal.first", "First function", 60),
+        ("internal.second", "Older text", 61),
+    ] {
+        world
+            .modules
+            .save_function(&principal, &world.workspace, path, description, at)
+            .await;
+    }
+    let hold = world.index.hold_row_building();
+    let index = world.index.clone();
+    let pass = tokio::spawn(async move { index.reconcile().await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), hold.entered())
+        .await
+        .expect("the pass reaches its first function");
+
+    let newer = world
+        .modules
+        .save_function(
+            &principal,
+            &world.workspace,
+            "internal.second",
+            "Newer text",
+            70,
+        )
+        .await;
+    world
+        .index
+        .sync_function(newer.workspace_id().clone(), newer.id().clone());
+    // The notified write queues for the mutex ahead of the pass's next item.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    drop(hold);
+    pass.await.expect("the pass ends");
+    world.index.settled().await;
+
+    let descriptions: Vec<(String,)> = world
+        .modules
+        .search
+        .database
+        .fetch_all(
+            Query::select()
+                .column(Alias::new("description"))
+                .from(Alias::new("search_entities"))
+                .and_where(Expr::col(Alias::new("qualified_name")).eq("internal.second"))
+                .to_owned(),
+        )
+        .await
+        .expect("read the function's row");
+    assert_eq!(descriptions, [("Newer text".to_string(),)]);
+}
+
+#[tokio::test]
+async fn a_generation_replaced_after_a_pass_read_it_is_no_longer_stale() {
+    async fn active(world: &World, provider: &coral_provider::ProviderId) -> ActiveGeneration {
+        let database = &world.modules.search.database;
+        let mut transaction = database.begin_read_snapshot().await.unwrap();
+        coral_provider::workspace_active_generations_in_transaction(
+            &mut transaction,
+            &world.workspace,
+            Some(provider),
+        )
+        .await
+        .unwrap()
+        .pop()
+        .expect("the Provider's active Generation")
+    }
+    async fn stale(world: &World, generation: &ActiveGeneration) -> bool {
+        let database = &world.modules.search.database;
+        let mut transaction = database.begin_read_snapshot().await.unwrap();
+        ToolIndexer
+            .still_needs_indexing(
+                &mut transaction,
+                generation,
+                crate::unix_now_nanos().unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let read_by_the_pass = active(&world, &ledger).await;
+    assert!(stale(&world, &read_by_the_pass).await);
+
+    world
+        .modules
+        .regenerate_workspace_provider(
+            &change(world.user.clone(), 60, '6'),
+            &world.workspace,
+            &ledger,
+            &serde_json::from_str(&LEDGER.replace("List ledger entries", "List every entry"))
+                .unwrap(),
+        )
+        .await;
+
+    assert!(!stale(&world, &read_by_the_pass).await);
+    assert!(stale(&world, &active(&world, &ledger).await).await);
 }
 
 #[tokio::test]
@@ -313,10 +977,7 @@ async fn a_failed_removal_leaves_the_superseded_generation_and_still_indexes_the
         logs.events()
             .iter()
             .any(|event| event.level == tracing::Level::ERROR
-                && event
-                    .fields
-                    .get("error")
-                    .is_some_and(|error| error.contains(INJECTED_FAULT))),
+                && event.fields.get("error.type").map(String::as_str) == Some("\"database\"")),
         "the failed removal is logged"
     );
 
@@ -407,7 +1068,8 @@ async fn a_pass_reindexes_a_renamed_provider_under_its_new_name() {
             coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
         )
         .await
-        .expect("rename the Provider");
+        .expect("rename the Provider")
+        .skip_search();
     world.index.reconcile().await;
 
     let generation = world
@@ -528,7 +1190,7 @@ async fn a_pass_corrects_the_statistics_a_saved_function_delete_leaves() {
     assert!(world.has_term("tides").await);
     world.assert_exact_statistics().await;
 
-    // The function's row cascades with it, and no index write follows.
+    // The delete leaves the function's row and notifies nothing.
     world
         .modules
         .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
@@ -541,7 +1203,7 @@ async fn a_pass_corrects_the_statistics_a_saved_function_delete_leaves() {
 }
 
 #[tokio::test]
-async fn a_pass_records_its_duration_and_its_statistics_work_on_its_spans() {
+async fn a_deleted_function_leaves_search_before_its_row_leaves_the_index() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let principal = AuthenticatedPrincipal::user(world.user.clone());
@@ -555,48 +1217,217 @@ async fn a_pass_records_its_duration_and_its_statistics_work_on_its_spans() {
             60,
         )
         .await;
-    let spans = CapturedSpans::default();
-
-    let recorded = world.traced_pass(&spans).await;
-    assert_eq!(
-        recorded.iter().map(|span| span.name).collect::<Vec<_>>(),
-        [
-            "coral.search.reconcile",
-            "coral.search.reconcile.remove_superseded",
-            "coral.search.reconcile.generations",
-            "coral.search.reconcile.functions",
-            "coral.search.reconcile.statistics",
-        ]
-    );
-    for span in &recorded {
-        assert!(
-            span.u64_field("duration_ms").is_some(),
-            "{} records its duration",
-            span.name
-        );
-    }
-    // Only Postgres keeps statistics of its own. Each index write counts its
-    // Workspace, so the statistics step finds nothing to count after them.
-    let checked = match world.modules.search.database.system() {
-        DatabaseSystem::Postgres => 1,
-        DatabaseSystem::Sqlite => 0,
+    world.index.reconcile().await;
+    let hits = async || {
+        world
+            .modules
+            .search
+            .search(
+                &principal,
+                &world.workspace,
+                &SearchRequest::query(SearchQuery::parse("tides").expect("query")),
+            )
+            .await
+            .expect("search the Workspace")
+            .hits()
+            .len()
     };
-    assert_eq!(statistics_work(&recorded), (checked, 0, false));
+    assert_eq!(hits().await, 1);
 
     world
         .modules
         .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
         .await;
+
     assert_eq!(
-        statistics_work(&world.traced_pass(&spans).await),
+        world.function_rows().await,
+        1,
+        "the row outlives the function"
+    );
+    assert_eq!(hits().await, 0);
+    world.index.reconcile().await;
+    assert_eq!(world.function_rows().await, 0);
+}
+
+#[tokio::test]
+async fn a_pass_traces_only_the_writes_it_makes_and_records_its_work() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let principal = AuthenticatedPrincipal::user(world.user.clone());
+    world
+        .modules
+        .save_function(
+            &principal,
+            &world.workspace,
+            "internal.summarizeTides",
+            "Summarize the tides",
+            60,
+        )
+        .await;
+
+    let (pass, writes) = split_pass(world.traced_pass().await);
+    assert_eq!(
+        pass.iter().map(|span| span.name).collect::<Vec<_>>(),
+        [
+            "coral.search.reconcile",
+            "coral.search.reconcile.remove_superseded",
+            "coral.search.reconcile.remove_orphaned",
+            "coral.search.reconcile.generations",
+            "coral.search.reconcile.functions",
+            "coral.search.reconcile.statistics",
+        ]
+    );
+    for span in &pass {
+        assert_eq!(span.level, tracing::Level::DEBUG, "{}", span.name);
+        assert_eq!(failure(span), None, "{} did not fail", span.name);
+    }
+    for span in &writes {
+        assert_eq!(span.level, tracing::Level::INFO, "{}", span.name);
+        assert_eq!(failure(span), None, "{} did not fail", span.name);
+        assert_eq!(
+            span.fields
+                .get("coral.search.write.trigger")
+                .map(String::as_str),
+            Some("\"reconcile\""),
+            "{}",
+            span.name
+        );
+    }
+    // Only Postgres keeps statistics of its own. An index write counts none,
+    // so the statistics step recounts the Workspace the pass wrote.
+    let checked = match world.modules.search.database.system() {
+        DatabaseSystem::Postgres => 1,
+        DatabaseSystem::Sqlite => 0,
+    };
+    let recount = (checked > 0).then_some("coral.search.refresh_statistics");
+    assert_eq!(
+        write_names(&writes),
+        [
+            "coral.search.index_generation",
+            "coral.search.sync_function"
+        ]
+        .into_iter()
+        .chain(recount)
+        .collect::<Vec<_>>(),
+        "the first pass indexes the Provider and the function, then counts them"
+    );
+    assert_eq!(item_work(&pass, "generations"), (1, 0));
+    assert_eq!(item_work(&pass, "functions"), (1, 0));
+    assert_eq!(statistics_work(&pass), (checked, checked, checked > 0));
+    let (pass, writes) = split_pass(world.traced_pass().await);
+    assert!(writes.is_empty(), "a pass that changed nothing: {writes:?}");
+    assert_eq!(item_work(&pass, "generations"), (0, 0));
+
+    world
+        .modules
+        .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
+        .await;
+    let (pass, writes) = split_pass(world.traced_pass().await);
+    assert_eq!(
+        statistics_work(&pass),
         (checked, checked, checked > 0),
-        "the pass after a cascade counts the Workspace again"
+        "the pass that removes a row counts the Workspace again"
     );
     assert_eq!(
-        statistics_work(&world.traced_pass(&spans).await),
+        write_names(&writes).len(),
+        1 + usize::try_from(checked).expect("a count"),
+        "a removal and a recount are writes of their own: {writes:?}"
+    );
+    let (pass, writes) = split_pass(world.traced_pass().await);
+    assert_eq!(
+        statistics_work(&pass),
         (checked, 0, false),
         "a pass with no changes counts nothing"
     );
+    assert!(writes.is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_step_marks_its_span_and_the_pass() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE search_index_states RENAME TO hidden_states")
+        .await
+        .expect("hide the index states");
+
+    let (pass, _) = split_pass(world.traced_pass().await);
+
+    for name in [
+        "coral.search.reconcile",
+        "coral.search.reconcile.generations",
+        "coral.search.reconcile.functions",
+    ] {
+        let span = pass
+            .iter()
+            .find(|span| span.name == name)
+            .unwrap_or_else(|| panic!("{name} span"));
+        assert_eq!(failure(span), Some("\"reconcile_failed\""), "{name}");
+    }
+}
+
+/// A Generation whose indexing fails is recorded for a retry and the pass
+/// goes on, but its own span, exported by default, names the error, and the
+/// pass counts it as failed.
+#[tokio::test]
+async fn a_pass_counts_and_traces_a_generation_that_fails_to_index() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql("ALTER TABLE materialized_tools RENAME TO hidden_tools")
+        .await
+        .expect("hide the catalog's Tools");
+
+    let (pass, writes) = split_pass(world.traced_pass().await);
+
+    let [generation] = writes.try_into().expect("one Generation span");
+    assert_eq!(generation.name, "coral.search.index_generation");
+    assert_eq!(
+        generation
+            .fields
+            .get("coral.provider.id")
+            .map(String::as_str),
+        Some(world.tracer.to_string().as_str())
+    );
+    assert_eq!(failure(&generation), Some("\"provider\""));
+    assert_eq!(item_work(&pass, "generations"), (0, 1));
+    assert_eq!(
+        failure(pass.first().expect("the pass span")),
+        Some("\"reconcile_failed\""),
+        "the pass fails with its Generation"
+    );
+}
+
+/// Splits a pass's spans into the `coral.search.reconcile` span and its
+/// steps, and the spans of the writes it made, each in start order.
+fn split_pass(recorded: Vec<CapturedSpan>) -> (Vec<CapturedSpan>, Vec<CapturedSpan>) {
+    recorded
+        .into_iter()
+        .partition(|span| span.name.starts_with("coral.search.reconcile"))
+}
+
+fn write_names(writes: &[CapturedSpan]) -> Vec<&'static str> {
+    writes.iter().map(|span| span.name).collect()
+}
+
+/// The error type a failed span records.
+fn failure(span: &CapturedSpan) -> Option<&str> {
+    span.fields.get("error.type").map(String::as_str)
+}
+
+/// The `items` the pass's span counts as indexed and as failed.
+fn item_work(pass: &[CapturedSpan], items: &str) -> (u64, u64) {
+    let count = |outcome: &str| {
+        pass.first()
+            .expect("the pass span")
+            .u64_field(&format!("coral.search.reconcile.{items}_{outcome}"))
+            .unwrap_or_else(|| panic!("{items} {outcome}"))
+    };
+    (count("indexed"), count("failed"))
 }
 
 /// The statistics work a pass's spans record: the Workspaces checked and
@@ -608,11 +1439,13 @@ fn statistics_work(recorded: &[CapturedSpan]) -> (u64, u64, bool) {
     };
     let work = |span: &CapturedSpan| {
         (
-            span.u64_field("workspaces_checked")
+            span.u64_field("coral.search.reconcile.workspaces_checked")
                 .expect("Workspaces checked"),
-            span.u64_field("workspaces_recounted")
+            span.u64_field("coral.search.reconcile.workspaces_recounted")
                 .expect("Workspaces recounted"),
-            span.u64_field("rows_written").expect("rows written") > 0,
+            span.u64_field("coral.search.reconcile.rows_written")
+                .expect("rows written")
+                > 0,
         )
     };
     assert_eq!(work(pass), work(statistics));
@@ -733,6 +1566,137 @@ async fn a_generation_without_tools_indexes_only_a_complete_state() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn visibility_read_pressure_does_not_hold_up_later_index_writes() {
+    // SQLite has distinct read and write pools: telemetry can wait for the
+    // former while a catalog-removal write must still use the latter.
+    coral_test_support::database_only!(Sqlite);
+    let upstream = MockServer::start().await;
+    let mut world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let old = world.stored_entries(&ledger).await;
+    notify(&world.index, &old);
+    world.index.settled().await;
+    world
+        .modules
+        .regenerate_workspace_provider(
+            &change(world.user.clone(), 60, '6'),
+            &world.workspace,
+            &ledger,
+            &serde_json::from_str(
+                &LEDGER.replace("List ledger entries", "List every ledger entry"),
+            )
+            .unwrap(),
+        )
+        .await;
+    let current = world.stored_entries(&ledger).await;
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let spans = SpanCapture::default();
+    let _measured = tracing::subscriber::set_default(
+        tracing_subscriber::Registry::default()
+            .with(metrics.layer())
+            .with(spans.layer()),
+    );
+    let hold = world.index.hold_row_building();
+    notify(&world.index, &current);
+    tokio::time::timeout(std::time::Duration::from_secs(5), hold.entered())
+        .await
+        .unwrap();
+    let mut readers = Vec::new();
+    for _ in 0..sqlx::sqlite::SqlitePoolOptions::new().get_max_connections() - 1 {
+        readers.push(
+            world
+                .modules
+                .search
+                .database
+                .begin_read_snapshot()
+                .await
+                .unwrap(),
+        );
+    }
+    // A rolled-back preparation connection may still be returning to its
+    // pool on the worker paused above. Queue the final reader before release.
+    let last = world.modules.search.database.begin_read_snapshot();
+    tokio::pin!(last);
+    let ready = tokio::time::timeout(std::time::Duration::from_millis(20), &mut last).await;
+    drop(hold);
+    readers.push(match ready {
+        Ok(reader) => reader.unwrap(),
+        Err(_) => last.await.unwrap(),
+    });
+    wait_for_observation(|| {
+        metrics
+            .named("coral.persistence.transaction.duration")
+            .iter()
+            .any(|point| point.attributes.get("outcome").map(String::as_str) == Some("committed"))
+    })
+    .await;
+    world.index.remove_generation(old.generation_id().clone());
+    let removed = eventually(std::time::Duration::from_millis(500), async || {
+        spans
+            .finished()
+            .iter()
+            .any(|span| span.name == "coral.search.remove_generation")
+    })
+    .await;
+    for reader in readers {
+        reader.rollback().await.unwrap();
+    }
+    world.index.settled().await;
+    assert!(
+        removed,
+        "the next write proceeds while a visibility read is queued"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_catalog_replaced_during_indexing_emits_no_visibility_sample() {
+    let upstream = MockServer::start().await;
+    let mut world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let old = world.stored_entries(&ledger).await;
+    let metrics = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(metrics.subscriber());
+    let hold = world.index.hold_row_building();
+    notify(&world.index, &old);
+    tokio::time::timeout(std::time::Duration::from_secs(5), hold.entered())
+        .await
+        .unwrap();
+    world
+        .modules
+        .regenerate_workspace_provider(
+            &change(world.user.clone(), 60, '6'),
+            &world.workspace,
+            &ledger,
+            &serde_json::from_str(
+                &LEDGER.replace("List ledger entries", "List every ledger entry"),
+            )
+            .unwrap(),
+        )
+        .await;
+    let current = world.stored_entries(&ledger).await;
+    assert_ne!(old.generation_id(), current.generation_id());
+    drop(hold);
+    world.index.settled().await;
+    assert!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .is_empty(),
+        "a superseded projection never becomes searchable"
+    );
+    notify(&world.index, &current);
+    world.index.settled().await;
+    assert_eq!(
+        metrics
+            .named("coral.search.publication.visibility.duration")
+            .iter()
+            .map(|point| point.count)
+            .sum::<u64>(),
+        1,
+        "only the current catalog contributes first visibility"
+    );
+}
+
 #[tokio::test]
 async fn a_notice_for_a_replaced_generation_writes_nothing() {
     let upstream = MockServer::start().await;
@@ -756,11 +1720,99 @@ async fn a_notice_for_a_replaced_generation_writes_nothing() {
         replaced.generation_id()
     );
 
-    notify(&world.index, &replaced);
-    world.index.settled().await;
+    let write = world.traced_notice(|index| notify(index, &replaced)).await;
 
     assert!(world.tool_rows().await.is_empty());
     assert!(world.states().await.is_empty());
+    assert_eq!(
+        attribute(&write, "coral.search.skipped").as_deref(),
+        Some("generation_replaced")
+    );
+}
+
+/// A notified write is the root of a trace of its own, linked to the span
+/// that notified it, such as the request that published a Generation. Its
+/// span names the Generation it wrote and how long it waited for the writer
+/// and wrote, and a failed write marks it with its error's kind.
+#[tokio::test]
+async fn a_notified_write_traces_itself_and_links_to_its_notifier() {
+    type Notice = fn(&SearchIndex, &GenerationEntries);
+    let by_generation: Notice = notify;
+    let by_provider: Notice = |index, entries| {
+        index.index_active_generation(
+            entries.workspace_id().clone(),
+            entries.provider_id().clone(),
+        );
+    };
+    let removal: Notice = |index, entries| {
+        index.remove_provider(
+            entries.workspace_id().clone(),
+            entries.provider_id().clone(),
+        );
+    };
+    for (case, notice, fails, name) in [
+        (
+            "a Generation",
+            by_generation,
+            false,
+            "coral.search.index_generation",
+        ),
+        (
+            "a renamed Provider",
+            by_provider,
+            false,
+            "coral.search.index_generation",
+        ),
+        (
+            "a failed Generation",
+            by_generation,
+            true,
+            "coral.search.index_generation",
+        ),
+        ("a removal", removal, false, "coral.search.remove_provider"),
+        (
+            "a failed removal",
+            removal,
+            true,
+            "coral.search.remove_provider",
+        ),
+    ] {
+        let upstream = MockServer::start().await;
+        let world = World::publish_tracer(&upstream).await;
+        let entries = world.stored_entries(&world.tracer).await;
+        let removes = name == "coral.search.remove_provider";
+        if removes {
+            notify(&world.index, &entries);
+            world.index.settled().await;
+        }
+        if fails && removes {
+            world.reject_state_removals().await;
+        } else if fails {
+            world.reject_complete_states().await;
+        }
+
+        let write = world.traced_notice(|index| notice(index, &entries)).await;
+
+        assert_eq!(write.name, name, "{case}");
+        assert_eq!(
+            attribute(&write, "error.type"),
+            fails.then(|| "database".to_string()),
+            "{case}"
+        );
+        if !removes {
+            assert_eq!(
+                attribute(&write, "coral.search.generation.id"),
+                Some(entries.generation_id().to_string()),
+                "{case}"
+            );
+            for field in ["coral.search.writer_wait_ms", "coral.search.write_ms"] {
+                assert!(
+                    attribute(&write, field).is_some_and(|ms| ms.parse::<u64>().is_ok()),
+                    "{case}: {field}"
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -824,11 +1876,16 @@ async fn a_bounded_walk_indexes_the_tool_and_logs_a_warning() {
         .expect("one warning");
     assert_eq!(event.target, "coral_search::index");
     for (field, value) in [
-        ("workspace_id", world.workspace.to_string()),
-        ("provider_id", wide.to_string()),
-        ("generation_id", entries.generation_id().to_string()),
-        ("tool_key", "wide".to_string()),
-        ("code", "tool_search_material_truncated".to_string()),
+        ("coral.workspace.id", world.workspace.to_string()),
+        ("coral.provider.id", wide.to_string()),
+        (
+            "coral.search.generation.id",
+            entries.generation_id().to_string(),
+        ),
+        (
+            "coral.search.warning.code",
+            "tool_search_material_truncated".to_string(),
+        ),
     ] {
         assert_eq!(event.fields.get(field), Some(&value), "{field}");
     }
@@ -847,6 +1904,19 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
             notify(&world.index, &entries);
             world.index.settled().await;
             assert!(!world.tool_rows().await.is_empty());
+            // A rename is what rewrites an indexed Generation.
+            world
+                .modules
+                .providers
+                .rename_provider(
+                    &change(world.user.clone(), 70, '7'),
+                    &world.workspace,
+                    &world.tracer,
+                    coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
+                )
+                .await
+                .expect("rename the Provider")
+                .skip_search();
         }
         world.reject_complete_states().await;
 
@@ -871,43 +1941,20 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
         let error = state.error.expect("a failed state carries its error");
         assert!(error.contains(INJECTED_FAULT), "{error}");
 
-        let [times, event] = logs
-            .events()
-            .try_into()
-            .expect("the write's times, then its error");
-        assert_eq!(times.level, tracing::Level::INFO);
-        assert_eq!(
-            times.fields.get("workspace_id"),
-            Some(&world.workspace.to_string())
-        );
-        assert_eq!(
-            times.fields.get("succeeded").map(String::as_str),
-            Some("false")
-        );
-        for field in ["writer_wait_ms", "write_ms"] {
-            assert!(
-                times
-                    .fields
-                    .get(field)
-                    .is_some_and(|ms| ms.parse::<u64>().is_ok()),
-                "{field}"
-            );
-        }
+        let [event] = logs.events().try_into().expect("the write's error");
         assert_eq!(event.level, tracing::Level::ERROR);
         assert_eq!(event.target, "coral_search::index");
         for (field, value) in [
-            ("workspace_id", world.workspace.to_string()),
-            ("provider_id", world.tracer.to_string()),
-            ("generation_id", entries.generation_id().to_string()),
+            ("coral.workspace.id", world.workspace.to_string()),
+            ("coral.provider.id", world.tracer.to_string()),
+            (
+                "coral.search.generation.id",
+                entries.generation_id().to_string(),
+            ),
+            ("error.type", "\"database\"".to_string()),
         ] {
             assert_eq!(event.fields.get(field), Some(&value), "{field}");
         }
-        assert!(
-            event
-                .fields
-                .get("error")
-                .is_some_and(|error| error.contains(INJECTED_FAULT))
-        );
     }
 }
 
@@ -1007,7 +2054,11 @@ async fn a_rewrite_removes_rows_its_entries_no_longer_hold() {
     assert!(!world.tool_rows().await.is_empty());
 
     let generation_id = entries.generation_id().clone();
-    world.index.write_generation(&entries.without_tools()).await;
+    world
+        .index
+        .write_generation(&entries.without_tools())
+        .await
+        .expect("write the Generation without its Tools");
     world.index.settled().await;
 
     assert!(world.tool_rows().await.is_empty());
@@ -1039,7 +2090,8 @@ async fn a_renamed_provider_rewrites_its_generation_under_the_new_name() {
             coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
         )
         .await
-        .expect("rename the Provider");
+        .expect("rename the Provider")
+        .skip_search();
     world
         .index
         .index_active_generation(world.workspace.clone(), world.tracer.clone());
@@ -1170,6 +2222,253 @@ async fn postgres_statistics_follow_each_write_and_removal_of_the_workspace() {
 }
 
 #[tokio::test]
+async fn an_index_write_commits_while_a_recount_waits_on_the_statistics() {
+    // An index write upserts its own rows and counts no statistics, and a
+    // recount takes no lock that a write takes. So neither a recount held up
+    // on the statistics nor anything else that holds those tables holds back
+    // a write.
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let tracer_entries = world.stored_entries(&world.tracer).await;
+    let ledger_entries = world.stored_entries(&ledger).await;
+    let index = world
+        .index
+        .clone()
+        .with_recount_delay(std::time::Duration::ZERO);
+    let database = &world.modules.search.database;
+    let mut blocker = database.begin().await.expect("begin the blocker");
+    blocker
+        .execute_sql(
+            "LOCK TABLE search_terms, search_stats IN ACCESS EXCLUSIVE MODE",
+            sea_query::Values(Vec::new()),
+        )
+        .await
+        .expect("lock the statistics tables");
+    let recount_waits = async || {
+        let mut snapshot = database.begin_read_snapshot().await.unwrap();
+        let (waiting,): (i64,) = snapshot
+            .fetch_all_sql(
+                "SELECT count(*) FROM pg_locks WHERE NOT granted \
+                 AND relation IN ('search_terms'::regclass, 'search_stats'::regclass)",
+                sea_query::Values(Vec::new()),
+            )
+            .await
+            .expect("read the waiting locks")
+            .into_iter()
+            .next()
+            .expect("a count");
+        snapshot.rollback().await.unwrap();
+        waiting > 0
+    };
+    let wait = std::time::Duration::from_secs(5);
+
+    notify(&index, &tracer_entries);
+    assert!(
+        eventually(wait, async || !world.tool_rows().await.is_empty()).await,
+        "the write committed while the statistics were locked"
+    );
+    assert!(
+        eventually(wait, recount_waits).await,
+        "its recount waits on the statistics"
+    );
+    notify(&index, &ledger_entries);
+    assert!(
+        eventually(wait, async || world.indexed_generations().await.len() == 2).await,
+        "the next write committed while the recount waited"
+    );
+
+    blocker.rollback().await.expect("release the statistics");
+    index.settled().await;
+    assert!(world.has_term("forecast").await, "the recount followed");
+    assert!(world.has_term("ledger").await);
+    world.assert_exact_statistics().await;
+}
+
+#[tokio::test]
+async fn an_index_write_updates_only_the_rows_it_changes_and_each_once() {
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    // Every update of a search row leaves its document id behind.
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql(
+            "CREATE TABLE search_entity_updates (doc_id TEXT NOT NULL); \
+             CREATE FUNCTION record_search_entity_update() RETURNS trigger \
+                 LANGUAGE plpgsql AS $$ BEGIN \
+                     INSERT INTO search_entity_updates VALUES (NEW.doc_id); RETURN NEW; \
+                 END $$; \
+             CREATE TRIGGER record_search_entity_update AFTER UPDATE ON search_entities \
+                 FOR EACH ROW EXECUTE FUNCTION record_search_entity_update()",
+        )
+        .await
+        .expect("record each row update");
+    let updates = async || {
+        let mut snapshot = world
+            .modules
+            .search
+            .database
+            .begin_read_snapshot()
+            .await
+            .unwrap();
+        let rows: Vec<(String,)> = snapshot
+            .fetch_all_sql(
+                "SELECT doc_id FROM search_entity_updates ORDER BY doc_id",
+                sea_query::Values(Vec::new()),
+            )
+            .await
+            .expect("read the updates");
+        snapshot.rollback().await.unwrap();
+        rows.into_iter().map(|(doc_id,)| doc_id).collect::<Vec<_>>()
+    };
+    let entries = world.stored_entries(&world.tracer).await;
+
+    notify(&world.index, &entries);
+    world.index.settled().await;
+    assert_eq!(
+        updates().await,
+        Vec::<String>::new(),
+        "a new row takes one insert"
+    );
+
+    // Stale text on one row, and no state row, so the next write runs and
+    // brings back the one value that differs.
+    let stamps = world.row_stamps().await;
+    let [(changed, _stamp), ..] = stamps.as_slice() else {
+        panic!("the Generation has rows");
+    };
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE search_entities SET description = 'stale' WHERE doc_id = '{changed}'; \
+             DELETE FROM search_index_states; \
+             DELETE FROM search_entity_updates"
+        ))
+        .await
+        .expect("make one row stale");
+    notify(&world.index, &entries);
+    world.index.settled().await;
+    assert_eq!(
+        updates().await,
+        std::slice::from_ref(changed),
+        "the write updates the changed row once and leaves the rest"
+    );
+    world.assert_exact_statistics().await;
+}
+
+#[tokio::test]
+async fn a_write_whose_stamp_lags_another_hosts_still_gets_its_recount() {
+    // Another host's clock runs ahead and stamped one row past every stamp
+    // this host gives. A write here that changes another row changes neither
+    // the row count nor the newest stamp, so the watermark alone cannot show
+    // the change.
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let tracer_entries = world.stored_entries(&world.tracer).await;
+    notify(&world.index, &tracer_entries);
+    notify(&world.index, &world.stored_entries(&ledger).await);
+    world.index.settled().await;
+    let tracer_generation = tracer_entries.generation_id().to_string();
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE search_entities SET indexed_at_unix_nanos = {ahead} \
+                 WHERE provider_generation_id <> '{tracer_generation}'; \
+             UPDATE search_entities SET description = 'zanzibarstale' \
+                 WHERE provider_generation_id = '{tracer_generation}'",
+            ahead = i64::MAX - 1,
+        ))
+        .await
+        .expect("stamp the ledger ahead and make the tracer stale");
+    // The pass counts the stale text: the newest stamp moved.
+    world.index.reconcile().await;
+    assert!(world.has_term("zanzibarstale").await);
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql(&format!(
+            "DELETE FROM search_index_states WHERE target_id = '{tracer_generation}'"
+        ))
+        .await
+        .expect("let the tracer index again");
+
+    notify(&world.index, &tracer_entries);
+    world.index.settled().await;
+
+    assert!(
+        !world.has_term("zanzibarstale").await,
+        "the write's recount counted the rows it rewrote"
+    );
+    world.assert_exact_statistics().await;
+}
+
+#[tokio::test]
+async fn one_statistics_recount_follows_a_burst_of_writes() {
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let tracer_entries = world.stored_entries(&world.tracer).await;
+    let ledger_entries = world.stored_entries(&ledger).await;
+    // A delay no test run reaches, so only `settled` ends it.
+    let index = world
+        .index
+        .clone()
+        .with_recount_delay(std::time::Duration::from_mins(5));
+
+    let spans = CapturedSpans::default();
+    {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(spans.clone()),
+        );
+        notify(&index, &tracer_entries);
+        notify(&index, &ledger_entries);
+    }
+    assert!(
+        eventually(std::time::Duration::from_secs(5), async || {
+            world.indexed_generations().await.len() == 2
+        })
+        .await,
+        "both writes committed"
+    );
+    assert_eq!(world.statistics().await, None, "no write counted");
+    index.settled().await;
+
+    // A recount that a write marked after the first one started counts the
+    // same rows again and writes nothing.
+    let recounts = spans
+        .recorded()
+        .into_iter()
+        .filter(|span| {
+            span.name == "coral.search.refresh_statistics"
+                && span
+                    .u64_field("coral.search.rows_written")
+                    .is_some_and(|rows| rows > 0)
+        })
+        .collect::<Vec<_>>();
+    let [recount] = recounts.as_slice() else {
+        panic!("one recount for both writes: {recounts:?}");
+    };
+    assert_eq!(
+        recount
+            .fields
+            .get("coral.search.write.trigger")
+            .map(String::as_str),
+        Some("\"rows_changed\"")
+    );
+    assert!(world.has_term("forecast").await);
+    assert!(world.has_term("ledger").await);
+    world.assert_exact_statistics().await;
+}
+
+#[tokio::test]
 async fn a_rewrite_of_an_unchanged_generation_writes_no_search_row() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
@@ -1245,14 +2544,12 @@ async fn a_write_stalled_past_its_limit_rolls_back_and_frees_later_writes() {
     // SQLite's writer stalls the write before the Workspace's lock;
     // Postgres's table lock stalls it after.
     let expected = match database.system() {
-        DatabaseSystem::Sqlite => "waited more than",
-        DatabaseSystem::Postgres => "ran past its",
+        DatabaseSystem::Sqlite => "\"writer_busy\"",
+        DatabaseSystem::Postgres => "\"overran\"",
     };
-    assert!(
-        first
-            .fields
-            .get("error")
-            .is_some_and(|error| error.contains(expected)),
+    assert_eq!(
+        first.fields.get("error.type").map(String::as_str),
+        Some(expected),
         "{first:?}"
     );
 
@@ -1465,7 +2762,7 @@ async fn a_failed_state_read_reports_no_states_and_logs_the_error() {
     let [event] = logs.events().try_into().expect("one log event");
     assert_eq!(event.level, tracing::Level::WARN);
     assert_eq!(
-        event.fields.get("workspace_id"),
+        event.fields.get("coral.workspace.id"),
         Some(&world.workspace.to_string())
     );
 }
@@ -1516,7 +2813,10 @@ struct World {
 
 impl World {
     async fn publish_tracer(upstream: &MockServer) -> Self {
-        let modules = TestModules::new().await;
+        Self::publish_with_modules(TestModules::new().await, upstream).await
+    }
+
+    async fn publish_with_modules(modules: TestModules, upstream: &MockServer) -> Self {
         let user = organization_user(modules.search.database.clone(), USER).await;
         let workspace = modules.create_workspace(&user).await;
         let tracer = modules
@@ -1531,6 +2831,11 @@ impl World {
             tracer,
             index,
         }
+    }
+
+    async fn reconcile_and_settle(&self) {
+        self.index.reconcile().await;
+        self.index.settled().await;
     }
 
     /// The active Generation's entries, prepared by the owner from what the
@@ -1603,6 +2908,25 @@ impl World {
             .expect("read the statistics")
     }
 
+    /// How many Saved Function rows the index holds in the Workspace.
+    async fn function_rows(&self) -> usize {
+        let rows: Vec<(String,)> = self
+            .modules
+            .search
+            .database
+            .fetch_all(
+                Query::select()
+                    .column(Alias::new("doc_id"))
+                    .from(Alias::new("search_entities"))
+                    .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
+                    .and_where(Expr::col(Alias::new("kind")).eq("saved_function"))
+                    .to_owned(),
+            )
+            .await
+            .expect("read the function rows");
+        rows.len()
+    }
+
     /// Whether the Workspace's Postgres term statistics hold `term`.
     async fn has_term(&self, term: &str) -> bool {
         let row: Option<(String,)> = self
@@ -1622,8 +2946,71 @@ impl World {
         row.is_some()
     }
 
-    /// Runs one reconcile pass and returns the spans it recorded.
-    async fn traced_pass(&self, spans: &CapturedSpans) -> Vec<CapturedSpan> {
+    /// Sends `notice` in a request span, waits for the write it starts, and
+    /// returns the write's span. Asserts what every notified write's span
+    /// shows: it is a root, marked `notified`, that links to the request and
+    /// does not hold the request's span open.
+    async fn traced_notice(&self, notice: impl FnOnce(&SearchIndex)) -> SpanData {
+        let capture = SpanCapture::default();
+        {
+            let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+            tracing::info_span!("request").in_scope(|| notice(&self.index));
+        }
+        self.index.settled().await;
+        // On Postgres a write's statistics recount follows in a root span of
+        // its own.
+        let is_write = |span: &SpanData| {
+            span.name.starts_with("coral.search.") && span.name != "coral.search.refresh_statistics"
+        };
+        // A database driver may hold the write's span for a moment after the
+        // write returns.
+        eventually(std::time::Duration::from_secs(5), async || {
+            capture.finished().iter().any(is_write)
+        })
+        .await;
+        let spans = capture.finished();
+        let request = spans
+            .iter()
+            .find(|span| span.name == "request")
+            .expect("the request span")
+            .clone();
+        let [write] = spans
+            .into_iter()
+            .filter(is_write)
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("one write span");
+        assert_eq!(write.parent_span_id, SpanId::INVALID, "a root");
+        assert_ne!(
+            write.span_context.trace_id(),
+            request.span_context.trace_id()
+        );
+        assert!(
+            request.end_time < write.end_time,
+            "the write does not hold its notifier's span open"
+        );
+        assert_eq!(
+            write
+                .links
+                .iter()
+                .map(|link| (link.span_context.trace_id(), link.span_context.span_id()))
+                .collect::<Vec<_>>(),
+            [(
+                request.span_context.trace_id(),
+                request.span_context.span_id()
+            )],
+            "the write links to its notifier"
+        );
+        assert_eq!(
+            attribute(&write, "coral.search.write.trigger").as_deref(),
+            Some("notified")
+        );
+        write
+    }
+
+    /// Runs one pass and returns the spans it started.
+    async fn traced_pass(&self) -> Vec<CapturedSpan> {
+        let spans = CapturedSpans::default();
         {
             let _subscriber = tracing::subscriber::set_default(
                 tracing_subscriber::Registry::default().with(spans.clone()),
@@ -1728,7 +3115,7 @@ impl World {
     /// The Workspace's Postgres statistics counted again from its rows' vectors,
     /// by the rules the indexer follows: what [`Self::stored_statistics`]
     /// holds when the statistics are exact. The mean length counts each
-    /// vector's lexeme positions again, so a stale `doc_len` shows.
+    /// vector's lexeme positions again, so a wrong `tsv_length` shows.
     async fn recounted_statistics(&self) -> Statistics {
         let mut transaction = self
             .modules
@@ -1768,6 +3155,14 @@ impl World {
         self.reject_complete_states().await;
         self.index.reconcile().await;
         self.allow_complete_states().await;
+    }
+
+    /// Injects a persisted outage clock, including stale data an older writer
+    /// can leave when it does not know the new columns.
+    async fn set_outage_start(&self, at: i64) {
+        self.modules.fixture.execute_fixture_sql(&format!(
+            "UPDATE search_index_states SET unavailable_since_unix_nanos = {at} WHERE ever_visible = TRUE"
+        )).await.unwrap();
     }
 
     /// Makes every `complete` state row fail to insert, so an attempt fails
@@ -2182,17 +3577,17 @@ impl Retry {
 
 /// Records every event of this crate with its level, target, and fields.
 #[derive(Clone, Default)]
-struct CapturedLogs(Arc<std::sync::Mutex<Vec<CapturedEvent>>>);
+pub(super) struct CapturedLogs(Arc<std::sync::Mutex<Vec<CapturedEvent>>>);
 
 #[derive(Debug)]
-struct CapturedEvent {
-    level: tracing::Level,
-    target: String,
-    fields: BTreeMap<String, String>,
+pub(super) struct CapturedEvent {
+    pub(super) level: tracing::Level,
+    pub(super) target: String,
+    pub(super) fields: BTreeMap<String, String>,
 }
 
 impl CapturedLogs {
-    fn events(&self) -> Vec<CapturedEvent> {
+    pub(super) fn events(&self) -> Vec<CapturedEvent> {
         std::mem::take(&mut *self.0.lock().expect("captured logs"))
     }
 }
@@ -2226,6 +3621,7 @@ struct CapturedSpans(Arc<std::sync::Mutex<Vec<CapturedSpan>>>);
 #[derive(Debug)]
 struct CapturedSpan {
     name: &'static str,
+    level: tracing::Level,
     fields: BTreeMap<String, String>,
 }
 
@@ -2266,6 +3662,7 @@ where
         span.extensions_mut().insert(CapturedSpanIndex(spans.len()));
         spans.push(CapturedSpan {
             name: span.metadata().name(),
+            level: *span.metadata().level(),
             fields: fields.0,
         });
     }

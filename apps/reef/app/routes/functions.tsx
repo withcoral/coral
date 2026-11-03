@@ -26,9 +26,9 @@ export function shouldRevalidate({
   return false
 }
 
-export async function loader({ request, context, params }: Route.LoaderArgs) {
+export async function loader({ context, params }: Route.LoaderArgs) {
   try {
-    const { api, workspace: w } = await authorizedWorkspace(request, context, params.workspace)
+    const { api, workspace: w } = await authorizedWorkspace(context, params.workspace)
     // The page groups and filters every function, so it reads each bounded page.
     const summaries: SavedFunctionSummary[] = []
     let pageToken = ''

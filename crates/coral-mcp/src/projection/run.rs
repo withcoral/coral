@@ -33,6 +33,12 @@ pub(crate) struct RunUpdateResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Failure<'a>")]
     failure: Option<Failure<'a>>,
+    /// The W3C trace identifier of a Run that failed, timed out or was
+    /// interrupted. Give it to the operator to find the Run in Coral's
+    /// telemetry. It grants no authority.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    trace_id: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -128,6 +134,30 @@ struct Failure<'a> {
     code: FailureCode,
     message: &'a str,
     error: Option<ProgramError<'a>>,
+    /// The shapes of the Tool Results the Program received before it threw,
+    /// in call order: keys and value types, never values.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_result_shapes: Vec<ToolResultShape<'a>>,
+    /// Tool Results the Program received that no entry in
+    /// `tool_result_shapes` describes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("minimum" = 1))]
+    unsketched_tool_results: Option<SafeInteger>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ToolResultShape<'a> {
+    call_path: &'a str,
+    /// Tool Invocations of this Call Path whose results had this shape.
+    #[schemars(extend("minimum" = 1))]
+    invocations: SafeInteger,
+    /// TypeScript-like shape of the `data` the Program received, as a Tool
+    /// Result or a Tool Error. A key some array elements lack is optional.
+    data: &'a str,
+    /// Shape of the JSON that the result's MCP text content parses to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parsed_text: Option<&'a str>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -210,6 +240,30 @@ fn project_run_update(
                 },
                 message: failure.message(),
                 error: failure.error().map(ProgramError::try_from).transpose()?,
+                tool_result_shapes: update
+                    .tool_result_shapes()
+                    .map(|shapes| {
+                        shapes
+                            .shapes()
+                            .iter()
+                            .map(|shape| {
+                                Ok(ToolResultShape {
+                                    call_path: shape.call_path(),
+                                    invocations: SafeInteger::new(shape.invocations())?,
+                                    data: shape.data(),
+                                    parsed_text: shape.parsed_text(),
+                                })
+                            })
+                            .collect::<Result<Vec<_>, ToolFailure>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default(),
+                unsketched_tool_results: update
+                    .tool_result_shapes()
+                    .map(coral_run::ToolResultShapes::unsketched)
+                    .filter(|count| *count > 0)
+                    .map(SafeInteger::new)
+                    .transpose()?,
             }),
         ),
         _ => (None, None),
@@ -234,6 +288,10 @@ fn project_run_update(
         has_more: update.has_more(),
         final_value,
         failure,
+        trace_id: update
+            .trace_id()
+            .filter(|_| !update.has_more())
+            .map(|trace| trace.as_str().to_string()),
     })?;
     result.content.extend(rich);
     Ok(result)

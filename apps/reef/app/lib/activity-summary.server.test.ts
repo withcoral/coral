@@ -40,6 +40,33 @@ it('keeps exact context bytes and turns the median wait into seconds', async () 
   })
 })
 
+// Catches: an agent's calls that do not open its page, or your own calls that link nowhere.
+it('links each agent caller to its page and leaves your own calls unlinked', async () => {
+  const agent = `${workspace}/agents/agent:00000000-0000-4000-8000-000000000002`
+  const callers = [
+    { key: 'a1', label: 'Nightly sync', agent, calls: 7n },
+    { key: 'u1', label: 'You', agent: '', calls: 2n },
+  ]
+  const api = {
+    activity: activity(() => ({
+      callers,
+      tools: [{ callPath: 'coral.providers.github.getIssue', calls: 9n, callers }],
+    })),
+  }
+  const summary = await loadActivitySummary(api, workspace, 7)
+  const expected = [
+    {
+      key: 'a1',
+      label: 'Nightly sync',
+      agentPath: `/${workspace}/agents/agent%3A00000000-0000-4000-8000-000000000002`,
+      calls: 7,
+    },
+    { key: 'u1', label: 'You', calls: 2 },
+  ]
+  expect(summary.callers).toEqual(expected)
+  expect(summary.tools[0].callers).toEqual(expected)
+})
+
 it('reports no decisions and no measured context as absent, not zero', async () => {
   const summary = await loadActivitySummary({ activity: activity(() => ({})) }, workspace, 1)
   expect(summary.approvals.medianWaitSeconds).toBeNull()

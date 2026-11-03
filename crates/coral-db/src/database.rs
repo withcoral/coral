@@ -27,6 +27,8 @@ pub struct ReadOnly;
 pub struct Database<Access = ReadWrite> {
     pub(crate) backend: DatabaseBackend,
     pub(crate) access: Access,
+    /// Registered lazily on the first acquisition under the metrics layer.
+    pub(crate) pool_metric: std::sync::OnceLock<coral_telemetry::metric::PoolObservation>,
 }
 
 /// A database handle whose backend enforces read-only access.
@@ -130,12 +132,25 @@ impl<Access> Database<Access> {
     ///
     /// Returns the backend connection or query error.
     pub async fn ping(&self) -> Result<(), Error> {
+        self.observe_pools();
         match &self.backend {
             DatabaseBackend::Sqlite { reads, .. } => {
-                sqlx::query("SELECT 1").execute(reads).await?;
+                let mut connection = crate::query::acquire(
+                    reads,
+                    coral_telemetry::metric::DbSystem::Sqlite,
+                    coral_telemetry::metric::AcquisitionOperation::Ping,
+                )
+                .await?;
+                sqlx::query("SELECT 1").execute(&mut *connection).await?;
             }
             DatabaseBackend::Postgres(pool) => {
-                sqlx::query("SELECT 1").execute(pool).await?;
+                let mut connection = crate::query::acquire(
+                    pool,
+                    coral_telemetry::metric::DbSystem::Postgresql,
+                    coral_telemetry::metric::AcquisitionOperation::Ping,
+                )
+                .await?;
+                sqlx::query("SELECT 1").execute(&mut *connection).await?;
             }
         }
         Ok(())
@@ -143,7 +158,7 @@ impl<Access> Database<Access> {
 
     async fn close_pool(&self) {
         match &self.backend {
-            DatabaseBackend::Sqlite { reads, writes } => {
+            DatabaseBackend::Sqlite { reads, writes, .. } => {
                 writes.close().await;
                 reads.close().await;
             }
@@ -183,7 +198,12 @@ async fn connect_sqlite(path: &Path, writer_wait: Duration) -> Result<Database, 
         .connect_with(options.pragma("query_only", "ON"))
         .await?;
     Ok(Database {
-        backend: DatabaseBackend::Sqlite { reads, writes },
+        pool_metric: std::sync::OnceLock::new(),
+        backend: DatabaseBackend::Sqlite {
+            reads,
+            writes,
+            shared_pool: false,
+        },
         access: ReadWrite {
             changes: crate::changes::Changes::local(),
         },
@@ -206,8 +226,10 @@ async fn connect_read_only_sqlite(path: &Path) -> Result<ReadOnlyDatabase, Error
         backend: DatabaseBackend::Sqlite {
             reads: pool.clone(),
             writes: pool,
+            shared_pool: true,
         },
         access: ReadOnly,
+        pool_metric: std::sync::OnceLock::new(),
     })
 }
 
@@ -219,6 +241,7 @@ async fn connect_postgres(url: &str, keepalive: Duration) -> Result<Database, Er
             changes: crate::changes::Changes::postgres(url, &pool, keepalive).await?,
         },
         backend: DatabaseBackend::Postgres(pool),
+        pool_metric: std::sync::OnceLock::new(),
     })
 }
 
@@ -231,6 +254,7 @@ async fn connect_read_only_postgres(url: &str) -> Result<ReadOnlyDatabase, Error
     Ok(ReadOnlyDatabase {
         backend: DatabaseBackend::Postgres(pool),
         access: ReadOnly,
+        pool_metric: std::sync::OnceLock::new(),
     })
 }
 
@@ -361,6 +385,48 @@ mod tests {
         use super::*;
 
         #[tokio::test]
+        async fn read_only_queries_observe_one_shared_pool_while_waiting_for_it() {
+            use std::future::Future as _;
+            coral_test_support::database_only!(Sqlite);
+            let temp = tempfile::tempdir().unwrap();
+            let options = DatabaseOptions::Sqlite {
+                path: temp.path().join("coral.db"),
+            };
+            let writer = Database::connect(options.clone()).await.unwrap();
+            let reader = super::super::ReadOnlyDatabase::connect_read_only(options)
+                .await
+                .unwrap();
+            let DatabaseBackend::Sqlite { reads, .. } = &reader.backend else {
+                unreachable!()
+            };
+            // Hold the only connection at the external SQLx pool boundary.
+            let held = reads.acquire().await.unwrap();
+            let metrics = coral_telemetry::testing::MetricCapture::default();
+            let _measured = tracing::subscriber::set_default(metrics.subscriber());
+            let mut waiting = Box::pin(
+                reader.fetch_all::<(i64,)>(
+                    sea_query::Query::select()
+                        .expr(sea_query::Expr::val(1))
+                        .to_owned(),
+                ),
+            );
+            std::future::poll_fn(|context| {
+                assert!(waiting.as_mut().poll(context).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            assert_eq!(metrics.values("coral.persistence.pool.in_use"), [1.0]);
+            assert_eq!(
+                metrics.values("coral.persistence.acquisition.waiters"),
+                [1.0]
+            );
+            drop(waiting);
+            drop(held);
+            reader.close().await;
+            writer.close().await;
+        }
+
+        #[tokio::test]
         async fn connections_have_bounded_busy_handling() {
             coral_test_support::database_only!(Sqlite);
             let temp = tempfile::tempdir().expect("temp dir");
@@ -369,7 +435,7 @@ mod tests {
             })
             .await
             .expect("connect SQLite");
-            let DatabaseBackend::Sqlite { reads, writes } = &database.backend else {
+            let DatabaseBackend::Sqlite { reads, writes, .. } = &database.backend else {
                 panic!("selected backend must be SQLite");
             };
 

@@ -129,21 +129,27 @@ const fn search_index_failure_reason(
     }
 }
 
+/// The canonical resource name of one Tool of the Provider `parent`.
+pub(super) fn tool_name(parent: &str, key: &coral_catalog::ToolKey) -> String {
+    format!("{parent}/tools/{}", URL_SAFE_NO_PAD.encode(key.as_str()))
+}
+
+pub(super) fn tool_hints(hints: coral_catalog::ToolHints) -> wire::ToolHints {
+    wire::ToolHints {
+        read_only: hints.read_only(),
+        destructive: hints.destructive(),
+        idempotent: hints.idempotent(),
+        open_world: hints.open_world(),
+    }
+}
+
 fn tool_view(parent: &str, tool: &coral_catalog::ToolSummary) -> wire::ProviderTool {
     wire::ProviderTool {
-        name: format!(
-            "{parent}/tools/{}",
-            URL_SAFE_NO_PAD.encode(tool.key.as_str())
-        ),
+        name: tool_name(parent, &tool.key),
         relative_path: tool.relative_path.clone(),
         summary: tool.summary.clone(),
         description: tool.description.clone(),
-        hints: Some(wire::ToolHints {
-            read_only: tool.hints.read_only(),
-            destructive: tool.hints.destructive(),
-            idempotent: tool.hints.idempotent(),
-            open_world: tool.hints.open_world(),
-        }),
+        hints: Some(tool_hints(tool.hints)),
         available: tool.availability == coral_catalog::ToolAvailability::Available,
         diagnostics: tool.diagnostics.iter().map(diagnostic).collect(),
         tags: tool.tags.clone(),
@@ -193,7 +199,7 @@ fn authorization_view(
         client_id: authorization.client_id.unwrap_or_default(),
     }
 }
-fn diagnostic(value: &domain::PublicationDiagnostic) -> wire::ProviderDiagnostic {
+pub(super) fn diagnostic(value: &domain::PublicationDiagnostic) -> wire::ProviderDiagnostic {
     wire::ProviderDiagnostic {
         code: value.code().into(),
         message: value.message().into(),
@@ -1053,6 +1059,23 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
             next_page_token,
         }))
     }
+
+    #[tracing::instrument(skip_all, name = "coral.private.get_tool")]
+    async fn get_tool(
+        &self,
+        request: Request<wire::GetToolRequest>,
+    ) -> Result<Response<wire::ProviderTool>, Status> {
+        let user = self.management_user(&request).await?;
+        let req = request.into_inner();
+        let (owner, id) = resource(&req.parent, "providers")?;
+        let id = domain::ProviderId::parse(id).map_err(error)?;
+        let tool = self
+            .providers
+            .inspect_tool_summary(&user, &owner, &id, &req.relative_path)
+            .await
+            .map_err(error)?;
+        Ok(Response::new(tool_view(&req.parent, &tool)))
+    }
 }
 
 impl GrpcServices {
@@ -1087,7 +1110,6 @@ pub(super) fn readiness_error(failure: coral_search::Error) -> Status {
         coral_search::Error::Policy(inner) => super::policies::error(inner),
         coral_search::Error::InvalidInput(_)
         | coral_search::Error::UnknownProviderCallRoot { .. }
-        | coral_search::Error::InvalidCursor
         | coral_search::Error::TypesLimit
         | coral_search::Error::UndeclaredTypes { .. } => {
             safe_status(tonic::Code::InvalidArgument, "INVALID_ARGUMENT")
@@ -1316,11 +1338,6 @@ mod tests {
     #[test]
     fn readiness_errors_report_retryable_only_for_dependencies() {
         let cases = [
-            (
-                coral_search::Error::InvalidCursor,
-                Code::InvalidArgument,
-                "INVALID_ARGUMENT",
-            ),
             (
                 coral_search::Error::InvalidInput("private detail".into()),
                 Code::InvalidArgument,

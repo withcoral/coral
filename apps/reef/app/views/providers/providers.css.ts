@@ -207,14 +207,19 @@ export const toolNameCell = style({
   paddingInlineStart: 40,
 })
 // The name reads as plain text; the whole row is the click target.
+/** The tool's name gives way to its hints and status in a narrow cell. */
+export const toolNameFace = style({ minWidth: 0 })
+
+// The link truncates, so its tooltip can tell when the name is cut short. `ToolName`
+// gives it the face every tool name shares.
 export const toolName = style({
-  color: theme.content.primary,
+  color: 'inherit',
+  display: 'block',
   minWidth: 0,
   overflow: 'hidden',
   textDecoration: 'none',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
-  ...theme.typography.bodySmall,
   selectors: {
     '&:focus-visible': { borderRadius: 4, outline: `2px solid ${theme.stroke.focused}` },
   },

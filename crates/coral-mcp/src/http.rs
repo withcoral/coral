@@ -10,6 +10,7 @@ use axum::extract::State;
 use axum::http::{Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
+use axum::serve::ListenerExt as _;
 use coral_workspace::{Principal, WorkspaceId, WorkspaceState};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::session::{SessionId, SessionManager as _};
@@ -220,25 +221,33 @@ async fn start_server(
             axum::routing::get(metadata),
         );
     // Health probes are added after tracing, so they open no span.
-    let router = coral_telemetry::trace_http_routes(mcp_routes)
-        .route("/healthz", axum::routing::get(|| async { StatusCode::OK }))
-        .route(
-            "/readyz",
-            axum::routing::get(move || {
-                let readiness = readiness.clone();
-                let state = health_state.clone();
-                async move {
-                    if !state.config.cancellation_token.is_cancelled() && readiness().await {
-                        StatusCode::OK
-                    } else {
-                        StatusCode::SERVICE_UNAVAILABLE
+    let router =
+        coral_telemetry::trace_http_routes(mcp_routes, coral_telemetry::metric::Interface::Mcp)
+            .route("/healthz", axum::routing::get(|| async { StatusCode::OK }))
+            .route(
+                "/readyz",
+                axum::routing::get(move || {
+                    let readiness = readiness.clone();
+                    let state = health_state.clone();
+                    async move {
+                        if !state.config.cancellation_token.is_cancelled() && readiness().await {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::SERVICE_UNAVAILABLE
+                        }
                     }
-                }
-            }),
-        )
-        .with_state(state.clone());
+                }),
+            )
+            .with_state(state.clone());
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let task_state = state.clone();
+    // axum leaves Nagle's algorithm on, so a small write can wait for the
+    // client's delayed ACK.
+    let listener = listener.tap_io(|stream| {
+        if stream.set_nodelay(true).is_err() {
+            tracing::warn!("failed to set TCP_NODELAY on an accepted connection");
+        }
+    });
     let task = tokio::spawn(async move {
         let result = axum::serve(listener, router)
             .with_graceful_shutdown(async move {

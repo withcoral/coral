@@ -32,9 +32,23 @@ pub(crate) struct RunRecord {
     pub(crate) terminal_outcome: Option<RunTerminalOutcome>,
     pub(crate) terminal_at_unix_nanos: Option<i64>,
     pub(crate) value_limits: coral_value::ValueLimits,
+    /// The Run Trace acceptance stored; `None` for a Run accepted before it
+    /// was stored, or without an OpenTelemetry layer.
+    pub(crate) trace: Option<coral_telemetry::RunTrace>,
 }
 
 impl RunRecord {
+    /// The Run Trace identifier its terminal diagnostic names: only for a
+    /// Run that failed, timed out or was interrupted.
+    pub(crate) fn diagnostic_trace_id(&self) -> Option<coral_telemetry::TraceId> {
+        matches!(
+            self.state,
+            RunState::Failed | RunState::TimedOut | RunState::Interrupted
+        )
+        .then(|| self.trace.as_ref().map(coral_telemetry::RunTrace::trace_id))
+        .flatten()
+    }
+
     /// Checks Emissions, Logs, Invocation results, and the Final Value against
     /// the shared budget. The Final Value is checked only at Run completion.
     pub(crate) fn output_fits(&self, additional: usize) -> bool {

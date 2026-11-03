@@ -16,7 +16,7 @@ use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 
 use crate::access::ProviderCallRoot;
-use crate::{Error, Provider, ProviderId, ProviderState, ToolAuthoringMaterial, repository};
+use crate::{Error, Provider, ProviderId, ToolAuthoringMaterial, repository};
 
 /// Everything Universal Search may index about one Generation: the Provider's
 /// identity and one entry per structurally available Tool.
@@ -26,6 +26,7 @@ use crate::{Error, Provider, ProviderId, ProviderState, ToolAuthoringMaterial, r
 /// each entry into what it keeps, and drops the entry, holds one Tool's
 /// fields at a time: a large Provider's fields together run to gigabytes.
 pub struct GenerationEntries {
+    published_at_unix_nanos: i64,
     workspace_id: WorkspaceId,
     provider_id: ProviderId,
     call_root: ProviderCallRoot,
@@ -38,6 +39,12 @@ pub struct GenerationEntries {
 }
 
 impl GenerationEntries {
+    /// The Generation's stored publication time, before its publishing commit.
+    #[must_use]
+    pub const fn published_at_unix_nanos(&self) -> i64 {
+        self.published_at_unix_nanos
+    }
+
     /// Returns the Workspace that owns the Provider.
     #[must_use]
     pub const fn workspace_id(&self) -> &WorkspaceId {
@@ -192,8 +199,13 @@ pub async fn prepare_active_generation_entries_in_transaction(
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
 ) -> Result<Option<GenerationEntries>, Error> {
-    let Some(stored) =
-        repository::provider_in_transaction(transaction, workspace_id, provider_id).await?
+    let Some(stored) = repository::current_provider(
+        transaction,
+        workspace_id,
+        repository::ProviderKey::Id(provider_id),
+        repository::ProviderHold::None,
+    )
+    .await?
     else {
         return Ok(None);
     };
@@ -202,7 +214,16 @@ pub async fn prepare_active_generation_entries_in_transaction(
     let tools =
         coral_catalog::searchable_tools_in_transaction(transaction, &stored.generation_id).await?;
     let provider = &stored.provider;
+    let published_at_unix_nanos = coral_catalog::generation_publication_times_in_transaction(
+        transaction,
+        std::slice::from_ref(&stored.generation_id),
+    )
+    .await?
+    .get(&stored.generation_id)
+    .copied()
+    .ok_or_else(|| Error::CorruptData("active Generation has no publication time".to_string()))?;
     Ok(Some(GenerationEntries {
+        published_at_unix_nanos,
         workspace_id: provider.owner().clone(),
         provider_id: provider.id().clone(),
         call_root: provider.access().call_root().clone(),
@@ -355,7 +376,7 @@ pub(crate) async fn active_providers(
         repository::management_providers(transaction, workspace_id, provider_filter)
             .await?
             .into_iter()
-            .filter(|stored| stored.provider.state() == ProviderState::Active)
+            .filter_map(repository::ProviderWithActiveGeneration::into_active)
             .map(|stored| ActiveProvider {
                 provider: stored.provider,
                 generation_id: stored.generation_id,

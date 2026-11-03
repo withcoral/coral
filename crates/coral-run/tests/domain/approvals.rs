@@ -99,6 +99,7 @@ async fn approval_waits_for_the_invoking_user_and_commits_one_decision() {
 
 #[tokio::test]
 async fn declining_commits_invocation_failure_with_the_winning_decision() {
+    let telemetry = super::trace::telemetry();
     let fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
@@ -168,6 +169,7 @@ async fn declining_commits_invocation_failure_with_the_winning_decision() {
         .unwrap();
     assert_eq!(events.len(), 1);
     assert!(!format!("{events:?}").contains("canary"));
+    telemetry.assert_holds_none_of(["argument-canary", "comment-canary"]);
 }
 
 /// An approval-gated Workspace with every kind of Principal that might see an
@@ -547,7 +549,8 @@ async fn destructive_lifecycle_keeps_exact_agent_invocation_and_approval_history
         .providers
         .delete_provider(&context, &tool.workspace_id.clone(), &tool.provider_id)
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(
         approvals
             .get(&tool.principal, &tool.workspace_id, &request.id)
@@ -772,6 +775,10 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
 /// actionable), and a decision that arrives after the timer fired is
 /// answered with the recorded Expired; no Approved decision is written.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey follows the owner's expiry through every reader of the request"
+)]
 async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_reads_expired() {
     let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
@@ -806,10 +813,16 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     // The timer fires on the host clock; the test clock stays before the
     // deadline, so nothing but the owner's record can show the expiry.
     let read = || approvals.get(&tool.principal, &tool.workspace_id, &request.id);
+    let pending = approval_revision(&fixture.runs, &tool.principal, &tool.workspace_id).await;
     wait_until_async_within(Duration::from_secs(5), async || {
         read().await.unwrap().state != ApprovalState::Pending
     })
     .await;
+    assert_ne!(
+        approval_revision(&fixture.runs, &tool.principal, &tool.workspace_id).await,
+        pending,
+        "an expiry changes the pending set"
+    );
     let expired = read().await.unwrap();
     assert_eq!(expired.state, ApprovalState::Expired);
     assert_eq!(expired.approver, None);
@@ -828,9 +841,10 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     assert_eq!(
         fixture
             .runs
-            .required_action_count(&tool.principal, None)
+            .required_action_counts(&tool.principal, None)
             .await
-            .unwrap(),
+            .unwrap()
+            .total(),
         0
     );
     assert!(queue.actions.is_empty());
@@ -1357,12 +1371,12 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
 }
 
 #[tokio::test]
-async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_fence() {
+async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_enforcement_point() {
     let upstream = Arc::new(ScriptedUpstream::json(
         200,
         serde_json::json!({"temperature":21}),
     ));
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
@@ -1561,31 +1575,32 @@ async fn approval_event_fault(fixture: &TestModules, enabled: bool) {
         .await;
 }
 
-/// Holds the fence and, when set, moves time to `expire_at_checks` once the fence
-/// has loaded its final checks.
-struct ApprovalFenceExpiry {
+/// Holds the enforcement point and, when set, moves time to `expire_at_checks`
+/// once the enforcement point has loaded its final checks.
+struct ApprovalEnforcementExpiry {
     /// Holds the Invocation as it is about to wait for the decision.
-    wait: Arc<FenceGate>,
-    fence: Arc<FenceGate>,
+    wait: Arc<EnforcementGate>,
+    enforcement: Arc<EnforcementGate>,
     clock: Arc<TestClock>,
     expire_at_checks: Option<i64>,
 }
 
 #[async_trait]
-impl InvocationObserver for ApprovalFenceExpiry {
-    fn fence_attempt_finished(&self, permit: bool, durable_start: bool) {
-        self.fence.fence_attempt_finished(permit, durable_start);
+impl InvocationObserver for ApprovalEnforcementExpiry {
+    fn enforcement_check_finished(&self, permit: bool, durable_start: bool) {
+        self.enforcement
+            .enforcement_check_finished(permit, durable_start);
     }
 
     async fn approval_waiting(&self) -> Result<(), Error> {
-        self.wait.before_fence().await
+        self.wait.before_enforcement().await
     }
 
-    async fn before_fence(&self) -> Result<(), Error> {
-        self.fence.before_fence().await
+    async fn before_enforcement(&self) -> Result<(), Error> {
+        self.enforcement.before_enforcement().await
     }
 
-    async fn fence_checks_loaded(&self) {
+    async fn enforcement_checks_loaded(&self) {
         if let Some(at) = self.expire_at_checks {
             self.clock.next.store(at, Ordering::SeqCst);
         }
@@ -1594,8 +1609,8 @@ impl InvocationObserver for ApprovalFenceExpiry {
 
 /// An approved Invocation cannot dispatch once its approval expires, whether
 /// the approval expired before the held gate read it or, with the deadline
-/// the gate recorded in owner memory, while the fence loaded its final
-/// checks. The approval itself stays approved.
+/// the gate recorded in owner memory, while the enforcement point loaded its
+/// final checks. The approval itself stays approved.
 #[tokio::test]
 async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
     const APPROVAL_DEADLINE: i64 = 1_000_000;
@@ -1606,11 +1621,11 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
             upstream.clone(),
         )
         .await;
-        let (wait, release_wait) = FenceGate::blocking();
-        let (fence, release_fence) = FenceGate::blocking();
-        fixture.runs.invocation_observer = Arc::new(ApprovalFenceExpiry {
+        let (wait, release_wait) = EnforcementGate::blocking();
+        let (enforcement, release_enforcement) = EnforcementGate::blocking();
+        fixture.runs.invocation_observer = Arc::new(ApprovalEnforcementExpiry {
             wait: wait.clone(),
-            fence: fence.clone(),
+            enforcement: enforcement.clone(),
             clock: fixture.clock.clone(),
             expire_at_checks: during_final_checks.then_some(APPROVAL_DEADLINE),
         });
@@ -1629,9 +1644,10 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
         .await;
         wait_until(|| wait.entered()).await;
         // Isolate approval expiry from the longer Run and worker-claim deadlines.
-        // While the fence loads its checks, the deadline the gate records is
-        // the one the fence's clock sample passes; before the gate, the
-        // deadline has already passed when the gate reads the approval.
+        // While the enforcement point loads its checks, the deadline the gate
+        // records is the one the enforcement point's clock sample passes;
+        // before the gate, the deadline has already passed when the gate reads
+        // the approval.
         if during_final_checks {
             crate::approval_repository::set_approval_deadline(
                 &fixture.database,
@@ -1665,9 +1681,9 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
         }
         release_wait.send(()).unwrap();
         if during_final_checks {
-            wait_until(|| fence.entered()).await;
+            wait_until(|| enforcement.entered()).await;
         }
-        release_fence.send(()).unwrap();
+        release_enforcement.send(()).unwrap();
         let terminal = wait_for_terminal(
             &fixture.runs,
             &tool.principal,
@@ -1675,7 +1691,7 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
             run.run_id(),
         )
         .await;
-        fence.fences.assert_no_dispatch();
+        enforcement.enforcement_checks.assert_no_dispatch();
         assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
         assert_final_code(&terminal, "approval_expired");
         assert_eq!(
@@ -1690,20 +1706,20 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
     }
 }
 
-struct ApprovalFailureGate(Arc<FenceGate>);
+struct ApprovalFailureGate(Arc<EnforcementGate>);
 #[async_trait]
 impl InvocationObserver for ApprovalFailureGate {
     async fn before_failure_commit(&self) -> Result<(), Error> {
-        self.0.before_fence().await
+        self.0.before_enforcement().await
     }
 }
 
 /// A decision reads no policy: a decline made after the Tool was
 /// disabled is recorded as the decline, and the Invocation ends declined
-/// even though the fence already judged the policy failure.
+/// even though the enforcement point already judged the policy failure.
 #[tokio::test]
 async fn a_decline_after_a_policy_change_is_recorded_as_the_decline() {
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         Arc::new(RejectingUpstream),
@@ -1775,7 +1791,7 @@ async fn a_decline_after_a_policy_change_is_recorded_as_the_decline() {
 )]
 async fn first_durable_decision_wins_against_policy_changes_before_the_worker_observes_them() {
     for (policy_first, agent_case) in [(false, false), (true, false), (false, true), (true, true)] {
-        let (gate, release) = FenceGate::blocking();
+        let (gate, release) = EnforcementGate::blocking();
         let fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             Arc::new(RejectingUpstream),
@@ -1897,12 +1913,13 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
 /// While an Approval Request is pending, its Invocation is parked with its
 /// Run Owner and holds nothing. Commits elsewhere ring the content-free
 /// change signal, but an owner subscribes only for a connection wait, so
-/// they wake nothing, read nothing and fence nothing: the decision comes
+/// they wake nothing, read nothing and enforce nothing: the decision comes
 /// through the owner, and the periodic precheck (15 s away here) is the
 /// ceiling for everything else. Polling a snapshot per parked wait on every
 /// commit used to starve the pool.
 #[tokio::test]
-async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_fence_and_no_read() {
+async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_enforcement_check_and_no_read()
+{
     let wake_gap = Duration::from_secs(1);
     let (fixture, probe) = probed_fixture(
         crate::execution::ExecutionPolicy::testing()
@@ -1927,7 +1944,7 @@ async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_fence_and_no
         .unwrap();
     // The held gate requests the approval and parks the Invocation.
     probe.until_parked(1).await;
-    let (held, fences) = (probe.held(), probe.fences());
+    let (held, enforcement_checks) = (probe.held(), probe.enforcement_checks());
     for at in 0..3 {
         commit_elsewhere(&fixture, &bystander, at).await;
     }
@@ -1935,7 +1952,11 @@ async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_fence_and_no
     tokio::time::sleep(wake_gap + Duration::from_millis(500)).await;
 
     assert_eq!(probe.held() - held, 0, "held rechecks");
-    assert_eq!(probe.fences() - fences, 0, "fences");
+    assert_eq!(
+        probe.enforcement_checks() - enforcement_checks,
+        0,
+        "enforcement checks"
+    );
     assert_eq!(probe.parked(), 1, "the Invocation stays parked");
     assert_eq!(probe.prechecks(), Vec::new(), "snapshot reads");
     fixture
@@ -1953,9 +1974,10 @@ async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_fence_and_no
 /// A wait that became moot with no wake-up (the Workspace archived while a
 /// decision is pending) is found by the periodic precheck alone: its
 /// snapshot finds the authority lost, and the Invocation goes back to its
-/// held gate, which refuses it under the fence's shared holds and closes the
-/// request. No fence ever runs. The owner's timers run on the host clock, so
-/// the test shortens the precheck's period instead of advancing a clock 15 s.
+/// held gate, which refuses it under the enforcement point's shared holds and
+/// closes the request. No enforcement check ever runs. The owner's timers run
+/// on the host clock, so the test shortens the precheck's period instead of
+/// advancing a clock 15 s.
 #[tokio::test]
 async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_request_closed() {
     let (fixture, probe) = probed_fixture(
@@ -2019,7 +2041,7 @@ async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_reque
         1,
         "one held recheck, after the finding"
     );
-    assert_eq!(probe.fences(), 0, "no fence");
+    assert_eq!(probe.enforcement_checks(), 0, "no enforcement check");
     assert_eq!(
         approvals
             .get(&tool.principal, &tool.workspace_id, &request.id)
@@ -2087,6 +2109,223 @@ async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
     );
     assert_eq!(probe.parked(), 1, "parked once, woken once");
     assert_eq!(probe.prechecks(), Vec::new(), "no read woke it");
+}
+
+/// A request the Run's timeout reaches while it is pending expires, as
+/// its own deadline (capped at the Run's) would have expired it: no
+/// approver, dated at its deadline, its Invocation failed
+/// `approval_expired`, and one Expired lifecycle event. The Run still ends
+/// `timed_out`.
+#[tokio::test]
+async fn a_run_timeout_expires_its_pending_approval() {
+    let fixture = TestModules::new(Arc::new(
+        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
+    ))
+    .await;
+    let tool = fixture
+        .user_tool("user:timed-out-review", "Nobody answers in time")
+        .await;
+    fixture.require_approval(&tool).await;
+    let approvals = fixture.approvals();
+    let run = fixture
+        .runs
+        .start(
+            &tool.principal,
+            &tool.workspace_id,
+            RunSubmission::new(
+                ProgramSource::parse("await coral.providers.weather.getForecast({});").unwrap(),
+                RunTimeout::from_millis(500).unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    let request = wait_for_approval(
+        &approvals,
+        &tool.principal,
+        &tool.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &tool.principal,
+        &tool.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    assert_eq!(terminal.state(), RunState::TimedOut);
+    let expired = approvals
+        .get(&tool.principal, &tool.workspace_id, &request.id)
+        .await
+        .unwrap();
+    assert_eq!(expired.state, ApprovalState::Expired);
+    assert_eq!(expired.approver, None);
+    assert_eq!(
+        expired.decided_at_unix_nanos,
+        Some(request.deadline_at_unix_nanos),
+        "dated at its deadline"
+    );
+    let rows = fixture
+        .invocation_rows(&tool.workspace_id, run.run_id())
+        .await;
+    assert!(
+        matches!(rows.as_slice(), [row] if row.failure_code.as_deref() == Some("approval_expired")),
+        "{rows:?}"
+    );
+    let events = approvals
+        .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
+        .await
+        .unwrap();
+    assert!(
+        matches!(events.as_slice(), [event] if event.state == ApprovalState::Expired),
+        "{events:?}"
+    );
+}
+
+/// History holds the requests a person approved or declined and those whose
+/// deadline passed, newest first, and leaves out a request Coral closed. Its
+/// keyset seeks past a position, so a page already read stays put when a
+/// newer request settles, and paging never repeats or skips a row. A page
+/// size outside 1–100 is refused.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one history arranged through every way a request settles"
+)]
+async fn settled_approvals_list_decisions_and_expiries_newest_first_and_page_stably() {
+    use crate::SettledOutcome::{Approved, Declined, Expired};
+    let fixture = TestModules::new(Arc::new(
+        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
+    ))
+    .await;
+    let tool = fixture.user_tool("user:history", "Approval history").await;
+    fixture.require_approval(&tool).await;
+    let approvals = fixture.approvals();
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    let call =
+        "try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }";
+    let start = async |timeout_ms: u64| {
+        let run = fixture
+            .runs
+            .start(
+                actor,
+                workspace,
+                RunSubmission::new(
+                    ProgramSource::parse(call).unwrap(),
+                    RunTimeout::from_millis(timeout_ms).unwrap(),
+                ),
+            )
+            .await
+            .unwrap()
+            .run_id()
+            .clone();
+        let request = wait_for_approval(&approvals, actor, workspace, &run).await;
+        (run, request.id)
+    };
+    let decide = async |request: &crate::approval::ApprovalId, decision| {
+        approvals
+            .decide(
+                actor,
+                workspace,
+                request,
+                decision,
+                None,
+                &TraceId::parse(&"d".repeat(32)).unwrap(),
+            )
+            .await
+            .unwrap();
+    };
+    let settled = async |after: Option<&crate::SettledCursor>, limit| {
+        settled_approvals(&fixture.runs, actor, workspace, after, limit)
+            .await
+            .unwrap()
+    };
+
+    let (_, approved) = start(60_000).await;
+    decide(&approved, ApprovalDecision::Approve).await;
+    let (_, declined) = start(60_000).await;
+    decide(&declined, ApprovalDecision::Decline).await;
+    let (closed_run, closed) = start(60_000).await;
+    fixture
+        .runs
+        .cancel(actor, workspace, &closed_run, &immediate(None, 1))
+        .await
+        .unwrap();
+    wait_for_terminal(&fixture.runs, actor, workspace, &closed_run).await;
+    // Nobody answers before the Run's timeout.
+    let (expired_run, expired) = start(500).await;
+    wait_for_terminal(&fixture.runs, actor, workspace, &expired_run).await;
+    assert_eq!(
+        approvals
+            .get(actor, workspace, &closed)
+            .await
+            .unwrap()
+            .state,
+        ApprovalState::Closed
+    );
+
+    let all = settled(None, 100).await;
+    let rows: Vec<_> = all
+        .approvals
+        .iter()
+        .map(|row| (row.approval.clone(), row.outcome, row.approver.is_some()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (expired.clone(), Expired, false),
+            (declined.clone(), Declined, true),
+            (approved.clone(), Approved, true),
+        ],
+        "newest first, and the closed request stays out"
+    );
+    assert!(all.next.is_none());
+    let expiry = approvals.get(actor, workspace, &expired).await.unwrap();
+    let [expired_row, declined_row, _] = all.approvals.as_slice() else {
+        panic!("three settled rows")
+    };
+    assert_eq!(
+        expired_row.settled_at_unix_nanos, expiry.deadline_at_unix_nanos,
+        "an expiry is dated at its deadline"
+    );
+    assert_eq!(
+        declined_row
+            .approver
+            .as_ref()
+            .map(|approver| &approver.principal),
+        Some(actor.principal())
+    );
+
+    let first = settled(None, 2).await;
+    let cursor = first.next.clone().expect("a later page");
+    // A request that settles now is newer than every row read so far.
+    let (_, newer) = start(60_000).await;
+    decide(&newer, ApprovalDecision::Approve).await;
+    let rest = settled(Some(&cursor), 2).await;
+    let paged: Vec<_> = first
+        .approvals
+        .iter()
+        .chain(&rest.approvals)
+        .map(|row| row.approval.clone())
+        .collect();
+    assert_eq!(paged, [expired.clone(), declined, approved]);
+    assert!(rest.next.is_none());
+    // A fresh read shows it beside the rows it is newer than. The expiry stays
+    // first: it is dated at its deadline, later than any decision here.
+    let fresh: Vec<_> = settled(None, 2)
+        .await
+        .approvals
+        .into_iter()
+        .map(|row| row.approval)
+        .collect();
+    assert_eq!(fresh, [expired, newer]);
+
+    for limit in [0, 101] {
+        assert!(matches!(
+            settled_approvals(&fixture.runs, actor, workspace, None, limit).await,
+            Err(Error::InvalidInput(_))
+        ));
+    }
 }
 
 /// A fixture under `policy` whose Invocations and Run Owners one

@@ -17,9 +17,49 @@ pub(super) async fn check(
         .and_then(Value::as_str)
         .expect("Task id");
     search_defaults_return_ten_visible_descriptions(session, task, index).await;
+    the_next_offset_reads_the_next_page(session, task).await;
+    remove_default_limit_fixtures(session, task).await;
     session
         .tool("end_task", json!({"task_id":task, "outcome":"success"}))
         .await;
+}
+
+/// The `offset` argument reaches search, and `next_offset` reads on: the next
+/// page holds no hit of the first. Paging itself is coral-search's rule.
+async fn the_next_offset_reads_the_next_page(session: &super::RawSession, task: &str) {
+    let page = |offset: Option<Value>| async move {
+        let mut arguments = json!({
+            "task_id":task, "intent":"Read a search page", "query":"optionalDefaults", "limit":3
+        });
+        if let Some(offset) = offset {
+            arguments
+                .as_object_mut()
+                .expect("arguments")
+                .insert("offset".into(), offset);
+        }
+        let result = session.tool("search", arguments).await;
+        result
+            .get("structuredContent")
+            .cloned()
+            .expect("search page")
+    };
+    let call_paths = |page: &Value| {
+        page["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .map(|hit| hit["call_path"].clone())
+            .collect::<Vec<_>>()
+    };
+    let first = page(None).await;
+    let next_offset = first.get("next_offset").cloned().expect("next_offset");
+    let next = page(Some(next_offset)).await;
+    assert!(!call_paths(&next).is_empty());
+    assert!(
+        call_paths(&next)
+            .iter()
+            .all(|path| !call_paths(&first).contains(path))
+    );
 }
 
 async fn search_defaults_return_ten_visible_descriptions(
@@ -102,8 +142,8 @@ async fn search_defaults_return_ten_visible_descriptions(
             count
         );
         assert_eq!(
-            page.get("next_cursor").is_some_and(Value::is_string),
-            count < 12
+            page.get("next_offset").and_then(Value::as_u64),
+            (count < 12).then_some(count as u64)
         );
         if count == 10 {
             if let Some(expected) = &default_page {
@@ -113,6 +153,9 @@ async fn search_defaults_return_ten_visible_descriptions(
             }
         }
     }
+}
+
+async fn remove_default_limit_fixtures(session: &super::RawSession, task: &str) {
     for index in 0..12 {
         let deleted = session
             .tool(
@@ -274,7 +317,7 @@ fn check_schema(tools: &[Value]) {
     for (name, field, default) in [
         ("search", "limit", 10),
         ("exec", "run_timeout_ms", 900_000),
-        ("exec", "wait_ms", 10_000),
+        ("exec", "wait_ms", 30_000),
         ("wait", "wait_ms", 0),
     ] {
         let property = property(tools, name, field);

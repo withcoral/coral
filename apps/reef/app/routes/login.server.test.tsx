@@ -1,23 +1,43 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { localRuntimeConfig, publicRouteTestArgs } from '@/auth/server-context.test-helper'
-import { commitCoralWebSession, oauthCookieName } from '@/auth/session.server'
+import {
+  commitCoralWebSession,
+  oauthCookieName,
+  signOutCoralWebSession,
+} from '@/auth/session.server'
 import { hostedRuntimeConfig, requiredAuthConfig } from '@/auth/test-config'
 import type { CoralWebRuntimeConfig } from '@/lib/runtime-config.server'
 
 import { headers, loader } from './login'
 
 const issuer = requiredAuthConfig.issuer
-const discovery = vi.fn(async () =>
-  Response.json({
+const started = { endpoint: `${issuer}/oauth/session`, expiresIn: 3600, handle: 'coral_ws_handle' }
+/** How Coral answers ending a session, unless a test changes it. */
+let endAnswer = 200
+/** How Coral answers resolving a session, unless a test changes it. */
+let tokenAnswer = 200
+// Discovery, session resolves, and session ends, routed by URL.
+const discovery = vi.fn(async (input: string | URL | Request) => {
+  const url = input.toString()
+  if (url.endsWith('/oauth/session/token')) {
+    if (tokenAnswer !== 200)
+      return Response.json({ error: 'server_error' }, { status: tokenAnswer })
+    return Response.json({ access_token: 'minted', expires_in: 300, session_expires_in: 3000 })
+  }
+  if (url.endsWith('/oauth/session/end')) return new Response(null, { status: endAnswer })
+  return Response.json({
     authorization_endpoint: `${issuer}/authorize`,
+    coral_web_session_endpoint: `${issuer}/oauth/session`,
     issuer,
     token_endpoint: `${issuer}/token`,
-  }),
-)
+  })
+})
 
 describe('login route', () => {
   beforeEach(() => {
+    endAnswer = 200
+    tokenAnswer = 200
     discovery.mockClear()
     vi.stubGlobal('fetch', discovery)
   })
@@ -40,10 +60,7 @@ describe('login route', () => {
   })
 
   it('returns an existing hosted session home instead of restarting OAuth', async () => {
-    const session = await commitCoralWebSession(
-      { accessToken: 'server-only-token', expiresAt: 4_102_444_800, tokenType: 'Bearer' },
-      requiredAuthConfig,
-    )
+    const session = await commitCoralWebSession(started, requiredAuthConfig)
 
     const response = await runLoader('https://coral-web.example.test/login', {
       cookie: session.split(';', 1)[0],
@@ -52,15 +69,81 @@ describe('login route', () => {
     expect(response.status).toBe(302)
     expect(response.headers.get('location')).toBe('/')
     expect(response.headers.get('Cache-Control')).toBe('private, no-store')
-    expect(discovery).not.toHaveBeenCalled()
+    expect(discovery.mock.calls.map(([url]) => url.toString())).toEqual([
+      `${started.endpoint}/token`,
+    ])
+  })
+
+  it.each([
+    [200, false],
+    [503, true],
+  ])(
+    'retries a pending sign-out on the next visit; Coral answering %i leaves it pending: %s',
+    async (status, stillPending) => {
+      endAnswer = 503
+      const signOut = await signOutCoralWebSession(
+        new Request('https://coral-web.example.test/', {
+          headers: {
+            cookie: (await commitCoralWebSession(started, requiredAuthConfig)).split(';', 1)[0],
+          },
+        }),
+        requiredAuthConfig,
+      )
+      const pending = signOut.setCookies.find((cookie) =>
+        cookie.startsWith(`${requiredAuthConfig.cookieName}_signout=`),
+      )
+      discovery.mockClear()
+      endAnswer = status
+
+      const result = await runLoaderValue('https://coral-web.example.test/login?signedOut=1', {
+        cookie: pending!.split(';', 1)[0],
+      })
+
+      expect(discovery.mock.calls.map(([url]) => url.toString())).toEqual([
+        `${started.endpoint}/end`,
+      ])
+      expect(loaderValue(result)).toMatchObject({ signOutPending: stillPending })
+      const cleared = loaderHeaders(result)
+        .getSetCookie()
+        .some((cookie) => cookie.startsWith(`${requiredAuthConfig.cookieName}_signout=;`))
+      expect(cleared).toBe(!stillPending)
+    },
+  )
+
+  // Catches an outage answer that drops the finished retry's cookie, so the
+  // browser would keep retrying a sign-out Coral already finished.
+  it('keeps a finished sign-out finished when Coral cannot resolve the session', async () => {
+    endAnswer = 503
+    const session = (await commitCoralWebSession(started, requiredAuthConfig)).split(';', 1)[0]
+    const signOut = await signOutCoralWebSession(
+      new Request('https://coral-web.example.test/', { headers: { cookie: session } }),
+      requiredAuthConfig,
+    )
+    const pending = signOut.setCookies
+      .find((cookie) => cookie.startsWith(`${requiredAuthConfig.cookieName}_signout=`))!
+      .split(';', 1)[0]
+    endAnswer = 200
+    tokenAnswer = 503
+
+    const thrown = await runLoaderValue('https://coral-web.example.test/login', {
+      cookie: `${session}; ${pending}`,
+    }).catch((error: unknown) => error)
+
+    expect((thrown as Response).status).toBe(503)
+    expect(
+      (thrown as Response).headers
+        .getSetCookie()
+        .some((cookie) => cookie.startsWith(`${requiredAuthConfig.cookieName}_signout=;`)),
+    ).toBe(true)
   })
 
   it('renders the signed-out interstitial without immediately restarting SSO', async () => {
-    await expect(
-      runLoaderValue('https://coral-web.example.test/login?signedOut=1'),
-    ).resolves.toEqual({
+    expect(
+      loaderValue(await runLoaderValue('https://coral-web.example.test/login?signedOut=1')),
+    ).toEqual({
       returnTo: '/',
       sessionExpired: false,
+      signOutPending: false,
     })
     expect(discovery).not.toHaveBeenCalled()
   })
@@ -68,19 +151,27 @@ describe('login route', () => {
   // The interstitial renders instead of redirecting, so unlike every other
   // branch it has to carry the destination across the pause itself.
   it('carries a destination through the interstitial', async () => {
-    await expect(
-      runLoaderValue(
-        'https://coral-web.example.test/login?signedOut=1&returnTo=%2Fworkspaces%2Fanalytics%3Ftab%3Dmine',
+    expect(
+      loaderValue(
+        await runLoaderValue(
+          'https://coral-web.example.test/login?signedOut=1&returnTo=%2Fworkspaces%2Fanalytics%3Ftab%3Dmine',
+        ),
       ),
-    ).resolves.toEqual({ returnTo: '/workspaces/analytics?tab=mine', sessionExpired: false })
+    ).toEqual({
+      returnTo: '/workspaces/analytics?tab=mine',
+      sessionExpired: false,
+      signOutPending: false,
+    })
   })
 
   it('drops a destination the interstitial should not send anyone to', async () => {
-    await expect(
-      runLoaderValue(
-        'https://coral-web.example.test/login?signedOut=1&returnTo=%2F..%2F%2Fevil.example',
+    expect(
+      loaderValue(
+        await runLoaderValue(
+          'https://coral-web.example.test/login?signedOut=1&returnTo=%2F..%2F%2Fevil.example',
+        ),
       ),
-    ).resolves.toEqual({ returnTo: '/', sessionExpired: false })
+    ).toEqual({ returnTo: '/', sessionExpired: false, signOutPending: false })
   })
 
   it('starts hosted OAuth at the issuer and sets the transaction cookie privately', async () => {
@@ -112,4 +203,18 @@ async function runLoaderValue(
   runtime: CoralWebRuntimeConfig = hostedRuntimeConfig,
 ) {
   return loader(publicRouteTestArgs(new Request(url, { headers: init }), runtime))
+}
+
+/** The value a loader returned with `data()`, or returned bare. */
+function loaderValue(result: unknown): unknown {
+  return result && typeof result === 'object' && 'data' in result ? result.data : result
+}
+
+/** The headers a loader returned with `data()`. */
+function loaderHeaders(result: unknown): Headers {
+  const init =
+    result && typeof result === 'object' && 'init' in result
+      ? (result.init as ResponseInit | null)
+      : null
+  return new Headers(init?.headers)
 }

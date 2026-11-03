@@ -18,11 +18,14 @@ pub use builtin::{
     AddProviderArguments, AddProviderResult, ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME,
     BuiltinAccessState, BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity,
     BuiltinCredentialRoute, BuiltinExecutionBinding, BuiltinTool, ConfigurationChoices,
-    ConfigurationOutput, ConfigurationPatch, GetPolicyArguments, GetPolicyResult,
-    GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
-    ListedProviderState, ListedSetup, ListedSetupState, ProviderFacts, ProviderSourceArgument,
-    ProviderSourceOutput, SourceChange, UpdatePolicyArguments, UpdatePolicyResult,
-    UpdateProviderArguments, UpdateProviderResult,
+    ConfigurationOutput, ConfigurationPatch, DeclaredHints, Description, DescriptionAuthoring,
+    GetPolicyArguments, GetPolicyResult, GetProviderArguments, GetProviderResult,
+    ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
+    MissingPath, PathsResult, ProviderFacts, ProviderSourceArgument, ProviderSourceOutput,
+    SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, SavedDetail, SavedDiagnostic, SavedDiagnosticCategory,
+    SearchArguments, SearchHit, SearchOutput, SearchResult, SearchRetriever,
+    SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus, SourceChange,
+    UpdatePolicyArguments, UpdatePolicyResult, UpdateProviderArguments, UpdateProviderResult,
 };
 mod configuration;
 pub use configuration::{
@@ -113,7 +116,7 @@ use coral_catalog as _;
 pub use binding::ExecutionBinding;
 pub use declaration_path::{DECLARATION_PATH_MAX_BYTES, DeclarationPath};
 pub use error::Error;
-pub use inspection::ToolSummary;
+pub use inspection::{ToolListing, ToolSummary};
 pub use mcp::{
     MCP_DISCOVERY_SNAPSHOT_MAX_BYTES, McpDiscoverySnapshot, McpExecutionBinding,
     McpInvocationMethod, McpTaskSupport, McpToolAnnotations, McpTransport,
@@ -127,11 +130,12 @@ pub use openapi::{
 pub use paths::{ToolPathAssignment, call_path_segment_is_reserved, provider_namespace_is_valid};
 pub use search::{DeclarationIndexEntry, PreparedDeclarationFields, StoredDeclarationFields};
 pub use types::{
-    CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, MaterializationOutcome,
-    MaterializedTool, PreparedProviderCatalog, ProviderGenerationFingerprint, ProviderGenerationId,
-    ProviderSetupInput, ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId,
-    SchemaSemantics, SearchableTool, TOOL_AUTHORING_DESCRIPTION_MAX_BYTES, ToolAvailability,
-    ToolHints, ToolKey, ToolPresentation,
+    CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, DiagnosticCode,
+    MaterializationOutcome, MaterializedTool, PreparedProviderCatalog,
+    ProviderGenerationFingerprint, ProviderGenerationId, ProviderSetupInput,
+    ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId, SchemaSemantics,
+    SearchableTool, TOOL_AUTHORING_DESCRIPTION_MAX_BYTES, ToolAvailability, ToolHints, ToolKey,
+    ToolPresentation,
 };
 
 /// Materializes one pinned Provider Setup input with the deployment-selected policy.
@@ -332,6 +336,18 @@ pub async fn verify_generation_in_transaction(
     repository::verify_generation(transaction, generation_id).await
 }
 
+/// Reads the stored publication times of owner-selected Generations in bounded
+/// batches. These timestamps precede the publication transaction's commit.
+///
+/// # Errors
+/// Returns a persistence or corrupt identity failure.
+pub async fn generation_publication_times_in_transaction(
+    transaction: &mut Transaction<'_>,
+    ids: &[ProviderGenerationId],
+) -> Result<std::collections::BTreeMap<ProviderGenerationId, i64>, Error> {
+    repository::generation_publication_times(transaction, ids).await
+}
+
 /// Loads the authoritative schema graph for one retained private Generation.
 ///
 /// # Errors
@@ -458,6 +474,43 @@ pub async fn tool_summaries_in_transaction(
         return Err(Error::InvalidInput("invalid catalog page size".into()));
     }
     repository::load_tool_summaries(transaction, generation_id, after, page_size).await
+}
+
+/// The most Tool listings one page can hold.
+pub const MAX_TOOL_LISTING_PAGE: u32 = 1000;
+
+/// Reads one listing page in Tool Key order, plus at most one lookahead row.
+///
+/// The caller owns authority and continuation encoding. `after` is exclusive;
+/// `page_size` must be 1..=[`MAX_TOOL_LISTING_PAGE`]. Prose, definitions and
+/// schemas stay lazy, which is what lets a page be this large.
+///
+/// # Errors
+/// Returns an invalid size, persistence, or listing corruption failure.
+pub async fn tool_listings_in_transaction(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    after: Option<&ToolKey>,
+    page_size: u32,
+) -> Result<Vec<ToolListing>, Error> {
+    if !(1..=MAX_TOOL_LISTING_PAGE).contains(&page_size) {
+        return Err(Error::InvalidInput("invalid catalog page size".into()));
+    }
+    repository::load_tool_listings(transaction, generation_id, after, page_size).await
+}
+
+/// Reads one Tool's summary by its exact Generation-relative Call Path
+/// projection. The caller owns authority.
+///
+/// # Errors
+/// Returns a persistence or summary corruption failure. `Ok(None)` means the
+/// Generation has no such Tool.
+pub async fn tool_summary_by_relative_path_in_transaction(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    relative_path: &str,
+) -> Result<Option<ToolSummary>, Error> {
+    repository::load_tool_summary_by_relative_path(transaction, generation_id, relative_path).await
 }
 
 /// Loads the bounded current catalog for authorized administrative inspection.

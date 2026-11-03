@@ -14,16 +14,16 @@ import { ActionDialog, NameInput } from '@/views/management/forms'
 import { trail } from '@/views/management/layout'
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
-// Activity belongs to a Workspace, so home opens the first Workspace's Activity.
+// Overview belongs to a Workspace, so home opens the first Workspace's Overview.
 export async function loader({ request, context }: Route.LoaderArgs) {
   let workspaces
   try {
-    workspaces = await activeWorkspaces(management(request, context), request.signal)
+    workspaces = await activeWorkspaces(management(context), request.signal)
   } catch (error) {
     managementFailure(error)
   }
   if (!workspaces.length) return null
-  return redirect(`${resourcePath(workspaces[0].name)}/activity`, { headers: privateHeaders })
+  return redirect(resourcePath(workspaces[0].name), { headers: privateHeaders })
 }
 // Home renders only for someone with no active Workspace: nothing else in
 // Coral works until they create one.

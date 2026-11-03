@@ -79,6 +79,33 @@ impl fmt::Display for RunId {
     }
 }
 
+/// The ID of a Run Coral holds a row for: one it inserted at acceptance, or
+/// read from the row. A [`RunId`] a request names is caller text until Coral
+/// finds its Run, so only a Run's record makes one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HeldRunId(RunId);
+
+impl HeldRunId {
+    pub(crate) const fn run_id(&self) -> &RunId {
+        &self.0
+    }
+
+    /// A Run ID as if Coral held its row.
+    #[cfg(test)]
+    pub(crate) const fn fixture(run_id: RunId) -> Self {
+        Self(run_id)
+    }
+}
+
+impl fmt::Display for HeldRunId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Only a Run's record makes one, so Coral holds the Run it names.
+impl coral_telemetry::safe::Identifier for HeldRunId {}
+
 /// Stable Coral-generated Tool Invocation identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct InvocationId(Uuid);
@@ -110,6 +137,10 @@ impl fmt::Display for InvocationId {
         write!(formatter, "{}", self.0.hyphenated())
     }
 }
+
+/// A UUID Coral generated, or one parsed in its canonical form: it holds
+/// no text.
+impl coral_telemetry::safe::Identifier for InvocationId {}
 
 /// Exact submitted TypeScript async-function body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -340,6 +371,21 @@ pub enum RunFailureCode {
     RunAuthorityLost,
 }
 
+impl RunFailureCode {
+    /// Stable, transport-neutral code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::ProgramRejected => "program_rejected",
+            Self::InvalidProgramValue => "invalid_program_value",
+            Self::ResourceLimitExceeded => "resource_limit_exceeded",
+            Self::MemoryLimitExceeded => "memory_limit_exceeded",
+            Self::ProgramExecutionFailed => "program_execution_failed",
+            Self::RunAuthorityLost => "run_authority_lost",
+        }
+    }
+}
+
 /// Safe terminal Program failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunFailure {
@@ -409,6 +455,19 @@ impl RunTerminalOutcome {
             Self::Canceled => RunState::Canceled,
             Self::TimedOut => RunState::TimedOut,
             Self::Interrupted => RunState::Interrupted,
+        }
+    }
+
+    /// The failure code of an outcome that is an error, for a span's
+    /// `error.type`: the Run's failure code, `timed_out` or `interrupted`.
+    /// `None` for a success or a cancellation.
+    #[must_use]
+    pub const fn failure_code(&self) -> Option<&'static str> {
+        match self {
+            Self::Succeeded { .. } | Self::Canceled => None,
+            Self::Failed(failure) => Some(failure.code().code()),
+            Self::TimedOut => Some("timed_out"),
+            Self::Interrupted => Some("interrupted"),
         }
     }
 }
@@ -732,6 +791,7 @@ pub struct RunObservation {
     event_limit: u16,
     wait: Duration,
     batch_output: bool,
+    by_acceptor: bool,
 }
 
 impl RunObservation {
@@ -752,7 +812,22 @@ impl RunObservation {
             event_limit,
             wait: Duration::ZERO,
             batch_output: false,
+            by_acceptor: false,
         })
+    }
+
+    /// Marks this observation as made by the request that accepted the Run.
+    /// Acceptance already linked that request to the Run Trace, so the
+    /// observation links nothing more.
+    #[must_use]
+    pub const fn by_acceptor(mut self) -> Self {
+        self.by_acceptor = true;
+        self
+    }
+
+    /// Whether the request making this observation accepted the Run.
+    pub(crate) const fn is_by_acceptor(&self) -> bool {
+        self.by_acceptor
     }
 
     /// Observes a newly accepted Run, batching authored output until terminal state,
@@ -760,9 +835,9 @@ impl RunObservation {
     /// # Errors
     /// Rejects waits longer than 30 seconds.
     pub fn initial(wait: Duration) -> Result<Self, Error> {
-        let mut observation = Self::immediate(None, RUN_EVENT_PAGE_MAX)?.with_wait(wait)?;
-        observation.batch_output = true;
-        Ok(observation)
+        Self::immediate(None, RUN_EVENT_PAGE_MAX)?
+            .batching_output()
+            .with_wait(wait)
     }
 
     /// The last Event a wait has seen before it starts: its cursor's, or without
@@ -787,7 +862,16 @@ impl RunObservation {
                     .map_or([0; 32], RunCursor::required_action_revision)
     }
 
+    /// Waits for changed actions or the Run's end, not for each Emission or Log,
+    /// and returns the output that arrived by then, as `exec` does.
+    #[must_use]
+    pub const fn batching_output(mut self) -> Self {
+        self.batch_output = true;
+        self
+    }
+
     /// Waits until new authored Emissions/Logs, changed actions, or terminal data are available.
+    /// New output does not end a [`Self::batching_output`] wait, which still returns it.
     /// Without a cursor, output that exists when the wait begins is replayed, not new.
     /// A zero duration keeps the observation immediate.
     /// # Errors
@@ -826,6 +910,11 @@ pub struct RunUpdate {
     next_cursor: RunCursor,
     has_more: bool,
     terminal_outcome: Option<RunTerminalOutcome>,
+    /// What the failed Program received, read with the final page.
+    pub(crate) tool_result_shapes: crate::ToolResultShapes,
+    pub(crate) trace_id: Option<coral_telemetry::TraceId>,
+    /// The Run's Run Trace, which a request about the Run links to.
+    pub(crate) run_trace: Option<coral_telemetry::RunTrace>,
 }
 
 impl RunUpdate {
@@ -856,7 +945,17 @@ impl RunUpdate {
             next_cursor,
             has_more,
             terminal_outcome,
+            tool_result_shapes: crate::ToolResultShapes::default(),
+            trace_id: None,
+            run_trace: None,
         })
+    }
+
+    /// The Run Trace identifier of a Run that failed, timed out or was
+    /// interrupted, for operator correlation. It grants no authority.
+    #[must_use]
+    pub const fn trace_id(&self) -> Option<&coral_telemetry::TraceId> {
+        self.trace_id.as_ref()
     }
 
     /// Returns the effective limits retained at Run admission.
@@ -938,6 +1037,18 @@ impl RunUpdate {
             self.terminal_outcome.as_ref()
         }
     }
+
+    /// Returns, with the failure on the final page, the Tool Result Shapes of
+    /// a Run whose Program threw; `None` when it received no Tool Result.
+    #[must_use]
+    pub fn tool_result_shapes(&self) -> Option<&crate::ToolResultShapes> {
+        match self.terminal_outcome() {
+            Some(RunTerminalOutcome::Failed(_)) if !self.tool_result_shapes.is_empty() => {
+                Some(&self.tool_result_shapes)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Exact immutable attribution, deadline and claim retained by a durable Run.
@@ -957,6 +1068,23 @@ pub(crate) struct AcceptedRun {
     /// Linked Saved Function path to the identity of the snapshot that
     /// acceptance retained for it.
     pub(crate) linked_snapshots: HashMap<String, String>,
+    /// The Run Trace every span of the Run joins; `None` when acceptance
+    /// stored none.
+    pub(crate) trace: Option<coral_telemetry::RunTrace>,
+}
+
+impl AcceptedRun {
+    /// The Run's ID as a span field.
+    pub(crate) fn held_id(&self) -> HeldRunId {
+        HeldRunId(self.id.clone())
+    }
+}
+
+impl crate::lifecycle::RunRecord {
+    /// The Run's ID as a span field.
+    pub(crate) fn held_id(&self) -> HeldRunId {
+        HeldRunId(self.id.clone())
+    }
 }
 
 /// The cap on Program output the Run Owner has applied but not yet recorded.
