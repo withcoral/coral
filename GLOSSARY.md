@@ -543,25 +543,15 @@ Run that is running or has incomplete Invocation evidence has none. _Avoid_: tok
 **Required Action**: A request of one Program Run that a person must decide before the Run can go on: the invoking
 User for a Run a User invoked, any Workspace Owner for a Run an Agent invoked. Today it is an Approval Request or an
 Account Connection Request; any later kind (a Provider's own question to the User, #2447) keeps the same shape: one
-request with a deadline, decided by the person or role the Run names, and the first answer counts. A Run a User invoked
-also has one Handoff Route for it. A Run Update's `required_actions` lists the Run's current Required Actions. An
+request with a deadline, decided by the person or role the Run names, and the first answer counts. A Run Update's
+`required_actions` lists the Run's current Required Actions. A Required Action of a Run a User invoked reaches that User
+one way: the observing tool call returns it with the Run Status Page link, the assistant passes the link on, and the
+User decides on that page. Reef holds the request from the moment it exists, so a page is never a second way in, and
+the assistant has no path to decide. Coral sends no MCP elicitation and no notification for a Required Action. An
 Account Connection Request that several Runs wait on is one Required Action in each of their Run Updates: each
-assistant passes it on, and the first answer settles it for all of them. _Avoid_: pending action, human action, elicitation, prompt
-
-**Human Handoff**: The act of Coral putting a Required Action in front of the one User who can decide it. Coral offers
-each through exactly one Handoff Route, keeps Reef as the standing place where the request is already waiting, counts the
-first answer wherever it comes from, and offers the assistant no path to decide: the assistant only passes the request
-on. A Human Handoff only ever concerns a Run that a User invoked from their AI app; a Run an Agent invoked has none, and
-a Workspace Owner acts in Reef. _Avoid_: assistant approval, agent-answered handoff, allow-tool prompt as approval, Run
-preflight
-
-**Handoff Route**: What Coral does, without the person asking, to put a Required Action in front of them. It is not the
-Credential Route, which is a Provider setting. There is one Handoff Route: the assistant's link. The tool call that
-observes the Run returns the Run Update with the Required Action and the Run Status Page link, the assistant shows the
-link and the Run identifier, and the person decides on the page. Reef's Run Status Page and Approvals Page are the
-standing place, not a Route, and a page updating while open is the page doing its job. Coral sends no notification and
-no MCP elicitation for a Required Action; it would use elicitation only in a client that renders every mode and tells
-its model what was asked and answered. _Avoid_: in-band prompt, notification Route, per-client Route
+assistant passes it on, and the first answer settles it for all of them. _Avoid_: pending action, human action,
+elicitation, prompt, in-band prompt, notification, per-client route, assistant approval, allow-tool prompt as approval,
+Run preflight
 
 **Run Status Page**: The directly linked detail of one Program Run within Reef's activity interface, at one stable,
 non-secret URL, rather than a required standalone page. Every supported local or hosted deployment provides this

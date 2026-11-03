@@ -27,24 +27,23 @@ sessions and server-initiated requests (SEP-2567 and SEP-2322); the research beh
 which revision and how each handles elicitation, is in
 [docs/research/2026-10-28-mcp-client-protocol-versions.md](../research/2026-10-28-mcp-client-protocol-versions.md).
 
-With the session goes the prompt. Coral calls a request that a Run waits on a **Required Action** and the act of
-putting it in front of the one User who can decide it a **Human Handoff**. Every Required Action of a Run that a User
-invoked is offered through one **Handoff Route**, the assistant's link: the tool call that observes the Run returns the Run Update with the Required
-Action and the Run Status Page link, the assistant passes the link and the Run identifier to the person, and the person
+With the session goes the prompt. Coral calls a request that a Run waits on a **Required Action**, and every Required
+Action of a Run that a User invoked reaches that User one way, through the assistant's link: the tool call that observes
+the Run returns the Run Update with the Required Action and the Run Status Page link, the assistant passes the link and the Run identifier to the person, and the person
 decides on the Run Status Page, signed in to Reef, with the exact Tool arguments in view. Reef is the standing place:
 the Run Status Page holds every Required Action, and the Approvals Page every Approval Request, from the moment it
 exists, and the first answer counts wherever it comes from. Coral sends no MCP elicitation and no notification, and it
 offers the assistant no tool, argument or path by which to decide: the assistant can only pass the request on. Nothing
 in the request (protocol revision, declared capabilities, client name) chooses anything, so Coral keeps no list of
-known clients, and a client it has never seen gets the same handoff. The map that decided this is
+known clients, and a client it has never seen is served the same way. The map that decided this is
 [#2732](https://github.com/withcoral/coral/issues/2732); the parent of the implementation is #2825.
 
-## What changes so the assistant's link is a Route to rely on
+## What changes so the assistant's link is reliable
 
 The assistant's link existed before this decision, as the fallback for clients that got no prompt, and the live check
-showed why it was not yet a Route to rely on: the assistant stopped after one call and asked the person to say when
+showed why it was not yet reliable: the assistant stopped after one call and asked the person to say when
 they had acted, named the Tool by guesswork, and left the person to find the request on a page that led with the Run's
-activity. Making it the one Route means removing each of those
+activity. Making it the one way means removing each of those
 ([what the assistant receives](https://github.com/withcoral/coral/issues/2736#issuecomment-6519311420)):
 
 - **The Run Update says what is asked.** Each Required Action names its kind, the Provider, the waiting Tool where one
@@ -94,16 +93,15 @@ activity. Making it the one Route means removing each of those
   is enabled, needs approval, or is disabled, and nothing about it decides where or how the person is asked
   ([no setting](https://github.com/withcoral/coral/issues/2742#issuecomment-6521367372)).
 - **The accepted cost.** A Required Action nobody reads waits to the Run Deadline, the Run ends `TimedOut`, and the
-  person reruns. An assistant running unattended with a person's credential gets no other Route: the person changes the
+  person reruns. An assistant running unattended with a person's credential gets no other way in: the person changes the
   Tool's policy in Reef beforehand ([no notification](https://github.com/withcoral/coral/issues/2740#issuecomment-6521160022)).
-- **Agent-invoked Runs have no Human Handoff.** Their Required Actions name the Workspace Owner, who acts in Reef, as
-  before.
+- **Agent-invoked Runs get no link.** Their Required Actions name the Workspace Owner, who acts in Reef, as before.
 - **A Provider's own question to the User** (#2447) becomes a third kind of Required Action with the same shape: one
-  exact person, one request with a deadline, the same Route and the same first-wins rule.
+  exact person, one request with a deadline, the same link and the same first-wins rule.
 
 ## The Run Status Page
 
-The page a Human Handoff opens is where the person decides, so it is a handoff sheet, not an activity list
+The page the assistant's link opens is where the person decides, so it is a handoff sheet, not an activity list
 ([the prototype decision](https://github.com/withcoral/coral/issues/2739#issuecomment-6520881303)):
 
 - It is headed by the Run identifier, the name the assistant said, with the Run's intent under it. Each Required Action
@@ -128,10 +126,10 @@ The page a Human Handoff opens is where the person decides, so it is a handoff s
   request lives in the first instance's memory, so an answer that lands elsewhere is lost until the prompt's deadline.
 - **Routing client messages to the instance that holds the session.** A second Run Inbox for MCP traffic, built to keep
   a feature the current protocol revision removed.
-- **MCP elicitation as a Route, chosen per client.** It renders in one client today, blinds that client's model to what
+- **MCP elicitation, chosen per client.** It renders in one client today, blinds that client's model to what
   was asked and answered, and outlives the Run Deadline. It returns only when a client renders every elicitation mode
-  and tells its model what was asked and answered ([the Route decision](https://github.com/withcoral/coral/issues/2737#issuecomment-6602262606)).
-- **A notification Route** from Reef, Desktop, email or a chat app. The person is at the AI app they invoked the Run
+  and tells its model what was asked and answered ([the elicitation decision](https://github.com/withcoral/coral/issues/2737#issuecomment-6602262606)).
+- **A notification** from Reef, Desktop, email or a chat app. The person is at the AI app they invoked the Run
   from, and a deadline measured in minutes leaves a notification little to do. It returns as a fresh effort if the
   timeout case hurts in use.
 - **Pausing the Run Deadline while a person decides.** It would keep the isolate, the owner task and the lease alive
