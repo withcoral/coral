@@ -3278,16 +3278,16 @@ describe('intent search', () => {
 
 describe('a search that keeps a Task for one of its Runs', () => {
   /** Task `n`, kept for Run `match`. Coral answers its query as the repository tests pin it. */
-  function searchedWorld(waiting: 'match' | 'other') {
-    const wait = approvalWait(`${waiting}-wait`, 2n)
+  function searchedWorld(asking: 'match' | 'other') {
+    const wait = approvalWait(`${asking}-wait`, 2n)
     const world = liveWorld([
       {
         kind: 'task',
         id: 'n',
         partial: true,
         runs: [
-          { id: 'match', waits: waiting === 'match' ? [wait] : [] },
-          { id: 'other', waits: waiting === 'other' ? [wait] : [] },
+          { id: 'match', waits: asking === 'match' ? [wait] : [] },
+          { id: 'other', waits: asking === 'other' ? [wait] : [] },
         ],
       },
     ]) as Handlers & { activity: Record<string, (input: never) => unknown> }
@@ -3332,10 +3332,10 @@ describe('a search that keeps a Task for one of its Runs', () => {
   it.each([
     ['a Run the search leaves out', 'other', undefined],
     ['a Run the search lists', 'match', runOf('match')],
-  ] as const)('names an action in %s only if the search lists it', async (_, waiting, followed) => {
-    const { api } = coral(searchedWorld(waiting))
+  ] as const)('names an action in %s only if the search lists it', async (_, asking, action) => {
+    const { api } = coral(searchedWorld(asking))
     const page = await loadActivity(onLatest({ q: 'billing' }), api, { scope })
-    expect(page.liveLatest?.action?.action.run).toBe(followed)
+    expect(page.liveLatest?.action?.action.run).toBe(action)
   })
 
   // Catches: an open Run the search leaves out joining the filtered list with no label.

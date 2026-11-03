@@ -115,6 +115,7 @@ test('Activity search ignores Unicode case, and opens every Task it lists for it
       await step('See the Runs of a Task that arrives while you search', async () => {
         // Live inserts new records only at the top of the list.
         await run(count - 1).scrollIntoViewIfNeeded()
+        await table.hover()
         await page.mouse.wheel(0, -100_000)
         await matching(count)
         await run(count).waitFor()

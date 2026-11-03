@@ -362,6 +362,8 @@ export const LiveToggleOrder: Story = {
     await expect(heading.nextElementSibling).toContainElement(live)
     live.focus()
     await userEvent.tab()
+    await expect(canvas.getByRole('searchbox', { name: 'Search intent' })).toHaveFocus()
+    await userEvent.tab()
     await expect(canvas.getByRole('table', { name: 'Activity records' })).toHaveFocus()
   },
 }

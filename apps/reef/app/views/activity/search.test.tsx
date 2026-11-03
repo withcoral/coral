@@ -54,9 +54,9 @@ it('searches as you type, with one history entry per search and Back restoring t
   expect(address(router).has('q')).toBe(false)
 })
 
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 /** The field alone, on a route whose loader takes `load` ms, as in a real read of Activity. */
 function searchRoute(load: number) {
-  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
   const router = createMemoryRouter(
     [
       {
