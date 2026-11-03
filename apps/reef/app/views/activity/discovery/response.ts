@@ -45,7 +45,7 @@ export const searchPageSchema = z.object({
       deprecated: z.boolean().optional(),
     }),
   ),
-  // A page retained before pages had an offset has `has_more` and
+  // A trimmed page retained before pages had an offset has `has_more` and
   // `next_cursor` instead; it reads as a page with no more results.
   next_offset: count.optional(),
   retriever_statuses: z
