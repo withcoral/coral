@@ -19,12 +19,9 @@ use super::{ToolFailure, success};
     {"if":{"properties":{"state":{"const":"failed"},"has_more":{"const":false}},"required":["state","has_more"]},"then":{"properties":{"failure":true},"required":["failure"]}},
     {"if":{"properties":{"state":{"not":{"const":"running"}}},"required":["state"]},"then":{"properties":{"required_actions":{"type":"array","maxItems":0}}}}
 ]))]
-pub(crate) struct RunUpdateResult<'a> {
-    /// The Task this call started from `goal`, only on that call's result.
-    /// Pass it as `task_id` to every later call for the same unit of work.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "crate::arguments::identifier_schema")]
-    task_id: Option<&'a str>,
+pub(crate) struct RunUpdateResult<'a, Task> {
+    #[serde(flatten)]
+    task: Task,
     #[schemars(schema_with = "crate::arguments::identifier_schema")]
     run_id: String,
     state: State,
@@ -44,6 +41,35 @@ pub(crate) struct RunUpdateResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     trace_id: Option<String>,
+}
+
+/// What `exec` reports: the Run, and the Task when this call started it.
+pub(crate) type ExecResult<'a> = RunUpdateResult<'a, StartedTask<'a>>;
+
+/// What `wait` and `cancel` report. They take a `run_id`, so they never name
+/// the Task.
+pub(crate) type ObservedRun<'a> = RunUpdateResult<'a, NoTask>;
+
+// Flattened into the result, so only the field carries a description.
+#[derive(Clone, Copy, Serialize, JsonSchema)]
+pub(crate) struct StartedTask<'a> {
+    /// The Task this call started from `goal`, only on that call's result.
+    /// Pass it as `task_id` to every later call for the same unit of work.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "crate::arguments::identifier_schema")]
+    task_id: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, Serialize, JsonSchema)]
+pub(crate) struct NoTask {}
+
+/// The tool that reports a Run Update. Only `exec` can name a Task.
+#[derive(Clone, Copy)]
+pub(crate) enum Reporter<'a> {
+    /// `exec`, with the Task it started from `goal`, if it started one.
+    Exec(Option<&'a coral_task::TaskId>),
+    /// `wait` or `cancel`.
+    Observer,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -153,17 +179,35 @@ enum FailureCode {
 }
 
 /// Projects the largest prefix of `update` that fits `page_bytes`, or one
-/// item. `started` names the Task this call started, if it started one.
+/// item, in the result shape of the tool that reports it.
 pub(crate) fn run_update(
     update: &RunUpdate,
-    started: Option<&str>,
+    reporter: Reporter<'_>,
+    human_interface: &crate::HumanInterfaceUrl,
+    page_bytes: usize,
+) -> Result<CallToolResult, ToolFailure> {
+    match reporter {
+        Reporter::Exec(started) => {
+            let started = started.map(ToString::to_string);
+            let task = StartedTask {
+                task_id: started.as_deref(),
+            };
+            paged(update, task, human_interface, page_bytes)
+        }
+        Reporter::Observer => paged(update, NoTask {}, human_interface, page_bytes),
+    }
+}
+
+fn paged<Task: Serialize + Copy>(
+    update: &RunUpdate,
+    task: Task,
     human_interface: &crate::HumanInterfaceUrl,
     page_bytes: usize,
 ) -> Result<CallToolResult, ToolFailure> {
     let mut count = update.events().len();
     loop {
         let page = update.event_prefix(count);
-        let result = project_run_update(&page, started, human_interface)?;
+        let result = project_run_update(&page, task, human_interface)?;
         if fits(&result, page_bytes) {
             return Ok(result);
         }
@@ -171,7 +215,7 @@ pub(crate) fn run_update(
         // combination is too large, deliver these Events and advance first.
         if !page.events().is_empty() && page.terminal_outcome().is_some() {
             let deferred =
-                project_run_update(&page.defer_terminal_outcome(), started, human_interface)?;
+                project_run_update(&page.defer_terminal_outcome(), task, human_interface)?;
             if count <= 1 || fits(&deferred, page_bytes) {
                 return Ok(deferred);
             }
@@ -190,9 +234,9 @@ fn fits(result: &CallToolResult, page_bytes: usize) -> bool {
     serde_json::to_vec(result).is_ok_and(|bytes| bytes.len() <= page_bytes)
 }
 
-fn project_run_update<'a>(
-    update: &'a RunUpdate,
-    started: Option<&'a str>,
+fn project_run_update<Task: Serialize>(
+    update: &RunUpdate,
+    task: Task,
     human_interface: &crate::HumanInterfaceUrl,
 ) -> Result<CallToolResult, ToolFailure> {
     let mut rich = Vec::new();
@@ -230,7 +274,7 @@ fn project_run_update<'a>(
         _ => (None, None),
     };
     let mut result = success(RunUpdateResult {
-        task_id: started,
+        task,
         run_id: update.run_id().to_string(),
         state: match update.state() {
             RunState::Running => State::Running,

@@ -20,7 +20,7 @@ use crate::arguments::{
     ExecArguments, SaveFunctionArguments, SearchArguments, TaskOutcomeArgument, ToolArguments,
     WaitArguments,
 };
-use crate::projection::{self, ToolFailure};
+use crate::projection::{self, Reporter, ToolFailure};
 use crate::prompts::{Asked, Channel, Prompting};
 
 #[cfg(test)]
@@ -256,7 +256,13 @@ impl McpServer {
                 ExecTarget::Goal(_) => self.started_task(&run_id).await?,
             };
             return self
-                .observe_prompting(&run_id, &reread, &reread, prompting, started.as_ref())
+                .observe_prompting(
+                    &run_id,
+                    &reread,
+                    &reread,
+                    prompting,
+                    Reporter::Exec(started.as_ref()),
+                )
                 .await;
         }
         let (started, accepted) = match target {
@@ -285,7 +291,7 @@ impl McpServer {
         };
         if wait_ms == 0 {
             return self
-                .run_update(&accepted, started.as_ref())
+                .run_update(&accepted, Reporter::Exec(started.as_ref()))
                 .map(Into::into)
                 .map_err(DispatchError::Tool);
         }
@@ -299,7 +305,7 @@ impl McpServer {
             &observation,
             &reread.by_acceptor(),
             prompting,
-            started.as_ref(),
+            Reporter::Exec(started.as_ref()),
         )
         .await
     }
@@ -350,8 +356,14 @@ impl McpServer {
                 .with_wait(Duration::from_millis(wait_ms))
                 .map_err(invalid_input)?,
         };
-        self.observe_prompting(&run_id, &observation, &reread, prompting, None)
-            .await
+        self.observe_prompting(
+            &run_id,
+            &observation,
+            &reread,
+            prompting,
+            Reporter::Observer,
+        )
+        .await
     }
 
     /// Observes a Run and asks the client about each current action it can answer.
@@ -363,7 +375,7 @@ impl McpServer {
         observation: &RunObservation,
         reread: &RunObservation,
         mut prompting: Prompting,
-        started: Option<&TaskId>,
+        reporter: Reporter<'_>,
     ) -> Result<CallToolResponse, DispatchError> {
         let trace = &TraceId::current_or_new();
         self.answer_prompts(run_id, prompting.take_answers(), trace)
@@ -422,7 +434,7 @@ impl McpServer {
                 }
             }
         }
-        self.run_update(&update, started)
+        self.run_update(&update, reporter)
             .map(Into::into)
             .map_err(DispatchError::Tool)
     }
@@ -531,7 +543,8 @@ impl McpServer {
             )
             .await
             .map_err(run_failure)?;
-        self.run_update(&update, None).map_err(DispatchError::Tool)
+        self.run_update(&update, Reporter::Observer)
+            .map_err(DispatchError::Tool)
     }
 
     async fn end_task(&self, arguments: EndTaskArguments) -> Result<CallToolResult, DispatchError> {
@@ -568,13 +581,12 @@ impl McpServer {
     fn run_update(
         &self,
         update: &coral_run::RunUpdate,
-        started: Option<&TaskId>,
+        reporter: Reporter<'_>,
     ) -> Result<CallToolResult, ToolFailure> {
         let modules = &self.runtime.modules;
-        let started = started.map(ToString::to_string);
         projection::run_update(
             update,
-            started.as_deref(),
+            reporter,
             &modules.human_interface,
             modules.run_update_page_bytes.get(),
         )
