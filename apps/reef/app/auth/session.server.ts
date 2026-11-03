@@ -1,8 +1,13 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 
 import { createCookie } from 'react-router'
 
-import { authCookieSecure, hostBoundCookieName } from './config.server'
+import {
+  authClientId,
+  authCookieSecure,
+  hostBoundCookieName,
+  isIssuerEndpoint,
+} from './config.server'
 import type { AuthSession, RequiredAuthConfig } from './types'
 
 const OAUTH_COOKIE_NAME = 'coral_web_oauth'
@@ -71,44 +76,220 @@ export async function clearOAuthTransaction(config: RequiredAuthConfig): Promise
 }
 
 /**
- * Writes a session cookie, refusing to write one that cannot be read back.
- *
- * `readCoralWebSession` treats a session expiring within [`CLOCK_SKEW_SECONDS`] as
- * already gone, so a shorter-lived one is unreadable from the moment it is
- * committed. Left to itself that is not an error anywhere: the callback
- * succeeds, redirects to a protected route, the route finds no session and
- * sends the visitor back to `/login` — a loop with no failure in it. Two
- * unrelated settings can cause it, a Coral token with a tiny `expires_in` and a
- * small `CORAL_WEB_SESSION_MAX_AGE_SECONDS`, so the message names both rather than
- * guessing.
+ * What the session cookie carries: the session handle Coral issued, and the
+ * session endpoint discovered when the session started. The cookie is signed,
+ * and the endpoint is checked against the issuer again on every use.
  */
-export async function commitCoralWebSession(
-  session: AuthSession,
-  config: RequiredAuthConfig,
-): Promise<string> {
-  if (session.expiresAt <= unixTimestamp() + CLOCK_SKEW_SECONDS) {
-    throw new Error(
-      `Refusing to establish a Coral web session that expires within ${CLOCK_SKEW_SECONDS}s: check the Coral access token lifetime and CORAL_WEB_SESSION_MAX_AGE_SECONDS`,
-    )
-  }
-
-  return sessionCookie(config).serialize(encryptSession(session, config.sessionSecret))
+interface StoredWebSession {
+  endpoint: string
+  handle: string
 }
 
-export async function readCoralWebSession(
+/** A web session Coral just started for this browser. */
+export interface StartedWebSession extends StoredWebSession {
+  /** Seconds until Coral ends the session. */
+  expiresIn: number
+}
+
+/**
+ * Writes the session cookie, refusing to write one that cannot be read back.
+ *
+ * [`resolveCoralWebSession`] treats a session ending within
+ * [`CLOCK_SKEW_SECONDS`] as already gone, so a shorter one is unusable from the
+ * moment it is committed. Left to itself that is not an error anywhere: the
+ * callback succeeds, a protected route finds no session, and the visitor
+ * returns to `/login` in a loop with no failure in it. A small
+ * `CORAL_WEB_SESSION_MAX_AGE_SECONDS` or a short Coral refresh-token lifetime can
+ * cause it, so the message names both.
+ */
+export async function commitCoralWebSession(
+  session: StartedWebSession,
+  config: RequiredAuthConfig,
+): Promise<string> {
+  if (session.expiresIn <= CLOCK_SKEW_SECONDS) {
+    throw new Error(
+      `Refusing to establish a Coral web session that expires within ${CLOCK_SKEW_SECONDS}s: check CORAL_WEB_SESSION_MAX_AGE_SECONDS and Coral's refresh_token_ttl_seconds`,
+    )
+  }
+  const stored: StoredWebSession = { endpoint: session.endpoint, handle: session.handle }
+  return sessionCookie(config).serialize(stored, {
+    maxAge: Math.min(session.expiresIn, config.sessionMaxAgeSeconds),
+  })
+}
+
+/**
+ * Resolves this request's web session into a Reef access token Coral mints
+ * for it, or `null` when the request has no usable session.
+ *
+ * Coral answers from one database read and writes nothing, so concurrent
+ * requests, tabs, and Reef processes resolve one session without
+ * coordinating, and a retry repeats nothing.
+ *
+ * @throws a 503 `Response` when Coral does not answer. The session may still
+ * be valid, so the cookie stays.
+ */
+export async function resolveCoralWebSession(
   request: Request,
   config: RequiredAuthConfig,
 ): Promise<AuthSession | null> {
-  const encrypted = await sessionCookie(config).parse(request.headers.get('cookie'))
-  if (typeof encrypted !== 'string' || !encrypted) return null
-  const session = decryptSession(encrypted, config.sessionSecret)
-  if (!session || session.expiresAt <= unixTimestamp() + CLOCK_SKEW_SECONDS) return null
+  const stored = await readStoredSession(sessionCookie(config), request, config)
+  if (!stored) return null
+  const response = await postSessionForm(`${stored.endpoint}/token`, {
+    client_id: authClientId(config),
+    session: stored.handle,
+  })
+  if (await isInvalidGrant(response)) return null
+  if (response.status !== 200) throw sessionUnavailable()
+  const body = (await response.json().catch(() => null)) as SessionTokenResponse | null
+  if (
+    !body ||
+    typeof body.access_token !== 'string' ||
+    !body.access_token ||
+    !isPositiveSeconds(body.expires_in) ||
+    !isPositiveSeconds(body.session_expires_in)
+  ) {
+    throw sessionUnavailable()
+  }
+  if (body.session_expires_in <= CLOCK_SKEW_SECONDS) return null
+  const now = unixTimestamp()
+  return {
+    accessToken: body.access_token,
+    expiresAt: now + body.expires_in,
+    handle: stored.handle,
+    sessionExpiresAt: now + body.session_expires_in,
+  }
+}
 
-  return session
+/** Whether a request carries a session cookie at all, valid or not. */
+export async function hasCoralWebSession(
+  request: Request,
+  config: RequiredAuthConfig,
+): Promise<boolean> {
+  return (await readStoredSession(sessionCookie(config), request, config)) !== null
+}
+
+/** The handle in this request's session cookie, unchecked with Coral. */
+export async function coralWebSessionHandle(
+  request: Request,
+  config: RequiredAuthConfig,
+): Promise<string | null> {
+  return (await readStoredSession(sessionCookie(config), request, config))?.handle ?? null
+}
+
+/** What ending a web session at Coral came to. */
+export type SignOutOutcome = 'ended' | 'unfinished'
+
+/**
+ * Ends the session this request's session cookie names, and the grant
+ * behind it, at Coral. Without that cookie it finishes an earlier sign-out
+ * that Coral did not answer, if one is pending.
+ *
+ * Ending is idempotent at Coral, so a repeat is safe. `unfinished` means
+ * Coral did not answer: the caller keeps the pending sign-out so the next
+ * visit retries it.
+ */
+export async function endCoralWebSession(
+  request: Request,
+  config: RequiredAuthConfig,
+): Promise<SignOutOutcome> {
+  const stored =
+    (await readStoredSession(sessionCookie(config), request, config)) ??
+    (await readStoredSession(pendingSignOutCookie(config), request, config))
+  if (!stored) return 'ended'
+  let response: Response
+  try {
+    response = await postSessionForm(`${stored.endpoint}/end`, {
+      client_id: authClientId(config),
+      session: stored.handle,
+    })
+  } catch {
+    return 'unfinished'
+  }
+  return response.status === 200 ? 'ended' : 'unfinished'
 }
 
 export async function clearCoralWebSession(config: RequiredAuthConfig): Promise<string> {
   return sessionCookie(config).serialize('', { maxAge: 0 })
+}
+
+/**
+ * Keeps the ended session's handle in a cookie of its own, so the next visit
+ * can finish a sign-out Coral did not answer. No route reads it as a session.
+ */
+export async function commitPendingSignOut(
+  request: Request,
+  config: RequiredAuthConfig,
+): Promise<string | null> {
+  const stored = await readStoredSession(sessionCookie(config), request, config)
+  if (!stored) return null
+  return pendingSignOutCookie(config).serialize(stored)
+}
+
+/** Whether this request carries a sign-out that has not finished. */
+export async function hasPendingSignOut(
+  request: Request,
+  config: RequiredAuthConfig,
+): Promise<boolean> {
+  return (await readStoredSession(pendingSignOutCookie(config), request, config)) !== null
+}
+
+export async function clearPendingSignOut(config: RequiredAuthConfig): Promise<string> {
+  return pendingSignOutCookie(config).serialize('', { maxAge: 0 })
+}
+
+interface SessionTokenResponse {
+  access_token?: unknown
+  expires_in?: unknown
+  session_expires_in?: unknown
+}
+
+async function postSessionForm(url: string, form: Record<string, string>): Promise<Response> {
+  try {
+    return await fetch(url, {
+      body: new URLSearchParams(form),
+      headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+      method: 'POST',
+      redirect: 'manual',
+    })
+  } catch {
+    throw sessionUnavailable()
+  }
+}
+
+async function isInvalidGrant(response: Response): Promise<boolean> {
+  if (response.status !== 400) return false
+  const body = (await response
+    .clone()
+    .json()
+    .catch(() => null)) as { error?: unknown } | null
+  return body?.error === 'invalid_grant'
+}
+
+function isPositiveSeconds(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+}
+
+function sessionUnavailable(): Response {
+  return new Response('Sign-in is temporarily unavailable. Try again.', { status: 503 })
+}
+
+async function readStoredSession(
+  cookie: ReturnType<typeof createCookie>,
+  request: Request,
+  config: RequiredAuthConfig,
+): Promise<StoredWebSession | null> {
+  const value = (await cookie.parse(request.headers.get('cookie'))) as unknown
+  if (!value || typeof value !== 'object') return null
+  const candidate = value as Partial<StoredWebSession>
+  if (
+    typeof candidate.handle !== 'string' ||
+    !candidate.handle ||
+    typeof candidate.endpoint !== 'string' ||
+    !isIssuerEndpoint(candidate.endpoint, config.issuer)
+  ) {
+    return null
+  }
+  return { endpoint: candidate.endpoint, handle: candidate.handle }
 }
 
 export function randomToken(byteCount: number): string {
@@ -149,40 +330,15 @@ function sessionCookie(config: RequiredAuthConfig) {
   })
 }
 
-function encryptSession(session: AuthSession, secret: string): string {
-  const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', encryptionKey(secret), iv)
-  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(session), 'utf8'), cipher.final()])
-  const tag = cipher.getAuthTag()
-
-  return [iv, tag, ciphertext].map((part) => part.toString('base64url')).join('.')
-}
-
-function decryptSession(value: string, secret: string): AuthSession | null {
-  const [ivPart, tagPart, ciphertextPart] = value.split('.')
-  if (!ivPart || !tagPart || !ciphertextPart) return null
-
-  try {
-    const decipher = createDecipheriv(
-      'aes-256-gcm',
-      encryptionKey(secret),
-      Buffer.from(ivPart, 'base64url'),
-    )
-    decipher.setAuthTag(Buffer.from(tagPart, 'base64url'))
-    const plaintext = Buffer.concat([
-      decipher.update(Buffer.from(ciphertextPart, 'base64url')),
-      decipher.final(),
-    ]).toString('utf8')
-    const session = JSON.parse(plaintext) as unknown
-
-    return isAuthSession(session) ? session : null
-  } catch {
-    return null
-  }
-}
-
-function encryptionKey(secret: string): Buffer {
-  return createHash('sha256').update(secret).digest()
+function pendingSignOutCookie(config: RequiredAuthConfig) {
+  return createCookie(`${config.cookieName}_signout`, {
+    httpOnly: true,
+    maxAge: config.sessionMaxAgeSeconds,
+    path: '/',
+    sameSite: 'lax',
+    secrets: [config.sessionSecret],
+    secure: authCookieSecure(config),
+  })
 }
 
 function isStoredOAuthTransaction(value: unknown): value is StoredOAuthTransaction {
@@ -195,20 +351,6 @@ function isStoredOAuthTransaction(value: unknown): value is StoredOAuthTransacti
     typeof candidate.state === 'string' &&
     typeof candidate.issuedAt === 'number' &&
     Number.isFinite(candidate.issuedAt)
-  )
-}
-
-function isAuthSession(value: unknown): value is AuthSession {
-  if (!value || typeof value !== 'object') return false
-  const candidate = value as Partial<AuthSession>
-
-  return (
-    typeof candidate.accessToken === 'string' &&
-    candidate.accessToken.length > 0 &&
-    typeof candidate.expiresAt === 'number' &&
-    Number.isFinite(candidate.expiresAt) &&
-    typeof candidate.tokenType === 'string' &&
-    candidate.tokenType.length > 0
   )
 }
 

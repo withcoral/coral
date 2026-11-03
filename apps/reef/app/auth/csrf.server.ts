@@ -6,6 +6,9 @@ import { authCookieSecure } from './config.server'
 import { randomToken } from './session.server'
 import type { AuthSession, RequiredAuthConfig } from './types'
 
+/** The part of a session CSRF evidence binds to. */
+type SessionBinding = Pick<AuthSession, 'handle'>
+
 const CLOCK_SKEW_SECONDS = 30
 
 interface CsrfCookieValue {
@@ -22,7 +25,7 @@ interface CsrfTokenResult {
 export async function csrfTokenForRequest(
   request: Request,
   config: RequiredAuthConfig,
-  session: AuthSession,
+  session: SessionBinding,
 ): Promise<CsrfTokenResult> {
   const existing = await readCsrfCookie(request, config)
   const binding = sessionBinding(session)
@@ -69,7 +72,7 @@ function xor(value: Buffer, pad: Buffer): Buffer {
 export async function validateCsrfToken(
   request: Request,
   config: RequiredAuthConfig,
-  session: AuthSession,
+  session: SessionBinding,
 ): Promise<boolean> {
   const cookie = await readCsrfCookie(request, config)
   if (
@@ -137,8 +140,13 @@ function isFresh(value: CsrfCookieValue, config: RequiredAuthConfig): boolean {
   )
 }
 
-function sessionBinding(session: AuthSession): string {
-  return createHash('sha256').update(session.accessToken).digest('hex')
+/**
+ * CSRF evidence binds to the session's handle, which stays the same while
+ * Coral mints new access tokens, so a form opened before a renewal still
+ * submits. Another session, or a new sign-in, has another handle.
+ */
+function sessionBinding(session: SessionBinding): string {
+  return createHash('sha256').update(session.handle).digest('hex')
 }
 
 function safeEqual(left: string, right: string): boolean {

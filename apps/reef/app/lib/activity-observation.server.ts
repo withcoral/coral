@@ -1,4 +1,4 @@
-import { activityStream } from './activity-stream.server'
+import { activityStream, type StreamDeadlines } from './activity-stream.server'
 import { loadActivity, type ActivityApi } from './activity.server'
 import { ACTIVITY_CHILD_WINDOW, type ActivityObservation } from './activity-live-types'
 import { agentName, workspaceName, privateHeaders } from './management.server'
@@ -77,7 +77,7 @@ async function observation(request: Request): Promise<ActivityObservation> {
 export async function observeActivity(
   request: Request,
   api: ActivityApi,
-  expiresAt = Infinity,
+  deadlines?: StreamDeadlines,
 ): Promise<Response> {
   const input = await observation(request)
   const parts = input.path.split('/')
@@ -105,6 +105,6 @@ export async function observeActivity(
         reading: input.window,
       }),
     }),
-    expiresAt,
+    deadlines,
   )
 }

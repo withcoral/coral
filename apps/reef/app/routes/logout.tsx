@@ -5,9 +5,12 @@ import type { Route } from './+types/logout'
 import { clearCsrfToken, validateCsrfToken } from '@/auth/csrf.server'
 import { markAuthResponsePrivate } from '@/auth/response.server'
 import {
-  clearOAuthTransaction,
   clearCoralWebSession,
-  readCoralWebSession,
+  clearOAuthTransaction,
+  clearPendingSignOut,
+  commitPendingSignOut,
+  coralWebSessionHandle,
+  endCoralWebSession,
 } from '@/auth/session.server'
 import { runtimeConfigContext } from '@/lib/runtime-config.server'
 import { routePath } from '@/routing/routemap'
@@ -23,19 +26,28 @@ export async function action({ context, request }: Route.ActionArgs) {
 
   const config = context.get(runtimeConfigContext).auth
   if (config.mode === 'disabled') return markAuthResponsePrivate(redirect('/'))
-  const session = await readCoralWebSession(request, config)
-  if (!session || !(await validateCsrfToken(request, config, session))) {
+  // CSRF evidence binds to the session handle, so sign-out needs no answer
+  // from Coral to check it.
+  const handle = await coralWebSessionHandle(request, config)
+  if (!handle || !(await validateCsrfToken(request, config, { handle }))) {
     throw markAuthResponsePrivate(new Response('Invalid CSRF token', { status: 403 }))
   }
 
   const headers = new Headers()
   headers.append('Set-Cookie', await clearCsrfToken(config))
   headers.append('Set-Cookie', await clearOAuthTransaction(config))
+  // Ending the session at Coral ends its grant, so it cannot refresh again.
+  // When Coral does not answer, the browser still loses the session, and a
+  // pending sign-out cookie lets the next visit finish ending it.
+  if ((await endCoralWebSession(request, config)) === 'ended') {
+    headers.append('Set-Cookie', await clearPendingSignOut(config))
+  } else {
+    const pending = await commitPendingSignOut(request, config)
+    if (pending) headers.append('Set-Cookie', pending)
+  }
   headers.append('Set-Cookie', await clearCoralWebSession(config))
 
-  // Coral Cloud does not currently advertise a provider-neutral browser logout
-  // or revocation endpoint. Keep logout local and stop automatic SSO bounce by
-  // landing on the signed-out login screen.
+  // Land on the signed-out screen so sign-in does not start again by itself.
   return markAuthResponsePrivate(redirect(`${routePath('login')}?signedOut=1`, { headers }))
 }
 

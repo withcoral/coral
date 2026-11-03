@@ -1,11 +1,16 @@
-import { Form, redirect } from 'react-router'
+import { data, Form, redirect } from 'react-router'
 
 import type { Route } from './+types/login'
 
 import { startCoralOAuthLogin } from '@/auth/coral-oauth.server'
 import { authPrivateHeaders, markAuthResponsePrivate } from '@/auth/response.server'
 import { safeInternalPath } from '@/auth/safe-path.server'
-import { readCoralWebSession } from '@/auth/session.server'
+import {
+  clearPendingSignOut,
+  endCoralWebSession,
+  hasPendingSignOut,
+  resolveCoralWebSession,
+} from '@/auth/session.server'
 import { runtimeConfigContext } from '@/lib/runtime-config.server'
 import { routePath } from '@/routing/routemap'
 import { Brand } from '@/wax/components/brand'
@@ -24,8 +29,25 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   const config = context.get(runtimeConfigContext).auth
   if (config.mode === 'disabled') return redirect('/')
 
-  const session = await readCoralWebSession(request, config)
-  if (session) return markAuthResponsePrivate(redirect('/'))
+  // A sign-out Coral did not answer is finished here, before anything else.
+  const cookies = new Headers()
+  let signOutPending = false
+  if (await hasPendingSignOut(request, config)) {
+    if ((await endCoralWebSession(request, config)) === 'ended') {
+      cookies.append('Set-Cookie', await clearPendingSignOut(config))
+    } else {
+      signOutPending = true
+    }
+  }
+
+  let session
+  try {
+    session = await resolveCoralWebSession(request, config)
+  } catch (error) {
+    if (error instanceof Response) throw markAuthResponsePrivate(error)
+    throw error
+  }
+  if (session) return markAuthResponsePrivate(redirect('/', { headers: cookies }))
 
   const url = new URL(request.url)
   // The interstitial is the one branch that renders instead of starting a login,
@@ -33,11 +55,20 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   // is sanitized here rather than on submit because it is about to be written
   // into the page and handed back as a query parameter.
   const sessionExpired = url.searchParams.has('sessionExpired')
-  if (url.searchParams.has('signedOut') || sessionExpired) {
-    return { returnTo: safeInternalPath(url.searchParams.get('returnTo')), sessionExpired }
+  if (url.searchParams.has('signedOut') || sessionExpired || signOutPending) {
+    return data(
+      {
+        returnTo: safeInternalPath(url.searchParams.get('returnTo')),
+        sessionExpired,
+        signOutPending,
+      },
+      { headers: cookies },
+    )
   }
 
-  return markAuthResponsePrivate(await startCoralOAuthLogin(request, config))
+  const login = await startCoralOAuthLogin(request, config)
+  for (const cookie of cookies.getSetCookie()) login.headers.append('Set-Cookie', cookie)
+  return markAuthResponsePrivate(login)
 }
 
 export default function Login({ loaderData }: Route.ComponentProps) {
@@ -51,6 +82,11 @@ export default function Login({ loaderData }: Route.ComponentProps) {
           <Typography.HeadingMedium as="h1" id="login-title">
             {loaderData?.sessionExpired ? 'Your session expired' : 'You are signed out'}
           </Typography.HeadingMedium>
+          {loaderData?.signOutPending ? (
+            <Typography.Body role="status">
+              Sign-out is not complete. Reload this page to finish it.
+            </Typography.Body>
+          ) : null}
           {/* GET, so submitting replaces the query wholesale — the interstitial flag drops
               away and the loader starts a real login on the next pass. */}
           <Form action={routePath('login')} className={styles.actions} method="get">

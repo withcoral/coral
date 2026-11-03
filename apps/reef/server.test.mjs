@@ -6,7 +6,6 @@ import { createServer, request as httpRequest } from 'node:http'
 import { connect } from 'node:net'
 import { test } from 'node:test'
 import { createServer as createHttp2Server } from 'node:http2'
-import { createCipheriv, createHash, randomBytes } from 'node:crypto'
 import { gunzipSync } from 'node:zlib'
 
 import { createCookie } from 'react-router'
@@ -392,15 +391,20 @@ test('rejected Coral sessions clear the cookie and offer sign in instead of a ge
   })
   peer.listen(0, '127.0.0.1')
   await once(peer, 'listening')
+  const authorization = await startSessionPeer()
   const child = spawn(process.execPath, ['server.mjs'], {
     cwd: import.meta.dirname,
-    env: { ...CHILD_ENV, CORAL_ENDPOINT: `http://127.0.0.1:${peer.address().port}` },
+    env: {
+      ...CHILD_ENV,
+      CORAL_ENDPOINT: `http://127.0.0.1:${peer.address().port}`,
+      CORAL_WEB_AUTH_ISSUER: authorization.url,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const stderr = streamText(child.stderr)
   try {
     const origin = `http://127.0.0.1:${await listeningPort(child)}`
-    const cookie = await validSessionCookie()
+    const cookie = await validSessionCookie(authorization.url)
     let csrfCookie
     const workspace = '/workspaces/00000000-0000-4000-8000-000000000001'
     // Authorization denials and outages are not session expiry. Keep the session.
@@ -485,30 +489,45 @@ test('rejected Coral sessions clear the cookie and offer sign in instead of a ge
     await stderr
     for (const session of sessions) session.destroy()
     await new Promise((resolve) => peer.close(resolve))
+    await authorization.close()
   }
 })
 
-// A browser-valid, unexpired cookie whose token Coral no longer recognizes.
-async function validSessionCookie() {
+// A browser-valid, unexpired session cookie naming a session at `issuer`.
+async function validSessionCookie(issuer) {
   const secret = REQUIRED_ENV.CORAL_WEB_SESSION_SECRET
-  const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', createHash('sha256').update(secret).digest(), iv)
-  const ciphertext = Buffer.concat([
-    cipher.update(
-      JSON.stringify({
-        accessToken: 'deleted-database-token',
-        expiresAt: Math.floor(Date.now() / 1000) + 3600,
-        tokenType: 'Bearer',
-      }),
-    ),
-    cipher.final(),
-  ])
-  const encrypted = [iv, cipher.getAuthTag(), ciphertext]
-    .map((part) => part.toString('base64url'))
-    .join('.')
   return (
-    await createCookie('coral_web_session', { secrets: [secret] }).serialize(encrypted)
+    await createCookie('coral_web_session', { secrets: [secret] }).serialize({
+      endpoint: `${issuer}/oauth/session`,
+      handle: 'coral_ws_test-session',
+    })
   ).split(';')[0]
+}
+
+/** Coral's authorization server, minting a Reef access token for every session resolve. */
+async function startSessionPeer() {
+  const peer = createServer((request, response) => {
+    request.resume()
+    if (request.method !== 'POST' || request.url !== '/oauth/session/token') {
+      response.writeHead(404).end()
+      return
+    }
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(
+      JSON.stringify({
+        access_token: 'deleted-database-token',
+        expires_in: 300,
+        session_expires_in: 3600,
+        token_type: 'Bearer',
+      }),
+    )
+  })
+  peer.listen(0, '127.0.0.1')
+  await once(peer, 'listening')
+  return {
+    url: `http://127.0.0.1:${peer.address().port}`,
+    close: () => new Promise((resolve) => peer.close(resolve)),
+  }
 }
 
 test('proxied logout accepts the runtime public host without trusting forwarded origins', async () => {
@@ -627,8 +646,10 @@ test('production entry names fatal runtime config and exits without listening', 
 test('one Reef request is one trace, rooted at Reef, that Coral calls join', async () => {
   const collector = await startCollector()
   const coral = await startGrpcPeer()
+  const authorization = await startSessionPeer()
   const child = startReef({
     CORAL_ENDPOINT: coral.url,
+    CORAL_WEB_AUTH_ISSUER: authorization.url,
     OTEL_EXPORTER_OTLP_ENDPOINT: collector.url,
     OTEL_SERVICE_NAME: 'reef-under-test',
   })
@@ -636,7 +657,7 @@ test('one Reef request is one trace, rooted at Reef, that Coral calls join', asy
   const workspace = '/workspaces/00000000-0000-4000-8000-000000000001'
   try {
     const origin = `http://127.0.0.1:${await listeningPort(child)}`
-    const cookie = await validSessionCookie()
+    const cookie = await validSessionCookie(authorization.url)
     const callsDuring = async (...fetchArgs) => {
       coral.calls.length = 0
       await (await fetch(...fetchArgs)).text()
@@ -692,6 +713,7 @@ test('one Reef request is one trace, rooted at Reef, that Coral calls join', asy
   } finally {
     await stopChild(child)
     await coral.close()
+    await authorization.close()
     await collector.close()
   }
 })

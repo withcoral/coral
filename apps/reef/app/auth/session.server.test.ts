@@ -1,14 +1,15 @@
-import { createCipheriv, createHash, randomBytes } from 'node:crypto'
-
 import { createCookie } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { authClientId } from './config.server'
 import {
-  commitOAuthTransaction,
   commitCoralWebSession,
+  commitOAuthTransaction,
+  commitPendingSignOut,
+  endCoralWebSession,
   oauthCookieName,
   readOAuthTransaction,
-  readCoralWebSession,
+  resolveCoralWebSession,
 } from './session.server'
 import { loopbackAuthConfig as loopbackConfig, requiredAuthConfig } from './test-config'
 
@@ -19,6 +20,8 @@ const CLOCK_SKEW_SECONDS = 30
 const OAUTH_MAX_AGE_SECONDS = 10 * 60
 
 const config = requiredAuthConfig
+const ENDPOINT = `${config.issuer}/oauth/session`
+const HANDLE = 'coral_ws_handle'
 
 describe('Coral web auth sessions', () => {
   beforeEach(() => {
@@ -28,38 +31,100 @@ describe('Coral web auth sessions', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    vi.unstubAllGlobals()
   })
 
-  it('round trips an encrypted server session with secure cookie attributes', async () => {
-    const session = {
-      accessToken: 'coral-access-token',
-      expiresAt: unixTimestamp() + 1800,
-      tokenType: 'Bearer',
-    }
-    const cookie = await commitCoralWebSession(session, config)
-
+  it('keeps only the session handle in a secure cookie and resolves it through Coral', async () => {
+    const cookie = await startedSession()
     expect(cookie).toContain('__Host-coral_web_session=')
-    expect(cookie).not.toContain('coral-access-token')
     expect(cookie).toContain('HttpOnly')
     expect(cookie).toContain('SameSite=Lax')
     expect(cookie).toContain('Secure')
-    await expect(readCoralWebSession(requestWith(cookie), config)).resolves.toEqual(session)
+    expect(cookie).toContain(`Max-Age=${config.sessionMaxAgeSeconds}`)
+    expect(cookieValue(cookie)).toBe(JSON.stringify({ endpoint: ENDPOINT, handle: HANDLE }))
+
+    const fetch = mockFetch(minted())
+    await expect(resolveCoralWebSession(requestWith(cookie), config)).resolves.toEqual({
+      accessToken: 'minted-access-token',
+      expiresAt: unixTimestamp() + 300,
+      handle: HANDLE,
+      sessionExpiresAt: unixTimestamp() + 1800,
+    })
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe(`${ENDPOINT}/token`)
+    expect(Object.fromEntries(init.body as URLSearchParams)).toEqual({
+      client_id: authClientId(config),
+      session: HANDLE,
+    })
+    expect(init.redirect).toBe('manual')
   })
 
-  it('keeps a representative opaque access token below the cookie size limit', async () => {
-    const cookie = await commitCoralWebSession(
-      {
-        accessToken: representativeSessionToken(),
-        expiresAt: unixTimestamp() + 1800,
-        tokenType: 'Bearer',
-      },
-      config,
-    )
+  // Every protected request resolves again, so a renewed access token reaches
+  // the next request without the cookie changing at all.
+  it('gets a fresh access token on each request from the same cookie', async () => {
+    const cookie = await startedSession()
+    mockFetch(minted('first-token'), minted('second-token'))
 
-    expect(Buffer.byteLength(cookie)).toBeLessThan(4096)
-    await expect(readCoralWebSession(requestWith(cookie), config)).resolves.toMatchObject({
-      accessToken: representativeSessionToken(),
-    })
+    const first = await resolveCoralWebSession(requestWith(cookie), config)
+    advanceSeconds(400)
+    const second = await resolveCoralWebSession(requestWith(cookie), config)
+
+    expect(first?.accessToken).toBe('first-token')
+    expect(second?.accessToken).toBe('second-token')
+    expect(second?.handle).toBe(first?.handle)
+  })
+
+  it.each([
+    ['carries no session cookie', () => new Request('https://coral-web.example.test/')],
+    [
+      'carries a session cookie that is not validly signed',
+      () => requestWith(`${config.cookieName}=not-a-session`),
+    ],
+    [
+      'names a session endpoint off the issuer',
+      async () =>
+        requestWith(
+          await signedSessionCookie({ endpoint: 'https://attacker.test/session', handle: HANDLE }),
+        ),
+    ],
+    [
+      'carries no handle',
+      async () => requestWith(await signedSessionCookie({ endpoint: ENDPOINT })),
+    ],
+  ])('has no session, and asks Coral nothing, when the request %s', async (_label, request) => {
+    const fetch = mockFetch()
+
+    await expect(resolveCoralWebSession(await request(), config)).resolves.toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('has no session once Coral refuses it, or once it is about to end', async () => {
+    const cookie = await startedSession()
+    mockFetch(jsonResponse({ error: 'invalid_grant' }, 400), minted('token', CLOCK_SKEW_SECONDS))
+
+    await expect(resolveCoralWebSession(requestWith(cookie), config)).resolves.toBeNull()
+    await expect(resolveCoralWebSession(requestWith(cookie), config)).resolves.toBeNull()
+  })
+
+  // A failure that says nothing about the session leaves it in place: the
+  // caller answers 503 rather than signing the visitor out.
+  it.each([
+    ['Coral is unavailable', () => Promise.resolve(jsonResponse({ error: 'server_error' }, 503))],
+    [
+      'Coral rejects the request itself',
+      () => Promise.resolve(jsonResponse({ error: 'invalid_request' }, 400)),
+    ],
+    ['the answer is not a token', () => Promise.resolve(jsonResponse({ access_token: '' }))],
+    ['Coral cannot be reached', () => Promise.reject(new TypeError('fetch failed'))],
+  ])('reports a temporary failure when %s', async (_label, response) => {
+    const cookie = await startedSession()
+    mockFetch(response)
+
+    const failure = await resolveCoralWebSession(requestWith(cookie), config).catch(
+      (error: unknown) => error,
+    )
+    expect(failure).toBeInstanceOf(Response)
+    expect((failure as Response).status).toBe(503)
   })
 
   // `toEqual` and not `toMatchObject`: the reader is also expected to strip the
@@ -157,7 +222,11 @@ describe('Coral web auth sessions', () => {
 
   it('omits Secure only for the accepted all-loopback HTTP topology', async () => {
     const sessionCookie = await commitCoralWebSession(
-      { accessToken: 'token', expiresAt: unixTimestamp() + 1800, tokenType: 'Bearer' },
+      {
+        endpoint: `${loopbackConfig.issuer}/oauth/session`,
+        expiresIn: 1800,
+        handle: HANDLE,
+      },
       loopbackConfig,
     )
     const transactionCookie = await commitOAuthTransaction(
@@ -169,125 +238,46 @@ describe('Coral web auth sessions', () => {
     expect(transactionCookie).not.toContain('Secure')
   })
 
-  // Previously one case named four rejections and demonstrated two of them. It
-  // is split up because each of these is a distinct guard that can regress on
-  // its own, and because two of the four were not being reached at all: the
-  // "tampered" case supplied a wrong *key* rather than altered ciphertext, and
-  // the "expired" case used a timestamp inside the clock-skew window, so the
-  // skew guard rejected it before the expiry check ever ran.
-  it('ignores a request carrying no session cookie', async () => {
-    await expect(
-      readCoralWebSession(new Request('https://coral-web.example.test/'), config),
-    ).resolves.toBeNull()
-  })
-
-  it('ignores a session cookie that is not validly signed', async () => {
-    await expect(
-      readCoralWebSession(requestWith(`${config.cookieName}=not-a-session`), config),
-    ).resolves.toBeNull()
-  })
-
-  // Correctly signed, so the cookie layer hands each of these through to the
-  // decryptor rather than turning it away first — the only way to exercise what
-  // the decryptor does with a payload it cannot use.
-  //
-  // These pin the rejection, not the line that performs it: removing the
-  // three-part guard in `decryptSession` leaves them all passing, because the
-  // surrounding try/catch already rejects the same inputs. That guard is
-  // redundancy, and no test can tell it apart from the catch.
-  it.each([
-    ['a payload that is not three parts', 'aGVsbG8.d29ybGQ'],
-    ['a payload with an empty part', 'aGVsbG8..d29ybGQ'],
-    ['parts that are not valid ciphertext', 'aGVsbG8.d29ybGQ.YnJva2Vu'],
-  ])('ignores %s', async (_label, payload) => {
-    await expect(
-      readCoralWebSession(requestWith(await signedCookie(payload)), config),
-    ).resolves.toBeNull()
-  })
-
-  it('ignores a session whose ciphertext was altered under the right key', async () => {
-    const cookie = await commitCoralWebSession(validSession(), config)
-    const [iv, tag, ciphertext] = cookieValue(cookie).split('.')
-    const flipped = ciphertext.slice(0, -1) + (ciphertext.endsWith('A') ? 'B' : 'A')
-
-    await expect(
-      readCoralWebSession(requestWith(await signedCookie(`${iv}.${tag}.${flipped}`)), config),
-    ).resolves.toBeNull()
-  })
-
-  it('ignores a session encrypted under a different secret', async () => {
-    const cookie = await commitCoralWebSession(validSession(), config)
-    const wrongSecret = { ...config, sessionSecret: 'abcdef0123456789abcdef0123456789' }
-
-    await expect(readCoralWebSession(requestWith(cookie), wrongSecret)).resolves.toBeNull()
-  })
-
-  // Decrypts cleanly and is still not a session. Nothing else in this file
-  // reaches the shape check, because everything else fails before the plaintext
-  // exists.
-  it.each([
-    ['is missing a token', { expiresAt: 4_102_444_800, tokenType: 'Bearer' }],
-    ['carries an empty token', { accessToken: '', expiresAt: 4_102_444_800, tokenType: 'Bearer' }],
-    ['carries a non-numeric expiry', { accessToken: 't', expiresAt: 'soon', tokenType: 'Bearer' }],
-    ['is missing a token type', { accessToken: 't', expiresAt: 4_102_444_800 }],
-    ['is not an object at all', 'a string'],
-  ])('ignores a decryptable payload that %s', async (_label, payload) => {
-    const cookie = await signedCookie(encryptForTest(payload))
-
-    await expect(readCoralWebSession(requestWith(cookie), config)).resolves.toBeNull()
-  })
-
-  it('ignores a session once it has genuinely expired', async () => {
-    const cookie = await commitCoralWebSession(validSession(), config)
-    await expect(readCoralWebSession(requestWith(cookie), config)).resolves.not.toBeNull()
-
-    // Well past expiry, so the skew window plays no part in the rejection.
-    advanceSeconds(1800 + CLOCK_SKEW_SECONDS + 60)
-    await expect(readCoralWebSession(requestWith(cookie), config)).resolves.toBeNull()
-  })
-
-  it('ignores a session that is still valid but inside the clock-skew window', async () => {
-    const cookie = await commitCoralWebSession(validSession(), config)
-
-    // 20s of life left: not expired, but too close to hand to a request.
-    advanceSeconds(1800 - 20)
-    await expect(readCoralWebSession(requestWith(cookie), config)).resolves.toBeNull()
-  })
-
-  // The other half of that guard. A session this short is unreadable the instant
-  // it is written, and the resulting `/login` → callback → `/login` loop reports
-  // no error anywhere, so the refusal has to happen on the way in.
-  it('refuses to commit a session that expires inside the clock-skew window', async () => {
+  // A session this short is unusable the instant it is written, and the
+  // resulting `/login` → callback → `/login` loop reports no error anywhere, so
+  // the refusal has to happen on the way in.
+  it('refuses to commit a session that ends inside the clock-skew window', async () => {
+    for (const expiresIn of [CLOCK_SKEW_SECONDS, 0]) {
+      await expect(
+        commitCoralWebSession({ endpoint: ENDPOINT, expiresIn, handle: HANDLE }, config),
+      ).rejects.toThrow('Refusing to establish a Coral web session that expires within 30s')
+    }
     await expect(
       commitCoralWebSession(
-        {
-          accessToken: 'token',
-          expiresAt: unixTimestamp() + CLOCK_SKEW_SECONDS,
-          tokenType: 'Bearer',
-        },
+        { endpoint: ENDPOINT, expiresIn: CLOCK_SKEW_SECONDS + 1, handle: HANDLE },
         config,
       ),
-    ).rejects.toThrow('Refusing to establish a Coral web session that expires within 30s')
-
-    await expect(
-      commitCoralWebSession(
-        { accessToken: 'token', expiresAt: unixTimestamp() - 1, tokenType: 'Bearer' },
-        config,
-      ),
-    ).rejects.toThrow('Refusing to establish a Coral web session that expires within 30s')
+    ).resolves.toContain('Max-Age=31')
   })
 
-  it('commits a session that clears the clock-skew window by a second', async () => {
-    await expect(
-      commitCoralWebSession(
-        {
-          accessToken: 'token',
-          expiresAt: unixTimestamp() + CLOCK_SKEW_SECONDS + 1,
-          tokenType: 'Bearer',
-        },
-        config,
-      ),
-    ).resolves.toContain(`${config.cookieName}=`)
+  it('ends the session at Coral, or keeps a sign-out to finish later', async () => {
+    const cookie = await startedSession()
+    const fetch = mockFetch(
+      new Response(null, { status: 200 }),
+      jsonResponse({ error: 'server_error' }, 503),
+      new Response(null, { status: 200 }),
+    )
+
+    await expect(endCoralWebSession(requestWith(cookie), config)).resolves.toBe('ended')
+    await expect(endCoralWebSession(requestWith(cookie), config)).resolves.toBe('unfinished')
+    const pending = await commitPendingSignOut(requestWith(cookie), config)
+    expect(pending).toContain(`${config.cookieName}_signout=`)
+    // The pending cookie alone finishes the sign-out; it is never a session.
+    await expect(endCoralWebSession(requestWith(pending ?? ''), config)).resolves.toBe('ended')
+    await expect(resolveCoralWebSession(requestWith(pending ?? ''), config)).resolves.toBeNull()
+
+    for (const [url, init] of fetch.mock.calls as [string, RequestInit][]) {
+      expect(url).toBe(`${ENDPOINT}/end`)
+      expect(Object.fromEntries(init.body as URLSearchParams)).toEqual({
+        client_id: authClientId(config),
+        session: HANDLE,
+      })
+    }
   })
 })
 
@@ -305,12 +295,36 @@ function advanceSeconds(seconds: number): void {
   vi.setSystemTime(new Date(Date.now() + seconds * 1000))
 }
 
-function validSession() {
-  return {
-    accessToken: 'coral-access-token',
-    expiresAt: unixTimestamp() + 1800,
-    tokenType: 'Bearer',
+function startedSession(): Promise<string> {
+  return commitCoralWebSession({ endpoint: ENDPOINT, expiresIn: 3600, handle: HANDLE }, config)
+}
+
+function minted(accessToken = 'minted-access-token', sessionExpiresIn = 1800): Response {
+  return jsonResponse({
+    access_token: accessToken,
+    expires_in: 300,
+    session_expires_in: sessionExpiresIn,
+    token_type: 'Bearer',
+  })
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    headers: { 'content-type': 'application/json' },
+    status,
+  })
+}
+
+/** Answers each fetch with the next response; a function runs when its fetch does. */
+function mockFetch(...responses: (Response | (() => Promise<Response>))[]) {
+  const fetch = vi.fn<typeof globalThis.fetch>()
+  for (const response of responses) {
+    fetch.mockImplementationOnce(() =>
+      typeof response === 'function' ? response() : Promise.resolve(response),
+    )
   }
+  vi.stubGlobal('fetch', fetch)
+  return fetch
 }
 
 function validTransaction() {
@@ -328,56 +342,19 @@ async function signedOAuthCookie(payload: unknown): Promise<string> {
   }).serialize(payload)
 }
 
-function cookieValue(setCookie: string): string {
-  const value = setCookie.split(';', 1)[0].split('=').slice(1).join('=')
-  // react-router signs a cookie as `<base64 payload>.<signature>`, and the
-  // payload itself is the base64 of what was serialized.
-  return Buffer.from(decodeURIComponent(value).split('.')[0], 'base64').toString('utf8')
-}
-
 // Signs an arbitrary payload the way the session cookie is signed, so a
-// hand-built value reaches the decryptor instead of being turned away by the
-// cookie layer. Only `secrets` matters for that; `secure` is there because the
-// serializer refuses to write a `__Host-` cookie without it.
-async function signedCookie(payload: string): Promise<string> {
+// hand-built value reaches the shape check instead of being turned away by the
+// cookie layer.
+async function signedSessionCookie(payload: unknown): Promise<string> {
   return createCookie(config.cookieName, {
     secrets: [config.sessionSecret],
     secure: true,
   }).serialize(payload)
 }
 
-// Mirrors the module's own AES-256-GCM envelope. Reproduced rather than exported
-// from the source, because the point is to feed the reader something that
-// decrypts perfectly and is still not a session — the one case that cannot be
-// built out of the public API.
-function encryptForTest(payload: unknown): string {
-  const iv = randomBytes(12)
-  const key = createHash('sha256').update(config.sessionSecret).digest()
-  const cipher = createCipheriv('aes-256-gcm', key, iv)
-  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(payload), 'utf8'), cipher.final()])
-
-  return [iv, cipher.getAuthTag(), ciphertext].map((part) => part.toString('base64url')).join('.')
-}
-
-function representativeSessionToken(): string {
-  const header = base64UrlJson({
-    alg: 'ES256',
-    kid: '8n83UnqxWBGpQWJmVpkam9SuO9AmOoa3ik4fdurN7N0',
-    typ: 'at+jwt',
-  })
-  const claims = base64UrlJson({
-    aud: 'https://coral-web.example.test',
-    client_id: 'https://coral-web.example.test/.well-known/oauth-client',
-    exp: 1_767_226_800,
-    iat: 1_767_225_600,
-    iss: 'https://coral.example.test',
-    jti: '4b9677e0-2a75-4227-b1e2-45e8584f940e',
-    sub: 'opaque:subject/123',
-  })
-  const signature = 's'.repeat(86)
-  return `${header}.${claims}.${signature}`
-}
-
-function base64UrlJson(value: unknown): string {
-  return Buffer.from(JSON.stringify(value)).toString('base64url')
+function cookieValue(setCookie: string): string {
+  const value = setCookie.split(';', 1)[0].split('=').slice(1).join('=')
+  // react-router signs a cookie as `<base64 payload>.<signature>`, and the
+  // payload itself is the base64 of what was serialized.
+  return Buffer.from(decodeURIComponent(value).split('.')[0], 'base64').toString('utf8')
 }

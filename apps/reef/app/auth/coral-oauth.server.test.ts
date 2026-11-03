@@ -2,16 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { authClientId, authRedirectUri, authResource } from './config.server'
 import { completeCoralOAuthLogin, startCoralOAuthLogin } from './coral-oauth.server'
-import { oauthCookieName, readOAuthTransaction, readCoralWebSession } from './session.server'
+import { coralWebSessionHandle, oauthCookieName, readOAuthTransaction } from './session.server'
 import { loopbackAuthConfig, requiredAuthConfig } from './test-config'
 
 const config = requiredAuthConfig
 const AUTH_ISSUER = config.issuer
 const metadata = {
   authorization_endpoint: `${AUTH_ISSUER}/authorize`,
+  coral_web_session_endpoint: `${AUTH_ISSUER}/oauth/session`,
   issuer: AUTH_ISSUER,
   token_endpoint: `${AUTH_ISSUER}/token`,
 }
+const tokens = { access_token: 'opaque-coral-token', expires_in: 7200, refresh_token: 'coral_rt_r' }
+const startedSession = { expires_in: 3600, session: 'coral_ws_handle' }
 const untrustedEndpointCases = [
   ['lookalike host', 'https://coral.example.test.attacker.test/oauth'],
   ['alternate port', 'https://coral.example.test:444/oauth'],
@@ -66,11 +69,12 @@ describe('Coral OAuth adapter', () => {
     })
   })
 
-  it('completes login, clears OAuth state, and stores a bounded encrypted session', async () => {
+  it('completes login, hands the refresh token to a Coral session, and keeps only its handle', async () => {
     const fetch = mockFetch(
       jsonResponse(metadata),
       jsonResponse(metadata),
-      jsonResponse({ access_token: 'opaque-coral-token', expires_in: 7200, token_type: 'Bearer' }),
+      jsonResponse(tokens),
+      jsonResponse(startedSession, { status: 201 }),
     )
     const login = await startCoralOAuthLogin(
       new Request('https://coral-web.example.test/login?returnTo=/workspaces/analytics?tab=mine'),
@@ -84,7 +88,7 @@ describe('Coral OAuth adapter', () => {
       config,
     )
     const cookies = setCookies(callback)
-    const session = await readCoralWebSession(
+    const handle = await coralWebSessionHandle(
       new Request('https://coral-web.example.test/', {
         headers: { cookie: cookieHeader(callback, config.cookieName) },
       }),
@@ -95,12 +99,10 @@ describe('Coral OAuth adapter', () => {
     expect(cookies[0]).toContain(`${oauthCookieName(config)}=`)
     expect(cookies[0]).toContain('Max-Age=0')
     expect(cookies[1]).toContain(`${config.cookieName}=`)
-    expect(cookies[1]).not.toContain('opaque-coral-token')
-    expect(session).toEqual({
-      accessToken: 'opaque-coral-token',
-      expiresAt: unixTimestamp() + 3600,
-      tokenType: 'Bearer',
-    })
+    expect(handle).toBe('coral_ws_handle')
+    for (const secret of ['opaque-coral-token', 'coral_rt_r']) {
+      expect(decodedCookies(callback)).not.toContain(secret)
+    }
 
     const tokenRequest = fetch.mock.calls[2]
     const body = tokenRequest?.[1]?.body as URLSearchParams
@@ -113,12 +115,22 @@ describe('Coral OAuth adapter', () => {
     expect(body.get('resource')).toBe(authResource(config))
     expect(body.get('coral_audience')).toBe('reef')
     expect(body.has('scope')).toBe(false)
+
+    const sessionRequest = fetch.mock.calls[3]
+    expect(sessionRequest?.[0]).toBe(metadata.coral_web_session_endpoint)
+    expect(Object.fromEntries(sessionRequest?.[1]?.body as URLSearchParams)).toEqual({
+      client_id: authClientId(config),
+      max_age: String(config.sessionMaxAgeSeconds),
+      refresh_token: 'coral_rt_r',
+    })
+    expect(sessionRequest?.[1]?.redirect).toBe('manual')
   })
 
   it('derives the same OAuth identity for the accepted all-loopback topology', async () => {
     const loopbackConfig = loopbackAuthConfig
     const loopbackMetadata = {
       authorization_endpoint: 'http://127.0.0.1:3000/authorize',
+      coral_web_session_endpoint: 'http://127.0.0.1:3000/oauth/session',
       issuer: loopbackConfig.issuer,
       token_endpoint: 'http://127.0.0.1:3000/token',
     }
@@ -154,7 +166,8 @@ describe('Coral OAuth adapter', () => {
     mockFetch(
       jsonResponse(metadata),
       jsonResponse(metadata),
-      jsonResponse({ access_token: 'token', expires_in: 3600 }),
+      jsonResponse(tokens),
+      jsonResponse(startedSession, { status: 201 }),
     )
     const login = await startCoralOAuthLogin(
       new Request(`https://coral-web.example.test/login?returnTo=${encodeURIComponent(returnTo)}`),
@@ -238,6 +251,7 @@ describe('Coral OAuth adapter', () => {
     const pathConfig = { ...config, issuer }
     const pathMetadata = {
       authorization_endpoint: `${issuer}authorize`,
+      coral_web_session_endpoint: `${issuer}session`,
       issuer,
       token_endpoint: `${issuer}token`,
     }
@@ -366,11 +380,33 @@ describe('Coral OAuth adapter', () => {
     ])
   })
 
-  it('requires a positive standards-based token expiry', async () => {
+  it.each(untrustedEndpointCases)(
+    'rejects an untrusted web session endpoint using a %s',
+    async (_, endpoint) => {
+      const fetch = mockFetch(jsonResponse({ ...metadata, coral_web_session_endpoint: endpoint }))
+
+      await expect(
+        startCoralOAuthLogin(new Request('https://coral-web.example.test/login'), config),
+      ).rejects.toThrow('coral_web_session_endpoint must be an absolute same-origin HTTP(S) URL')
+      expect(fetch).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  // Without a refresh token Reef has nothing to keep a session with, and it
+  // never stores the access token instead.
+  it.each([
+    ['returns no refresh token', jsonResponse({ access_token: 'token', expires_in: 3600 }), null],
+    [
+      'refuses to start a session',
+      jsonResponse(tokens),
+      jsonResponse({ error: 'invalid_grant' }, { status: 400 }),
+    ],
+  ])('fails sign-in when Coral %s', async (_label, tokenResponse, sessionResponse) => {
     mockFetch(
       jsonResponse(metadata),
       jsonResponse(metadata),
-      jsonResponse({ access_token: 'token-with-ignored-jwt-shape' }),
+      tokenResponse,
+      ...(sessionResponse ? [sessionResponse] : []),
     )
     const login = await startCoralOAuthLogin(
       new Request('https://coral-web.example.test/login'),
@@ -378,14 +414,15 @@ describe('Coral OAuth adapter', () => {
     )
     const state = new URL(login.headers.get('location') ?? '').searchParams.get('state')
 
-    await expect(
-      completeCoralOAuthLogin(
-        new Request(`https://coral-web.example.test/auth/callback?code=abc&state=${state}`, {
-          headers: { cookie: cookieHeader(login, oauthCookieName(config)) },
-        }),
-        config,
-      ),
-    ).rejects.toThrow('positive expires_in')
+    const failure = await completeCoralOAuthLogin(
+      new Request(`https://coral-web.example.test/auth/callback?code=abc&state=${state}`, {
+        headers: { cookie: cookieHeader(login, oauthCookieName(config)) },
+      }),
+      config,
+    ).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Response)
+    expect((failure as Response).status).toBe(400)
+    expect(setCookies(failure as Response).join()).not.toContain(`${config.cookieName}=`)
   })
 })
 
@@ -420,6 +457,12 @@ function cookieHeader(response: Response, name: string): string {
   return cookie.split(';', 1)[0]
 }
 
-function unixTimestamp(): number {
-  return Math.floor(Date.now() / 1000)
+/** Every cookie the response sets, decoded as a browser would store it. */
+function decodedCookies(response: Response): string {
+  return setCookies(response)
+    .map((cookie) => {
+      const value = decodeURIComponent(cookie.split(';', 1)[0].split('=').slice(1).join('='))
+      return Buffer.from(value.split('.')[0] ?? '', 'base64').toString('utf8')
+    })
+    .join('\n')
 }

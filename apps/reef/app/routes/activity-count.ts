@@ -1,7 +1,7 @@
 import type { Route } from './+types/activity-count'
 import { requestAuthContext } from '@/auth/server-context'
 import { assertManagementOrigin, management, privateHeaders } from '@/lib/management.server'
-import { activityStream } from '@/lib/activity-stream.server'
+import { activityStream, streamDeadlines } from '@/lib/activity-stream.server'
 import { loadActionCounts } from '@/lib/action-count.server'
 import { activeWorkspaces } from '@/lib/workspace-route.server'
 
@@ -19,6 +19,6 @@ export function action({ request, context }: Route.ActionArgs) {
       kind: 'count',
       counts: await loadActionCounts(api, await activeWorkspaces(api, signal), signal),
     }),
-    auth.mode === 'required' ? auth.session.expiresAt : Infinity,
+    streamDeadlines(auth),
   )
 }

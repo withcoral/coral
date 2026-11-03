@@ -5,7 +5,11 @@ import type { Route } from './+types/_protected'
 import { clearCsrfToken, csrfTokenForRequest } from '@/auth/csrf.server'
 import { loginLocationForUrl, markAuthResponsePrivate } from '@/auth/response.server'
 import { requestAuthContext } from '@/auth/server-context'
-import { clearCoralWebSession, readCoralWebSession } from '@/auth/session.server'
+import {
+  clearCoralWebSession,
+  hasCoralWebSession,
+  resolveCoralWebSession,
+} from '@/auth/session.server'
 import type { RequiredAuthConfig } from '@/auth/types'
 import { runtimeConfigContext } from '@/lib/runtime-config.server'
 
@@ -23,9 +27,18 @@ export const middleware: Route.MiddlewareFunction[] = [
       }
     }
 
-    const session = await readCoralWebSession(request, config)
+    // Coral mints this request's access token from the session it holds. A
+    // session Coral refuses is over; one Coral cannot answer for stays, and
+    // the request fails with 503 instead of signing the visitor out.
+    let session
+    try {
+      session = await resolveCoralWebSession(request, config)
+    } catch (error) {
+      if (error instanceof Response) throw markAuthResponsePrivate(error)
+      throw error
+    }
     if (!session) {
-      throw await loginRedirect(request, url, config)
+      throw await loginRedirect(request, url, config, await hasCoralWebSession(request, config))
     }
     const csrf = await csrfTokenForRequest(request, config, session)
     context.set(requestAuthContext, {
