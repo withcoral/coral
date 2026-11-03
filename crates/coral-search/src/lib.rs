@@ -100,7 +100,9 @@ pub struct UniversalSearchModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     /// One retriever per Search Entity kind. At equal mark and position, an
-    /// earlier retriever's Entity comes first: Saved Functions, then Tools.
+    /// earlier retriever's Entity comes first: Tools, then Saved Functions.
+    /// A strong Saved Function therefore leads every Tool below its
+    /// position, but not the strong Tool at its own.
     retrievers: Arc<[Arc<dyn EntityRetriever>]>,
 }
 
@@ -151,8 +153,8 @@ impl UniversalSearchModule {
             database,
             workspaces,
             retrievers: Arc::new([
-                Arc::new(functions) as Arc<dyn EntityRetriever>,
-                Arc::new(tools),
+                Arc::new(tools) as Arc<dyn EntityRetriever>,
+                Arc::new(functions),
             ]),
         }
     }

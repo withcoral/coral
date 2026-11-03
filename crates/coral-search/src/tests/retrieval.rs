@@ -202,13 +202,13 @@ async fn a_mixed_query_fuses_strong_matches_first_then_by_position() {
     assert_eq!(
         paths(&page),
         [
-            "coral.functions.triage.openIssues",
             "coral.providers.github.issues.list",
-            "coral.functions.reports.weekly",
+            "coral.functions.triage.openIssues",
             "coral.providers.github.pulls.list",
+            "coral.functions.reports.weekly",
         ],
         "each kind keeps its own order, every Entity here is a strong match, \
-         and at equal position the Saved Function comes first"
+         and at equal position the Tool comes first"
     );
     assert_eq!(
         state(&page, EntityKind::ProviderTool),
@@ -379,8 +379,8 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
     assert_eq!(
         paths(&page),
         [
-            "coral.functions.triage.openIssues",
             "coral.providers.github.pulls.list",
+            "coral.functions.triage.openIssues",
             "coral.functions.reports.weekly",
         ],
         "neither a disabled Tool nor another Principal's Saved Function ranks"
