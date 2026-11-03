@@ -326,12 +326,23 @@ impl From<CoralFailure> for Rejection {
 
 /// What a Program reads when `call_path` names no Tool it can call: the
 /// path, cut to the longest a lookup accepts, and what to call instead.
+///
+/// A Program can compute the path, or write a literal segment that holds
+/// any string, so each control character and line separator in it is
+/// escaped and the message stays one line.
 pub(crate) fn unknown_call_path_message(call_path: &str, suggestions: &[String]) -> String {
     let mut end = call_path.len().min(coral_catalog::SEARCH_PATH_MAX_BYTES);
     while !call_path.is_char_boundary(end) {
         end -= 1;
     }
-    let written = call_path.get(..end).unwrap_or_default();
+    let mut written = String::with_capacity(end);
+    for character in call_path.get(..end).unwrap_or_default().chars() {
+        if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
+            written.extend(character.escape_default());
+        } else {
+            written.push(character);
+        }
+    }
     if suggestions.is_empty() {
         format!("{written} names no Tool that you can call. Find one with coral.workspace.search.")
     } else {
@@ -658,6 +669,27 @@ mod tests {
             Some(CoralFailure::ResultTooLarge)
         );
         assert_eq!(CoralFailure::from_code("unknown"), None);
+    }
+
+    // Catches: a Call Path a Program computed, or wrote as a literal
+    // segment, putting a line break or another control character into the
+    // durable ToolError message or an admission refusal.
+    #[test]
+    fn a_call_path_names_its_control_characters_escaped() {
+        let rejection = super::Rejection::tool_not_found(
+            "coral.providers.notion.retrieve\nPage\u{1b}[31m\u{2028}",
+            vec!["coral.providers.notion.retrieveAPage".to_owned()],
+        );
+        assert_eq!(
+            rejection.message(),
+            "coral.providers.notion.retrieve\\nPage\\u{1b}[31m\\u{2028} names no Tool \
+             that you can call. Nearest: coral.providers.notion.retrieveAPage."
+        );
+        assert_eq!(
+            super::Rejection::tool_not_found("coral.providers.a\tb", Vec::new()).message(),
+            "coral.providers.a\\tb names no Tool that you can call. Find one with \
+             coral.workspace.search."
+        );
     }
 
     #[test]
