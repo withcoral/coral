@@ -3360,4 +3360,65 @@ describe('a search that keeps a Task for one of its Runs', () => {
     )
     expect(page.branches[taskName('n')]?.rows.map((row) => row.name)).toEqual([runOf('match')])
   })
+
+  /** `world`, where each open Run reads as Coral submitted it: `match` as the search keeps it. */
+  function openRuns(world: ReturnType<typeof searchedWorld>) {
+    const { inspectTask } = world.activity as Record<string, (input: object) => never>
+    const { interactions } = inspectTask({ name: taskName('n'), query: 'billing' }) as {
+      interactions: { name: string }[]
+    }
+    Object.assign(world.activity, {
+      browseRunEntries: (input: { name: string }) => ({
+        run: { ...execution, name: input.name, task: taskName('n') },
+        submission: {
+          name: input.name === runOf('match') ? interactions[0]!.name : 'left-out',
+          position: 1n,
+        },
+        entries: [],
+        total: 0n,
+        offset: 0n,
+        nextAfter: 0n,
+        hasFinalValue: false,
+      }),
+    })
+    return world
+  }
+
+  // Catches: Live staying on a running Run the search leaves out while a matching one runs.
+  it('reads what Live may follow while it holds a Run the search leaves out', async () => {
+    const { api } = coral(openRuns(searchedWorld('other')))
+    const page = await loadActivity(onLatest({ q: 'billing', record: runOf('other') }), api, {
+      scope,
+    })
+    expect(page.liveLatest?.heldOutside).toBe(true)
+    expect(page.liveLatest?.running?.[taskName('n')]?.name).toBe(runOf('match'))
+  })
+
+  // Catches: a Run the search keeps giving up its hold, as every other held Run keeps it.
+  it('reads nothing past a held Run the search keeps', async () => {
+    const { api } = coral(openRuns(searchedWorld('other')))
+    const page = await loadActivity(onLatest({ q: 'billing', record: runOf('match') }), api, {
+      scope,
+    })
+    expect(page.liveLatest).toBeUndefined()
+  })
+
+  // Catches: a held standalone Run staying in scope, though a search keeps no standalone Run.
+  it('leaves a held standalone Run out of every search', async () => {
+    const world = openRuns(searchedWorld('other'))
+    const read = (world.activity as Record<string, (input: { name: string }) => object>)
+      .browseRunEntries!
+    Object.assign(world.activity, {
+      browseRunEntries: (input: { name: string }) => ({
+        ...read(input),
+        run: { ...execution, name: input.name, task: '' },
+        submission: undefined,
+      }),
+    })
+    const { api } = coral(world)
+    const page = await loadActivity(onLatest({ q: 'billing', record: runOf('alone') }), api, {
+      scope,
+    })
+    expect(page.liveLatest?.heldOutside).toBe(true)
+  })
 })

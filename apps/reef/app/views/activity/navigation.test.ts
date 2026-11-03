@@ -867,6 +867,60 @@ describe('live scopes', () => {
   ])('latest action: %s', (_, current, actionable, expected) => {
     expect(liveTarget(current, 'latest', now, actionable)).toEqual(expected)
   })
+  // Under a search, a Run the search leaves out gives way to a matching Run that waits
+  // or runs. With neither, nothing says what Live does instead, so it stays as it was.
+  const left = taskRow('left')
+  const outside = runRow('outside', left.name, { state: 'running', endedAt: null })
+  const holdsOutside: ReturnType<typeof liveTarget> = {
+    kind: 'run',
+    run: outside.name,
+    chain: [left.name, outside.name],
+  }
+  const searched = (liveLatest: ActivityPage['liveLatest'], more: Partial<ActivityPage> = {}) =>
+    activityPage({
+      query: 'invoice',
+      rows: [work],
+      selected: outside.name,
+      selectedRow: outside,
+      liveLatest,
+      ...more,
+    })
+  it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
+    [
+      'moves to a matching Run that runs',
+      searched({ heldOutside: true, running: { [work.name]: running } }),
+      { kind: 'run', run: first.name, chain: [work.name, first.name] },
+    ],
+    [
+      'moves to the action in a matching Run',
+      searched({ heldOutside: true, action: { task: work.name, action: named } }),
+      followsAsks,
+    ],
+    [
+      'reads the newest records first when newer ones may hold a match',
+      searched({ heldOutside: true }, { hasBefore: true }),
+      { kind: 'newest' },
+    ],
+    [
+      'stays with no matching Run that waits or runs',
+      searched({ heldOutside: true }),
+      holdsOutside,
+    ],
+    [
+      'stays when the newest match is a record of a Run that ended',
+      searched({
+        heldOutside: true,
+        running: {},
+        complete: true,
+        latest: { root: work.name, record: lookup.name, run: false },
+      }),
+      holdsOutside,
+    ],
+    ['stays on a Run the search keeps', searched(undefined), holdsOutside],
+  ])('with a search that leaves out the Run it holds, it %s', (_, current, expected) => {
+    expect(liveTarget(current, 'latest', now)).toEqual(expected)
+  })
+
   it('steps to the action the target names in its Run', () => {
     const current = { ...asked(lookup), expanded: [work.name, first.name] }
     expect(liveStep(current, first.name, true, named)).toEqual({

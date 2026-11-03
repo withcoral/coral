@@ -359,6 +359,11 @@ export type RunRow = Extract<ActivityRow, { kind: 'run' }>
 /** What page live mode knows past the list and its loaded windows. */
 export interface LiveLatest {
   /**
+   * The search leaves out the Run that holds live mode. A matching Run that waits or runs
+   * then takes over, as this names it.
+   */
+  heldOutside?: boolean
+  /**
    * The oldest action you can take in any Run page live mode may follow, timed by when
    * the tool that waits on it started, not by when the request was made. `task`
    * is the Run's Task, empty for a standalone Run.

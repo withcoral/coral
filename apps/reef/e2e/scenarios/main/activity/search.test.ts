@@ -1,7 +1,17 @@
+import { createServer, type ServerResponse } from 'node:http'
 import { expect, test } from 'vitest'
 import { authenticatedTarget, loginActor, mcpToken } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
-import { createWorkspace, observeRun, programRunner } from '../../../support/providers.ts'
+import { managementClients } from '../../../support/management.ts'
+import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
+import {
+  addProviderFromFile,
+  createWorkspace,
+  enableTool,
+  observeRun,
+  programRunner,
+} from '../../../support/providers.ts'
+import { withOwner } from '../../../support/topology.ts'
 
 test('Activity search lists matching Tasks and Runs as you type, follows new matches live, and keeps the search in the address and history', async (context) => {
   const actor = await loginActor(context, authenticatedTarget().authentication.owner)
@@ -137,4 +147,68 @@ test('Activity search ignores Unicode case, and opens every Task it lists for it
     },
     { actor: actor.label, storageState: actor.storageState },
   )
+})
+
+test('Live moves from a running Run the search leaves out to a matching Run that runs', async (context) => {
+  // Each call waits here until the test ends, so both Runs stay running.
+  const held: ServerResponse[] = []
+  const upstream = await listen(
+    context,
+    createServer((_request, response) => void held.push(response)),
+  )
+  context.onTestFinished(() => {
+    for (const response of held) response.writeHead(200).end('{}')
+  })
+  await withOwner(context, async ({ page, target, step, accessToken }) => {
+    const api = managementClients(accessToken)
+    const word = `zq${crypto.randomUUID().slice(0, 8)}`
+    const workspace = await createWorkspace(accessToken, `Hold ${word}`)
+    const provider = await addProviderFromFile(
+      page,
+      workspace,
+      openApiDocument(
+        'Hold fixture',
+        { lookup: { summary: 'Look up one record' } },
+        {
+          server: upstream.origin,
+        },
+      ),
+      'holdFixture',
+    )
+    await page.goto(provider)
+    await enableTool(page, 'lookup')
+    const start = async (taskIntent: string, intent: string, calls: number) => {
+      // exec returns at once; the Run goes on without it.
+      const execute = programRunner(page, target, workspace, { waitMs: 1, taskIntent })
+      const accepted = await execute.exec('await coral.providers.holdFixture.lookup({})', intent)
+      expect(accepted.isError).not.toBe(true)
+      await expect.poll(() => held.length, { timeout: 15_000 }).toBe(calls)
+      return `workspaces/${workspace}/runs/${accepted.structuredContent.run_id}`
+    }
+    const leftOut = await start('Unrelated chores', 'Unrelated wait', 1)
+    const matching = await start('Weekly chores', `Export ${word} invoices`, 2)
+    const address = () => new URL(page.url()).searchParams
+    const records = async () => [
+      matching,
+      ...(await api.activity.browseRunEntries({ name: matching, pageSize: 100 })).entries.flatMap(
+        ({ record }) => (record.case === 'invocation' ? [record.value.name] : []),
+      ),
+    ]
+    await step('Live holds the running Run you open, with no search', async () => {
+      const query = new URLSearchParams({ tree: '1', live: 'latest', record: leftOut })
+      await page.goto(`/workspaces/${workspace}/activity?${query}`)
+      await page.getByRole('dialog', { name: 'Activity details' }).waitFor()
+      expect(address().get('record')).toBe(leftOut)
+    })
+    await step('Search for the other Run, and Live moves to it', async () => {
+      await page.getByRole('searchbox', { name: 'Search intent', exact: true }).fill(word)
+      await expect
+        .poll(async () => (await records()).includes(address().get('record') ?? ''), {
+          timeout: 15_000,
+        })
+        .toBe(true)
+      expect(address().get('q')).toBe(word)
+      expect(address().get('live')).toBe('latest')
+    })
+  })
 })

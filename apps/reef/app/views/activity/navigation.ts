@@ -452,7 +452,8 @@ export function liveTarget(
  * What page live mode follows. Only an open Run that runs holds it; a Task never does.
  * In order:
  * 1. The open record's Run while it runs (`liveHold`), whatever arrives. `liveStep`
- *    then picks its oldest action, else its newest record.
+ *    then picks its oldest action, else its newest record. If the search leaves that Run
+ *    out (`liveLatest.heldOutside`), an action or a Run that runs from 2 or 3 goes first.
  * 2. The oldest action you can take in any Run it may follow, as the loader names it
  *    (`liveLatest`). `actionable` is false where you cannot act, such as in an archived
  *    workspace.
@@ -473,7 +474,8 @@ export function liveTarget(
  */
 function latestTarget(page: ActivityPage, now: number, actionable: boolean): LiveTarget {
   const current = liveRun(page.selectedRow)
-  if (current && liveHold(page)) return { kind: 'run', ...current }
+  const held = current && liveHold(page) ? current : null
+  if (held && !page.liveLatest?.heldOutside) return { kind: 'run', ...held }
   if (page.hasBefore) return { kind: 'newest' }
   const roots = page.rows.filter(
     (root) => root.kind === 'run' || (root.kind === 'task' && recentTask(root, now)),
@@ -512,6 +514,8 @@ function latestTarget(page: ActivityPage, now: number, actionable: boolean): Liv
   )
     return { kind: 'newest' }
   if (latest) return { kind: 'run', run: latest.run.name, chain: latest.chain }
+  // Only a Run that waits or runs takes over from one the search leaves out.
+  if (held) return { kind: 'run', ...held }
   // The loader's newest record across the list's scope, which a Task's place in the
   // list does not tell. A listed one shows through its window.
   const record = page.liveLatest?.latest
