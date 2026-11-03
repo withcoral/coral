@@ -321,8 +321,9 @@ fn strong_tool(plan: &QueryPlan, matched: &repository::RowMatch, named: bool) ->
 }
 
 /// The searched Providers the query names. Their Tools rank first within
-/// their phrase points, and no Tool is filtered out. With a Provider filter
-/// only that Provider is searched, so naming it changes nothing.
+/// their phrase points and are strong matches, and no Tool is filtered out.
+/// With a Provider filter only that Provider is searched, so naming it
+/// changes no Tool's order, only which Tools are strong.
 fn named_providers(
     plan: &QueryPlan,
     searched: &HashMap<ProviderId, Arc<ActiveProvider>>,

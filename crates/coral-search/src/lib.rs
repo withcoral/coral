@@ -162,9 +162,10 @@ impl UniversalSearchModule {
     /// Searches visible Search Entities and returns a page of Search Hits.
     ///
     /// Each retriever applies current visibility and ranks its own kind; the
-    /// engine fuses the windows by position, strong matches first. Only the page's items are
-    /// hydrated, each into a hit with a signature line, snippets, and
-    /// evidence of why it matched. Every page carries one status per retriever. An omitted query
+    /// engine fuses the windows by position, strong matches first. Only the
+    /// page's items are hydrated, each into a hit with a signature line,
+    /// snippets, and evidence of why it matched. Every page carries one
+    /// status per retriever. An omitted query
     /// lists every visible Entity in Call Path order and reads no index.
     ///
     /// # Errors

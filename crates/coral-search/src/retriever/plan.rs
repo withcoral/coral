@@ -52,10 +52,10 @@ pub(crate) struct QueryPlan {
     pub(super) variant_words: Vec<String>,
     /// Terms that yield no word, kept as substring patterns.
     pub(super) wordless: Vec<String>,
-    /// The content words of the whole query, each once: runs of ASCII
-    /// letters and digits of at least three characters, as the phrase test
-    /// splits them, less the filler words. A retriever's strong-match rule
-    /// reads them.
+    /// The content words of the whole query, each once: its words by the
+    /// rule that finds a field's words, so each run of ASCII letters and
+    /// digits and each camelCase part of it, of at least three characters,
+    /// less the filler words. A retriever's strong-match rule reads them.
     content_words: Vec<String>,
     /// Every typed term, so a term can equal a Provider Namespace.
     typed_terms: BTreeSet<String>,

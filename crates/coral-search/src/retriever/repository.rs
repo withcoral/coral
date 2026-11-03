@@ -45,16 +45,6 @@ const TOOL: &str = "provider_tool";
 const SAVED_FUNCTION: &str = "saved_function";
 const COMPLETE: &str = "complete";
 
-/// The fields the phrase points read, with their weights. Schema text adds
-/// none: it holds each word once, at its first
-/// occurrence, so two words in order there are chance.
-const MATCH_FIELDS: [(&str, u32); 4] = [
-    ("qualified_name", 8),
-    ("title", 6),
-    ("description", 2),
-    ("provider_name", 2),
-];
-
 /// The rows one kind's statement may rank, as its visibility step decided.
 enum Scope<'a> {
     /// Tools of the visible, ready Providers' active Generations, less
@@ -490,9 +480,9 @@ fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan) -> String {
 /// title 6), and once in the body (description and Provider name 2, schema
 /// text 1). A call adds up its columns' weighted hits before it saturates,
 /// and a column weighted 0 adds nothing. So a long body needs many mentions
-/// to come near the value of one name match. Two numbers differ from Postgres: FTS5 fixes `b` at 0.75,
-/// not 0.4, and schema text weighs 1, not 0.25, because 0.25 ranked lower on
-/// one of three SQLite benchmark corpora.
+/// to come near the value of one name match. Two numbers differ from
+/// Postgres: FTS5 fixes `b` at 0.75, not 0.4, and schema text weighs 1, not
+/// 0.25, because 0.25 ranked lower on one of three SQLite benchmark corpora.
 async fn rank_sqlite(
     transaction: &mut Transaction<'_>,
     scope: &Scope<'_>,
@@ -529,10 +519,12 @@ async fn rank_sqlite(
     transaction.fetch_all_sql(&sql, binds.values).await
 }
 
-/// The phrase points over the alias's [`MATCH_FIELDS`], the first order key
-/// on both backends. Each field adds its weight once when it holds the
-/// phrase's words in order, and twice when it is the whole phrase. One
-/// pattern pair serves Postgres's `~` and `SQLite`'s `REGEXP` alike.
+/// The phrase points over the alias's name, title, description and Provider
+/// name, the first order key on both backends. Each field adds its weight
+/// once when it holds the phrase's words in order, and twice when it is the
+/// whole phrase. Schema text adds none: it holds each word once, at its first
+/// occurrence, so two words in order there are chance. One pattern pair
+/// serves Postgres's `~` and `SQLite`'s `REGEXP` alike.
 fn phrase_points(binds: &mut Binds, alias: &str, plan: &QueryPlan) -> String {
     let phrase = &plan.phrase;
     let operator = match binds.system {
@@ -541,17 +533,22 @@ fn phrase_points(binds: &mut Binds, alias: &str, plan: &QueryPlan) -> String {
     };
     let whole = binds.push(phrase.whole.clone());
     let contained = binds.push(phrase.contained.clone());
-    MATCH_FIELDS
-        .iter()
-        .map(|(column, weight)| {
-            format!(
-                "(CASE WHEN {alias}.{column} {operator} {whole} THEN {} \
-                 WHEN {alias}.{column} {operator} {contained} THEN {weight} ELSE 0 END)",
-                weight * 2
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" + ")
+    [
+        ("qualified_name", 8),
+        ("title", 6),
+        ("description", 2),
+        ("provider_name", 2),
+    ]
+    .iter()
+    .map(|(column, weight)| {
+        format!(
+            "(CASE WHEN {alias}.{column} {operator} {whole} THEN {} \
+             WHEN {alias}.{column} {operator} {contained} THEN {weight} ELSE 0 END)",
+            weight * 2
+        )
+    })
+    .collect::<Vec<_>>()
+    .join(" + ")
 }
 
 /// The Workspace's Postgres statistics for each of the plan's words, and the
