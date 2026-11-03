@@ -7,7 +7,7 @@ import { renderRoute } from '@/test-support/route'
 import { ActionReviewSession } from '../actions/review'
 import { Activity } from './activity'
 import { activityPage, approvalRequest, invocationRow, runRow } from './fixtures'
-import { MIN_LIVE_RECORD_STAY_MS } from './navigation'
+import { leavesActivityReview, MIN_LIVE_RECORD_STAY_MS } from './navigation'
 import type { ActivityPage, ActivityRow, LiveLatest } from './types'
 
 // Page live mode shows each record at least MIN_LIVE_RECORD_STAY_MS before it selects
@@ -117,8 +117,9 @@ function Route() {
     stream = () =>
       setStreamed({ page: pageFor(new URL(location.search, `http://reef${list}`)), over: loaded })
   })
+  const request = page.detail?.kind === 'run' ? page.detail.request : null
   return (
-    <ActionReviewSession request={page.detail?.kind === 'run' ? page.detail.request : null}>
+    <ActionReviewSession request={request} leaves={leavesActivityReview(request)}>
       <Activity
         page={page}
         windowKey="live-stay"

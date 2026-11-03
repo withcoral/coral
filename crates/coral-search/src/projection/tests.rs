@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 use crate::{
     ApprovalRequirement, CallPath, EntityKind, ProviderCallRoot, ProviderId, RetrieverCoverage,
-    RetrieverState, RetrieverStatus, SearchCursor, SearchEvidence, SearchHit, SearchPage,
+    RetrieverState, RetrieverStatus, SearchEvidence, SearchHit, SearchPage,
     ToolAuthoringDescription, types::HitText,
 };
 
@@ -119,28 +119,25 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
 }
 
 #[test]
-fn a_page_states_its_cursor_and_retriever_statuses_only_when_they_matter() {
-    let cursor = SearchCursor::parse("eyJwb3NpdGlvbiI6MX0").expect("cursor");
+fn a_page_states_its_next_offset_and_retriever_statuses_only_when_they_matter() {
     for (name, page, expected) in [
         (
             "a last page that every retriever searched",
             SearchPage::new(
                 Vec::new(),
                 None,
-                false,
                 vec![
                     status(EntityKind::ProviderTool, RetrieverState::ResultsFound),
                     status(EntityKind::SavedFunction, RetrieverState::Empty),
                 ],
             ),
-            json!({ "hits": [], "has_more": false }),
+            json!({ "hits": [] }),
         ),
         (
             "a page with more results and one retriever that failed",
             SearchPage::new(
                 Vec::new(),
-                Some(cursor.clone()),
-                true,
+                Some(20),
                 vec![
                     status(EntityKind::ProviderTool, RetrieverState::Partial),
                     status(EntityKind::SavedFunction, RetrieverState::ResultsFound),
@@ -148,8 +145,7 @@ fn a_page_states_its_cursor_and_retriever_statuses_only_when_they_matter() {
             ),
             json!({
                 "hits": [],
-                "has_more": true,
-                "next_cursor": cursor.to_string(),
+                "next_offset": 20,
                 "retriever_statuses": [{
                     "retriever": "provider_tool",
                     "state": "partial",

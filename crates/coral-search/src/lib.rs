@@ -36,12 +36,11 @@
 //!   index on what the owners hold.
 //!
 //! The engine inside [`UniversalSearchModule`] normalizes the query, hands the
-//! same terms to every retriever, fuses by position, pages, and encodes
-//! non-authorizing cursors. It never names a Search Entity kind. Every search
+//! same terms to every retriever, fuses by position, and pages by a plain
+//! offset that authorizes nothing. It never names a Search Entity kind. Every search
 //! page and exact description applies the owners' current visibility rules.
 //! Discovery never starts an interactive authorization or refreshes credentials.
 
-mod cursor;
 mod eligibility;
 mod error;
 mod evidence;
@@ -67,7 +66,6 @@ use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 
-use cursor::decode_cursor_position;
 use page::{Ranked, hydrate_page_in_transaction};
 use retriever::functions::SavedFunctionRetriever;
 use retriever::tools::ToolRetriever;
@@ -82,16 +80,16 @@ pub use storage::{StorageError, prepare_storage};
 pub use types::{
     ApprovalRequirement, AuthoringDescription, CallPath, EntityKind, ExactAuthoringDescription,
     ExactSavedFunctionDetail, ProviderCallRoot, ProviderId, RetrieverCoverage, RetrieverState,
-    RetrieverStatus, SEARCH_CURSOR_MAX_BYTES, SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX,
+    RetrieverStatus, SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX,
     SEARCH_EVIDENCE_PATH_MAX_BYTES, SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES,
     SEARCH_QUERY_MAX_BYTES, SEARCH_RESULT_LIMIT_MAX, SavedFunctionAuthoringDescription,
-    SearchCursor, SearchEvidence, SearchHit, SearchIndexFailure, SearchIndexState, SearchInput,
-    SearchLimit, SearchPage, SearchQuery, SearchRequest, ToolAuthoringDescription, ToolHit,
+    SearchEvidence, SearchHit, SearchIndexFailure, SearchIndexState, SearchInput, SearchLimit,
+    SearchPage, SearchQuery, SearchRequest, ToolAuthoringDescription, ToolHit,
     provider_filter_value,
 };
 
 /// How many ranked Search Entities each retriever hands the engine. The
-/// fused union of the windows is the result universe a cursor pages through.
+/// fused union of the windows is the result universe an offset pages through.
 const RETRIEVAL_WINDOW: usize = 100;
 
 /// Transport-neutral Universal Search Module.
@@ -170,7 +168,7 @@ impl UniversalSearchModule {
     ///
     /// # Errors
     ///
-    /// Returns invalid cursor, authority, or shared persistence failures, and
+    /// Returns authority or shared persistence failures, and
     /// [`Error::ServiceUnavailable`] when every applied retriever fails to rank.
     pub async fn search(
         &self,
@@ -178,16 +176,9 @@ impl UniversalSearchModule {
         workspace_id: &WorkspaceId,
         request: &SearchRequest,
     ) -> Result<SearchPage, Error> {
-        let normalized = request
+        let terms = request
             .search_query()
-            .map(|query| normalize_query(query.as_str()));
-        let cursor_position = decode_cursor_position(
-            request.cursor(),
-            actor,
-            workspace_id,
-            normalized.as_ref().map(|query| query.text.as_str()),
-            request.provider(),
-        )?;
+            .map(|query| query_terms(query.as_str()));
 
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
@@ -198,20 +189,20 @@ impl UniversalSearchModule {
             actor,
             authority: &authority,
             workspace_id,
-            terms: normalized.as_ref().map(|query| query.terms.as_slice()),
+            terms: terms.as_deref(),
             loaded: &loaded,
         };
-        let (ranked, statuses) = match &normalized {
+        let (ranked, statuses) = match &terms {
             None => {
                 self.list_in_transaction(&mut transaction, context, request.provider())
                     .await?
             }
-            Some(query) => {
+            Some(terms) => {
                 self.rank_in_transaction(
                     &mut transaction,
                     context,
                     &QueryRequest {
-                        terms: &query.terms,
+                        terms,
                         provider_filter: request.provider(),
                         window: RETRIEVAL_WINDOW,
                     },
@@ -224,10 +215,9 @@ impl UniversalSearchModule {
             context,
             &self.retrievers,
             &ranked,
-            cursor_position.min(ranked.len()),
+            usize::try_from(request.offset())
+                .map_or(ranked.len(), |offset| offset.min(ranked.len())),
             request.limit(),
-            normalized.as_ref().map(|query| query.text.as_str()),
-            request.provider(),
             statuses,
         )
         .await?;
@@ -508,17 +498,11 @@ impl UniversalSearchModule {
     }
 }
 
-/// The normalized query: its text binds the cursor, its terms go to every
-/// retriever.
-struct NormalizedQuery {
-    text: String,
-    terms: Vec<String>,
-}
-
-/// Trims, collapses whitespace, and lowercases the query, then splits it into
-/// terms on every character that is not alphanumeric or one of `_ - . # / @`.
-/// The whole query is one more term. Terms are sorted and deduplicated.
-fn normalize_query(query: &str) -> NormalizedQuery {
+/// The terms every retriever gets. Trims, collapses whitespace, and lowercases
+/// the query, then splits it into terms on every character that is not
+/// alphanumeric or one of `_ - . # / @`. The whole query is one more term.
+/// Terms are sorted and deduplicated.
+fn query_terms(query: &str) -> Vec<String> {
     let text = query
         .split_whitespace()
         .map(str::to_lowercase)
@@ -534,7 +518,7 @@ fn normalize_query(query: &str) -> NormalizedQuery {
         .collect::<Vec<_>>();
     terms.sort();
     terms.dedup();
-    NormalizedQuery { text, terms }
+    terms
 }
 
 /// Fuses the retrievers' windows, each `(retriever index, window)` in

@@ -12,9 +12,6 @@ pub enum Error {
         /// The Call Roots the caller can search, in order.
         searchable: Vec<ProviderCallRoot>,
     },
-    /// A cursor is malformed, incompatible, or bound to different arguments.
-    #[error("invalid search cursor")]
-    InvalidCursor,
     /// Search results could not be ranked, or a result page could not be
     /// produced.
     #[error("Universal Search is temporarily unavailable")]
@@ -89,10 +86,6 @@ impl Error {
         }
         let (code, message) = match self {
             Self::InvalidInput(_) => ("invalid_input", "Discovery input is invalid"),
-            Self::InvalidCursor => (
-                "invalid_cursor",
-                "Search cursor does not match this request",
-            ),
             Self::ServiceUnavailable => (
                 "service_unavailable",
                 "Universal Search is temporarily unavailable",

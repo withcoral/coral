@@ -39,7 +39,8 @@ async fn creation_and_update_share_the_workspace_publication_request_namespace()
             fixture.request(setup.id(), update_id),
         )
         .await
-        .expect("publish update with its own request identity");
+        .expect("publish update with its own request identity")
+        .skip_search();
     let creation_setup = fixture
         .replacement_setup(&providers, CREDENTIAL_FREE_OPENAPI, 70, '7')
         .await;

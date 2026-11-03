@@ -349,15 +349,15 @@ test('Current Run and tool actions settle live while exact review stays selected
       await addProviderFromFile(page, id, Buffer.from(JSON.stringify(document)), 'liveGate')
     ).slice(1)
     const activityUrl = `/workspaces/${id}/activity`
-    /** This Workspace's Activity destination, named with its pending-action count. A modal
+    /** This Workspace's Approvals destination, named with its pending-approval count. A modal
      * review hides the sidebar from the accessibility tree, so include hidden elements. */
-    const activityLink = (count: bigint) =>
+    const approvalsLink = (count: bigint) =>
       page
         .getByRole('navigation', { name: 'Coral', exact: true, includeHidden: true })
         .getByRole('link', {
           name: count
-            ? `Activity. ${count} pending ${count === 1n ? 'action' : 'actions'}`
-            : 'Activity',
+            ? `Approvals. ${count} pending ${count === 1n ? 'approval' : 'approvals'}`
+            : 'Approvals',
           exact: true,
           includeHidden: true,
         })
@@ -412,7 +412,7 @@ test('Current Run and tool actions settle live while exact review stays selected
           parent: provider,
           policies: [{ tool, accessState: ToolAccessState.DISABLED }],
         })
-        // The action leaves the queue as soon as the policy commits.
+        // The tool stops waiting on you as soon as the policy commits.
         await expect
           .poll(() => page.getByText('needs action', { exact: true }).count(), { timeout: 10_000 })
           .toBe(0)
@@ -429,9 +429,7 @@ test('Current Run and tool actions settle live while exact review stays selected
         expect(new URL(page.url()).searchParams.get('record')).toBe(selected)
         expect(await page.getByRole('dialog').count()).toBe(1)
         expect(await shownArguments(page.getByRole('dialog'))).toEqual(logical)
-        expect(
-          await page.getByRole('button', { name: 'Approve this call', exact: true }).count(),
-        ).toBe(0)
+        expect(await page.getByRole('button', { name: 'Approve', exact: true }).count()).toBe(0)
       })
       await step(`Find and review concurrent ${scope} actions in Activity`, async () => {
         await api.policies.updateToolPolicies({
@@ -455,13 +453,16 @@ test('Current Run and tool actions settle live while exact review stays selected
                 .length,
           )
           .toBe(2)
-        // The badge counts this Workspace's actions on its own Activity destination.
+        // The badge counts this Workspace's approvals on its own Approvals destination.
         await page.goto(`/workspaces/${id}`)
         const workspaceCount = (
           await api.activity.countRequiredActions({ workspace: workspace.name })
-        ).actionCount
-        await activityLink(workspaceCount).waitFor()
-        await activityLink(workspaceCount).click()
+        ).approvalCount
+        await approvalsLink(workspaceCount).waitFor()
+        await page
+          .getByRole('navigation', { name: 'Coral', exact: true })
+          .getByRole('link', { name: 'Activity', exact: true })
+          .click()
         // The Overview embeds the activity reader, so wait for Activity's own breadcrumb.
         await breadcrumb(page, 'Activity').waitFor()
         expect(new URL(page.url()).pathname).toBe(activityUrl)
@@ -471,10 +472,7 @@ test('Current Run and tool actions settle live while exact review stays selected
           query.append('expand', run)
           await page.goto(`${activityUrl}?${query}`)
           const table = page.getByRole('table', { name: 'Activity records', exact: true })
-          await table
-            .getByRole('link', { name: 'coral.providers.liveGate.lookup', exact: true })
-            .first()
-            .click()
+          await table.getByRole('link', { name: 'Live gate lookup', exact: true }).first().click()
           await page.getByRole('dialog', { name: 'Review action', exact: true }).waitFor()
           await page.waitForURL((url) => Boolean(url.searchParams.get('request')))
           await page.getByRole('button', { name: 'Close details', exact: true }).click()
@@ -482,19 +480,26 @@ test('Current Run and tool actions settle live while exact review stays selected
           await table.getByRole('link', { name: 'Call one Tool', exact: true }).click()
           await page.getByRole('dialog', { name: 'Activity details', exact: true }).waitFor()
           expect(new URL(page.url()).searchParams.get('record')).toBe(run)
-          expect(
-            await page.getByRole('button', { name: 'Approve this call', exact: true }).count(),
-          ).toBe(0)
-          await page.getByRole('button', { name: 'Close details', exact: true }).click()
-          await page.waitForURL((url) => !url.searchParams.has('record'))
-          await page.getByRole('link', { name: 'Review', exact: true }).first().click()
-          await page.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()
+          expect(await page.getByRole('button', { name: 'Approve', exact: true }).count()).toBe(0)
+          // The Run's own action list opens the review of a call that waits on you.
+          await page
+            .getByRole('navigation', { name: 'Actions in this run', exact: true })
+            .getByRole('link', { name: /^Review / })
+            .first()
+            .click()
+          await page.getByRole('button', { name: 'Approve', exact: true }).waitFor()
           await page.waitForURL((url) =>
             Boolean(url.searchParams.get('record')?.includes('/invocations/')),
           )
         } else {
-          await page.goto(activityUrl)
-          await page.getByRole('link', { name: 'Review', exact: true }).first().click()
+          // An Owner finds the Agent's request on the Approvals page, then opens it in activity.
+          await page.goto(`/workspaces/${id}/approvals`)
+          await page
+            .getByRole('table', { name: 'Pending approvals', exact: true })
+            .getByRole('link', { name: /^Review: / })
+            .first()
+            .click()
+          await page.getByRole('link', { name: 'Open in activity', exact: true }).click()
         }
         await page.getByRole('dialog', { name: 'Review action', exact: true }).waitFor()
         const history = page.getByRole('table', {
@@ -517,7 +522,7 @@ test('Current Run and tool actions settle live while exact review stays selected
             includeHidden: true,
           })
           .getByRole('link', {
-            name: 'coral.providers.liveGate.lookup',
+            name: 'Live gate lookup',
             exact: true,
             includeHidden: true,
           })
@@ -547,11 +552,11 @@ test('Current Run and tool actions settle live while exact review stays selected
         const arrival = await runner.exec(
           'return await coral.providers.liveGate.lookup({marker:"arrival"});',
         )
-        await activityLink(workspaceCount + 1n).waitFor()
+        await approvalsLink(workspaceCount + 1n).waitFor()
         await api.activity.cancelActivityRun({
           name: `${workspace.name}/runs/${arrival.structuredContent.run_id}`,
         })
-        await activityLink(workspaceCount).waitFor()
+        await approvalsLink(workspaceCount).waitFor()
         expect(await comment.inputValue()).toBe('Reviewed once')
         // The two approvals the Run waits on, read from Coral before you decide.
         const waiting = (
@@ -570,7 +575,7 @@ test('Current Run and tool actions settle live while exact review stays selected
         expect(decided.invocation).toBe(selectedTool)
         expect(remaining.invocation).not.toBe(selectedTool)
         const before = calls
-        await page.getByRole('button', { name: 'Approve this call', exact: true }).click()
+        await page.getByRole('button', { name: 'Approve', exact: true }).click()
         // Your decision wins, so the review advances to the approval the Run waits on now.
         await page.waitForURL((url) => url.searchParams.get('request') === remaining.name)
         expect(new URL(page.url()).searchParams.get('record')).toBe(remaining.invocation)
@@ -578,13 +583,13 @@ test('Current Run and tool actions settle live while exact review stays selected
           .poll(() => selectedRow.getAttribute('data-record-key'))
           .toBe(remaining.invocation)
         await page.getByRole('dialog', { name: 'Review action', exact: true }).waitFor()
-        await page.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()
+        await page.getByRole('button', { name: 'Approve', exact: true }).waitFor()
         // The decision keeps the exact comment as its Comment fact.
         const approved = await api.activity.inspectApproval({ name: decided.name })
         expect(approved.state).toBe('approved')
         expect(approved.comment).toBe('Reviewed once')
         await page.setViewportSize({ width: 1440, height: 900 })
-        await page.getByRole('button', { name: 'Deny this call', exact: true }).click()
+        await page.getByRole('button', { name: 'Decline', exact: true }).click()
         await expect
           .poll(async () => (await api.activity.inspectApproval({ name: remaining.name })).state)
           .toBe('declined')
@@ -596,16 +601,16 @@ test('Current Run and tool actions settle live while exact review stays selected
           )
           .toBe(0n)
         // The live page settles: nothing waits on you, and no review offers a decision.
-        await expect.poll(() => page.locator('[aria-label="Pending actions"]').count()).toBe(0)
+        await approvalsLink(0n).waitFor()
         await expect
-          .poll(() => page.getByRole('button', { name: 'Approve this call', exact: true }).count())
+          .poll(() => page.getByRole('button', { name: 'Approve', exact: true }).count())
           .toBe(0)
         // Each settled review, opened on its own, shows its decision. Without a decision of
         // yours there, the review stays where you opened it. Only the approval carries the
         // exact comment, once, as its Comment fact.
         for (const [approval, label, comments] of [
           [decided, 'Approved', 1],
-          [remaining, 'Denied', 0],
+          [remaining, 'Declined', 0],
         ] as const) {
           const review = new URLSearchParams({
             tree: '1',
@@ -620,9 +625,7 @@ test('Current Run and tool actions settle live while exact review stays selected
           expect(new URL(page.url()).searchParams.get('request')).toBe(approval.name)
           expect(new URL(page.url()).searchParams.get('record')).toBe(approval.invocation)
           expect(await selectedRow.getAttribute('data-record-key')).toBe(approval.invocation)
-          expect(
-            await page.getByRole('button', { name: 'Approve this call', exact: true }).count(),
-          ).toBe(0)
+          expect(await page.getByRole('button', { name: 'Approve', exact: true }).count()).toBe(0)
           const commentFact = dialog
             .locator('dl > div')
             .filter({ has: page.locator('dt', { hasText: /^Comment$/ }) })
@@ -630,14 +633,10 @@ test('Current Run and tool actions settle live while exact review stays selected
           await expect.poll(() => commentFact.count()).toBe(comments)
           expect(await dialog.getByText('Reviewed once', { exact: true }).count()).toBe(comments)
         }
-        await expect.poll(() => page.locator('[aria-label="Pending actions"]').count()).toBe(0)
         expect(
           await page.getByRole('table', { name: 'Activity records', includeHidden: true }).count(),
         ).toBe(1)
-        expect(await page.locator('[aria-label="Pending actions"]').count()).toBe(0)
-        expect(
-          await page.getByRole('button', { name: 'Approve this call', exact: true }).count(),
-        ).toBe(0)
+        expect(await page.getByRole('button', { name: 'Approve', exact: true }).count()).toBe(0)
         const ended = await observeRun(runner, accepted)
         expect(ended.update.state).toBe('succeeded')
         await page.setViewportSize({ width: 390, height: 844 })

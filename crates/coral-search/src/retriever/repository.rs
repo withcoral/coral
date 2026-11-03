@@ -353,7 +353,7 @@ async fn rank_postgres(
     let sql = format!(
         "WITH candidates AS MATERIALIZED ( \
              SELECT d.doc_id, d.call_path, d.provider_id, d.tool_key, d.saved_function_id, \
-                    d.qualified_name, d.title, d.description, d.provider_name, d.tsv, d.doc_len \
+                    d.qualified_name, d.title, d.description, d.provider_name, d.tsv, d.tsv_length \
              FROM search_entities AS d \
              WHERE {conditions} AND ({matches}) \
          ) \
@@ -440,7 +440,7 @@ fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan) -> String {
     let saturation = |f: &str| {
         format!(
             "q.idf * ({f} * (1.2 + 1)) \
-             / ({f} + 1.2 * (1 - 0.4 + 0.4 * coalesce(c.doc_len::float8, {avgdl}) / {avgdl}))"
+             / ({f} + 1.2 * (1 - 0.4 + 0.4 * c.tsv_length::float8 / {avgdl}))"
         )
     };
     format!(

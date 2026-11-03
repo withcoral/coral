@@ -1,3 +1,5 @@
+import { utcDay } from '@/lib/activity-list'
+
 // Fixed locale and time zone: the server and every browser render the same text.
 const parts = new Intl.DateTimeFormat('en-US', {
   timeZone: 'UTC',
@@ -20,6 +22,39 @@ export function Instant({ value }: { value: string }) {
   return (
     <time dateTime={value} title={value}>
       {`${part.day} ${part.month} ${part.year}, ${part.hour}:${part.minute}:${part.second} UTC`}
+    </time>
+  )
+}
+
+// A time column reads UTC, as its heading says. An ISO instant splits into the
+// UTC time without a time zone lookup.
+const utcTime = (instant: string) => instant.slice(11, 19)
+const dayParts = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'UTC',
+  weekday: 'short',
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+})
+/**
+ * Names a UTC calendar day (`YYYY-MM-DD`): "Tue 22 Sep 2026". Never "Today": the
+ * reader's today is often another UTC day, and the record alone decides its label.
+ */
+export function dayLabel(day: string) {
+  const part = Object.fromEntries(
+    dayParts
+      .formatToParts(new Date(`${day}T00:00:00.000Z`))
+      .map(({ type, value }) => [type, value]),
+  )
+  return `${part.weekday} ${part.day} ${part.month} ${part.year}`
+}
+
+/** The UTC time of `value` alone, for a column under a day heading. The full instant is
+ * on hover. */
+export function UtcTime({ value }: { value: string }) {
+  return (
+    <time dateTime={value} title={`${utcDay(value)} ${utcTime(value)} UTC`}>
+      {utcTime(value)}
     </time>
   )
 }

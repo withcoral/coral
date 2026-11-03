@@ -151,7 +151,8 @@ macro_rules! provider_setup_fixtures {
                                 .with_account_setting(route)
                                 .with_incompatible_configuration_confirmation(),
                             )
-                            .await?;
+                            .await?
+                            .skip_search();
                     if publication.outcome() == providers::ProviderPublicationOutcome::Failed {
                         return Err(providers::Error::ProviderChangedDuringPublication);
                     }
@@ -198,7 +199,8 @@ macro_rules! provider_setup_fixtures {
                                     grant.provisional_grant_id.expect("provisional grant"),
                                 ),
                             )
-                            .await?;
+                            .await?
+                            .skip_search();
                     Ok(publication
                         .published_provider()
                         .expect("published shared Provider")
@@ -310,6 +312,7 @@ macro_rules! provider_setup_fixtures {
                         ),
                     )
                     .await
+                    .map(providers::Committed::skip_search)
                 }
             }
             fn fixture_configuration(document: &OpenApiDocument) -> ProviderConfiguration {

@@ -570,7 +570,7 @@ test("A workspace owner's Program asks for a shared API key in a header, and you
   })
 })
 
-test("A workspace owner denies their Program's rename, then approves it, and the providers page shows the new name", async (context) => {
+test("A workspace owner declines their Program's rename, then approves it, and the providers page shows the new name", async (context) => {
   await withOwnerSession(context, async (session) => {
     const { page, step } = session
     // Only addProvider runs without approval, so each updateProvider call waits for you.
@@ -583,11 +583,11 @@ test("A workspace owner denies their Program's rename, then approves it, and the
       namespace: 'weather',
       displayName: 'Forecasts',
     })}); } catch (error) { return error.code; }`
-    await step('Deny the rename, and the Program catches the failure', async () => {
+    await step('Decline the rename, and the Program catches the failure', async () => {
       const paused = await pausedForApproval(program, rename)
       const review = await openReview(page, paused, 'updateProvider')
-      await review.getByRole('button', { name: 'Deny this call', exact: true }).click()
-      await page.getByText('Denied', { exact: true }).waitFor()
+      await review.getByRole('button', { name: 'Decline', exact: true }).click()
+      await page.getByText('Declined', { exact: true }).waitFor()
       const { update } = await observeRun(program, await program.wait(paused))
       expect(update.final_value).toEqual({ kind: 'value', value: 'approval_declined' })
       expect(await api.providers.getProvider({ name: provider.name })).toEqual(provider)
@@ -595,7 +595,7 @@ test("A workspace owner denies their Program's rename, then approves it, and the
     await step('Approve the same rename in a new Run, and Coral renames it', async () => {
       const paused = await pausedForApproval(program, rename)
       const review = await openReview(page, paused, 'updateProvider')
-      await review.getByRole('button', { name: 'Approve this call', exact: true }).click()
+      await review.getByRole('button', { name: 'Approve', exact: true }).click()
       await page.getByText('Approved', { exact: true }).waitFor()
       const { update } = await observeRun(program, await program.wait(paused))
       expect(update.final_value).toMatchObject({

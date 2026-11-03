@@ -17,9 +17,12 @@ import { ActionDialog, NameInput } from '@/views/management/forms'
 import { ArchiveWorkspaceButton } from '@/views/management/archive-workspace'
 import { RestoreWorkspaceButton } from '@/views/management/restore-workspace'
 import type { FormContext, WorkspaceView } from '@/views/management/types'
-import type { ActionCounts } from '@/lib/activity-live-types'
+import type { ActionCount } from '@/lib/activity-live-types'
 import * as styles from './sidebar.css'
 import { useSidebarState } from './use-sidebar-state'
+
+/** The numbers a badge shows. The sidebar has no use for revisions. */
+type WorkspaceCount = Omit<ActionCount, 'revisions'>
 
 export type SidebarWorkspace = Pick<
   WorkspaceView,
@@ -28,7 +31,7 @@ export type SidebarWorkspace = Pick<
 
 interface SidebarProps {
   /** Pending actions by Workspace path. Null or a null count shows no badge. */
-  actionCounts?: ActionCounts | null
+  actionCounts?: Record<string, WorkspaceCount | null> | null
   organizationOwner?: boolean
   /** A published Coral release newer than this one. The shell passes it only to organization owners. */
   newerRelease?: NewerRelease
@@ -91,12 +94,12 @@ const helpLinks: { href: string; icon: IconName; label: string }[] = [
 ]
 
 /** Undefined shows no badge: a zero count, or a Workspace without a known count. An
- * unknown count has nothing for you to do, and the Activity page reports it. */
-function pending(count: string | null | undefined): Pending | undefined {
+ * unknown count is never reported as zero. `unit` names what the count counts. */
+function pending(count: string | undefined, unit: string): Pending | undefined {
   if (!count || count === '0') return undefined
   return {
     badge: count.length > 3 ? '999+' : count,
-    text: `${count} pending ${count === '1' ? 'action' : 'actions'}`,
+    text: `${count} pending ${unit}${count === '1' ? '' : 's'}`,
   }
 }
 
@@ -108,22 +111,32 @@ function named(label: string, count?: Pending) {
 function workspaceDestinations(
   workspace: SidebarWorkspace,
   people: boolean,
-  count?: Pending,
+  count?: WorkspaceCount | null,
 ): Destination[] {
   const owner = workspace.effectiveRole === 'owner'
   const w = workspace.path
   return [
     { to: w, icon: 'Home', label: 'Overview', exact: true },
+    {
+      to: `${w}/approvals`,
+      icon: 'ShieldCheck',
+      label: 'Approvals',
+      pending: pending(count?.approvals, 'approval'),
+    },
     // Stable Run links are Activity detail, outside the Activity path.
     {
       to: `${w}/activity`,
       icon: 'Activity',
       label: 'Activity',
       also: `${w}/runs/`,
-      pending: count,
     },
     { to: `${w}/providers`, icon: 'Plug', label: 'Providers' },
-    { to: `${w}/accounts`, icon: 'KeyRound', label: 'Accounts' },
+    {
+      to: `${w}/accounts`,
+      icon: 'KeyRound',
+      label: 'Accounts',
+      pending: pending(count?.connections, 'connection request'),
+    },
     { to: `${w}/functions`, icon: 'SquareFunction', label: 'Functions' },
     ...(owner ? [{ to: `${w}/agents`, icon: 'Bot' as const, label: 'Agents' }] : []),
     // A local deployment has no other people to manage.
@@ -227,7 +240,7 @@ function SidebarNavigation({
       ? location.pathname === d.to
       : location.pathname.startsWith(d.to) ||
         Boolean(d.also && location.pathname.startsWith(d.also))
-  const countFor = (w: SidebarWorkspace) => pending(actionCounts?.[w.path])
+  const totalFor = (w: SidebarWorkspace) => pending(actionCounts?.[w.path]?.total, 'action')
   const links = (destinations: Destination[]) =>
     destinations.map((d) => (
       <SidebarButton
@@ -307,9 +320,8 @@ function SidebarNavigation({
         <div className={styles.rail} role="group" aria-label="Workspaces">
           {tree.map((w) => {
             const current = w.path === workspace?.path
-            const count = countFor(w)
-            // The current Workspace shows its count on Activity; the others on their tile.
-            const tileCount = current ? undefined : count
+            // The current Workspace shows its counts on their pages; the others on their tile.
+            const tileCount = current ? undefined : totalFor(w)
             return (
               <div key={w.path} className={styles.railWorkspace}>
                 <Link
@@ -323,7 +335,7 @@ function SidebarNavigation({
                 </Link>
                 {current && (
                   <div className={styles.railDestinations}>
-                    {links(workspaceDestinations(w, people, count))}
+                    {links(workspaceDestinations(w, people, actionCounts?.[w.path]))}
                   </div>
                 )}
               </div>
@@ -378,9 +390,8 @@ function SidebarNavigation({
                 const id = `${treeId}-${index}`
                 const owner = w.effectiveRole === 'owner'
                 const actions = (Number(Boolean(w.mcpEndpoint)) + Number(owner)) as 0 | 1 | 2
-                const count = countFor(w)
-                // An open Workspace shows its count on Activity; a closed one on its name.
-                const headerCount = open ? undefined : count
+                // An open Workspace shows its counts on their pages; a closed one on its name.
+                const headerCount = open ? undefined : totalFor(w)
                 return (
                   <div key={w.path} className={styles.workspace}>
                     <div className={styles.workspaceHeader}>
@@ -423,7 +434,7 @@ function SidebarNavigation({
                         aria-labelledby={`${id}-header`}
                         className={styles.workspaceChildren}
                       >
-                        {links(workspaceDestinations(w, people, count))}
+                        {links(workspaceDestinations(w, people, actionCounts?.[w.path]))}
                       </div>
                     )}
                   </div>

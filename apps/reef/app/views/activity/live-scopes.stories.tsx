@@ -234,7 +234,7 @@ function children(model: RunModel): ActivityRow[] {
       workspace,
       run: model.row.name,
       task: model.row.task,
-      label: 'final value',
+      label: 'return value',
       startedAt: at,
       eventKind: 'run.ended',
       agent: '',

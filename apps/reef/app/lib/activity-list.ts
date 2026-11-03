@@ -168,27 +168,43 @@ export function loadsAutomatically(list: ActivityList) {
 // into the UTC day without a time zone lookup.
 export const utcDay = (instant: string) => instant.slice(0, 10)
 
-export interface ActivityDay {
+/** Rows under one UTC day. `key` stays the same as rows join the day. */
+export interface UtcDayGroup<Row> {
   day: string
   key: string
-  rows: ActivityRow[]
+  rows: Row[]
 }
-/** Top-level records under the UTC day they started. One day is one group across pages. */
-export function activityDays(rows: ActivityRow[]): ActivityDay[] {
-  const days: ActivityDay[] = []
+export type ActivityDay = UtcDayGroup<ActivityRow>
+/**
+ * `rows` under the UTC day of `instant(row)`, in their order. A day keeps its key as rows
+ * join it; only an out-of-order repeat of a day needs another, made from `name(row)`.
+ */
+export function utcDays<Row>(
+  rows: Row[],
+  instant: (row: Row) => string,
+  name: (row: Row) => string,
+): UtcDayGroup<Row>[] {
+  const days: UtcDayGroup<Row>[] = []
   for (const row of rows) {
-    const day = utcDay(row.startedAt)
+    const day = utcDay(instant(row))
     const last = days.at(-1)
     if (last?.day === day) last.rows.push(row)
-    // A day keeps its key as records join; only an out-of-order repeat needs another.
     else
       days.push({
         day,
-        key: days.some((group) => group.day === day) ? `${day}:${row.name}` : day,
+        key: days.some((group) => group.day === day) ? `${day}:${name(row)}` : day,
         rows: [row],
       })
   }
   return days
+}
+/** Top-level records under the UTC day they started. One day is one group across pages. */
+export function activityDays(rows: ActivityRow[]): ActivityDay[] {
+  return utcDays(
+    rows,
+    (row) => row.startedAt,
+    (row) => row.name,
+  )
 }
 
 /** Work that can still change: a Run that has not ended, or a Task with work underway. */

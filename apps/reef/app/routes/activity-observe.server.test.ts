@@ -52,7 +52,8 @@ it('accepts the configured HTTPS browser origin behind an HTTP reverse proxy', a
     session: {
       accessToken: 'expired-dummy-token',
       expiresAt: 0,
-      tokenType: 'Bearer',
+      handle: 'coral_ws_ended',
+      sessionExpiresAt: 0,
     },
   })
   const response = await action(args)
@@ -81,7 +82,8 @@ it.each([
     session: {
       accessToken: 'expired-dummy-token',
       expiresAt: 0,
-      tokenType: 'Bearer',
+      handle: 'coral_ws_ended',
+      sessionExpiresAt: 0,
     },
   })
   const response = await route(args)

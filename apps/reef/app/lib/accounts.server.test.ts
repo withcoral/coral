@@ -1,6 +1,7 @@
 import { authRouteTestArgs, authTestContext } from '@/auth/server-context.test-helper'
 import { loader as oauthCallback } from '@/routes/provider-setup-oauth-callback'
 import { commitCallbackReturn } from './provider-publication-attempt/setup.server'
+import { RECIPE_CHOICES } from './provider-recipes/library.server'
 import { fakeManagement, fakeManagementTransport } from './management.test-support'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -35,9 +36,11 @@ const mocks = vi.hoisted(() => ({
   cancelProviderAccountAuthorization: vi.fn(),
   resolveAccountConnectionRequest: vi.fn(),
   completeProviderSetupAuthorization: vi.fn(),
+  countRequiredActions: vi.fn(),
+  listProviders: vi.fn(),
 }))
 const handlers = {
-  providers: { getProvider: mocks.getProvider },
+  providers: { getProvider: mocks.getProvider, listProviders: mocks.listProviders },
   agents: { getAgent: mocks.getAgent },
   accounts: {
     getProviderAccount: mocks.getProviderAccount,
@@ -49,6 +52,7 @@ const handlers = {
     resolveAccountConnectionRequest: mocks.resolveAccountConnectionRequest,
     completeProviderSetupAuthorization: mocks.completeProviderSetupAuthorization,
   },
+  activity: { countRequiredActions: mocks.countRequiredActions },
 }
 const api = fakeManagement(handlers)
 const transport = fakeManagementTransport(handlers)
@@ -86,6 +90,7 @@ beforeEach(() => {
   })
   mocks.getAgent.mockResolvedValue({ displayName: 'Nightly reconciler' })
   mocks.getProviderAccount.mockResolvedValue({ requestedScopes: [] })
+  mocks.listProviders.mockResolvedValue({ providers: [] })
 })
 
 function load(query: string) {
@@ -458,6 +463,7 @@ it('lists your accounts and the run that waits on one', async () => {
         providerDisplayName: 'Linear',
         account: { canConnect: true, canReconnect: false },
         pendingConnection: {
+          name: `${base.slice(1)}/accountConnectionRequests/waiting`,
           state: AccountConnectionState.PENDING,
           expireTime: { seconds: 1_800_000_000n, nanos: 0 },
         },
@@ -477,13 +483,20 @@ it('lists your accounts and the run that waits on one', async () => {
       },
     ],
   })
+  const linear = RECIPE_CHOICES.find((choice) => choice.id === 'linear')!
+  expect(linear.icons).toBeDefined()
+  mocks.listProviders.mockResolvedValue({ providers: [{ name: provider, namespace: 'linear' }] })
   const view = await loadUserAccounts(context, { workspace })
   expect(view.accounts).toEqual([
     expect.objectContaining({
       name: 'Linear',
+      icons: linear.icons,
       state: 'not_connected',
       canConnect: true,
-      waitingUntil: '2027-01-15T08:00:00.000Z',
+      connectionRequest: {
+        name: `${base.slice(1)}/accountConnectionRequests/waiting`,
+        expiresAt: '2027-01-15T08:00:00.000Z',
+      },
       connectPath: `${connectBase}?returnTo=${encodeURIComponent(`${base}/accounts`)}`,
       detailPath: connectBase,
     }),
@@ -492,9 +505,25 @@ it('lists your accounts and the run that waits on one', async () => {
       state: 'connected',
       accountId: 'account',
       canDisconnect: true,
-      waitingUntil: undefined,
+      icons: undefined,
+      connectionRequest: undefined,
     }),
   ])
+})
+
+// The rows must be at least as new as the revision, or a change between them is never seen.
+it('reads the connection revision before your accounts', async () => {
+  const reads: string[] = []
+  mocks.countRequiredActions.mockImplementation(() => {
+    reads.push('revision')
+    return { approvalRevision: 'approvals', connectionRevision: 'connections' }
+  })
+  mocks.listUserAccounts.mockImplementation(() => {
+    reads.push('rows')
+    return { accounts: [] }
+  })
+  expect((await loadUserAccounts(context, { workspace })).revision).toBe('connections')
+  expect(reads).toEqual(['revision', 'rows'])
 })
 
 it('does not redirect a successful shared or agent connection', async () => {

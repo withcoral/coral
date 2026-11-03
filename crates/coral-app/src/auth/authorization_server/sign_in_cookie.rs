@@ -240,6 +240,7 @@ mod tests {
                 client_state: Some("s".into()),
                 code_challenge: "x".repeat(43),
                 resource: "u".repeat(350),
+                refresh_eligible: false,
             },
             client_name: client_name.map(str::to_owned),
         }

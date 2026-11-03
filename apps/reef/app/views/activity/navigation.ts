@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import { useLocation, useSearchParams } from 'react-router'
+import { useLocation, useSearchParams, type Location } from 'react-router'
 import {
   ACTIVITY_CHILD_WINDOW,
   activityRowIdentity,
@@ -16,6 +16,7 @@ import {
   type LiveAction,
   type LiveLatest,
   type LiveScope,
+  type RequestDetail,
   type RunRow,
   type TaskRow,
 } from './types'
@@ -45,7 +46,6 @@ const listKeys = new Set<string>([
   'anchor',
   'before',
   'after',
-  'pendingAfter',
   'root',
   'rootMode',
 ])
@@ -79,6 +79,26 @@ export function revealHref(row: ActivityRow, options: { request?: string } = {})
   if (options.request) next.set('request', options.request)
   return `${path}?${next}`
 }
+
+/**
+ * Whether a navigation leaves the review of `request`. Moving between an approval's Run and
+ * its call keeps the review, and so does the address gaining the request the loader resolved.
+ */
+export const leavesActivityReview =
+  (request: RequestDetail | null | undefined) => (current: Location, next: Location) => {
+    const from = new URLSearchParams(current.search)
+    const to = new URLSearchParams(next.search)
+    const record = from.get('record') ?? current.pathname.slice(1)
+    // The approval's Run and its call, in either order.
+    const pair = request?.kind === 'approval' ? [request.run, request.invocation] : []
+    const sameReview =
+      pair.includes(record) && pair.includes(to.get('record') ?? '') && record !== to.get('record')
+    return (
+      current.pathname !== next.pathname ||
+      (from.get('record') !== to.get('record') && !sameReview) ||
+      (from.get('request') ?? request?.name ?? null) !== to.get('request')
+    )
+  }
 
 /** Pin server-resolved review identity and its exact child window without another read. */
 export function activitySelection(page: ActivityPage, search: string): URLSearchParams {
@@ -155,11 +175,8 @@ export function activityNavigation(
   const href = (changes: Record<string, string | string[] | null>, path = page.listPath) => {
     const next = new URLSearchParams(context)
     // Selection and expansion keep the reading position, so a reload opens there.
-    // Explicit root navigation names its own anchor; pending-action pages keep the URL's.
-    if (
-      !['before', 'after', 'anchor', 'pendingAfter'].some((key) => key in changes) &&
-      path === page.listPath
-    ) {
+    // Explicit root navigation names its own anchor.
+    if (!['before', 'after', 'anchor'].some((key) => key in changes) && path === page.listPath) {
       if (reading.anchor) next.set('anchor', reading.anchor)
       else next.delete('anchor')
     }

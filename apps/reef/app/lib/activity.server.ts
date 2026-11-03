@@ -1,6 +1,8 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { redirect } from 'react-router'
 import {
+  ActivityApprovalOutcome,
+  ActivityRequiredActionKind,
   ActivityRunState,
   ActivityInvocationState,
   ActivityInvocationOutcome,
@@ -17,6 +19,7 @@ import type {
   ActivityInvocation,
   ActivityProgramError,
   ActivityDiscovery,
+  InspectApprovalResponse,
   InspectInvocationResponse,
   ActivityRequestReference,
   ActivityRunEvent,
@@ -31,6 +34,8 @@ import type {
   DiscoveryView,
   ActivityPage,
   ActivityRow,
+  SettledApproval,
+  SettledPage,
   ActivityBranch,
   ExecutionRow,
   InvocationRow,
@@ -41,7 +46,8 @@ import type {
   InvocationState,
   InvocationOutcome,
   RequestReference,
-  RequestDetail,
+  ApprovalDetail,
+  ApprovalReading,
   RunEvent,
   RunTerminal,
   RunFailureCode,
@@ -156,7 +162,7 @@ function discoveryContextView({ context }: ActivityDiscovery): DiscoveryContext 
         query: context.value.query ?? null,
         provider: context.value.provider ?? null,
         limit: context.value.limit,
-        cursor: context.value.cursor ?? null,
+        offset: context.value.offset,
       }
     case 'describe':
       return { kind: 'describe', callPath: context.value.callPath, types: [...context.value.types] }
@@ -558,7 +564,7 @@ function unavailable(error: unknown) {
 }
 /** A passing Coral fault. Only optional context may leave it out; sign-in, validation and a
  * cancelled load still fail the read. */
-function transient(error: unknown) {
+export function transient(error: unknown) {
   return (
     error instanceof ConnectError &&
     (error.code === Code.Unavailable || error.code === Code.Internal)
@@ -625,6 +631,64 @@ function outputRow(
     task,
     agent,
     sourceLocation: sourceLocationView(event.sourceLocation),
+  }
+}
+
+/** A Run with its accepted source and outcome, and no request selected. */
+function runDetailView(value: InspectRunResponse, run: ExecutionRow): RunDetail {
+  return {
+    kind: 'run',
+    request: null,
+    requestUnavailable: false,
+    run,
+    source: value.submittedSource,
+    submission: value.submission ? interactionView(value.submission) : undefined,
+    linkedFunctions: value.linkedFunctions.map(({ savedFunction, path, source }) => ({
+      savedFunction,
+      path,
+      source,
+    })),
+    terminal: runTerminalView(value),
+  }
+}
+
+const APPROVAL_NAME = /^workspaces\/[^/]+\/approvals\/[^/]+$/
+
+function approvalView(request: InspectApprovalResponse): ApprovalDetail {
+  return {
+    kind: 'approval',
+    actionable: request.actionable,
+    name: request.name,
+    run: request.run,
+    invocation: request.invocation,
+    provider: request.provider,
+    providerLabel: request.providerLabel,
+    approverLabel: request.approverLabel,
+    callPath: request.callPath,
+    arguments: request.argumentsJson,
+    state: request.state,
+    deadline: timestamp(request.deadlineAtUnixNanos),
+    approver: request.approver,
+    decidedAt:
+      request.decidedAtUnixNanos === undefined ? null : timestamp(request.decidedAtUnixNanos),
+    comment: request.comment ?? null,
+  }
+}
+
+/** Adds why the Task started. The Run names its Task only when the caller can see it; an
+ * unavailable Task, or a passing fault on this optional read, leaves the intent out, not the
+ * review. */
+async function addTaskIntent(
+  review: ApprovalDetail,
+  api: Pick<ActivityApi, 'activity'>,
+  task: string,
+  signal: AbortSignal,
+) {
+  try {
+    const value = await api.activity.inspectTask({ name: task, pageSize: 1 }, { signal })
+    if (value.task?.intent) review.taskIntent = value.task.intent
+  } catch (error) {
+    if (!unavailable(error) && !transient(error)) throw error
   }
 }
 
@@ -731,20 +795,7 @@ async function selectedDetail(
             page.initialRequest = first.name
           }
         }
-        page.detail = {
-          kind: 'run',
-          request: null,
-          requestUnavailable: false,
-          run: row,
-          source: value.submittedSource,
-          submission: value.submission ? interactionView(value.submission) : undefined,
-          linkedFunctions: value.linkedFunctions.map(({ savedFunction, path, source }) => ({
-            savedFunction,
-            path,
-            source,
-          })),
-          terminal,
-        }
+        page.detail = runDetailView(value, row)
         page.selected = run
         page.selectedRow = {
           ...row,
@@ -795,7 +846,7 @@ async function selectedDetail(
       try {
         if (
           reference?.kind === 'approval' ||
-          (detail.kind === 'run' && /^workspaces\/[^/]+\/approvals\/[^/]+$/.test(selectedRequest))
+          (detail.kind === 'run' && APPROVAL_NAME.test(selectedRequest))
         ) {
           const request = await api.activity.inspectApproval(
             {
@@ -808,26 +859,7 @@ async function selectedDetail(
             (detail.kind === 'invocation' && request.invocation !== detail.invocation.name)
           )
             throw new ConnectError('unavailable', Code.NotFound)
-          const review: Extract<RequestDetail, { kind: 'approval' }> = {
-            kind: 'approval',
-            actionable: request.actionable,
-            name: request.name,
-            run: request.run,
-            invocation: request.invocation,
-            provider: request.provider,
-            providerLabel: request.providerLabel,
-            approverLabel: request.approverLabel,
-            callPath: request.callPath,
-            arguments: request.argumentsJson,
-            state: request.state,
-            deadline: timestamp(request.deadlineAtUnixNanos),
-            approver: request.approver,
-            decidedAt:
-              request.decidedAtUnixNanos === undefined
-                ? null
-                : timestamp(request.decidedAtUnixNanos),
-            comment: request.comment ?? null,
-          }
+          const review = approvalView(request)
           if (detail.kind === 'run') {
             // Approval belongs to this exact tool, not its containing Run.
             // Resolve it in this response rather than redirecting and rereading history.
@@ -871,19 +903,10 @@ async function selectedDetail(
             detail.context = context.detail
             detail.request = review
           }
-          // Approval review shows why the Task started. The Run names its Task only when the
-          // caller can see it; an unavailable Task, or a passing fault on this optional read,
-          // leaves the intent out, not the review.
+          // Approval review shows why the Task started.
           const owner =
             page.detail?.kind === 'invocation' ? page.detail.context?.run.task : undefined
-          if (owner) {
-            try {
-              const value = await api.activity.inspectTask({ name: owner, pageSize: 1 }, { signal })
-              if (value.task?.intent) review.taskIntent = value.task.intent
-            } catch (error) {
-              if (!unavailable(error) && !transient(error)) throw error
-            }
-          }
+          if (owner) await addTaskIntent(review, api, owner, signal)
         } else if (
           reference?.kind === 'account_connection' ||
           selectedRequest === retainedConnection
@@ -1025,8 +1048,8 @@ function noteEnd(seen: LoadEvidence, task: string, value: TaskRead) {
  *   `oldestRunAction` times it, by the tool that waits on it, so the tool
  *   that started waiting first wins, not the request made first: Coral states no
  *   request time. The candidates are the Runs that run and wait on you that the list,
- *   a loaded window or your queue of required actions shows. Your queue lists a shared
- *   connection once, under one Run, so while it holds a connection, every Task whose
+ *   a loaded window or your pending requests show. Those list a shared connection
+ *   once, under one Run, so while they hold a connection, every Task whose
  *   row says a Run of it runs is read in full for the other Runs that wait. That read
  *   also finds its newest Run that runs, so no window is read twice. An archived
  *   workspace takes no action, so it reads none.
@@ -1085,12 +1108,12 @@ async function liveLatestWork(
       (await api.workspaces.getWorkspace({ name: scope.workspace }, { signal })).state !==
         WorkspaceState.ARCHIVED)
   if (actionable) {
-    const queue = tasks.length ? await requiredActions(page, query, api, scope, signal) : []
+    const waiting = tasks.length ? await pendingActions(api, scope.workspace, signal) : []
     const eligible = new Set(tasks.map((task) => task.name))
-    for (const { run } of queue)
+    for (const { run } of waiting)
       if (unfinishedRun(page, run) && (eligible.has(run.task) || asking.has(run.name)))
         asking.set(run.name, run.task)
-    if (queue.some(({ action }) => action.kind === 'account_connection'))
+    if (waiting.some(({ action }) => action.kind === 'account_connection'))
       for (const task of tasks) await readRuns(task.name, { waiting: true })
     const timed = await Promise.all(
       [...asking.keys()].map((run) => runActions(run, undefined, api, scope, signal)),
@@ -1261,31 +1284,19 @@ async function liveLatestWork(
   }
 }
 
-/**
- * Every request in your queue of required actions in the workspace, with a Run that
- * waits on it. It takes the page the pending actions already read when that holds them
- * all, and reads the rest a page at a time otherwise.
- */
-async function requiredActions(
-  page: ActivityPage,
-  query: URLSearchParams,
-  api: ActivityApi,
-  scope: ActivityScope,
+/** Every pending request in `workspace` that waits on the caller, most urgent first, each
+ * with a Run that waits on it. A `kind` keeps only that kind. */
+export async function pendingActions(
+  api: Pick<ManagementApi, 'activity'>,
+  workspace: string,
   signal: AbortSignal,
+  kind = ActivityRequiredActionKind.UNSPECIFIED,
 ): Promise<PendingAction[]> {
-  const shown = page.pending
-  if (
-    shown &&
-    !shown.unavailable &&
-    !query.get('pendingAfter') &&
-    shown.actions.length >= Number(shown.actionCount)
-  )
-    return shown.actions
   const actions: PendingAction[] = []
   let after = ''
   do {
     const value = await api.activity.browseRequiredActions(
-      { workspace: scope.workspace, after, pageSize: 100 },
+      { workspace, after, pageSize: 100, kind },
       { signal },
     )
     for (const { action, run } of value.actions)
@@ -1295,6 +1306,70 @@ async function requiredActions(
     after = value.nextAfter
   } while (after)
   return actions
+}
+
+const settledOutcomes = {
+  [ActivityApprovalOutcome.APPROVED]: 'approved',
+  [ActivityApprovalOutcome.DECLINED]: 'declined',
+  [ActivityApprovalOutcome.EXPIRED]: 'expired',
+} as const satisfies Partial<Record<ActivityApprovalOutcome, SettledApproval['outcome']>>
+
+/** One page of `workspace`'s settled approvals that you can inspect, newest first, after
+ * `after` or from the newest. A row whose outcome this build does not know is left out. */
+export async function settledApprovals(
+  api: Pick<ManagementApi, 'activity'>,
+  workspace: string,
+  after: string,
+  signal: AbortSignal,
+): Promise<SettledPage> {
+  const value = await api.activity.browseSettledApprovals({ workspace, after }, { signal })
+  return {
+    approvals: value.approvals.flatMap((row): SettledApproval[] => {
+      const outcome = settledOutcomes[row.outcome as keyof typeof settledOutcomes]
+      if (!outcome || !row.run) return []
+      return [
+        {
+          name: row.name,
+          outcome,
+          settledAt: timestamp(row.settledAtUnixNanos),
+          approverLabel: row.approverLabel,
+          callPath: row.callPath,
+          providerLabel: row.providerLabel,
+          run: { ...runView(row.run), kind: 'run' },
+        },
+      ]
+    }),
+    next: value.nextAfter,
+  }
+}
+
+/**
+ * The review of `name`, read as the caller. Null when `name` is no approval of `workspace` or
+ * Coral conceals it or its Run: an address grants no authority. Coral keeps every state of a
+ * retained request readable, so a settled one still has its review.
+ */
+export async function approvalReading(
+  api: Pick<ManagementApi, 'activity'>,
+  workspace: string,
+  name: string,
+  signal: AbortSignal,
+): Promise<ApprovalReading | null> {
+  if (!APPROVAL_NAME.test(name) || !name.startsWith(`${workspace}/`)) return null
+  try {
+    const request = await api.activity.inspectApproval({ name }, { signal })
+    const [call, run] = await Promise.all([
+      api.activity.inspectInvocation({ name: request.invocation }, { signal }),
+      api.activity.inspectRun({ name: request.run, pageSize: 1, actionAfter: '' }, { signal }),
+    ])
+    if (!run.run || call.invocation?.run !== request.run) return null
+    const context = runDetailView(run, runView(run.run))
+    const detail = approvalView(request)
+    if (context.run.task) await addTaskIntent(detail, api, context.run.task, signal)
+    return { detail, context, call: { ...invocationView(call.invocation), kind: 'invocation' } }
+  } catch (error) {
+    if (unavailable(error)) return null
+    throw error
+  }
 }
 
 /**
@@ -1612,34 +1687,6 @@ export async function loadActivity(
     for (const name of [task, run])
       if (name && !page.expanded.includes(name)) page.expanded.push(name)
   }
-  if (!scope.agent) {
-    try {
-      const value = await api.activity.browseRequiredActions(
-        {
-          workspace: scope.workspace,
-          after: query.get('pendingAfter') ?? '',
-          pageSize: 10,
-        },
-        { signal },
-      )
-      page.pending = {
-        actions: value.actions.flatMap(({ action, run }) =>
-          action && run
-            ? actionSummaryView(action).map((summary) => ({
-                action: summary,
-                run: { ...runView(run), kind: 'run' as const },
-              }))
-            : [],
-        ),
-        actionCount: value.actionCount.toString(),
-        next: value.nextAfter,
-        unavailable: false,
-      }
-    } catch (error) {
-      if (!unavailable(error)) throw error
-      page.pending = { actions: [], actionCount: '0', next: '', unavailable: true }
-    }
-  }
   try {
     const value = await api.activity.browseActivityRoots(
       {
@@ -1712,7 +1759,7 @@ export async function loadActivity(
           event.name !== page.selected &&
           event.name !== anchor(row.name)
         )
-          return [{ ...event, name: `${row.name}/final`, label: 'final value' }]
+          return [{ ...event, name: `${row.name}/final`, label: 'return value' }]
         return [event]
       }),
     }

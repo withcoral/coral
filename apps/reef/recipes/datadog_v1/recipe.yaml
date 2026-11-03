@@ -1,10 +1,13 @@
 # yaml-language-server: $schema=../schema.json
 schema_version: 1
 id: datadog_v1
+# Datadog adds new products to v2 and keeps others, such as monitors, dashboards
+# and SLOs, in v1 alone, so the service offers both APIs.
+button_label: V1
 display_name: Datadog
 description: >-
-  Monitors, events, dashboards, hosts, downtimes, SLOs, synthetic tests, logs and
-  metrics from Datadog's v1 API.
+  Monitors, dashboards, SLOs, notebooks, hosts, tags, synthetic tests, log
+  pipelines and metric queries from Datadog's v1 API.
 icons:
   light: logo.png
 
@@ -60,4 +63,4 @@ servers:
   '#/paths/~1v1~1input/post/servers':
     base_url: https://http-intake.logs.{{input.site}}
 
-# V2 has a separate upstream document and needs a separate Recipe.
+# V2 has a separate upstream document, so datadog_v2 is a separate recipe.

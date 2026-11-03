@@ -35,7 +35,8 @@ switch (operation) {
     const name = args[args.indexOf('--name') + 1]
     if (state.containers[name]) fail()
     const publish = args[args.indexOf('-p') + 1]
-    state.containers[name] = { running: true, image: args.at(-1), publish, port: publish.split(':')[1] || '55432' }
+    const shm = args.includes('--shm-size') ? args[args.indexOf('--shm-size') + 1] : undefined
+    state.containers[name] = { running: true, image: args.at(-1), publish, port: publish.split(':')[1] || '55432', shm }
     break
   }
   case 'start':

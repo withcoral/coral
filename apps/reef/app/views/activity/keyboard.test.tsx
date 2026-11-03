@@ -8,6 +8,7 @@ import { renderRoute } from '@/test-support/route'
 import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
 import { activityPage, approvalRequest, runRow, taskRow, toolRow, workspace } from './fixtures'
+import { leavesActivityReview } from './navigation'
 import type { ActivityPage, ActivityRow, ActivityViewProps } from './types'
 
 // The keys Activity owns: ↑/↓, Space, Enter and Escape on the table itself (or
@@ -88,8 +89,9 @@ async function renderActivity(entry = list, more?: ActivityViewProps['more']) {
       publish = (next) => setLists((value) => ({ ...value, ...next }))
     }, [])
     const page = pageFor(location, lists)
+    const request = page.detail?.kind === 'run' ? page.detail.request : null
     return (
-      <ActionReviewSession request={page.detail?.kind === 'run' ? page.detail.request : null}>
+      <ActionReviewSession request={request} leaves={leavesActivityReview(request)}>
         <button type="button">Outside</button>
         <Activity page={page} more={more} />
       </ActionReviewSession>
