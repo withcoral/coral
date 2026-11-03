@@ -13,10 +13,10 @@
 //! # Interface
 //!
 //! - [`UniversalSearchModule::search`] runs one ranked statement per Search
-//!   Entity kind, one retriever each, and fuses their windows by match
-//!   strength into bounded pages of Search Hits with one status per
-//!   retriever. An omitted query lists current items in Call Path order and
-//!   reads no index.
+//!   Entity kind, one retriever each, and fuses their windows by position,
+//!   strong matches first, into bounded pages of Search Hits with one status
+//!   per retriever. An omitted query lists current items in Call Path order
+//!   and reads no index.
 //! - [`UniversalSearchModule::describe`] resolves one exact complete Call Path
 //!   and reads no index. `signature::abridge` shortens the declaration it
 //!   returns; search reads the complete one.
@@ -36,7 +36,7 @@
 //!   index on what the owners hold.
 //!
 //! The engine inside [`UniversalSearchModule`] normalizes the query, hands the
-//! same terms to every retriever, fuses by match strength, pages, and encodes
+//! same terms to every retriever, fuses by position, pages, and encodes
 //! non-authorizing cursors. It never names a Search Entity kind. Every search
 //! page and exact description applies the owners' current visibility rules.
 //! Discovery never starts an interactive authorization or refreshes credentials.
@@ -59,8 +59,6 @@ mod storage;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
 mod types;
-use std::cmp::Reverse;
-use std::collections::VecDeque;
 use std::sync::Arc;
 
 use coral_db::{Database, Transaction};
@@ -74,7 +72,7 @@ use page::{Ranked, hydrate_page_in_transaction};
 use retriever::functions::SavedFunctionRetriever;
 use retriever::tools::ToolRetriever;
 use retriever::{
-    Answer, EntityRetriever, QueryError, QueryRequest, RequestContext, Scored, abandon_query,
+    Answer, EntityRetriever, QueryError, QueryRequest, RequestContext, WindowEntry, abandon_query,
     begin_query, count, end_query,
 };
 
@@ -101,9 +99,8 @@ const RETRIEVAL_WINDOW: usize = 100;
 pub struct UniversalSearchModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
-    /// One retriever per Search Entity kind. At equal match strength and
-    /// position, an earlier retriever's Entity comes first: Saved Functions,
-    /// then Tools.
+    /// One retriever per Search Entity kind. At equal mark and position, an
+    /// earlier retriever's Entity comes first: Saved Functions, then Tools.
     retrievers: Arc<[Arc<dyn EntityRetriever>]>,
 }
 
@@ -163,7 +160,7 @@ impl UniversalSearchModule {
     /// Searches visible Search Entities and returns a page of Search Hits.
     ///
     /// Each retriever applies current visibility and ranks its own kind; the
-    /// engine fuses the windows by match strength. Only the page's items are
+    /// engine fuses the windows by position, strong matches first. Only the page's items are
     /// hydrated, each into a hit with a signature line, snippets, and
     /// evidence of why it matched. Every page carries one status per retriever. An omitted query
     /// lists every visible Entity in Call Path order and reads no index.
@@ -537,44 +534,33 @@ fn normalize_query(query: &str) -> NormalizedQuery {
     NormalizedQuery { text, terms }
 }
 
-/// Merges the retrievers' windows, each `(retriever index, window)` in
-/// retriever order, head to head: of the Entities each window offers next,
-/// the stronger match comes first, then the earlier position in its window,
-/// then the earlier retriever. Each window keeps its own order, and a kind's
-/// Entity outranks another kind's next Entity only when its match is at least
-/// as strong. The strength leads with every key a ranked statement orders by
-/// before its score; a key it lacked would let a weak Entity pass the strong
-/// ones queued behind the other window's head.
-fn fuse(windows: Vec<(usize, Vec<Scored>)>) -> Vec<Ranked> {
-    let mut heads = windows
+/// Fuses the retrievers' windows, each `(retriever index, window)` in
+/// retriever order: the strong entries of every window by position, then the
+/// weak ones by position. At equal position the earlier retriever comes
+/// first. Each retriever marks its own entries by its own rule and signals,
+/// so only a position and that mark cross into the engine, and no score is
+/// compared across kinds. A weak entry is demoted below every strong one,
+/// never dropped.
+fn fuse(windows: Vec<(usize, Vec<WindowEntry>)>) -> Vec<Ranked> {
+    let mut entries = windows
         .into_iter()
-        .map(|(retriever_index, window)| (retriever_index, VecDeque::from(window), 0usize))
+        .flat_map(|(retriever_index, window)| {
+            window
+                .into_iter()
+                .enumerate()
+                .map(move |(position, entry)| (!entry.strong, position, retriever_index, entry))
+        })
         .collect::<Vec<_>>();
-    let mut fused = Vec::new();
-    loop {
-        let best = heads
-            .iter_mut()
-            .filter_map(|(retriever_index, window, position)| {
-                let strength = window.front()?.strength;
-                Some((
-                    (Reverse(strength), *position, *retriever_index),
-                    window,
-                    position,
-                ))
-            })
-            .min_by_key(|(key, _window, _position)| *key);
-        let Some(((_strength, _position, retriever_index), window, position)) = best else {
-            return fused;
-        };
-        let Some(scored) = window.pop_front() else {
-            return fused;
-        };
-        *position += 1;
-        fused.push(Ranked {
+    entries.sort_by_key(|(weak, position, retriever_index, _entry)| {
+        (*weak, *position, *retriever_index)
+    });
+    entries
+        .into_iter()
+        .map(|(_weak, _position, retriever_index, entry)| Ranked {
             retriever_index,
-            entity: scored.entity,
-        });
-    }
+            entity: entry.entity,
+        })
+        .collect()
 }
 
 /// A ranked retriever's state follows from its coverage.

@@ -20,7 +20,7 @@ use super::plan::QueryPlan;
 use super::repository;
 use super::{
     Answer, EntityRef, EntityRetriever, Hydrated, Listing, QueryError, QueryRequest,
-    RequestContext, RetrievalError, Scored, ToolRef, count,
+    RequestContext, RetrievalError, ToolRef, WindowEntry, count,
 };
 use crate::eligibility::tool_approval;
 use crate::evidence::{EvidenceBuilder, EvidenceTerms};
@@ -151,6 +151,7 @@ impl EntityRetriever for ToolRetriever {
                 .map(|key| (provider.provider().id().clone(), key)),
             );
         }
+        let named = named_providers(&plan, &searched);
         let ranked = if searched.is_empty() {
             repository::Ranking {
                 entities: Vec::new(),
@@ -162,7 +163,6 @@ impl EntityRetriever for ToolRetriever {
                 .values()
                 .map(|provider| provider.generation_id().clone())
                 .collect::<Vec<_>>();
-            let named = named_providers(&plan, &searched);
             repository::rank_tools(
                 transaction,
                 context.workspace_id,
@@ -187,7 +187,8 @@ impl EntityRetriever for ToolRetriever {
                 .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
                     "a ranked Tool's Provider was not searched",
                 )))?;
-            window.push(Scored {
+            window.push(WindowEntry {
+                strong: strong_tool(&plan, &tool.matched, named.contains(&tool.provider_id)),
                 entity: EntityRef::Tool(ToolRef {
                     provider: Arc::clone(provider),
                     tool_key: tool.tool_key,
@@ -195,7 +196,6 @@ impl EntityRetriever for ToolRetriever {
                     call_path: tool.call_path,
                     near_spellings: Arc::clone(&near_spellings),
                 }),
-                strength: tool.strength,
             });
         }
         Ok(Answer {
@@ -303,6 +303,21 @@ impl EntityRetriever for ToolRetriever {
                 .map(ExactAuthoringDescription::tool),
         )
     }
+}
+
+/// Whether a ranked Tool is a strong match, by the Tool retriever's own
+/// rule: a field holds the query's words in order, the query names its
+/// Provider, or its name and title start words with at least half of the
+/// query's content words, as the statement's name score counts prefixes. A
+/// Tool that meets the query only through its description, its schema text,
+/// a near-spelling or a minority of its words is weak.
+fn strong_tool(plan: &QueryPlan, matched: &repository::RowMatch, named: bool) -> bool {
+    let words = plan.content_word_count();
+    matched.phrase_points > 0
+        || named
+        || (words > 0
+            && 2 * plan.content_words_starting([matched.name.as_str(), matched.title.as_str()])
+                >= words)
 }
 
 /// The searched Providers the query names. Their Tools rank first within

@@ -180,27 +180,26 @@ async fn each_query_ranks_its_most_relevant_entity_first() {
 }
 
 #[tokio::test]
-async fn a_saved_function_never_splits_a_named_providers_tools_or_passes_a_stronger_tool() {
+async fn a_weak_saved_function_follows_every_strong_tool() {
     let (modules, principal, workspace) = catalog().await;
-    // Each row: the query, a Saved Function that holds one of its body
-    // words, and the Tools it must follow: every Tool of the Provider the
-    // query names, and a Tool that holds the query's words in its name and
-    // title.
+    // Each row: the query, a Saved Function that shares only a description
+    // word with it, and Tools that are strong matches: every Tool of the
+    // Provider the query names, and a Tool whose name and title start words
+    // with half of the query's content words.
     let cases = [
         (
             "search slack messages",
             "coral.functions.digest.weekly",
-            [
+            &[
                 "coral.providers.slack.conversations.history",
                 "coral.providers.slack.users.list",
                 "coral.providers.slack.chat.postMessage",
-                "coral.providers.github.search.commits",
-            ],
+            ][..],
         ),
         (
             "slack list",
             "coral.functions.standup.notes",
-            [
+            &[
                 "coral.providers.slack.users.list",
                 "coral.providers.slack.conversations.history",
                 "coral.providers.slack.chat.postMessage",
@@ -210,17 +209,8 @@ async fn a_saved_function_never_splits_a_named_providers_tools_or_passes_a_stron
     ];
     let mut misranked = Vec::new();
     for (query, function, stronger) in cases {
-        let page = modules
-            .search
-            .search(
-                &principal,
-                &workspace,
-                &SearchRequest::query(SearchQuery::parse(query).unwrap()),
-            )
-            .await
-            .unwrap();
-        let ranked = paths(&page);
-        let position = |path: &str| ranked.iter().position(|ranked| *ranked == path);
+        let ranked = ranked(&modules, &principal, &workspace, query).await;
+        let position = |path: &str| ranked.iter().position(|ranked| ranked == path);
         for tool in stronger {
             let follows = matches!(
                 (position(function), position(tool)),
@@ -234,4 +224,79 @@ async fn a_saved_function_never_splits_a_named_providers_tools_or_passes_a_stron
         }
     }
     assert!(misranked.is_empty(), "{misranked:#?}");
+}
+
+const OPS: &str = r#"{
+  "openapi": "3.1.0",
+  "info": { "title": "Ops", "version": "1.0.0" },
+  "servers": [{ "url": "https://api.ops.example" }],
+  "security": [],
+  "paths": {
+    "/deployments/statuses": { "get": { "operationId": "deployments/listStatuses",
+      "summary": "List deployment statuses",
+      "description": "Lists the status of deployments.",
+      "responses": { "200": { "description": "OK" } } } },
+    "/status": { "get": { "operationId": "status/get", "summary": "Get the pipeline",
+      "description": "Returns the deploy state.",
+      "responses": { "200": { "description": "OK" } } } }
+  }
+}"#;
+
+/// Two Tools in one phrase tier whose statement order and whole-word counts
+/// disagree, and a Saved Function that holds both query words apart in its
+/// description. `deployments.listStatuses` leads its window by its score:
+/// its name and title start words with both query words, though neither is
+/// a whole word there. `status.get` holds `status` whole in its name. A
+/// merge that compares whole-word counts across kinds puts the Saved
+/// Function first, since it holds more whole words than the window's head,
+/// and so above `status.get`, which holds more than the Saved Function.
+#[tokio::test]
+async fn a_saved_function_between_two_tools_follows_both_when_it_is_weak() {
+    let modules = TestModules::new().await;
+    let user = organization_user(modules.search.database.clone(), USER).await;
+    let principal = AuthenticatedPrincipal::user(user.clone());
+    let workspace = modules.create_workspace(&user).await;
+    modules
+        .publish_openapi(&user, &workspace, OPS, "ops", 20)
+        .await;
+    modules
+        .save_function(
+            &principal,
+            &workspace,
+            "alerts.notify",
+            "Notify the team of each status change after a deploy.",
+            30,
+        )
+        .await;
+    modules.converge().await;
+
+    assert_eq!(
+        ranked(&modules, &principal, &workspace, "deploy status").await,
+        [
+            "coral.providers.ops.deployments.listStatuses",
+            "coral.providers.ops.status.get",
+            "coral.functions.alerts.notify",
+        ],
+        "both Tools are strong by the Tool rule and keep their statement's \
+         order; the Saved Function's path starts no query word, so it is weak \
+         and follows them"
+    );
+}
+
+async fn ranked(
+    modules: &TestModules,
+    principal: &AuthenticatedPrincipal,
+    workspace: &WorkspaceId,
+    query: &str,
+) -> Vec<String> {
+    let page = modules
+        .search
+        .search(
+            principal,
+            workspace,
+            &SearchRequest::query(SearchQuery::parse(query).unwrap()),
+        )
+        .await
+        .unwrap();
+    paths(&page).into_iter().map(str::to_string).collect()
 }

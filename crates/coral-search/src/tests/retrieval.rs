@@ -194,7 +194,7 @@ fn state(page: &SearchPage, kind: EntityKind) -> RetrieverState {
 }
 
 #[tokio::test]
-async fn a_mixed_query_fuses_each_kinds_ranking_by_match_strength() {
+async fn a_mixed_query_fuses_strong_matches_first_then_by_position() {
     let corpus = Corpus::new().await;
     let issues = SearchRequest::query(SearchQuery::parse("issues").unwrap());
 
@@ -202,14 +202,13 @@ async fn a_mixed_query_fuses_each_kinds_ranking_by_match_strength() {
     assert_eq!(
         paths(&page),
         [
-            "coral.providers.github.issues.list",
             "coral.functions.triage.openIssues",
+            "coral.providers.github.issues.list",
             "coral.functions.reports.weekly",
             "coral.providers.github.pulls.list",
         ],
-        "`issues.list` holds `issues` in its name and title, above the name of \
-         `triage.openIssues`; each kind keeps its own order; and at equal \
-         strength and position the Saved Function comes first"
+        "each kind keeps its own order, every Entity here is a strong match, \
+         and at equal position the Saved Function comes first"
     );
     assert_eq!(
         state(&page, EntityKind::ProviderTool),

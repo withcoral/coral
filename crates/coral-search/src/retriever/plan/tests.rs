@@ -145,8 +145,8 @@ fn a_query_names_a_provider_by_its_namespace_or_every_word_of_its_display_name()
 }
 
 #[test]
-fn word_points_count_each_query_word_a_field_holds_as_a_whole_word() {
-    for (query, field, points, reason) in [
+fn a_content_word_counts_where_it_starts_a_word_of_a_field() {
+    for (query, field, count, reason) in [
         (
             "open issues",
             "triage.openIssues",
@@ -159,6 +159,12 @@ fn word_points_count_each_query_word_a_field_holds_as_a_whole_word() {
             0,
             "a word inside a longer word is none",
         ),
+        (
+            "deploy status",
+            "deployments.listStatuses",
+            2,
+            "a word that starts a longer word counts, as the Tool statement's prefix match does",
+        ),
         ("issues", "ISSUES", 1, "case does not count"),
         (
             "the issues issues",
@@ -168,7 +174,10 @@ fn word_points_count_each_query_word_a_field_holds_as_a_whole_word() {
         ),
         ("openissues", "openIssues", 1, "the whole run is a word too"),
     ] {
-        let strength = plan(query).strength(0, false, [(field, 1)]);
-        assert_eq!(strength.word_points, points, "{query} in {field}: {reason}");
+        assert_eq!(
+            plan(query).content_words_starting([field]),
+            count,
+            "{query} in {field}: {reason}"
+        );
     }
 }
