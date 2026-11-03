@@ -544,8 +544,9 @@ Run that is running or has incomplete Invocation evidence has none. _Avoid_: tok
 User for a Run a User invoked, any Workspace Owner for a Run an Agent invoked. Today it is an Approval Request or an
 Account Connection Request; any later kind (a Provider's own question to the User, #2447) keeps the same shape: one
 request with a deadline, decided by the person or role the Run names, and the first answer counts. A Run a User invoked
-also has one Handoff Route for it. A Run Update's `required_actions` lists the Run's current Required Actions. One
-Required Action handed over is one Human Handoff, even when several Runs wait on it. _Avoid_: pending action, human action, elicitation, prompt
+also has one Handoff Route for it. A Run Update's `required_actions` lists the Run's current Required Actions. An
+Account Connection Request that several Runs wait on is one Required Action in each of their Run Updates: each
+assistant passes it on, and the first answer settles it for all of them. _Avoid_: pending action, human action, elicitation, prompt
 
 **Human Handoff**: The act of Coral putting a Required Action in front of the one User who can decide it. Coral offers
 each through exactly one Handoff Route, keeps Reef as the standing place where the request is already waiting, counts the
