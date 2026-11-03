@@ -1,159 +1,15 @@
 //! Search Hits and complete public TypeScript descriptions, not authoritative Provider
-//! schemas.
+//! schemas. coral-search builds both as the result types coral-catalog declares
+//! for `coral.workspace.search`, so MCP, the Built-in Tool and Task history
+//! show the same fields.
+use coral_catalog::{Description, SearchResult};
 use coral_functions::SavedFunction;
 use coral_search::{ExactAuthoringDescription, SearchPage};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::Value;
+use serde::Serialize;
 
 use super::ToolFailure;
 use super::diagnostics::{Diagnostic, saved_diagnostics};
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SearchResult {
-    hits: Vec<SearchHit>,
-    /// The `offset` of the next page; absent on the last page.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "u32")]
-    next_offset: Option<u32>,
-    /// The retrievers whose results may be missing; absent when none are.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    retriever_statuses: Vec<RetrieverStatus>,
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct RetrieverStatus {
-    retriever: Retriever,
-    state: RetrieverState,
-    coverage: RetrieverCoverage,
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum Retriever {
-    ProviderTool,
-    SavedFunction,
-}
-
-/// - `partial`: some Providers or Saved Functions are not indexed yet, or
-///   failed; results may be missing.
-/// - `error`: the retriever could not rank; its results are missing.
-///
-/// Retry shortly or list without a query.
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum RetrieverState {
-    Partial,
-    Error,
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct RetrieverCoverage {
-    eligible_units: u64,
-    searched_units: u64,
-    failed_units: u64,
-    returned_count: u64,
-    has_more: bool,
-}
-
-/// One Search Hit. Call a read from it when its signature line is complete:
-/// no cut marker (`…`) and no type named in its input that the line does not
-/// show. Describe first otherwise, and before a write.
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct SearchHit {
-    /// `coral.providers.<namespace>.…` for a provider tool,
-    /// `coral.functions.…` for a Saved Function.
-    call_path: String,
-    /// The callable's input members one level deep; a provider tool's result
-    /// data types by name, an unnamed object as `{…}`; a Saved Function's
-    /// result members one level deep. At most 512 UTF-8 bytes.
-    signature_line: String,
-    /// At most 512 UTF-8 bytes of the description, around the first matched
-    /// term; `…` marks cut text.
-    description_snippet: String,
-    /// Present only when a query term matched the guidance.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    guidance_snippet: Option<String>,
-    /// The tags a query term matched; absent when none did.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    matched_tags: Vec<String>,
-    /// The arguments a query term matched that the signature line does not
-    /// show; absent when there are none.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    matched_inputs: Vec<String>,
-    /// Present only when the Provider declared a hint.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Hints")]
-    hints: Option<Hints>,
-    /// Present, and true, only when a person must approve each call.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    approval_required: bool,
-    /// Present, and true, only when the provider tool is deprecated.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    deprecated: bool,
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum Description<Detail> {
-    ProviderTool {
-        #[serde(flatten)]
-        authoring: Authoring,
-        provider_access: String,
-        #[schemars(schema_with = "crate::arguments::uuid_schema")]
-        provider_id: String,
-        provider_display_name: String,
-        title: Option<String>,
-        deprecated: bool,
-        tags: Vec<String>,
-        guidance: Option<String>,
-        hints: Hints,
-        approval_required: bool,
-    },
-    SavedFunction {
-        #[serde(flatten)]
-        authoring: Authoring,
-        #[serde(flatten)]
-        detail: Detail,
-    },
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub(crate) struct Authoring {
-    call_path: String,
-    description: String,
-    typescript_declaration: String,
-}
-
-/// Effect hints the Provider declared. An absent field is undeclared, not a
-/// protocol default.
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Hints {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "bool")]
-    read_only: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "bool")]
-    destructive: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "bool")]
-    idempotent: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "bool")]
-    open_world: Option<bool>,
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub(crate) struct SavedDetail {
-    source: String,
-    diagnostics: Vec<Diagnostic>,
-    diagnostics_truncated: bool,
-}
 
 #[derive(Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -165,30 +21,27 @@ pub(crate) struct SavedFunctionResult<'a> {
     diagnostics_truncated: bool,
 }
 
-pub(crate) fn search(page: &SearchPage) -> Result<SearchResult, ToolFailure> {
-    from_snapshot(&coral_search::projection::search(page))
+pub(crate) fn search(page: &SearchPage) -> SearchResult {
+    coral_search::projection::search_result(page)
 }
 
 /// A Saved Function's detail is absent when `describe` returned only the
 /// `types` it was asked for.
 pub(crate) fn exact_description(
     exact: &ExactAuthoringDescription,
-) -> Result<Description<Option<SavedDetail>>, ToolFailure> {
-    from_snapshot(&coral_search::projection::exact_description(exact))
+) -> Result<Description, ToolFailure> {
+    exact_in_json(coral_search::projection::description(exact))
 }
 
-// Task history and MCP must expose the same complete discovery response. Keep
-// domain-to-public field mapping in the existing shared snapshot projection.
-// These MCP-owned types drive both serialization and schemas; reject drift
-// rather than silently discarding a field that history retained (serde flatten
-// cannot be combined reliably with deny_unknown_fields).
-fn from_snapshot<T: DeserializeOwned + Serialize>(snapshot: &Value) -> Result<T, ToolFailure> {
-    let projected = T::deserialize(snapshot).map_err(|_error| ToolFailure::internal())?;
-    let serialized = serde_json::to_value(&projected).map_err(|_error| ToolFailure::internal())?;
-    if &serialized != snapshot {
-        return Err(ToolFailure::internal());
+/// The description, or an internal failure when a saved diagnostic carries
+/// an integer that a JSON reader cannot hold exactly, as the Built-in Tool
+/// fails for the same description.
+fn exact_in_json(description: Description) -> Result<Description, ToolFailure> {
+    if description.is_exact_in_json() {
+        Ok(description)
+    } else {
+        Err(ToolFailure::internal())
     }
-    Ok(projected)
 }
 
 pub(crate) fn saved_function(
@@ -201,4 +54,50 @@ pub(crate) fn saved_function(
         diagnostics: saved_diagnostics(function.diagnostics())?,
         diagnostics_truncated: function.diagnostics_truncated(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use coral_catalog::{
+        Description, DescriptionAuthoring, SavedDetail, SavedDiagnostic, SavedDiagnosticCategory,
+    };
+
+    fn saved_function(code: u64, line: Option<u64>, column: Option<u64>) -> Description {
+        Description::SavedFunction {
+            authoring: DescriptionAuthoring {
+                call_path: "coral.functions.weekly".to_owned(),
+                description: "The weekly report.".to_owned(),
+                typescript_declaration: "export default function (): Promise<string>;".to_owned(),
+            },
+            detail: Some(SavedDetail {
+                source: "export default async function weekly() {}".to_owned(),
+                diagnostics: vec![SavedDiagnostic {
+                    category: SavedDiagnosticCategory::Warning,
+                    code,
+                    message: "unused".to_owned(),
+                    line,
+                    column,
+                }],
+                diagnostics_truncated: false,
+            }),
+        }
+    }
+
+    // Catches: a saved diagnostic integer that a JSON reader cannot hold
+    // exactly reaching the agent as a rounded number instead of failing.
+    #[test]
+    fn an_exact_description_fails_rather_than_round_a_diagnostic_integer() {
+        const SAFE: u64 = 9_007_199_254_740_991;
+        assert!(super::exact_in_json(saved_function(SAFE, Some(SAFE), Some(SAFE))).is_ok());
+        for (code, line, column) in [
+            (SAFE + 1, None, None),
+            (6133, Some(SAFE + 1), None),
+            (6133, Some(1), Some(SAFE + 1)),
+        ] {
+            assert!(
+                super::exact_in_json(saved_function(code, line, column)).is_err(),
+                "{code} {line:?} {column:?}"
+            );
+        }
+    }
 }
