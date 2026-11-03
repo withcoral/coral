@@ -1179,8 +1179,8 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     .await;
     assert_eq!(
         structured(&started)["providers"],
-        json!(["weather"]),
-        "the result names the namespaces the caller can search"
+        json!(["weather", "coral.workspace"]),
+        "the result names the namespaces the caller can search, Built-in included"
     );
     let task_id = structured(&started)["task_id"]
         .as_str()
