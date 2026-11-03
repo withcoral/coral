@@ -29,7 +29,7 @@ export const CLIENT_CONFIG_HINT_GENERATORS: Record<
   (context: ClientConfigHintContext) => string
 > = {
   slack_app_create_link: ({ callbackUrl }) =>
-    `[Create a Slack app](${slackAppCreateLink(callbackUrl)}), then copy its client ID and client secret here.`,
+    `[Create a Slack app](${slackAppCreateLink(callbackUrl)}), then copy its client ID and client secret here. For help, read the [Slack setup guide](https://withcoral.com/docs/guides/providers/slack).`,
   datadog_mcp_redirect_allowlist: ({ signInUrl }) =>
     `Before you sign in, ask a Datadog admin to add the callback URL in ${datadogMcpSettingsLink(signInUrl)}.`,
 }
