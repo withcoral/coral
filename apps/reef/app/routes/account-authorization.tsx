@@ -16,7 +16,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
     const view = await loadAuthorization(request, context, params)
     const workspace = params.workspace
-      ? (await authorizedWorkspace(request, context, params.workspace)).workspace
+      ? (await authorizedWorkspace(context, params.workspace)).workspace
       : undefined
     return data({ ...view, workspace }, { headers: accountHeaders })
   } catch (error) {

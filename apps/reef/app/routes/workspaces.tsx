@@ -19,7 +19,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   try {
     if (field(form, 'intent') !== 'createWorkspace')
       throw new Response('Invalid action', { status: 400 })
-    const workspace = await management(request, context).workspaces.createWorkspace({
+    const workspace = await management(context).workspaces.createWorkspace({
       displayName: field(form, 'displayName'),
       requestId: field(form, 'requestId'),
     })

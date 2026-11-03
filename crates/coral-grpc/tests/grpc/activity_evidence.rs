@@ -168,14 +168,18 @@ async fn successful_terminal_preserves_absent_final_value_versus_explicit_null()
 
 /// coral-run owns what cancellation does to a waiting or dispatched Invocation
 /// (`user_and_agent_cancellation_*`). This checks their projection: the queued
-/// card, the review, a stale decision, and each typed outcome.
+/// card, the review, a stale decision, and each typed outcome. What the Run
+/// Status Page reads and sends stays out of the spans of its requests.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "one Run per Invocation gate projects the card, review, stale decision, and typed outcome"
 )]
 async fn cancellation_retains_pending_and_dispatched_invocation_distinctions_and_typed_actor() {
+    let capture = coral_telemetry::testing::process_spans();
     let f = Fixture::new().await;
+    f.sign_in_profiles(&[(&f.member, "name-canary", "email-canary@example.test", true)])
+        .await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(
@@ -186,7 +190,7 @@ async fn cancellation_retains_pending_and_dispatched_invocation_distinctions_and
         .mount(&server)
         .await;
     let provider = publish_http(&f, &server.uri()).await;
-    let source = "return await coral.providers.evidence.read({body: {private: 'argument'}});";
+    let source = "// source-canary\nreturn await coral.providers.evidence.read({body: {private: 'argument-canary'}});";
     // HTTP's default approval gate holds the first call before dispatch.
     let pending = start(&f, source).await;
     wait_invocation(&f, &pending, true).await;
@@ -291,7 +295,7 @@ async fn cancellation_retains_pending_and_dispatched_invocation_distinctions_and
             wire::DecideApprovalRequest {
                 name: approval.clone(),
                 decision: "approve".into(),
-                comment: Some("too late".into()),
+                comment: Some("comment-canary".into()),
             },
             &member,
             "reef",
@@ -341,6 +345,20 @@ async fn cancellation_retains_pending_and_dispatched_invocation_distinctions_and
         exact.invocation.unwrap().outcome(),
         wire::ActivityInvocationOutcome::Indeterminate
     );
+
+    let spans = format!("{:?}", capture.finished());
+    assert!(spans.contains("ActivityService/DecideApproval"), "{spans}");
+    assert!(spans.contains("ActivityService/InspectApproval"), "{spans}");
+    for private in [
+        "source-canary",
+        "argument-canary",
+        "comment-canary",
+        "name-canary",
+        "email-canary",
+        member.as_str(),
+    ] {
+        assert!(!spans.contains(private), "{private}: {spans}");
+    }
 }
 
 async fn cancel(f: &Fixture, run: &coral_run::RunId) {
@@ -737,6 +755,7 @@ async fn action_queue_pages_by_cursor_and_a_run_rejects_a_malformed_action_curso
     reason = "one exact review journey verifies Task intent and attribution before and after queue exclusion"
 )]
 async fn action_groups_keep_exec_intent_and_labels_after_selected_run_leaves_queue() {
+    let capture = coral_telemetry::testing::process_spans();
     let f = Fixture::new().await;
     let server = MockServer::start().await;
     publish_http(&f, &server.uri()).await;
@@ -805,7 +824,7 @@ async fn action_groups_keep_exec_intent_and_labels_after_selected_run_leaves_que
                 wire::DecideApprovalRequest {
                     name: name.clone(),
                     decision: "decline".into(),
-                    comment: Some("This exact call only".into()),
+                    comment: Some("live-comment-canary".into()),
                 },
                 &token,
                 "reef",
@@ -850,6 +869,9 @@ async fn action_groups_keep_exec_intent_and_labels_after_selected_run_leaves_que
         .into_inner();
     assert_eq!(refreshed.action_count, 0);
     assert!(refreshed.actions.is_empty());
+    let spans = format!("{:?}", capture.finished());
+    assert!(spans.contains("ActivityService/DecideApproval"), "{spans}");
+    assert!(!spans.contains("live-comment-canary"), "{spans}");
 }
 
 #[tokio::test]

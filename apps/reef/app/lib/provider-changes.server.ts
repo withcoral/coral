@@ -13,14 +13,13 @@ import type { ToolOutcome } from '@/views/providers/types'
  * parsed and checked: rename, enable or disable, remove, or tool policy.
  */
 export async function applyProviderChange(
-  request: Request,
   context: Readonly<RouterContextProvider>,
   params: { workspace: string },
   form: FormData,
 ) {
   const intent = field(form, 'intent')
   try {
-    const { api, workspace: w } = await authorizedWorkspace(request, context, params.workspace, {
+    const { api, workspace: w } = await authorizedWorkspace(context, params.workspace, {
       ownerOnly: true,
     })
     const providersPath = `${w.path}/providers`

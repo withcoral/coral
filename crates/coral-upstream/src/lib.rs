@@ -3,11 +3,14 @@
 //! Protocol adapters own planning, serialization, bounded sending, and complete
 //! result capture. They never retry, traverse pagination, or evaluate Coral
 //! authority. The Invocation owner supplies retained recipes and a Run-local
-//! resource registry; no policy or fenced-dispatch permit crosses this boundary.
+//! resource registry; no policy or Policy Enforcement Point permit crosses this
+//! boundary.
 
 mod dispatch;
+mod exchange;
 mod http;
 mod mcp;
+mod span_field;
 
 pub use dispatch::{OutcomeClass, ReadyDispatch, UpstreamOutcome};
 pub use http::{HttpDecodeDiagnostic, HttpOutcome, HttpRedirect, HttpUpstream, ReadyHttpDispatch};

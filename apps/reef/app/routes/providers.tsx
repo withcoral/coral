@@ -35,9 +35,9 @@ export function shouldRevalidate({
 }
 
 /** Loads the Workspace tree independently of tool selection. */
-export async function loader({ request, context, params }: Route.LoaderArgs) {
+export async function loader({ context, params }: Route.LoaderArgs) {
   try {
-    const { api, workspace: w } = await authorizedWorkspace(request, context, params.workspace)
+    const { api, workspace: w } = await authorizedWorkspace(context, params.workspace)
     const [listed, personalAccounts] = await Promise.all([
       listAllProviders(api, w.name),
       personalAccountStates(api, w.name),
@@ -73,7 +73,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 }
 
 export async function action({ request, context, params }: Route.ActionArgs) {
-  return applyProviderChange(request, context, params, await mutationForm(request, context))
+  return applyProviderChange(context, params, await mutationForm(request, context))
 }
 
 export type ProvidersData = Route.ComponentProps['loaderData']

@@ -477,9 +477,7 @@ it('lists your accounts and the run that waits on one', async () => {
       },
     ],
   })
-  const view = await loadUserAccounts(new Request(`http://localhost${base}/accounts`), context, {
-    workspace,
-  })
+  const view = await loadUserAccounts(context, { workspace })
   expect(view.accounts).toEqual([
     expect.objectContaining({
       name: 'Linear',

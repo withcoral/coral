@@ -226,6 +226,12 @@ export const CreateWorkspace: Story = {
     await userEvent.click(canvas.getByRole('button', { name: 'Create workspace' }))
   },
 }
+const newerRelease = {
+  version: '1.3.0',
+  notesUrl: 'https://github.com/withcoral/coral/releases/tag/v1.3.0',
+}
+export const NewerRelease: Story = { args: { newerRelease } }
+export const CollapsedNewerRelease: Story = { args: { newerRelease, initialIsMinimized: true } }
 export const Dark: Story = { globals: { backgrounds: { value: 'dark' } } }
 export const Light: Story = { globals: { backgrounds: { value: 'light' } } }
 export const Narrow: Story = {

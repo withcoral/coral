@@ -5,19 +5,21 @@ use coral_credentials::Secret;
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::too_many_lines,
-    reason = "the Run seam follows one approved Invocation through each Update at the final dispatch fence"
+    reason = "the Run seam follows one approved Invocation through each Update at the final Policy Enforcement Point"
 )]
-async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_fence_dispatch() {
+async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_block_dispatch() {
     for change_kind in ["catalog", "caller-contract", "replacement", "setting"] {
         let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
-        let (gate, release) = FenceGate::blocking();
+        let (gate, release) = EnforcementGate::blocking();
         let mut fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             upstream.clone(),
             gate.clone(),
         )
         .await;
-        let mut tool = fixture.user_tool("user:update-fence", "Update fence").await;
+        let mut tool = fixture
+            .user_tool("user:update-enforcement", "Update enforcement")
+            .await;
         let (_directory, accounts) = if change_kind == "caller-contract" {
             configure_user_caller(&fixture, &tool, "https://upstream.example").await
         } else {
@@ -163,7 +165,7 @@ async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_
             "{change_kind}: {terminal:?}"
         );
         if !continues {
-            gate.fences.assert_no_dispatch();
+            gate.enforcement_checks.assert_no_dispatch();
         }
         assert_eq!(
             retained_events(&fixture.runs, &tool.principal, scope, terminal.run_id())

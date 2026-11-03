@@ -90,8 +90,11 @@ pub(crate) async fn tool_declarations(
     let declarations = reader
         .read(call_paths)
         .await
-        .inspect_err(|error| {
-            tracing::warn!(%error, "Tool declarations are unavailable; the source is checked untyped");
+        .inspect_err(|_| {
+            tracing::warn!(
+                error.type = "declarations_unavailable",
+                "Tool declarations are unavailable; the source is checked untyped"
+            );
         })
         .ok()?;
     let bytes = declarations

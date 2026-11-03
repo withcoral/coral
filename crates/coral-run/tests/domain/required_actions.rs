@@ -265,7 +265,7 @@ async fn connection_selection_never_retargets_to_a_replacement_request() {
     reason = "one gated observation checks action-only wake-up, unchanged wait expiry, and terminal cleanup"
 )]
 async fn required_actions_show_pending_approval_and_clear_without_a_run_event() {
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
         Arc::new(RejectingUpstream),

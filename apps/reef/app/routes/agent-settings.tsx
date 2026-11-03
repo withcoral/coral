@@ -19,8 +19,8 @@ import { AgentSettingsPage } from '@/views/management/agent-settings-page'
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
-export async function loader({ request, context, params }: Route.LoaderArgs) {
-  const api = management(request, context)
+export async function loader({ context, params }: Route.LoaderArgs) {
+  const api = management(context)
   const name = agentName(params.workspace, params.agent)
   try {
     const [workspace, agent, registration] = await Promise.all([
@@ -44,7 +44,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
 export async function action({ request, context, params }: Route.ActionArgs) {
   const form = await mutationForm(request, context)
-  const api = management(request, context)
+  const api = management(context)
   const name = agentName(params.workspace, params.agent)
   const intent = field(form, 'intent')
   try {

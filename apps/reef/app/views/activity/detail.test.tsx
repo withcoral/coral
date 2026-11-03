@@ -20,6 +20,7 @@ import type {
   InteractionRow,
   InvocationDetail,
   InvocationRow,
+  ProgramError,
   RequestDetail,
   RunDetail,
   RunEvent,
@@ -263,12 +264,8 @@ it.each([true, false])(
     expect(container.textContent).not.toContain('Technical details')
     expect(container.textContent).not.toContain(call.name)
     if (withRun) {
-      // The Run's intent leads the list; its controls stay in view.
+      // The Run's intent leads the list.
       expect(fact('Run intent')).toHaveTextContent('Send invoice reminders')
-      expect(
-        within(container).getByRole('button', { name: 'Cancel run' }).closest('details'),
-      ).toBeNull()
-      expect(container.textContent).not.toContain('Whole-run controls')
     } else expect(container.textContent).not.toContain('Send invoice reminders')
   },
 )
@@ -402,6 +399,68 @@ it.each([
   },
 )
 
+/** A Program error named `name`, with upstream response data that says so. */
+const failure = (name: string, more: Partial<ProgramError> = {}): ProgramError => ({
+  name,
+  message: '',
+  frames: [],
+  toolCode: '',
+  toolTraceId: '',
+  toolStatus: 502,
+  toolBody: `{"from":"${name}"}`,
+  toolBodyTruncated: false,
+  cause: null,
+  errors: [],
+  truncated: false,
+  causeOmitted: false,
+  omittedErrors: 0,
+  circular: false,
+  ...more,
+})
+
+// Catches: upstream response data that every error in a chain names alike, so a screen
+// reader hears the same region, Expand, Copy and Download for each; or, under an error with
+// no name, a name that ends in "cause of " or "grouped error 1 of ". Each is named by its
+// error and that error's place, even when names repeat or are empty.
+it.each([
+  [
+    'named errors, some alike',
+    failure('ToolError', {
+      cause: failure('ToolError', { cause: failure('ToolError') }),
+      errors: [failure('ToolError'), failure('RangeError')],
+    }),
+    [
+      'Upstream response data for ToolError',
+      'Upstream response data for ToolError, cause of ToolError',
+      'Upstream response data for ToolError, cause of ToolError, cause of ToolError',
+      'Upstream response data for ToolError, grouped error 1 of ToolError',
+      'Upstream response data for RangeError, grouped error 2 of ToolError',
+    ],
+  ],
+  [
+    'an error with no name',
+    failure('', { cause: failure('TypeError'), errors: [failure(''), failure('')] }),
+    [
+      'Upstream response data',
+      'Upstream response data for TypeError, cause of the error',
+      'Upstream response data for grouped error 1 of the error',
+      'Upstream response data for grouped error 2 of the error',
+    ],
+  ],
+])('names each upstream response by its error and where it sits: %s', (_, error, names) => {
+  const container = show({
+    ...runPanel({ state: 'failed', endedAt: '2026-09-22T09:05:00Z' }),
+    terminal: { kind: 'failed', code: 'program_rejected', message: '', error },
+  } as RunDetail)
+  const regions = within(container)
+    .getAllByRole('region')
+    .map((region) => region.getAttribute('aria-label'))
+    .filter((label) => label?.startsWith('Upstream response data'))
+  expect(regions.toSorted()).toEqual(names.toSorted())
+  for (const name of names)
+    expect(within(container).getAllByRole('button', { name: `Expand ${name}` })).toHaveLength(1)
+})
+
 it('heads a Run that failed for a reason this Reef does not know, without a code line', () => {
   const container = show({
     ...runPanel({ state: 'failed', endedAt: '2026-09-22T09:05:00Z' }),
@@ -409,89 +468,6 @@ it('heads a Run that failed for a reason this Reef does not know, without a code
   } as RunDetail)
   const card = within(container).getByRole('region', { name: 'Error' })
   expect(card.textContent).toBe('The run failedexact-run-message')
-})
-
-it('keeps the supplied Run evidence and source beside a selected call, apart from its outcome', () => {
-  const failed = { ...run, state: 'failed' as const, endedAt: '2026-09-22T09:01:00Z' }
-  const call: InvocationRow = {
-    ...failed,
-    name: `${workspace}/invocations/evidence`,
-    run: failed.name,
-    state: 'ended',
-    outcome: 'upstream_outcome',
-    dispatchedAt: failed.startedAt,
-    waitingNanos: '0',
-    provider: `${workspace}/providers/mail`,
-    tool: 'send',
-    callPath: 'coral.providers.mail.send',
-  }
-  const submission = `${workspace}/tasks/one/interactions/exec`
-  const container = document.createElement('div')
-  container.innerHTML = markup({
-    ...pendingPage,
-    selected: call.name,
-    selectedRow: { ...call, kind: 'invocation' },
-    detail: {
-      kind: 'invocation',
-      invocation: call,
-      arguments: '{}',
-      result: { kind: 'upstream_outcome', value: '{"call-outcome":202}' },
-      requests: [],
-      request: null,
-      requestUnavailable: false,
-      context: {
-        kind: 'run',
-        run: failed,
-        submission: {
-          name: submission,
-          agent: '',
-          tool: 'exec',
-          intent: 'Send invoice reminders',
-          outcome: 'succeeded',
-          startedAt: failed.startedAt,
-          completedAt: failed.startedAt,
-          acceptedRun: failed.name,
-        },
-        source: 'exact-accepted-source',
-        linkedFunctions: [
-          { savedFunction: 'snapshot-id', path: 'billing.remind', source: 'exact-snapshot' },
-        ],
-        terminal: {
-          kind: 'failed',
-          code: 'program_execution_failed',
-          message: 'exact-run-failure',
-          error: null,
-        },
-      },
-    },
-  })
-  const disclosure = (title: string) =>
-    within(container).getByText(title, { selector: 'summary' }).closest('details')!
-  // The call's outcome and the Run's terminal evidence are visible, each in its own card.
-  const upstream = within(container).getByRole('region', { name: 'Provider response' })
-  expect(upstream).toHaveTextContent('call-outcome')
-  expect(upstream).not.toHaveTextContent('exact-run-failure')
-  expect(within(container).getByText('program run: failed')).toBeTruthy()
-  expect(container.textContent).not.toContain('Run state')
-  const failure = container.querySelector('[aria-label="Error"]')!
-  expect(failure).toHaveTextContent('program_execution_failed')
-  expect(failure).toHaveTextContent('exact-run-failure')
-  expect(failure).not.toHaveTextContent('call-outcome')
-  expect(failure.closest('details')).toBeNull()
-  // Source, snapshots, and the original submission stay retained, folded in Details.
-  const details = disclosure('Details')
-  expect(details).not.toHaveAttribute('open')
-  expect(disclosure('Accepted program source')).toHaveTextContent('exact-accepted-source')
-  expect(disclosure('Saved-function snapshot: billing.remind')).toHaveTextContent('exact-snapshot')
-  for (const title of ['Accepted program source', 'Saved-function snapshot: billing.remind'])
-    expect(details.contains(disclosure(title))).toBe(true)
-  const original = within(details).getByText('Inspect original exec submission')
-  expect(new URL(original.getAttribute('href')!, 'http://reef').searchParams.get('record')).toBe(
-    submission,
-  )
-  // The Run's own times and IDs belong to the Run's panel.
-  for (const gone of ['Run ended', 'Run ID', 'Technical details', failed.name])
-    expect(container.textContent).not.toContain(gone)
 })
 
 it.each([
@@ -985,7 +961,8 @@ it.each<[string, RunDetail, string | null]>([
     // A returned value shows directly in its own card, never behind a disclosure.
     const returned = container.querySelector('[aria-label="Final value"]')
     expect(Boolean(returned)).toBe(state === 'succeeded')
-    if (returned) expect(returned.textContent).toBe(returned.querySelector('pre')!.textContent)
+    if (returned)
+      expect(within(returned as HTMLElement).getByRole('group', { name: 'Structure' })).toBeTruthy()
     expect(within(container).queryByText('Final value', { selector: 'summary' })).toBeNull()
     expect(Boolean(within(container).queryByRole('button', { name: 'Cancel run' }))).toBe(
       state === 'running',
@@ -1748,11 +1725,6 @@ it.each<[string, Detail, string | null]>([
     succeeded('12345678901234567890'),
     '12345678901234567890',
   ],
-  [
-    "a tool call's Run that returned a value",
-    { ...invocationPanel({}), context: succeeded('{"total":18450.70}') },
-    '18450.70',
-  ],
 ])(
   'shows what %s returned in a Final value card, or nothing when it returned nothing',
   (_, detail, value) => {
@@ -1761,7 +1733,10 @@ it.each<[string, Detail, string | null]>([
     const card = container.querySelector('[aria-label="Final value"]')
     // No value shows no card and no sentence; JSON null is a value and has its card.
     if (value === null) expect(card).toBeNull()
-    else expect(card!.querySelector('pre')!.textContent).toContain(value)
+    else
+      expect(
+        within(card as HTMLElement).getByRole('group', { name: 'Structure' }).textContent,
+      ).toContain(value)
     expect(container.textContent).not.toContain('returned no final value')
     expect(within(container).queryByText('Final value', { selector: 'summary' })).toBeNull()
   },
@@ -1826,7 +1801,8 @@ it.each<[string, RunEvent, boolean, string, string[], string | null]>([
     { ...at, kind: 'program.logged', level: 'warn', message: 'Fetched page 2\n  then page 3' },
     true,
     'Log message',
-    ['Fetched page 2\n  then page 3'],
+    // One numbered line each, the indent kept.
+    ['1Fetched page 2', '2  then page 3'],
     'warn',
   ],
   [
@@ -1887,10 +1863,9 @@ it.each<[string, RunEvent, boolean, string, string[], string | null]>([
       'Technical details',
     ])
       expect(container.textContent).not.toContain(gone)
-    // The card is named for assistive technology but shows only the payload.
+    // The payload viewer is named for assistive technology; its payload is exact.
     const body = container.querySelector<HTMLElement>(`[aria-label="${card}"]`)!
-    const code = body.querySelector('pre')!
-    expect(body.textContent).toBe(code.textContent)
+    const code = within(body).getByRole('group', { name: level ? 'Lines' : 'Structure' })
     for (const text of content) expect(code.textContent).toContain(text)
   },
 )
@@ -2491,11 +2466,10 @@ describe('an account connection the Run waits on', () => {
     expect(card.querySelector('time')).toHaveAttribute('dateTime', connection.expiresAt)
     expect(document.body).not.toHaveTextContent(connection.name)
     expect(screen.queryByRole('button', { name: /Connect|Decline/ })).not.toBeInTheDocument()
-    // The call, its Run and the retained connection each keep their own state, named apart.
+    // The call and the retained connection each keep their own state, named apart.
     expect(screen.queryByText('State', { selector: 'dt' })).not.toBeInTheDocument()
     expect(within(document.querySelector('header')!).getByText('pending')).toBeInTheDocument()
     expect(screen.getByText('connection request: pending')).toBeInTheDocument()
-    expect(screen.getByText('program run: running')).toBeInTheDocument()
     expect(document.body).not.toHaveTextContent('Run state')
     // The whole card is the one link: it opens the connection on its Run, where you act on it.
     const open = card.querySelector('a')!
@@ -2826,68 +2800,114 @@ describe('each record states only what helps, once', () => {
     for (const text of shown) expect(card!.textContent).toContain(text)
   })
 
-  // Catches: a tool call that buries its controls, shows raw IDs, or hides its error.
-  it.each<[string, InvocationDetail['result'], string[], string[]]>([
+  // Catches: a tool call that shows raw IDs, hides its error, or ends with its parent Run's
+  // footer (its state, final value, Details, history link or Cancel run): the Run's own panel
+  // holds those, and a running Run's badge under a finished call mixes the two lifecycles.
+  const finished = { endedAt: '2026-09-22T09:05:00Z' }
+  it.each<
     [
-      'a Coral failure',
+      string,
+      InvocationDetail['result'],
+      Partial<typeof run>,
+      RunDetail['terminal'],
+      string[],
+      string[],
+    ]
+  >([
+    [
+      'a Coral failure in a running Run',
       { kind: 'coral_failure', code: 'tool_disabled', message: 'The tool is disabled.' },
+      { state: 'running', endedAt: null },
+      { kind: 'unavailable' },
       ['Coral failure: tool_disabled', 'The tool is disabled.'],
       [],
     ],
     [
-      'an upstream result',
+      'an upstream result in a running Run',
       { kind: 'upstream_outcome', value: '{"status":200}' },
+      { state: 'running', endedAt: null },
+      { kind: 'unavailable' },
       ['"status": 200'],
       ['HTTP status and MCP isError'],
     ],
-    ['no retained result', { kind: 'unknown' }, [], ['No retained outcome']],
     [
-      'an incomplete dispatch',
+      'an upstream result in a succeeded Run',
+      { kind: 'upstream_outcome', value: '{"status":200}' },
+      { state: 'succeeded', ...finished },
+      { kind: 'succeeded', finalValue: '{"exact-run-final-value":1}' },
+      ['"status": 200'],
+      ['exact-run-final-value'],
+    ],
+    [
+      'no retained result in a failed Run',
+      { kind: 'unknown' },
+      ended,
+      { kind: 'failed', code: 'program_rejected', message: 'exact-run-failure', error: null },
+      [],
+      ['No retained outcome', 'exact-run-failure'],
+    ],
+    [
+      'an incomplete dispatch in a running Run',
       { kind: 'indeterminate' },
+      { state: 'running', endedAt: null },
+      { kind: 'unavailable' },
       ['External effects may be uncertain.'],
       [],
     ],
-  ])('shows a tool call with %s, its controls in view and no raw IDs', (_, result, shown, gone) => {
-    const live = { ...run, state: 'running' as const, endedAt: null }
-    const detail: InvocationDetail = {
-      ...invocationPanel({}),
-      result,
-      context: {
-        ...runPanel(live, {
-          ...interaction,
-          tool: 'exec',
-          name: `${workspace}/tasks/one/interactions/exec`,
-        }),
-        source: 'exact-accepted-source',
-      },
-    }
-    const container = show(detail)
-    expectNoScaffolding(container)
-    for (const id of [detail.invocation.name, run.name])
-      expect(container.textContent).not.toContain(id)
-    for (const text of [...gone, 'Run ID', 'Invocation ID', 'Whole-run controls'])
-      expect(container.textContent).not.toContain(text)
-    // One list, its times last.
-    const lists = [...container.querySelectorAll('dl')].filter((list) => !list.closest('details'))
-    expect(lists).toHaveLength(1)
-    const times = ['Duration', 'Started', ...(detail.invocation.endedAt ? ['Ended'] : [])]
-    expect(terms(lists[0]).slice(-times.length)).toEqual(times)
-    // The whole-run controls stay in view; the accepted source folds into Details.
-    expect(
-      within(container).getByRole('button', { name: 'Cancel run' }).closest('details'),
-    ).toBeNull()
-    expect(
-      within(container).getByRole('link', { name: 'View in history' }).closest('details'),
-    ).toBeNull()
-    const details = within(container)
-      .getByText('Details', { selector: 'summary' })
-      .closest('details')!
-    expect(details).toHaveTextContent('exact-accepted-source')
-    for (const text of shown) {
-      expect(container.textContent).toContain(text)
-      expect(details.textContent).not.toContain(text)
-    }
-  })
+  ])(
+    'shows a tool call with %s, without the Run footer or raw IDs',
+    (_, result, parent, terminal, shown, gone) => {
+      const detail: InvocationDetail = {
+        ...invocationPanel({}),
+        arguments: '{"exact-argument":1}',
+        result,
+        context: {
+          ...runPanel(parent, {
+            ...interaction,
+            tool: 'exec',
+            name: `${workspace}/tasks/one/interactions/exec`,
+          }),
+          source: 'exact-accepted-source',
+          terminal,
+        },
+      }
+      const container = show(detail)
+      expectNoScaffolding(container)
+      // The call's own header, arguments and outcome stay.
+      expect(container.querySelector('header')).toHaveTextContent(detail.invocation.callPath)
+      expect(container.querySelector('header')).toHaveTextContent('tool')
+      expect(container.textContent).toContain('exact-argument')
+      for (const text of shown) expect(container.textContent).toContain(text)
+      for (const id of [detail.invocation.name, run.name])
+        expect(container.textContent).not.toContain(id)
+      for (const text of [
+        ...gone,
+        'Run ID',
+        'Invocation ID',
+        'Whole-run controls',
+        'program run',
+        'exact-accepted-source',
+        'Inspect original exec submission',
+      ])
+        expect(container.textContent).not.toContain(text)
+      expect(within(container).queryByRole('button', { name: 'Cancel run' })).toBeNull()
+      expect(within(container).queryByRole('link', { name: 'View in history' })).toBeNull()
+      expect(within(container).queryByText('Details', { selector: 'summary' })).toBeNull()
+      expect(within(container).queryByRole('region', { name: 'Final value' })).toBeNull()
+      // One list, its times last.
+      const lists = [...container.querySelectorAll('dl')].filter((list) => !list.closest('details'))
+      expect(lists).toHaveLength(1)
+      const times = ['Duration', 'Started', ...(detail.invocation.endedAt ? ['Ended'] : [])]
+      expect(terms(lists[0]).slice(-times.length)).toEqual(times)
+      // Nothing follows the call's outcome but the panel's empty footer slot.
+      const panel = container.firstElementChild!
+      const footer = panel.lastElementChild!
+      expect(footer.tagName).toBe('FOOTER')
+      expect(footer).toBeEmptyDOMElement()
+      if (shown.length)
+        expect(footer.previousElementSibling).toHaveTextContent(shown[shown.length - 1]!)
+    },
+  )
 
   // Catches: an approval review that keeps raw IDs, the program body or the Run's controls, or
   // that dates the request by its Run or its deadline.

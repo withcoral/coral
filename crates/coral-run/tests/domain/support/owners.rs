@@ -52,7 +52,7 @@ impl ProgramEngine for BurstEngine {
         &self,
         _deadline: std::time::Instant,
         source: &str,
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         Ok(ProgramPackage::scripted(source))
     }
 

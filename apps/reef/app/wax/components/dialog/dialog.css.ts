@@ -1,4 +1,4 @@
-import { createVar, keyframes, style, styleVariants } from '@/wax/css'
+import { createVar, globalStyle, keyframes, style, styleVariants } from '@/wax/css'
 
 import { utils } from '@/styles/utils'
 import { stickyBottom, stickyTop } from '@/wax/components/card/card.css'
@@ -60,6 +60,11 @@ export const popup = style({
 // a drawer that a route renders mounts already open and Base UI skips that phase.
 const drawerTravel = createVar()
 const { panel } = animation
+// A docked drawer moves the page beside it, so it opens and closes in half the time.
+const drawerOpen = createVar()
+const drawerClose = createVar()
+const dockedOpen = '200ms'
+const dockedClose = '175ms'
 const drawerHidden = {
   filter: panel.blur,
   transform: `translateX(${drawerTravel})`,
@@ -73,10 +78,15 @@ export const drawer = style({
   maxHeight: '100dvh',
   maxWidth: 'calc(100vw - 48px)',
   borderRadius: 0,
-  vars: { [padding]: '12px', [drawerTravel]: '-100%' },
+  vars: {
+    [padding]: '12px',
+    [drawerTravel]: '-100%',
+    [drawerOpen]: panel.open,
+    [drawerClose]: panel.close,
+  },
   transform: 'none',
   translate: 'none',
-  animation: `${drawerReveal} ${panel.open} ${panel.ease}`,
+  animation: `${drawerReveal} ${drawerOpen} ${panel.ease}`,
   transition: 'none',
   selectors: {
     // The drawer takes focus so its arrow keys work; it is not a control, so it shows no ring.
@@ -85,7 +95,7 @@ export const drawer = style({
     '&[data-ending-style]': {
       ...drawerHidden,
       opacity: 1,
-      transition: `transform ${panel.close} ${panel.ease}, filter ${panel.close} ${panel.ease}`,
+      transition: `transform ${drawerClose} ${panel.ease}, filter ${drawerClose} ${panel.ease}`,
     },
   },
   '@media': {
@@ -119,6 +129,78 @@ export const fullWidthOnMobile = style({
 
 // Beside the page, the rail sits under page menus, dialogs and tooltips.
 export const besidePage = style({ zIndex: zIndex.rail })
+
+/** At this width or more a docked rail takes its place in the page's layout. */
+export const docked = '(min-width: 1200px)'
+
+// Where a docked rail portals its popup. It has no box of its own until the rail
+// docks, so a floating or modal rail still positions against the viewport.
+export const dock = style({ display: 'contents' })
+
+// The rail's width beside the page, and the space it keeps from it. The dock's basis
+// takes its share of the row; the portal inside takes the same share in container units.
+const dockShare = 'clamp(420px, 45%, 700px)'
+const railWidth = 'clamp(420px, 45cqw, 700px)'
+const dockGap = '16px'
+
+// The page beside it keeps the rest of the row, so a docked rail takes a share of it.
+// The dock widens from nothing as the rail opens and narrows as it closes, in step with
+// the popup, so the page beside it resizes smoothly. A percentage stays a percentage
+// once computed, so resizing the window or swapping the record moves nothing.
+export const dockActive = style({
+  display: 'flex',
+  flexDirection: 'column',
+  flex: `0 0 calc(${dockShare} + ${dockGap})`,
+  minHeight: 0,
+  minWidth: 0,
+  // The rail keeps its width while the dock reveals it, so its text never rewraps.
+  overflowX: 'clip',
+  transition: `flex-basis ${dockedOpen} ${panel.ease}`,
+  '@starting-style': { flexBasis: 0 },
+  // A closed rail leaves the page the whole row.
+  selectors: { '&:empty': { display: 'none' } },
+  '@media': { '(prefers-reduced-motion: reduce)': { transition: 'none' } },
+})
+
+// The portal's own element passes the dock's height on to the popup, at the rail's full
+// width. The dock's row is the container, so the width matches the dock's settled share.
+globalStyle(`${dockActive} > *`, {
+  display: 'flex',
+  flexDirection: 'column',
+  flex: '1 1 auto',
+  minHeight: 0,
+  width: railWidth,
+  marginInlineStart: dockGap,
+})
+globalStyle(`:has(> ${dockActive})`, { containerType: 'inline-size' })
+
+// In the page's flow, beside the content it pushes aside. It sets no stacking order,
+// so a dialog opened from it still draws above the page. It keeps the raised surface,
+// which its pinned headers and fades share, inside an outline instead of a shadow.
+// The dock's width slides it in and out, so it does not travel itself; its blur keeps
+// the close running until the dock has narrowed.
+export const dockedPopup = style({
+  borderColor: theme.stroke.secondary,
+  position: 'relative',
+  inset: 'auto',
+  flex: '1 1 auto',
+  width: 'auto',
+  maxWidth: 'none',
+  height: 'auto',
+  maxHeight: 'none',
+  minHeight: 0,
+  borderRadius: 10,
+  boxShadow: 'none',
+  zIndex: 'auto',
+  vars: { [drawerTravel]: '0px', [drawerOpen]: dockedOpen, [drawerClose]: dockedClose },
+})
+
+// Closing, the dock narrows back to nothing over the popup's own close.
+globalStyle(`${dockActive}:has(${dockedPopup}[data-ending-style])`, {
+  flexBasis: 0,
+  transition: `flex-basis ${dockedClose} ${panel.ease}`,
+  '@media': { '(prefers-reduced-motion: reduce)': { transition: 'none' } },
+})
 
 export const header = style({
   position: 'sticky',
@@ -172,6 +254,9 @@ export const pinnedBottom = style({
   bottom: `calc(-1 * ${padding})`,
   vars: { [stickyBottom]: `calc(-1 * ${padding})` },
 })
+
+// Content that reaches through the popup's side padding to its edges, such as a split's divider.
+export const flushInline = style({ marginInline: `calc(-1 * ${padding})` })
 
 // The close control placed in the flow of a header the content owns.
 export const closeInline = style({ position: 'static', flexShrink: 0 })

@@ -18,10 +18,10 @@ export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/man
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
     const [page, { workspace }] = await Promise.all([
-      loadActivity(request, management(request, context), {
+      loadActivity(request, management(context), {
         scope: { workspace: workspaceName(params.workspace) },
       }),
-      authorizedWorkspace(request, context, params.workspace),
+      authorizedWorkspace(context, params.workspace),
     ])
     return data({ ...page, workspace }, { headers: privateHeaders })
   } catch (error) {

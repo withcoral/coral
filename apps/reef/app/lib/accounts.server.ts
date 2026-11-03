@@ -137,7 +137,7 @@ export async function loadAuthorization(
   context: Readonly<RouterContextProvider>,
   params: { workspace: string; authorization: string },
 ): Promise<AuthorizationView> {
-  const api = management(request, context)
+  const api = management(context)
   const value = await api.accounts.getProviderAccountAuthorization({
     name: authorizationName(params),
   })
@@ -256,12 +256,12 @@ async function accountsContext(
   context: Readonly<RouterContextProvider>,
   params: { workspace: string; provider: string },
 ) {
-  const api = management(request, context)
+  const api = management(context)
   const query = new URL(request.url).searchParams
   const scopeQuery = query.get('scope')
   if (scopeQuery && !['user', 'shared', 'agent'].includes(scopeQuery))
     throw new Response('Not found', { status: 404, headers: accountHeaders })
-  const { workspace: ws } = await authorizedWorkspace(request, context, params.workspace)
+  const { workspace: ws } = await authorizedWorkspace(context, params.workspace)
   const provider = await api.providers.getProvider({ name: providerName(ws.name, params.provider) })
   const route = routeChoice(provider.credentialRoute)
   if (!route)
@@ -298,11 +298,10 @@ function agentAccountPath(provider: string, agent: string) {
 
 /** One complete snapshot; no client-side joins or repeated paginated scans. */
 export async function loadAgentProviders(
-  request: Request,
   context: Readonly<RouterContextProvider>,
   agent: string,
 ): Promise<AgentProviderView[]> {
-  const snapshot = await management(request, context).accounts.listAgentProviders({ parent: agent })
+  const snapshot = await management(context).accounts.listAgentProviders({ parent: agent })
   return snapshot.providers.map((inspection) => {
     const provider = inspection.provider
     if (!provider)
@@ -449,11 +448,10 @@ export function userAccountPath(provider: string, returnTo?: string | null) {
 
 /** Your own accounts, one row per separate-account provider, from one snapshot. */
 export async function loadUserAccounts(
-  request: Request,
   context: Readonly<RouterContextProvider>,
   params: { workspace: string },
 ): Promise<UserAccountsView> {
-  const { workspace, api } = await authorizedWorkspace(request, context, params.workspace)
+  const { workspace, api } = await authorizedWorkspace(context, params.workspace)
   const snapshot = await api.accounts.listUserAccounts({ parent: workspace.name })
   const path = `${workspace.path}/accounts`
   return {
@@ -482,12 +480,11 @@ export async function loadUserAccounts(
   }
 }
 export async function userAccountsAction(
-  request: Request,
   context: Readonly<RouterContextProvider>,
   params: { workspace: string },
   form: FormData,
 ) {
-  const { workspace, api } = await authorizedWorkspace(request, context, params.workspace)
+  const { workspace, api } = await authorizedWorkspace(context, params.workspace)
   if (field(form, 'intent') !== 'disconnect')
     throw new Response('Invalid action', { status: 400, headers: accountHeaders })
   const provider = field(form, 'provider')
@@ -513,7 +510,7 @@ async function userAccountContext(
   context: Readonly<RouterContextProvider>,
   params: { workspace: string; provider: string },
 ) {
-  const { workspace, api } = await authorizedWorkspace(request, context, params.workspace)
+  const { workspace, api } = await authorizedWorkspace(context, params.workspace)
   const provider = await api.providers.getProvider({
     name: providerName(workspace.name, params.provider),
   })
@@ -716,7 +713,7 @@ export async function authorizationAction(
   params: { workspace: string; authorization: string },
   form: FormData,
 ): Promise<Response> {
-  const api = management(request, context)
+  const api = management(context)
   const name = authorizationName(params)
   const path = authorizationPath(name, new URL(request.url).searchParams.get('returnTo'))
   try {

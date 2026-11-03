@@ -23,8 +23,8 @@
 //! - [`exact_tool_rules_in_transaction`] reads every exact rule of one
 //!   Workspace, so discovery decides all its Tools from one read.
 //! - [`invocation_decision_in_transaction`] rechecks an exact retained decision
-//!   inside Run-owned admission and Dispatch Fence transactions, holding the
-//!   explicit rule shared when asked to.
+//!   inside Run-owned admission and Policy Enforcement Point transactions,
+//!   holding the explicit rule shared when asked to.
 //! - [`ToolPolicyModule::list_lifecycle_events`] exposes safe policy-domain
 //!   Administrative Lifecycle Events.
 //!
@@ -474,12 +474,12 @@ pub async fn exact_tool_rules_in_transaction(
 /// the explicit rule as `lock` says.
 ///
 /// The caller owns the transaction that either admits an Invocation or runs
-/// its Dispatch Fence and supplies declared hints and the HTTP method from the
-/// exact retained Provider Generation. A shared hold on the explicit rule
-/// lets concurrent decisions read side by side while a policy change, which
-/// writes the rule, waits for them, on both supported persistence Adapters;
-/// a read snapshot holds nothing and only decides whether a held check is
-/// needed.
+/// its Policy Enforcement Point and supplies declared hints and the HTTP method
+/// from the exact retained Provider Generation. A shared hold on the explicit
+/// rule lets concurrent decisions read side by side while a policy change,
+/// which writes the rule, waits for them, on both supported persistence
+/// Adapters; a read snapshot holds nothing and only decides whether a held
+/// check is needed.
 ///
 /// # Errors
 ///
@@ -513,14 +513,20 @@ fn resolved_decision(
     )
 }
 
-/// A Tool runs without approval when it declares it changes nothing or
-/// its HTTP method is safe. An undeclared hint is not evidence, so any other
-/// Tool takes the cautious default.
+/// Whether a Tool only reads provider state: it declares it changes
+/// nothing, or its HTTP method is safe. An undeclared hint is not evidence.
+#[must_use]
+pub fn reads_only(hints: ToolHints, http_method: Option<HttpMethod>) -> bool {
+    hints.declares_read_only() || http_method.is_some_and(HttpMethod::is_safe)
+}
+
+/// A Tool runs without approval when it only reads. Any other Tool takes
+/// the cautious default.
 pub(crate) fn default_access_state(
     hints: ToolHints,
     http_method: Option<HttpMethod>,
 ) -> ToolAccessState {
-    if hints.declares_read_only() || http_method.is_some_and(HttpMethod::is_safe) {
+    if reads_only(hints, http_method) {
         ToolAccessState::Enabled
     } else {
         ToolAccessState::ApprovalRequired

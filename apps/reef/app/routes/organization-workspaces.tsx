@@ -20,7 +20,7 @@ export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/man
 /** Only an organization owner can list every workspace; Coral denies anyone else. */
 export async function loader({ request, context }: Route.LoaderArgs) {
   try {
-    const api = management(request, context)
+    const api = management(context)
     const [result, current, candidates] = await Promise.all([
       api.organizationWorkspaces.listOrganizationWorkspaces({
         pageToken: new URL(request.url).searchParams.get('page') ?? '',
@@ -60,7 +60,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (!Object.hasOwn(done, intent)) throw new Response('Invalid action', { status: 400 })
   const name = field(form, 'name')
   if (!/^workspaces\/[^/]+$/.test(name)) throw new Response('Invalid target', { status: 400 })
-  const api = management(request, context).organizationWorkspaces
+  const api = management(context).organizationWorkspaces
   try {
     if (intent === 'assignOwner') {
       const fields = form.getAll('owner')

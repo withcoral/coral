@@ -11,6 +11,7 @@ use crate::{
     CoralFailure, Error, InvocationId, InvocationResultKind, approval, invocation_repository,
 };
 use coral_db::Transaction;
+use coral_telemetry::safe;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum InvocationState {
@@ -135,8 +136,8 @@ pub(crate) async fn finish_approval_failure(
 ) -> Result<Option<OwnedEvent>, Error> {
     if !invocation_repository::end_pending_with_failure(tx, run, invocation, failure, now).await? {
         tracing::warn!(
-            run_id = %run.id,
-            invocation_id = %invocation,
+            coral.run.id = safe::id(&run.held_id()),
+            coral.invocation.id = safe::id(&invocation),
             "approval decision found its Invocation no longer pending"
         );
         return Ok(None);

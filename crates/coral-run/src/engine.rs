@@ -26,11 +26,13 @@
 mod host;
 pub(crate) use host::execute;
 
+use coral_telemetry::metric::CompilerRole;
+
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
-use coral_v8::format_compiler_error;
+use coral_v8::CompileFailure;
 
 use crate::execution::ExecutionStop;
 use crate::{
@@ -50,7 +52,7 @@ pub(crate) trait ProgramEngine: Send + Sync {
         &self,
         _deadline: Instant,
         _source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, String> {
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         Ok(Vec::new())
     }
 
@@ -59,22 +61,24 @@ pub(crate) trait ProgramEngine: Send + Sync {
         _deadline: Instant,
         _path: &SavedFunctionPath,
         _source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, String> {
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         Ok(Vec::new())
     }
 
-    fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, String>;
+    fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure>;
 
     fn compile_with_saved_functions(
         &self,
         deadline: Instant,
         source: &str,
         linked: &[SavedFunctionSelection],
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         if linked.is_empty() {
             self.compile(deadline, source)
         } else {
-            Err("scripted Program compiler does not support Saved Functions".to_string())
+            Err(CompileFailure::Rejected(
+                "scripted Program compiler does not support Saved Functions".to_string(),
+            ))
         }
     }
 
@@ -110,7 +114,7 @@ pub(crate) struct V8ProgramEngine {
 impl V8ProgramEngine {
     pub(crate) fn new(isolate_limits: coral_v8::IsolateLimits) -> Result<Self, Error> {
         Ok(Self {
-            compiler: coral_v8::ProgramCompiler::new(isolate_limits)
+            compiler: coral_v8::ProgramCompiler::new(isolate_limits, CompilerRole::Run)
                 .map_err(|error| Error::ProgramRuntimeUnavailable(error.to_string()))?,
             executor: coral_v8::ProgramExecutor::new(isolate_limits),
         })
@@ -122,12 +126,13 @@ impl ProgramEngine for V8ProgramEngine {
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, String> {
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         let source_name = "Program";
-        self.compiler
+        let references = self
+            .compiler
             .saved_function_paths(deadline, source)
-            .map_err(|error| format_compiler_error_for_source(error, source_name))
-            .and_then(|references| parse_saved_function_references(references, source_name))
+            .map_err(|error| compile_failure_for_source(error, source_name))?;
+        Ok(parse_saved_function_references(references, source_name)?)
     }
 
     fn saved_function_dependency_references(
@@ -135,19 +140,17 @@ impl ProgramEngine for V8ProgramEngine {
         deadline: Instant,
         path: &SavedFunctionPath,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, String> {
+    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
         let source_name = format!("Saved Function coral.functions.{}", path.as_str());
-        self.compiler
+        let references = self
+            .compiler
             .saved_function_dependency_paths(deadline, source)
-            .map_err(|error| format_compiler_error_for_source(error, &source_name))
-            .and_then(|references| parse_saved_function_references(references, &source_name))
+            .map_err(|error| compile_failure_for_source(error, &source_name))?;
+        Ok(parse_saved_function_references(references, &source_name)?)
     }
 
-    fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, String> {
-        let compiled = self
-            .compiler
-            .compile(deadline, source)
-            .map_err(format_compiler_error)?;
+    fn compile(&self, deadline: Instant, source: &str) -> Result<ProgramPackage, CompileFailure> {
+        let compiled = self.compiler.compile(deadline, source)?;
         package_from_compiled(&compiled)
     }
 
@@ -156,7 +159,7 @@ impl ProgramEngine for V8ProgramEngine {
         deadline: Instant,
         source: &str,
         linked: &[SavedFunctionSelection],
-    ) -> Result<ProgramPackage, String> {
+    ) -> Result<ProgramPackage, CompileFailure> {
         if linked.is_empty() {
             return self.compile(deadline, source);
         }
@@ -171,8 +174,7 @@ impl ProgramEngine for V8ProgramEngine {
             .collect::<Vec<_>>();
         let compiled = self
             .compiler
-            .compile_with_saved_functions(deadline, source, &sources)
-            .map_err(format_compiler_error)?;
+            .compile_with_saved_functions(deadline, source, &sources)?;
         package_from_compiled(&compiled)
     }
 
@@ -192,10 +194,15 @@ impl ProgramEngine for V8ProgramEngine {
                 None => ExecutionCompletion::Succeeded(FinalValue::Absent),
                 Some(value) => match ProgramValue::with_limits(value, limits) {
                     Ok(value) => ExecutionCompletion::Succeeded(FinalValue::Present(value)),
-                    Err(error) => ExecutionCompletion::Failed(RunFailure::new(
-                        RunFailureCode::InvalidProgramValue,
-                        error.to_string(),
-                    )),
+                    Err(error) => {
+                        coral_telemetry::metric::output_rejected(
+                            coral_telemetry::metric::OutputKind::FinalValue,
+                        );
+                        ExecutionCompletion::Failed(RunFailure::new(
+                            RunFailureCode::InvalidProgramValue,
+                            error.to_string(),
+                        ))
+                    }
                 },
             },
             Err(coral_v8::Error::MemoryLimitExceeded) => ExecutionCompletion::MemoryLimitExceeded,
@@ -250,20 +257,22 @@ fn parse_saved_function_references(
         .collect()
 }
 
-fn format_compiler_error_for_source(error: coral_v8::Error, source_name: &str) -> String {
+fn compile_failure_for_source(error: coral_v8::Error, source_name: &str) -> CompileFailure {
     match error {
         coral_v8::Error::InvalidSavedFunctionReference {
             message,
             line,
             column,
-        } => format!("{source_name}:{line}:{column}: {message}"),
-        other => format_compiler_error(other),
+        } => CompileFailure::Rejected(format!("{source_name}:{line}:{column}: {message}")),
+        other => other.into(),
     }
 }
 
-fn package_from_compiled(compiled: &coral_v8::CompiledProgram) -> Result<ProgramPackage, String> {
+fn package_from_compiled(
+    compiled: &coral_v8::CompiledProgram,
+) -> Result<ProgramPackage, CompileFailure> {
     let diagnostics_json = serde_json::to_string(compiled.diagnostics())
-        .map_err(|error| format!("compiler diagnostics could not be encoded: {error}"))?;
+        .map_err(|_error| CompileFailure::Failed("compiler_diagnostics_encoding"))?;
     let profile = compiled.profile();
     Ok(ProgramPackage::new(
         compiled.javascript().to_string(),

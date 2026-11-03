@@ -1237,8 +1237,8 @@ pub(super) async fn provider_by_call_root_in_transaction(
 }
 
 /// Reads one Provider of the Workspace with its active Generation, holding
-/// its row as `lock` says: a shared hold lets concurrent Dispatch Fences read
-/// it side by side while a Provider change waits for them.
+/// its row as `lock` says: a shared hold lets concurrent enforcement checks
+/// read it side by side while a Provider change waits for them.
 pub(super) async fn provider_for_workspace_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,

@@ -1,7 +1,7 @@
 //! Safe discovery responses, shared by current callers and historical snapshots.
 use crate::{
-    ApprovalRequirement, AuthoringDescription, EntityKind, ExactAuthoringDescription,
-    RetrieverState, RetrieverStatus, SearchHit, SearchPage,
+    ApprovalRequirement, AuthoringDescription, ExactAuthoringDescription, RetrieverState,
+    RetrieverStatus, SearchHit, SearchPage,
 };
 use coral_catalog::ToolHints;
 use serde_json::{Map, Value, json};
@@ -104,7 +104,7 @@ fn matched_inputs(hit: &SearchHit) -> Vec<&str> {
 fn retriever_status(status: &RetrieverStatus) -> Value {
     let coverage = status.coverage();
     json!({
-        "retriever": entity_kind(status.retriever()),
+        "retriever": status.retriever().as_str(),
         "state": match status.state() {
             RetrieverState::ResultsFound => "results_found",
             RetrieverState::Empty => "empty",
@@ -142,7 +142,7 @@ pub fn exact_description(description: &ExactAuthoringDescription) -> Value {
 
 fn authoring(description: &AuthoringDescription) -> Value {
     let mut fields = Map::from_iter([
-        ("kind".to_string(), json!(entity_kind(description.kind()))),
+        ("kind".to_string(), json!(description.kind().as_str())),
         (
             "call_path".to_string(),
             json!(description.call_path().as_str()),
@@ -179,13 +179,6 @@ fn authoring(description: &AuthoringDescription) -> Value {
         ]);
     }
     Value::Object(fields)
-}
-
-fn entity_kind(kind: EntityKind) -> &'static str {
-    match kind {
-        EntityKind::ProviderTool => "provider_tool",
-        EntityKind::SavedFunction => "saved_function",
-    }
 }
 
 /// Only the hints the Provider declared. An absent key is undeclared, not a

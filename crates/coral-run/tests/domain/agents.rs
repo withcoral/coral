@@ -355,7 +355,7 @@ async fn agent_lifecycle_loss_after_acceptance_fails_without_executing_program()
 #[tokio::test]
 async fn agent_lifecycle_loss_before_dispatch_blocks_send_but_allows_secret_free_computation() {
     for loss in AgentLoss::ALL {
-        let (gate, release) = FenceGate::blocking();
+        let (gate, release) = EnforcementGate::blocking();
         let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
         let fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
@@ -385,7 +385,7 @@ async fn agent_lifecycle_loss_before_dispatch_blocks_send_but_allows_secret_free
             accepted.run_id(),
         )
         .await;
-        gate.fences.assert_no_dispatch();
+        gate.enforcement_checks.assert_no_dispatch();
         assert_eq!(upstream.sends.load(Ordering::SeqCst), 0, "{loss:?}");
         assert_eq!(
             *gate.failure_code.lock().unwrap(),
@@ -485,7 +485,7 @@ async fn agent_expiry_during_final_checks_blocks_dispatch_but_not_computation() 
         upstream.clone(),
     )
     .await;
-    let observer = AdvanceFenceTime::new(fixture.clock.clone(), 1_000_000);
+    let observer = AdvanceEnforcementTime::new(fixture.clock.clone(), 1_000_000);
     fixture.runs.invocation_observer = observer.clone();
     let tool = fixture.user_tool("user:owner", "Final expiry race").await;
     let (agent, _) = agent_scope(&fixture, &tool.principal, &tool.workspace_id).await;
@@ -498,7 +498,7 @@ async fn agent_expiry_during_final_checks_blocks_dispatch_but_not_computation() 
         run.run_id(),
     )
     .await;
-    observer.fences.assert_no_dispatch();
+    observer.enforcement_checks.assert_no_dispatch();
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
     assert!(
         matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded {
@@ -514,7 +514,7 @@ async fn agent_expiry_during_final_checks_blocks_dispatch_but_not_computation() 
 }
 
 #[tokio::test]
-async fn post_fence_agent_loss_commits_during_upstream_send_and_blocks_only_later_dispatch() {
+async fn post_enforcement_agent_loss_commits_during_upstream_send_and_blocks_only_later_dispatch() {
     for loss in AgentLoss::ALL {
         let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
             200,
@@ -525,7 +525,9 @@ async fn post_fence_agent_loss_commits_during_upstream_send_and_blocks_only_late
             upstream.clone(),
         )
         .await;
-        let tool = fixture.user_tool("user:owner", "Post-fence race").await;
+        let tool = fixture
+            .user_tool("user:owner", "Post-enforcement race")
+            .await;
         let (agent, registration) =
             agent_scope(&fixture, &tool.principal, &tool.workspace_id).await;
         let accepted = fixture.runs.start(&agent, &tool.workspace_id, submission("await coral.providers.weather.getForecast(); try { await coral.providers.weather.getForecast(); } catch (error) { return error.code; } throw new Error('second dispatch should fail');",
@@ -574,7 +576,7 @@ async fn post_fence_agent_loss_commits_during_upstream_send_and_blocks_only_late
 
 #[tokio::test]
 async fn rotation_during_a_pending_invocation_changes_neither_authority_nor_history() {
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),

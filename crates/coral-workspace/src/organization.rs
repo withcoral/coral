@@ -3,9 +3,10 @@
 //! Login provisioning is host-only: the authentication Adapter
 //! selects Member or the explicitly configured bootstrap Owner. Administration
 //! requires current Owner authority and an exact revision. Both use the same
-//! record read by Workspace authorization and held by the dispatch fence.
-//! Removal retains revision continuity; login can rejoin only removed Membership.
-//! No protocol work, remote synchronization, or destructive cleanup lives here.
+//! record read by Workspace authorization and held by the Policy Enforcement
+//! Point. Removal retains revision continuity; login can rejoin only removed
+//! Membership. No protocol work, remote synchronization, or destructive cleanup
+//! lives here.
 
 #[path = "organization_repository.rs"]
 mod repository;

@@ -376,8 +376,10 @@ export const groupHeading = recipe({
     overflow: 'hidden',
     position: 'sticky',
     top: `calc(${tableVars.headingHeight.value} + var(${GROUP_DEPTH_PROPERTY}, 0) * ${tableVars.groupHeadingHeight.value})`,
+    // Rows scroll under a pinned heading, so the hover colour that a clickable
+    // heading takes from `row` is its opaque fill, not the translucent row tint.
+    vars: { [tableVars.rowHoverBackground.ref]: theme.surface.mainContent },
     selectors: {
-      [`${group} > &:hover`]: { backgroundColor: theme.surface.mainContent },
       // A collapsed heading is its group's last row. It keeps its border's
       // width, so its content does not move, and shows no line above the next.
       [`${group} > &:last-child`]: { borderBottom: '1px solid transparent' },

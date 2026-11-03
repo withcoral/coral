@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tracing::Instrument as _;
+use tracing::instrument::WithSubscriber as _;
 
 use crate::execution::ExecutionStop;
 use crate::invocation::{InvocationHostError, ToolInvoker};
@@ -31,9 +32,19 @@ pub(crate) async fn execute(
         invoker,
         output,
     });
-    tokio::task::spawn_blocking(move || engine.execute(package, host, stop))
-        .await
-        .unwrap_or(ExecutionCompletion::ProgramHostTerminated)
+    // The Program's thread records its telemetry where this task does. Where
+    // this task has no dispatcher, it is left to find the global one, which
+    // may be set by then.
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
+    tokio::task::spawn_blocking(move || {
+        if dispatch.is::<tracing::subscriber::NoSubscriber>() {
+            engine.execute(package, host, stop)
+        } else {
+            tracing::dispatcher::with_default(&dispatch, || engine.execute(package, host, stop))
+        }
+    })
+    .await
+    .unwrap_or(ExecutionCompletion::ProgramHostTerminated)
 }
 
 struct RunProgramHost {
@@ -142,7 +153,9 @@ impl coral_v8::ProgramHost for RunProgramHost {
                         }
                     })
             }
-            .instrument(span),
+            .instrument(span)
+            // Records its telemetry where the Program's thread does.
+            .with_current_subscriber(),
         );
         Box::pin(async move {
             invocation

@@ -81,6 +81,13 @@ export function ActionReviewSession({
       (current.get('request') ?? request?.name ?? null) !== next.get('request')
     )
   })
+  // A navigation you discarded the comment for. The comment stays until it lands, so
+  // nothing that waits on it, such as live mode, can start a navigation that cancels it.
+  const [discarding, setDiscarding] = useState(false)
+  if (discarding && blocker.state === 'unblocked') {
+    setDiscarding(false)
+    update({ name: '', comment: '' })
+  }
   useBeforeUnload((event) => {
     if (dirty) {
       event.preventDefault()
@@ -114,7 +121,7 @@ export function ActionReviewSession({
                 variant="destructive"
                 onClick={() => {
                   if (blocker.state === 'blocked') {
-                    update({ name: '', comment: '' })
+                    setDiscarding(true)
                     blocker.proceed()
                   }
                 }}

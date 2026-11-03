@@ -147,23 +147,23 @@ impl ExecutionObserver for InboxProbe {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct FenceObservation {
+pub(crate) struct EnforcementObservation {
     pub(crate) permit_returned: bool,
     pub(crate) durable_dispatch_start: bool,
 }
 
 #[derive(Default)]
-pub(crate) struct ObservedFences(pub(crate) Mutex<Vec<FenceObservation>>);
+pub(crate) struct ObservedEnforcementChecks(pub(crate) Mutex<Vec<EnforcementObservation>>);
 
-impl ObservedFences {
+impl ObservedEnforcementChecks {
     pub(crate) fn record(&self, permit_returned: bool, durable_dispatch_start: bool) {
-        self.0.lock().unwrap().push(FenceObservation {
+        self.0.lock().unwrap().push(EnforcementObservation {
             permit_returned,
             durable_dispatch_start,
         });
     }
 
-    /// Fence attempts that ended, permitted or not.
+    /// Enforcement checks that ended, permitted or not.
     pub(crate) fn len(&self) -> usize {
         self.0.lock().unwrap().len()
     }
@@ -189,55 +189,55 @@ impl ObservedFences {
     }
 }
 
-pub(crate) struct AdvanceFenceTime {
+pub(crate) struct AdvanceEnforcementTime {
     pub(crate) clock: Arc<TestClock>,
     pub(crate) now: i64,
-    pub(crate) fences: ObservedFences,
+    pub(crate) enforcement_checks: ObservedEnforcementChecks,
 }
 
-impl AdvanceFenceTime {
+impl AdvanceEnforcementTime {
     pub(crate) fn new(clock: Arc<TestClock>, now: i64) -> Arc<Self> {
         Arc::new(Self {
             clock,
             now,
-            fences: ObservedFences::default(),
+            enforcement_checks: ObservedEnforcementChecks::default(),
         })
     }
 }
 
 #[async_trait]
-impl InvocationObserver for AdvanceFenceTime {
-    async fn fence_checks_loaded(&self) {
+impl InvocationObserver for AdvanceEnforcementTime {
+    async fn enforcement_checks_loaded(&self) {
         self.clock.next.store(self.now, Ordering::SeqCst);
     }
 
-    fn fence_attempt_finished(&self, permit: bool, durable_start: bool) {
-        self.fences.record(permit, durable_start);
+    fn enforcement_check_finished(&self, permit: bool, durable_start: bool) {
+        self.enforcement_checks.record(permit, durable_start);
     }
 }
 
 /// Holds a Run at its approval wait until the gate opens.
-pub(crate) struct ApprovalWaitGate(pub(crate) Arc<FenceGate>);
+pub(crate) struct ApprovalWaitGate(pub(crate) Arc<EnforcementGate>);
 
 #[async_trait]
 impl InvocationObserver for ApprovalWaitGate {
     async fn approval_waiting(&self) -> Result<(), Error> {
-        self.0.before_fence().await
+        self.0.before_enforcement().await
     }
 }
 
-pub(crate) struct FenceGate {
-    pub(crate) fences: ObservedFences,
+pub(crate) struct EnforcementGate {
+    pub(crate) enforcement_checks: ObservedEnforcementChecks,
     gate: BlockingGate,
     pub(crate) failure_code: Mutex<Option<&'static str>>,
 }
 
-impl FenceGate {
+impl EnforcementGate {
     pub(crate) fn blocking() -> (Arc<Self>, oneshot::Sender<()>) {
         let (gate, release) = BlockingGate::new();
         (
             Arc::new(Self {
-                fences: ObservedFences::default(),
+                enforcement_checks: ObservedEnforcementChecks::default(),
                 gate,
                 failure_code: Mutex::new(None),
             }),
@@ -270,12 +270,12 @@ impl InvocationObserver for TerminalCommitFault {
 }
 
 #[async_trait]
-impl InvocationObserver for FenceGate {
-    fn fence_attempt_finished(&self, permit: bool, durable_start: bool) {
-        self.fences.record(permit, durable_start);
+impl InvocationObserver for EnforcementGate {
+    fn enforcement_check_finished(&self, permit: bool, durable_start: bool) {
+        self.enforcement_checks.record(permit, durable_start);
     }
 
-    async fn before_fence(&self) -> Result<(), Error> {
+    async fn before_enforcement(&self) -> Result<(), Error> {
         // Unwinding drops the sender. Exit the blocking Program worker without
         // further database work, even when the test runtime is shutting down.
         self.gate
@@ -292,50 +292,53 @@ impl InvocationObserver for FenceGate {
     }
 }
 
-/// Parks every Invocation that reaches the fence until released, so a batch
-/// of ready Invocations asks the owner for its fence together; and parks
-/// every fence again after it has read its facts under their holds, so a
-/// test can see what else proceeds while those holds are in place. Each
-/// park is released on its own; a latch that holds neither only records
-/// each Invocation's fence attempt.
-pub(crate) struct FenceLatch {
-    pub(crate) fences: ObservedFences,
-    /// Invocations that reached the fence.
+/// Parks every Invocation that reaches the enforcement point until released, so
+/// a batch of ready Invocations asks the owner for its enforcement point
+/// together; and parks every enforcement check again after it has read its
+/// facts under their holds, so a test can see what else proceeds while those
+/// holds are in place. Each park is released on its own; a latch that holds
+/// neither only records each Invocation's enforcement check.
+pub(crate) struct EnforcementLatch {
+    pub(crate) enforcement_checks: ObservedEnforcementChecks,
+    /// Invocations that reached the enforcement point.
     pub(crate) arrived: AtomicUsize,
-    /// Fences that have read their facts and hold them.
+    /// Enforcement checks that have read their facts and hold them.
     pub(crate) loaded: AtomicUsize,
     arrivals: watch::Sender<bool>,
-    /// How many loaded fences may go on, in the order they loaded.
+    /// How many loaded enforcement checks may go on, in the order they loaded.
     loaded_permits: watch::Sender<usize>,
     failures: watch::Sender<bool>,
 }
 
-impl FenceLatch {
-    /// Holds Invocations before their fence; fences pass once loaded.
+impl EnforcementLatch {
+    /// Holds Invocations before their enforcement point; enforcement checks
+    /// pass once loaded.
     pub(crate) fn holding_arrivals() -> Arc<Self> {
         Self::new(true, false, false)
     }
 
-    /// Holds Invocations before their fence, and fences once loaded.
+    /// Holds Invocations before their enforcement point, and enforcement checks
+    /// once loaded.
     pub(crate) fn holding_both() -> Arc<Self> {
         Self::new(true, true, false)
     }
 
-    /// Holds Invocations before their fence, and the commit of every known
-    /// failure, so a fence's own chunk can be observed alone.
+    /// Holds Invocations before their enforcement point, and the commit of
+    /// every known failure, so an enforcement check's own chunk can be observed
+    /// alone.
     pub(crate) fn holding_arrivals_and_failures() -> Arc<Self> {
         Self::new(true, false, true)
     }
 
-    /// Holds nothing: counts the Invocations that reach the fence and the
-    /// fence attempts that ended.
+    /// Holds nothing: counts the Invocations that reach the enforcement point
+    /// and the enforcement checks that ended.
     pub(crate) fn counting() -> Arc<Self> {
         Self::new(false, false, false)
     }
 
     fn new(hold_arrivals: bool, hold_loaded_facts: bool, hold_failures: bool) -> Arc<Self> {
         Arc::new(Self {
-            fences: ObservedFences::default(),
+            enforcement_checks: ObservedEnforcementChecks::default(),
             arrived: AtomicUsize::new(0),
             loaded: AtomicUsize::new(0),
             arrivals: watch::channel(!hold_arrivals).0,
@@ -349,17 +352,20 @@ impl FenceLatch {
         self.failures.send_replace(true);
     }
 
-    /// Lets every Invocation parked before its fence go on, and later ones pass.
+    /// Lets every Invocation parked before its enforcement point go on, and
+    /// later ones pass.
     pub(crate) fn release_arrivals(&self) {
         self.arrivals.send_replace(true);
     }
 
-    /// Lets every fence parked on its loaded facts go on, and later ones pass.
+    /// Lets every enforcement check parked on its loaded facts go on, and later
+    /// ones pass.
     pub(crate) fn release_loaded(&self) {
         self.loaded_permits.send_replace(usize::MAX);
     }
 
-    /// Lets the one fence that loaded its facts earliest and still parks go on.
+    /// Lets the one enforcement check that loaded its facts earliest and still
+    /// parks go on.
     pub(crate) fn release_one_loaded(&self) {
         self.loaded_permits.send_modify(|permits| *permits += 1);
     }
@@ -389,14 +395,14 @@ impl FenceLatch {
 }
 
 #[async_trait]
-impl InvocationObserver for FenceLatch {
-    async fn before_fence(&self) -> Result<(), Error> {
+impl InvocationObserver for EnforcementLatch {
+    async fn before_enforcement(&self) -> Result<(), Error> {
         self.arrived.fetch_add(1, Ordering::SeqCst);
         Self::park(&self.arrivals).await;
         Ok(())
     }
 
-    async fn fence_checks_loaded(&self) {
+    async fn enforcement_checks_loaded(&self) {
         let ordinal = self.loaded.fetch_add(1, Ordering::SeqCst) + 1;
         let mut permits = self.loaded_permits.subscribe();
         // A dropped sender never happens: the latch outlives the test.
@@ -408,18 +414,18 @@ impl InvocationObserver for FenceLatch {
         Ok(())
     }
 
-    fn fence_attempt_finished(&self, permit: bool, durable_start: bool) {
-        self.fences.record(permit, durable_start);
+    fn enforcement_check_finished(&self, permit: bool, durable_start: bool) {
+        self.enforcement_checks.record(permit, durable_start);
     }
 }
 
 /// Watches parked waits from both sides: counts the held rechecks, the
-/// times an Invocation parks, its Dispatch Fence attempts, and the owner's
+/// times an Invocation parks, its enforcement checks, and the owner's
 /// snapshot checks of its parked waits with what each found.
 pub(crate) struct WaitProbe {
     held: watch::Sender<usize>,
     parked: watch::Sender<usize>,
-    fences: ObservedFences,
+    enforcement_checks: ObservedEnforcementChecks,
     /// Each check of the parked waits: its kind, what it found, and when it
     /// finished.
     prechecks: Mutex<Vec<(crate::owner::Check, usize, tokio::time::Instant)>>,
@@ -430,7 +436,7 @@ impl WaitProbe {
         Arc::new(Self {
             held: watch::channel(0).0,
             parked: watch::channel(0).0,
-            fences: ObservedFences::default(),
+            enforcement_checks: ObservedEnforcementChecks::default(),
             prechecks: Mutex::new(Vec::new()),
         })
     }
@@ -444,9 +450,9 @@ impl WaitProbe {
         *self.parked.borrow()
     }
 
-    /// Dispatch Fence attempts that returned.
-    pub(crate) fn fences(&self) -> usize {
-        self.fences.len()
+    /// Enforcement checks that returned.
+    pub(crate) fn enforcement_checks(&self) -> usize {
+        self.enforcement_checks.len()
     }
 
     /// The owner's checks of its parked waits, in order, each with how many
@@ -493,8 +499,8 @@ impl InvocationObserver for WaitProbe {
         self.parked.send_modify(|parked| *parked += 1);
     }
 
-    fn fence_attempt_finished(&self, permit: bool, durable_start: bool) {
-        self.fences.record(permit, durable_start);
+    fn enforcement_check_finished(&self, permit: bool, durable_start: bool) {
+        self.enforcement_checks.record(permit, durable_start);
     }
 }
 

@@ -77,6 +77,19 @@ pub enum AuthorizationCodeError {
     Unavailable,
 }
 
+impl AuthorizationCodeError {
+    /// The error's stable kind, for an event's `error.type`: a bounded
+    /// code that never carries the error's text.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::EmptySecret { .. } => "empty_secret",
+            Self::ClockOutOfRange { .. } => "clock_out_of_range",
+            Self::Unavailable { .. } => "unavailable",
+        }
+    }
+}
+
 /// Deployment-level store of authorization codes awaiting redemption.
 #[derive(Clone)]
 pub struct AuthorizationCodes {

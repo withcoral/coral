@@ -35,7 +35,7 @@ const recording = () => data({ recording: true as const }, { status: 202, header
 export async function action({ request, context }: Route.ActionArgs) {
   const form = await mutationForm(request, context)
   try {
-    const api = management(request, context).activity
+    const api = management(context).activity
     const name = field(form, 'name')
     const intent = field(form, 'intent')
     if (intent === 'cancel') {
@@ -56,7 +56,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     }
     if (intent === 'decline_connection') {
       // Only the invoking User can decline; Coral conceals anyone else's request.
-      const result = await management(request, context).accounts.resolveAccountConnectionRequest({
+      const result = await management(context).accounts.resolveAccountConnectionRequest({
         name,
         decision: { case: 'decline', value: {} },
       })

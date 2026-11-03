@@ -1,11 +1,11 @@
-import { randomBytes } from 'node:crypto'
-
 import type { RequestAuth } from '@/auth/types'
 
 import { createClient } from '@connectrpc/connect'
 import { createGrpcTransport, Http2SessionManager } from '@connectrpc/connect-node'
 
 import { Health } from '@/generated/grpc/health/v1/health_pb'
+
+import { traceCoralCall } from '../../server-tracing.js'
 
 import type { CoralEndpointPolicy } from './coral-endpoint.server'
 
@@ -23,25 +23,19 @@ export function healthClient(endpoint: CoralEndpointPolicy) {
 
 /** Private first-party transport; used only by resource-specific server paths. */
 export function managementTransportForRequest(
-  request: Request,
   auth: RequestAuth,
   endpoint: CoralEndpointPolicy,
   defaultTimeoutMs = 10_000,
 ) {
   warnAuthenticatedCleartext(endpoint.authenticatedCleartextOrigin)
-  const incoming = request.headers.get('traceparent')
-  const traceparent =
-    incoming && /^00-[a-f0-9]{32}-[a-f0-9]{16}-0[01]$/.test(incoming)
-      ? incoming
-      : `00-${randomBytes(16).toString('hex')}-${randomBytes(8).toString('hex')}-01`
   return createGrpcTransport({
     baseUrl: endpoint.baseUrl,
     sessionManager: coralSessionManager(new URL(endpoint.baseUrl)),
     defaultTimeoutMs,
     interceptors: [
+      traceCoralCall,
       (next) => (call) => {
         call.header.set('coral-audience', 'reef')
-        call.header.set('traceparent', traceparent)
         if (auth.accessToken) call.header.set('authorization', `Bearer ${auth.accessToken}`)
         return next(call)
       },

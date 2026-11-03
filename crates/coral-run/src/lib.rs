@@ -7,9 +7,9 @@
 //! `run.started` and the Run's worker claim, and gives every launched Run one
 //! Run Owner (ADR 0018): the in-process actor that alone appends the Run
 //! Ledger on every path the Program takes, in chunks, and runs the Run-bound
-//! Tool Invocation and dispatch-fence choreography inside its commits. A
-//! Run accepted in a caller's transaction and never launched keeps its claim
-//! until the expired-lease sweep ends it.
+//! Tool Invocation and Policy Enforcement Point choreography inside its
+//! commits. A Run accepted in a caller's transaction and never launched keeps
+//! its claim until the expired-lease sweep ends it.
 //!
 //! # Interface
 //!
@@ -18,7 +18,8 @@
 //! - [`RunModule::prepare`], [`RunModule::accept_in_transaction`], and
 //!   [`RunModule::launch`] expose the same admission and execution behavior to
 //!   an upper-level transaction owner. Staged acceptance is not proof of commit;
-//!   launch reads durable evidence and retains normal worker and authority fences.
+//!   launch reads durable evidence and keeps the normal worker claim and Policy
+//!   Enforcement Point checks.
 //! - [`RunModule::observe`] replays bounded authored Emissions/Logs with current
 //!   Principal-filtered required actions and terminal data on the final output page.
 //!   Bounded waiting ignores internal lifecycle records. Initial observation batches
@@ -81,19 +82,20 @@
 //! renews the lease. Above the Applied cap on unrecorded output the Program
 //! waits for the chunk. Emissions and Logs remain observable after a later
 //! failure. Invocation admission retains its Provider target, arguments,
-//! child record, and `invocation.started` in one chunk. The Dispatch Fence is
-//! one batched check per chunk commit: inside the chunk's transaction it
-//! reads the Workspace, Agent/Registration, Provider, policy and Account
-//! facts the chunk's ready Invocations share once, holding their rows shared
-//! so fences of other Runs read beside it and an authority writer waits for
-//! it, decides each Invocation in memory against those facts, the Run row as
-//! the chunk read it and the approval its gate recorded, at one clock sample after
-//! the last read, and records every permitted dispatch start in the same
-//! commit; it reads the retained Tool by its Generation id and never
+//! child record, and `invocation.started` in one chunk. The Policy Enforcement
+//! Point is one batched check per chunk commit: inside the chunk's transaction
+//! it reads the Workspace, Agent/Registration, Provider, policy and Account
+//! facts the chunk's ready Invocations share once, holding their rows shared so
+//! enforcement checks of other Runs read beside it and an authority writer
+//! waits for it, decides each Invocation in memory against those facts, the Run
+//! row as the chunk read it and the approval its gate recorded, at one clock
+//! sample after the last read, and records every permitted dispatch start in
+//! the same commit; it reads the retained Tool by its Generation id and never
 //! the Account's material. Decryption and the upstream send run outside
 //! every lock, after the pre-send check; a stop that reaches the owner first
-//! ends a fenced Invocation as `run_terminated` instead of sending, and a
-//! fence not yet committed answers terminated at once. Missing User caller Accounts attach to durable shared connection
+//! ends a permitted Invocation as `run_terminated` instead of sending, and an
+//! enforcement check not yet committed answers terminated at once. Missing
+//! User caller Accounts attach to durable shared connection
 //! requests; each Invocation keeps its Run deadline and detaches on selection
 //! or terminal cleanup. Approval is requested only after Account selection and
 //! before credential resolution. Its first decision and safe lifecycle
@@ -138,10 +140,10 @@ pub use admission::{PreparedRun, StagedRun};
 pub mod approval;
 mod approval_repository;
 mod builtin;
+mod enforcement;
 mod engine;
 mod error;
 mod execution;
-mod fence;
 mod history;
 mod human_interface;
 pub use history::{InvocationStatus, InvocationSummary, RunSummary};

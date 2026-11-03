@@ -291,3 +291,22 @@ pub enum ClientMetadataError {
     #[error("OAuth client metadata document is not supported")]
     InvalidMetadata,
 }
+
+impl ClientMetadataError {
+    /// The error's stable kind, for an event's `error.type`: a bounded
+    /// code that never carries the error's text.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidClientId { .. } => "invalid_client_id",
+            Self::InvalidConfiguration { .. } => "invalid_configuration",
+            Self::ClientBuild { .. } => "client_build",
+            Self::Fetch { .. } => "fetch",
+            Self::Redirect { .. } => "redirect",
+            Self::HttpStatus { .. } => "http_status",
+            Self::BodyTooLarge { .. } => "body_too_large",
+            Self::InvalidJson { .. } => "invalid_json",
+            Self::InvalidMetadata { .. } => "invalid_metadata",
+        }
+    }
+}

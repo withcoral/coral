@@ -585,6 +585,38 @@ pub(crate) async fn list_every_entry_in_transaction(
         .collect()
 }
 
+pub(crate) async fn index_revisions(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<crate::SavedFunctionIndexRevision>, Error> {
+    let rows: Vec<(String, String, i64)> = transaction
+        .fetch_all(
+            Query::select()
+                .columns([
+                    SavedFunctionRecords::Id,
+                    SavedFunctionRecords::WorkspaceId,
+                    SavedFunctionRecords::DefinitionRevision,
+                ])
+                .from(SavedFunctionRecords::Table)
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|(id, workspace, revision)| {
+            Ok(crate::SavedFunctionIndexRevision {
+                id: SavedFunctionId::parse(&id).map_err(|_error| {
+                    Error::CorruptData("invalid Saved Function index identity".to_string())
+                })?,
+                workspace_id: WorkspaceId::parse(&workspace).map_err(|_error| {
+                    Error::CorruptData("invalid Saved Function index Workspace".to_string())
+                })?,
+                revision: u64::try_from(revision).map_err(|_error| {
+                    Error::CorruptData("invalid Saved Function index revision".to_string())
+                })?,
+            })
+        })
+        .collect()
+}
+
 fn entries_statement() -> sea_query::SelectStatement {
     Query::select()
         .columns([

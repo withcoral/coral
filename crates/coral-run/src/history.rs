@@ -7,7 +7,7 @@ use coral_workspace::{HistoryAuthority, WorkspaceId};
 pub enum InvocationStatus {
     /// Admitted but not dispatched.
     Pending,
-    /// Durable dispatch fence crossed.
+    /// Durable Policy Enforcement Point crossed.
     Dispatching,
     /// Durable outcome recorded.
     Ended,

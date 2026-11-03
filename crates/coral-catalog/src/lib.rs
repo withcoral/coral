@@ -127,11 +127,12 @@ pub use openapi::{
 pub use paths::{ToolPathAssignment, call_path_segment_is_reserved, provider_namespace_is_valid};
 pub use search::{DeclarationIndexEntry, PreparedDeclarationFields, StoredDeclarationFields};
 pub use types::{
-    CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, MaterializationOutcome,
-    MaterializedTool, PreparedProviderCatalog, ProviderGenerationFingerprint, ProviderGenerationId,
-    ProviderSetupInput, ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId,
-    SchemaSemantics, SearchableTool, TOOL_AUTHORING_DESCRIPTION_MAX_BYTES, ToolAvailability,
-    ToolHints, ToolKey, ToolPresentation,
+    CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, DiagnosticCode,
+    MaterializationOutcome, MaterializedTool, PreparedProviderCatalog,
+    ProviderGenerationFingerprint, ProviderGenerationId, ProviderSetupInput,
+    ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId, SchemaSemantics,
+    SearchableTool, TOOL_AUTHORING_DESCRIPTION_MAX_BYTES, ToolAvailability, ToolHints, ToolKey,
+    ToolPresentation,
 };
 
 /// Materializes one pinned Provider Setup input with the deployment-selected policy.
@@ -330,6 +331,18 @@ pub async fn verify_generation_in_transaction(
     generation_id: &ProviderGenerationId,
 ) -> Result<(), Error> {
     repository::verify_generation(transaction, generation_id).await
+}
+
+/// Reads the stored publication times of owner-selected Generations in bounded
+/// batches. These timestamps precede the publication transaction's commit.
+///
+/// # Errors
+/// Returns a persistence or corrupt identity failure.
+pub async fn generation_publication_times_in_transaction(
+    transaction: &mut Transaction<'_>,
+    ids: &[ProviderGenerationId],
+) -> Result<std::collections::BTreeMap<ProviderGenerationId, i64>, Error> {
+    repository::generation_publication_times(transaction, ids).await
 }
 
 /// Loads the authoritative schema graph for one retained private Generation.

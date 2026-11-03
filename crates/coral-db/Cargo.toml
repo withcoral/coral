@@ -14,6 +14,7 @@ workspace = true
 test-support = []
 
 [dependencies]
+coral-telemetry.workspace = true
 sea-query.workspace = true
 sea-query-sqlx.workspace = true
 sqlx.workspace = true
@@ -22,6 +23,8 @@ tokio.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-test-support.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tracing.workspace = true

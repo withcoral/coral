@@ -10,6 +10,7 @@ use coral_catalog::ProviderGenerationId;
 use coral_db::{Database, Transaction};
 use coral_functions::SavedFunctionEntry;
 use coral_provider::{GenerationEntries, ProviderId};
+use coral_telemetry::{metric, safe};
 use coral_workspace::WorkspaceId;
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
@@ -22,6 +23,7 @@ use crate::indexer::tools::{self, AttemptedGeneration, ToolIndexer, ToolRemoval}
 use crate::indexer::{self, EntityIndexer, IndexError};
 
 mod reconcile;
+mod telemetry;
 
 /// How long one index write may run before it is rolled back and logged as
 /// failed. The limit frees the mutex: a write stalled on a database lock would
@@ -55,6 +57,9 @@ pub struct SearchIndex {
     /// The last notified write; the next one waits for it.
     last_write: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
     in_flight: Arc<watch::Sender<usize>>,
+    telemetry: Arc<telemetry::IndexTelemetry>,
+    #[cfg(test)]
+    row_build_pause: Option<Arc<RowBuildPause>>,
     /// A test-only index whose notifications write nothing.
     #[cfg(any(test, feature = "test-fixtures"))]
     inert: bool,
@@ -67,7 +72,43 @@ pub struct SearchIndex {
     stall_before_write: Option<Duration>,
 }
 
+// A timing-only hook: exercise synchronous row work without building an
+// artificial large catalog or tying the test to its machine's throughput.
+#[cfg(test)]
+struct RowBuildPause {
+    entered: Arc<tokio::sync::Notify>,
+    release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+#[cfg(test)]
+pub(crate) struct RowBuildHold {
+    entered: Arc<tokio::sync::Notify>,
+    release: std::sync::mpsc::Sender<()>,
+}
+#[cfg(test)]
+impl RowBuildHold {
+    pub(crate) async fn entered(&self) {
+        self.entered.notified().await;
+    }
+}
+#[cfg(test)]
+impl Drop for RowBuildHold {
+    fn drop(&mut self) {
+        let _sent = self.release.send(());
+    }
+}
+
 impl SearchIndex {
+    #[cfg(test)]
+    pub(crate) fn hold_row_building(&mut self) -> RowBuildHold {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let (release, receiver) = std::sync::mpsc::channel();
+        self.row_build_pause = Some(Arc::new(RowBuildPause {
+            entered: entered.clone(),
+            release: std::sync::Mutex::new(Some(receiver)),
+        }));
+        RowBuildHold { entered, release }
+    }
+
     /// Builds the write side over migrated domain persistence. The reconcile task
     /// runs a pass every `reconcile_interval`, and a pass retries a failed
     /// Generation or Saved Function by the retry module's rule, whose waits
@@ -82,6 +123,9 @@ impl SearchIndex {
             reconcile_interval,
             last_write: Arc::new(std::sync::Mutex::new(None)),
             in_flight: Arc::new(watch::Sender::new(0)),
+            telemetry: Arc::new(telemetry::IndexTelemetry::default()),
+            #[cfg(test)]
+            row_build_pause: None,
             #[cfg(any(test, feature = "test-fixtures"))]
             inert: false,
             #[cfg(any(test, feature = "test-fixtures"))]
@@ -143,7 +187,7 @@ impl SearchIndex {
     ) {
         let span = generation_span(&workspace_id, &provider_id, expected.as_ref());
         let index = self.clone();
-        self.spawn(span, GENERATION_FAILURE, async move {
+        self.spawn(span, async move {
             let _write = index.writes.lock().await;
             match index
                 .prepare_stored_generation(&workspace_id, &provider_id)
@@ -195,14 +239,13 @@ impl SearchIndex {
                 self.fail_generation((&active).into(), error).await;
             }
             Ok(_) => {}
-            Err(read_error) => {
+            Err(_) => {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
-                    workspace_id = %workspace_id,
-                    provider_id = %provider_id,
-                    generation_id = expected.map(tracing::field::display),
-                    error = %error,
-                    read_error = %read_error,
+                    coral.workspace.id = safe::id(&workspace_id),
+                    coral.provider.id = safe::id(&provider_id),
+                    coral.search.generation.id = expected.map(safe::id),
+                    error.type = safe::kind(error.code()),
                     "failed to prepare a Provider Generation for the search index"
                 );
             }
@@ -235,22 +278,20 @@ impl SearchIndex {
         let span = tracing::info_span!(
             parent: None,
             "coral.search.remove_generation",
-            coral.search.generation.id = %generation_id,
+            coral.search.generation.id = safe::id(&generation_id),
             coral.search.write.trigger = Empty,
-            status = Empty,
             error.type = Empty,
-            exception.message = Empty,
         );
         let index = self.clone();
-        self.spawn(span, "removing a Provider Generation failed", async move {
+        self.spawn(span, async move {
             let _write = index.writes.lock().await;
             let removal = ToolRemoval::Generation(generation_id.clone());
             let removed = index.erase(&ToolIndexer, &removal).await;
             if let Err(error) = &removed {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
-                    generation_id = %generation_id,
-                    error = %error,
+                    coral.search.generation.id = safe::id(&generation_id),
+                    error.type = safe::kind(error.code()),
                     "failed to remove a Provider Generation from the search index"
                 );
             }
@@ -264,15 +305,13 @@ impl SearchIndex {
         let span = tracing::info_span!(
             parent: None,
             "coral.search.remove_provider",
-            coral.workspace.id = %workspace_id,
-            coral.provider.id = %provider_id,
+            coral.workspace.id = safe::id(&workspace_id),
+            coral.provider.id = safe::id(&provider_id),
             coral.search.write.trigger = Empty,
-            status = Empty,
             error.type = Empty,
-            exception.message = Empty,
         );
         let index = self.clone();
-        self.spawn(span, "removing a Provider failed", async move {
+        self.spawn(span, async move {
             let _write = index.writes.lock().await;
             let removal = ToolRemoval::Provider {
                 workspace_id: workspace_id.clone(),
@@ -282,9 +321,9 @@ impl SearchIndex {
             if let Err(error) = &removed {
                 // TODO: an error monitor for failed index writes is still to be set up.
                 tracing::error!(
-                    workspace_id = %workspace_id,
-                    provider_id = %provider_id,
-                    error = %error,
+                    coral.workspace.id = safe::id(&workspace_id),
+                    coral.provider.id = safe::id(&provider_id),
+                    error.type = safe::kind(error.code()),
                     "failed to remove a Provider from the search index"
                 );
             }
@@ -299,13 +338,13 @@ impl SearchIndex {
     pub fn index_function(&self, entry: SavedFunctionEntry) {
         let span = function_span(&entry);
         let index = self.clone();
-        self.spawn(span, FUNCTION_FAILURE, async move {
+        self.spawn(span, async move {
             let _write = index.writes.lock().await;
             index.write_function(&entry).await
         });
     }
 
-    /// Waits until no spawned write is running or waiting to run.
+    /// Waits until notified writes and committed visibility observations finish.
     ///
     /// A caller that must observe the index after a notification, a test
     /// above all, awaits this first.
@@ -319,8 +358,8 @@ impl SearchIndex {
     /// Runs one write in the background after the previously notified one,
     /// counted until it finishes. The write logs to the caller's subscriber
     /// and runs in `span`, the root of a trace of its own that links to the
-    /// caller's span. A failed write marks `span` with `failure`; it has
-    /// already logged and recorded its error.
+    /// caller's span. A failed write marks `span` failed; it has already
+    /// logged and recorded its error.
     ///
     /// Tasks reach the mutex in no fixed order, so each write first awaits its
     /// predecessor: a rename's rewrite and a later removal of the same
@@ -328,7 +367,6 @@ impl SearchIndex {
     fn spawn(
         &self,
         span: tracing::Span,
-        failure: &'static str,
         write: impl Future<Output = Result<(), IndexError>> + Send + 'static,
     ) {
         #[cfg(any(test, feature = "test-fixtures"))]
@@ -339,7 +377,7 @@ impl SearchIndex {
         // of its own and links back.
         coral_telemetry::link_to_current(&span);
         self.in_flight.send_modify(|writes| *writes += 1);
-        let in_flight = InFlightWrite(self.in_flight.clone());
+        let in_flight = InFlightWork(self.in_flight.clone());
         // No code panics while holding this lock, so a poisoned one still
         // holds a valid handle.
         let mut last_write = self
@@ -354,7 +392,7 @@ impl SearchIndex {
                     // A predecessor that panicked has finished all the same.
                     drop(previous.await);
                 }
-                drop(in_write_span(span, WriteTrigger::Notified, failure, write).await);
+                drop(in_write_span(span, WriteTrigger::Notified, write).await);
             }
             .with_current_subscriber(),
         ));
@@ -401,7 +439,7 @@ impl SearchIndex {
     ) -> Result<(), IndexError> {
         tracing::Span::current().record(
             "coral.search.generation.id",
-            tracing::field::display(entries.generation_id()),
+            safe::id(entries.generation_id()),
         );
         let rows = match self.write(&ToolIndexer, entries).await {
             Ok(rows) => rows,
@@ -410,15 +448,13 @@ impl SearchIndex {
                 return Err(error);
             }
         };
-        for (tool_key, warning) in rows.warnings() {
+        for (_, warning) in rows.warnings() {
             tracing::warn!(
-                workspace_id = %entries.workspace_id(),
-                provider_id = %entries.provider_id(),
-                generation_id = %entries.generation_id(),
-                tool_key = %tool_key.as_str(),
-                code = %warning.code(),
-                "{}",
-                warning.message()
+                coral.workspace.id = safe::id(&entries.workspace_id()),
+                coral.provider.id = safe::id(&entries.provider_id()),
+                coral.search.generation.id = safe::id(&entries.generation_id()),
+                coral.search.warning.code = safe::id(warning.diagnostic_code()),
+                "a Tool was indexed with a catalog warning"
             );
         }
         Ok(())
@@ -432,18 +468,16 @@ impl SearchIndex {
         };
         // TODO: an error monitor for failed index writes is still to be set up.
         tracing::error!(
-            workspace_id = %entry.workspace_id(),
-            principal_id = %entry.principal().id(),
-            saved_function_id = %entry.id(),
-            error = %error,
+            coral.workspace.id = safe::id(&entry.workspace_id()),
+            coral.saved_function.id = safe::id(&entry.id()),
+            error.type = safe::kind(error.code()),
             "failed to index a Saved Function"
         );
         if let Err(record_error) = self.record_failed_function(entry, &error).await {
             tracing::error!(
-                workspace_id = %entry.workspace_id(),
-                principal_id = %entry.principal().id(),
-                saved_function_id = %entry.id(),
-                error = %record_error,
+                coral.workspace.id = safe::id(&entry.workspace_id()),
+                coral.saved_function.id = safe::id(&entry.id()),
+                error.type = safe::kind(record_error.code()),
                 "failed to record a failed Saved Function index attempt"
             );
         }
@@ -454,18 +488,18 @@ impl SearchIndex {
     async fn fail_generation(&self, generation: AttemptedGeneration<'_>, error: &IndexError) {
         // TODO: an error monitor for failed index writes is still to be set up.
         tracing::error!(
-            workspace_id = %generation.workspace_id(),
-            provider_id = %generation.provider_id(),
-            generation_id = %generation.generation_id(),
-            error = %error,
+            coral.workspace.id = safe::id(&generation.workspace_id()),
+            coral.provider.id = safe::id(&generation.provider_id()),
+            coral.search.generation.id = safe::id(&generation.generation_id()),
+            error.type = safe::kind(error.code()),
             "failed to index a Provider Generation"
         );
         if let Err(record_error) = self.record_failed_generation(generation, error).await {
             tracing::error!(
-                workspace_id = %generation.workspace_id(),
-                provider_id = %generation.provider_id(),
-                generation_id = %generation.generation_id(),
-                error = %record_error,
+                coral.workspace.id = safe::id(&generation.workspace_id()),
+                coral.provider.id = safe::id(&generation.provider_id()),
+                coral.search.generation.id = safe::id(&generation.generation_id()),
+                error.type = safe::kind(record_error.code()),
                 "failed to record a failed Provider Generation index attempt"
             );
         }
@@ -499,6 +533,14 @@ impl SearchIndex {
         entry: &'e I::Entry,
     ) -> Result<I::Rows<'e>, IndexError> {
         let workspace_id = indexer.workspace_id(entry);
+        #[cfg(test)]
+        if let Some(pause) = &self.row_build_pause {
+            let receiver = pause.release.lock().unwrap().take();
+            if let Some(receiver) = receiver {
+                pause.entered.notify_one();
+                let _released = receiver.recv_timeout(Duration::from_secs(5));
+            }
+        }
         let rows = indexer.rows(entry)?;
         #[cfg(any(test, feature = "test-fixtures"))]
         if let Some(stall) = self.stall_before_write {
@@ -523,19 +565,102 @@ impl SearchIndex {
             if let Some(stall) = self.stall_after_lock {
                 tokio::time::sleep(stall).await;
             }
-            if let Err(error) = indexer.index(&mut transaction, entry, written_rows).await {
-                rollback(transaction).await;
-                return Err(error);
-            }
+            let effect = match indexer.index(&mut transaction, entry, written_rows).await {
+                Ok(effect) => effect,
+                Err(error) => {
+                    rollback(transaction).await;
+                    return Err(error);
+                }
+            };
             transaction.commit().await?;
-            Ok(())
+            Ok((effect, crate::unix_now_nanos()))
         })
         .await
         .unwrap_or_else(|_elapsed| Err(IndexError::Overran(self.write_limit)));
         let span = tracing::Span::current();
-        span.record("coral.search.writer_wait_ms", millis(locked - started));
-        span.record("coral.search.write_ms", millis(locked.elapsed()));
-        written.map(|()| rows)
+        span.record(
+            "coral.search.writer_wait_ms",
+            safe::number(millis(locked - started)),
+        );
+        span.record(
+            "coral.search.write_ms",
+            safe::number(millis(locked.elapsed())),
+        );
+        let (effect, committed_at) = written?;
+        self.observe_committed_visibility(workspace_id.clone(), effect, committed_at);
+        Ok(rows)
+    }
+
+    /// Verification is best effort and independently scheduled. It neither
+    /// holds the write mutex nor becomes a predecessor of the next write.
+    fn observe_committed_visibility(
+        &self,
+        workspace: WorkspaceId,
+        effect: indexer::IndexEffect,
+        committed_at: Option<i64>,
+    ) {
+        if effect.catalog().is_none() || committed_at.is_none() || !metric::enabled() {
+            return;
+        }
+        let index = self.clone();
+        self.in_flight.send_modify(|work| *work += 1);
+        let work = InFlightWork(self.in_flight.clone());
+        let span = tracing::info_span!(parent: None, "coral.search.verify_visibility");
+        coral_telemetry::link_to_current(&span);
+        let observe = async move {
+            let _work = work;
+            let Some(target) = effect.catalog() else {
+                return;
+            };
+            let check = async {
+                let mut tx = index.database.begin_read_snapshot().await?;
+                let active = coral_provider::workspace_active_generations_in_transaction(
+                    &mut tx,
+                    &workspace,
+                    Some(&target.provider_id),
+                )
+                .await?;
+                tx.rollback().await?;
+                Ok::<_, IndexError>(
+                    active
+                        .iter()
+                        .any(|active| active.generation_id() == &target.generation_id),
+                )
+            };
+            match tokio::time::timeout(Duration::from_secs(1), check).await {
+                Ok(Ok(true)) => {}
+                Ok(Ok(false)) => return,
+                Ok(Err(error)) => {
+                    tracing::warn!(error.type = safe::kind(error.code()), "could not verify committed catalog visibility; sample omitted");
+                    return;
+                }
+                Err(_elapsed) => {
+                    tracing::warn!(error.type = "timed_out", "committed catalog visibility check timed out; sample omitted");
+                    return;
+                }
+            }
+            match effect {
+                indexer::IndexEffect::FirstVisible {
+                    published_at_unix_nanos,
+                    path,
+                    ..
+                } => {
+                    if let Some(elapsed) = elapsed_at(published_at_unix_nanos, committed_at) {
+                        metric::publication_visible(path, elapsed);
+                    }
+                }
+                indexer::IndexEffect::Recovered {
+                    unavailable_since_unix_nanos,
+                    ..
+                } => {
+                    if let Some(elapsed) = elapsed_at(unavailable_since_unix_nanos, committed_at) {
+                        metric::index_recovered(elapsed);
+                    }
+                }
+                indexer::IndexEffect::Updated => {}
+            }
+        };
+        let _observation = tokio::spawn(observe.instrument(span).with_current_subscriber());
     }
 
     async fn erase<I: EntityIndexer>(
@@ -608,12 +733,6 @@ impl SearchIndex {
     }
 }
 
-/// The failure that marks a Provider Generation's write span.
-const GENERATION_FAILURE: &str = "indexing a Provider Generation failed";
-
-/// The failure that marks a Saved Function's write span.
-const FUNCTION_FAILURE: &str = "indexing a Saved Function failed";
-
 /// The span of one Provider Generation's index write, notified or made by a
 /// reconcile pass. The write records the Generation it prepared when none was
 /// named, how long it waited for the writer and wrote, or why it wrote
@@ -626,16 +745,14 @@ fn generation_span(
     tracing::info_span!(
         parent: None,
         "coral.search.index_generation",
-        coral.workspace.id = %workspace_id,
-        coral.provider.id = %provider_id,
-        coral.search.generation.id = generation_id.map(tracing::field::display),
+        coral.workspace.id = safe::id(&workspace_id),
+        coral.provider.id = safe::id(&provider_id),
+        coral.search.generation.id = generation_id.map(safe::id),
         coral.search.skipped = Empty,
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,
         coral.search.write.trigger = Empty,
-        status = Empty,
         error.type = Empty,
-        exception.message = Empty,
     )
 }
 
@@ -646,20 +763,18 @@ fn function_span(entry: &SavedFunctionEntry) -> tracing::Span {
     tracing::info_span!(
         parent: None,
         "coral.search.index_function",
-        coral.workspace.id = %entry.workspace_id(),
-        coral.saved_function.id = %entry.id(),
+        coral.workspace.id = safe::id(&entry.workspace_id()),
+        coral.saved_function.id = safe::id(&entry.id()),
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,
         coral.search.write.trigger = Empty,
-        status = Empty,
         error.type = Empty,
-        exception.message = Empty,
     )
 }
 
 /// Records on the current write span why the write wrote nothing.
 fn skipped(reason: &'static str) {
-    tracing::Span::current().record("coral.search.skipped", reason);
+    tracing::Span::current().record("coral.search.skipped", safe::kind(reason));
 }
 
 /// What started an index write, recorded on its span, so a trace query can
@@ -683,22 +798,21 @@ impl WriteTrigger {
 }
 
 /// Runs one write in `span`, a root span, records its `trigger`, links it to
-/// the current span, such as a reconcile pass's, and marks it with `failure`
-/// and the error's kind when the write fails. The write is boxed, so a pass's
+/// the current span, such as a reconcile pass's, and marks it with the
+/// error's kind when the write fails. The write is boxed, so a pass's
 /// future holds one pointer for it rather than a second copy.
 fn in_write_span<T>(
     span: tracing::Span,
     trigger: WriteTrigger,
-    failure: &'static str,
     write: impl Future<Output = Result<T, IndexError>>,
 ) -> impl Future<Output = Result<T, IndexError>> {
-    span.record("coral.search.write.trigger", trigger.as_str());
+    span.record("coral.search.write.trigger", safe::kind(trigger.as_str()));
     coral_telemetry::link_to_current(&span);
     let write = Box::pin(write.instrument(span.clone()));
     async move {
         let written = write.await;
         if let Err(error) = &written {
-            coral_telemetry::record_failure(&span, error.code(), failure);
+            coral_telemetry::record_failure(&span, error.code());
         }
         written
     }
@@ -708,7 +822,10 @@ fn in_write_span<T>(
 /// caller still reports the write's error, the cause.
 async fn rollback(transaction: Transaction<'_>) {
     if let Err(error) = transaction.rollback().await {
-        tracing::error!(error = %error, "failed to roll back a search index write");
+        tracing::error!(
+            error.type = safe::kind(error.code()),
+            "failed to roll back a search index write"
+        );
     }
 }
 
@@ -717,12 +834,17 @@ fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Counts one spawned write as in flight until dropped, so a write that
+/// Counts one write or visibility observation as in flight until dropped, so a write that
 /// panics still stops counting.
-struct InFlightWrite(Arc<watch::Sender<usize>>);
+struct InFlightWork(Arc<watch::Sender<usize>>);
 
-impl Drop for InFlightWrite {
+impl Drop for InFlightWork {
     fn drop(&mut self) {
         self.0.send_modify(|writes| *writes -= 1);
     }
+}
+
+fn elapsed_at(since_unix_nanos: i64, committed_at: Option<i64>) -> Option<Duration> {
+    let elapsed = committed_at?.checked_sub(since_unix_nanos)?;
+    Some(Duration::from_nanos(u64::try_from(elapsed).ok()?))
 }

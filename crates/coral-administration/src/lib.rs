@@ -25,7 +25,8 @@
 //! This Module depends on Workspace, Provider, Functions, and the private database
 //! foundation. It never calls Run or Task, deletes retained history, initializes a
 //! compiler, or performs network revocation. Current authority at the commit is
-//! sufficient to fence later dispatch; no post-commit cleanup is required.
+//! sufficient to block later dispatch at the Policy Enforcement Point; no
+//! post-commit cleanup is required.
 mod providers;
 mod workspaces;
 

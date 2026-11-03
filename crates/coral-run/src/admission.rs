@@ -6,6 +6,8 @@ use std::time::Instant;
 
 use coral_db::Transaction;
 use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
+use coral_telemetry::safe;
+use coral_v8::CompileFailure;
 use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -223,7 +225,7 @@ impl RunModule {
                 )));
             }
         };
-        accept.record("coral.run.id", run.id.as_str());
+        accept.record("coral.run.id", safe::id(&run.held_id()));
         Ok(StagedRun {
             run,
             actor: actor.clone(),
@@ -259,20 +261,50 @@ impl RunModule {
             admitted,
         } = staged;
         drop(accept);
+        crate::trace::record_run_accepted(actor.principal());
         self.schedule_execution(run, actor);
         // The owner is registered: shutdown counts it from here.
         drop(admitted);
         Ok(update)
     }
 
+    /// [`Self::compile_package`], timed as `coral.program.compile.duration`
+    /// by how it ended.
     async fn compile_submission(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         submitted_source: &ProgramSource,
     ) -> Result<(ProgramPackage, Vec<SavedFunctionSelection>), Error> {
-        let source = submitted_source.as_str().to_string();
+        use coral_telemetry::metric::{self, CompileOutcome};
         let compilation_started = Instant::now();
+        let compiled = self
+            .compile_package(actor, workspace_id, submitted_source, compilation_started)
+            .await;
+        let outcome = match &compiled {
+            Ok(_) => CompileOutcome::Ok,
+            Err(Error::CompilationTimedOut) => CompileOutcome::TimedOut,
+            Err(
+                Error::CompilerBusy
+                | Error::ProgramWorkerStopped
+                | Error::ProgramRuntimeUnavailable(_)
+                | Error::CorruptData(_),
+            ) => CompileOutcome::Unavailable,
+            Err(error) if error.database_error().is_some() => CompileOutcome::Unavailable,
+            Err(_) => CompileOutcome::Rejected,
+        };
+        metric::program_compiled(outcome, compilation_started.elapsed());
+        compiled
+    }
+
+    async fn compile_package(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        submitted_source: &ProgramSource,
+        compilation_started: Instant,
+    ) -> Result<(ProgramPackage, Vec<SavedFunctionSelection>), Error> {
+        let source = submitted_source.as_str().to_string();
         let roots = self
             .analyze_saved_function_paths(
                 source.clone(),
@@ -303,7 +335,7 @@ impl RunModule {
         let package = match timeout(remaining_compilation_time, compile).await {
             Err(_elapsed) => return Err(Error::CompilationTimedOut),
             Ok(Err(_join_error)) => return Err(Error::ProgramWorkerStopped),
-            Ok(Ok(Err(message))) => return Err(Error::ProgramAdmission(message)),
+            Ok(Ok(Err(failure))) => return Err(domain_error(failure)),
             Ok(Ok(Ok(package))) => package,
         };
         package.validate()?;
@@ -406,8 +438,25 @@ impl RunModule {
         match timeout(remaining_compilation_time, analyze).await {
             Err(_elapsed) => Err(Error::CompilationTimedOut),
             Ok(Err(_join_error)) => Err(Error::ProgramWorkerStopped),
-            Ok(Ok(Err(message))) => Err(Error::ProgramAdmission(message)),
+            Ok(Ok(Err(failure))) => Err(domain_error(failure)),
             Ok(Ok(Ok(paths))) => Ok(paths),
+        }
+    }
+}
+
+/// Only a rejection judges the Program; the others tell its author nothing to fix.
+fn domain_error(failure: CompileFailure) -> Error {
+    match failure {
+        CompileFailure::Rejected(message) => Error::ProgramAdmission(message),
+        CompileFailure::Busy => Error::CompilerBusy,
+        CompileFailure::TimedOut => Error::CompilationTimedOut,
+        CompileFailure::Stopped => Error::ProgramWorkerStopped,
+        CompileFailure::Failed(kind) => {
+            tracing::warn!(
+                error.type = safe::kind(kind),
+                "Program compiler failed; the caller sees an internal failure"
+            );
+            Error::ProgramRuntimeUnavailable(kind.to_string())
         }
     }
 }

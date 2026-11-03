@@ -2,6 +2,7 @@ import { expect, type TestContext } from 'vitest'
 
 import { createWorkspace, programRunner } from '../../../support/providers.ts'
 import { withOwner } from '../../../support/topology.ts'
+import { retainedPayload, shownPayload } from '../../../support/payloads.ts'
 
 // Bytes that are not UTF-8 text, with a CR LF that text handling would change.
 const image = {
@@ -12,10 +13,15 @@ const image = {
   byteLength: 5,
 }
 
+// Too long for Reef to mount whole: only its rows near the view show.
+const items = 10_000
+const huge = Array.from({ length: items }, (_, index) => `item-${String(index).padStart(5, '0')}`)
+
 /**
  * A Program's binary Final Value crosses every process unchanged: V8 to Coral's
  * store, then to an MCP client as an image block and through private gRPC to
  * Reef's Run Status Page. Value rules stay in `crates/coral-run/tests/domain/binary.rs`.
+ * A Final Value too long to show whole still reaches Reef whole.
  */
 export async function binaryOutput(context: TestContext) {
   await withOwner(context, async ({ page, target, step, accessToken }) => {
@@ -38,12 +44,21 @@ export async function binaryOutput(context: TestContext) {
     })
     await step('Reef shows the same value on the Run Status Page', async () => {
       await page.goto(`/${runName}`)
-      const shown = page
-        .getByRole('region', { name: 'Final value', exact: true })
-        .locator('pre')
-        .filter({ hasText: image.data })
-      await shown.waitFor()
-      expect(JSON.parse((await shown.textContent()) ?? '')).toEqual(image)
+      const value = page.getByRole('region', { name: 'Final value', exact: true })
+      await shownPayload(value, image.data).waitFor()
+      // Exactly as retained: the same text, not only the same value.
+      expect(await retainedPayload(page, value, 'Final value')).toBe(JSON.stringify(image))
+    })
+    await step('Reef keeps a Final Value too long to show whole, exactly', async () => {
+      const result = await programRunner(page, target, workspace).exec(
+        `return Array.from({ length: ${items} }, (_, index) => \`item-\${String(index).padStart(5, '0')}\`);`,
+      )
+      const update = result.structuredContent
+      expect(update.state, JSON.stringify(update.failure)).toBe('succeeded')
+      await page.goto(`/workspaces/${workspace}/runs/${update.run_id}`)
+      const value = page.getByRole('region', { name: 'Final value', exact: true })
+      await shownPayload(value, huge[0]!).waitFor()
+      expect(await retainedPayload(page, value, 'Final value')).toBe(JSON.stringify(huge))
     })
   })
 }

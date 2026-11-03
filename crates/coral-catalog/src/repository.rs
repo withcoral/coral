@@ -967,6 +967,36 @@ pub(super) async fn load_credential_contract(
     crate::ProviderCredentialContract::from_storage(&value)
 }
 
+pub(super) async fn generation_publication_times(
+    transaction: &mut Transaction<'_>,
+    ids: &[ProviderGenerationId],
+) -> Result<std::collections::BTreeMap<ProviderGenerationId, i64>, Error> {
+    let mut times = std::collections::BTreeMap::new();
+    for ids in ids.chunks(256) {
+        let rows: Vec<(String, i64)> = transaction
+            .fetch_all(
+                Query::select()
+                    .columns([
+                        ProviderGenerations::Id,
+                        ProviderGenerations::CreatedAtUnixNanos,
+                    ])
+                    .from(ProviderGenerations::Table)
+                    .and_where(
+                        Expr::col(ProviderGenerations::Id)
+                            .is_in(ids.iter().map(ToString::to_string)),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        for (id, at) in rows {
+            let id = ProviderGenerationId::parse(&id)
+                .map_err(|_error| Error::CorruptData("invalid publication identity".to_string()))?;
+            times.insert(id, at);
+        }
+    }
+    Ok(times)
+}
+
 pub(super) async fn load_schema_graph(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,

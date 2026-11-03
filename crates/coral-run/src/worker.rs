@@ -10,13 +10,15 @@
 //! ending it, once its lease lapses), and every write is predicated on the
 //! claim and the head the row showed.
 
+use coral_telemetry::metric::{self, ClaimKind, ClaimOutcome};
+use coral_telemetry::safe;
 use coral_workspace::AuthenticatedPrincipal;
-use tracing::Instrument as _;
 
 use crate::engine::ExecutionCompletion;
 use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
 use crate::owner::{self, OwnerHandle, OwnerStart, StartedExecution};
 use crate::termination::ShutdownAction;
+use crate::trace::RunEnd;
 use crate::types::AcceptedRun;
 use crate::{
     Error, FinalValue, RunFailure, RunFailureCode, RunModule, RunState, RunTerminalOutcome,
@@ -31,7 +33,7 @@ impl RunModule {
     /// lost) renews nothing more, and the expired-lease sweep ends the Run
     /// once its lease lapses, unless another process took it.
     pub(crate) fn schedule_execution(&self, run: AcceptedRun, actor: AuthenticatedPrincipal) {
-        let (handle, mailbox) = OwnerHandle::new(run.id.clone(), run.claim_id.clone());
+        let (handle, mailbox) = OwnerHandle::new(run.held_id(), run.claim_id.clone());
         let registration = self.owners.register(handle.clone());
         self.inbox.owner_registered(
             &self.owners,
@@ -64,10 +66,12 @@ impl RunModule {
     /// chunk, as the owner's self-interrupt would. Nothing still in flight
     /// under the old claim can land afterwards.
     async fn recover_from_owner_failure(&self, run: &AcceptedRun, ended: &tokio::task::JoinError) {
-        let span =
-            crate::trace::phase_span(run.trace.as_ref(), &run.id, crate::trace::Phase::Complete);
-        self.interrupt_after_owner_failure(run, ended)
-            .instrument(span)
+        let span = crate::trace::phase_span(
+            run.trace.as_ref(),
+            &run.held_id(),
+            crate::trace::Phase::Complete,
+        );
+        span.instrument(self.interrupt_after_owner_failure(run, ended))
             .await;
     }
 
@@ -78,32 +82,33 @@ impl RunModule {
     ) {
         let takeover_claim_id = uuid::Uuid::new_v4().hyphenated().to_string();
         tracing::error!(
-            run_id = %run.id,
-            claim_id = %run.claim_id,
-            takeover_claim_id = %takeover_claim_id,
-            ended = %ended,
+            coral.run.id = safe::id(&run.held_id()),
+            coral.run.claim.id = crate::trace::claim(&run.claim_id).as_ref().map(safe::id),
+            coral.run.takeover_claim.id = crate::trace::claim(&takeover_claim_id).as_ref().map(safe::id),
+            error.type = safe::kind(owner_task_end_code(ended)),
             "Run Owner task ended without retiring; interrupting its Run"
         );
         match self
             .record_interruption(
                 &run.workspace_id,
-                &run.id,
+                &run.held_id(),
                 &run.claim_id,
                 Some(&takeover_claim_id),
             )
             .await
         {
-            Ok(()) => {}
+            Ok(()) => metric::run_claimed(ClaimKind::Takeover, ClaimOutcome::Won),
             Err(Error::ClaimMismatch | Error::RunEnded) => {
+                metric::run_claimed(ClaimKind::Takeover, ClaimOutcome::Lost);
                 tracing::warn!(
-                    run_id = %run.id,
+                    coral.run.id = safe::id(&run.held_id()),
                     "Run of a failed Run Owner was already ended"
                 );
             }
             Err(error) => {
                 tracing::error!(
-                    run_id = %run.id,
-                    error = %error,
+                    coral.run.id = safe::id(&run.held_id()),
+                    error.type = safe::kind(error.code()),
                     "Run of a failed Run Owner could not be interrupted"
                 );
             }
@@ -146,6 +151,9 @@ impl RunModule {
             || run.worker_claim_id.as_deref() != Some(claim_id)
         {
             transaction.commit().await?;
+            if run.state == RunState::Running && run.worker_claim_id.as_deref() != Some(claim_id) {
+                metric::run_claimed(ClaimKind::Start, ClaimOutcome::Lost);
+            }
             return Ok(None);
         }
 
@@ -180,6 +188,7 @@ impl RunModule {
             .is_none_or(|expires_at| started_at >= expires_at)
         {
             transaction.commit().await?;
+            metric::run_claimed(ClaimKind::Start, ClaimOutcome::Lost);
             return Ok(None);
         }
         if started_at >= run.deadline_at_unix_nanos {
@@ -196,18 +205,14 @@ impl RunModule {
             if error.database_error().is_some() {
                 return Err(error);
             }
-            run_repository::finish_unstarted_run(
-                &mut transaction,
-                &run,
-                &RunTerminalOutcome::Failed(RunFailure::new(
-                    RunFailureCode::RunAuthorityLost,
-                    "Run authority was lost before Program execution started".to_string(),
-                )),
-                started_at,
-            )
-            .await?;
+            let outcome = RunTerminalOutcome::Failed(RunFailure::new(
+                RunFailureCode::RunAuthorityLost,
+                "Run authority was lost before Program execution started".to_string(),
+            ));
+            run_repository::finish_unstarted_run(&mut transaction, &run, &outcome, started_at)
+                .await?;
             transaction.commit().await?;
-            crate::trace::record_run_end(RunState::Failed);
+            crate::trace::record_run_end(&run, &RunEnd::Unstarted(&outcome), started_at);
             return Ok(None);
         }
 
@@ -215,6 +220,7 @@ impl RunModule {
         run_repository::start_execution(&mut transaction, &run, claim_id, started_at, lease_until)
             .await?;
         transaction.commit().await?;
+        metric::run_claimed(ClaimKind::Start, ClaimOutcome::Won);
         Ok(Some(StartedExecution {
             package,
             head: run.chunk_sequence + 1,
@@ -243,6 +249,7 @@ impl RunModule {
         .await?
         .ok_or_else(|| Error::CorruptData("started Run has no Program package".to_string()))?;
         transaction.commit().await?;
+        metric::run_claimed(ClaimKind::Start, ClaimOutcome::Won);
         Ok(Some(StartedExecution {
             package,
             head: run.chunk_sequence,
@@ -268,7 +275,11 @@ impl RunModule {
         self.finish_termination_in_transaction(&mut transaction, &run, now_unix_nanos)
             .await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(RunState::TimedOut);
+        crate::trace::record_run_end(
+            &run,
+            &RunEnd::Unstarted(&RunTerminalOutcome::TimedOut),
+            now_unix_nanos,
+        );
         Ok(None)
     }
 
@@ -366,38 +377,60 @@ impl RunModule {
             self.finish_termination_in_transaction(&mut transaction, &run, completed_at)
                 .await?;
             transaction.commit().await?;
-            crate::trace::record_run_end(kind.outcome().state());
+            crate::trace::record_run_end(
+                &run,
+                &RunEnd::Returned {
+                    outcome: &kind.outcome(),
+                    final_value_over_budget: false,
+                },
+                completed_at,
+            );
             return Ok(None);
         }
-        let outcome = match completion {
-            ExecutionCompletion::Succeeded(final_value) => RunTerminalOutcome::Succeeded {
-                final_value: final_value.clone(),
-            },
-            ExecutionCompletion::Failed(failure) => RunTerminalOutcome::Failed(failure.clone()),
-            ExecutionCompletion::ProgramHostTerminated
-            | ExecutionCompletion::MemoryLimitExceeded => unreachable!(
-                "host termination creates durable interruption evidence before completion"
-            ),
-        };
-        // The Final Value is decided against the recorded total, which the
-        // owner's last chunk wrote from its exact in-memory total.
-        let outcome = if let RunTerminalOutcome::Succeeded {
-            final_value: FinalValue::Present(value),
-        } = &outcome
-            && !run.output_fits(value.encoded_json().len())
-        {
-            RunTerminalOutcome::Failed(RunFailure::new(
-                RunFailureCode::ResourceLimitExceeded,
-                "Run output exceeds its limit".to_string(),
-            ))
-        } else {
-            outcome
-        };
+        let (outcome, final_value_over_budget) = returned_outcome(&run, completion);
         run_repository::finish_run(&mut transaction, &run, claim_id, &outcome, completed_at)
             .await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(outcome.state());
+        crate::trace::record_run_end(
+            &run,
+            &RunEnd::Returned {
+                outcome: &outcome,
+                final_value_over_budget,
+            },
+            completed_at,
+        );
         Ok(None)
+    }
+}
+
+/// The outcome of a Program that returned on its own, and whether its Final
+/// Value was over the Run's output budget, which fails the Run instead. The
+/// Final Value is decided against the recorded total, which the owner's last
+/// chunk wrote from its exact in-memory total.
+fn returned_outcome(
+    run: &RunRecord,
+    completion: &ExecutionCompletion,
+) -> (RunTerminalOutcome, bool) {
+    let outcome = match completion {
+        ExecutionCompletion::Succeeded(final_value) => RunTerminalOutcome::Succeeded {
+            final_value: final_value.clone(),
+        },
+        ExecutionCompletion::Failed(failure) => RunTerminalOutcome::Failed(failure.clone()),
+        ExecutionCompletion::ProgramHostTerminated | ExecutionCompletion::MemoryLimitExceeded => {
+            unreachable!("host termination creates durable interruption evidence before completion")
+        }
+    };
+    let over_budget = matches!(&outcome, RunTerminalOutcome::Succeeded {
+        final_value: FinalValue::Present(value),
+    } if !run.output_fits(value.encoded_json().len()));
+    if over_budget {
+        let failure = RunFailure::new(
+            RunFailureCode::ResourceLimitExceeded,
+            "Run output exceeds its limit".to_string(),
+        );
+        (RunTerminalOutcome::Failed(failure), true)
+    } else {
+        (outcome, false)
     }
 }
 
@@ -423,5 +456,15 @@ fn termination_for_completion(
         Some(RunTerminationKind::MemoryLimitExceeded)
     } else {
         None
+    }
+}
+
+/// How a Run Owner task ended without retiring, for an event's `error.type`:
+/// it panicked, or its runtime cancelled it.
+pub(crate) fn owner_task_end_code(ended: &tokio::task::JoinError) -> &'static str {
+    if ended.is_panic() {
+        "panic"
+    } else {
+        "cancelled"
     }
 }

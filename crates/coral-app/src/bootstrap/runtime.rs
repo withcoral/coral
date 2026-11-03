@@ -34,11 +34,18 @@ pub struct Launch {
     pub local_web_url: Option<coral_mcp::HumanInterfaceUrl>,
     /// Treat EOF on stdin like a termination signal.
     pub stop_on_stdin_close: bool,
+    /// The launching binary's version, for telemetry's `service.version`.
+    /// Without one, Coral's package version names the service.
+    pub service_version: Option<&'static str>,
 }
 
 impl Launch {
     /// Passes this launch to `builder`.
     fn configure(self, builder: ServerBuilder) -> ServerBuilder {
+        let builder = match self.service_version {
+            Some(version) => builder.with_service_version(version),
+            None => builder,
+        };
         let builder = match self.local_web_url {
             Some(url) => builder.with_local_web_url(url),
             None => builder,

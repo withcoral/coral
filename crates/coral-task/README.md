@@ -12,8 +12,9 @@
   no Task identifiers, dependency, context field, or recording callback.
 - Run acceptance returns scope-bound **staged** evidence. Task commits acceptance,
   its association, and completion before calling Run's post-commit launch facet.
-  Run owns claims, deadlines, execution, authority fences, and recovery. An
-  interrupted handoff leaves accepted evidence, not permission to replay a request.
+  Run owns claims, deadlines, execution, the Policy Enforcement Point, and
+  recovery. An interrupted handoff leaves accepted evidence, not permission to
+  replay a request.
 - Search owns the complete current safe response projection. Task persistence
   retains that response plus accepted request context without reinterpreting it.
   Summary reads never select the response or diagnostics columns.

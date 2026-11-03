@@ -269,6 +269,62 @@ fn runtime_stops_gracefully_when_stdin_closes_only_when_its_launcher_opts_in() {
     }
 }
 
+/// A collector that reports each connection the runtime opens to it, and
+/// either closes it at once, which fails the export, or never answers it.
+fn collector(answers_nothing: bool) -> (std::net::SocketAddr, mpsc::Receiver<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind collector");
+    let address = listener.local_addr().expect("collector address");
+    let (connected, connections) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut unanswered = Vec::new();
+        for stream in listener.incoming().flatten() {
+            let _sent = connected.send(());
+            if answers_nothing {
+                unanswered.push(stream);
+            }
+        }
+    });
+    (address, connections)
+}
+
+/// Telemetry is best effort. With a collector that fails each export, and with
+/// one that never answers, a runtime comes ready, stays ready once it has
+/// tried to export, and stops cleanly having lost what it could not flush.
+#[test]
+fn a_failing_collector_changes_neither_readiness_nor_a_clean_stop() {
+    for answers_nothing in [false, true] {
+        let (address, connections) = collector(answers_nothing);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let state_root = local_state_root(&temp);
+        let config = state_root.join("config.toml");
+        let raw = std::fs::read_to_string(&config).expect("read config");
+        std::fs::write(
+            &config,
+            format!("{raw}[otel]\nendpoint = 'http://{address}'\n"),
+        )
+        .expect("write config");
+        let mut runtime = Runtime::start(&state_root, true);
+
+        // Requests give the exporters spans and metrics to send.
+        let client = reqwest::blocking::Client::new();
+        let endpoint = format!("{}/workspaces/absent/mcp", runtime.mcp_origin);
+        for _ in 0..8 {
+            let traced = client.post(&endpoint).send().expect("traced request");
+            assert!(traced.status().is_client_error(), "{answers_nothing}");
+        }
+        connections
+            .recv_timeout(EXIT_TIMEOUT)
+            .expect("the runtime tries to export");
+        assert!(runtime.ready(), "{answers_nothing}: export decides nothing");
+
+        runtime.close_stdin();
+        let status = runtime
+            .exit_within(EXIT_TIMEOUT)
+            .expect("the runtime stops without its collector");
+        assert_eq!(status.code(), Some(0), "{answers_nothing}: {status}");
+    }
+}
+
 /// A relaunch while an earlier runtime still runs must not open the same
 /// stores. It exits with `EX_TEMPFAIL` so a launcher can retry it.
 #[test]

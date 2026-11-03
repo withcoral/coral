@@ -1,5 +1,5 @@
 //! Performs `coral.workspace.addProvider`, and settles one whose worker was
-//! lost after the Dispatch Fence.
+//! lost after the Policy Enforcement Point.
 
 use async_trait::async_trait;
 use coral_catalog::{AddProviderArguments, AddProviderResult, ConfigurationChoices};
@@ -208,10 +208,10 @@ impl SetupTool for AddProvider {
     }
 }
 
-/// Settles an `addProvider` whose worker was lost after the dispatch fence,
-/// from the Publication Coral attempted under the Invocation's identity. A
-/// published Provider becomes the Tool Result; otherwise the Run ended
-/// first. A Setup that was never published expires at its deadline.
+/// Settles an `addProvider` whose worker was lost after the Policy Enforcement
+/// Point, from the Publication Coral attempted under the Invocation's identity.
+/// A published Provider becomes the Tool Result; otherwise the Run ended first.
+/// A Setup that was never published expires at its deadline.
 pub(super) async fn recover(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,

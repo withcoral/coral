@@ -13,6 +13,7 @@
 )]
 
 use coral_outbound::DestinationPolicy;
+use coral_telemetry::metric::CompilerRole;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -393,7 +394,7 @@ fn strict_program_errors(declaration: &str, body: &str) -> Vec<u32> {
     let source = format!(
         "declare namespace Materialized {{\n{declaration}\n}}\nexport default async function check(): Promise<void> {{\n{body}\n}}"
     );
-    let compilation = ProgramCompiler::new(coral_v8::IsolateLimits::default())
+    let compilation = ProgramCompiler::new(coral_v8::IsolateLimits::default(), CompilerRole::Run)
         .expect("pinned TypeScript compiler")
         .prepare_saved_function(
             std::time::Instant::now() + coral_v8::COMPILATION_TIMEOUT,
@@ -3025,7 +3026,7 @@ fn assert_strict_compiling_declaration(declaration: &str) {
     let source = format!(
         "declare namespace Materialized {{\n{declaration}\n}}\nexport default function compileCheck(): void {{}}"
     );
-    let compiler = ProgramCompiler::new(coral_v8::IsolateLimits::default())
+    let compiler = ProgramCompiler::new(coral_v8::IsolateLimits::default(), CompilerRole::Run)
         .expect("pinned TypeScript compiler");
     let compilation = compiler
         .prepare_saved_function(

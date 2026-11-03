@@ -469,13 +469,14 @@ authorized detail and Approval Request can show its exact logical arguments; sum
 telemetry omit them. Credentials and host-generated authentication data are never Invocation arguments. Repeating a call
 is a new Invocation rather than an automatic retry. _Avoid_: Retry attempt, query execution, stored Program
 
-**Dispatch Fence**: The one authoritative check that lets a Tool Invocation start its dispatch. The Run Owner runs
-it for every ready Invocation after any wait has ended, against the current Workspace, Provider, policy and account
-facts, the User's current authority, and the Run state it holds, including each Approval Request's decision. A change to
-those facts either completes before the fence reads them or waits until the fence has recorded its outcome, so a
-revocation that commits first always wins. The fence records the dispatch start; a change that commits after it does not
-stop a dispatch already started. A cached or earlier decision cannot authorize dispatch. _Avoid_: dispatch recheck, held
-fence, versioned decision, authorization cache
+**Policy Enforcement Point**: The one authoritative check that lets a Tool Invocation start its dispatch. Each pass of
+it is an enforcement check. The Run Owner runs it for every ready Invocation after any wait has ended, against the
+current Workspace, Provider, policy and account facts, the User's current authority, and the Run state it holds,
+including each Approval Request's decision. A change to those facts either completes before the enforcement point reads
+them or waits until it has recorded its outcome, so a revocation that commits first always wins. The enforcement point
+records the dispatch start; a change that commits after it does not stop a dispatch already started. A cached or earlier
+decision cannot authorize dispatch. _Avoid_: Dispatch Fence, dispatch recheck, held fence, versioned decision,
+authorization cache
 
 **Fan-out Limit**: The deployment-wide number of Tool Invocations of one Coral Program Run that may be
 `dispatching` at the same time. Coral admits every call as an Invocation at once; a ready Invocation above the limit

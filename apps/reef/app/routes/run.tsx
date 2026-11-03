@@ -10,9 +10,9 @@ export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/man
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
     const [page, workspace] = await Promise.all([
-      loadRunActivity(request, management(request, context), params),
+      loadRunActivity(request, management(context), params),
       // The Run's workspace names its breadcrumb; without access, the Run page still decides.
-      authorizedWorkspace(request, context, params.workspace).then(
+      authorizedWorkspace(context, params.workspace).then(
         (authorized) => authorized.workspace,
         () => undefined,
       ),

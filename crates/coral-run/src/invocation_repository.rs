@@ -260,7 +260,7 @@ pub(super) async fn has_dispatch_start(
         .await?;
     row.map(|(started,)| started.is_some()).ok_or_else(|| {
         Error::InvocationPersistence(
-            "admitted Invocation disappeared while observing its fence".into(),
+            "admitted Invocation disappeared while observing its enforcement point".into(),
         )
     })
 }

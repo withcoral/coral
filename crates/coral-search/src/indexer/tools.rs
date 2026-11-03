@@ -66,10 +66,12 @@ impl EntityIndexer for ToolIndexer {
         transaction: &mut Transaction<'_>,
         entries: &GenerationEntries,
         rows: &GenerationRows<'_>,
-    ) -> Result<(), IndexError> {
+    ) -> Result<super::IndexEffect, IndexError> {
         let rows = &rows.rows;
         let workspace_id = entries.workspace_id();
         let generation_id = entries.generation_id();
+        let visibility =
+            repository::generation_visibility(transaction, workspace_id, generation_id).await?;
         let attempted_at = now_unix_nanos()?;
         repository::upsert_tool_rows(transaction, rows, attempted_at).await?;
         // A Generation keeps its Tools, but the reconcile task prepares
@@ -83,7 +85,36 @@ impl EntityIndexer for ToolIndexer {
         .await?;
         repository::refresh_generation_lengths(transaction, workspace_id, generation_id).await?;
         repository::refresh_workspace_statistics(transaction, workspace_id).await?;
-        Ok(())
+        let target = || super::IndexedCatalog {
+            provider_id: entries.provider_id().clone(),
+            generation_id: generation_id.clone(),
+        };
+        Ok(match visibility {
+            None => super::IndexEffect::FirstVisible {
+                target: target(),
+                published_at_unix_nanos: entries.published_at_unix_nanos(),
+                path: coral_telemetry::metric::VisibilityPath::Initial,
+            },
+            Some(repository::RecordedVisibility::NeverVisible) => {
+                super::IndexEffect::FirstVisible {
+                    target: target(),
+                    published_at_unix_nanos: entries.published_at_unix_nanos(),
+                    path: coral_telemetry::metric::VisibilityPath::Retried,
+                }
+            }
+            Some(repository::RecordedVisibility::Visible {
+                unavailable_since: Some(since),
+            }) => super::IndexEffect::Recovered {
+                target: target(),
+                unavailable_since_unix_nanos: since,
+            },
+            Some(
+                repository::RecordedVisibility::Visible {
+                    unavailable_since: None,
+                }
+                | repository::RecordedVisibility::Unknown,
+            ) => super::IndexEffect::Updated,
+        })
     }
 
     async fn remove(
@@ -138,14 +169,22 @@ impl EntityIndexer for ToolIndexer {
                 match &state.outcome {
                     // A rename keeps the Generation, so the name is compared on
                     // its own.
-                    RecordedOutcome::Complete { display_name } => {
-                        display_name != generation.display_name()
-                    }
+                    RecordedOutcome::Complete { .. } => !current_projection(state, generation),
                     RecordedOutcome::Failed { retry } => retry.is_due(now_unix_nanos),
                 }
             })
             .collect())
     }
+}
+
+/// Projection freshness, shared by reconciliation and telemetry. Retry
+/// eligibility is separate: every failed projection remains backlog.
+pub(super) fn current_projection(
+    state: &repository::RecordedGeneration,
+    expected: &ActiveGeneration,
+) -> bool {
+    state.indexer_revision >= Some(INDEXER_REVISION)
+        && matches!(&state.outcome, RecordedOutcome::Complete { display_name } if display_name == expected.display_name())
 }
 
 impl ToolIndexer {

@@ -13,9 +13,9 @@ export function shouldRevalidate() {
 }
 
 /** Selection reveals no new catalog data, but always rechecks current access. */
-export async function loader({ request, context, params }: Route.LoaderArgs) {
+export async function loader({ context, params }: Route.LoaderArgs) {
   try {
-    const { workspace } = await authorizedWorkspace(request, context, params.workspace)
+    const { workspace } = await authorizedWorkspace(context, params.workspace)
     return data(
       {
         workspace,

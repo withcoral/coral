@@ -661,7 +661,7 @@ async fn upstream_send_holds_no_database_transaction_or_lock() {
     )
     .await
     .expect("policy change must not wait for an upstream-held database lock")
-    .expect("post-fence policy change commits");
+    .expect("post-enforcement policy change commits");
     upstream.release.store(true, Ordering::SeqCst);
 
     let terminal = wait_for_terminal(

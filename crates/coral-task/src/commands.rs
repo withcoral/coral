@@ -8,6 +8,7 @@ use coral_db::Transaction;
 use coral_functions::SavedFunctionModule;
 use coral_run::RunModule;
 use coral_search::{SearchIndex, SearchPage, SearchRequest, UniversalSearchModule as SearchModule};
+use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -434,6 +435,8 @@ impl TaskCommands {
         )
         .await?
         .ok_or(Error::TaskNotFound)?;
+        // The command runs in its caller's span, such as an MCP tool call's.
+        tracing::Span::current().record("coral.task.id", safe::id(&task.telemetry_id()));
         if task.outcome().is_some() {
             return Err(Error::TaskClosed);
         }

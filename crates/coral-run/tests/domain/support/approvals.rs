@@ -103,13 +103,13 @@ impl ActionQueue for RunModule {
 pub(crate) struct ApprovalGatedTool {
     pub(crate) fixture: TestModules,
     pub(crate) tool: ToolFixture,
-    gate: Arc<FenceGate>,
+    gate: Arc<EnforcementGate>,
     release: oneshot::Sender<()>,
 }
 
 impl ApprovalGatedTool {
     pub(crate) async fn new(user_id: &str) -> Self {
-        let (gate, release) = FenceGate::blocking();
+        let (gate, release) = EnforcementGate::blocking();
         let fixture = TestModules::with_invocation_adapters(
             Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
             Arc::new(RejectingUpstream),

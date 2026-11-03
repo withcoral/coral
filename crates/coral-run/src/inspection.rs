@@ -82,7 +82,8 @@ pub enum InvocationOutcome {
     },
     /// Run termination won before dispatch.
     RunTerminated,
-    /// Dispatch crossed its fence without a durable complete result.
+    /// Dispatch crossed its enforcement point without a durable complete
+    /// result.
     Indeterminate,
 }
 /// Exact Invocation evidence. Outcome kind remains in its summary.

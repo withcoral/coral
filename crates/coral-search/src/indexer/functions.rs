@@ -41,12 +41,12 @@ impl EntityIndexer for SavedFunctionIndexer {
         transaction: &mut Transaction<'_>,
         entry: &SavedFunctionEntry,
         row: &FunctionRow<'_>,
-    ) -> Result<(), IndexError> {
+    ) -> Result<super::IndexEffect, IndexError> {
         repository::upsert_function_row(transaction, row, now_unix_nanos()?).await?;
         repository::delete_function_state(transaction, entry.workspace_id(), entry.id()).await?;
         repository::refresh_function_length(transaction, entry.workspace_id(), entry.id()).await?;
         repository::refresh_workspace_statistics(transaction, entry.workspace_id()).await?;
-        Ok(())
+        Ok(super::IndexEffect::Updated)
     }
 
     async fn remove(

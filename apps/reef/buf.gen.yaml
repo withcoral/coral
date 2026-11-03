@@ -19,3 +19,4 @@ inputs:
       - ../../crates/coral-grpc/proto/coral/management/v1/policy.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/activity.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/saved_function.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/release.proto

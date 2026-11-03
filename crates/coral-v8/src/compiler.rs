@@ -1,7 +1,9 @@
+use coral_telemetry::metric::CompilerRole;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use coral_telemetry::metric::{self, CompilerOperation, CompilerOutcome};
 use serde::Deserialize;
 
 use crate::profile::TYPESCRIPT_PROFILE;
@@ -55,6 +57,7 @@ pub struct ProgramCompiler {
     sender: mpsc::SyncSender<Option<CompilerJob>>,
     worker: Option<thread::JoinHandle<()>>,
     limits: IsolateLimits,
+    role: CompilerRole,
 }
 
 impl ProgramCompiler {
@@ -68,7 +71,7 @@ impl ProgramCompiler {
     /// Returns an initialization or memory-limit error when V8 or the packaged
     /// compiler cannot start within the selected budget, or when the packaged
     /// compiler version differs from the profile.
-    pub fn new(isolate_limits: IsolateLimits) -> Result<Self, Error> {
+    pub fn new(isolate_limits: IsolateLimits, role: CompilerRole) -> Result<Self, Error> {
         crate::v8_support::initialize()?;
         // ponytail: one warm isolate and 32 queued requests; use a pool only if
         // measured authoring throughput needs it. Saturation never queues unbounded work.
@@ -98,6 +101,7 @@ impl ProgramCompiler {
                 sender,
                 worker: Some(worker),
                 limits: isolate_limits,
+                role,
             }),
             Ok(Err(error)) => {
                 if worker.join().is_err() {
@@ -128,7 +132,9 @@ impl ProgramCompiler {
     /// error.
     pub fn compile(&self, deadline: Instant, source: &str) -> Result<CompiledProgram, Error> {
         let source = source.to_string();
-        self.request(deadline, move |compiler| compiler.compile(&source))
+        self.request(CompilerOperation::Program, deadline, move |compiler| {
+            compiler.compile(&source)
+        })
     }
 
     /// Emits and validates the self-contained declaration for one Saved Function.
@@ -147,9 +153,11 @@ impl ProgramCompiler {
         source: &str,
     ) -> Result<SavedFunctionCompilation, Error> {
         let source = source.to_string();
-        self.request(deadline, move |compiler| {
-            compiler.prepare_saved_function(&source, "null")
-        })
+        self.request(
+            CompilerOperation::SavedFunction,
+            deadline,
+            move |compiler| compiler.prepare_saved_function(&source, "null"),
+        )
     }
 
     /// Prepares one Saved Function as [`Self::prepare_saved_function`] does,
@@ -172,9 +180,11 @@ impl ProgramCompiler {
         let declarations_json = serde_json::to_string(declarations)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         let source = source.to_string();
-        self.request(deadline, move |compiler| {
-            compiler.prepare_saved_function(&source, &declarations_json)
-        })
+        self.request(
+            CompilerOperation::SavedFunction,
+            deadline,
+            move |compiler| compiler.prepare_saved_function(&source, &declarations_json),
+        )
     }
 
     /// Finds the Saved Functions and Tools one Saved Function module
@@ -190,7 +200,7 @@ impl ProgramCompiler {
         source: &str,
     ) -> Result<SavedFunctionCallPaths, Error> {
         let source = source.to_string();
-        self.request(deadline, move |compiler| {
+        self.request(CompilerOperation::Analysis, deadline, move |compiler| {
             compiler.saved_function_call_paths(&source)
         })
     }
@@ -206,7 +216,7 @@ impl ProgramCompiler {
         source: &str,
     ) -> Result<Vec<SavedFunctionReference>, Error> {
         let source = source.to_string();
-        self.request(deadline, move |compiler| {
+        self.request(CompilerOperation::Analysis, deadline, move |compiler| {
             compiler.saved_function_paths(&source)
         })
     }
@@ -222,7 +232,7 @@ impl ProgramCompiler {
         source: &str,
     ) -> Result<Vec<SavedFunctionReference>, Error> {
         let source = source.to_string();
-        self.request(deadline, move |compiler| {
+        self.request(CompilerOperation::Analysis, deadline, move |compiler| {
             compiler.saved_function_dependency_paths(&source)
         })
     }
@@ -246,13 +256,31 @@ impl ProgramCompiler {
         let saved_functions_json = serde_json::to_string(saved_functions)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         let source = source.to_string();
-        self.request(deadline, move |compiler| {
+        self.request(CompilerOperation::Program, deadline, move |compiler| {
             compiler.compile_with_saved_functions(&source, &saved_functions_json)
         })
     }
 
     fn request<T: Send + 'static>(
         &self,
+        operation: CompilerOperation,
+        deadline: Instant,
+        work: impl FnOnce(&mut CompilerIsolate) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        let started = Instant::now();
+        let result = self.enqueue_and_wait(operation, deadline, work);
+        metric::compiler_requested(
+            self.role,
+            operation,
+            compiler_outcome(&result),
+            started.elapsed(),
+        );
+        result
+    }
+
+    fn enqueue_and_wait<T: Send + 'static>(
+        &self,
+        operation: CompilerOperation,
         deadline: Instant,
         work: impl FnOnce(&mut CompilerIsolate) -> Result<T, Error> + Send + 'static,
     ) -> Result<T, Error> {
@@ -261,31 +289,37 @@ impl ProgramCompiler {
         let worker_control = control.clone();
         let (response_sender, response_receiver) = mpsc::sync_channel(1);
         let limits = self.limits;
+        let queued = metric::compiler_queued(self.role, operation);
         self.sender
             .try_send(Some(Box::new(move |compiler| {
-                if Instant::now() >= deadline || worker_control.is_requested() {
-                    let _sent = response_sender.send(Err(Error::CompilationTimedOut));
-                    return;
-                }
-                if compiler.is_none() {
-                    match CompilerIsolate::new(limits) {
-                        Ok(fresh) => *compiler = Some(fresh),
-                        Err(error) => {
-                            let _sent = response_sender.send(Err(error));
-                            return;
+                let active_measurement = queued.dequeued();
+                let result = (|| {
+                    if Instant::now() >= deadline || worker_control.is_requested() {
+                        return Err(Error::CompilationTimedOut);
+                    }
+                    if compiler.is_none() {
+                        match CompilerIsolate::new(limits) {
+                            Ok(fresh) => *compiler = Some(fresh),
+                            Err(error) => {
+                                return Err(error);
+                            }
                         }
                     }
-                }
-                let active = compiler.as_mut().expect("compiler initialized");
-                worker_control.install(&active.isolate.thread_safe_handle());
-                let mut result = work(active);
-                worker_control.uninstall();
-                if worker_control.is_requested() || Instant::now() >= deadline {
-                    result = Err(Error::CompilationTimedOut);
-                }
-                if result.is_err() || active.heap_requires_recycling(COMPILER_RECYCLE_HEAP_BYTES) {
-                    *compiler = None;
-                }
+                    let active = compiler.as_mut().expect("compiler initialized");
+                    worker_control.install(&active.isolate.thread_safe_handle());
+                    let mut result = work(active);
+                    worker_control.uninstall();
+                    if worker_control.is_requested() || Instant::now() >= deadline {
+                        result = Err(Error::CompilationTimedOut);
+                    }
+                    if result.is_err()
+                        || active.heap_requires_recycling(COMPILER_RECYCLE_HEAP_BYTES)
+                    {
+                        *compiler = None;
+                    }
+                    result
+                })();
+                active_measurement.finish(compiler_outcome(&result));
                 let _sent = response_sender.send(result);
             })))
             .map_err(|error| match error {
@@ -300,6 +334,24 @@ impl ProgramCompiler {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::CompilerUnavailable),
         }
+    }
+}
+
+fn compiler_outcome<T>(result: &Result<T, Error>) -> CompilerOutcome {
+    match result {
+        Ok(_) => CompilerOutcome::Ok,
+        Err(Error::CompilerBusy) => CompilerOutcome::QueueFull,
+        Err(Error::CompilerUnavailable | Error::CompilerThread(_)) => CompilerOutcome::Stopped,
+        Err(Error::CompilationTimedOut) => CompilerOutcome::TimedOut,
+        Err(
+            Error::Compilation { .. }
+            | Error::InvalidProgramBody
+            | Error::InvalidSavedFunction(_)
+            | Error::SourceTooDeeplyNested
+            | Error::ForbiddenCapability(_)
+            | Error::InvalidSavedFunctionReference { .. },
+        ) => CompilerOutcome::Rejected,
+        Err(_) => CompilerOutcome::Failed,
     }
 }
 
@@ -585,7 +637,12 @@ impl CompilerIsolate {
                 .call(&try_catch, receiver, &arguments)
                 .ok_or_else(|| match try_catch.exception() {
                     Some(exception) => {
-                        Error::Engine(format_thrown_value(&mut try_catch, exception))
+                        let thrown = format_thrown_value(&mut try_catch, exception);
+                        if thrown.starts_with(STACK_OVERFLOW) {
+                            Error::SourceTooDeeplyNested
+                        } else {
+                            Error::Engine(thrown)
+                        }
                     }
                     None => Error::Engine("TypeScript compiler bridge failed".to_string()),
                 })?;
@@ -596,6 +653,9 @@ impl CompilerIsolate {
         })
     }
 }
+
+/// What V8 throws when the compiler's recursion over source overflows its stack.
+const STACK_OVERFLOW: &str = "RangeError: Maximum call stack size exceeded";
 
 fn invalid_saved_function_reference(error: SavedFunctionReferenceError) -> Error {
     Error::InvalidSavedFunctionReference {
@@ -636,7 +696,144 @@ fn decode_compiled_program(json: &str) -> Result<CompiledProgram, Error> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timed_out_callers_stay_queued_until_dequeued_and_full_is_distinct() {
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let _measured = tracing::subscriber::set_default(metrics.subscriber());
+        let compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
+        let (entered, started) = mpsc::channel();
+        let (release, held) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let capture = metrics.clone();
+            let compiler = &compiler;
+            let blocker = scope.spawn(move || {
+                tracing::subscriber::with_default(capture.subscriber(), || {
+                    compiler.request(
+                        CompilerOperation::Analysis,
+                        Instant::now() + COMPILATION_TIMEOUT,
+                        move |_| {
+                            let _sent = entered.send(());
+                            let _released = held.recv();
+                            Ok(())
+                        },
+                    )
+                })
+            });
+            started
+                .recv_timeout(COMPILATION_TIMEOUT)
+                .expect("worker is held");
+            for _ in 0..32 {
+                assert!(matches!(
+                    compiler.compile(Instant::now(), "return 1;"),
+                    Err(Error::CompilationTimedOut)
+                ));
+            }
+            let depth = || {
+                let mut values = metrics.values("coral.compiler.queue.depth");
+                values.sort_by(f64::total_cmp);
+                values
+            };
+            assert_eq!(
+                depth(),
+                [32.0],
+                "caller timeout does not remove the queued job"
+            );
+            let authoring = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Authoring)
+                .expect("authoring compiler");
+            authoring
+                .prepare_saved_function(
+                    Instant::now() + COMPILATION_TIMEOUT,
+                    "export default () => 1;",
+                )
+                .expect("authoring queue remains available");
+            let depths = metrics.named("coral.compiler.queue.depth");
+            for (role, expected) in [("run", 32.0), ("authoring", 0.0)] {
+                let point = depths
+                    .iter()
+                    .find(|point| {
+                        point.attributes.get("compiler.role").map(String::as_str) == Some(role)
+                    })
+                    .expect("role-specific depth");
+                assert!((point.value - expected).abs() < f64::EPSILON);
+            }
+            assert!(matches!(
+                compiler.prepare_saved_function(Instant::now(), "export default () => 1;"),
+                Err(Error::CompilerBusy)
+            ));
+            assert_eq!(
+                depth(),
+                [0.0, 32.0],
+                "a rejected enqueue releases its gauge contribution"
+            );
+            assert!(
+                metrics
+                    .named("coral.compiler.request.duration")
+                    .iter()
+                    .any(|point| point.attributes.get("outcome").map(String::as_str)
+                        == Some("queue_full"))
+            );
+            release.send(()).expect("release worker");
+            blocker.join().unwrap().expect("blocking work ended");
+        });
+        let deadline = Instant::now() + COMPILATION_TIMEOUT;
+        loop {
+            match compiler.compile(deadline, "return 42;") {
+                Ok(_) => break,
+                Err(Error::CompilerBusy) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                result => panic!("worker drains expired requests and recovers: {result:?}"),
+            }
+        }
+        for name in ["coral.compiler.queue.depth", "coral.compiler.active"] {
+            assert_eq!(metrics.values(name), [0.0, 0.0]);
+        }
+    }
+
+    #[test]
+    fn compiler_metrics_cover_programs_and_saved_function_authoring() {
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let _measured = tracing::subscriber::set_default(metrics.subscriber());
+        let compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
+        compiler
+            .compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;")
+            .expect("Program");
+        let authoring = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Authoring)
+            .expect("authoring compiler");
+        authoring
+            .prepare_saved_function(
+                Instant::now() + COMPILATION_TIMEOUT,
+                "export default function answer() { return 42; }",
+            )
+            .expect("Saved Function");
+        for name in [
+            "coral.compiler.request.duration",
+            "coral.compiler.queue.duration",
+            "coral.compiler.work.duration",
+        ] {
+            let points = metrics.named(name);
+            for (operation, role) in [("program", "run"), ("saved_function", "authoring")] {
+                let point = points
+                    .iter()
+                    .find(|point| {
+                        point.attributes.get("operation").map(String::as_str) == Some(operation)
+                    })
+                    .unwrap_or_else(|| panic!("{name} covers {operation}"));
+                assert_eq!(point.count, 1);
+                assert_eq!(
+                    point.attributes.get("compiler.role").map(String::as_str),
+                    Some(role)
+                );
+            }
+        }
+        for name in ["coral.compiler.queue.depth", "coral.compiler.active"] {
+            assert_eq!(metrics.values(name), [0.0, 0.0]);
+        }
+    }
     use super::*;
+    use crate::CompileFailure;
 
     fn script(compiler: &mut CompilerIsolate, source: &str) -> Result<(), Error> {
         v8::scope!(let scope, &mut compiler.isolate);
@@ -647,10 +844,12 @@ mod tests {
 
     #[test]
     fn deadline_terminates_noncooperative_compiler_and_next_request_recovers() {
-        let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
+        let compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
         let entered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_entered = entered.clone();
         let result = compiler.request(
+            CompilerOperation::Program,
             Instant::now() + Duration::from_millis(200),
             move |compiler| {
                 worker_entered.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -672,12 +871,89 @@ mod tests {
 
     #[test]
     fn expired_requests_never_execute_or_terminate_a_later_request() {
-        let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
-        let result = compiler.request::<()>(Instant::now(), |_| panic!("expired job executed"));
+        let compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
+        let result = compiler.request::<()>(CompilerOperation::Program, Instant::now(), |_| {
+            panic!("expired job executed")
+        });
         assert!(matches!(result, Err(Error::CompilationTimedOut)));
         compiler
             .compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;")
             .expect("live request after expired job");
+    }
+
+    #[test]
+    fn only_authored_faults_become_rejections() {
+        for (error, failure) in [
+            (Error::CompilerBusy, CompileFailure::Busy),
+            (Error::CompilationTimedOut, CompileFailure::TimedOut),
+            (Error::CompilerUnavailable, CompileFailure::Stopped),
+            (
+                Error::CompilerThread(std::io::Error::other("no thread")),
+                CompileFailure::Stopped,
+            ),
+            (
+                Error::InvalidProgramBody,
+                CompileFailure::Rejected("Program source is not one async-function body".into()),
+            ),
+            (
+                Error::SourceTooDeeplyNested,
+                CompileFailure::Rejected(
+                    "TypeScript source is nested too deeply to compile".into(),
+                ),
+            ),
+            (
+                Error::MemoryLimitExceeded,
+                CompileFailure::Rejected("V8 isolate memory limit exceeded".into()),
+            ),
+            (
+                Error::CompilerProtocol("private".into()),
+                CompileFailure::Failed("compiler_protocol"),
+            ),
+            (
+                Error::Engine("private".into()),
+                CompileFailure::Failed("engine"),
+            ),
+            (
+                Error::Initialization("private".into()),
+                CompileFailure::Failed("initialization"),
+            ),
+            (
+                Error::InvalidSourceMap("private".into()),
+                CompileFailure::Failed("invalid_source_map"),
+            ),
+        ] {
+            assert_eq!(CompileFailure::from(error), failure);
+        }
+    }
+
+    #[test]
+    fn deeply_nested_source_is_rejected_and_leaves_the_compiler_usable() {
+        let compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
+        let deadline = || Instant::now() + COMPILATION_TIMEOUT;
+        for source in [
+            format!("return 1{};", "+1".repeat(30_000)),
+            format!("return {}1{};", "(".repeat(30_000), ")".repeat(30_000)),
+        ] {
+            assert!(
+                matches!(
+                    compiler.compile(deadline(), &source),
+                    Err(Error::SourceTooDeeplyNested)
+                ),
+                "compile"
+            );
+            assert!(
+                matches!(
+                    compiler.saved_function_paths(deadline(), &source),
+                    Err(Error::SourceTooDeeplyNested)
+                ),
+                "analysis"
+            );
+        }
+        compiler
+            .compile(deadline(), "return 42;")
+            .expect("compiler usable after overflow");
     }
 
     #[test]
@@ -714,16 +990,55 @@ mod tests {
     }
 
     #[test]
-    fn compiler_recycles_after_failure() {
-        let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
-        let failed = compiler.request(Instant::now() + COMPILATION_TIMEOUT, |compiler| {
-            script(compiler, "globalThis.__coralCompile = null;")?;
-            Err::<(), _>(Error::Engine("injected failure".to_string()))
-        });
-        assert!(failed.is_err());
+    fn compiler_metrics_distinguish_rejected_failed_and_stopped_requests() {
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let _measured = tracing::subscriber::set_default(metrics.subscriber());
+        let mut compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
+        assert!(matches!(
+            compiler.compile(Instant::now() + COMPILATION_TIMEOUT, "return ("),
+            Err(Error::Compilation { .. })
+        ));
+        // The existing compiler fault harness modifies the real isolate. The
+        // next public compile fails inside its bridge, rather than on source.
+        compiler
+            .request(
+                CompilerOperation::Analysis,
+                Instant::now() + COMPILATION_TIMEOUT,
+                |compiler| script(compiler, "globalThis.__coralCompile = null;"),
+            )
+            .unwrap();
+        assert!(matches!(
+            compiler.compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;"),
+            Err(Error::Engine(_))
+        ));
         compiler
             .compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;")
             .expect("fresh compiler after failure");
+        // Exercise the same stop protocol as Drop, then submit to the closed worker.
+        compiler.sender.send(None).unwrap();
+        compiler.worker.take().unwrap().join().unwrap();
+        assert!(matches!(
+            compiler.compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;"),
+            Err(Error::CompilerUnavailable)
+        ));
+        for (outcome, handled) in [("rejected", true), ("failed", true), ("stopped", false)] {
+            for (name, expected) in [
+                ("coral.compiler.request.duration", 1),
+                ("coral.compiler.work.duration", u64::from(handled)),
+            ] {
+                let count = metrics
+                    .named(name)
+                    .iter()
+                    .filter(|point| {
+                        point.attributes.get("operation").map(String::as_str) == Some("program")
+                            && point.attributes.get("outcome").map(String::as_str) == Some(outcome)
+                    })
+                    .map(|point| point.count)
+                    .sum::<u64>();
+                assert_eq!(count, expected, "{name}: {outcome}");
+            }
+        }
     }
 
     #[test]
@@ -733,16 +1048,19 @@ mod tests {
             "const buffer = new ArrayBuffer(0, { maxByteLength: 4 * 1024 * 1024 }); buffer.resize(4 * 1024 * 1024); return new Uint8Array(buffer);",
         ] {
             let limits = IsolateLimits::new(16 * 1024 * 1024, 64 * 1024 * 1024).expect("limits");
-            let compiler = ProgramCompiler::new(limits).expect("compiler");
+            let compiler = ProgramCompiler::new(limits, CompilerRole::Run).expect("compiler");
             compiler
-                .request(Instant::now() + COMPILATION_TIMEOUT, move |compiler| {
-                    script(
-                        compiler,
-                        &format!("globalThis.__coralAllocate = () => {{ {allocate} }};"),
-                    )?;
-                    script(
-                        compiler,
-                        r"
+                .request(
+                    CompilerOperation::Program,
+                    Instant::now() + COMPILATION_TIMEOUT,
+                    move |compiler| {
+                        script(
+                            compiler,
+                            &format!("globalThis.__coralAllocate = () => {{ {allocate} }};"),
+                        )?;
+                        script(
+                            compiler,
+                            r"
                     const compile = __coralCompile;
                     globalThis.__coralCompile = (...args) => {
                         const retained = [];
@@ -754,8 +1072,9 @@ mod tests {
                         return compile(...args);
                     };
                 ",
-                    )
-                })
+                        )
+                    },
+                )
                 .expect("inject cumulative compiler buffer growth");
             let result = compiler.compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;");
             assert!(

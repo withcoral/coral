@@ -537,6 +537,7 @@ async fn the_owner_arms_a_timer_at_a_connection_requests_deadline() {
 /// connects, but the request stays ended.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_declined_or_expired_request_does_not_bind_a_later_connection() {
+    let telemetry = super::trace::telemetry();
     for (loss, ended) in [
         (
             GateLoss::Decline,
@@ -581,13 +582,14 @@ async fn a_declined_or_expired_request_does_not_bind_a_later_connection() {
             .unwrap();
         assert!(!format!("{events:?}").contains("late-connection-canary"));
     }
+    telemetry.assert_holds_none_of(["late-connection-canary"]);
 }
 
-/// Disconnecting fences a waiting request before its first credentials
+/// Disconnecting blocks a waiting request before its first credentials
 /// arrive. Later independent work may connect the same Account but cannot
 /// revive the request or its Invocation.
 #[tokio::test(flavor = "multi_thread")]
-async fn disconnect_fences_a_waiting_request_before_its_credentials_arrive() {
+async fn disconnect_blocks_a_waiting_request_before_its_credentials_arrive() {
     let waiting = WaitingConnection::new().await;
     let connecting = waiting.start_connecting().await;
     GateLoss::Disconnect.apply(&waiting).await;
@@ -987,9 +989,9 @@ async fn caller_connection_cannot_complete_an_obsolete_contract_after_regenerati
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::too_many_lines,
-    reason = "one caller-account journey checks exact Account selection and authorization ABA rejection at the dispatch fence"
+    reason = "one caller-account journey checks exact Account selection and authorization ABA rejection at the Policy Enforcement Point"
 )]
-async fn caller_connection_reconnect_preserves_account_and_fences_prepared_dispatch() {
+async fn caller_connection_reconnect_preserves_account_and_blocks_prepared_dispatch() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/forecast"))
@@ -1071,7 +1073,7 @@ async fn caller_connection_reconnect_preserves_account_and_fences_prepared_dispa
         .state(),
         RunState::Succeeded
     );
-    let (gate, release) = FenceGate::blocking();
+    let (gate, release) = EnforcementGate::blocking();
     runs.invocation_observer = gate.clone();
     let later = runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
     wait_until(|| gate.entered()).await;
@@ -1119,10 +1121,11 @@ async fn caller_connection_reconnect_preserves_account_and_fences_prepared_dispa
 /// signal rings both parked Runs' owners, each reads just its own pending
 /// connection requests, and only the one whose request ended sends its
 /// Invocation back to its held recheck, within the wake gap. That Invocation
-/// dispatches after one fence. The other owner writes nothing: its Run's
-/// ledger head stays where it was, and its request stays pending.
+/// dispatches after one enforcement check. The other owner writes nothing: its
+/// Run's ledger head stays where it was, and its request stays pending.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_after_one_fence() {
+async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_after_one_enforcement_check()
+ {
     let server = MockServer::start().await;
     forecast_once(&server, "first-canary").await;
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
@@ -1186,7 +1189,7 @@ async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_afte
         found_after <= wake_gap + Duration::from_millis(500),
         "found within the gap: {found_after:?}"
     );
-    assert_eq!(probe.fences(), 1, "one fence");
+    assert_eq!(probe.enforcement_checks(), 1, "one enforcement check");
     let prechecks = probe.prechecks();
     assert!(
         prechecks

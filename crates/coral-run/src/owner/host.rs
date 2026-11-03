@@ -28,16 +28,18 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tracing::Instrument as _;
 
+use coral_telemetry::metric::{ClaimKind, ClaimOutcome, RecoveryOutcome};
+use coral_telemetry::safe;
 use coral_workspace::AuthenticatedPrincipal;
 
 use crate::execution::{Backoff, until_answered};
-use crate::invocation::{FenceBatch, PrecheckBatch, ToolInvoker};
+use crate::invocation::{EnforcementBatch, PrecheckBatch, ToolInvoker};
 use crate::lifecycle::RunRecord;
 use crate::owner::ChunkWork as _;
 use crate::program_output::ProgramOutputWriter;
 use crate::recovery::RecoveryWrite;
 use crate::run_repository::{self, Chunk, OwnedEvent};
-use crate::trace::{Phase, phase_span};
+use crate::trace::{Phase, TimedSpan, phase_span};
 use crate::types::AcceptedRun;
 use crate::{Error, RunModule, engine, nanos_duration};
 
@@ -84,7 +86,7 @@ pub(crate) async fn host(
     // set by the first settle attempt, read by every later one.
     let mut settle_deadline: Option<Instant> = None;
     // One `coral.run.terminate` span covers every settle attempt.
-    let mut terminate: Option<tracing::Span> = None;
+    let mut terminate: Option<TimedSpan> = None;
     loop {
         let mut retired = false;
         for effect in effects.drain(..) {
@@ -114,8 +116,13 @@ pub(crate) async fn host(
                         *settle_deadline.get_or_insert_with(|| grace_deadline(&module, &shutdown));
                     let span = terminate
                         .get_or_insert_with(|| {
-                            phase_span(accepted.trace.as_ref(), &accepted.id, Phase::Terminate)
+                            phase_span(
+                                accepted.trace.as_ref(),
+                                &accepted.held_id(),
+                                Phase::Terminate,
+                            )
                         })
+                        .span()
                         .clone();
                     spawn_settle(&module, &accepted, &handle, shutdown, again, deadline, span);
                 }
@@ -263,9 +270,8 @@ fn spawn_precheck(
         let found = batch.run().await;
         if let Err(error) = &found {
             tracing::debug!(
-                run_id = %handle.run_id(),
-                ?check,
-                %error,
+                coral.run.id = safe::id(handle.held_id()),
+                error.type = safe::kind(error.code()),
                 "Run Owner's check of its parked waits found nothing: the next one reads again"
             );
         }
@@ -284,8 +290,8 @@ fn interrupt(
     last_commit_age_nanos: i64,
 ) {
     tracing::warn!(
-        run_id = %accepted.id,
-        last_commit_age_ms = last_commit_age_nanos / 1_000_000,
+        coral.run.id = safe::id(&accepted.held_id()),
+        coral.run.last_commit_age_ms = safe::number(last_commit_age_nanos / 1_000_000),
         "Run Owner interrupts its Run: no commit succeeded within three leases"
     );
     handle.stop().request();
@@ -368,8 +374,8 @@ fn run_effect(
         Effect::Suspect {
             last_commit_age_nanos,
         } => tracing::warn!(
-            run_id = %accepted.id,
-            last_commit_age_ms = last_commit_age_nanos / 1_000_000,
+            coral.run.id = safe::id(&accepted.held_id()),
+            coral.run.last_commit_age_ms = safe::number(last_commit_age_nanos / 1_000_000),
             "Run Owner is suspect: no commit succeeded within a lease; \
              Program requests answer once recorded"
         ),
@@ -387,25 +393,25 @@ fn run_effect(
             let accepted = accepted.clone();
             let actor = actor.clone();
             let handle = handle.clone();
-            let span = phase_span(accepted.trace.as_ref(), &accepted.id, Phase::Start);
-            tokio::spawn(
-                async move {
-                    #[cfg(test)]
-                    module
-                        .execution_observer
-                        .owner_starting(&accepted.id, &accepted.claim_id)
-                        .await;
-                    let started = until_answered(
-                        &accepted.id,
-                        "execution start",
-                        || !handle.is_retired(),
-                        || module.start_execution(&accepted, &actor),
-                    )
+            let span = phase_span(accepted.trace.as_ref(), &accepted.held_id(), Phase::Start);
+            // The Run waits for its start mark.
+            let queued = coral_telemetry::metric::run_queued();
+            tokio::spawn(span.instrument(async move {
+                #[cfg(test)]
+                module
+                    .execution_observer
+                    .owner_starting(&accepted.id, &accepted.claim_id)
                     .await;
-                    handle.send(Message::Started(started));
-                }
-                .instrument(span),
-            );
+                let started = until_answered(
+                    &accepted.held_id(),
+                    "execution start",
+                    || !handle.is_retired(),
+                    || module.start_execution(&accepted, &actor),
+                )
+                .await;
+                drop(queued);
+                handle.send(Message::Started(started));
+            }));
         }
         Effect::StartProgram(package) => {
             if let OwnerStart::Program(actor) = start {
@@ -419,20 +425,21 @@ fn run_effect(
             let module = module.clone();
             let accepted = accepted.clone();
             let handle = handle.clone();
-            let span = phase_span(accepted.trace.as_ref(), &accepted.id, Phase::Complete);
-            tokio::spawn(
-                async move {
-                    let completed = until_answered(
-                        &accepted.id,
-                        "terminal write",
-                        || !handle.is_retired(),
-                        || module.complete_execution(&accepted, &completion, intent.as_ref()),
-                    )
-                    .await;
-                    handle.send(Message::Completed(completed));
-                }
-                .instrument(span),
+            let span = phase_span(
+                accepted.trace.as_ref(),
+                &accepted.held_id(),
+                Phase::Complete,
             );
+            tokio::spawn(span.instrument(async move {
+                let completed = until_answered(
+                    &accepted.held_id(),
+                    "terminal write",
+                    || !handle.is_retired(),
+                    || module.complete_execution(&accepted, &completion, intent.as_ref()),
+                )
+                .await;
+                handle.send(Message::Completed(completed));
+            }));
         }
         Effect::Commit { .. }
         | Effect::Settle { .. }
@@ -482,23 +489,20 @@ fn start_program(
     let limits = accepted.value_limits;
     let stop = handle.stop();
     let handle = handle.clone();
-    let span = phase_span(accepted.trace.as_ref(), &accepted.id, Phase::Execute);
-    tokio::spawn(
-        async move {
-            let completion = engine::execute(
-                engine,
-                package,
-                linked_snapshots,
-                invoker,
-                output,
-                limits,
-                stop,
-            )
-            .await;
-            handle.send(Message::ProgramEnded(completion));
-        }
-        .instrument(span),
-    );
+    let span = phase_span(accepted.trace.as_ref(), &accepted.held_id(), Phase::Execute);
+    tokio::spawn(span.instrument(async move {
+        let completion = engine::execute(
+            engine,
+            package,
+            linked_snapshots,
+            invoker,
+            output,
+            limits,
+            stop,
+        )
+        .await;
+        handle.send(Message::ProgramEnded(completion));
+    }));
 }
 
 /// The end of a recorded termination's shutdown grace on this process's
@@ -536,7 +540,7 @@ fn spawn_settle(
                 tokio::time::sleep(SETTLE_RETRY).await;
             }
             let attempted = until_answered(
-                &accepted.id,
+                &accepted.held_id(),
                 "settle",
                 || !handle.is_retired(),
                 || module.settle_termination(&shutdown, Instant::now() >= deadline),
@@ -552,32 +556,36 @@ fn spawn_interruption(module: &RunModule, accepted: &AcceptedRun, handle: &Owner
     let module = module.clone();
     let accepted = accepted.clone();
     let handle = handle.clone();
-    let span = phase_span(accepted.trace.as_ref(), &accepted.id, Phase::Complete);
-    tokio::spawn(
-        async move {
-            let recorded = module
-                .record_interruption(
-                    &accepted.workspace_id,
-                    &accepted.id,
-                    &accepted.claim_id,
-                    None,
-                )
-                .await
-                .map_err(CommitRejection::from);
-            match &recorded {
-                Ok(()) => {
-                    tracing::warn!(run_id = %accepted.id, "Run Owner recorded its interruption");
-                }
-                Err(rejection) => tracing::warn!(
-                    run_id = %accepted.id,
-                    ?rejection,
-                    "Run Owner's interruption was not written: the Run is no longer its own"
-                ),
-            }
-            handle.send(Message::Interrupted(recorded));
-        }
-        .instrument(span),
+    let span = phase_span(
+        accepted.trace.as_ref(),
+        &accepted.held_id(),
+        Phase::Complete,
     );
+    tokio::spawn(span.instrument(async move {
+        let recorded = module
+            .record_interruption(
+                &accepted.workspace_id,
+                &accepted.held_id(),
+                &accepted.claim_id,
+                None,
+            )
+            .await
+            .map_err(CommitRejection::from);
+        match &recorded {
+            Ok(()) => {
+                tracing::warn!(
+                    coral.run.id = safe::id(&accepted.held_id()),
+                    "Run Owner recorded its interruption"
+                );
+            }
+            Err(rejection) => tracing::warn!(
+                coral.run.id = safe::id(&accepted.held_id()),
+                error.type = safe::kind(rejection.code()),
+                "Run Owner's interruption was not written: the Run is no longer its own"
+            ),
+        }
+        handle.send(Message::Interrupted(recorded));
+    }));
 }
 
 /// The recovered owner's one chunk, written until the database answers. Its
@@ -593,8 +601,8 @@ fn spawn_recovery(
     let module = module.clone();
     let accepted = accepted.clone();
     let handle = handle.clone();
-    let span = phase_span(accepted.trace.as_ref(), &accepted.id, Phase::Recover);
-    tokio::spawn(async move {
+    let span = phase_span(accepted.trace.as_ref(), &accepted.held_id(), Phase::Recover);
+    tokio::spawn(span.instrument(async move {
         let write = RecoveryWrite {
             workspace_id: &accepted.workspace_id,
             run_id: &accepted.id,
@@ -611,28 +619,41 @@ fn spawn_recovery(
             return;
         }
         let recorded = until_answered(
-            &accepted.id,
+            &accepted.held_id(),
             "recovery",
             || !handle.is_retired(),
             || module.record_recovery(&write),
         )
         .await;
+        let (recovery, claim) = match &recorded {
+            Ok(()) => (RecoveryOutcome::Ended, Some(ClaimOutcome::Won)),
+            Err(Error::RunEnded) => (RecoveryOutcome::AlreadyEnded, None),
+            Err(Error::ClaimMismatch) => (RecoveryOutcome::Lost, Some(ClaimOutcome::Lost)),
+            Err(_) => (RecoveryOutcome::Failed, None),
+        };
+        coral_telemetry::metric::run_recovered(recovery);
+        if let Some(claim) = claim {
+            coral_telemetry::metric::run_claimed(ClaimKind::Recover, claim);
+        }
         match &recorded {
-            Ok(()) => tracing::info!(run_id = %accepted.id, "recovered Run Owner ended its Run"),
+            Ok(()) => tracing::info!(
+                coral.run.id = safe::id(&accepted.held_id()),
+                "recovered Run Owner ended its Run"
+            ),
             Err(Error::RunEnded) => tracing::info!(
-                run_id = %accepted.id,
+                coral.run.id = safe::id(&accepted.held_id()),
                 "recovered Run Owner found its Run ended"
             ),
             Err(error) => tracing::warn!(
-                run_id = %accepted.id,
-                %error,
+                coral.run.id = safe::id(&accepted.held_id()),
+                error.type = safe::kind(error.code()),
                 "recovered Run Owner wrote nothing: the Run is not its own, or the next sweep tries again"
             ),
         }
         handle.send(Message::Interrupted(
             recorded.map_err(CommitRejection::from),
         ));
-    }.instrument(span));
+    }));
 }
 
 fn spawn_commit(
@@ -732,7 +753,7 @@ async fn commit_until_answered(
     output_total: usize,
 ) -> Option<Result<(), CommitRejection>> {
     let mut items = chunk.items;
-    let mut fence = chunk.fence;
+    let mut enforcement = chunk.enforcement;
     let records = Records {
         termination: chunk.termination,
         inbox_rows: chunk.inbox_rows,
@@ -742,13 +763,14 @@ async fn commit_until_answered(
         head_before: chunk.head,
         lease_until_unix_nanos: None,
     };
-    let mut backoff = Backoff::new(&accepted.id, "chunk commit");
+    let held = accepted.held_id();
+    let mut backoff = Backoff::new(&held, "chunk commit");
     let outcome = loop {
         match commit_once(
             module,
             accepted,
             &mut items,
-            &mut fence,
+            &mut enforcement,
             &records,
             &mut written,
         )
@@ -771,9 +793,10 @@ async fn commit_until_answered(
     };
     if let Err(CommitRejection::Corrupt) = outcome {
         tracing::error!(
-            run_id = %accepted.id,
-            claim_id = %accepted.claim_id,
-            ?written,
+            coral.run.id = safe::id(&accepted.held_id()),
+            coral.run.claim.id = crate::trace::claim(&accepted.claim_id)
+                .as_ref()
+                .map(safe::id),
             "Run Ledger head contradicts its Run Owner's history; the owner stops and writes nothing more"
         );
     }
@@ -791,7 +814,7 @@ async fn commit_until_answered(
             work.settle(outcome.map_err(CommitRejection::lost));
         }
     }
-    if let Some(batch) = fence {
+    if let Some(batch) = enforcement {
         batch.settle(outcome.map_err(CommitRejection::lost));
     }
     Some(outcome)
@@ -861,16 +884,16 @@ fn refusal(run: &RunRecord, claim_id: &str, head: u64) -> Option<CommitRejection
 }
 
 /// One attempt to commit the chunk, in one transaction that holds no Run
-/// row: the row work, then the fence, the deletion of the Run Inbox rows it
-/// records, then the head update predicated on
-/// the owner's claim and the head it tracks. A recommit first checks whether
-/// the attempt it repeats landed; a head update that matches no row is
-/// classified from the row read again.
+/// row: the row work, then the enforcement point, the deletion of the Run Inbox
+/// rows it records, then the head update predicated on the owner's claim and
+/// the head it tracks. A recommit first checks whether the attempt it repeats
+/// landed; a head update that matches no row is classified from the row read
+/// again.
 async fn commit_once(
     module: &RunModule,
     accepted: &AcceptedRun,
     items: &mut [ChunkItem],
-    fence: &mut Option<Box<FenceBatch>>,
+    enforcement: &mut Option<Box<EnforcementBatch>>,
     records: &Records,
     written: &mut Written,
 ) -> Attempt {
@@ -910,9 +933,9 @@ async fn commit_once(
                 produced.push(work.run(&mut transaction, &run, now).await?);
             }
         }
-        // The fence decides every ready Invocation of the chunk together,
-        // after the row work; it writes no Event.
-        if let Some(batch) = fence.as_mut() {
+        // The enforcement point decides every ready Invocation of the chunk
+        // together, after the row work; it writes no Event.
+        if let Some(batch) = enforcement.as_mut() {
             batch.run(&mut transaction, &run, now).await?;
         }
         // The requests this chunk records leave the Run Inbox with it.

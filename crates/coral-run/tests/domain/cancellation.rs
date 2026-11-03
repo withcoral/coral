@@ -105,17 +105,18 @@ async fn user_and_agent_cancellation_wait_for_started_program_execution_to_stop(
     }
 }
 
-/// A cancel that reaches the owner while a Dispatch Fence is in flight is
-/// applied at once: the Program is terminated before the fence returns, and
-/// nothing is recorded until it has. The Run Inbox reader delivers it as it
-/// would a row inserted before the fence's transaction began (on SQLite an
-/// insert waits behind that transaction). Then `cancellation.requested` is
-/// recorded, every Invocation the fence permitted ends `run_terminated`
-/// instead of sending, and `run.ended` follows.
+/// A cancel that reaches the owner while an enforcement check is in flight is
+/// applied at once: the Program is terminated before the enforcement point
+/// returns, and nothing is recorded until it has. The Run Inbox reader delivers
+/// it as it would a row inserted before the enforcement point's transaction
+/// began (on SQLite an insert waits behind that transaction). Then
+/// `cancellation.requested` is recorded, every Invocation the enforcement point
+/// permitted ends `run_terminated` instead of sending, and `run.ended` follows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_follows_the_fence() {
+async fn a_cancel_during_an_in_flight_enforcement_check_is_applied_at_once_and_run_ended_follows_it()
+ {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
-    let latch = FenceLatch::holding_both();
+    let latch = EnforcementLatch::holding_both();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
@@ -123,7 +124,10 @@ async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_fol
     )
     .await;
     let tool = fixture
-        .user_tool("user:cancel-mid-fence", "Cancel during a fence")
+        .user_tool(
+            "user:cancel-mid-enforcement",
+            "Cancel during an enforcement check",
+        )
         .await;
     let run = fixture
         .runs
@@ -157,7 +161,7 @@ async fn a_cancel_during_an_in_flight_fence_is_applied_at_once_and_run_ended_fol
     assert_eq!(
         fixture.run_record(&tool.workspace_id, run.run_id()).await,
         before,
-        "the intent waits behind the fence in flight"
+        "the intent waits behind the enforcement check in flight"
     );
     latch.release_loaded();
     let canceled = fixture
@@ -629,10 +633,11 @@ impl Termination {
     }
 }
 
-/// An Invocation held before its dispatch fence or inside its upstream send.
+/// An Invocation held before its Policy Enforcement Point or inside its
+/// upstream send.
 enum InFlight {
     Waiting {
-        gate: Arc<FenceGate>,
+        gate: Arc<EnforcementGate>,
         release: oneshot::Sender<()>,
         upstream: Arc<ScriptedUpstream>,
         engine: Arc<CompletionAttemptingEngine>,
@@ -657,7 +662,7 @@ impl InFlight {
             .await;
             (Self::Dispatching { upstream }, fixture)
         } else {
-            let (gate, release) = FenceGate::blocking();
+            let (gate, release) = EnforcementGate::blocking();
             let upstream = Arc::new(ScriptedUpstream::json(200, result()));
             let engine = Arc::new(CompletionAttemptingEngine::new(
                 "coral.providers.weather.getForecast",
@@ -702,7 +707,7 @@ impl InFlight {
             Self::Waiting {
                 release, engine, ..
             } => {
-                release.send(()).expect("release dispatch fence");
+                release.send(()).expect("release Policy Enforcement Point");
                 wait_until(|| engine.finished.load(Ordering::SeqCst)).await;
             }
             Self::Dispatching { upstream } => {
@@ -713,9 +718,9 @@ impl InFlight {
     }
 }
 
-/// Cancellation and the Run deadline end an Invocation still waiting at its fence
-/// without a send. One already sent waits out the child shutdown grace and ends
-/// indeterminate; its late result changes nothing.
+/// Cancellation and the Run deadline end an Invocation still waiting at its
+/// enforcement point without a send. One already sent waits out the child
+/// shutdown grace and ends indeterminate; its late result changes nothing.
 #[tokio::test]
 async fn termination_ends_waiting_invocations_and_marks_unfinished_dispatches_indeterminate() {
     let terminations = CancellationCaller::ALL
@@ -1059,7 +1064,7 @@ async fn recovery_revokes_a_started_claim_before_late_program_work() {
 
 #[tokio::test]
 async fn recovery_ends_a_pending_invocation_without_dispatch() {
-    let (observer, release_fence) = FenceGate::blocking();
+    let (observer, release_enforcement) = EnforcementGate::blocking();
     let upstream = Arc::new(ScriptedUpstream::json(
         200,
         serde_json::json!({"temperature": 21}),
@@ -1121,7 +1126,9 @@ async fn recovery_ends_a_pending_invocation_without_dispatch() {
         ))
     );
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
-    release_fence.send(()).expect("release dispatch fence");
+    release_enforcement
+        .send(())
+        .expect("release Policy Enforcement Point");
     wait_until(|| engine.finished.load(Ordering::SeqCst)).await;
     wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
@@ -1134,7 +1141,7 @@ async fn recovery_ends_a_pending_invocation_without_dispatch() {
             &immediate(None, 100),
         )
         .await
-        .expect("observe interruption after stale fence and completion attempts");
+        .expect("observe interruption after stale enforcement check and completion attempts");
     assert_eq!(unchanged.state(), RunState::Interrupted);
 }
 

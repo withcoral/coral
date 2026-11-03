@@ -139,6 +139,61 @@ pub enum Error {
 }
 
 impl Error {
+    /// The error's stable kind, for an event's `error.type`: a bounded
+    /// code that never carries the error's text.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::ConsentDestinationRejected { .. } => "consent_destination_rejected",
+            Self::OutboundDestinationRejected { .. } => "outbound_destination_rejected",
+            Self::InputUnavailable { .. } => "input_unavailable",
+            Self::SetupPreparationUnavailable { .. } => "setup_preparation_unavailable",
+            Self::ProviderSetupNotApplicable { .. } => "provider_setup_not_applicable",
+            Self::ProviderSetupNotReady { .. } => "provider_setup_not_ready",
+            Self::AuthorizationDiscovery { .. } => "authorization_discovery",
+            Self::ClientBootstrapUnavailable { .. } => "client_bootstrap_unavailable",
+            Self::ClientMetadataNotPublic { .. } => "client_metadata_not_public",
+            Self::ClientMetadataUnresolved { .. } => "client_metadata_unresolved",
+            Self::AccountInput { .. } => "account_input",
+            Self::CredentialRefreshFailed { .. } => "credential_refresh_failed",
+            Self::OAuthTokenExchange { .. } => "oauth_token_exchange",
+            Self::OAuthClientConfiguration { .. } => "oauth_client_configuration",
+            Self::AccountNotFound { .. } => "account_not_found",
+            Self::AccountRequired { .. } => "account_required",
+            Self::AccountAuthorizationChanged { .. } => "account_authorization_changed",
+            Self::AccountConnectionDeclined { .. } => "account_connection_declined",
+            Self::AccountConnectionExpired { .. } => "account_connection_expired",
+            Self::CredentialRouteChanged { .. } => "credential_route_changed",
+            Self::Credentials { .. } => "credentials",
+            Self::InvalidInput { .. } => "invalid_input",
+            Self::ProviderSetupNotFound { .. } => "provider_setup_not_found",
+            Self::ProviderSetupConsumed { .. } => "provider_setup_consumed",
+            Self::ProviderPublicationNotFound { .. } => "provider_publication_not_found",
+            Self::ProviderNotFound { .. } => "provider_not_found",
+            Self::ProviderAlreadyDisabled { .. } => "provider_already_disabled",
+            Self::ProviderAlreadyActive { .. } => "provider_already_active",
+            Self::ProviderCallRootConflict { .. } => "provider_call_root_conflict",
+            Self::BuiltinProviderManaged { .. } => "builtin_provider_managed",
+            Self::ProviderAccountSettingVersionOverflow { .. } => {
+                "provider_account_setting_version_overflow"
+            }
+            Self::ToolNotFound { .. } => "tool_not_found",
+            Self::RequestIdConflict { .. } => "request_id_conflict",
+            Self::PendingAuthorizationLimit { .. } => "pending_authorization_limit",
+            Self::EtagMismatch { .. } => "etag_mismatch",
+            Self::IncompatibleConfigurationConfirmationRequired { .. } => {
+                "incompatible_configuration_confirmation_required"
+            }
+            Self::ProviderChangedDuringPublication { .. } => "provider_changed_during_publication",
+            Self::OperationalPublication { .. } => "operational_publication",
+            Self::CorruptData { .. } => "corrupt_data",
+            Self::Catalog { .. } => "catalog",
+            Self::Workspace { .. } => "workspace",
+            Self::Database { .. } => "database",
+            Self::EventFields { .. } => "event_fields",
+        }
+    }
+
     pub(crate) fn source_fetch(error: reqwest::Error) -> Self {
         match coral_outbound::FetchError::from(error) {
             coral_outbound::FetchError::DestinationRejected => Self::OutboundDestinationRejected,

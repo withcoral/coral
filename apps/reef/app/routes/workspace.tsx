@@ -33,7 +33,7 @@ const SUMMARY_REFRESH_MS = 30_000
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
-    const { api, workspace: w } = await authorizedWorkspace(request, context, params.workspace)
+    const { api, workspace: w } = await authorizedWorkspace(context, params.workspace)
     // An archived Workspace has only its history to show.
     if (w.state === 'archived') return redirect(`${w.path}/activity`, { headers: privateHeaders })
     const owner = w.effectiveRole === 'owner'
@@ -116,7 +116,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   const form = await mutationForm(request, context)
   const intent = field(form, 'intent')
   if (!Object.hasOwn(saved, intent)) throw new Response('Invalid action', { status: 400 })
-  const api = management(request, context).workspaces
+  const api = management(context).workspaces
   const name = workspaceName(params.workspace)
   const etag = field(form, 'etag')
   try {

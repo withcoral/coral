@@ -9,6 +9,7 @@ use axum::extract::{RawQuery, Request, State};
 use axum::http::{HeaderMap, header};
 use axum::response::Response;
 use coral_outbound::{BrowserRedirect, EndpointUrl};
+use coral_telemetry::safe;
 
 use super::approval_page::{self, ApprovalDecision, ApprovalScope};
 
@@ -282,7 +283,10 @@ async fn resolve_client(
         .resolve(client_id)
         .await
         .map_err(|error| {
-            tracing::warn!(%error, "OAuth client metadata resolution failed");
+            tracing::warn!(
+                error.type = safe::kind(error.code()),
+                "OAuth client metadata resolution failed"
+            );
         })
 }
 

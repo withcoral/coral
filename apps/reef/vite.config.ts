@@ -2,6 +2,8 @@ import { reactRouter } from '@react-router/dev/vite'
 import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin'
 import { defineConfig } from 'vite'
 
+import { devRequestTracing } from './dev-tracing.ts'
+
 export default defineConfig({
   server: {
     host: '127.0.0.1',
@@ -21,7 +23,7 @@ export default defineConfig({
       ],
     },
   },
-  plugins: [vanillaExtractPlugin(), reactRouter()],
+  plugins: [vanillaExtractPlugin(), devRequestTracing(), reactRouter()],
   resolve: {
     tsconfigPaths: true,
   },
