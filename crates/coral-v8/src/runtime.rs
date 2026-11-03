@@ -292,6 +292,7 @@ fn drain_program_work(
                             code,
                             message,
                             trace_id,
+                            suggestions,
                         }) => {
                             reject_tool_error(
                                 scope,
@@ -300,6 +301,7 @@ fn drain_program_work(
                                 &message,
                                 trace_id.as_deref(),
                                 None,
+                                &suggestions,
                                 &call_stack,
                             );
                         }
@@ -315,6 +317,7 @@ fn drain_program_work(
                                 message,
                                 None,
                                 Some(&outcome_json),
+                                &[],
                                 &call_stack,
                             );
                         }
@@ -529,6 +532,7 @@ fn tool_callback(
             message,
             trace_id.as_deref(),
             None,
+            &[],
             &call_stack,
         );
         return;
@@ -825,6 +829,17 @@ pub(crate) fn tool_error_fields(
     let status = fields.get_index(scope, 2)?;
     let body = fields.get_index(scope, 3)?;
     let body_truncated = fields.get_index(scope, 4)?;
+    let suggested = fields.get_index(scope, 5)?;
+    let suggestions = match v8::Local::<v8::Array>::try_from(suggested) {
+        Ok(paths) => (0..paths.length())
+            .map(|index| {
+                paths
+                    .get_index(scope, index)
+                    .map(|path| path.to_rust_string_lossy(scope))
+            })
+            .collect::<Option<Vec<_>>>()?,
+        Err(_undefined) => Vec::new(),
+    };
     Some(crate::ProgramToolError {
         code: code.to_rust_string_lossy(scope),
         trace_id: (!trace.is_undefined()).then(|| trace.to_rust_string_lossy(scope)),
@@ -834,6 +849,7 @@ pub(crate) fn tool_error_fields(
             .and_then(|status| u16::try_from(status).ok()),
         body: (!body.is_undefined()).then(|| body.to_rust_string_lossy(scope)),
         body_truncated: body_truncated.is_true(),
+        suggestions,
     })
 }
 
@@ -883,6 +899,10 @@ fn parse_tool_result<'s>(
     v8::json::parse(scope, encoded)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is one field of the ToolError the Program receives"
+)]
 fn reject_tool_error(
     scope: &mut v8::PinScope<'_, '_>,
     resolver: v8::Local<'_, v8::PromiseResolver>,
@@ -890,6 +910,7 @@ fn reject_tool_error(
     message: &str,
     trace_id: Option<&str>,
     outcome_json: Option<&str>,
+    suggestions: &[String],
     call_stack: &str,
 ) {
     let exception = (|| {
@@ -909,6 +930,15 @@ fn reject_tool_error(
             Some(outcome_json) => parse_tool_result(scope, outcome_json)?,
             None => v8::undefined(scope).into(),
         };
+        let suggested: v8::Local<v8::Value> = if suggestions.is_empty() {
+            v8::undefined(scope).into()
+        } else {
+            let paths = suggestions
+                .iter()
+                .map(|path| v8::String::new(scope, path).map(Into::into))
+                .collect::<Option<Vec<v8::Local<v8::Value>>>>()?;
+            v8::Array::new_with_elements(scope, &paths).into()
+        };
         let receiver = v8::undefined(scope).into();
         let exception = factory.call(
             scope,
@@ -919,6 +949,7 @@ fn reject_tool_error(
                 trace,
                 stack.into(),
                 outcome,
+                suggested,
             ],
         )?;
         let object = v8::Local::<v8::Object>::try_from(exception).ok()?;
@@ -938,7 +969,7 @@ fn reject_tool_error(
         let body_truncated = v8::Boolean::new(scope, body_truncated).into();
         let fields = v8::Array::new_with_elements(
             scope,
-            &[code.into(), trace, status, body, body_truncated],
+            &[code.into(), trace, status, body, body_truncated, suggested],
         );
         if object.set_private(scope, key, fields.into()) != Some(true) {
             return None;
@@ -973,6 +1004,7 @@ fn reject_tool_promise(
         message,
         trace_id.as_deref(),
         None,
+        &[],
         &call_stack,
     );
     return_value.set(resolver.get_promise(scope).into());

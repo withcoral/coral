@@ -13,7 +13,7 @@ use crate::{
     CompiledProgram, CompilerDiagnostic, CoralDeclarations, DiagnosticCategory, Error,
     IsolateLimits, LinkedSavedFunctionSource, ProgramExecutionControl, SavedFunctionCallPaths,
     SavedFunctionCompilation, SavedFunctionDeclarationField, SavedFunctionReference,
-    ToolReferences,
+    ToolReferences, UnknownToolCall,
 };
 
 const TYPESCRIPT_SOURCE: &str = include_str!("../vendor/typescript.js");
@@ -202,6 +202,52 @@ impl ProgramCompiler {
         let source = source.to_string();
         self.request(CompilerOperation::Analysis, deadline, move |compiler| {
             compiler.saved_function_call_paths(&source)
+        })
+    }
+
+    /// Finds the Saved Functions and Tools one Program body names
+    /// directly, to link and check it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects computed or aliased `coral.functions` access and malformed
+    /// wrapper escapes.
+    pub fn program_call_paths(
+        &self,
+        deadline: Instant,
+        source: &str,
+    ) -> Result<SavedFunctionCallPaths, Error> {
+        let source = source.to_string();
+        self.request(CompilerOperation::Analysis, deadline, move |compiler| {
+            compiler.call_paths(
+                "__coralAnalyzeSavedFunctionPaths",
+                PROGRAM_FILE_NAME,
+                &source,
+            )
+        })
+    }
+
+    /// The called chains of `tools` that name no Tool among `callable`, the
+    /// complete Call Paths the caller can call, by the rule the
+    /// unknown-Tool diagnostic of typed Saved Function preparation applies:
+    /// a chain is known once a prefix of it is callable, and a prefix that
+    /// is only a namespace of a callable path reads on.
+    ///
+    /// # Errors
+    ///
+    /// Returns a compiler-isolate or availability failure.
+    pub fn unknown_tool_calls(
+        &self,
+        deadline: Instant,
+        tools: &ToolReferences,
+        callable: &[String],
+    ) -> Result<Vec<UnknownToolCall>, Error> {
+        let chains = tools.chains_json()?;
+        let callable = serde_json::to_string(callable)
+            .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
+        self.request(CompilerOperation::Analysis, deadline, move |compiler| {
+            let json = compiler.call("__coralUnknownToolCalls", &[&chains, &callable])?;
+            serde_json::from_str(&json).map_err(|error| Error::CompilerProtocol(error.to_string()))
         })
     }
 
@@ -531,13 +577,22 @@ impl CompilerIsolate {
     }
 
     fn saved_function_call_paths(&mut self, source: &str) -> Result<SavedFunctionCallPaths, Error> {
-        let json = self.call(
+        self.call_paths(
             "__coralAnalyzeSavedFunctionCallPaths",
-            &[
-                source,
-                SAVED_FUNCTION_FILE_NAME,
-                TYPESCRIPT_PROFILE.javascript_target(),
-            ],
+            SAVED_FUNCTION_FILE_NAME,
+            source,
+        )
+    }
+
+    fn call_paths(
+        &mut self,
+        function: &str,
+        file_name: &str,
+        source: &str,
+    ) -> Result<SavedFunctionCallPaths, Error> {
+        let json = self.call(
+            function,
+            &[source, file_name, TYPESCRIPT_PROFILE.javascript_target()],
         )?;
         let output: SavedFunctionCallPathsOutput = serde_json::from_str(&json)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;

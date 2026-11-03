@@ -186,6 +186,21 @@ async fn search_types_each_mode_with_the_result_it_returns() {
             vec![],
         ),
         (
+            "a missing path reads its suggestions",
+            "  const missing = (await coral.workspace.search({ paths: [\"a\"] })).data.missing[0];\n  const nearest: string | undefined = missing?.suggestions[0];\n  return nearest;",
+            vec![],
+        ),
+        (
+            "a missing path of a types call reads its suggestions",
+            "  const found = (await coral.workspace.search({ paths: [\"a\"], types: [\"T\"] })).data;\n  return found.missing.flatMap((missing) => missing.suggestions);",
+            vec![],
+        ),
+        (
+            "a suggestion read as a description",
+            "  return (await coral.workspace.search({ paths: [\"a\"] })).data.missing[0]?.suggestions[0]?.call_path;",
+            vec![(2339, Some(2), Some(92))],
+        ),
+        (
             "types read one path's descriptions",
             "  return (await coral.workspace.search({ paths: [\"a\"], types: [\"T\"] })).data.descriptions;",
             vec![],

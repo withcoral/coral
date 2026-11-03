@@ -17,11 +17,12 @@
 //!   all reach, each request in one read snapshot. A query runs one ranked
 //!   statement per Search Entity kind, one retriever each, and fuses their
 //!   windows by match strength into bounded pages of Search Hits with one
-//!   status per retriever. An omitted query lists current items in Call Path order and
-//!   reads no index. Exact Call Paths resolve to their Authoring
-//!   Descriptions and read no index; `signature::abridge` shortens the
-//!   declaration each returns, while search reads the complete one. A path
-//!   that names nothing the caller can discover comes back missing.
+//!   status per retriever. An omitted query lists current items in Call
+//!   Path order and reads no index. Exact Call Paths resolve to their
+//!   Authoring Descriptions and read no index; `signature::abridge` shortens
+//!   the declaration each returns, while search reads the complete one. A
+//!   path that names nothing the caller can discover comes back missing, with
+//!   the nearest Discoverable Call Paths of its Call Root.
 //!   [`UniversalSearchModule::search`] and [`UniversalSearchModule::describe`]
 //!   are its query mode and its one-path mode.
 //! - [`projection`] turns what discovery found into the result types
@@ -64,6 +65,7 @@ mod retriever;
 mod signature;
 mod snippet;
 mod storage;
+mod suggestion;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
 mod types;
@@ -90,6 +92,7 @@ pub use discovery::{Discovery, DiscoveryRequest, ExactLookup, ExactPaths, Missin
 pub use error::Error;
 pub use index::SearchIndex;
 pub use storage::{StorageError, prepare_storage};
+pub use suggestion::SUGGESTIONS_MAX;
 pub use types::{
     ApprovalRequirement, AuthoringDescription, CallPath, EntityKind, ExactAuthoringDescription,
     ExactSavedFunctionDetail, ProviderCallRoot, ProviderId, RetrieverCoverage, RetrieverState,
@@ -452,6 +455,14 @@ impl UniversalSearchModule {
             .await?;
         let mut found = Vec::with_capacity(paths.paths().len());
         let mut missing = Vec::new();
+        let loaded = LoadedGenerations::default();
+        let context = RequestContext {
+            actor,
+            authority: &authority,
+            workspace_id,
+            terms: None,
+            loaded: &loaded,
+        };
         for written in paths.paths() {
             let exact = match CallPath::parse(written) {
                 Ok(call_path) => self
@@ -469,7 +480,14 @@ impl UniversalSearchModule {
             match exact {
                 Ok(Some(exact)) => found.push(exact),
                 Ok(None) | Err(Error::AuthoringDescriptionNotFound) => {
-                    missing.push(MissingPath::new(written.clone()));
+                    let suggestions = suggestion::suggestions(
+                        &mut transaction,
+                        context,
+                        &self.retrievers,
+                        written,
+                    )
+                    .await?;
+                    missing.push(MissingPath::new(written.clone(), suggestions));
                 }
                 Err(error) => return Err(error),
             }
