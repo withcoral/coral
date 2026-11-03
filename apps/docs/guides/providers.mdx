@@ -1,0 +1,48 @@
+---
+title: "Providers"
+description: "Adding providers to Coral"
+---
+
+Providers connect Coral to third-party data sources. Coral works with any data source that has either an OpenAPI 3.x document, or a streaming HTTP MCP server. For other providers, see [advanced scenarios](#advanced-scenarios).
+
+## Adding a built-in provider
+
+Coral has built-in configs for a range of popular providers.
+
+1. Go to your your workspace's **Providers** page
+2. Click **Add provider**
+3. Pick a provider from the list
+
+## Adding a provider using an OpenAPI document or MCP server URL
+
+1. Go to your workspace's **Providers** page
+2. Click **Add provider**
+3. Click **Add custom**
+
+From there you can enter the MCP server URL, enter the URL to an OpenAPI document, or upload an OpenAPI document.
+
+## Adding a provider using your agent
+
+Coral exposes a set of tools for managing Coral. These include tools for managing providers. So once you've configured Coral in your agent, you can ask your agent to add new providers, for example:
+
+> Add a Coral provider for Mezmo
+
+## Advanced scenarios
+
+### Adding databases
+
+See [query datatases](/guides/query-databases).
+
+### Adding a provider that only has a stdio MCP server
+
+Use a bridge that runs the stdio server and exposes a streaming HTTP endpoint. There are plenty of libraries that can help with this, including:
+
+- [Supergateway](https://github.com/supercorp-ai/supergateway) (Node)
+- [MCP Proxy](https://github.com/sparfenyuk/mcp-proxy) (Python)
+- [FastMCP](https://gofastmcp.com/getting-started/welcome) (`FastMCP.as_proxy(...)`) (Python)
+
+### Adding a provider that has no OpenAPI document and no MCP server
+
+If the provider has a well specified RESTful API, you can ask your agent to generate an OpenAPI document for it, then use that document to add the provider to Coral.
+
+Otherwise, you can write a small API server or MCP server (using [FastAPI](https://fastapi.tiangolo.com/), [FastMCP](https://gofastmcp.com/getting-started/welcome) or similar) that wraps your provider, and add that to Coral.
