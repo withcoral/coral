@@ -9,14 +9,17 @@ not through MCP `search` and `describe` tools. One discovery operation in `coral
 ranked Search Hits, and exact Call Paths return their Authoring Descriptions, each from one read snapshot and typed for
 the Program that receives them. Coral's MCP surface keeps only the tools that run, observe and record work.
 
-Measured in Duel, moving discovery into `exec` together with starting the Task there cut about 2.7 model turns per Task
-on a code-mode-only client and was neutral on Claude Code. Replaying 600 labelled queries, both surfaces gave the same
-rank on 597, so the choice is about turns and iteration, not ranking. One surface also lets the discovery API change
-without keeping two contracts in step.
+In a Duel ablation on 17 challenges, three attempts each, moving discovery into Programs alone cut prompt tokens by
+about a fifth on Claude Code and a sixth on a code-mode-only client, and about one model turn per Task. Starting the
+Task in `exec` saved nothing alone, because MCP `search` still needed a Task, but with discovery in Programs the two cut
+about 1.5 turns on Claude Code and 2 on the code-mode-only client. Cutting MCP search hits to the Call Path and
+signature line instead saved nothing on Claude Code and part of the gain on the other client. Replaying 600 labelled
+queries, both surfaces gave the same rank on 597, so the choice is about turns and iteration, not ranking. One surface
+also lets the discovery API change without keeping two contracts in step.
 
-Rejected: MCP-only discovery (main before this), which costs code-mode clients their extra turns; serving both surfaces
-and choosing one per client from `clientInfo`, which keeps two contracts and puts client detection in the product; and a
-dynamic `coral.call(path, args)`, which invites calls to Tools whose declaration the agent never read.
+Rejected: MCP-only discovery (main before this), which costs both measured clients turns and tokens; serving both
+surfaces and choosing one per client from `clientInfo`, which keeps two contracts and puts client detection in the
+product; and a dynamic `coral.call(path, args)`, which invites calls to Tools whose declaration the agent never read.
 
 ## Consequences
 
