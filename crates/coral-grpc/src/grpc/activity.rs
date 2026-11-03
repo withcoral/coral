@@ -676,13 +676,13 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
                             query,
                             provider,
                             limit,
-                            cursor,
+                            offset,
                         } => {
                             wire::activity_discovery::Context::Search(wire::ActivitySearchContext {
                                 query,
                                 provider,
                                 limit: u32::from(limit),
-                                cursor,
+                                offset,
                             })
                         }
                         coral_task::DiscoveryContext::Describe { call_path, types } => {

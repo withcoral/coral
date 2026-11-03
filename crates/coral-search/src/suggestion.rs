@@ -13,7 +13,7 @@ use crate::retriever::{
     EntityRetriever, QueryError, QueryRequest, RequestContext, abandon_query, begin_query,
     end_query,
 };
-use crate::{EntityKind, Error, ProviderCallRoot, normalize_query};
+use crate::{EntityKind, Error, ProviderCallRoot, query_terms};
 
 /// The most Call Paths one missing path names.
 pub const SUGGESTIONS_MAX: usize = 3;
@@ -76,12 +76,13 @@ pub(crate) async fn suggestions(
     if suggested.len() == SUGGESTIONS_MAX {
         return Ok(suggested);
     }
-    let query = normalize_query(&words(relative_path).join(" "));
-    if query.text.is_empty() {
+    let words = words(relative_path);
+    if words.is_empty() {
         return Ok(suggested);
     }
+    let terms = query_terms(&words.join(" "));
     let ranking = RequestContext {
-        terms: Some(&query.terms),
+        terms: Some(&terms),
         ..context
     };
     begin_query(transaction).await?;
@@ -90,7 +91,7 @@ pub(crate) async fn suggestions(
             transaction,
             ranking,
             &QueryRequest {
-                terms: &query.terms,
+                terms: &terms,
                 provider_filter: Some(&call_root),
                 window: SUGGESTIONS_MAX * 2,
             },

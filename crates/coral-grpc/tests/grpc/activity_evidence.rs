@@ -559,7 +559,7 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
                 query: Some("  private missing café  ".into()),
                 provider: Some(provider.into()),
                 limit: Some(7),
-                cursor: None,
+                offset: Some(3),
             },
         )
         .await
@@ -641,7 +641,7 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
                         query: Some("  private missing café  ".into()),
                         provider: Some(provider.into()),
                         limit: 7,
-                        cursor: None,
+                        offset: 3,
                     }
                 ))
             );

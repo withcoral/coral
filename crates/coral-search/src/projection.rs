@@ -27,14 +27,13 @@ pub fn discovery(found: &Discovery) -> SearchOutput {
 }
 
 /// Projects every ordered hit, and only what the caller acts on besides: the
-/// cursor while more remain, and the status of each retriever whose results
-/// may be missing.
+/// next offset while more remain, and the status of each retriever whose
+/// results may be missing.
 #[must_use]
 pub fn search_result(page: &SearchPage) -> SearchResult {
     SearchResult {
         hits: page.hits().iter().map(hit).collect(),
-        has_more: page.has_more(),
-        next_cursor: page.next_cursor().map(ToString::to_string),
+        next_offset: page.next_offset(),
         retriever_statuses: page
             .retriever_statuses()
             .iter()

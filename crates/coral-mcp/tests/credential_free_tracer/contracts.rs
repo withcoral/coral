@@ -130,7 +130,7 @@ impl OutputContracts {
         } else {
             match name {
                 "start_task" => &["task_id", "providers"],
-                "search" => &["hits", "has_more"],
+                "search" => &["hits"],
                 // A Saved Function's source and diagnostics are absent from a
                 // description cut to `types`.
                 "describe" => &["kind", "call_path", "description", "typescript_declaration"],

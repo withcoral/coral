@@ -110,10 +110,10 @@ struct QueryInput {
     limit: Option<u16>,
     #[serde(default)]
     #[schemars(
-        with = "String",
-        description = "The next_cursor of the previous page, with the same query and provider."
+        with = "u32",
+        description = "The next_offset of the previous page, with the same query and provider."
     )]
-    cursor: Option<String>,
+    offset: Option<u32>,
 }
 
 /// The exact descriptions of 1 to 10 Call Paths.
@@ -178,7 +178,7 @@ struct Arguments {
     #[serde(default, deserialize_with = "super::present")]
     limit: Option<u16>,
     #[serde(default, deserialize_with = "super::present")]
-    cursor: Option<String>,
+    offset: Option<u32>,
     #[serde(default, deserialize_with = "super::present")]
     paths: Option<Vec<String>>,
     #[serde(default, deserialize_with = "super::present")]
@@ -197,8 +197,9 @@ pub enum SearchArguments {
         provider: Option<String>,
         /// The page size.
         limit: Option<u16>,
-        /// The continuation of an earlier page.
-        cursor: Option<String>,
+        /// How many ranked results to skip: the `next_offset` of an earlier
+        /// page.
+        offset: Option<u32>,
     },
     /// The exact descriptions of named Call Paths.
     Paths {
@@ -229,14 +230,14 @@ impl SearchArguments {
                 query: arguments.query,
                 provider: arguments.provider,
                 limit: arguments.limit,
-                cursor: arguments.cursor,
+                offset: arguments.offset,
             });
         };
         let mut problems: Vec<ArgumentProblem> = [
             ("query", arguments.query.is_some()),
             ("provider", arguments.provider.is_some()),
             ("limit", arguments.limit.is_some()),
-            ("cursor", arguments.cursor.is_some()),
+            ("offset", arguments.offset.is_some()),
         ]
         .into_iter()
         .filter(|(_field, present)| *present)
@@ -316,24 +317,21 @@ const fn exact_in_json(value: u64) -> bool {
 }
 
 /// One page of Search Hits, and only what the caller acts on besides: the
-/// cursor while more remain, and the status of each retriever whose results
-/// may be missing.
+/// next offset while more remain, and the status of each retriever whose
+/// results may be missing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields, description = "")]
 pub struct SearchResult {
     /// The hits, best first; in Call Path order for a listing.
     #[schemars(description = "The hits, best first. Without a query, in Call Path order.")]
     pub hits: Vec<SearchHit>,
-    /// Whether another page follows.
-    #[schemars(description = "")]
-    pub has_more: bool,
-    /// The cursor of the next page, while `has_more` is true.
+    /// The `offset` of the next page; `None` on the last page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(
-        with = "String",
-        description = "Present only while `has_more` is true."
+        with = "u32",
+        description = "The `offset` of the next page; absent on the last page."
     )]
-    pub next_cursor: Option<String>,
+    pub next_offset: Option<u32>,
     /// The retrievers whose results may be missing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(description = "The retrievers whose results may be missing; absent when none are.")]
@@ -732,7 +730,7 @@ pub(super) mod tests {
                 "query": "list pull requests",
                 "provider": "github",
                 "limit": 3,
-                "cursor": "next"
+                "offset": 20
             }),
             json!({ "paths": ["coral.providers.github.repos.get", "coral.functions.weekly"] }),
             json!({ "paths": ["coral.providers.github.repos.get"], "types": ["Repository"] }),
@@ -749,10 +747,6 @@ pub(super) mod tests {
 
     /// A page with every optional part, an empty page, and an exact lookup
     /// with each kind of description and a missing path.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one value for each part of the output schema"
-    )]
     pub(in crate::builtin) fn results() -> Vec<Value> {
         let hit = SearchHit {
             call_path: "coral.providers.github.repos.get".to_owned(),
@@ -796,8 +790,7 @@ pub(super) mod tests {
         [
             SearchOutput::Page(SearchResult {
                 hits: vec![hit, bare],
-                has_more: true,
-                next_cursor: Some("next".to_owned()),
+                next_offset: Some(20),
                 retriever_statuses: vec![
                     status(SearchRetriever::ProviderTool, SearchRetrieverState::Partial),
                     status(SearchRetriever::SavedFunction, SearchRetrieverState::Error),
@@ -805,8 +798,7 @@ pub(super) mod tests {
             }),
             SearchOutput::Page(SearchResult {
                 hits: Vec::new(),
-                has_more: false,
-                next_cursor: None,
+                next_offset: None,
                 retriever_statuses: Vec::new(),
             }),
             SearchOutput::Paths(PathsResult {
@@ -928,8 +920,7 @@ pub(super) mod tests {
         let page = |units| {
             SearchOutput::Page(SearchResult {
                 hits: Vec::new(),
-                has_more: false,
-                next_cursor: None,
+                next_offset: None,
                 retriever_statuses: vec![SearchRetrieverStatus {
                     retriever: SearchRetriever::SavedFunction,
                     state: SearchRetrieverState::Partial,

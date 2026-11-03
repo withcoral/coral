@@ -22,12 +22,10 @@
           },
           "description": "The hits, best first. Without a query, in Call Path order."
         },
-        "has_more": {
-          "type": "boolean"
-        },
-        "next_cursor": {
-          "type": "string",
-          "description": "Present only while `has_more` is true."
+        "next_offset": {
+          "type": "integer",
+          "description": "The `offset` of the next page; absent on the last page.",
+          "minimum": 0
         },
         "retriever_statuses": {
           "type": "array",
@@ -38,8 +36,7 @@
         }
       },
       "required": [
-        "hits",
-        "has_more"
+        "hits"
       ]
     },
     "SearchHit": {

@@ -113,9 +113,9 @@ async fn every_principal_searches_without_approval_and_sees_only_what_it_reaches
     }
 }
 
-// Catches: a page a Program cannot continue from its own cursor.
+// Catches: a page a Program cannot continue from its own next offset.
 #[tokio::test]
-async fn a_program_pages_a_listing_with_the_cursor_it_returned() {
+async fn a_program_pages_a_listing_with_the_offset_it_returned() {
     let scope = AdminScope::new("user:search-pages").await;
     let run = scope
         .start(
@@ -126,7 +126,7 @@ async fn a_program_pages_a_listing_with_the_cursor_it_returned() {
                 const next = await coral.workspace.search({
                     provider: "coral.workspace",
                     limit: 2,
-                    cursor: first.data.next_cursor,
+                    offset: first.data.next_offset,
                 });
                 const all = await coral.workspace.search({ provider: "coral.workspace", limit: 4 });
                 return { first, next, all };
@@ -136,7 +136,7 @@ async fn a_program_pages_a_listing_with_the_cursor_it_returned() {
         .await;
     let results = final_value(&scope.terminal(&scope.owner, &run).await);
     let page = |name: &str| results.get(name).cloned().expect("a page");
-    assert_eq!(page("first").pointer("/data/has_more"), Some(&json!(true)));
+    assert_eq!(page("first").pointer("/data/next_offset"), Some(&json!(2)));
     assert_eq!(
         page("first").get("metadata"),
         Some(&json!({ "kind": "builtin" }))
@@ -178,11 +178,7 @@ async fn an_invalid_argument_names_what_to_correct() {
             " at `provider`: No Provider you can search has this namespace. Use one of: \
              coral.workspace.",
         ),
-        (
-            json!({ "cursor": "bm90LWEtY3Vyc29y" }),
-            " at `cursor`: pass the next_cursor of the previous page, with the same query and \
-             provider",
-        ),
+        (json!({ "offset": -1 }), " at `offset`: expected u32"),
         (
             json!({ "paths": ["coral.workspace.getPolicy"], "types": ["Missing"] }),
             " at `types`: Type \"Missing\" is not declared by this path. Coral cannot list the \

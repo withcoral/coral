@@ -93,7 +93,8 @@ export function SearchParameters({
         {context.provider === null ? 'all providers' : <CodeChip>{context.provider}</CodeChip>}
       </DescriptionList.Row>
       <DescriptionList.Row label="Page">
-        {context.cursor === null ? 'first page' : 'a later page'}, up to {context.limit} results
+        {context.offset === 0 ? 'first page' : `from result ${context.offset + 1}`}, up to{' '}
+        {context.limit} results
       </DescriptionList.Row>
     </DescriptionList.List>
   )
