@@ -231,7 +231,8 @@ impl ProgramCompiler {
     /// complete Call Paths the caller can call, by the rule the
     /// unknown-Tool diagnostic of typed Saved Function preparation applies:
     /// a chain is known once a prefix of it is callable, and a prefix that
-    /// is only a namespace of a callable path reads on.
+    /// is only a namespace of a callable path reads on. A called chain that
+    /// ends at such a namespace is unknown too: calling it names no Tool.
     ///
     /// # Errors
     ///

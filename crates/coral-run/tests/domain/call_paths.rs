@@ -104,9 +104,10 @@ async fn refused(scope: &AdminScope, principal: &AuthenticatedPrincipal, source:
     message
 }
 
-// Catches: a guessed literal path that runs the Program's earlier calls and
-// only then fails; a refusal that does not name the path, where it is, or
-// what to call instead; or one that suggests a Tool the caller cannot call.
+// Catches: a guessed literal path, or a call to a namespace of a Tool, that
+// runs the Program's earlier calls and only then fails; a refusal that does
+// not name the path, where it is, or what to call instead; or one that
+// suggests a Tool the caller cannot call.
 #[tokio::test]
 async fn a_literal_path_that_names_no_tool_is_refused_with_the_nearest_paths() {
     let scope = scope("user:call-paths-literal").await;
@@ -133,6 +134,21 @@ async fn a_literal_path_that_names_no_tool_is_refused_with_the_nearest_paths() {
     assert!(
         message.starts_with(
             "Program:1:14: coral.providers.github.getRepo names no Tool that you can call. \
+             Nearest: coral.providers.github.repos.get"
+        ),
+        "{message}"
+    );
+    // A namespace of a Tool is not a Tool, even beside a call to the Tool.
+    let message = refused(
+        &scope,
+        &scope.owner,
+        "await coral.providers.github.repos.get({ owner: \"a\", repo: \"b\" });\n\
+         return await coral.providers.github.repos({ owner: \"a\", repo: \"b\" });",
+    )
+    .await;
+    assert!(
+        message.starts_with(
+            "Program:2:14: coral.providers.github.repos names no Tool that you can call. \
              Nearest: coral.providers.github.repos.get"
         ),
         "{message}"
