@@ -646,8 +646,8 @@ outcome, failure union, Upstream Error
 **Tool Result Shape**: A sketch of where data lives in what a Program received from one Call Path: its field names and
 value types, never its values. An object keyed by data, such as identifiers, emails or names a person chose, shows the
 union of its values' shapes and not its keys. Only a Run that failed because its Program threw gets them: the final
-output page of its Run Update carries one for each distinct Call Path and shape among the latest Tool Results the
-Program received, in the order it first received each. The sketch is bounded, so it may leave Tool Results
+output page of its Run Update carries one for each distinct Call Path and shape among the latest Tool Results and
+Tool Errors the Program received, in the order it first received each. The sketch is bounded, so it may leave some
 undescribed, and it counts them. Coral derives it for that failure alone; it is not a Schema Type and makes no claim
 about other Runs.
 _Avoid_: Observed schema, inferred output schema, result sample
