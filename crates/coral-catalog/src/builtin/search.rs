@@ -522,6 +522,7 @@ pub struct MissingPath {
     /// Up to three Call Paths of the same Call Root that the caller can
     /// call, nearest first.
     #[schemars(
+        length(max = 3),
         description = "Up to 3 call paths you can call under the same root, nearest first."
     )]
     pub suggestions: Vec<String>,
