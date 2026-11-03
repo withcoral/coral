@@ -11,7 +11,7 @@ const search: DiscoveryContext = {
   query: 'github pulls',
   provider: null,
   limit: 5,
-  cursor: null,
+  offset: 0,
 }
 
 const updateBranch = {
@@ -39,6 +39,15 @@ it('reads a search page into hits, with no coverage when every retriever searche
     title: 'coral.providers.github.pulls.updateBranch',
     matched: { fields: [], tags: ['pulls'], paths: [] },
   })
+})
+
+// Catches: a page Coral retained before pages had an offset failing to load.
+// It loses its mark that more results remain.
+it('reads a page retained with a cursor as a page with no more results', () => {
+  const view = discoveryView(search, stored.withCursor)
+  if (view.kind !== 'search') throw new Error(`expected a search page, got ${view.kind}`)
+  expect(view.page.hits).toHaveLength(5)
+  expect(view.page.hasMore).toBe(false)
 })
 
 it('reads the kind of each hit from its Call Path, and an absent flag as unset', () => {
@@ -326,9 +335,9 @@ suite('the parser and the advertised output schemas', () => {
   it('differ when Coral removes a key that the parser reads', () => {
     expect(
       differences('search', (definitions) => {
-        delete definitions.SearchResult.properties.has_more
+        delete definitions.SearchResult.properties.next_offset
       }),
-    ).toEqual(['search.has_more: Coral does not advertise this key'])
+    ).toEqual(['search.next_offset: Coral does not advertise this key'])
   })
 
   it('differ when Coral changes the type of a key', () => {

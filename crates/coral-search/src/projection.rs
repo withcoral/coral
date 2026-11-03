@@ -10,19 +10,16 @@ use serde_json::{Map, Value, json};
 mod tests;
 
 /// Projects every ordered hit, and only what the agent acts on besides: the
-/// cursor while more remain, and the status of each retriever whose results
-/// may be missing.
+/// next offset while more remain, and the status of each retriever whose
+/// results may be missing.
 #[must_use]
 pub fn search(page: &SearchPage) -> Value {
-    let mut fields = Map::from_iter([
-        (
-            "hits".to_string(),
-            json!(page.hits().iter().map(hit).collect::<Vec<_>>()),
-        ),
-        ("has_more".to_string(), json!(page.has_more())),
-    ]);
-    if let Some(cursor) = page.next_cursor() {
-        fields.insert("next_cursor".to_string(), json!(cursor.to_string()));
+    let mut fields = Map::from_iter([(
+        "hits".to_string(),
+        json!(page.hits().iter().map(hit).collect::<Vec<_>>()),
+    )]);
+    if let Some(offset) = page.next_offset() {
+        fields.insert("next_offset".to_string(), json!(offset));
     }
     let incomplete = page
         .retriever_statuses()

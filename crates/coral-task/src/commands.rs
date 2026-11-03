@@ -113,7 +113,7 @@ impl TaskCommands {
                     .provider()
                     .map(|provider| coral_search::provider_filter_value(provider).to_owned()),
                 limit: request.limit().value(),
-                cursor: request.cursor().map(ToString::to_string),
+                offset: request.offset(),
             },
             response: coral_search::projection::search(&page),
         };

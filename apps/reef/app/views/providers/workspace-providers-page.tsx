@@ -16,6 +16,7 @@ import { Picker } from '@/wax/components/picker'
 import { Pill, type PillColor } from '@/wax/components/pill'
 import { StatusDot } from '@/wax/components/status'
 import { InfoTip, Tooltip } from '@/wax/components/tooltip'
+import { ToolName } from '@/wax/components/tool-name'
 import * as Table from '@/wax/components/table'
 import { CELL_HEIGHT_PX, groupHeadingHeightPx } from '@/wax/components/table'
 import {
@@ -67,12 +68,10 @@ import type {
   WorkspaceProvidersPageProps,
 } from './types'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
-import coralMarkDark from './coral-mark-dark.svg'
-import coralMarkLight from './coral-mark-light.svg'
+import { CORAL_ICONS } from './coral-icons'
 import * as styles from './providers.css'
 
 /** Coral's own mark, which stands for the Built-in Provider. */
-const CORAL_ICONS: RecipeIcons = { light: coralMarkLight, dark: coralMarkDark }
 
 const bulkPolicyOptions = policyOptions.map(({ icon, ...option }) => ({
   ...option,
@@ -1653,17 +1652,20 @@ const ToolRow = memo(function ToolRow({
       </span>
       <span role="cell" className={styles.toolNameCell}>
         {/* The row opens the drawer; the name stays a link for the keyboard. */}
-        <Tooltip content={tool.relativePath} showOnlyWhenTruncated>
-          <Link
-            to={toolPath(provider, tool)}
-            prefetch="intent"
-            preventScrollReset
-            onClick={() => onOpen(provider.id, tool.key)}
-            className={styles.toolName}
-          >
-            <HighlightedMatches text={tool.relativePath} query={query} />
-          </Link>
-        </Tooltip>
+        {/* The provider names the group, so the tool stands alone. */}
+        <ToolName className={styles.toolNameFace}>
+          <Tooltip content={tool.relativePath} showOnlyWhenTruncated>
+            <Link
+              to={toolPath(provider, tool)}
+              prefetch="intent"
+              preventScrollReset
+              onClick={() => onOpen(provider.id, tool.key)}
+              className={styles.toolName}
+            >
+              <HighlightedMatches text={tool.relativePath} query={query} />
+            </Link>
+          </Tooltip>
+        </ToolName>
         <HintLabels hints={tool.hints} />
         {!tool.available && (
           <Tooltip content={unavailableReason} maxWidth={420}>

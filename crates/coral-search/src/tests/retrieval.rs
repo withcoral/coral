@@ -11,7 +11,7 @@ use coral_provider::ProviderId;
 use coral_provider::access::ProviderCallRoot;
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
 
-use super::{TestModules, change, organization_user};
+use super::{TestModules, change, organization_user, paths};
 use crate::{
     CallPath, EntityKind, RetrieverState, RetrieverStatus, SearchPage, SearchQuery, SearchRequest,
 };
@@ -172,13 +172,6 @@ impl Corpus {
             .await
             .expect("search the corpus")
     }
-}
-
-fn paths(page: &SearchPage) -> Vec<&str> {
-    page.hits()
-        .iter()
-        .map(|item| item.call_path().as_str())
-        .collect()
 }
 
 fn status(page: &SearchPage, kind: EntityKind) -> RetrieverStatus {
@@ -748,7 +741,7 @@ async fn a_stale_match_without_evidence_leaves_an_empty_page() {
 
     let page = corpus.search(Corpus::query("closed")).await;
     assert!(page.hits().is_empty(), "the stale match leaves the page");
-    assert!(!page.has_more());
+    assert_eq!(page.next_offset(), None);
 }
 
 #[tokio::test]

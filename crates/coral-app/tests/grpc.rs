@@ -13,6 +13,8 @@ mod oidc_login_tests;
 mod private_access_tests;
 #[path = "grpc/record_locations_tests.rs"]
 mod record_locations_tests;
+#[path = "grpc/refresh_journey_tests.rs"]
+mod refresh_journey_tests;
 #[path = "grpc/server_lifecycle_tests.rs"]
 mod server_lifecycle_tests;
 #[path = "grpc/session_auth.rs"]

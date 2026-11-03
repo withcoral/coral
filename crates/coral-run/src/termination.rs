@@ -228,6 +228,7 @@ impl RunModule {
         let events = invocation_lifecycle::end_nonterminal_invocations(
             transaction,
             run,
+            termination.kind,
             terminal_at_unix_nanos,
         )
         .await?;
@@ -243,8 +244,8 @@ impl RunModule {
 
     /// Interrupts the Run `claim_id` owns in one chunk: the Program's pending
     /// Invocations end `run_terminated`, dispatching ones `indeterminate`,
-    /// their Approval Requests close, and the Run ends `interrupted` (or
-    /// `timed_out` past its deadline), or with the termination already
+    /// their Approval Requests close (a timeout expires them), and the Run
+    /// ends `interrupted` (or `timed_out` past its deadline), or with the termination already
     /// recorded (a cancellation wins). The self-interrupt path of a Run
     /// Owner that cannot commit, and of the supervisor that takes over a Run
     /// whose owner task ended without retiring; `takeover_claim_id` is the
@@ -343,7 +344,8 @@ impl RunModule {
 /// `now_unix_nanos` past its deadline (as every deadline path records), else
 /// interrupted then. Every nonterminal Invocation ends (`run_terminated`
 /// before its dispatch, `indeterminate` once dispatching) with its Approval
-/// Request closed, then `run.ended`, never before the termination. The
+/// Request closed (a timeout expires it and fails the Invocation
+/// `approval_expired`), then `run.ended`, never before the termination. The
 /// worker claim is released and, for a started Run, the execution claim
 /// taken over by `takeover`. One head move, predicated on the claim and the
 /// head `run` shows. Returns the termination it wrote.
@@ -373,8 +375,13 @@ pub(crate) async fn end_in_one_chunk(
     };
     let ended_at_unix_nanos = now_unix_nanos.max(termination.termination.started_at_unix_nanos);
     events.extend(
-        invocation_lifecycle::end_nonterminal_invocations(transaction, run, ended_at_unix_nanos)
-            .await?,
+        invocation_lifecycle::end_nonterminal_invocations(
+            transaction,
+            run,
+            termination.termination.kind,
+            ended_at_unix_nanos,
+        )
+        .await?,
     );
     run_repository::interrupt_run(
         transaction,

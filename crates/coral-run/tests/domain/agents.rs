@@ -219,9 +219,10 @@ async fn action_queue_and_approval_decisions_agree_after_authority_or_policy_cha
         let agreement = async || {
             let queued = fixture
                 .runs
-                .required_action_count(owner, None)
+                .required_action_counts(owner, None)
                 .await
                 .unwrap()
+                .total()
                 == 1;
             let actionable = approvals
                 .get(owner, workspace, &request)

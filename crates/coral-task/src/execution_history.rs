@@ -43,6 +43,10 @@ pub struct ActionRun {
 }
 /// Bounded queue of current requests, most urgent first, each with its Run context.
 pub type RequiredActions = coral_run::RequiredActions<ActionRun>;
+/// One page of a Workspace's settled Approval Requests, newest first, each with its Run context.
+pub type SettledApprovals = coral_run::SettledApprovals<ActionRun>;
+/// One settled Approval Request with its Run context.
+pub type SettledApproval = coral_run::SettledApproval<ActionRun>;
 impl TaskModule {
     /// Composes queued requests and Task-owned exec intent in one authorized snapshot.
     /// # Errors
@@ -52,6 +56,7 @@ impl TaskModule {
         runs: &RunModule,
         actor: &AuthenticatedPrincipal,
         workspace: Option<&WorkspaceId>,
+        kind: Option<coral_run::RequiredActionKind>,
         after: Option<&coral_run::QueueCursor>,
         limit: u16,
     ) -> Result<RequiredActions, Error> {
@@ -61,7 +66,7 @@ impl TaskModule {
             .action_history_authority_in_transaction(&mut tx, actor, workspace)
             .await?;
         let page = runs
-            .required_actions_in_transaction(&mut tx, &authority, after, limit)
+            .required_actions_in_transaction(&mut tx, &authority, kind, after, limit)
             .await?;
         let contexts = page
             .actions
@@ -86,6 +91,61 @@ impl TaskModule {
                             task: submission.map(|(task, _)| task.clone()),
                             intent: submission.map(|(_, intent)| intent.clone()),
                             run: queued.run,
+                        },
+                    }
+                })
+                .collect(),
+            next: page.next,
+        })
+    }
+    /// Composes one Workspace's settled Approval Requests, newest first, and
+    /// Task-owned exec intent in one authorized snapshot. Visibility is the
+    /// queue's: the caller's own Runs, plus Agent Runs in Workspaces they own.
+    /// # Errors
+    /// Rejects inaccessible Workspaces, Agent callers and invalid bounded windows.
+    pub async fn settled_approvals(
+        &self,
+        runs: &RunModule,
+        actor: &AuthenticatedPrincipal,
+        workspace: &WorkspaceId,
+        after: Option<&coral_run::SettledCursor>,
+        limit: u16,
+    ) -> Result<SettledApprovals, Error> {
+        let mut tx = self.database.begin_read_snapshot().await?;
+        let authority = self
+            .workspaces
+            .action_history_authority_in_transaction(&mut tx, actor, Some(workspace))
+            .await?;
+        let page = runs
+            .settled_approvals_in_transaction(&mut tx, actor, &authority, after, limit)
+            .await?;
+        let contexts = page
+            .approvals
+            .iter()
+            .map(|settled| &settled.run)
+            .collect::<Vec<_>>();
+        let submissions =
+            crate::interaction_repository::action_run_submissions(&mut tx, &authority, &contexts)
+                .await?;
+        tx.commit().await?;
+        Ok(SettledApprovals {
+            approvals: page
+                .approvals
+                .into_iter()
+                .map(|settled| {
+                    let submission =
+                        submissions.get(&(settled.run.workspace.clone(), settled.run.id.clone()));
+                    coral_run::SettledApproval {
+                        approval: settled.approval,
+                        outcome: settled.outcome,
+                        settled_at_unix_nanos: settled.settled_at_unix_nanos,
+                        approver: settled.approver,
+                        call_path: settled.call_path,
+                        provider_label: settled.provider_label,
+                        run: ActionRun {
+                            task: submission.map(|(task, _)| task.clone()),
+                            intent: submission.map(|(_, intent)| intent.clone()),
+                            run: settled.run,
                         },
                     }
                 })

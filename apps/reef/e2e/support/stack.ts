@@ -6,7 +6,11 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import { reefRoot, type FixtureAddress, type Target } from './config.ts'
-import { prepareAuthenticatedTarget, reservePort } from './authenticated-target.ts'
+import {
+  prepareAuthenticatedTarget,
+  reservePort,
+  type SessionLifetimes,
+} from './authenticated-target.ts'
 import { startInstanceControl } from './instance-control.ts'
 import { startRoundRobinProxy, type Backend } from './round-robin-proxy.ts'
 
@@ -127,6 +131,8 @@ export async function startStack(options: {
   privateNetworkAccess?: 'deny' | 'https' | 'http-and-https'
   /** Two Coral Instances share one Postgres database behind a round-robin proxy. */
   multiInstance?: boolean
+  /** Shortened sign-in lifetimes for a scenario's own stack. */
+  sessionLifetimes?: SessionLifetimes
 }) {
   if (options.postgresURL && !options.authenticated) {
     throw new Error('Postgres requires the main suite')
@@ -187,7 +193,8 @@ export async function startStack(options: {
     }
     // The proxy listens first, so every instance advertises its origins.
     if (options.multiInstance) proxy = await startRoundRobinProxy()
-    if (options.authenticated) authentication = await prepareAuthenticatedTarget(stateDirs, proxy)
+    if (options.authenticated)
+      authentication = await prepareAuthenticatedTarget(stateDirs, proxy, options.sessionLifetimes)
     else localWeb = await reservePort()
     // Instances share one credential key, or none could read what another sealed.
     const credentialKey = options.multiInstance ? randomBytes(32).toString('base64') : undefined

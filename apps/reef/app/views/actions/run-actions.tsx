@@ -1,11 +1,11 @@
 import { useState, type ReactNode } from 'react'
-import { useFetcher, useRevalidator } from 'react-router'
+import { useRevalidator } from 'react-router'
 import { Button, List, Typography } from '@/wax/components'
 import { CodeChip } from '@/wax/components/code-chip'
 import { Deadline } from '@/wax/components/deadline'
 import { useShellCsrf } from '@/lib/use-shell-csrf'
-import type { action as resolve } from '@/routes/activity-resolve'
 import { ConnectButton } from '../accounts/connect-button'
+import { DeclineConnection } from './decline-connection'
 import { ApprovalReview } from './review'
 import { PanelFooter } from '../activity/panel'
 import { DetailHeader } from '../activity/detail-header'
@@ -196,16 +196,14 @@ function ConnectionAction({
 }) {
   const csrf = useShellCsrf()
   const connected = useActivityConnected()
-  const decline = useFetcher<typeof resolve>({ key: request.name })
   const provider = providerLabel || 'provider'
   const archived = useActivityArchived()
   const pending = request.state === 'pending'
   const header = (
     <DetailHeader
-      // A settled request has left the pending list, which names its provider.
+      // A settled request has left the Run's pending actions, which name its provider.
       title={providerLabel ? `Connect your ${providerLabel} account` : 'Connect your account'}
       status={request.state}
-      kind="account connection request"
       heading="h3"
       meta={pending && request.expiresAt && <Deadline at={request.expiresAt} variant="tertiary" />}
     />
@@ -232,18 +230,7 @@ function ConnectionAction({
           <Typography.BodySmall>Connect your {provider} account to continue.</Typography.BodySmall>
           {/* Like an approval: the secondary choice leads, the primary one ends. */}
           <PanelFooter>
-            <decline.Form method="post" action="/activity/resolve">
-              <input type="hidden" name="csrf" value={csrf} />
-              <input type="hidden" name="name" value={request.name} />
-              <input type="hidden" name="intent" value="decline_connection" />
-              <Button.TextButton
-                type="submit"
-                variant="secondary"
-                disabled={!connected || decline.state !== 'idle'}
-              >
-                Decline
-              </Button.TextButton>
-            </decline.Form>
+            <DeclineConnection request={request.name} disabled={!connected} />
             <ConnectButton
               action={connectHref(request.provider, returnTo)}
               csrf={csrf}

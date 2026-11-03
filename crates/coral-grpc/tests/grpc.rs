@@ -214,7 +214,6 @@ impl Fixture {
                     workspaces.clone(),
                 ),
                 provider_workflow: coral_administration::ProviderWorkflow::new(
-                    database.clone(),
                     providers.clone(),
                     search_index.clone(),
                 ),
@@ -275,7 +274,8 @@ impl Fixture {
         self.provider_module
             .install_builtin_in_transaction(&mut tx, &change(&self.owner), self.workspace.id())
             .await
-            .unwrap();
+            .unwrap()
+            .skip_search();
         tx.commit().await.unwrap();
     }
 
@@ -424,18 +424,26 @@ impl Fixture {
         tx.commit().await.unwrap();
     }
 
-    /// Waits on the Run's change notifications, not a poll, until it is terminal.
+    /// Waits on the Run's change notifications, not a poll, until it is terminal. An
+    /// observation also returns while a request waits on a person, so it observes again.
     async fn settle(&self, actor: &AuthenticatedPrincipal, run: &coral_run::RunId) {
-        let settled = self
-            .runs
-            .observe(
-                actor,
-                self.workspace.id(),
-                run,
-                &coral_run::RunObservation::initial(std::time::Duration::from_secs(30)).unwrap(),
-            )
-            .await
-            .unwrap();
+        let observe = async || {
+            self.runs
+                .observe(
+                    actor,
+                    self.workspace.id(),
+                    run,
+                    &coral_run::RunObservation::initial(std::time::Duration::from_secs(30))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        };
+        let mut settled = observe().await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !settled.state().is_terminal() && tokio::time::Instant::now() < deadline {
+            settled = observe().await;
+        }
         assert!(settled.state().is_terminal(), "{:?}", settled.state());
     }
 

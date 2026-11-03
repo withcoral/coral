@@ -78,12 +78,12 @@ fn refused_calls(task: &Value) -> [(&'static str, Value, &'static str); 7] {
         (
             "end_task",
             json!({"task_id": task, "outcome": "outcome-c0ral-private"}),
-            "invalid arguments for 'end_task': a value does not match the tool's input schema",
+            "invalid arguments for 'end_task': the value of `outcome` does not match the tool's input schema",
         ),
         (
             "exec",
             json!({"goal": "Start", "intent": "Start", "program": "return null;", "key-c0ral-private": true}),
-            "invalid arguments for 'exec': a value does not match the tool's input schema",
+            "invalid arguments for 'exec': an argument is not one the tool takes. It takes: task_id, goal, intent, program, run_timeout_ms, wait_ms",
         ),
         ("no-such-tool-c0ral-private", json!({}), "tool not found"),
     ]

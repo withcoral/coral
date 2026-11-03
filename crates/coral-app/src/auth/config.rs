@@ -27,6 +27,7 @@ const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCAL
 const DEFAULT_SIGNING_KEY_ENV: &str = "CORAL_SESSION_SIGNING_KEY";
 const DEFAULT_TOKEN_TTL: Duration = Duration::from_hours(720);
 const MAX_TOKEN_TTL: Duration = Duration::from_hours(24 * 365);
+const DEFAULT_REFRESH_TOKEN_TTL: Duration = coral_auth::user_tokens::DEFAULT_REFRESH_GRANT_LIFETIME;
 const CONFLICTING_KEY_SOURCES: &str = "configure only one of signing_key_env or signing_key_file";
 
 /// Validated authentication policy and its auth/web listener identities.
@@ -151,6 +152,7 @@ impl AuthSettings {
                 bind_addr: self.bind_addr,
                 authorization_server: self.authorization_server,
                 access_token_ttl,
+                refresh_token_ttl: Duration::from_secs(self.auth.session.refresh_token_ttl_seconds),
                 provider,
                 handshake_keys: Arc::new(handshake_keys),
             },
@@ -168,6 +170,7 @@ pub(crate) struct ResolvedAuthSettings {
     bind_addr: SocketAddr,
     authorization_server: AuthorizationServerSettings,
     access_token_ttl: Duration,
+    refresh_token_ttl: Duration,
     provider: ResolvedOidcProvider,
     /// Seals sign-in state into browsers; derived from the session signing key.
     handshake_keys: Arc<HandshakeKeys>,
@@ -180,6 +183,11 @@ impl ResolvedAuthSettings {
 
     pub(crate) fn authorization_server(&self) -> &AuthorizationServerSettings {
         &self.authorization_server
+    }
+
+    /// How long a Refresh Grant can refresh after its sign-in.
+    pub(super) fn refresh_token_ttl(&self) -> Duration {
+        self.refresh_token_ttl
     }
 
     pub(super) fn provider(&self) -> &ResolvedOidcProvider {
@@ -313,6 +321,9 @@ struct SessionTokenSettings {
     signing_key_env: Option<String>,
     signing_key_file: Option<PathBuf>,
     access_token_ttl_seconds: u64,
+    /// How long a client may refresh after one sign-in. Absolute: rotation
+    /// never extends it.
+    refresh_token_ttl_seconds: u64,
 }
 
 impl Default for SessionTokenSettings {
@@ -321,6 +332,7 @@ impl Default for SessionTokenSettings {
             signing_key_env: None,
             signing_key_file: None,
             access_token_ttl_seconds: DEFAULT_TOKEN_TTL.as_secs(),
+            refresh_token_ttl_seconds: DEFAULT_REFRESH_TOKEN_TTL.as_secs(),
         }
     }
 }
@@ -335,6 +347,17 @@ impl SessionTokenSettings {
         if self.access_token_ttl_seconds > MAX_TOKEN_TTL.as_secs() {
             return Err(session_config_error(format!(
                 "access_token_ttl_seconds must not exceed {}",
+                MAX_TOKEN_TTL.as_secs()
+            )));
+        }
+        if self.refresh_token_ttl_seconds == 0 {
+            return Err(session_config_error(
+                "refresh_token_ttl_seconds must be greater than 0",
+            ));
+        }
+        if self.refresh_token_ttl_seconds > MAX_TOKEN_TTL.as_secs() {
+            return Err(session_config_error(format!(
+                "refresh_token_ttl_seconds must not exceed {}",
                 MAX_TOKEN_TTL.as_secs()
             )));
         }
@@ -1731,6 +1754,14 @@ mod tests {
                 "must not exceed",
             ),
             ("access_token_ttl_seconds = 31536001", "must not exceed"),
+            (
+                "signing_key_file = 'session.key'\nrefresh_token_ttl_seconds = 0",
+                "refresh_token_ttl_seconds must be greater than 0",
+            ),
+            (
+                "signing_key_file = 'session.key'\nrefresh_token_ttl_seconds = 31536001",
+                "refresh_token_ttl_seconds must not exceed",
+            ),
         ] {
             let raw = valid("").replace("signing_key_file = 'session.key'", replacement);
             assert!(reject(&raw).contains(expected));

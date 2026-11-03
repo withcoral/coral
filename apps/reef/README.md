@@ -102,13 +102,19 @@ The insecure endpoint flag relaxes only the Reef-to-Coral hop. It does not
 relax `CORAL_WEB_PUBLIC_URL`, the OAuth issuer, browser-to-Reef transport, audience,
 cookie, or callback validation.
 
-`CORAL_WEB_SESSION_MAX_AGE_SECONDS` defaults to 3600 and caps how long Reef keeps a
-login, even if Coral issues a longer-lived access token. A shorter token expiry
-still wins. When the encrypted Reef session expires, or Coral rejects its token
-with `UNAUTHENTICATED`, Reef clears the session and sends the browser through a
-new login while preserving the requested path. There is no token refresh,
-silent renewal, token revocation, or upstream IdP logout in this release;
-signing out clears only the Reef session.
+Reef keeps a sign-in as a Coral Web Session. The session cookie carries no
+access or refresh token: only the session's handle, a bearer secret, with the
+session endpoint and end time. Coral holds the Refresh Grant and mints
+a short-lived Reef access token for each request, so a session outlives its
+access tokens. `CORAL_WEB_SESSION_MAX_AGE_SECONDS` defaults to 2592000 (30 days)
+and caps a session's length; Coral's `refresh_token_ttl_seconds` caps it too,
+and the earlier limit wins. Activity never extends a session. When Coral ends
+a session, Reef keeps showing that it expired until the reader signs in again.
+When Coral rejects an access token with `UNAUTHENTICATED`, Reef clears the
+session and sends the browser through a new login, preserving the requested
+path. Signing out asks Coral to end the session and its grant; if Coral does
+not answer, the next visit to the sign-in page retries it. There is no
+upstream IdP logout.
 
 Over HTTPS, Reef names its session and CSRF cookies with the `__Host-` prefix:
 `__Host-coral_web_session` and `__Host-coral_web_session_csrf` by default. The
@@ -216,6 +222,28 @@ Reef traces each request when an OTLP endpoint is configured.
 See [Trace UI requests](../docs/reference/configuration.mdx) for the variables.
 `./dev reef` uses the `[otel]` settings from `.dev/state/config.toml`, so Reef and
 Coral export to one backend. Set the `OTEL_*` variables in your shell to override them.
+
+## Coral plugin onboarding
+
+`AGENTS_WITH_AVAILABLE_PLUGINS` names the MCP clients that may have a Coral plugin in
+this deployment, as a comma-separated list:
+
+```bash
+AGENTS_WITH_AVAILABLE_PLUGINS='claude, chatgpt'
+```
+
+The onboarding prompt then tells a client with one of these names that can find and
+install plugins to look for the plugin. If it finds the plugin and the person
+consents, it adds the MCP server through the plugin. If it cannot find or install
+the plugin, or the person declines, it adds the server directly. Every other
+client, and every client when the variable is unset or empty, also adds the server
+directly. The list only advertises a plugin; Reef does not check that it exists.
+
+Reef reads the variable at server startup, so set it in the server environment
+rather than at image build time. It trims each name, lowercases it, collapses
+inner spaces and drops empty and repeated entries. A name has at most 32 letters,
+digits, and single spaces, dots, hyphens or underscores between them, and the list
+has at most 8 names. Any other value fails startup and names the variable.
 
 ## Recorded browser scenarios
 

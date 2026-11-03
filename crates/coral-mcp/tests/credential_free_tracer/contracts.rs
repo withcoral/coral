@@ -178,7 +178,7 @@ impl OutputContracts {
             &["code", "message", "trace_id"]
         } else {
             match name {
-                "search" => &["hits", "has_more"],
+                "search" => &["hits"],
                 // A Saved Function's source and diagnostics are absent from a
                 // description cut to `types`.
                 "describe" => &["kind", "call_path", "description", "typescript_declaration"],

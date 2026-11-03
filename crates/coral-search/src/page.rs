@@ -4,14 +4,12 @@ use std::sync::Arc;
 
 use coral_db::Transaction;
 
-use crate::cursor::encode_cursor;
 use crate::retriever::{EntityRef, EntityRetriever, Hydrated, RequestContext};
-use crate::{
-    Error, ProviderCallRoot, RetrieverStatus, SEARCH_CURSOR_MAX_BYTES, SEARCH_PAGE_MAX_BYTES,
-    SearchHit, SearchLimit, SearchPage,
-};
+use crate::{Error, RetrieverStatus, SEARCH_PAGE_MAX_BYTES, SearchHit, SearchLimit, SearchPage};
 
-const SEARCH_PAGE_BASE_BYTES: usize = SEARCH_CURSOR_MAX_BYTES + 8 * 1024;
+/// The bytes a page holds besides its hits: its `next_offset` and retriever
+/// statuses.
+const SEARCH_PAGE_BASE_BYTES: usize = 8 * 1024;
 
 /// One position of the result universe: the Entity and the retriever that
 /// ranked or listed it, which alone can hydrate it.
@@ -25,10 +23,6 @@ pub(crate) struct Ranked {
 /// page moves on; a page always advances by at least one position. A page
 /// whose every remaining Entity was unreadable is unavailable rather than an
 /// empty success; stale or vanished Entities give an empty page.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "page hydration binds one cursor to its complete request context"
-)]
 pub(crate) async fn hydrate_page_in_transaction(
     transaction: &mut Transaction<'_>,
     context: RequestContext<'_>,
@@ -36,8 +30,6 @@ pub(crate) async fn hydrate_page_in_transaction(
     ranked: &[Ranked],
     start: usize,
     limit: SearchLimit,
-    normalized_query: Option<&str>,
-    provider_filter: Option<&ProviderCallRoot>,
     retriever_statuses: Vec<RetrieverStatus>,
 ) -> Result<SearchPage, Error> {
     let mut hits = Vec::<SearchHit>::new();
@@ -84,22 +76,8 @@ pub(crate) async fn hydrate_page_in_transaction(
     {
         return Err(Error::ServiceUnavailable);
     }
-    let has_more = position < ranked.len();
-    let next_cursor = has_more
-        .then(|| {
-            encode_cursor(
-                position,
-                context.actor,
-                context.workspace_id,
-                normalized_query,
-                provider_filter,
-            )
-        })
+    let next_offset = (position < ranked.len())
+        .then(|| u32::try_from(position).map_err(|_error| Error::ServiceUnavailable))
         .transpose()?;
-    Ok(SearchPage::new(
-        hits,
-        next_cursor,
-        has_more,
-        retriever_statuses,
-    ))
+    Ok(SearchPage::new(hits, next_offset, retriever_statuses))
 }

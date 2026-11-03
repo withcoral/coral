@@ -605,6 +605,7 @@ name = "coral-administration"
 version = "1.4.0"
 dependencies = [
  "async-trait",
+ "coral-auth",
  "coral-catalog",
  "coral-credentials",
  "coral-db",
@@ -694,6 +695,7 @@ dependencies = [
  "coral-test-support",
  "coral-workspace",
  "jsonwebtoken",
+ "ring",
  "sea-query",
  "serde",
  "serde_json",
@@ -702,6 +704,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -859,6 +862,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "thiserror",
  "tokio",
  "tower",
@@ -993,7 +997,6 @@ name = "coral-search"
 version = "1.4.0"
 dependencies = [
  "async-trait",
- "base64 0.23.1",
  "coral-catalog",
  "coral-credentials",
  "coral-db",
@@ -1013,7 +1016,6 @@ dependencies = [
  "sea-query",
  "serde",
  "serde_json",
- "sha2 0.11.1",
  "sqlx",
  "tempfile",
  "thiserror",
