@@ -6,11 +6,9 @@ import { loginActor } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
 import { startStack } from '../../../support/stack.ts'
 
-// Coral access tokens last five seconds, and its verifier allows a minute of
-// clock skew; Reef sessions last a hundred seconds from sign-in.
+// Coral access tokens last five seconds; Reef sessions last forty from sign-in.
 const ACCESS_TOKEN_TTL_SECONDS = 5
-const PAST_ACCESS_TOKEN_EXPIRY_MS = (ACCESS_TOKEN_TTL_SECONDS + 65) * 1000
-const WEB_SESSION_MAX_AGE_SECONDS = 100
+const WEB_SESSION_MAX_AGE_SECONDS = 40
 
 test('A Reef session outlives its access tokens, ends at its own deadline, and stays ended after sign-out', async (context) => {
   const config = inject('reel')
@@ -56,7 +54,10 @@ test('A Reef session outlives its access tokens, ends at its own deadline, and s
       )
 
       await step('Submit the open form after every token minted so far has expired', async () => {
-        await page.waitForTimeout(PAST_ACCESS_TOKEN_EXPIRY_MS)
+        // Time passing is the claim itself: no page condition shows a token
+        // expiring. Reef never reuses a token, so the verifier's clock-skew
+        // allowance plays no part; the tokens' own expiry is enough.
+        await page.waitForTimeout((ACCESS_TOKEN_TTL_SECONDS + 1) * 1000)
         await dialog.getByRole('button', { name: 'Create workspace', exact: true }).click()
         await page.waitForURL((url) => /^\/workspaces\/[0-9a-f-]{36}$/.test(url.pathname))
         workspacePath = new URL(page.url()).pathname
@@ -79,10 +80,19 @@ test('A Reef session outlives its access tokens, ends at its own deadline, and s
       })
 
       await step('Offer sign-in once the session reaches its absolute end', async () => {
-        const remaining = signedInAt + (WEB_SESSION_MAX_AGE_SECONDS + 5) * 1000 - Date.now()
-        await page.waitForTimeout(Math.max(0, remaining))
-        await page.reload()
-        await page.getByRole('heading', { name: 'Your session expired', exact: true }).waitFor()
+        const expired = page.getByRole('heading', { name: 'Your session expired', exact: true })
+        await expect
+          .poll(
+            async () => {
+              await page.reload()
+              return expired.count()
+            },
+            {
+              interval: 2000,
+              timeout: signedInAt + (WEB_SESSION_MAX_AGE_SECONDS + 15) * 1000 - Date.now(),
+            },
+          )
+          .toBe(1)
         await page.getByRole('button', { name: 'Sign in', exact: true }).click()
         await accountMenu.waitFor()
       })

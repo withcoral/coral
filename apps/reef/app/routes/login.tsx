@@ -5,12 +5,7 @@ import type { Route } from './+types/login'
 import { startCoralOAuthLogin } from '@/auth/coral-oauth.server'
 import { authPrivateHeaders, markAuthResponsePrivate } from '@/auth/response.server'
 import { safeInternalPath } from '@/auth/safe-path.server'
-import {
-  clearPendingSignOut,
-  endCoralWebSession,
-  hasPendingSignOut,
-  resolveCoralWebSession,
-} from '@/auth/session.server'
+import { finishPendingSignOuts, resolveCoralWebSession } from '@/auth/session.server'
 import { runtimeConfigContext } from '@/lib/runtime-config.server'
 import { routePath } from '@/routing/routemap'
 import { Brand } from '@/wax/components/brand'
@@ -31,14 +26,9 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 
   // A sign-out Coral did not answer is finished here, before anything else.
   const cookies = new Headers()
-  let signOutPending = false
-  if (await hasPendingSignOut(request, config)) {
-    if ((await endCoralWebSession(request, config)) === 'ended') {
-      cookies.append('Set-Cookie', await clearPendingSignOut(config))
-    } else {
-      signOutPending = true
-    }
-  }
+  const pending = await finishPendingSignOuts(request, config)
+  if (pending) cookies.append('Set-Cookie', pending.setCookie)
+  const signOutPending = pending?.unfinished ?? false
 
   let session
   try {

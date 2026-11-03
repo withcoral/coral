@@ -5,11 +5,11 @@ import { authClientId } from './config.server'
 import {
   commitCoralWebSession,
   commitOAuthTransaction,
-  commitPendingSignOut,
-  endCoralWebSession,
+  finishPendingSignOuts,
   oauthCookieName,
   readOAuthTransaction,
   resolveCoralWebSession,
+  signOutCoralWebSession,
 } from './session.server'
 import { loopbackAuthConfig as loopbackConfig, requiredAuthConfig } from './test-config'
 
@@ -42,7 +42,11 @@ describe('Coral web auth sessions', () => {
     expect(cookie).toContain('Secure')
     // The cookie outlives the session, so its end reaches the reader as a refusal.
     expect(cookie).toContain('Max-Age=3900')
-    expect(cookieValue(cookie)).toBe(JSON.stringify({ endpoint: ENDPOINT, handle: HANDLE }))
+    expect(JSON.parse(cookieValue(cookie))).toEqual({
+      endpoint: ENDPOINT,
+      endsAt: unixTimestamp() + 3600,
+      handle: HANDLE,
+    })
 
     const fetch = mockFetch(minted())
     await expect(resolveCoralWebSession(requestWith(cookie), config)).resolves.toEqual({
@@ -85,7 +89,11 @@ describe('Coral web auth sessions', () => {
       'names a session endpoint off the issuer',
       async () =>
         requestWith(
-          await signedSessionCookie({ endpoint: 'https://attacker.test/session', handle: HANDLE }),
+          await signedSessionCookie({
+            endpoint: 'https://attacker.test/session',
+            endsAt: 4_102_444_800,
+            handle: HANDLE,
+          }),
         ),
     ],
     [
@@ -261,35 +269,86 @@ describe('Coral web auth sessions', () => {
     ).resolves.toContain('Max-Age=331')
   })
 
-  it('ends the session at Coral, or keeps a sign-out to finish later', async () => {
+  it('signs out at Coral and clears the session cookie', async () => {
     const cookie = await startedSession()
-    const fetch = mockFetch(
-      new Response(null, { status: 200 }),
-      jsonResponse({ error: 'server_error' }, 503),
-      new Response(null, { status: 200 }),
+    const fetch = mockFetch(new Response(null, { status: 200 }))
+
+    const signOut = await signOutCoralWebSession(requestWith(cookie), config)
+
+    expect(signOut.unfinished).toBe(false)
+    expect(endedHandles(fetch)).toEqual([HANDLE])
+    expect(signOut.setCookies.map(cookieName).toSorted()).toEqual(
+      [config.cookieName, `${config.cookieName}_signout`].toSorted(),
     )
+    for (const set of signOut.setCookies) expect(set).toContain('Max-Age=0')
+  })
 
-    await expect(endCoralWebSession(requestWith(cookie), config)).resolves.toBe('ended')
-    await expect(endCoralWebSession(requestWith(cookie), config)).resolves.toBe('unfinished')
-    const pending = await commitPendingSignOut(requestWith(cookie), config)
-    expect(pending).toContain(`${config.cookieName}_signout=`)
-    // The pending cookie alone finishes the sign-out; it is never a session.
-    await expect(endCoralWebSession(requestWith(pending ?? ''), config)).resolves.toBe('ended')
-    await expect(resolveCoralWebSession(requestWith(pending ?? ''), config)).resolves.toBeNull()
+  // Catches a retry that reads the newer session cookie and signs the reader
+  // out of a sign-in they just made, leaving the old session alive.
+  it('keeps an unanswered sign-out and later finishes only that one', async () => {
+    const old = await startedSession()
+    mockFetch(jsonResponse({ error: 'server_error' }, 503))
+    const signOut = await signOutCoralWebSession(requestWith(old), config)
+    expect(signOut.unfinished).toBe(true)
+    const pending = signOut.setCookies.find(
+      (set) => cookieName(set) === `${config.cookieName}_signout`,
+    )!
+    // The pending cookie lasts no longer than the session it would end.
+    expect(pending).toContain('Max-Age=3600')
 
-    for (const [url, init] of fetch.mock.calls as [string, RequestInit][]) {
-      expect(url).toBe(`${ENDPOINT}/end`)
-      expect(Object.fromEntries(init.body as URLSearchParams)).toEqual({
-        client_id: authClientId(config),
-        session: HANDLE,
-      })
-    }
+    const newer = await commitCoralWebSession(
+      { endpoint: ENDPOINT, expiresIn: 3600, handle: 'coral_ws_newer' },
+      config,
+    )
+    const fetch = mockFetch(new Response(null, { status: 200 }))
+    const finished = await finishPendingSignOuts(requestWith(newer, pending), config)
+
+    expect(endedHandles(fetch)).toEqual([HANDLE])
+    expect(finished).toEqual({ setCookie: expect.stringContaining('Max-Age=0'), unfinished: false })
+    mockFetch(minted())
+    await expect(
+      resolveCoralWebSession(requestWith(newer, pending), config),
+    ).resolves.toMatchObject({
+      handle: 'coral_ws_newer',
+    })
+  })
+
+  it('drops a pending sign-out once its session has ended on its own', async () => {
+    mockFetch(jsonResponse({ error: 'server_error' }, 503))
+    const signOut = await signOutCoralWebSession(requestWith(await startedSession()), config)
+    const pending = signOut.setCookies.find(
+      (set) => cookieName(set) === `${config.cookieName}_signout`,
+    )!
+
+    advanceSeconds(3600)
+    const fetch = mockFetch()
+    await expect(finishPendingSignOuts(requestWith(pending), config)).resolves.toEqual({
+      setCookie: expect.stringContaining('Max-Age=0'),
+      unfinished: false,
+    })
+    expect(fetch).not.toHaveBeenCalled()
+    await expect(
+      finishPendingSignOuts(new Request('https://coral-web.example.test/'), config),
+    ).resolves.toBeNull()
   })
 })
 
-function requestWith(setCookie: string): Request {
+function requestWith(...setCookies: string[]): Request {
   return new Request('https://coral-web.example.test/', {
-    headers: { cookie: setCookie.split(';', 1)[0] },
+    headers: { cookie: setCookies.map((set) => set.split(';', 1)[0]).join('; ') },
+  })
+}
+
+function cookieName(setCookie: string): string {
+  return setCookie.slice(0, setCookie.indexOf('='))
+}
+
+/** The session handles each fetch asked Coral to end, in order. */
+function endedHandles(fetch: ReturnType<typeof mockFetch>): string[] {
+  return (fetch.mock.calls as [string, RequestInit][]).map(([url, init]) => {
+    expect(url).toBe(`${ENDPOINT}/end`)
+    expect((init.body as URLSearchParams).get('client_id')).toBe(authClientId(config))
+    return (init.body as URLSearchParams).get('session') ?? ''
   })
 }
 

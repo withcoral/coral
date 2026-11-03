@@ -221,7 +221,7 @@ async function startWebSession(
   config: RequiredAuthConfig,
 ): Promise<StartedWebSession> {
   if (typeof token.refresh_token !== 'string' || !token.refresh_token) {
-    throw callbackError('Coral did not return a refresh token, so Reef cannot keep you signed in')
+    throw callbackError('Sign-in failed: no refresh token. Ask your administrator to update Coral.')
   }
   const response = await fetch(metadata.coral_web_session_endpoint, {
     body: new URLSearchParams({

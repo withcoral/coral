@@ -5,12 +5,9 @@ import type { Route } from './+types/logout'
 import { clearCsrfToken, validateCsrfToken } from '@/auth/csrf.server'
 import { markAuthResponsePrivate } from '@/auth/response.server'
 import {
-  clearCoralWebSession,
   clearOAuthTransaction,
-  clearPendingSignOut,
-  commitPendingSignOut,
   coralWebSessionHandle,
-  endCoralWebSession,
+  signOutCoralWebSession,
 } from '@/auth/session.server'
 import { runtimeConfigContext } from '@/lib/runtime-config.server'
 import { routePath } from '@/routing/routemap'
@@ -39,13 +36,8 @@ export async function action({ context, request }: Route.ActionArgs) {
   // Ending the session at Coral ends its grant, so it cannot refresh again.
   // When Coral does not answer, the browser still loses the session, and a
   // pending sign-out cookie lets the next visit finish ending it.
-  if ((await endCoralWebSession(request, config)) === 'ended') {
-    headers.append('Set-Cookie', await clearPendingSignOut(config))
-  } else {
-    const pending = await commitPendingSignOut(request, config)
-    if (pending) headers.append('Set-Cookie', pending)
-  }
-  headers.append('Set-Cookie', await clearCoralWebSession(config))
+  const signOut = await signOutCoralWebSession(request, config)
+  for (const cookie of signOut.setCookies) headers.append('Set-Cookie', cookie)
 
   // Land on the signed-out screen so sign-in does not start again by itself.
   return markAuthResponsePrivate(redirect(`${routePath('login')}?signedOut=1`, { headers }))

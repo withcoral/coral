@@ -30,11 +30,6 @@ function evidence(value: ActivityPageValue | ActivityCountValue) {
  */
 export const STREAM_LIFETIME_MS = 2 * 60_000
 
-/** Feature-specific SSE adapter. Coral subscribes before its first `changed` message, so
- * changes during reads stay queued. Coral heartbeats become browser heartbeats without an
- * activity read. No idle reload timer, raw invalidation hints or hidden payloads reach the
- * browser.
- */
 /** When a stream's credentials stop serving it, in Unix seconds. */
 export interface StreamDeadlines {
   /** The access token expires: the browser reconnects and the session mints another. */
@@ -52,6 +47,11 @@ export function streamDeadlines(auth: RequestAuth): StreamDeadlines {
     : UNBOUNDED
 }
 
+/** Feature-specific SSE adapter. Coral subscribes before its first `changed` message, so
+ * changes during reads stay queued. Coral heartbeats become browser heartbeats without an
+ * activity read. No idle reload timer, raw invalidation hints or hidden payloads reach the
+ * browser.
+ */
 export function activityStream<Value extends ActivityPageValue | ActivityCountValue>(
   request: Request,
   api: Pick<ManagementApi, 'activity'>,

@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { localRuntimeConfig, publicRouteTestArgs } from '@/auth/server-context.test-helper'
-import { commitCoralWebSession, commitPendingSignOut, oauthCookieName } from '@/auth/session.server'
+import {
+  commitCoralWebSession,
+  oauthCookieName,
+  signOutCoralWebSession,
+} from '@/auth/session.server'
 import { hostedRuntimeConfig, requiredAuthConfig } from '@/auth/test-config'
 import type { CoralWebRuntimeConfig } from '@/lib/runtime-config.server'
 
@@ -71,8 +75,8 @@ describe('login route', () => {
   ])(
     'finishes a pending sign-out on the next visit when Coral answers %i',
     async (status, stillPending) => {
-      endAnswer = status
-      const pending = await commitPendingSignOut(
+      endAnswer = 503
+      const signOut = await signOutCoralWebSession(
         new Request('https://coral-web.example.test/', {
           headers: {
             cookie: (await commitCoralWebSession(started, requiredAuthConfig)).split(';', 1)[0],
@@ -80,6 +84,11 @@ describe('login route', () => {
         }),
         requiredAuthConfig,
       )
+      const pending = signOut.setCookies.find((cookie) =>
+        cookie.startsWith(`${requiredAuthConfig.cookieName}_signout=`),
+      )
+      discovery.mockClear()
+      endAnswer = status
 
       const result = await runLoaderValue('https://coral-web.example.test/login?signedOut=1', {
         cookie: pending!.split(';', 1)[0],

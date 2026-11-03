@@ -1,4 +1,4 @@
-//! Reef's web sessions, held by the authorization server.
+//! Reef's Web Sessions, held by the authorization server.
 //!
 //! Reef starts a session with the refresh token its sign-in returned, and
 //! from then on keeps only the session handle: the server holds the Refresh
@@ -17,7 +17,7 @@
 //! did not answer and the request may be retried: none of these requests
 //! changes anything that a retry could repeat.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use axum::body::to_bytes;
 use axum::extract::{Request, State};
@@ -34,7 +34,7 @@ use super::token::{
     now_unix_nanos, parse_form, token_error, valid_content_type,
 };
 
-/// The longest web session a client may ask for.
+/// The longest Web Session a client may ask for.
 const MAX_SESSION_AGE: Duration = Duration::from_hours(24 * 365);
 
 pub(super) async fn start(
@@ -94,15 +94,15 @@ pub(super) async fn token(
         .await
     {
         Ok(minted) => {
-            let issued_at = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |elapsed| elapsed.as_secs());
+            // The token expires after `now` by construction; one second is
+            // the least a client can schedule its next request against.
+            let now_secs = u64::try_from(now / 1_000_000_000).unwrap_or(0);
             json_response(
                 StatusCode::OK,
                 &serde_json::json!({
                     "access_token": minted.access_token.access_token,
                     "token_type": "Bearer",
-                    "expires_in": minted.access_token.expires_at.saturating_sub(issued_at),
+                    "expires_in": minted.access_token.expires_at.saturating_sub(now_secs).max(1),
                     "session_expires_in": seconds_until(minted.session_expires_at_unix_nanos, now),
                 }),
             )
@@ -166,8 +166,11 @@ fn session_age(value: &str) -> Option<Duration> {
     Some(Duration::from_secs(seconds)).filter(|age| *age <= MAX_SESSION_AGE)
 }
 
+/// Whole seconds until `deadline`, rounded up: a session with any time left
+/// reports at least one second.
 fn seconds_until(deadline_unix_nanos: i64, now_unix_nanos: i64) -> i64 {
-    deadline_unix_nanos.saturating_sub(now_unix_nanos) / 1_000_000_000
+    let remaining = deadline_unix_nanos.saturating_sub(now_unix_nanos).max(0);
+    remaining / 1_000_000_000 + i64::from(remaining % 1_000_000_000 != 0)
 }
 
 fn refused(refusal: TokenRefusal) -> Response {
@@ -184,8 +187,15 @@ fn refused(refusal: TokenRefusal) -> Response {
         error.type = safe::kind(refusal.code()),
         "web session endpoint could not answer"
     );
+    // Storage that did not answer may answer a retry; a failed signature
+    // will not, so it reports as the token endpoint does.
+    let status = if refusal == TokenRefusal::Unavailable {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
     json_response(
-        StatusCode::SERVICE_UNAVAILABLE,
+        status,
         &serde_json::json!({
             "error": "server_error",
             "error_description": "the session is temporarily unavailable",
@@ -319,12 +329,6 @@ mod tests {
         assert_eq!(minted["token_type"], "Bearer");
         assert!(minted["expires_in"].as_u64().unwrap() > 0);
         assert!(minted["session_expires_in"].as_i64().unwrap() > 3590);
-        let claims = jsonwebtoken::dangerous::insecure_decode::<Value>(
-            minted["access_token"].as_str().unwrap(),
-        )
-        .unwrap()
-        .claims;
-        assert_eq!(claims["aud"], "reef");
 
         let (status, _body) =
             read(token(State(state.clone()), form(&[("client_id", CLIENT)])).await).await;

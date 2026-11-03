@@ -82,31 +82,37 @@ export async function clearOAuthTransaction(config: RequiredAuthConfig): Promise
 }
 
 /**
- * What the session cookie carries: the session handle Coral issued, and the
- * session endpoint discovered when the session started. The cookie is signed,
- * and the endpoint is checked against the issuer again on every use.
+ * What the session cookie carries: the session handle Coral issued, the
+ * session endpoint discovered when the session started, and when the session
+ * ends. The cookie is signed, and the endpoint is checked against the issuer
+ * again on every use.
  */
 interface StoredWebSession {
   endpoint: string
   handle: string
+  /** When Coral ends the session, in Unix seconds. */
+  endsAt: number
 }
 
 /** A web session Coral just started for this browser. */
-export interface StartedWebSession extends StoredWebSession {
+export interface StartedWebSession {
+  endpoint: string
+  handle: string
   /** Seconds until Coral ends the session. */
   expiresIn: number
 }
 
+/** The most sign-outs one browser keeps to finish. The newest are kept. */
+const MAX_PENDING_SIGN_OUTS = 4
+
 /**
- * Writes the session cookie, refusing to write one that cannot be read back.
+ * Writes the session cookie, refusing to write one that cannot be used.
  *
- * [`resolveCoralWebSession`] treats a session ending within
- * [`CLOCK_SKEW_SECONDS`] as already gone, so a shorter one is unusable from the
- * moment it is committed. Left to itself that is not an error anywhere: the
- * callback succeeds, a protected route finds no session, and the visitor
- * returns to `/login` in a loop with no failure in it. A small
- * `CORAL_WEB_SESSION_MAX_AGE_SECONDS` or a short Coral refresh-token lifetime can
- * cause it, so the message names both.
+ * A session that ends within [`CLOCK_SKEW_SECONDS`] would be gone before the
+ * redirect after sign-in reached a protected route, and the visitor would
+ * return to `/login` in a loop with no failure in it. A small
+ * `CORAL_WEB_SESSION_MAX_AGE_SECONDS` or a short Coral refresh-token lifetime
+ * can cause it, so the message names both.
  */
 export async function commitCoralWebSession(
   session: StartedWebSession,
@@ -117,7 +123,11 @@ export async function commitCoralWebSession(
       `Refusing to establish a Coral web session that expires within ${CLOCK_SKEW_SECONDS}s: check CORAL_WEB_SESSION_MAX_AGE_SECONDS and Coral's refresh_token_ttl_seconds`,
     )
   }
-  const stored: StoredWebSession = { endpoint: session.endpoint, handle: session.handle }
+  const stored: StoredWebSession = {
+    endpoint: session.endpoint,
+    endsAt: unixTimestamp() + session.expiresIn,
+    handle: session.handle,
+  }
   return sessionCookie(config).serialize(stored, {
     maxAge: session.expiresIn + SESSION_COOKIE_GRACE_SECONDS,
   })
@@ -138,7 +148,7 @@ export async function resolveCoralWebSession(
   request: Request,
   config: RequiredAuthConfig,
 ): Promise<AuthSession | null> {
-  const stored = await readStoredSession(sessionCookie(config), request, config)
+  const stored = await readStoredSession(request, config)
   if (!stored) return null
   const response = await postSessionForm(`${stored.endpoint}/token`, {
     client_id: authClientId(config),
@@ -172,7 +182,7 @@ export async function hasCoralWebSession(
   request: Request,
   config: RequiredAuthConfig,
 ): Promise<boolean> {
-  return (await readStoredSession(sessionCookie(config), request, config)) !== null
+  return (await readStoredSession(request, config)) !== null
 }
 
 /** The handle in this request's session cookie, unchecked with Coral. */
@@ -180,39 +190,49 @@ export async function coralWebSessionHandle(
   request: Request,
   config: RequiredAuthConfig,
 ): Promise<string | null> {
-  return (await readStoredSession(sessionCookie(config), request, config))?.handle ?? null
+  return (await readStoredSession(request, config))?.handle ?? null
 }
 
-/** What ending a web session at Coral came to. */
-export type SignOutOutcome = 'ended' | 'unfinished'
+/** The cookies a sign-out step sets, and whether any sign-out is unfinished. */
+export interface SignOutCookies {
+  setCookies: string[]
+  unfinished: boolean
+}
 
 /**
- * Ends the session this request's session cookie names, and the grant
- * behind it, at Coral. Without that cookie it finishes an earlier sign-out
- * that Coral did not answer, if one is pending.
+ * Ends this request's web session, and the grant behind it, at Coral, and
+ * clears the session cookie. A session Coral does not answer for joins the
+ * browser's pending sign-outs, which this retries too.
  *
- * Ending is idempotent at Coral, so a repeat is safe. `unfinished` means
- * Coral did not answer: the caller keeps the pending sign-out so the next
- * visit retries it.
+ * Ending is idempotent at Coral, so retrying is safe. The browser loses the
+ * session either way; until a pending sign-out finishes, a copy of the old
+ * cookie elsewhere can still use it, so the caller reports it.
  */
-export async function endCoralWebSession(
+export async function signOutCoralWebSession(
   request: Request,
   config: RequiredAuthConfig,
-): Promise<SignOutOutcome> {
-  const stored =
-    (await readStoredSession(sessionCookie(config), request, config)) ??
-    (await readStoredSession(pendingSignOutCookie(config), request, config))
-  if (!stored) return 'ended'
-  let response: Response
-  try {
-    response = await postSessionForm(`${stored.endpoint}/end`, {
-      client_id: authClientId(config),
-      session: stored.handle,
-    })
-  } catch {
-    return 'unfinished'
+): Promise<SignOutCookies> {
+  const current = await readStoredSession(request, config)
+  const unanswered = current && !(await endAtCoral(current, config)) ? [current] : []
+  const pending = await retryPendingSignOuts(request, config, unanswered)
+  return {
+    setCookies: [pending.setCookie, await clearCoralWebSession(config)],
+    unfinished: pending.unfinished,
   }
-  return response.status === 200 ? 'ended' : 'unfinished'
+}
+
+/**
+ * Retries the sign-outs this browser kept because Coral did not answer, and
+ * only those: the browser's current session, if any, is left alone.
+ *
+ * Returns `null` when the browser has no sign-out pending.
+ */
+export async function finishPendingSignOuts(
+  request: Request,
+  config: RequiredAuthConfig,
+): Promise<{ setCookie: string; unfinished: boolean } | null> {
+  if ((await readPendingSignOuts(request, config)).length === 0) return null
+  return retryPendingSignOuts(request, config, [])
 }
 
 export async function clearCoralWebSession(config: RequiredAuthConfig): Promise<string> {
@@ -220,28 +240,47 @@ export async function clearCoralWebSession(config: RequiredAuthConfig): Promise<
 }
 
 /**
- * Keeps the ended session's handle in a cookie of its own, so the next visit
- * can finish a sign-out Coral did not answer. No route reads it as a session.
+ * Retries every pending sign-out, adds `unanswered`, and returns the pending
+ * cookie that remains. A session past its own end needs no sign-out: Coral
+ * has already ended it with its grant. The cookie lasts until the latest
+ * pending session would have ended anyway.
  */
-export async function commitPendingSignOut(
+async function retryPendingSignOuts(
   request: Request,
   config: RequiredAuthConfig,
-): Promise<string | null> {
-  const stored = await readStoredSession(sessionCookie(config), request, config)
-  if (!stored) return null
-  return pendingSignOutCookie(config).serialize(stored)
+  unanswered: StoredWebSession[],
+): Promise<{ setCookie: string; unfinished: boolean }> {
+  const now = unixTimestamp()
+  const remaining: StoredWebSession[] = []
+  for (const pending of await readPendingSignOuts(request, config)) {
+    if (pending.endsAt > now && !(await endAtCoral(pending, config))) remaining.push(pending)
+  }
+  remaining.push(...unanswered.filter((session) => session.endsAt > now))
+  const kept = remaining.slice(-MAX_PENDING_SIGN_OUTS)
+  if (kept.length === 0) {
+    return {
+      setCookie: await pendingSignOutCookie(config).serialize('', { maxAge: 0 }),
+      unfinished: false,
+    }
+  }
+  const maxAge = Math.max(...kept.map((session) => session.endsAt)) - now
+  return {
+    setCookie: await pendingSignOutCookie(config).serialize(kept, { maxAge }),
+    unfinished: true,
+  }
 }
 
-/** Whether this request carries a sign-out that has not finished. */
-export async function hasPendingSignOut(
-  request: Request,
-  config: RequiredAuthConfig,
-): Promise<boolean> {
-  return (await readStoredSession(pendingSignOutCookie(config), request, config)) !== null
-}
-
-export async function clearPendingSignOut(config: RequiredAuthConfig): Promise<string> {
-  return pendingSignOutCookie(config).serialize('', { maxAge: 0 })
+/** Whether Coral answered that the session is ended. */
+async function endAtCoral(session: StoredWebSession, config: RequiredAuthConfig): Promise<boolean> {
+  try {
+    const response = await postSessionForm(`${session.endpoint}/end`, {
+      client_id: authClientId(config),
+      session: session.handle,
+    })
+    return response.status === 200
+  } catch {
+    return false
+  }
 }
 
 interface SessionTokenResponse {
@@ -281,22 +320,38 @@ function sessionUnavailable(): Response {
 }
 
 async function readStoredSession(
-  cookie: ReturnType<typeof createCookie>,
   request: Request,
   config: RequiredAuthConfig,
 ): Promise<StoredWebSession | null> {
-  const value = (await cookie.parse(request.headers.get('cookie'))) as unknown
+  return storedSession(await sessionCookie(config).parse(request.headers.get('cookie')), config)
+}
+
+async function readPendingSignOuts(
+  request: Request,
+  config: RequiredAuthConfig,
+): Promise<StoredWebSession[]> {
+  const value = (await pendingSignOutCookie(config).parse(request.headers.get('cookie'))) as unknown
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry) => storedSession(entry, config))
+    .filter((entry) => entry !== null)
+    .slice(-MAX_PENDING_SIGN_OUTS)
+}
+
+function storedSession(value: unknown, config: RequiredAuthConfig): StoredWebSession | null {
   if (!value || typeof value !== 'object') return null
   const candidate = value as Partial<StoredWebSession>
   if (
     typeof candidate.handle !== 'string' ||
     !candidate.handle ||
     typeof candidate.endpoint !== 'string' ||
-    !isIssuerEndpoint(candidate.endpoint, config.issuer)
+    !isIssuerEndpoint(candidate.endpoint, config.issuer) ||
+    typeof candidate.endsAt !== 'number' ||
+    !Number.isFinite(candidate.endsAt)
   ) {
     return null
   }
-  return { endpoint: candidate.endpoint, handle: candidate.handle }
+  return { endpoint: candidate.endpoint, endsAt: candidate.endsAt, handle: candidate.handle }
 }
 
 export function randomToken(byteCount: number): string {

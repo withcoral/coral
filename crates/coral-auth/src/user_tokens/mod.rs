@@ -142,7 +142,7 @@ impl fmt::Debug for RefreshToken {
     }
 }
 
-/// One web session handle, shown only to the client that started it. It is
+/// One Web Session handle, shown only to the client that started it. It is
 /// a bearer secret: whoever holds it gets that session's access tokens.
 pub struct WebSessionHandle(Zeroizing<String>);
 
@@ -160,7 +160,7 @@ impl fmt::Debug for WebSessionHandle {
     }
 }
 
-/// A web session that just started.
+/// A Web Session that just started.
 #[derive(Debug)]
 pub struct StartedWebSession {
     /// The session's handle.
@@ -169,7 +169,7 @@ pub struct StartedWebSession {
     pub expires_at_unix_nanos: i64,
 }
 
-/// An access token a web session minted.
+/// An access token a Web Session minted.
 pub struct WebSessionToken {
     /// The new access token. It never outlives its session.
     pub access_token: IssuedAccessToken,
@@ -410,7 +410,7 @@ impl UserTokens {
     }
 
     /// Takes the Reef Refresh Grant `refresh_token` belongs to from
-    /// `client_id` and holds it in a new web session that lasts `max_age`,
+    /// `client_id` and holds it in a new Web Session that lasts `max_age`,
     /// never past the grant's own expiry.
     ///
     /// The refresh token is spent: presenting it again is a replay that ends
@@ -420,7 +420,7 @@ impl UserTokens {
     ///
     /// [`TokenRefusal::InvalidGrant`] for a token that could not refresh, one
     /// issued to another client, or one whose grant is not for Reef. Only a
-    /// Reef grant may back a web session, so an MCP grant never reaches
+    /// Reef grant may back a Web Session, so an MCP grant never reaches
     /// management access.
     pub async fn start_web_session(
         &self,
@@ -477,7 +477,7 @@ impl UserTokens {
         })
     }
 
-    /// Mints a Reef access token for the web session `handle` names, under
+    /// Mints a Reef access token for the Web Session `handle` names, under
     /// the User's current authority, at host time `now_unix_nanos`.
     ///
     /// Minting writes nothing, so any number of requests and processes can
@@ -507,8 +507,13 @@ impl UserTokens {
             .resolve_user_authority(&scope.user_id)
             .await
             .map_err(|error| refusal(&error))?;
+        // Tokens carry whole seconds. A session in its last second can carry
+        // no token that ends with it, so it is already over.
         let session_end = u64::try_from(session.expires_at_unix_nanos / 1_000_000_000)
             .map_err(|_error| TokenRefusal::Issuance)?;
+        if i64::try_from(session_end).unwrap_or(i64::MAX) <= now_unix_nanos / 1_000_000_000 {
+            return Err(TokenRefusal::InvalidGrant);
+        }
         let audience = scope
             .private_audience
             .ok_or(TokenRefusal::Unavailable)?
@@ -528,7 +533,7 @@ impl UserTokens {
         })
     }
 
-    /// Ends the web session `handle` names, with its grant, when `client_id`
+    /// Ends the Web Session `handle` names, with its grant, when `client_id`
     /// started it. An unknown or ended session, or another client's, changes
     /// nothing and is not reported.
     ///
@@ -547,7 +552,7 @@ impl UserTokens {
         }
     }
 
-    /// Deletes a bounded batch of grants whose web session expired.
+    /// Deletes a bounded batch of grants whose Web Session expired.
     async fn purge_expired_sessions(&self, now_unix_nanos: i64) {
         let Ok(mut tx) = self.database.begin().await else {
             return;

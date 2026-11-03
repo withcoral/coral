@@ -47,7 +47,7 @@ enum Tokens {
     ConsumedAtUnixNanos,
 }
 
-/// A presented web session and the grant it holds.
+/// A presented Web Session and the grant it holds.
 pub(super) struct PresentedSession {
     pub(super) grant_id: String,
     pub(super) scope: Scope,
@@ -200,7 +200,7 @@ pub(super) async fn insert_session(
     Ok(())
 }
 
-/// Deletes up to `batch` of the grants whose web session expired, with the
+/// Deletes up to `batch` of the grants whose Web Session expired, with the
 /// session and its tokens.
 pub(super) async fn purge_expired_sessions(
     tx: &mut Transaction<'_>,

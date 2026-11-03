@@ -228,7 +228,8 @@ The web interface keeps your users signed in through a web session that Coral ho
 
 - **Lifetime.** A web session lasts `CORAL_WEB_SESSION_MAX_AGE_SECONDS` (default 2592000, 30 days) or until `refresh_token_ttl_seconds` ends, whichever comes first. Activity does not extend it. To keep users signed in longer, increase both values. To sign them out sooner, decrease either one.
 - **Several processes.** Every web interface process reads sessions from Coral. You do not need shared storage for the web interface itself.
-- **Sign-out.** Signing out ends the session and its refresh token at Coral. A copied session cookie stops working. If Coral does not answer, the browser still signs out, and the next visit finishes the sign-out at Coral.
+- **Sign-out.** Signing out ends the session and its refresh token at Coral, and a copied session cookie stops working. Access tokens that Coral minted before sign-out work until they expire.
+- **Sign-out when Coral does not answer.** The browser still signs out. The next visit to the sign-in page finishes the sign-out at Coral. Until then, a copied session cookie still works, at most until the session would end.
 - **Outages.** If Coral does not answer, the web interface shows an error and keeps the session. Your users stay signed in when Coral recovers.
 
 ### `[auth.provider]`

@@ -56,14 +56,32 @@ async fn a_web_session_mints_reef_tokens_until_it_ends() {
         assert_eq!(claims["sub"], fixture.user.user_id().as_str());
         assert!(claims.get("workspace_id").is_none());
     }
+    let issued = fixture
+        .session_token(&handle, NOW + 4 * SECOND)
+        .await
+        .unwrap();
     fixture
         .tokens
         .end_web_session(&handle, CLIENT)
         .await
         .unwrap();
     assert_eq!(
-        fixture.session_token(&handle, NOW + 4 * SECOND).await.err(),
+        fixture.session_token(&handle, NOW + 5 * SECOND).await.err(),
         Some(TokenRefusal::InvalidGrant)
+    );
+    // Ending a session ends refresh only: a token minted before keeps its
+    // expiry and its live authority checks.
+    let reef = crate::PrincipalAuthentication::new(
+        &fixture.issuer,
+        coral_workspace::OrganizationModule::new(fixture.database.database()),
+        coral_workspace::WorkspaceModule::new(fixture.database.database()),
+    )
+    .authenticate_user(Some(&issued.access_token.access_token), "reef")
+    .await
+    .expect("the earlier token still authenticates");
+    assert_eq!(
+        reef.principal().id().as_str(),
+        fixture.user.user_id().as_str()
     );
 }
 
@@ -150,7 +168,13 @@ async fn a_session_ends_at_the_earlier_of_its_age_and_its_grant() {
         let session_end = NOW + SECOND + i64::try_from(max_age.as_nanos()).unwrap();
         let grant_end = NOW + 1 + i64::try_from(grant_lifetime.as_nanos()).unwrap();
         let end = session_end.min(grant_end);
-        let token = fixture.session_token(&handle, end - 1).await.unwrap();
+        // Tokens carry whole seconds, so the session's last usable instant
+        // is just before its last second.
+        let last_second = (end / SECOND) * SECOND;
+        let token = fixture
+            .session_token(&handle, last_second - 1)
+            .await
+            .unwrap();
         assert_eq!(token.session_expires_at_unix_nanos, end, "{ends_after}s");
         let exp = claims(&token)["exp"].as_i64().unwrap();
         assert!(
@@ -159,6 +183,12 @@ async fn a_session_ends_at_the_earlier_of_its_age_and_its_grant() {
         );
         assert_eq!(
             fixture.session_token(&handle, end).await.err(),
+            Some(TokenRefusal::InvalidGrant),
+            "{ends_after}s"
+        );
+        // Its last second is a refusal too, never an issuance failure.
+        assert_eq!(
+            fixture.session_token(&handle, last_second).await.err(),
             Some(TokenRefusal::InvalidGrant),
             "{ends_after}s"
         );
@@ -171,9 +201,9 @@ async fn only_the_sessions_own_client_ends_it() {
     let fixture = Fixture::new().await;
     let handle = fixture.web_session(HOUR).await;
     for (client, refused) in [
-        ("https://other.example.test/client.json", false),
-        (CLIENT, true),
-        (CLIENT, true),
+        ("https://other.example.test/client.json", None),
+        (CLIENT, Some(TokenRefusal::InvalidGrant)),
+        (CLIENT, Some(TokenRefusal::InvalidGrant)),
     ] {
         fixture
             .tokens
@@ -181,10 +211,7 @@ async fn only_the_sessions_own_client_ends_it() {
             .await
             .unwrap();
         assert_eq!(
-            fixture
-                .session_token(&handle, NOW + 2 * SECOND)
-                .await
-                .is_err(),
+            fixture.session_token(&handle, NOW + 2 * SECOND).await.err(),
             refused,
             "{client}"
         );

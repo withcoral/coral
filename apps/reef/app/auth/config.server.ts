@@ -99,6 +99,25 @@ export function authCookieSecure(config: RequiredAuthConfig): boolean {
 }
 
 /**
+ * Whether `endpoint` is an absolute HTTP(S) URL on the issuer's own origin,
+ * with no credentials, so nothing Reef sends there can leave the issuer.
+ */
+export function isIssuerEndpoint(endpoint: string, issuer: string): boolean {
+  let url: URL
+  try {
+    url = new URL(endpoint)
+  } catch {
+    return false
+  }
+  return (
+    (url.protocol === 'http:' || url.protocol === 'https:') &&
+    url.origin === new URL(issuer).origin &&
+    !url.username &&
+    !url.password
+  )
+}
+
+/**
  * Prefixes a cookie name with `__Host-` wherever the browser will accept one.
  *
  * A signature keeps a cookie's value from being forged; it does nothing about a
@@ -118,25 +137,6 @@ export function authCookieSecure(config: RequiredAuthConfig): boolean {
  * discarded on every response. A name that already carries the prefix is left
  * alone.
  */
-/**
- * Whether `endpoint` is an absolute HTTP(S) URL on the issuer's own origin,
- * with no credentials, so nothing Reef sends there can leave the issuer.
- */
-export function isIssuerEndpoint(endpoint: string, issuer: string): boolean {
-  let url: URL
-  try {
-    url = new URL(endpoint)
-  } catch {
-    return false
-  }
-  return (
-    (url.protocol === 'http:' || url.protocol === 'https:') &&
-    url.origin === new URL(issuer).origin &&
-    !url.username &&
-    !url.password
-  )
-}
-
 export function hostBoundCookieName(name: string, secure: boolean): string {
   if (!secure || HOST_PREFIX.test(name)) return name
 
