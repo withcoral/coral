@@ -1060,7 +1060,9 @@ pub(super) enum ProviderHold {
     /// A plain read, as in a read snapshot.
     None,
     /// A shared hold, for a decision that reads the Provider but never writes
-    /// it: concurrent decisions read side by side, and a change waits for them.
+    /// it. [`coral_db::RowLock::Shared`] says what each backend does: on
+    /// Postgres, concurrent decisions read side by side and a change waits
+    /// for them; SQLite's writer lock already serializes them.
     Shared,
     /// The exclusive no-op `UPDATE` hold, for a change that writes the
     /// Provider or must exclude every other change while it decides.

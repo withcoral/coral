@@ -23,7 +23,8 @@ impl ProviderModule {
     ///
     /// Workspace creation calls this in the transaction that creates the
     /// Workspace. It joins that transaction and never commits, so the caller
-    /// hands the returned [`SearchChange`] to search after its own commit.
+    /// hands the returned [`Committed`]'s search change to Universal Search
+    /// after its own commit.
     ///
     /// # Errors
     ///

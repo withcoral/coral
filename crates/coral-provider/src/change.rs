@@ -4,7 +4,8 @@
 //! Every path that changes an existing Provider names its change here, and
 //! [`ProviderModule::hold_for_change`] runs the steps every such change shares:
 //! Owner configuration authority, the exclusive hold, the Call Root's
-//! allow-list and the etag. An Owner-added Provider permits every change. The
+//! allow-list and, for a rename, a state change or a removal, the etag. An
+//! Owner-added Provider permits every change. The
 //! Built-in Provider, which Coral manages, permits only disabling and
 //! restoring it, so a new kind of change is denied for it until someone allows
 //! it below. Its Tools' policy belongs to `coral-policy` and stays open.

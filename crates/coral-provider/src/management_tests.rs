@@ -672,3 +672,95 @@ async fn active_provider_names_cover_only_inspectable_workspaces() {
             .is_empty()
     );
 }
+
+// Catches: a Provider change that a Workspace Member, not an Owner, can make,
+// or a refused change that still writes the Provider or an event.
+#[tokio::test]
+async fn a_member_cannot_change_a_provider_and_the_refusal_changes_nothing() {
+    let (db, workspaces, providers) = test_modules().await;
+    let owner =
+        organization_user(db.database(), "user:change-owner", OrganizationRole::Owner).await;
+    let member = organization_user(
+        db.database(),
+        "user:change-member",
+        OrganizationRole::Member,
+    )
+    .await;
+    let context = change_context(owner.clone(), 1, '1');
+    let workspace = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Changes").unwrap())
+        .await
+        .unwrap();
+    workspaces
+        .set_membership(
+            &context,
+            workspace.id(),
+            &member,
+            coral_workspace::WorkspaceRole::Member,
+        )
+        .await
+        .unwrap();
+    let provider = super::tests::publish_provider(
+        &providers,
+        &context,
+        workspace.id(),
+        super::tests::CREDENTIAL_FREE_OPENAPI,
+        "member_change",
+        CredentialRoute::None,
+    )
+    .await;
+    let stored = || async {
+        let inspected = providers
+            .inspect_provider(&owner, workspace.id(), provider.id())
+            .await
+            .unwrap();
+        let events = providers
+            .list_lifecycle_events(&owner, workspace.id())
+            .await
+            .unwrap();
+        (inspected.etag(), inspected.state(), events)
+    };
+    let before = stored().await;
+
+    let by_member = change_context(member.clone(), 2, '2');
+    for (change, result) in [
+        (
+            "rename",
+            providers
+                .rename_provider(
+                    &by_member,
+                    workspace.id(),
+                    provider.id(),
+                    crate::ProviderDisplayName::parse("Taken over").unwrap(),
+                )
+                .await
+                .map(|committed| committed.skip_search().etag()),
+        ),
+        (
+            "disable",
+            providers
+                .disable_provider(&by_member, workspace.id(), provider.id())
+                .await
+                .map(|disabled| disabled.etag()),
+        ),
+        (
+            "delete",
+            providers
+                .delete_provider(&by_member, workspace.id(), provider.id())
+                .await
+                .map(crate::Committed::skip_search)
+                .map(|()| String::new()),
+        ),
+    ] {
+        assert!(
+            matches!(
+                result,
+                Err(Error::Workspace(coral_workspace::Error::PermissionDenied(
+                    _
+                )))
+            ),
+            "{change}: {result:?}"
+        );
+        assert_eq!(stored().await, before, "{change} changed nothing");
+    }
+}

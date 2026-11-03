@@ -904,9 +904,11 @@ impl ProviderModule {
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`Self::publish_workspace_provider`], and
-    /// [`Error::EtagMismatch`] when the Provider changed since the request's
-    /// etag.
+    /// Returns the errors of [`Self::publish_workspace_provider`];
+    /// [`Error::ProviderNotFound`] for an absent or disabled Provider;
+    /// [`Error::ProviderSetupNotApplicable`] for a Setup that does not update
+    /// this Provider; and [`Error::EtagMismatch`] when the Provider changed
+    /// since the request's etag.
     pub async fn regenerate_provider(
         &self,
         context: &ChangeContext,
