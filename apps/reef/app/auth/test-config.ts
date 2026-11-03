@@ -10,7 +10,7 @@ export const requiredAuthConfig: RequiredAuthConfig = {
   issuer: 'https://coral.example.test',
   mode: 'required',
   publicUrl: 'https://coral-web.example.test',
-  sessionMaxAgeSeconds: 3600,
+  sessionMaxAgeSeconds: 2_592_000,
   sessionSecret: '0123456789abcdef0123456789abcdef',
 }
 

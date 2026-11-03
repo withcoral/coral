@@ -142,6 +142,9 @@ pub(crate) struct ClientRequest {
     pub(crate) client_state: Option<String>,
     pub(crate) code_challenge: String,
     pub(crate) resource: String,
+    /// Whether the client's validated registration declared the
+    /// `refresh_token` grant.
+    pub(crate) refresh_eligible: bool,
 }
 
 impl ClientRequest {
@@ -159,6 +162,7 @@ impl ClientRequest {
             code_challenge: self.code_challenge.clone(),
             resource: self.resource.clone(),
             workspace_id: workspace,
+            refresh_eligible: self.refresh_eligible,
         }
     }
 
@@ -167,7 +171,9 @@ impl ClientRequest {
         frame.put_str(&self.redirect_uri)?;
         frame.put_optional_str(self.client_state.as_deref())?;
         frame.put_str(&self.code_challenge)?;
-        frame.put_str(&self.resource)
+        frame.put_str(&self.resource)?;
+        frame.put_u64(u64::from(self.refresh_eligible));
+        Ok(())
     }
 
     fn read(reader: &mut Reader<'_>) -> Option<Self> {
@@ -177,6 +183,11 @@ impl ClientRequest {
             client_state: reader.optional_str().ok()?,
             code_challenge: reader.str()?,
             resource: reader.str()?,
+            refresh_eligible: match reader.u64()? {
+                0 => false,
+                1 => true,
+                _ => return None,
+            },
         })
     }
 }
@@ -466,6 +477,7 @@ mod tests {
             client_state: Some("client-state".into()),
             code_challenge: "client-challenge".into(),
             resource: resource.into(),
+            refresh_eligible: true,
         }
     }
 

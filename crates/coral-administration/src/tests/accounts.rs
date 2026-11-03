@@ -319,7 +319,8 @@ async fn shared_account_survives_its_provisioner_but_pending_replacement_is_canc
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let before = f
         .accounts
         .get_account(

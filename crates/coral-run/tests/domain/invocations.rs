@@ -175,7 +175,8 @@ async fn builtin_scope(
             &workspace_id,
         )
         .await
-        .expect("install the Built-in Provider");
+        .expect("install the Built-in Provider")
+        .skip_search();
     transaction.commit().await.unwrap();
     (workspace_id, owner)
 }

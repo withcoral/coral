@@ -52,6 +52,7 @@ async fn current_mcp_catalog_can_change_application_and_complete_fresh_discovery
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap()
         .clone();
@@ -167,7 +168,8 @@ async fn current_mcp_catalog_can_change_application_and_complete_fresh_discovery
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(result.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(
         h.accounts
@@ -232,6 +234,7 @@ async fn authenticated_update_renews_expired_borrowed_material_without_reconnect
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap()
         .clone();

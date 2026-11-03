@@ -13,6 +13,7 @@ enum OAuthClients {
     ClientName,
     RedirectUris,
     IssuedAt,
+    RefreshEligible,
 }
 
 pub(super) async fn insert(
@@ -29,12 +30,14 @@ pub(super) async fn insert(
                 OAuthClients::ClientName,
                 OAuthClients::RedirectUris,
                 OAuthClients::IssuedAt,
+                OAuthClients::RefreshEligible,
             ])
             .values_panic([
                 client.client_id.clone().into(),
                 client.metadata.client_name.clone().into(),
                 redirects.into(),
                 client.client_id_issued_at.into(),
+                client.metadata.refresh_eligible.into(),
             ])
             .to_owned(),
     )
@@ -128,6 +131,7 @@ pub(super) async fn record_admission(
 struct ClientRow {
     client_name: String,
     redirect_uris: String,
+    refresh_eligible: bool,
 }
 
 pub(super) async fn resolve(
@@ -137,7 +141,11 @@ pub(super) async fn resolve(
     let row: ClientRow = database
         .fetch_optional(
             Query::select()
-                .columns([OAuthClients::ClientName, OAuthClients::RedirectUris])
+                .columns([
+                    OAuthClients::ClientName,
+                    OAuthClients::RedirectUris,
+                    OAuthClients::RefreshEligible,
+                ])
                 .from(OAuthClients::Table)
                 .and_where(Expr::col(OAuthClients::ClientId).eq(id))
                 .to_owned(),
@@ -149,5 +157,6 @@ pub(super) async fn resolve(
         client_name: row.client_name,
         redirect_uris: serde_json::from_str(&row.redirect_uris)
             .map_err(|_error| ClientMetadataError::InvalidMetadata)?,
+        refresh_eligible: row.refresh_eligible,
     })
 }

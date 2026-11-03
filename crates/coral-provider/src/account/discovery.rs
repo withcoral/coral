@@ -124,8 +124,15 @@ pub(super) async fn load(
         .update_provider_id
         .as_ref()
         .ok_or(Error::ProviderSetupNotApplicable)?;
-    if !providers::hold_active_provider_for_workspace_in_transaction(tx, workspace, provider)
-        .await?
+    if providers::current_provider(
+        tx,
+        workspace,
+        providers::ProviderKey::Id(provider),
+        providers::ProviderHold::Exclusive,
+    )
+    .await?
+    .and_then(providers::ProviderWithActiveGeneration::into_active)
+    .is_none()
     {
         return Err(Error::ProviderNotFound);
     }

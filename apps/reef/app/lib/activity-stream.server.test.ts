@@ -170,7 +170,7 @@ it('expires an idle session without reloading its count or waiting for a mutatio
         reads++
         return { kind: 'count', counts: { '/workspaces/w': counted('1') } }
       },
-      Date.now() / 1000 + 0.05,
+      { endsAt: Date.now() / 1000 + 0.05, renewAt: Date.now() / 1000 + 0.05 },
     ),
   )
   expect((await events.next()).value).toEqual({
@@ -204,7 +204,7 @@ it('ends a healthy stream at its lifetime bound with a reconnect event', async (
         reads++
         return { kind: 'count', counts: { '/workspaces/w': counted('1') } }
       },
-      Date.now() / 1000 + 3600,
+      { endsAt: Date.now() / 1000 + 3600, renewAt: Date.now() / 1000 + 3600 },
     ),
   )
   expect((await events.next()).value).toEqual({
@@ -220,6 +220,34 @@ it('ends a healthy stream at its lifetime bound with a reconnect event', async (
   expect((await end).value).toEqual({ kind: 'reconnect' })
   expect((await events.next()).done).toBe(true)
   expect(reads).toBe(1)
+})
+
+// Catches a stream that reports a renewable access token's expiry as the end of
+// the session, which would send the reader to sign in while the session holds.
+it('reconnects when the access token expires before the session does', async () => {
+  vi.useFakeTimers()
+  const changes = activityChanges()
+  const api = {
+    activity: createClient(
+      ActivityService,
+      createRouterTransport(({ service }) => {
+        service(ActivityService, { watchActivity: changes.watch })
+      }),
+    ),
+  }
+  const events = streamEvents(
+    activityStream(
+      new Request('http://reef/activity/count'),
+      api,
+      async () => ({ kind: 'count', counts: { '/workspaces/w': counted('1') } }),
+      { endsAt: Date.now() / 1000 + 3600, renewAt: Date.now() / 1000 + 5 },
+    ),
+  )
+  expect((await events.next()).value).toMatchObject({ kind: 'count' })
+  const end = events.next()
+  await vi.advanceTimersByTimeAsync(5_000)
+  expect((await end).value).toEqual({ kind: 'reconnect' })
+  expect((await events.next()).done).toBe(true)
 })
 
 it('ends an already expired session before subscribing or reading', async () => {
@@ -245,7 +273,7 @@ it('ends an already expired session before subscribing or reading', async () => 
       reads++
       return { kind: 'count', counts: { '/workspaces/w': counted('1') } }
     },
-    0,
+    { endsAt: 0, renewAt: 0 },
   )
   expect(await response.text()).toBe('event: sessionExpired\ndata: {"kind":"sessionExpired"}\n\n')
   expect(reads).toBe(0)

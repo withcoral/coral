@@ -140,7 +140,35 @@ impl SessionTokenIssuer {
         client_id: &str,
         audience: &str,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
-        self.mint(user_id, client_id, audience, PrincipalKind::User, None)
+        self.mint(
+            user_id,
+            client_id,
+            audience,
+            PrincipalKind::User,
+            None,
+            None,
+        )
+    }
+
+    /// Issues unscoped User access that lasts at most `lifetime`, and
+    /// expires by `latest_expires_at` (Unix seconds), whichever comes first,
+    /// and never later than the configured lifetime allows.
+    pub(crate) fn issue_bounded_access_token(
+        &self,
+        user_id: &str,
+        client_id: &str,
+        audience: &str,
+        lifetime: Duration,
+        latest_expires_at: u64,
+    ) -> Result<IssuedAccessToken, SessionTokenError> {
+        self.mint(
+            user_id,
+            client_id,
+            audience,
+            PrincipalKind::User,
+            None,
+            Some((lifetime, latest_expires_at)),
+        )
     }
 
     /// Issues User access with a signed, immutable Workspace scope.
@@ -162,6 +190,7 @@ impl SessionTokenIssuer {
             audience,
             PrincipalKind::User,
             Some(workspace.to_string()),
+            None,
         )
     }
 
@@ -172,6 +201,7 @@ impl SessionTokenIssuer {
         audience: &str,
         principal_kind: PrincipalKind,
         workspace_id: Option<String>,
+        bound: Option<(Duration, u64)>,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
         if external_user_id(user_id).is_err() {
             return Err(config_error(
@@ -188,9 +218,16 @@ impl SessionTokenIssuer {
             ));
         }
         let issued_at = unix_timestamp()?;
+        let lifetime = bound.map_or(self.access_token_ttl, |(lifetime, _latest)| {
+            lifetime.min(self.access_token_ttl)
+        });
         let expires_at = issued_at
-            .checked_add(self.access_token_ttl.as_secs())
-            .ok_or_else(|| config_error("access token expiry overflowed"))?;
+            .checked_add(lifetime.as_secs())
+            .ok_or_else(|| config_error("access token expiry overflowed"))?
+            .min(bound.map_or(u64::MAX, |(_lifetime, latest)| latest));
+        if expires_at <= issued_at {
+            return Err(config_error("access token would expire as it is issued"));
+        }
         let claims = SessionTokenClaims {
             iss: self.issuer.clone(),
             aud: audience.to_string(),

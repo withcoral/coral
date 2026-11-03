@@ -549,7 +549,8 @@ async fn destructive_lifecycle_keeps_exact_agent_invocation_and_approval_history
         .providers
         .delete_provider(&context, &tool.workspace_id.clone(), &tool.provider_id)
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(
         approvals
             .get(&tool.principal, &tool.workspace_id, &request.id)
