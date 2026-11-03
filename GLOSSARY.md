@@ -643,6 +643,11 @@ Provider-native Result, row projection, normalized query result
 `{ data, metadata }` for MCP. Its mandatory metadata carries safe execution-specific response facts. _Avoid_: Program
 outcome, failure union, Upstream Error
 
+**Tool Result Shape**: A sketch of the keys and value types of the data that a failed Program received from one Call
+Path, never the values. The failure of a Run whose Program threw carries one for each distinct Call Path and shape, in
+call order. Coral derives it for that failure alone; it is not a Schema Type and makes no claim about other Runs.
+_Avoid_: Observed schema, inferred output schema, result sample
+
 **Tool Error (`ToolError`)**: The non-constructible JavaScript `Error` subclass, `coral.ToolError`, that
 rejects a Tool call that produced no Declared Success. When Coral rejects an Upstream Outcome, the error carries
 it. For a Coral Failure it carries only a stable code and an optional trace identifier, and makes no claim about whether

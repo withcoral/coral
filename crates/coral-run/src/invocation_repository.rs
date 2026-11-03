@@ -516,6 +516,65 @@ pub(super) async fn completed_failure(
     .transpose()
 }
 
+/// The latest `limit` Tool Results the Run's Program received, in call
+/// order, and how many earlier ones there are.
+pub(super) async fn received_results(
+    transaction: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    run: &RunId,
+    limit: u64,
+) -> Result<(Vec<crate::tool_result_shape::ReceivedResult>, u64), Error> {
+    let received = Query::select()
+        .from(ToolInvocations::Table)
+        .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace.to_string()))
+        .and_where(Expr::col(ToolInvocations::RunId).eq(run.to_string()))
+        .and_where(
+            Expr::col(ToolInvocations::ResultKind)
+                .eq(InvocationResultKind::UpstreamOutcome.as_storage_str()),
+        )
+        .to_owned();
+    let (total,): (i64,) = transaction
+        .fetch_optional(
+            received
+                .clone()
+                .expr(Expr::col(ToolInvocations::Id).count())
+                .to_owned(),
+        )
+        .await?
+        .ok_or_else(|| Error::CorruptData("missing Tool Result count".into()))?;
+    let mut rows: Vec<(String, Option<String>)> = transaction
+        .fetch_all(
+            received
+                .clone()
+                .columns([ToolInvocations::CallPath, ToolInvocations::ResultJson])
+                .order_by(ToolInvocations::AdmittedAtUnixNanos, Order::Desc)
+                .order_by(ToolInvocations::Id, Order::Desc)
+                .limit(limit)
+                .to_owned(),
+        )
+        .await?;
+    rows.reverse();
+    let total = u64::try_from(total)
+        .map_err(|_negative| Error::CorruptData("invalid Tool Result count".into()))?;
+    let unread = total.saturating_sub(rows.len() as u64);
+    let received = rows
+        .into_iter()
+        .map(|(call_path, result_json)| {
+            let tool_result = serde_json::from_str(
+                result_json
+                    .as_deref()
+                    .ok_or_else(|| Error::CorruptData("missing upstream result".into()))?,
+            )
+            .map_err(|_invalid| Error::CorruptData("invalid retained Tool Result".into()))?;
+            Ok(crate::tool_result_shape::ReceivedResult {
+                call_path,
+                tool_result,
+            })
+        })
+        .collect::<Result<_, Error>>()?;
+    Ok((received, unread))
+}
+
 /// The arguments the Invocation was admitted with.
 pub(super) async fn arguments(
     transaction: &mut Transaction<'_>,

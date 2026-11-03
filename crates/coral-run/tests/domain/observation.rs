@@ -350,3 +350,84 @@ async fn waiting_observation_falls_back_to_polling_during_a_notification_outage(
         .expect("an outage does not fail the wait");
     assert!(update.required_actions().is_empty());
 }
+
+/// A Program that threw gets the shapes of the Tool Results it received with
+/// its failure, on the final page only. Other failures, and a Program that
+/// received no Tool Result, get none.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_thrown_program_gets_the_shapes_of_its_tool_results_with_its_failure() {
+    let fixture = TestModules::with_upstream(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        Arc::new(ScriptedUpstream::json(
+            200,
+            serde_json::json!({"items": [{"id": "c0ral-1"}, {"id": 2, "next": null}]}),
+        )),
+    )
+    .await;
+    let tool = fixture
+        .user_tool("user:result-shapes", "Result shapes")
+        .await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    let shape = (
+        "coral.providers.weather.getForecast".to_string(),
+        2,
+        "{ items: Array<{ id: string | number; next?: null }> }".to_string(),
+    );
+    for (program, expected) in [
+        (
+            "await coral.emit(1); await coral.emit(2); await coral.providers.weather.getForecast({}); await coral.providers.weather.getForecast({}); throw new Error('guessed');",
+            Some(vec![shape]),
+        ),
+        (
+            "await coral.emit(1); await coral.emit(2); throw new Error('no Tool');",
+            None,
+        ),
+        (
+            "await coral.emit(1); await coral.emit(2); await coral.providers.weather.getForecast({}); return { toJSON() { throw new Error('unserializable'); } };",
+            None,
+        ),
+    ] {
+        let accepted = fixture
+            .runs
+            .start(actor, workspace, submission(program))
+            .await
+            .unwrap();
+        wait_for_terminal(&fixture.runs, actor, workspace, accepted.run_id()).await;
+        let first = fixture
+            .runs
+            .observe(actor, workspace, accepted.run_id(), &immediate(None, 1))
+            .await
+            .unwrap();
+        assert!(first.has_more(), "{program}");
+        assert_eq!(first.tool_result_shapes(), None, "{program}");
+        let last = fixture
+            .runs
+            .observe(
+                actor,
+                workspace,
+                accepted.run_id(),
+                &immediate(Some(first.next_cursor().clone()), 1),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(last.terminal_outcome(), Some(RunTerminalOutcome::Failed(_))),
+            "{program}"
+        );
+        let shapes = last.tool_result_shapes().map(|shapes| {
+            assert_eq!(shapes.unsketched(), 0);
+            shapes
+                .shapes()
+                .iter()
+                .map(|shape| {
+                    (
+                        shape.call_path().to_string(),
+                        shape.invocations(),
+                        shape.data().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(shapes, expected, "{program}");
+    }
+}
