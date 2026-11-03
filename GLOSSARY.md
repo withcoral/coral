@@ -540,6 +540,28 @@ Tool Availability, allow/ask/deny
 Emissions, Logs and Final Value, minus the bytes of its Invocations' retained Tool Results. Negative means saved. A
 Run that is running or has incomplete Invocation evidence has none. _Avoid_: token savings
 
+**Required Action**: A request of one Program Run that one person must decide before the Run can go on: the invoking
+User for a Run a User invoked, a Workspace Owner for a Run an Agent invoked. Today it is an Approval Request or an
+Account Connection Request; any later kind (a Provider's own question to the User, #2447) keeps the same shape: one
+exact person, one request with a deadline, one Handoff Route, and the first answer counts. A Run Update's
+`required_actions` lists the Run's current Required Actions. One Required Action handed over is one Human Handoff, even
+when several Runs wait on it. _Avoid_: pending action, human action, elicitation, prompt
+
+**Human Handoff**: The act of Coral putting a Required Action in front of the one User who can decide it. Coral offers
+each through exactly one Handoff Route, keeps Reef as the standing place where the request is already waiting, counts the
+first answer wherever it comes from, and offers the assistant no path to decide: the assistant only passes the request
+on. A Human Handoff only ever concerns a Run that a User invoked from their AI app; a Run an Agent invoked has none, and
+a Workspace Owner acts in Reef. _Avoid_: assistant approval, agent-answered handoff, allow-tool prompt as approval, Run
+preflight
+
+**Handoff Route**: What Coral does, without the person asking, to put a Required Action in front of them. It is not the
+Credential Route, which is a Provider setting. There is one Handoff Route: the assistant's link. The tool call that
+observes the Run returns the Run Update with the Required Action and the Run Status Page link, the assistant shows the
+link and the Run identifier, and the person decides on the page. Reef's Run Status Page and Approvals Page are the
+standing place, not a Route, and a page updating while open is the page doing its job. Coral sends no notification and
+no MCP elicitation for a Required Action; it would use elicitation only in a client that renders every mode and tells
+its model what was asked and answered. _Avoid_: in-band prompt, notification Route, per-client Route
+
 **Run Status Page**: The directly linked detail of one Program Run within Reef's activity interface, at one stable,
 non-secret URL, rather than a required standalone page. Every supported local or hosted deployment provides this
 interface, and its link opens the exact Run independently of the activity list's current filters. Opening it requires
@@ -879,6 +901,12 @@ JavaScript value as already durable, assuming every runtime value has a portable
 
 **Final Value**: The optional Program Value produced when a Coral Program Run succeeds. It is distinct from the Run's
 Emissions and Program Logs. _Avoid_: Transcript, accumulated output
+
+**Run Deadline**: The instant a Program Run was accepted plus its timeout. It is the one clock every wait for a person
+obeys: nothing pauses or extends it, a Run that waits past it ends `TimedOut`, and a decision that arrives later does
+nothing for that Run. An Approval Request has no deadline of its own; an Account Connection Request keeps its own
+expiry across Runs, and the deadline the Run Update shows for it is the earlier of that expiry and the Run Deadline.
+_Avoid_: approval deadline, human-wait limit, paused Run
 
 **Run Update**: An observation of a Coral Program Run containing its current state, a current Principal-filtered
 `required_actions` list, a bounded ordered batch of authored Program Emissions and Program Logs after an opaque cursor,
