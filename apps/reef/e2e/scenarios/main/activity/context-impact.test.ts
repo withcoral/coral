@@ -55,8 +55,13 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
           "await coral.providers.contextFixture.read(); console.log('é'); coral.emit('é'); return 'ok';",
         ),
       )
-      const description = await execute.describe('coral.providers.contextFixture.read')
-      expect(description.isError).not.toBe(true)
+      // Discovery runs in a Program, so its cost is that Run's.
+      const discovery = await observeRun(
+        execute,
+        await execute.exec(
+          "return (await coral.workspace.search({ paths: ['coral.providers.contextFixture.read'] })).data.descriptions[0].typescript_declaration;",
+        ),
+      )
       expect(
         (
           await execute.saveFunction(
@@ -75,9 +80,15 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
       if (exact.outcome.case !== 'upstreamOutcomeJson') throw new Error('Expected native result')
       const rawBytes = BigInt(Buffer.byteLength(exact.outcome.value))
       expect(entries.run!.contextImpactBytes).toBe(10n - rawBytes)
+      const discovered = await api.activity.browseRunEntries({
+        name: `workspaces/${workspace}/runs/${discovery.update.run_id}`,
+        pageSize: 100,
+      })
+      // The search result is the Run's own tool result, and only the declaration reaches the agent.
+      expect(discovered.run!.contextImpactBytes!).toBeLessThan(0n)
       const goal = await api.activity.inspectTask({ name: task })
       expect(goal.task!.contextImpactBytes).toBe(
-        BigInt(Buffer.byteLength(JSON.stringify(description.structuredContent))) + 10n - rawBytes,
+        discovered.run!.contextImpactBytes! + 10n - rawBytes,
       )
       await step(
         'Keep the parent total when a saved function has no applicable context measurement',
@@ -94,8 +105,8 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
           query.append('expand', run)
           await page.goto(`/workspaces/${workspace}/activity?${query}`)
           expect(await root.getByRole('cell').last().innerText()).toBe(total)
-          expect(await table.locator('[aria-label$="B saved"]').count()).toBe(3)
-          expect(await table.locator('[aria-label$="B added"]').count()).toBe(4)
+          expect(await table.locator('[aria-label$="B saved"]').count()).toBe(4)
+          expect(await table.locator('[aria-label$="B added"]').count()).toBe(3)
           expect(await page.content()).not.toContain('x'.repeat(100))
           await table.getByRole('link', { name: 'return value', exact: true }).click()
           await shownPayload(page, '"ok"').waitFor()
@@ -104,7 +115,7 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
         },
       )
       await step('The Overview counts the same context as the Task', async () => {
-        // Only an exact byte count tells the describe response apart from the Run's saving.
+        // Only an exact byte count tells the discovery Run apart from the other Run's saving.
         const saved = (-goal.task!.contextImpactBytes!).toLocaleString('en-US')
         await page.goto(`/workspaces/${workspace}?lens=context`)
         await page

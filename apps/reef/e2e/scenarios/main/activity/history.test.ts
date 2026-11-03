@@ -25,18 +25,14 @@ function revealedAt(task: string, run: string, record: string) {
 }
 
 /**
- * Opens the recorded description's Details, which keep its source collapsed, and waits until
- * the recorded source that holds `marker` shows.
+ * Waits until the selected discovery Run's return value, the description its Program read
+ * with `coral.workspace.search` then, shows the recorded source that holds `marker`.
  */
 async function openRecordedSource(page: Page, marker: string) {
-  const details = page
-    .getByRole('dialog')
-    .locator('details')
-    .filter({ has: page.locator('pre', { hasText: marker }) })
-    .last()
-  if ((await details.getAttribute('open')) === null)
-    await details.locator('summary').first().click()
-  await details.locator('pre').filter({ hasText: marker }).first().waitFor()
+  await shownPayload(
+    page.getByRole('dialog').getByRole('region', { name: 'Return value', exact: true }),
+    marker,
+  ).waitFor()
 }
 
 test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen reading position', async (context) => {
@@ -190,7 +186,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         await page.goto(
           `/workspaces/${first}/activity?${new URLSearchParams({ expand: `workspaces/${first}/tasks/${task}` })}`,
         )
-        await page.getByRole('link', { name: 'Inspect one Tool', exact: true }).first().click()
+        await page.getByRole('link', { name: 'Find tools', exact: true }).first().click()
         await openRecordedSource(page, 'historical-source-249')
         expect(await page.content()).not.toContain('replacement-source-249')
         const rejectedRow = page
@@ -257,9 +253,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             element.scrollTop = element.scrollHeight
           })
           expect(await list.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
-          const selectedLink = list
-            .getByRole('link', { name: 'Inspect one Tool', exact: true })
-            .last()
+          const selectedLink = list.getByRole('link', { name: 'Find tools', exact: true }).last()
           const relativePosition = async () =>
             (await selectedLink.boundingBox())!.y - (await list.boundingBox())!.y
           const before = await relativePosition()

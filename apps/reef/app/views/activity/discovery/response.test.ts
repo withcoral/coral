@@ -216,9 +216,9 @@ it('shows a response that is not JSON as stored', () => {
 
 /*
  * Coral owns the response shape. coral-mcp keeps a snapshot of the output
- * schema that `search` and `describe` advertise, and its own test fails when
- * the shape changes. These tests fail when the parser reads a key, a type, or
- * a set of values that the snapshot does not state.
+ * schema of the `search` and `describe` responses Task history retains, and
+ * its own test fails when the shape changes. These tests fail when the parser
+ * reads a key, a type, or a set of values that the snapshot does not state.
  */
 type Schema = Record<string, any>
 type Located = { root: Schema; node: Schema }

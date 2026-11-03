@@ -704,6 +704,12 @@ export interface RunUpdate {
   failure?: { code: string }
 }
 
+/** What `coral.workspace.search` returns for exact Call Paths. */
+interface DescribedPath {
+  descriptions: { call_path: string; typescript_declaration: string }[]
+  missing: { call_path: string; suggestions: string[] }[]
+}
+
 interface ToolResult<T = unknown> {
   structuredContent: T
   /** MCP content blocks; rich Program values arrive here, referenced by index. */
@@ -876,6 +882,42 @@ export function programRunner(
     started(result)
     expect(taskId).not.toBe('')
   }
+  /**
+   * Runs `program` in the Task until its Run ends and returns its Final Value, or nothing
+   * when the call or the Run fails. Scenarios count only the calls they make, so these are
+   * left out of `calls`.
+   */
+  const discover = async <T>(program: string): Promise<ToolResult<T> | undefined> => {
+    await ensureTask()
+    const counted = { ...calls }
+    try {
+      let result: ToolResult<RunUpdate> = await rpc('tools/call', {
+        name: 'exec',
+        arguments: { task_id: taskId, intent: 'Find tools', program, wait_ms: waitMs },
+      })
+      for (
+        let pages = 0;
+        pages < 10 &&
+        !result.isError &&
+        (result.structuredContent.state === 'running' || result.structuredContent.has_more);
+        pages++
+      ) {
+        const update: RunUpdate = result.structuredContent
+        result = await rpc('tools/call', {
+          name: 'wait',
+          arguments: { run_id: update.run_id, cursor: update.next_cursor, wait_ms: waitMs },
+        })
+      }
+      const update = result.structuredContent
+      const final = update.final_value as { kind: string; value?: T } | undefined
+      if (result.isError || update.state !== 'succeeded' || final?.kind !== 'value')
+        return undefined
+      return { structuredContent: final.value as T }
+    } finally {
+      for (const name of Object.keys(calls)) delete calls[name]
+      Object.assign(calls, counted)
+    }
+  }
   const exec = async (program: string): Promise<ToolResult<RunUpdate>> => {
     await initialize()
     return started(await rpc('tools/call', { name: 'exec', arguments: execArguments(program) }))
@@ -936,19 +978,28 @@ export function programRunner(
         },
       })
     },
+    /**
+     * Searches the way an agent does, with `coral.workspace.search` inside a Program. The
+     * Program is one more uncounted exec of the Task; a failed Run is an error result.
+     */
     async search(query?: string): Promise<ToolResult<{ hits: { call_path: string }[] }>> {
-      await ensureTask()
-      return rpc('tools/call', {
-        name: 'search',
-        arguments: { task_id: taskId, intent: 'Find Tools', query },
-      })
+      const input = JSON.stringify(query === undefined ? {} : { query })
+      const found = await discover<{ hits: { call_path: string }[] }>(
+        `return (await coral.workspace.search(${input})).data;`,
+      )
+      return found ?? { isError: true, structuredContent: { hits: [] } }
     },
-    async describe(path: string): Promise<ToolResult> {
-      await ensureTask()
-      return rpc('tools/call', {
-        name: 'describe',
-        arguments: { task_id: taskId, intent: 'Inspect one Tool', path },
-      })
+    /**
+     * Reads one Call Path's description with `coral.workspace.search` in a Program. An error
+     * result when the path names nothing this caller can call, as `missing` reports it.
+     */
+    async describe(path: string): Promise<ToolResult<DescribedPath>> {
+      const input = JSON.stringify({ paths: [path] })
+      const found = await discover<DescribedPath>(
+        `return (await coral.workspace.search(${input})).data;`,
+      )
+      if (!found) return { isError: true, structuredContent: { descriptions: [], missing: [] } }
+      return { ...found, isError: found.structuredContent.missing.length > 0 }
     },
     /** The tools this MCP session advertises, in order. */
     async listTools(): Promise<{ name: string }[]> {
