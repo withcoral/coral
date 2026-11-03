@@ -294,6 +294,41 @@ fn repeated_calls_with_one_shape_appear_once_in_call_order() {
 }
 
 #[test]
+fn results_that_render_alike_share_one_entry() {
+    let sketched = sketch(
+        vec![
+            http("coral.providers.a.list", json!({"items": [{"id": 1}]})),
+            http(
+                "coral.providers.a.list",
+                json!({"items": [{"id": 2}, {"id": 3}]}),
+            ),
+            http("coral.providers.a.members", json!({"ada@example.com": 1})),
+            http(
+                "coral.providers.a.members",
+                json!({"bob@example.com": 2, "cy@example.com": 3}),
+            ),
+        ],
+        0,
+    );
+    let shapes: Vec<_> = sketched
+        .shapes()
+        .iter()
+        .map(|shape| (shape.call_path(), shape.invocations(), shape.data()))
+        .collect();
+    assert_eq!(
+        shapes,
+        [
+            (
+                "coral.providers.a.list",
+                2,
+                "{ items: Array<{ id: number }> }"
+            ),
+            ("coral.providers.a.members", 2, "Record<string, number>"),
+        ]
+    );
+}
+
+#[test]
 fn mcp_text_that_is_json_is_also_shaped_as_parsed_text() {
     let shape = shape_of(mcp(
         "coral.providers.linear.listIssues",

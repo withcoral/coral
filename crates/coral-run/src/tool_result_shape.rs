@@ -190,8 +190,14 @@ impl Draft {
         self.parsed_text = self.parsed.as_ref().map(|shape| shape.render(0, depth));
     }
 
+    /// Whether both have one Call Path and render alike. Shapes that merged a
+    /// different number of objects render alike when they show the same, so
+    /// the text decides, not the counts behind it. Both render at full depth
+    /// here, and text that is alike at full depth stays alike when shrunk.
     fn same_shape(&self, other: &Self) -> bool {
-        self.call_path == other.call_path && self.data == other.data && self.parsed == other.parsed
+        self.call_path == other.call_path
+            && self.text == other.text
+            && self.parsed_text == other.parsed_text
     }
 
     fn bytes(&self) -> usize {
