@@ -82,7 +82,8 @@ async fn create_and_remove(removal: Removal, shared: bool, removal_first: bool) 
         let result = providers
             .publish_workspace_provider(&context, request.clone())
             .await
-            .unwrap();
+            .unwrap()
+            .skip_search();
         assert_eq!(result.outcome(), ProviderPublicationOutcome::Succeeded);
         remove(&f, removal).await;
         Some(result)
@@ -121,7 +122,8 @@ async fn create_and_remove(removal: Removal, shared: bool, removal_first: bool) 
             providers
                 .publish_workspace_provider(&context, request)
                 .await
-                .unwrap(),
+                .unwrap()
+                .skip_search(),
             result
         );
     } else {

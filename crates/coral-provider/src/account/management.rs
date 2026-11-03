@@ -183,9 +183,14 @@ impl AccountModule {
                 .agent_in_transaction(&mut tx, workspace, agent)
                 .await?;
         }
-        let stored = crate::repository::provider_in_transaction(&mut tx, workspace, provider)
-            .await?
-            .ok_or(Error::ProviderNotFound)?;
+        let stored = crate::repository::current_provider(
+            &mut tx,
+            workspace,
+            crate::repository::ProviderKey::Id(provider),
+            crate::repository::ProviderHold::None,
+        )
+        .await?
+        .ok_or(Error::ProviderNotFound)?;
         let contract =
             coral_catalog::credential_contract_in_transaction(&mut tx, &stored.generation_id)
                 .await?;

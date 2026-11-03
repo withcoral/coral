@@ -768,7 +768,8 @@ async fn contract_change_keeps_account_identity_but_only_new_authorization_resto
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert!(matches!(
         credential_evidence(
             &db.database(),

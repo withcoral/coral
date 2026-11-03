@@ -579,6 +579,7 @@ async fn publish_http(
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap()
         .id()

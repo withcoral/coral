@@ -1,12 +1,22 @@
-//! Transport-neutral workflows that own one transaction across or above domain Modules.
+//! Transport-neutral workflows above domain Modules. A workflow owns a
+//! transaction only when one atomic write spans Modules; a change that stays
+//! inside one Module commits there. A workflow tells Universal Search what a
+//! committed change altered, because `coral-search` depends on the domain
+//! Modules and they cannot call it.
 //!
 //! # Interface
 //!
-//! [`ProviderWorkflow`] owns the transaction for Provider publication, removal,
-//! and rename. Provider prepares and writes; the workflow begins and commits.
+//! [`ProviderWorkflow`] runs each Provider change that search indexes:
+//! publication, regeneration, removal, rename, and the Built-in Provider's
+//! install and catalog update at boot. Provider owns each change's transaction
+//! and returns the [`coral_provider::SearchChange`] it committed. The workflow
+//! hands it to search after the commit, through the one mapping every
+//! workflow here shares.
 //!
 //! [`WorkspaceWorkflow`] owns the transaction that creates a Workspace together
 //! with its Built-in Provider. It is the only production Workspace creation path.
+//! Provider joins that transaction and returns its search change, which the
+//! workflow hands on after the commit.
 //!
 //! [`AccessLifecycleModule`] removes Workspace Membership (including self-service
 //! leave), Organization Membership, or an exact Workspace-owned Agent. Callers

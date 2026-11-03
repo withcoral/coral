@@ -1474,6 +1474,7 @@ async fn publish_approval_provider(fixture: &TestModules, tool: &ToolFixture) {
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .expect("public Provider");
 }

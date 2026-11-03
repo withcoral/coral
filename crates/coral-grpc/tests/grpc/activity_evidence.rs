@@ -40,6 +40,7 @@ async fn historical_account_selection_verifies_the_original_run_reference() {
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap();
     let run = start(&f, "await coral.providers.evidence.read({});").await;
@@ -467,6 +468,7 @@ async fn invocation_wire_rejects_an_mcp_is_error_and_keeps_its_native_data() {
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap();
     let run = start(
@@ -1415,6 +1417,7 @@ async fn publish_openapi(
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap()
         .id()
