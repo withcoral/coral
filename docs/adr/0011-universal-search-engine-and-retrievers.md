@@ -4,20 +4,36 @@ status: accepted
 
 # Split Universal Search into an engine and one retriever per Search Entity kind
 
-Universal Search has one engine and one retriever per Search Entity kind: Operations and Saved Functions. The engine
+Universal Search has one engine and one retriever per Search Entity kind: Tools and Saved Functions. The engine
 normalizes the query, asks every retriever, fuses their ranked lists by position and pages the result; it never
 branches on kind. A retriever owns everything about its kind: applying its owners' visibility rules, matching, ranking,
-evidence, and exact resolution for `describe`. Only positions and evidence cross into the engine, because raw scores are
-assumed incomparable across retrievers. Search applies visibility but decides none; those rules stay with the owning
-domains.
+evidence, and exact resolution for `describe`. Only positions, evidence and whether each entry is a strong match cross
+into the engine; a strong match is an entry that its retriever judges to answer the query, not merely to share a word
+with it. Raw scores are assumed incomparable across retrievers, so each retriever turns its own scores into that one
+judgment and the engine compares no score. Search applies visibility but decides none; those rules stay with the
+owning domains.
 
 Before the split, one module ranked lanes of material across every kind, and each new kind or kind-specific rule added
 a branch to every loop. Rejected: per-kind branches in the engine; a lanes-only trait that keeps ranking in the engine
 and stops a kind from ranking its own way; and one ranking per lane across kinds, which assumes scores stay comparable
 once each kind ranks its own way.
 
-Fusion weights retrievers equally and puts a Saved Function before an Operation at equal rank: people wrote Saved
-Functions for this Workspace, and no model has them memorised.
+Fusion weights retrievers equally. It puts every strong match before every weak one, each group by position, so a
+weak match is demoted, never dropped. Each retriever decides strong or weak by its own rule over its own signals, such
+as the query's words in order in a field or a Provider the query names. A kind can therefore judge by fields another
+kind lacks, and each rule can be tested alone; the cost is that the rules can disagree about how good a match must be,
+and only measuring them on one labelled set keeps them in step. The rules are in
+[#2792](https://github.com/withcoral/coral/pull/2792).
+
+At equal position a strong Tool comes before a strong Saved Function. A Saved Function used to win every tie, because
+people wrote Saved Functions for this Workspace and no model has them memorised. But with that tie, even with weak
+matches demoted, an unrelated Saved Function that shared one generic word with the query took rank 1 on about a third
+of searches; with Tools first, on about 2%. A Saved Function that the query targets usually moves from first to
+second, still in the top three.
+
+Rejected: one kind-neutral match strength that every kind computes and the engine compares. It drifts, because the
+kinds hold different fields: a Saved Function has no title or Provider name, so sorting by a shared score pushed
+targeted Saved Functions out of the top three on about two thirds of queries.
 
 ## Search owns its index
 
