@@ -17,28 +17,49 @@ pub(super) async fn check(
         .and_then(Value::as_str)
         .expect("Task id");
     search_defaults_return_ten_visible_descriptions(session, task, index).await;
-    the_next_offset_reads_the_rest(session, task).await;
+    the_next_offset_reads_the_next_page(session, task).await;
     remove_default_limit_fixtures(session, task).await;
     session
         .tool("end_task", json!({"task_id":task, "outcome":"success"}))
         .await;
 }
 
-/// The default page of the twelve Saved Functions says `next_offset` 10, and
-/// that offset reads the last two.
-async fn the_next_offset_reads_the_rest(session: &super::RawSession, task: &str) {
-    let rest = session
-        .tool(
-            "search",
-            json!({
-                "task_id":task, "intent":"Read the next page", "query":"optionalDefaults",
-                "offset":10
-            }),
-        )
-        .await;
-    let rest = rest.get("structuredContent").expect("next search page");
-    assert_eq!(rest["hits"].as_array().expect("hits").len(), 2);
-    assert!(rest.get("next_offset").is_none());
+/// The `offset` argument reaches search, and `next_offset` reads on: the next
+/// page holds no hit of the first. Paging itself is coral-search's rule.
+async fn the_next_offset_reads_the_next_page(session: &super::RawSession, task: &str) {
+    let page = |offset: Option<Value>| async move {
+        let mut arguments = json!({
+            "task_id":task, "intent":"Read a search page", "query":"optionalDefaults", "limit":3
+        });
+        if let Some(offset) = offset {
+            arguments
+                .as_object_mut()
+                .expect("arguments")
+                .insert("offset".into(), offset);
+        }
+        let result = session.tool("search", arguments).await;
+        result
+            .get("structuredContent")
+            .cloned()
+            .expect("search page")
+    };
+    let call_paths = |page: &Value| {
+        page["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .map(|hit| hit["call_path"].clone())
+            .collect::<Vec<_>>()
+    };
+    let first = page(None).await;
+    let next_offset = first.get("next_offset").cloned().expect("next_offset");
+    let next = page(Some(next_offset)).await;
+    assert!(!call_paths(&next).is_empty());
+    assert!(
+        call_paths(&next)
+            .iter()
+            .all(|path| !call_paths(&first).contains(path))
+    );
 }
 
 async fn search_defaults_return_ten_visible_descriptions(

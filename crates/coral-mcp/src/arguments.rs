@@ -278,7 +278,7 @@ where
 {
     let arguments = Value::Object(arguments.unwrap_or_default());
     serde_path_to_error::deserialize(&arguments).map_err(|error| {
-        let field = match error.path().iter().next() {
+        let failed_field = match error.path().iter().next() {
             Some(serde_path_to_error::Segment::Map { key }) => Some(key.as_str()),
             _ => None,
         };
@@ -286,7 +286,7 @@ where
             format!(
                 "invalid arguments for '{}': {}",
                 T::NAME,
-                argument_problem(T::NAME, &arguments, field)
+                argument_problem(T::NAME, &arguments, failed_field)
             ),
             None,
         )
@@ -296,9 +296,9 @@ where
 /// What is wrong with `arguments` to tool `name`, read from the schema Coral
 /// advertises. A deserializer's message quotes the value or key it rejected,
 /// which can be private, so none reaches the caller: the problem names only
-/// the tool's own fields. `field` is where the deserializer failed, if it
-/// failed inside one.
-fn argument_problem(name: &str, arguments: &Value, field: Option<&str>) -> String {
+/// the tool's own fields. `failed_field` is the argument the deserializer
+/// failed inside, if any.
+fn argument_problem(name: &str, arguments: &Value, failed_field: Option<&str>) -> String {
     let schema = TOOLS
         .iter()
         .find(|tool| tool.name == name)
@@ -316,13 +316,14 @@ fn argument_problem(name: &str, arguments: &Value, field: Option<&str>) -> Strin
     if let Some(field) = missing {
         return format!("missing field `{field}`");
     }
-    let taken = |field: &str| properties.is_some_and(|properties| properties.contains_key(field));
-    if let Some(field) = field.filter(|field| taken(field)) {
+    let is_tool_field =
+        |key: &str| properties.is_some_and(|properties| properties.contains_key(key));
+    if let Some(field) = failed_field.filter(|field| is_tool_field(field)) {
         return format!("the value of `{field}` does not match the tool's input schema");
     }
     let unknown = arguments
         .as_object()
-        .is_some_and(|arguments| arguments.keys().any(|key| !taken(key)));
+        .is_some_and(|arguments| arguments.keys().any(|key| !is_tool_field(key)));
     match properties {
         Some(properties) if unknown => format!(
             "an argument is not one the tool takes. It takes: {}",

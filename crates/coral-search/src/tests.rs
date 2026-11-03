@@ -2016,14 +2016,7 @@ async fn pages_current_results_by_offset_and_reapplies_visibility_on_each_page()
         )
         .await
         .expect("second page");
-    assert_eq!(
-        second
-            .hits()
-            .iter()
-            .map(|hit| hit.call_path().as_str())
-            .collect::<Vec<_>>(),
-        ["coral.providers.weather.getForecast"]
-    );
+    assert_eq!(paths(&second), ["coral.providers.weather.getForecast"]);
     assert_eq!(second.next_offset(), None);
 
     let filtered = fixture
@@ -2038,11 +2031,7 @@ async fn pages_current_results_by_offset_and_reapplies_visibility_on_each_page()
         .await
         .expect("Provider-filtered page");
     assert_eq!(
-        filtered
-            .hits()
-            .iter()
-            .map(|hit| hit.call_path().as_str())
-            .collect::<Vec<_>>(),
+        paths(&filtered),
         [
             "coral.functions.internal.formatForecast",
             "coral.providers.weather.getForecast",
@@ -2080,14 +2069,11 @@ async fn any_offset_pages_and_an_offset_past_the_end_is_an_empty_final_page() {
             (&fixture.search, &scope.principal, &scope.workspace_id);
         async move { search.search(principal, workspace, &request).await }
     };
-    let paths = |page: &crate::SearchPage| {
-        page.hits()
-            .iter()
-            .map(|hit| hit.call_path().as_str().to_owned())
-            .collect::<Vec<_>>()
-    };
-    let everything = paths(&search(SearchRequest::list()).await.unwrap());
-    assert_eq!(everything, [TracerScope::FUNCTION, TracerScope::TOOL]);
+    let everything = search(SearchRequest::list()).await.unwrap();
+    assert_eq!(
+        paths(&everything),
+        [TracerScope::FUNCTION, TracerScope::TOOL]
+    );
 
     let one = SearchRequest::list().with_limit(SearchLimit::parse(1).unwrap());
     let at = search(one.clone().with_offset(1)).await.unwrap();
@@ -4055,6 +4041,14 @@ export default function formatForecast(value: Forecast): string {{
             .await
             .expect("save tracer Saved Function")
     }
+}
+
+/// The Call Paths of a page's hits, in rank order.
+fn paths(page: &crate::SearchPage) -> Vec<&str> {
+    page.hits()
+        .iter()
+        .map(|item| item.call_path().as_str())
+        .collect()
 }
 
 async fn organization_user(
