@@ -57,16 +57,18 @@ activity. Making it the one Route means removing each of those
   identifier and ask that person to act; never ask for credentials in the chat. The descriptions of the tools that
   observe a Run carry the loop itself, because those are the tools whose result the assistant is reading when a
   Required Action appears: tell the person what is asked and by when, the Run identifier, and the link exactly as
-  given; then keep calling the waiting tool with the latest cursor until the Required Action is gone or the Run ends.
+  given; then keep calling the observing tool call that waits, with the latest cursor, until no Required Action
+  remains or the Run ends.
   The person's decision in Reef resumes the Run on its own, so the assistant does not ask the person to report back.
   The assistant makes no judgment about whether anyone is reading: the same loop runs in a chat and unattended. The
   assistant cannot decide and must not say it did. A decline reaches the Program as an error; the assistant reports it
   from the Run's output and does not run the Program again unasked. The assistant asks the person to connect an
   Account only when that Required Action appears, never ahead of a Run.
-- **Waiting is exact.** From the cursor it was given, the waiting tool holds, for at most one bounded call, until a
-  Required Action appears or the Run changes, then returns at once; a call without a cursor treats what it first reads
-  as already seen ([#2731](https://github.com/withcoral/coral/issues/2731)). The Run Deadline bounds every deadline
-  the assistant is told, so the loop's end is the Run's end.
+- **Waiting is exact.** From the cursor it was given, the observing tool call that waits holds, for at most one
+  bounded call, until the Required Action list changes or the Run ends, then returns at once; ordinary output does
+  not wake it, and a call without a cursor treats what it first reads as already seen
+  ([#2731](https://github.com/withcoral/coral/issues/2731)). The Run Deadline bounds every deadline the assistant is
+  told, so it is the loop's outer bound.
 - **The page is the request.** The link opens the Run's page. The page is headed by the Run identifier the assistant
   said; each request is a card decided on its own, an approval card with the exact arguments; after the last decision
   the page tells the person to go back to their AI app. The Run Status Page section settles the page.
