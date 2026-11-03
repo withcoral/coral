@@ -1,7 +1,7 @@
 //! Attributed command choreography. Tool decisions and writes stay with their owners.
 use crate::{
     AttemptEvidence, AttemptKind, AttributedCommand, DiscoveryContext, Error, InteractionId,
-    TaskModule,
+    NewTaskCommand, TaskModule,
 };
 use crate::{interaction_repository, repository};
 use coral_db::Transaction;
@@ -81,21 +81,6 @@ impl TaskCommands {
             #[cfg(test)]
             control: std::sync::Arc::default(),
         }
-    }
-
-    /// The Call Roots of the Providers the caller can search, as Universal
-    /// Search decides them. Retains nothing.
-    /// # Errors
-    /// Discovery authority and persistence failures.
-    pub async fn searchable_providers(
-        &self,
-        actor: &coral_workspace::AuthenticatedPrincipal,
-        workspace_id: &coral_workspace::WorkspaceId,
-    ) -> Result<Vec<coral_search::ProviderCallRoot>, Error> {
-        Ok(self
-            .search
-            .searchable_providers(actor, workspace_id)
-            .await?)
     }
 
     /// Retains exactly one requested search page before returning it.
@@ -351,6 +336,70 @@ impl TaskCommands {
             .pause(crate::command_tests::Checkpoint::AfterCommit)
             .await;
         Ok(self.runs.launch(staged).await?)
+    }
+
+    /// Starts a Task for the call's goal and accepts its first Run in one
+    /// commit, then launches the Run. Admission comes first, so a refused
+    /// Program starts no Task and leaves nothing to record.
+    /// # Errors
+    /// Safe admission failures create no Task and no Run. A launch error
+    /// never undoes acceptance.
+    pub async fn submit_new_task(
+        &self,
+        call: &NewTaskCommand,
+        source: &str,
+        timeout_ms: u64,
+    ) -> Result<(crate::Task, coral_run::RunUpdate), Error> {
+        let submission = coral_run::RunSubmission::new(
+            coral_run::ProgramSource::parse(source)?,
+            coral_run::RunTimeout::from_millis(timeout_ms)?,
+        );
+        let prepared = self
+            .runs
+            .prepare(&call.actor, &call.workspace_id, submission)
+            .await?;
+        let started_at = now()?;
+        let mut transaction = self.tasks.database.begin().await?;
+        let task = self
+            .tasks
+            .start_in_transaction(
+                &mut transaction,
+                &call.actor,
+                &call.workspace_id,
+                call.goal.clone(),
+                started_at,
+            )
+            .await?;
+        tracing::Span::current().record("coral.task.id", safe::id(&task.telemetry_id()));
+        let attributed = AttributedCommand::new(
+            call.actor.clone(),
+            call.workspace_id.clone(),
+            task.id().clone(),
+            call.intent.clone(),
+            call.trace_id.clone(),
+        );
+        let id = InteractionId::generate();
+        interaction_repository::insert(
+            &mut transaction,
+            &attributed,
+            &id,
+            AttemptKind::Submit,
+            started_at,
+        )
+        .await?;
+        let staged = self
+            .runs
+            .accept_in_transaction(&mut transaction, prepared)
+            .await?;
+        self.complete(
+            &mut transaction,
+            &attributed,
+            &id,
+            &AttemptEvidence::Run(staged.run_id().clone()),
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok((task, self.runs.launch(staged).await?))
     }
 
     fn function_context(

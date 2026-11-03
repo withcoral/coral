@@ -12,14 +12,16 @@ use coral_run::RUN_TIMEOUT_MAX_MS;
 use coral_search::SEARCH_DEFAULT_LIMIT;
 use coral_task::{TASK_FEEDBACK_MAX_CHARS, TASK_INTENT_MAX_CHARS};
 
-const TASK_ID_DESCRIPTION: &str = "The task_id from start_task.";
+const TASK_ID_DESCRIPTION: &str = "The task_id returned by the exec that started the Task.";
+const EXEC_TASK_ID_DESCRIPTION: &str =
+    "The task_id of the Task this call continues. Pass exactly one of task_id or goal.";
 const RUN_ID_DESCRIPTION: &str = "The run_id from exec.";
 const CALL_INTENT_DESCRIPTION: &str = "Why this call is needed, in one short phrase.";
 const DESCRIBE_INTENT_DESCRIPTION: &str =
     "What the search result did not show that you need from this declaration.";
 const FUNCTION_PATH_DESCRIPTION: &str =
     "Dotted path under coral.functions, without that prefix, such as reports.summarize.";
-const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible provider tools and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`, or `coral.workspace` for the Built-in Provider's tools. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows provider tools to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
+const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible provider tools and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`, or `coral.workspace` for the Built-in Provider's tools. Otherwise, leave `provider` out. The filter narrows provider tools to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
 const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
 pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 30_000;
@@ -32,21 +34,6 @@ const ALWAYS_LOAD_META_KEY: &str = "anthropic/alwaysLoad";
 
 pub(crate) trait ToolArguments: DeserializeOwned + JsonSchema + Any {
     const NAME: &'static str;
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(deny_unknown_fields)]
-pub(crate) struct StartTaskArguments {
-    #[schemars(
-        length(min = 1, max = TASK_INTENT_MAX_CHARS),
-        description = "What the user asked for, in one short phrase."
-    )]
-    pub(crate) intent: String,
-}
-
-impl ToolArguments for StartTaskArguments {
-    const NAME: &'static str = "start_task";
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -68,7 +55,7 @@ pub(crate) struct SearchArguments {
     #[schemars(
         length(min = 1, max = 128),
         regex(pattern = r"^([A-Za-z_$][A-Za-z0-9_$]*|coral\.workspace)$"),
-        description = "Namespace from coral.providers.<namespace>.<tool>, as listed by start_task, or coral.workspace for the Built-in Provider's tools. Omit unless the user names the service."
+        description = "Namespace from coral.providers.<namespace>.<tool>, or coral.workspace for the Built-in Provider's tools. Omit unless the user names the service."
     )]
     pub(crate) provider: Option<String>,
     #[schemars(
@@ -173,8 +160,13 @@ impl ToolArguments for DeleteFunctionArguments {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct ExecArguments {
-    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
-    pub(crate) task_id: String,
+    #[schemars(with = "Option<Identifier>", description = EXEC_TASK_ID_DESCRIPTION)]
+    pub(crate) task_id: Option<String>,
+    #[schemars(
+        length(min = 1, max = TASK_INTENT_MAX_CHARS),
+        description = "What the user asked for, in one short phrase. Starts a new Task for this unit of user work; the result returns its task_id. Pass exactly one of task_id or goal."
+    )]
+    pub(crate) goal: Option<String>,
     #[schemars(
         length(min = 1, max = TASK_INTENT_MAX_CHARS),
         description = CALL_INTENT_DESCRIPTION
@@ -326,10 +318,6 @@ pub(crate) fn served_name(name: &str) -> Option<&'static str> {
 
 static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
     vec![
-        always_loaded(tool::<StartTaskArguments, crate::projection::StartedTask>(
-            "Start one Coral Task for one unit of user work.",
-            mutation_annotations("Start Task", false, false),
-        )),
         always_loaded(tool::<SearchArguments, crate::projection::SearchResult>(
             SEARCH_TOOL_DESCRIPTION,
             read_annotations("Search"),
@@ -404,6 +392,24 @@ pub(crate) fn uuid_schema(generator: &mut SchemaGenerator) -> Schema {
     schema.insert("minLength".into(), json!(36));
     schema.insert("maxLength".into(), json!(36));
     schema
+}
+
+/// An optional field advertises an identifier through this type, so it stays
+/// out of `required`.
+struct Identifier;
+
+impl JsonSchema for Identifier {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Identifier".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        identifier_schema(generator)
+    }
 }
 
 /// A Task or Run identifier: four or five lowercase words joined by hyphens,
@@ -487,7 +493,6 @@ mod tests {
             })
             .collect();
         let expected = [
-            ("start_task", Some(json!(true))),
             ("search", Some(json!(true))),
             ("exec", Some(json!(true))),
             ("wait", Some(json!(true))),
@@ -588,7 +593,7 @@ mod tests {
 
     #[test]
     fn generated_nested_inputs_remove_only_nonstandard_formats() {
-        let advertised = tool::<NumericArguments, crate::projection::StartedTask>(
+        let advertised = tool::<NumericArguments, crate::projection::DeletedFunction>(
             "Numeric fixture",
             read_annotations("Fixture"),
         );

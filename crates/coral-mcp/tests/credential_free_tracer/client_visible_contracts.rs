@@ -58,10 +58,19 @@ async fn content_only_clients_read_results_and_actionable_rejections() {
         .expect("disable an installed Tool");
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = RawSession::open(&tracer.endpoint(), version).await;
+        // A content-only client reads the Task its first exec started from
+        // the text.
         let started = session
-            .tool("start_task", json!({"intent":"Read results as text"}))
+            .tool(
+                "exec",
+                json!({
+                    "goal":"Read results as text", "intent":"Start the Task",
+                    "program":"return null;"
+                }),
+            )
             .await;
         let task = text_json(&started)["task_id"].clone();
+        assert!(task.is_string(), "{version}: {started}");
         let searched = session
             .tool(
                 "search",
@@ -275,14 +284,13 @@ async fn agents_observe_and_cancel_only_their_own_runs() {
 
 /// Starts a Run that waits for approval, so it stays running without work.
 async fn parked(session: &RawSession) -> Value {
-    let task = session
-        .tool("start_task", json!({"intent":"Hold a Run open"}))
-        .await["structuredContent"]["task_id"]
-        .clone();
     let update = session
         .tool(
             "exec",
-            json!({"task_id":task, "intent":"Wait for approval", "wait_ms":0, "program":PARKED}),
+            json!({
+                "goal":"Hold a Run open", "intent":"Wait for approval", "wait_ms":0,
+                "program":PARKED
+            }),
         )
         .await;
     assert_eq!(update["isError"], false, "{update}");

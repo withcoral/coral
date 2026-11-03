@@ -680,6 +680,8 @@ export async function confirmConfiguration(
 }
 
 export interface RunUpdate {
+  /** Only on the result of the exec that started the Task. */
+  task_id?: string
   run_id: string
   state: string
   next_cursor: string
@@ -842,24 +844,41 @@ export function programRunner(
         data: { jsonrpc: '2.0', method: 'notifications/initialized' },
       })
     }
-    if (!taskId) {
-      const task = await rpc('tools/call', {
-        name: 'start_task',
-        arguments: { intent: options.taskIntent ?? 'Recorded Provider scenario' },
-      })
-      expect(task.isError).not.toBe(true)
-      taskId = task.structuredContent.task_id
-    }
   }
+  const goal = options.taskIntent ?? 'Recorded Provider scenario'
+  /** The first exec states the goal and starts the Task; later ones name it. */
   const execArguments = (program: string) => ({
-    task_id: taskId,
+    ...(taskId ? { task_id: taskId } : { goal }),
     intent: 'Call one Tool',
     program,
     wait_ms: waitMs,
   })
+  /** Keeps the Task an exec started, from its first result that names it. */
+  const started = (result: ToolResult<RunUpdate>) => {
+    // An input_required result has no structuredContent yet.
+    const named = result.structuredContent?.task_id
+    if (!taskId && named) taskId = named
+    return result
+  }
+  /** Starts the Task for a call that needs one before the scenario's first exec. */
+  const ensureTask = async () => {
+    await initialize()
+    if (taskId) return
+    // The helper's own call: scenarios count only the execs they make.
+    const counted = calls.exec
+    const result = await rpc('tools/call', {
+      name: 'exec',
+      arguments: { goal, intent: 'Start the Task', program: 'return null;', wait_ms: waitMs },
+    })
+    if (counted === undefined) delete calls.exec
+    else calls.exec = counted
+    expect(result.isError).not.toBe(true)
+    started(result)
+    expect(taskId).not.toBe('')
+  }
   const exec = async (program: string): Promise<ToolResult<RunUpdate>> => {
     await initialize()
-    return rpc('tools/call', { name: 'exec', arguments: execArguments(program) })
+    return started(await rpc('tools/call', { name: 'exec', arguments: execArguments(program) }))
   }
   return Object.assign(async (program: string) => JSON.stringify(await exec(program)), {
     exec,
@@ -875,24 +894,26 @@ export function programRunner(
       asked: InputRequired,
       inputResponses: Record<string, { action: 'accept' | 'decline' | 'cancel' }>,
     ): Promise<ToolResult<RunUpdate>> {
-      return rpc('tools/call', {
-        name: 'exec',
-        arguments: execArguments(program),
-        requestState: asked.requestState,
-        inputResponses,
-      })
+      return started(
+        await rpc('tools/call', {
+          name: 'exec',
+          arguments: execArguments(program),
+          requestState: asked.requestState,
+          inputResponses,
+        }),
+      )
     },
     calls,
     taskId: () => taskId,
     async endTask(outcome: 'success' | 'failure', feedback?: string): Promise<ToolResult> {
-      await initialize()
+      await ensureTask()
       return rpc('tools/call', {
         name: 'end_task',
         arguments: { task_id: taskId, outcome, feedback },
       })
     },
     async saveFunction(path: string, description: string, source: string): Promise<ToolResult> {
-      await initialize()
+      await ensureTask()
       return rpc('tools/call', {
         name: 'save_function',
         arguments: {
@@ -916,14 +937,14 @@ export function programRunner(
       })
     },
     async search(query?: string): Promise<ToolResult<{ hits: { call_path: string }[] }>> {
-      await initialize()
+      await ensureTask()
       return rpc('tools/call', {
         name: 'search',
         arguments: { task_id: taskId, intent: 'Find Tools', query },
       })
     },
     async describe(path: string): Promise<ToolResult> {
-      await initialize()
+      await ensureTask()
       return rpc('tools/call', {
         name: 'describe',
         arguments: { task_id: taskId, intent: 'Inspect one Tool', path },

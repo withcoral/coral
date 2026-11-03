@@ -352,21 +352,11 @@ async fn serve_with_mcp_client(
 /// Starts a Run over MCP whose Program spins and commits nothing after it
 /// starts, so only a stop ends it; returns its id once it is running.
 async fn spin_a_run(client: &rmcp::service::RunningService<rmcp::RoleClient, ()>) -> String {
-    let task = mcp_tool(
-        client,
-        "start_task",
-        serde_json::json!({"intent": "Spin until stopped"}),
-    )
-    .await;
-    let task_id = task
-        .get("task_id")
-        .and_then(serde_json::Value::as_str)
-        .expect("task id");
     let exec = mcp_tool(
         client,
         "exec",
         serde_json::json!({
-            "task_id": task_id,
+            "goal": "Spin until stopped",
             "intent": "Spin until stopped",
             "program": "while (true) {}",
             "wait_ms": 200,
