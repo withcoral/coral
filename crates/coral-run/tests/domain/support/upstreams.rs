@@ -27,6 +27,38 @@ impl UpstreamSender for ScriptedUpstream {
     }
 }
 
+/// Returns its outcomes in turn, one per send, starting over after the last.
+pub(crate) struct RotatingUpstream {
+    sends: AtomicUsize,
+    outcomes: Vec<HttpOutcome>,
+}
+
+impl RotatingUpstream {
+    pub(crate) fn json(outcomes: impl IntoIterator<Item = serde_json::Value>) -> Self {
+        Self {
+            sends: AtomicUsize::new(0),
+            outcomes: outcomes
+                .into_iter()
+                .map(|data| HttpOutcome::new(200, data))
+                .collect(),
+        }
+    }
+}
+
+#[async_trait]
+impl UpstreamSender for RotatingUpstream {
+    async fn send(
+        &self,
+        _dispatch: ReadyDispatch,
+        _stop: Arc<ExecutionStop>,
+    ) -> Result<UpstreamOutcome, crate::invocation::UpstreamSendError> {
+        let send = self.sends.fetch_add(1, Ordering::SeqCst);
+        Ok(UpstreamOutcome::Http(
+            self.outcomes[send % self.outcomes.len()].clone(),
+        ))
+    }
+}
+
 pub(crate) struct DefectiveUpstream {
     pub(crate) panic: bool,
 }
