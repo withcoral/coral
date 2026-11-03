@@ -17,6 +17,7 @@ test('provisioning owns container startup and readiness without Make on PATH', a
     image: 'docker.io/library/postgres:17',
     publish: '127.0.0.1::5432',
     port: '55432',
+    shm: '1g',
   })
   assert.equal(state.readinessFailures, 0)
   assert.equal(new URL(lease.url).host, '127.0.0.1:55432')
@@ -122,6 +123,7 @@ test('Make shortcuts share container defaults, overrides, reuse and cleanup with
     image: 'fixture:17',
     publish: '127.0.0.1:55440:5432',
     port: '55440',
+    shm: '1g',
   })
   assert.equal(state.commands.filter(({ args }) => args[0] === 'run').length, 1)
   assert.ok(
