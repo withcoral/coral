@@ -228,6 +228,7 @@ fn ordinary_api_objects_keep_their_field_names() {
         "results": [{"object": "page", "created_time": "2026-01-01"}],
         "customfield_10010": null,
         "sha256": "e3b0",
+        "added_2024": 1,
         "x509Certificate": null,
         "content-type": "text/plain",
         "$ref": "#/a",
@@ -242,7 +243,7 @@ fn ordinary_api_objects_keep_their_field_names() {
         concat!(
             "{ id: number; node_id: string; title: string; has_more: boolean; next_cursor: null; ",
             "results: Array<{ object: string; created_time: string }>; customfield_10010: null; ",
-            "sha256: string; x509Certificate: null; \"content-type\": string; $ref: string; ",
+            "sha256: string; added_2024: number; x509Certificate: null; \"content-type\": string; $ref: string; ",
             "__typename: string; _links: { self: { href: string }; html: { href: string }; ",
             "issue: { href: string }; comments: { href: string }; review_comments: { href: string }; ",
             "review_comment: { href: string }; commits: { href: string }; statuses: { href: string } } }",

@@ -541,13 +541,14 @@ fn is_field_name(name: &str) -> bool {
     if digits * 2 > alphanumeric {
         return false;
     }
-    // Hex with a digit: a hash, or a UUID that starts with a letter.
-    if alphanumeric >= 8
-        && digits > 0
-        && bytes
-            .iter()
-            .all(|byte| byte.is_ascii_hexdigit() || separator(*byte))
-    {
+    // A word of 8 or more hex characters with a digit: a hash, or a UUID
+    // that starts with a letter. Shorter words such as `added` or `2024` are
+    // ordinary parts of field names.
+    if bytes.split(|&byte| separator(byte)).any(|word| {
+        word.len() >= 8
+            && word.iter().any(u8::is_ascii_digit)
+            && word.iter().all(u8::is_ascii_hexdigit)
+    }) {
         return false;
     }
     // Letters and digits that alternate three times or more within one word
