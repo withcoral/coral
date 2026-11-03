@@ -170,6 +170,17 @@ async fn removal_ends_the_grants_it_takes_away_and_rejoining_revives_none() {
         .sign_in(AccessTarget::WorkspaceResource(fixture.workspace.clone()))
         .await;
     let reef_grant = fixture.sign_in(AccessTarget::Reef).await;
+    let session = fixture
+        .tokens
+        .start_web_session(
+            &fixture.sign_in(AccessTarget::Reef).await,
+            CLIENT,
+            Duration::from_hours(1),
+            NOW + 2,
+        )
+        .await
+        .unwrap()
+        .handle;
 
     fixture.remove_from_workspace().await;
     fixture.join_workspace().await;
@@ -209,6 +220,15 @@ async fn removal_ends_the_grants_it_takes_away_and_rejoining_revives_none() {
         fixture.refresh(&fixture.tokens, &reef_grant).await,
         Err(TokenRefusal::InvalidGrant),
         "rejoining the Organization revives no grant"
+    );
+    assert_eq!(
+        fixture
+            .tokens
+            .web_session_token(session.expose(), CLIENT, NOW + 3)
+            .await
+            .err(),
+        Some(TokenRefusal::InvalidGrant),
+        "removal ends the web session with its grant"
     );
 }
 

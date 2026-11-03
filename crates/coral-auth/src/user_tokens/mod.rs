@@ -11,6 +11,10 @@
 //!   access token and its single-use successor.
 //! - [`UserTokens::revoke`] ends the Refresh Grant a current or consumed
 //!   refresh token belongs to.
+//! - [`UserTokens::start_web_session`] takes a Reef Refresh Grant from its
+//!   client and holds it behind an opaque session handle;
+//!   [`UserTokens::web_session_token`] mints that session's Reef access
+//!   tokens; [`UserTokens::end_web_session`] ends the session and its grant.
 //! - [`retire_for_access_removal_in_transaction`] ends the Refresh Grants an
 //!   access removal takes away, in the removal's transaction.
 //!
@@ -36,6 +40,8 @@
 mod repository;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod web_session_tests;
 
 use std::fmt;
 use std::sync::Arc;
@@ -70,6 +76,7 @@ const MAX_ROTATIONS: i64 = 10_000;
 const PURGE_BATCH: u64 = 128;
 
 const REFRESH_TOKEN_PREFIX: &str = "coral_rt_";
+const WEB_SESSION_PREFIX: &str = "coral_ws_";
 
 /// What the access tokens from a sign-in are for, as the Adapter resolved it
 /// from the token request's resource and audience.
@@ -102,17 +109,23 @@ pub struct RefreshRequest<'a> {
 /// One refresh token, shown only to the client it was issued to.
 pub struct RefreshToken(Zeroizing<String>);
 
+/// A fresh high-entropy secret named by `prefix`, and the digest stored for it.
+fn generate_secret(prefix: &str) -> Result<(Zeroizing<String>, String), TokenRefusal> {
+    let mut bytes = Zeroizing::new([0_u8; 32]);
+    SystemRandom::new()
+        .fill(bytes.as_mut())
+        .map_err(|_error| TokenRefusal::Issuance)?;
+    let secret = Zeroizing::new(format!(
+        "{prefix}{}",
+        URL_SAFE_NO_PAD.encode(bytes.as_ref())
+    ));
+    let digest = digest(&secret).ok_or(TokenRefusal::Issuance)?;
+    Ok((secret, digest))
+}
+
 impl RefreshToken {
     fn generate() -> Result<(Self, String), TokenRefusal> {
-        let mut bytes = Zeroizing::new([0_u8; 32]);
-        SystemRandom::new()
-            .fill(bytes.as_mut())
-            .map_err(|_error| TokenRefusal::Issuance)?;
-        let token = Zeroizing::new(format!(
-            "{REFRESH_TOKEN_PREFIX}{}",
-            URL_SAFE_NO_PAD.encode(bytes.as_ref())
-        ));
-        let digest = digest(&token).ok_or(TokenRefusal::Issuance)?;
+        let (token, digest) = generate_secret(REFRESH_TOKEN_PREFIX)?;
         Ok((Self(token), digest))
     }
 
@@ -127,6 +140,41 @@ impl fmt::Debug for RefreshToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("RefreshToken(<redacted>)")
     }
+}
+
+/// One web session handle, shown only to the client that started it. It is
+/// a bearer secret: whoever holds it gets that session's access tokens.
+pub struct WebSessionHandle(Zeroizing<String>);
+
+impl WebSessionHandle {
+    /// The handle, for the client's own protected session storage alone.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for WebSessionHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("WebSessionHandle(<redacted>)")
+    }
+}
+
+/// A web session that just started.
+#[derive(Debug)]
+pub struct StartedWebSession {
+    /// The session's handle.
+    pub handle: WebSessionHandle,
+    /// When the session ends, as Unix nanoseconds; never extended.
+    pub expires_at_unix_nanos: i64,
+}
+
+/// An access token a web session minted.
+pub struct WebSessionToken {
+    /// The new access token. It never outlives its session.
+    pub access_token: IssuedAccessToken,
+    /// When the session ends, as Unix nanoseconds.
+    pub session_expires_at_unix_nanos: i64,
 }
 
 /// What a successful token request returns.
@@ -358,6 +406,157 @@ impl UserTokens {
                 self.end_grant(&presented.grant_id).await
             }
             _ => Ok(()),
+        }
+    }
+
+    /// Takes the Reef Refresh Grant `refresh_token` belongs to from
+    /// `client_id` and holds it in a new web session that lasts `max_age`,
+    /// never past the grant's own expiry.
+    ///
+    /// The refresh token is spent: presenting it again is a replay that ends
+    /// the grant and its session. The client then keeps only the handle.
+    ///
+    /// # Errors
+    ///
+    /// [`TokenRefusal::InvalidGrant`] for a token that could not refresh, one
+    /// issued to another client, or one whose grant is not for Reef. Only a
+    /// Reef grant may back a web session, so an MCP grant never reaches
+    /// management access.
+    pub async fn start_web_session(
+        &self,
+        refresh_token: &str,
+        client_id: &str,
+        max_age: Duration,
+        now_unix_nanos: i64,
+    ) -> Result<StartedWebSession, TokenRefusal> {
+        let digest = digest(refresh_token).ok_or(TokenRefusal::InvalidGrant)?;
+        let presented = repository::find(&self.database, &digest)
+            .await?
+            .ok_or(TokenRefusal::InvalidGrant)?;
+        let scope = &presented.scope;
+        if scope.client_id != client_id
+            || scope.private_audience != Some(PrivateAudience::Reef)
+            || presented.expires_at_unix_nanos <= now_unix_nanos
+        {
+            return Err(TokenRefusal::InvalidGrant);
+        }
+        let grant_id = presented.grant_id.as_str();
+        if presented.consumed {
+            self.end_grant(grant_id).await?;
+            return Err(TokenRefusal::InvalidGrant);
+        }
+        let expires_at = i64::try_from(max_age.as_nanos())
+            .ok()
+            .and_then(|max_age| now_unix_nanos.checked_add(max_age))
+            .unwrap_or(i64::MAX)
+            .min(presented.expires_at_unix_nanos);
+        if expires_at <= now_unix_nanos {
+            return Err(TokenRefusal::InvalidGrant);
+        }
+        let mut tx = self.database.begin().await.map_err(unavailable)?;
+        if let Err(refusal) = self.hold_authority(&mut tx, scope, now_unix_nanos).await {
+            rollback(tx).await;
+            return Err(refusal);
+        }
+        if !repository::hold_live_grant(&mut tx, grant_id, now_unix_nanos).await? {
+            rollback(tx).await;
+            return Err(TokenRefusal::InvalidGrant);
+        }
+        if !repository::consume(&mut tx, &digest, now_unix_nanos).await? {
+            repository::delete_grant(&mut tx, grant_id).await?;
+            tx.commit().await.map_err(unavailable)?;
+            return Err(TokenRefusal::InvalidGrant);
+        }
+        let (handle, session_digest) = generate_secret(WEB_SESSION_PREFIX)?;
+        repository::insert_session(&mut tx, &session_digest, grant_id, expires_at).await?;
+        tx.commit().await.map_err(unavailable)?;
+        self.purge_expired_sessions(now_unix_nanos).await;
+        Ok(StartedWebSession {
+            handle: WebSessionHandle(handle),
+            expires_at_unix_nanos: expires_at,
+        })
+    }
+
+    /// Mints a Reef access token for the web session `handle` names, under
+    /// the User's current authority, at host time `now_unix_nanos`.
+    ///
+    /// Minting writes nothing, so any number of requests and processes can
+    /// resolve one session at once. Each token expires with its session at
+    /// the latest.
+    ///
+    /// # Errors
+    ///
+    /// [`TokenRefusal::InvalidGrant`] for an unknown, ended, or expired
+    /// session, another client's session, or a User who is no longer an
+    /// enabled Organization Member.
+    pub async fn web_session_token(
+        &self,
+        handle: &str,
+        client_id: &str,
+        now_unix_nanos: i64,
+    ) -> Result<WebSessionToken, TokenRefusal> {
+        let digest = digest(handle).ok_or(TokenRefusal::InvalidGrant)?;
+        let session = repository::find_session(&self.database, &digest)
+            .await?
+            .ok_or(TokenRefusal::InvalidGrant)?;
+        let scope = &session.scope;
+        if scope.client_id != client_id || session.expires_at_unix_nanos <= now_unix_nanos {
+            return Err(TokenRefusal::InvalidGrant);
+        }
+        self.organization
+            .resolve_user_authority(&scope.user_id)
+            .await
+            .map_err(|error| refusal(&error))?;
+        let session_end = u64::try_from(session.expires_at_unix_nanos / 1_000_000_000)
+            .map_err(|_error| TokenRefusal::Issuance)?;
+        let audience = scope
+            .private_audience
+            .ok_or(TokenRefusal::Unavailable)?
+            .as_str();
+        let access_token = self
+            .issuer
+            .issue_access_token_expiring_by(
+                scope.user_id.as_str(),
+                &scope.client_id,
+                audience,
+                session_end,
+            )
+            .map_err(|_text| TokenRefusal::Issuance)?;
+        Ok(WebSessionToken {
+            access_token,
+            session_expires_at_unix_nanos: session.expires_at_unix_nanos,
+        })
+    }
+
+    /// Ends the web session `handle` names, with its grant, when `client_id`
+    /// started it. An unknown or ended session, or another client's, changes
+    /// nothing and is not reported.
+    ///
+    /// # Errors
+    ///
+    /// [`TokenRefusal::Unavailable`] when the database does not answer.
+    pub async fn end_web_session(&self, handle: &str, client_id: &str) -> Result<(), TokenRefusal> {
+        let Some(digest) = digest(handle) else {
+            return Ok(());
+        };
+        match repository::find_session(&self.database, &digest).await? {
+            Some(session) if session.scope.client_id == client_id => {
+                self.end_grant(&session.grant_id).await
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Deletes a bounded batch of grants whose web session expired.
+    async fn purge_expired_sessions(&self, now_unix_nanos: i64) {
+        let Ok(mut tx) = self.database.begin().await else {
+            return;
+        };
+        if repository::purge_expired_sessions(&mut tx, now_unix_nanos, PURGE_BATCH)
+            .await
+            .is_ok()
+        {
+            let _result = tx.commit().await;
         }
     }
 

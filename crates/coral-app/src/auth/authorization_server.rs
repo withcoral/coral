@@ -37,6 +37,7 @@ mod response;
 mod revoke;
 mod sign_in_cookie;
 mod token;
+mod web_session;
 mod workspace_choice;
 
 use self::client_metadata::{ClientMetadataResolver, HttpClientMetadataResolver};
@@ -256,6 +257,9 @@ fn auth_router(state: AuthorizationServerHttpState) -> Router {
         )
         .route("/oauth/token", post(token::oauth_token))
         .route("/oauth/revoke", post(revoke::oauth_revoke))
+        .route("/oauth/session", post(web_session::start))
+        .route("/oauth/session/token", post(web_session::token))
+        .route("/oauth/session/end", post(web_session::end))
         .route("/oauth/register", post(registration::register))
         .route(OIDC_CALLBACK_PATH, get(callback::oidc_callback))
         .route(
@@ -588,6 +592,8 @@ async fn authorization_server_metadata(
         // Revocation accepts refresh tokens only; access tokens expire.
         "revocation_endpoint": format!("{}/oauth/revoke", authorization_server.issuer),
         "revocation_endpoint_auth_methods_supported": ["none"],
+        // Reef's web sessions; `/token` and `/end` sit beneath it.
+        "coral_web_session_endpoint": format!("{}/oauth/session", authorization_server.issuer),
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
@@ -882,6 +888,7 @@ mod tests {
                 "registration_endpoint": "http://localhost:9080/oauth/register",
                 "revocation_endpoint": "http://localhost:9080/oauth/revoke",
                 "revocation_endpoint_auth_methods_supported": ["none"],
+                "coral_web_session_endpoint": "http://localhost:9080/oauth/session",
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code", "refresh_token"],
                 "code_challenge_methods_supported": ["S256"],

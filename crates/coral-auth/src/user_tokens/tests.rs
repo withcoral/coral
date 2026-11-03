@@ -15,28 +15,28 @@ use super::{AccessTarget, IssuedTokens, RefreshRequest, TokenRefusal, UserTokens
 use crate::authorization_codes::{AuthorizationCodes, AuthorizationGrant, CodeRedemption};
 use crate::{PrincipalAuthentication, PrivateAudience, SessionTokenIssuer};
 
-const NOW: i64 = 1_800_000_000_000_000_000;
-const SECOND: i64 = 1_000_000_000;
-const CLIENT: &str = "https://client.example.test/oauth/client.json";
+pub(super) const NOW: i64 = 1_800_000_000_000_000_000;
+pub(super) const SECOND: i64 = 1_000_000_000;
+pub(super) const CLIENT: &str = "https://client.example.test/oauth/client.json";
 const REDIRECT: &str = "http://127.0.0.1:14554/callback";
-const REEF: &str = "https://reef.example.test";
+pub(super) const REEF: &str = "https://reef.example.test";
 
-struct Fixture {
-    database: TestDatabase,
-    issuer: SessionTokenIssuer,
-    tokens: UserTokens,
-    codes: AuthorizationCodes,
-    user: AuthenticatedUser,
-    workspace: WorkspaceId,
-    codes_issued: std::sync::atomic::AtomicUsize,
+pub(super) struct Fixture {
+    pub(super) database: TestDatabase,
+    pub(super) issuer: SessionTokenIssuer,
+    pub(super) tokens: UserTokens,
+    pub(super) codes: AuthorizationCodes,
+    pub(super) user: AuthenticatedUser,
+    pub(super) workspace: WorkspaceId,
+    pub(super) codes_issued: std::sync::atomic::AtomicUsize,
 }
 
 impl Fixture {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         Self::with_lifetime(super::DEFAULT_REFRESH_GRANT_LIFETIME).await
     }
 
-    async fn with_lifetime(lifetime: Duration) -> Self {
+    pub(super) async fn with_lifetime(lifetime: Duration) -> Self {
         let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let issuer = SessionTokenIssuer::new(
             Some("https://auth.example.test"),
@@ -73,19 +73,19 @@ impl Fixture {
 
     /// The same deployment, reached through another connection pool, as a
     /// second Coral process would.
-    async fn peer(&self) -> UserTokens {
+    pub(super) async fn peer(&self) -> UserTokens {
         UserTokens::new(
             Arc::new(self.database.connect_peer().await.unwrap()),
             self.issuer.clone(),
         )
     }
 
-    fn workspace_resource(&self) -> String {
+    pub(super) fn workspace_resource(&self) -> String {
         format!("https://mcp.example.test/workspaces/{}/mcp", self.workspace)
     }
 
     /// Issues a fresh code for `resource`, then redeems it for `target`.
-    async fn sign_in(
+    pub(super) async fn sign_in(
         &self,
         resource: &str,
         target: AccessTarget,
@@ -95,7 +95,7 @@ impl Fixture {
             .await
     }
 
-    async fn sign_in_at(
+    pub(super) async fn sign_in_at(
         &self,
         resource: &str,
         target: AccessTarget,
@@ -137,7 +137,7 @@ impl Fixture {
 
     /// Signs in to the private MCP surface of the fixture's Workspace with a
     /// refresh-eligible client and returns the first refresh token.
-    async fn refreshable(&self) -> String {
+    pub(super) async fn refreshable(&self) -> String {
         let issued = self
             .sign_in(
                 &self.workspace_resource(),
@@ -153,12 +153,16 @@ impl Fixture {
             .to_owned()
     }
 
-    async fn refresh(&self, token: &str, now: i64) -> Result<IssuedTokens, TokenRefusal> {
+    pub(super) async fn refresh(
+        &self,
+        token: &str,
+        now: i64,
+    ) -> Result<IssuedTokens, TokenRefusal> {
         self.tokens.refresh(token, plain_refresh(), now).await
     }
 
     /// Authenticates `access_token` at the fixture Workspace's private MCP surface.
-    async fn authenticates(&self, access_token: &str) -> bool {
+    pub(super) async fn authenticates(&self, access_token: &str) -> bool {
         PrincipalAuthentication::new(
             &self.issuer,
             OrganizationModule::new(self.database.database()),
@@ -180,7 +184,7 @@ const fn plain_refresh() -> RefreshRequest<'static> {
     }
 }
 
-fn refresh_token(issued: &IssuedTokens) -> String {
+pub(super) fn refresh_token(issued: &IssuedTokens) -> String {
     issued
         .refresh_token
         .as_ref()

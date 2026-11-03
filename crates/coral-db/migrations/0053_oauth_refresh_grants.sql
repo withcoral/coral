@@ -46,3 +46,19 @@ ALTER TABLE oauth_authorization_codes
 -- Whether a dynamically registered client declared the refresh_token grant.
 ALTER TABLE oauth_clients
     ADD COLUMN refresh_eligible BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- A web session holds one Reef Refresh Grant on Reef's behalf, so the browser
+-- carries only an opaque handle and no Reef process holds a refresh token.
+-- Ending the grant ends its session.
+CREATE TABLE oauth_web_sessions (
+    -- Base64url SHA-256 of the session handle. The handle is never stored.
+    session_digest TEXT NOT NULL PRIMARY KEY,
+    grant_id TEXT NOT NULL
+        REFERENCES oauth_refresh_grants (grant_id) ON DELETE CASCADE,
+    -- Fixed at the start, never later than the grant's own expiry.
+    expires_at_unix_nanos BIGINT NOT NULL,
+    CONSTRAINT oauth_web_sessions_grant_uq UNIQUE (grant_id)
+);
+
+CREATE INDEX oauth_web_sessions_expiry_idx
+    ON oauth_web_sessions (expires_at_unix_nanos);

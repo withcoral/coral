@@ -30,12 +30,28 @@ enum Grants {
 }
 
 #[derive(Iden)]
+enum Sessions {
+    #[iden = "oauth_web_sessions"]
+    Table,
+    SessionDigest,
+    GrantId,
+    ExpiresAtUnixNanos,
+}
+
+#[derive(Iden)]
 enum Tokens {
     #[iden = "oauth_refresh_tokens"]
     Table,
     TokenDigest,
     GrantId,
     ConsumedAtUnixNanos,
+}
+
+/// A presented web session and the grant it holds.
+pub(super) struct PresentedSession {
+    pub(super) grant_id: String,
+    pub(super) scope: Scope,
+    pub(super) expires_at_unix_nanos: i64,
 }
 
 /// A presented refresh token's grant, and whether the token was spent.
@@ -92,6 +108,124 @@ impl PresentedRow {
 
 const fn unavailable(_error: &coral_db::Error) -> TokenRefusal {
     TokenRefusal::Unavailable
+}
+
+#[derive(sqlx::FromRow)]
+struct SessionRow {
+    grant_id: String,
+    user_id: String,
+    client_id: String,
+    resource: String,
+    private_audience: Option<String>,
+    workspace_id: Option<String>,
+    scoped_tokens: bool,
+    expires_at_unix_nanos: i64,
+}
+
+/// Reads the session a handle digest names and the grant it holds, without
+/// holding a writer.
+pub(super) async fn find_session(
+    database: &Database,
+    session_digest: &str,
+) -> Result<Option<PresentedSession>, TokenRefusal> {
+    let row: Option<SessionRow> = database
+        .fetch_optional(
+            Query::select()
+                .columns([
+                    (Grants::Table, Grants::GrantId),
+                    (Grants::Table, Grants::UserId),
+                    (Grants::Table, Grants::ClientId),
+                    (Grants::Table, Grants::Resource),
+                    (Grants::Table, Grants::PrivateAudience),
+                    (Grants::Table, Grants::WorkspaceId),
+                    (Grants::Table, Grants::ScopedTokens),
+                ])
+                .column((Sessions::Table, Sessions::ExpiresAtUnixNanos))
+                .from(Sessions::Table)
+                .inner_join(
+                    Grants::Table,
+                    Expr::col((Sessions::Table, Sessions::GrantId))
+                        .equals((Grants::Table, Grants::GrantId)),
+                )
+                .and_where(Expr::col((Sessions::Table, Sessions::SessionDigest)).eq(session_digest))
+                .to_owned(),
+        )
+        .await
+        .map_err(|error| unavailable(&error))?;
+    row.map(|row| {
+        let token = PresentedRow {
+            grant_id: row.grant_id,
+            user_id: row.user_id,
+            client_id: row.client_id,
+            resource: row.resource,
+            private_audience: row.private_audience,
+            workspace_id: row.workspace_id,
+            scoped_tokens: row.scoped_tokens,
+            expires_at_unix_nanos: row.expires_at_unix_nanos,
+            consumed_at_unix_nanos: None,
+        }
+        .decode()?;
+        Ok(PresentedSession {
+            grant_id: token.grant_id,
+            scope: token.scope,
+            expires_at_unix_nanos: token.expires_at_unix_nanos,
+        })
+    })
+    .transpose()
+}
+
+pub(super) async fn insert_session(
+    tx: &mut Transaction<'_>,
+    session_digest: &str,
+    grant_id: &str,
+    expires_at_unix_nanos: i64,
+) -> Result<(), TokenRefusal> {
+    tx.execute(
+        Query::insert()
+            .into_table(Sessions::Table)
+            .columns([
+                Sessions::SessionDigest,
+                Sessions::GrantId,
+                Sessions::ExpiresAtUnixNanos,
+            ])
+            .values_panic([
+                session_digest.into(),
+                grant_id.into(),
+                expires_at_unix_nanos.into(),
+            ])
+            .to_owned(),
+    )
+    .await
+    .map_err(|error| unavailable(&error))?;
+    Ok(())
+}
+
+/// Deletes up to `batch` of the grants whose web session expired, with the
+/// session and its tokens.
+pub(super) async fn purge_expired_sessions(
+    tx: &mut Transaction<'_>,
+    now_unix_nanos: i64,
+    batch: u64,
+) -> Result<(), TokenRefusal> {
+    tx.execute(
+        Query::delete()
+            .from_table(Grants::Table)
+            .and_where(
+                Expr::col(Grants::GrantId).in_subquery(
+                    Query::select()
+                        .column(Sessions::GrantId)
+                        .from(Sessions::Table)
+                        .and_where(Expr::col(Sessions::ExpiresAtUnixNanos).lte(now_unix_nanos))
+                        .order_by(Sessions::ExpiresAtUnixNanos, Order::Asc)
+                        .limit(batch)
+                        .to_owned(),
+                ),
+            )
+            .to_owned(),
+    )
+    .await
+    .map_err(|error| unavailable(&error))?;
+    Ok(())
 }
 
 /// Reads the grant a token digest belongs to, without holding a writer.

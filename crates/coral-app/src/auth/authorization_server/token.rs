@@ -197,7 +197,7 @@ fn token_response(issued: &IssuedTokens) -> Response {
     json_response(StatusCode::OK, &serde_json::Value::Object(body))
 }
 
-fn now_unix_nanos() -> Option<i64> {
+pub(super) fn now_unix_nanos() -> Option<i64> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -294,9 +294,13 @@ pub(super) struct TokenForm {
     redirect_uri: Option<Zeroizing<String>>,
     pub(super) client_id: Option<Zeroizing<String>>,
     code_verifier: Option<Zeroizing<String>>,
-    refresh_token: Option<Zeroizing<String>>,
+    pub(super) refresh_token: Option<Zeroizing<String>>,
     /// The token a revocation request names.
     pub(super) token: Option<Zeroizing<String>>,
+    /// The web session handle a session request names.
+    pub(super) session: Option<Zeroizing<String>>,
+    /// The longest a new web session may last, in seconds.
+    pub(super) max_age: Option<Zeroizing<String>>,
     resource: Option<Zeroizing<String>>,
     coral_audience: Option<Zeroizing<String>>,
 }
@@ -340,6 +344,8 @@ pub(super) fn parse_form(raw: &[u8]) -> Result<TokenForm, FormError> {
             "code_verifier" => &mut form.code_verifier,
             "refresh_token" => &mut form.refresh_token,
             "token" => &mut form.token,
+            "session" => &mut form.session,
+            "max_age" => &mut form.max_age,
             "resource" => &mut form.resource,
             "coral_audience" => &mut form.coral_audience,
             _ => continue,

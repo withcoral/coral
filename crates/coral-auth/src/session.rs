@@ -140,7 +140,33 @@ impl SessionTokenIssuer {
         client_id: &str,
         audience: &str,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
-        self.mint(user_id, client_id, audience, PrincipalKind::User, None)
+        self.mint(
+            user_id,
+            client_id,
+            audience,
+            PrincipalKind::User,
+            None,
+            None,
+        )
+    }
+
+    /// Issues unscoped User access that expires by `latest_expires_at` (Unix
+    /// seconds) when that comes before the configured lifetime ends.
+    pub(crate) fn issue_access_token_expiring_by(
+        &self,
+        user_id: &str,
+        client_id: &str,
+        audience: &str,
+        latest_expires_at: u64,
+    ) -> Result<IssuedAccessToken, SessionTokenError> {
+        self.mint(
+            user_id,
+            client_id,
+            audience,
+            PrincipalKind::User,
+            None,
+            Some(latest_expires_at),
+        )
     }
 
     /// Issues User access with a signed, immutable Workspace scope.
@@ -162,6 +188,7 @@ impl SessionTokenIssuer {
             audience,
             PrincipalKind::User,
             Some(workspace.to_string()),
+            None,
         )
     }
 
@@ -172,6 +199,7 @@ impl SessionTokenIssuer {
         audience: &str,
         principal_kind: PrincipalKind,
         workspace_id: Option<String>,
+        latest_expires_at: Option<u64>,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
         if external_user_id(user_id).is_err() {
             return Err(config_error(
@@ -190,7 +218,11 @@ impl SessionTokenIssuer {
         let issued_at = unix_timestamp()?;
         let expires_at = issued_at
             .checked_add(self.access_token_ttl.as_secs())
-            .ok_or_else(|| config_error("access token expiry overflowed"))?;
+            .ok_or_else(|| config_error("access token expiry overflowed"))?
+            .min(latest_expires_at.unwrap_or(u64::MAX));
+        if expires_at <= issued_at {
+            return Err(config_error("access token would expire as it is issued"));
+        }
         let claims = SessionTokenClaims {
             iss: self.issuer.clone(),
             aud: audience.to_string(),
