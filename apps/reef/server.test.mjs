@@ -499,6 +499,7 @@ async function validSessionCookie(issuer) {
   return (
     await createCookie('coral_web_session', { secrets: [secret] }).serialize({
       endpoint: `${issuer}/oauth/session`,
+      endsAt: Math.floor(Date.now() / 1000) + 3600,
       handle: 'coral_ws_test-session',
     })
   ).split(';')[0]
