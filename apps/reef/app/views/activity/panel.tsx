@@ -65,8 +65,8 @@ export function Panel({ label, children }: { label?: string; children: ReactNode
   )
 }
 
-/** The panel's record identity: a status icon, the heading, and its status, aligned on
- * the heading's first line. Lines under the heading say more about the same record. */
+/** The panel's record identity: a status icon, if any, the heading, and its status, aligned
+ * on the heading's first line. Lines under the heading say more about the same record. */
 export function PanelHeader({
   icon,
   tone,
@@ -76,7 +76,8 @@ export function PanelHeader({
   status,
   sticky = true,
 }: {
-  icon: IconName
+  /** Left out where the heading already shows what the record is, such as a provider logo. */
+  icon?: IconName
   tone: IconPlateTone
   title: ReactNode
   heading?: 'h2' | 'h3'
@@ -96,7 +97,7 @@ export function PanelHeader({
         sticky && Boolean(close) && !inset && Dialog.pinnedClassName,
       )}
     >
-      <IconPlate name={icon} tone={tone} />
+      {icon && <IconPlate name={icon} tone={tone} />}
       <div className={styles.summary}>
         <Typography.BodyLargeStrong as={heading} className={styles.title}>
           {title}

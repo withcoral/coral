@@ -110,9 +110,14 @@ impl AccountModule {
         self.providers
             .check_owner_inspection_in_transaction(&mut tx, context.actor(), owner)
             .await?;
-        let active = crate::repository::provider_in_transaction(&mut tx, owner, provider)
-            .await?
-            .ok_or(Error::ProviderNotFound)?;
+        let active = crate::repository::current_provider(
+            &mut tx,
+            owner,
+            crate::repository::ProviderKey::Id(provider),
+            crate::repository::ProviderHold::None,
+        )
+        .await?
+        .ok_or(Error::ProviderNotFound)?;
         let contract =
             coral_catalog::credential_contract_in_transaction(&mut tx, &active.generation_id)
                 .await?;
@@ -141,25 +146,26 @@ impl AccountModule {
     ) -> Result<(), Error> {
         let mut tx = self.providers.database.begin().await?;
         // Ownership is immutable, so it can be resolved before the Provider hold.
-        let Some(active) =
-            crate::runtime::active_provider_in_transaction(&mut tx, account_workspace, provider)
-                .await?
+        let Some(active) = crate::repository::current_provider(
+            &mut tx,
+            account_workspace,
+            crate::repository::ProviderKey::Id(provider),
+            crate::repository::ProviderHold::None,
+        )
+        .await?
+        .and_then(crate::repository::ProviderWithActiveGeneration::into_active) else {
+            return Ok(());
+        };
+        let Some(current_provider) = crate::repository::current_provider(
+            &mut tx,
+            active.provider.owner(),
+            crate::repository::ProviderKey::Id(provider),
+            crate::repository::ProviderHold::Exclusive,
+        )
+        .await?
         else {
             return Ok(());
         };
-        if !crate::repository::hold_provider_in_transaction(
-            &mut tx,
-            active.provider.owner(),
-            provider,
-        )
-        .await?
-        {
-            return Ok(());
-        }
-        let current_provider =
-            crate::repository::provider_in_transaction(&mut tx, active.provider.owner(), provider)
-                .await?
-                .ok_or(Error::ProviderNotFound)?;
         if &coral_catalog::credential_contract_in_transaction(
             &mut tx,
             &current_provider.generation_id,
@@ -209,19 +215,18 @@ impl AccountModule {
         secret: Secret,
     ) -> Result<(), Error> {
         let mut tx = self.providers.database.begin().await?;
-        let authority = self
+        let held = self
             .providers
-            .check_owner_configuration_in_transaction(&mut tx, context.actor(), owner)
+            .hold_for_change(
+                &mut tx,
+                context,
+                owner,
+                provider,
+                crate::change::ProviderChange::RotateOAuthClientSecret,
+            )
             .await?;
-        let active = crate::change::hold_for_change(
-            &mut tx,
-            owner,
-            provider,
-            crate::change::ProviderChange::RotateOAuthClientSecret,
-        )
-        .await?;
         let contract =
-            coral_catalog::credential_contract_in_transaction(&mut tx, &active.generation_id)
+            coral_catalog::credential_contract_in_transaction(&mut tx, &held.current.generation_id)
                 .await?;
         let policy = contract
             .oauth_client()
@@ -243,7 +248,7 @@ impl AccountModule {
             &mut tx,
             context,
             owner,
-            authority,
+            held.authority,
             crate::LifecycleAction::ProviderOAuthClientSecretRotated,
             false,
             &provider.to_string(),
@@ -260,10 +265,14 @@ impl AccountModule {
         provider: &crate::ProviderId,
         policy: Option<&OAuthClientPolicy>,
     ) -> Result<Option<Secret>, Error> {
-        let active = {
-            let workspace = account_workspace;
-            crate::runtime::active_provider_in_transaction(tx, workspace, provider).await?
-        }
+        let active = crate::repository::current_provider(
+            tx,
+            account_workspace,
+            crate::repository::ProviderKey::Id(provider),
+            crate::repository::ProviderHold::None,
+        )
+        .await?
+        .and_then(crate::repository::ProviderWithActiveGeneration::into_active)
         .ok_or(Error::ProviderNotFound)?;
         let contract =
             coral_catalog::credential_contract_in_transaction(tx, &active.generation_id).await?;

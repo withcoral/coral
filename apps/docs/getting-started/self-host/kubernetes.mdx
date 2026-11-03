@@ -99,7 +99,7 @@ spec:
               value: https://<coral-host>
             - name: CORAL_WEB_AUTH_ISSUER
               value: https://auth.<coral-host>
-            - name: CORAL_WEB_SESSION_SECRET # to encrypt session cookies
+            - name: CORAL_WEB_SESSION_SECRET # to sign session cookies
               valueFrom:
                 secretKeyRef:
                   name: coral-secrets

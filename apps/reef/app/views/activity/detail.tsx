@@ -24,6 +24,7 @@ import { RunActions } from '../actions/run-actions'
 import { Arguments } from '../actions/arguments'
 import { DescribeParameters, DiscoveryEvidence, SearchParameters } from './discovery/discovery'
 import { DetailHeader, StateBadge } from './detail-header'
+import { useCallProvider } from './call-tool'
 import { ContextImpact } from './context-impact'
 import { Instant } from './instant'
 import { PayloadViewer, type PayloadViewerProps } from '@/wax/components/payload-viewer'
@@ -112,7 +113,6 @@ function ExecutionDetail({
           <DetailHeader
             title={detail.submission?.intent || detail.run.intent || 'Program run'}
             status={detail.run.state}
-            kind="program run"
           />
           {/* Its times together, last. */}
           <DescriptionList.List>
@@ -178,6 +178,7 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
   const context = detail.context
   const call = detail.invocation
   const runIntent = context?.submission?.intent || context?.run.intent
+  const provider = useCallProvider(call.callPath)
   // A connection request belongs to the call's Run, which is where you connect or decline.
   const connectionHref = (name: string) => href({ record: call.run, request: name })
   const expiresId = useId()
@@ -209,7 +210,7 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
               ? answeredStatus(detail.result)
               : invocationOutcomeLabels[detail.invocation.outcome]
         }
-        kind="tool"
+        provider={provider}
       />
       {/* What the call belongs to and how it waited, then its times together, last. */}
       <DescriptionList.List>
@@ -306,18 +307,18 @@ function RecordDetail({ page }: { page: ActivityPage }) {
   const detail = page.detail
   const row = page.selectedRow
   if (!detail || detail.kind === 'run' || detail.kind === 'invocation') return null
-  const { title, kind } =
+  const title =
     detail.kind === 'task'
-      ? { title: detail.task.intent, kind: 'task' }
+      ? detail.task.intent
       : detail.kind === 'tool'
-        ? toolHeading(detail.interaction, detail.evidence)
-        : eventHeading(detail.event)
+        ? toolTitle(detail.interaction, detail.evidence)
+        : eventTitle(detail.event)
   const status =
     detail.kind === 'task'
       ? detail.task.outcome
       : detail.kind === 'tool'
         ? detail.interaction.outcome
-        : // An output's title and kind name it; a status would say nothing more.
+        : // An output's title names it; a status would say nothing more.
           null
   const label = detail.kind === 'tool' && status === 'unknown' ? resultUnknown : undefined
   // A run event states its own time when no row does.
@@ -373,7 +374,6 @@ function RecordDetail({ page }: { page: ActivityPage }) {
         title={title}
         status={status ?? 'output'}
         label={label}
-        kind={kind}
         showStatus={status !== null}
       />
       {/* A Task and a tool call state their own facts in their lists below. */}
@@ -503,7 +503,7 @@ const toolKinds: Record<string, string> = {
 /** The most specific retained name for a tool call: a search's intent, then its query; what a
  * describe call described; otherwise its intent, then the Run it started. The tool only when
  * nothing else is retained. */
-function toolHeading(interaction: InteractionRow, evidence: InteractionEvidence) {
+function toolTitle(interaction: InteractionRow, evidence: InteractionEvidence) {
   const context = evidence.kind === 'discovery' ? evidence.context : null
   const name =
     context?.kind === 'search'
@@ -515,36 +515,30 @@ function toolHeading(interaction: InteractionRow, evidence: InteractionEvidence)
   // A save or a delete retains only a function ID that no page opens, so its tool titles it.
   const functionTool =
     interaction.tool === 'save_function' || interaction.tool === 'delete_function'
-  return {
-    title: name || (functionTool ? kind[0]!.toUpperCase() + kind.slice(1) : interaction.tool),
-    kind,
-  }
+  return name || (functionTool ? kind[0]!.toUpperCase() + kind.slice(1) : interaction.tool)
 }
 /** A retained event's identity. A log message or an emitted value is the program's own
  * content, so it stays in the body and never becomes the title. */
-function eventHeading(event: RunEvent): { title: string; kind: string } {
+function eventTitle(event: RunEvent): string {
   switch (event.kind) {
     // The stored level names the console method; `log` is stored as `info`.
     case 'program.logged':
-      return { title: `console.${event.level} #${event.sequence}`, kind: 'program log' }
+      return `console.${event.level} #${event.sequence}`
     case 'program.emitted':
-      return { title: `coral.emit #${event.sequence}`, kind: 'program output' }
+      return `coral.emit #${event.sequence}`
     case 'run.started':
-      return { title: 'Program run started', kind: 'run event' }
+      return 'Program run started'
     case 'run.ended':
-      return { title: `Program run ended: ${event.state.replaceAll('_', ' ')}`, kind: 'run event' }
+      return `Program run ended: ${event.state.replaceAll('_', ' ')}`
     case 'run.cancellation_requested':
-      return { title: 'Cancellation requested', kind: 'run event' }
+      return 'Cancellation requested'
     case 'invocation.started':
-      return { title: 'Tool call started', kind: 'run event' }
+      return 'Tool call started'
     case 'invocation.ended':
-      return {
-        // The event holds no response to tell, so a complete one reads only as completed.
-        title: `Tool call ended: ${invocationOutcomeLabels[event.outcome]}`,
-        kind: 'run event',
-      }
+      // The event holds no response to tell, so a complete one reads only as completed.
+      return `Tool call ended: ${invocationOutcomeLabels[event.outcome]}`
     default:
-      return { title: 'Unknown run event', kind: 'run event' }
+      return 'Unknown run event'
   }
 }
 /**
@@ -748,7 +742,7 @@ function TerminalEvidence({ terminal }: { terminal: RunTerminal }) {
     case 'succeeded':
       // A program's return value, apart from anything it emitted while it ran.
       return terminal.finalValue === null ? null : (
-        <Payload value={terminal.finalValue} format="json" label="Final value" />
+        <Payload value={terminal.finalValue} format="json" label="Return value" />
       )
     case 'failed':
       return (

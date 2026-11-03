@@ -1,10 +1,11 @@
+import type { ShouldRevalidateFunctionArgs } from 'react-router'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { expect, it, vi } from 'vitest'
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { OrganizationRole } from '@/generated/coral/management/v1/organization_membership_pb'
 import { WorkspaceRole, WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { fakeManagementTransport } from '@/lib/management.test-support'
-import { loader } from './app-shell'
+import { loader, shouldRevalidate } from './app-shell'
 
 const transport = fakeManagementTransport({
   workspaces: {
@@ -72,3 +73,28 @@ it.each([
     expect(result.data.newerRelease).toEqual(shown ? { version: '1.4.0', notesUrl } : undefined)
   },
 )
+
+// A row opens its review through the query. The sidebar must not reload for it, but a refresh
+// and a move to another page must still read the shell.
+it.each([
+  ['opening a review', '/workspaces/one/approvals', '/workspaces/one/approvals?request=a', false],
+  ['closing a review', '/workspaces/one/approvals?request=a', '/workspaces/one/approvals', false],
+  ['refreshing the open review', '/workspaces/one/approvals?request=a', '', true],
+  ['leaving for another page', '/workspaces/one/approvals', '/workspaces/one/activity', true],
+  [
+    'changing the query of another page',
+    '/workspaces/one/activity',
+    '/workspaces/one/activity?x=1',
+    true,
+  ],
+])('%s', (_, from, to, expected) => {
+  const currentUrl = new URL(from, 'http://reef.test')
+  const nextUrl = new URL(to || from, 'http://reef.test')
+  expect(
+    shouldRevalidate({
+      currentUrl,
+      nextUrl,
+      defaultShouldRevalidate: true,
+    } as ShouldRevalidateFunctionArgs),
+  ).toBe(expected)
+})

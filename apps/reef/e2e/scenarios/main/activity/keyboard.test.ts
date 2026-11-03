@@ -133,8 +133,8 @@ test('The keyboard drives workspace Activity records, sparse child windows and t
 
     await step('↓ crosses later windows to the final value, then leaves the Run', async () => {
       for (let attempt = 0; attempt < 20; attempt++) {
-        const stop = (await walk('final value'))!
-        if (stop.label === 'final value') break
+        const stop = (await walk('return value'))!
+        if (stop.label === 'return value') break
         // Reveal-driven loading fills the next window; wait for it, never past it.
         await table.locator(`[data-window-index="${stop.index! + 1}"]`).waitFor({ timeout: 10_000 })
       }

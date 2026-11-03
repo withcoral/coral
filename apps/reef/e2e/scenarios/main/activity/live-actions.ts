@@ -202,7 +202,7 @@ export async function liveActions(context: TestContext) {
     })
 
     await step('Approve it: the review advances to the next approval', async () => {
-      await rail.getByRole('button', { name: 'Approve this call', exact: true }).click()
+      await rail.getByRole('button', { name: 'Approve', exact: true }).click()
       await reviews(1)
       await following(true)
       expect((await api.activity.inspectApproval({ name: waits[0]!.approval })).state).toBe(
@@ -210,19 +210,22 @@ export async function liveActions(context: TestContext) {
       )
     })
 
-    await step('Turn live mode off and deny the next approval: the review advances', async () => {
-      await toggle.click()
-      await following(false)
-      await rail.getByRole('button', { name: 'Deny this call', exact: true }).click()
-      await reviews(2)
-      await following(false)
-      expect((await api.activity.inspectApproval({ name: waits[1]!.approval })).state).toBe(
-        'declined',
-      )
-    })
+    await step(
+      'Turn live mode off and decline the next approval: the review advances',
+      async () => {
+        await toggle.click()
+        await following(false)
+        await rail.getByRole('button', { name: 'Decline', exact: true }).click()
+        await reviews(2)
+        await following(false)
+        expect((await api.activity.inspectApproval({ name: waits[1]!.approval })).state).toBe(
+          'declined',
+        )
+      },
+    )
 
     await step('Approve the last one: the review selects the newest record', async () => {
-      await rail.getByRole('button', { name: 'Approve this call', exact: true }).click()
+      await rail.getByRole('button', { name: 'Approve', exact: true }).click()
       // The advance waits for the decision and Activity's reload after it, so wait for
       // its navigation rather than a fixed second.
       await page.waitForURL((url) => url.searchParams.get('record') !== waits[2]!.invocation)

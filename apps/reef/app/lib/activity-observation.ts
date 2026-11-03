@@ -29,7 +29,6 @@ const idle = () => {}
 // Selection, expansion and reading position never change which list is loaded.
 const windowIndependentKeys = new Set<string>([
   ...selectionKeys,
-  'pendingAfter',
   'expand',
   'tree',
   'anchor',
@@ -68,9 +67,6 @@ function conceal(page: ActivityPage): ActivityPage {
   return {
     ...page,
     rows: [],
-    pending: page.pending
-      ? { actions: [], actionCount: '0', next: '', unavailable: true }
-      : undefined,
     branches: {},
     hasBefore: false,
     hasAfter: false,

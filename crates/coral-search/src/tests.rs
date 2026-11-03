@@ -590,7 +590,8 @@ async fn relevance_combines_metadata_and_schema_lanes_before_call_path_ties() {
             ),
         )
         .await
-        .expect("publish ranking Provider");
+        .expect("publish ranking Provider")
+        .skip_search();
 
     fixture.converge().await;
     let results = fixture
@@ -1179,7 +1180,8 @@ async fn mcp_publication_prepares_schema_field_paths_for_search() {
             ),
         )
         .await
-        .expect("publish MCP Provider");
+        .expect("publish MCP Provider")
+        .skip_search();
 
     fixture.converge().await;
     for (query, expected_path) in [
@@ -1293,7 +1295,8 @@ async fn regeneration_atomically_replaces_the_active_search_generation() {
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .expect("activate replacement Generation");
+        .expect("activate replacement Generation")
+        .skip_search();
 
     fixture.converge().await;
     let old = fixture
@@ -1600,7 +1603,8 @@ async fn oversized_complete_tool_description_is_unavailable_not_truncated() {
             ),
         )
         .await
-        .expect("publish catalog with unavailable large Tool");
+        .expect("publish catalog with unavailable large Tool")
+        .skip_search();
 
     let page = fixture
         .search
@@ -1684,7 +1688,8 @@ async fn query_evidence_is_bounded() {
             ),
         )
         .await
-        .expect("publish evidence Provider");
+        .expect("publish evidence Provider")
+        .skip_search();
 
     fixture.converge().await;
     let page = fixture
@@ -3094,7 +3099,8 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let target = ToolPolicyTarget::new(
         workspace.clone(),
         second.id().clone(),
@@ -3304,7 +3310,8 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     // The credentialed contract hides the Tool until the Agent has an Account.
     // The User connects its own Account during Invocation instead.
     fixture
@@ -3916,7 +3923,8 @@ impl TestModules {
                 .with_incompatible_configuration_confirmation(),
             )
             .await
-            .unwrap();
+            .unwrap()
+            .skip_search();
         assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     }
 
@@ -4105,7 +4113,8 @@ impl TestModules {
                 ),
             )
             .await
-            .expect("publish tracer Provider");
+            .expect("publish tracer Provider")
+            .skip_search();
         let published = publication
             .published_provider()
             .expect("successful Provider publication");

@@ -203,7 +203,8 @@ async fn workspace_account_promotion_is_atomic_and_replays_after_restart() {
             let publication = restarted
                 .publish_workspace_provider(&context, request.clone())
                 .await
-                .unwrap();
+                .unwrap()
+                .skip_search();
             assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
             assert_eq!(publication.request(), &request);
             assert_eq!(
@@ -217,7 +218,8 @@ async fn workspace_account_promotion_is_atomic_and_replays_after_restart() {
                 restarted
                     .publish_workspace_provider(&context, request)
                     .await
-                    .unwrap(),
+                    .unwrap()
+                    .skip_search(),
                 publication,
             );
             let changed = if retain {
@@ -433,6 +435,7 @@ async fn creation_configuration_change_during_materialization_leaves_setup_reusa
             .publish_workspace_provider(&context, request)
             .await
             .unwrap()
+            .skip_search()
             .outcome(),
         ProviderPublicationOutcome::Succeeded
     );
@@ -556,6 +559,7 @@ async fn creation_rechecks_owner_demotion_after_materialization() {
             .publish_workspace_provider(&context, request)
             .await
             .unwrap()
+            .skip_search()
             .outcome(),
         ProviderPublicationOutcome::Succeeded
     );

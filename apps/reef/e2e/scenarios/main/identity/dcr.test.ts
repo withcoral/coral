@@ -103,8 +103,9 @@ test('URL-only MCP client registers, obtains consent, signs in, and uses the exa
         expect(await auth(client.provider, { serverUrl: resource })).toBe('REDIRECT')
         const registered = await client.provider.clientInformation()
         expect(registered?.client_id).toMatch(/^dcr_[a-f0-9]{32}$/)
+        // The client declared refresh_token, so Coral grants it.
         expect(registered).toMatchObject({
-          grant_types: ['authorization_code'],
+          grant_types: ['authorization_code', 'refresh_token'],
           token_endpoint_auth_method: 'none',
           scope: '',
         })
@@ -156,7 +157,7 @@ test('URL-only MCP client registers, obtains consent, signs in, and uses the exa
           'AUTHORIZED',
         )
         const tokens = await client.provider.tokens()
-        expect(tokens).not.toHaveProperty('refresh_token')
+        expect(tokens?.refresh_token).toMatch(/^coral_rt_/)
         const claims = JSON.parse(
           Buffer.from(tokens!.access_token.split('.')[1], 'base64url').toString(),
         )
@@ -172,8 +173,27 @@ test('URL-only MCP client registers, obtains consent, signs in, and uses the exa
         } finally {
           await mcp.close()
         }
+        // The SDK refreshes whenever it holds a refresh token: one rotation,
+        // and the new access token reaches the same Workspace as the same User.
+        expect(await auth(client.provider, { serverUrl: resource })).toBe('AUTHORIZED')
+        const refreshed = await client.provider.tokens()
+        expect(refreshed?.refresh_token).toMatch(/^coral_rt_/)
+        expect(refreshed?.refresh_token).not.toBe(tokens?.refresh_token)
+        const renewed = JSON.parse(
+          Buffer.from(refreshed!.access_token.split('.')[1], 'base64url').toString(),
+        )
+        expect([renewed.sub, renewed.aud]).toEqual([owner.userId, resource])
+        const again = new Client({ name: 'DCR regression client', version: '1' })
+        try {
+          await again.connect(
+            new StreamableHTTPClientTransport(new URL(resource), { authProvider: client.provider }),
+          )
+          expect((await again.listTools()).tools.map((tool) => tool.name)).toContain('exec')
+        } finally {
+          await again.close()
+        }
         const refused = await fetch(`${target.mcpURL}/${other.name}/mcp`, {
-          headers: { Authorization: `Bearer ${tokens!.access_token}` },
+          headers: { Authorization: `Bearer ${refreshed!.access_token}` },
         })
         expect(refused.status).toBe(401)
         const replay = await page.request.post(`${target.authentication.issuerURL}/oauth/token`, {
@@ -181,6 +201,21 @@ test('URL-only MCP client registers, obtains consent, signs in, and uses the exa
         })
         expect(replay.status()).toBe(400)
         expect(await replay.json()).toMatchObject({ error: 'invalid_grant' })
+        // The spent refresh token is single-use: presenting it again is a
+        // replay that ends the grant, the newest token included.
+        const refresh = (token: string) =>
+          page.request.post(`${target.authentication.issuerURL}/oauth/token`, {
+            form: {
+              grant_type: 'refresh_token',
+              refresh_token: token,
+              client_id: correct.client_id,
+            },
+          })
+        for (const token of [tokens!.refresh_token!, refreshed!.refresh_token!]) {
+          const refusedRefresh = await refresh(token)
+          expect(refusedRefresh.status()).toBe(400)
+          expect(await refusedRefresh.json()).toMatchObject({ error: 'invalid_grant' })
+        }
       })
     },
     { actor: owner.label, label: 'URL-only MCP sign-in' },

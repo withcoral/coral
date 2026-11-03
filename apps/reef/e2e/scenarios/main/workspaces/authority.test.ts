@@ -197,8 +197,7 @@ test('Organization Owner governance, eligible Memberships, and private server pa
         await page.waitForURL(
           (url) =>
             url.pathname === '/' ||
-            (/^\/workspaces\/[^/]+\/activity$/.test(url.pathname) &&
-              !url.pathname.startsWith(`${path}/`)),
+            (/^\/workspaces\/[^/]+$/.test(url.pathname) && url.pathname !== path),
         )
         expect((await page.request.get(path)).status()).toBe(404)
       })

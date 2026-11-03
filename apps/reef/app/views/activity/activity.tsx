@@ -11,7 +11,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { Link, useFetcher, useLocation, useNavigate, useNavigation } from 'react-router'
+import { Link, useLocation, useNavigate, useNavigation } from 'react-router'
 import { CopyMcpEndpoint } from '@/components/copy-mcp-endpoint'
 import { EmptyPage } from '@/components/empty-page'
 import { Button, Typography } from '@/wax/components'
@@ -58,12 +58,13 @@ import {
   restoreFirst,
   useActivityArchived,
 } from './live'
-import { PendingActions } from './pending'
-import { useUnsentComment } from '../actions/review'
-import type { action as resolve } from '@/routes/activity-resolve'
+import { useCommentGuard, useDecisionOutcome, useUnsentComment } from '../actions/review'
 import { ContextImpact } from './context-impact'
 import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-types'
 import { activityDays, utcDay } from '@/lib/activity-list'
+import { dayLabel, UtcTime } from './instant'
+import { CallTool, ProviderMarksContext, type ProviderMark } from './call-tool'
+import { toolOwner } from '@/lib/call-root'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import * as styles from './task-activity.css'
 import { invocationOutcomeLabels, resultUnknown } from './labels'
@@ -83,6 +84,10 @@ export function rowLabel(row: ActivityRow): string {
       return row.label
   }
 }
+/** A record's name. A call names its tool as every list of calls does. */
+function RecordLabel({ row }: { row: ActivityRow }) {
+  return row.kind === 'invocation' ? <CallTool callPath={rowLabel(row)} /> : rowLabel(row)
+}
 const toolIcons = new Map<string, IconName>([
   ['search', 'Search'],
   ['describe', 'BookOpen'],
@@ -90,6 +95,11 @@ const toolIcons = new Map<string, IconName>([
   ['save_function', 'Save'],
   ['delete_function', 'Trash'],
 ])
+/** A record's kind icon. A call whose provider the workspace still has shows that provider's
+ * logo in its name instead. */
+function recordIcon(row: ActivityRow, providers: readonly ProviderMark[]) {
+  return row.kind === 'invocation' && toolOwner(row.callPath, providers) ? undefined : rowIcon(row)
+}
 function rowIcon(row: ActivityRow): { name: IconName; label: string } {
   switch (row.kind) {
     case 'task':
@@ -178,36 +188,6 @@ function rowDuration(row: ActivityRow) {
     )
   const end = row.kind === 'task' ? row.endedAt : row.kind === 'tool' ? row.completedAt : null
   return end ? duration((Date.parse(end) - Date.parse(row.startedAt)) * 1_000_000) : '—'
-}
-// Activity reads time in UTC, as its column heading says. An ISO instant splits
-// into the UTC time without a time zone lookup.
-const utcTime = (instant: string) => instant.slice(11, 19)
-const dayParts = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'UTC',
-  weekday: 'short',
-  day: 'numeric',
-  month: 'short',
-  year: 'numeric',
-})
-/**
- * Names a UTC calendar day (`YYYY-MM-DD`): "Tue 22 Sep 2026". Never "Today": the
- * reader's today is often another UTC day, and the record alone decides its label.
- */
-function dayLabel(day: string) {
-  const part = Object.fromEntries(
-    dayParts
-      .formatToParts(new Date(`${day}T00:00:00.000Z`))
-      .map(({ type, value }) => [type, value]),
-  )
-  return `${part.weekday} ${part.day} ${part.month} ${part.year}`
-}
-/** The time column shows the UTC time only; the full instant is on hover. */
-function StartTime({ startedAt }: { startedAt: string }) {
-  return (
-    <time dateTime={startedAt} title={`${utcDay(startedAt)} ${utcTime(startedAt)} UTC`}>
-      {utcTime(startedAt)}
-    </time>
-  )
 }
 function emptyBranchMessage(row: Extract<ActivityRow, { kind: 'task' | 'run' }>) {
   if (row.kind === 'task')
@@ -355,6 +335,7 @@ const RecordRow = memo(function RecordRow({
   scope: RowScope
 }) {
   const actions = useContext(RowActionsContext)
+  const providers = useContext(ProviderMarksContext)
   const expandable = !scope.glimpse && (row.kind === 'task' || row.kind === 'run')
   const branch = scope.glimpse ? undefined : branches?.[row.name]
   const expanded = scope.expanded.has(row.name)
@@ -373,14 +354,14 @@ const RecordRow = memo(function RecordRow({
   const cells = (
     <>
       <Table.Cell mono>
-        <StartTime startedAt={row.startedAt} />
+        <UtcTime value={row.startedAt} />
       </Table.Cell>
-      <Table.Cell mono={row.kind === 'invocation'}>
+      <Table.Cell>
         <Table.Record
           depth={depth}
           // The full table is one Tab stop; its keys reach the records.
           tabbable={scope.glimpse}
-          icon={rowIcon(row)}
+          icon={recordIcon(row, providers)}
           expanded={expanded}
           disabled={!expanded && scope.full}
           onToggle={expandable ? () => actions.toggle(row.name) : undefined}
@@ -391,8 +372,8 @@ const RecordRow = memo(function RecordRow({
               <Pill
                 color="graySubtle"
                 role="img"
-                aria-label="final value"
-                title="Open this execution to inspect its final value"
+                aria-label="return value"
+                title="Open this run to see its return value"
               >
                 <Icon name="FileOutput" size="14" />
               </Pill>
@@ -408,7 +389,7 @@ const RecordRow = memo(function RecordRow({
             preventScrollReset
             onClick={(event) => pickFromLink(event, () => actions.select(row))}
           >
-            {rowLabel(row)}
+            <RecordLabel row={row} />
           </Link>
         </Table.Record>
       </Table.Cell>
@@ -1010,47 +991,20 @@ export function Activity({
     (expanded: boolean) => setInspecting((count) => count + (expanded ? 1 : -1)),
     [],
   )
-  // The review guards a comment until its blocker updates, after the commit that
-  // cleared it. Until the next frame, a step would prompt you to discard it.
-  const [guarded, setGuarded] = useState(unsent)
-  if (unsent && !guarded) setGuarded(true)
-  useEffect(() => {
-    if (unsent || !guarded) return
-    const frame = requestAnimationFrame(() => setGuarded(false))
-    return () => cancelAnimationFrame(frame)
-  }, [unsent, guarded])
+  const guarded = useCommentGuard()
   // Whether the review guarded an unsent comment when live mode last looked.
   const wasGuarded = useRef(guarded)
   // The request the rail reviews, and the decision its approval review submits.
   const reviewed =
     page.detail?.kind === 'invocation' || page.detail?.kind === 'run' ? page.detail.request : null
   const reviewedApproval = reviewed?.kind === 'approval' ? reviewed.name : undefined
-  const decision = useFetcher<typeof resolve>({
-    key: reviewedApproval ?? 'activity:no-review',
-  })
-  // A decision you make in the review advances it once, when your decision wins and the
-  // read after it lands. A decision already shown, another review's, or one that another
-  // reviewer's opposite decision beat, never does.
-  const [seen, setSeen] = useState<{
-    key?: string
-    data: unknown
-    intent?: string
-  }>({
-    key: reviewedApproval,
-    data: decision.data,
-  })
   // The location where the advance started, which also marks the reads it takes first.
   const [advance, setAdvance] = useState<string | null>(null)
-  const submitted = decision.formData?.get('intent')
-  if (seen.key !== reviewedApproval) setSeen({ key: reviewedApproval, data: decision.data })
-  else if (typeof submitted === 'string' && submitted !== seen.intent)
-    setSeen({ ...seen, intent: submitted })
-  else if (decision.state === 'idle' && seen.data !== decision.data) {
-    setSeen({ key: reviewedApproval, data: decision.data })
-    const state = decision.data && 'state' in decision.data ? decision.data.state : undefined
-    const won = { approve: 'approved', decline: 'declined' }[seen.intent ?? '']
-    if (state !== undefined && state === won) setAdvance(locationKey)
-  }
+  // A decision you make in the review advances it once, when your decision wins and the
+  // read after it lands.
+  const decision = useDecisionOutcome(reviewedApproval ?? 'activity:no-review', ({ recorded }) => {
+    if (recorded) setAdvance(locationKey)
+  })
   // It holds through the reads it takes first, and ends with its selection. Any other
   // navigation ends it, and Back or Forward to one of its reads never resumes it.
   const advancing =
@@ -1271,6 +1225,7 @@ export function Activity({
       </Table.Group>
     )
   })
+  const providers = useContext(ProviderMarksContext)
   const outside =
     page.selectedRow && !shownRecords(page, roots, glimpse).has(page.selectedRow.name)
       ? page.selectedRow
@@ -1293,7 +1248,6 @@ export function Activity({
                   </Typography.BodySmall>
                 )}
               </div>
-              <PendingActions page={page} />
               <div
                 className={styles.list}
                 ref={listRef}
@@ -1402,11 +1356,11 @@ export function Activity({
                     {outside && (
                       <Table.Row recordKey={outside.name} selected status={rowStatus(outside)}>
                         <Table.Cell mono>
-                          <StartTime startedAt={outside.startedAt} />
+                          <UtcTime value={outside.startedAt} />
                         </Table.Cell>
-                        <Table.Cell mono={outside.kind === 'invocation'}>
+                        <Table.Cell>
                           <Table.Record
-                            icon={rowIcon(outside)}
+                            icon={recordIcon(outside, providers)}
                             metadata={
                               <>
                                 <span>Outside this workspace or page:</span>
@@ -1426,7 +1380,7 @@ export function Activity({
                                 pickFromLink(event, () => actions.select(outside))
                               }
                             >
-                              {rowLabel(outside)}
+                              <RecordLabel row={outside} />
                             </Link>
                           </Table.Record>
                         </Table.Cell>

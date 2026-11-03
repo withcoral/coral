@@ -36,7 +36,7 @@ export const run: Extract<ActivityRow, { kind: 'run' }> = {
   },
 }
 
-/** The pending action `run` waits on, as the pending list and the Run row carry it. */
+/** The pending action `run` waits on, as the Run row carries it. */
 export const approval = run.actionPage!.actions[0]
 
 /** The exact approval request behind `approval`, as its review reads it. */
@@ -85,8 +85,8 @@ export function activityPage(overrides: Partial<ActivityPage> = {}): ActivityPag
   }
 }
 
-/** Your personal history, with `approval` pending above it. */
-export const pendingPage = activityPage({
+/** Your personal history: one running Run, with nothing pending. */
+export const personalPage = activityPage({
   rows: [
     {
       ...run,
@@ -97,12 +97,6 @@ export const pendingPage = activityPage({
       actionPage: undefined,
     },
   ],
-  pending: {
-    actions: [{ action: approval, run }],
-    actionCount: '1',
-    next: '',
-    unavailable: false,
-  },
 })
 
 const at = '2026-09-18T14:02:00.000Z'

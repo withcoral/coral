@@ -17,6 +17,7 @@ fn grant() -> AuthorizationGrant {
         code_challenge: "client-challenge".into(),
         resource: "https://mcp.example.test/workspaces/w/mcp".into(),
         workspace_id: None,
+        refresh_eligible: false,
     }
 }
 

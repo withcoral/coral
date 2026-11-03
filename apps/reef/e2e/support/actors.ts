@@ -69,11 +69,11 @@ export async function signIn(page: Page, user: SyntheticUser, target = authentic
   await page.getByRole('heading', { name: 'Synthetic identity provider', exact: true }).waitFor()
   // Subject is the stable identity; labels may repeat across scenarios.
   await page.locator(`button[value="${user.subject}"]`).click()
-  // Home opens the first Workspace's Activity, or stays home when there is none.
+  // Home opens the first Workspace's Overview, or stays home when there is none.
   await page.waitForURL(
     (url) =>
       url.origin === target.baseURL &&
-      (url.pathname === '/' || /^\/workspaces\/[^/]+\/activity$/.test(url.pathname)),
+      (url.pathname === '/' || /^\/workspaces\/[^/]+$/.test(url.pathname)),
   )
   await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
 }
