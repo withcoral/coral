@@ -176,7 +176,7 @@ async fn search_types_each_mode_with_the_result_it_returns() {
     let cases: &[(&str, &str, Located)] = &[
         (
             "a query reads its page",
-            "  const page = (await coral.workspace.search({ query: \"forecast\", limit: 3 })).data;\n  return [page.hits[0]?.signature_line, page.next_cursor];",
+            "  const page = (await coral.workspace.search({ query: \"forecast\", limit: 3 })).data;\n  return [page.hits[0]?.signature_line, page.next_offset];",
             vec![],
         ),
         (

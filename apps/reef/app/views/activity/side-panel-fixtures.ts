@@ -506,7 +506,7 @@ export const searched: Extract<DiscoveryContext, { kind: 'search' }> = {
   query: 'github pulls',
   provider: null,
   limit: 5,
-  cursor: null,
+  offset: 0,
 }
 
 /**

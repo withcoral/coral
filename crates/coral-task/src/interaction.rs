@@ -104,8 +104,8 @@ pub enum DiscoveryContext {
         provider: Option<String>,
         /// Effective accepted page size.
         limit: u16,
-        /// Exact requested continuation; absent on the first page.
-        cursor: Option<String>,
+        /// Ranked results the page skipped; 0 for the first page.
+        offset: u32,
     },
     /// One exact callable description request.
     Describe {

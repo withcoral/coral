@@ -4,6 +4,7 @@ import { request } from 'playwright'
 import { expect, inject, test } from 'vitest'
 import { loginActor } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
+import { dismissOnboarding } from '../../../support/providers.ts'
 import { startStack } from '../../../support/stack.ts'
 
 // Coral access tokens last five seconds; Reef sessions last forty from sign-in.
@@ -60,6 +61,7 @@ test('A Reef session outlives its access tokens, ends at its own deadline, and s
         await page.waitForTimeout((ACCESS_TOKEN_TTL_SECONDS + 1) * 1000)
         await dialog.getByRole('button', { name: 'Create workspace', exact: true }).click()
         await page.waitForURL((url) => /^\/workspaces\/[0-9a-f-]{36}$/.test(url.pathname))
+        await dismissOnboarding(page)
         workspacePath = new URL(page.url()).pathname
         // One submission, one Workspace: renewal neither drops nor repeats it.
         await expect

@@ -162,7 +162,7 @@ function discoveryContextView({ context }: ActivityDiscovery): DiscoveryContext 
         query: context.value.query ?? null,
         provider: context.value.provider ?? null,
         limit: context.value.limit,
-        cursor: context.value.cursor ?? null,
+        offset: context.value.offset,
       }
     case 'describe':
       return { kind: 'describe', callPath: context.value.callPath, types: [...context.value.types] }
