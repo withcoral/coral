@@ -1,7 +1,8 @@
 import { createServer, type ServerResponse } from 'node:http'
-import { expect, test } from 'vitest'
+import type { Page } from 'playwright'
+import { expect, test, type TestContext } from 'vitest'
 import { authenticatedTarget, loginActor, mcpToken } from '../../../support/actors.ts'
-import { withBrowserSession } from '../../../support/browser-session.ts'
+import { withBrowserSession, type Session } from '../../../support/browser-session.ts'
 import { managementClients } from '../../../support/management.ts'
 import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
@@ -149,15 +150,40 @@ test('Activity search ignores Unicode case, and opens every Task it lists for it
   )
 })
 
-test('Live moves from a running Run the search leaves out to a matching Run that runs', async (context) => {
-  // Each call waits here until the test ends, so both Runs stay running.
+/** An Owner's new workspace, whose Programs each wait in the fixture's `lookup` until released. */
+async function withHeldRuns(
+  context: TestContext,
+  journey: (session: {
+    page: Page
+    step: Session['step']
+    word: string
+    /** Starts a Program of `lookups` calls, and returns its Run once its first call waits. */
+    hold: (taskIntent: string, intent: string, lookups?: number) => Promise<string>
+    /** Ends one Run's waiting call. */
+    release: () => void
+    calls: () => number
+    finish: (taskIntent: string, intent: string) => Promise<string>
+    /** The Run and its tool calls. */
+    records: (run: string) => Promise<string[]>
+    open: (run: string) => Promise<void>
+    search: (query: string) => Promise<void>
+    shown: () => string | null
+    address: () => URLSearchParams
+  }) => Promise<void>,
+) {
+  // Each call waits here until the test ends, so its Run stays running.
   const held: ServerResponse[] = []
+  let calls = 0
   const upstream = await listen(
     context,
-    createServer((_request, response) => void held.push(response)),
+    createServer((_request, response) => {
+      calls += 1
+      held.push(response)
+    }),
   )
+  const release = () => held.shift()?.writeHead(200).end('{}')
   context.onTestFinished(() => {
-    for (const response of held) response.writeHead(200).end('{}')
+    while (held.length) release()
   })
   await withOwner(context, async ({ page, target, step, accessToken }) => {
     const api = managementClients(accessToken)
@@ -169,46 +195,115 @@ test('Live moves from a running Run the search leaves out to a matching Run that
       openApiDocument(
         'Hold fixture',
         { lookup: { summary: 'Look up one record' } },
-        {
-          server: upstream.origin,
-        },
+        { server: upstream.origin },
       ),
       'holdFixture',
     )
     await page.goto(provider)
     await enableTool(page, 'lookup')
-    const start = async (taskIntent: string, intent: string, calls: number) => {
-      // exec returns at once; the Run goes on without it.
-      const execute = programRunner(page, target, workspace, { waitMs: 1, taskIntent })
-      const accepted = await execute.exec('await coral.providers.holdFixture.lookup({})', intent)
-      expect(accepted.isError).not.toBe(true)
-      await expect.poll(() => held.length, { timeout: 15_000 }).toBe(calls)
-      return `workspaces/${workspace}/runs/${accepted.structuredContent.run_id}`
-    }
-    const leftOut = await start('Unrelated chores', 'Unrelated wait', 1)
-    const matching = await start('Weekly chores', `Export ${word} invoices`, 2)
     const address = () => new URL(page.url()).searchParams
-    const records = async () => [
-      matching,
-      ...(await api.activity.browseRunEntries({ name: matching, pageSize: 100 })).entries.flatMap(
+    const runName = (id: string) => `workspaces/${workspace}/runs/${id}`
+    const records = async (run: string) => [
+      run,
+      ...(await api.activity.browseRunEntries({ name: run, pageSize: 100 })).entries.flatMap(
         ({ record }) => (record.case === 'invocation' ? [record.value.name] : []),
       ),
     ]
-    await step('Live holds the running Run you open, with no search', async () => {
-      const query = new URLSearchParams({ tree: '1', live: 'latest', record: leftOut })
-      await page.goto(`/workspaces/${workspace}/activity?${query}`)
-      await page.getByRole('dialog', { name: 'Activity details' }).waitFor()
-      expect(address().get('record')).toBe(leftOut)
+    await journey({
+      page,
+      step,
+      word,
+      release,
+      calls: () => calls,
+      records,
+      address,
+      shown: () => address().get('record'),
+      hold: async (taskIntent, intent, lookups = 1) => {
+        const before = calls
+        // exec returns at once; the Run goes on without it.
+        const execute = programRunner(page, target, workspace, { waitMs: 1, taskIntent })
+        const accepted = await execute.exec(
+          'await coral.providers.holdFixture.lookup({});\n'.repeat(lookups),
+          intent,
+        )
+        expect(accepted.isError).not.toBe(true)
+        await expect.poll(() => calls, { timeout: 15_000 }).toBe(before + 1)
+        return runName(accepted.structuredContent.run_id)
+      },
+      finish: async (taskIntent, intent) => {
+        const execute = programRunner(page, target, workspace, { taskIntent })
+        const { update } = await observeRun(execute, await execute.exec('return 1;', intent))
+        return runName(update.run_id)
+      },
+      open: async (run) => {
+        const query = new URLSearchParams({ tree: '1', live: 'latest', record: run })
+        await page.goto(`/workspaces/${workspace}/activity?${query}`)
+        await page.getByRole('dialog', { name: 'Activity details' }).waitFor()
+        // Live holds the Run: it shows the Run's newest record.
+        const newest = (await records(run)).at(-1)
+        await expect.poll(() => address().get('record'), { timeout: 15_000 }).toBe(newest)
+      },
+      search: (query) =>
+        page.getByRole('searchbox', { name: 'Search intent', exact: true }).fill(query),
     })
-    await step('Search for the other Run, and Live moves to it', async () => {
-      await page.getByRole('searchbox', { name: 'Search intent', exact: true }).fill(word)
+  })
+}
+
+test.for(['runs', 'ended'] as const)(
+  'Live moves from a running Run the search leaves out to a matching Run that %s',
+  async (state, context) => {
+    await withHeldRuns(context, async (session) => {
+      const { step, word, hold, finish, records, open, search, shown, address } = session
+      const leftOut = await hold('Unrelated chores', 'Unrelated wait')
+      const start = state === 'runs' ? hold : finish
+      const matching = await start('Weekly chores', `Export ${word} invoices`)
+      await step('Live holds the running Run you open, with no search', () => open(leftOut))
+      await step('Search for the other Run, and Live moves to it', async () => {
+        await search(word)
+        await expect
+          .poll(async () => (await records(matching)).includes(shown() ?? ''), { timeout: 15_000 })
+          .toBe(true)
+        expect(address().get('q')).toBe(word)
+        expect(address().get('live')).toBe('latest')
+      })
+    })
+  },
+)
+
+test('Live waits while the search matches no Run, then moves to the first that arrives', async (context) => {
+  await withHeldRuns(context, async (session) => {
+    const { page, step, word, hold, release, calls, records, open, search, shown, address } =
+      session
+    const leftOut = await hold('Unrelated chores', 'Unrelated wait', 3)
+    /** Ends the Run's waiting call, and returns its next one once Coral records it. */
+    const nextCall = async () => {
+      const count = (await records(leftOut)).length
+      release()
+      await expect.poll(calls, { timeout: 15_000 }).toBe(count)
       await expect
-        .poll(async () => (await records()).includes(address().get('record') ?? ''), {
-          timeout: 15_000,
-        })
-        .toBe(true)
-      expect(address().get('q')).toBe(word)
+        .poll(async () => (await records(leftOut)).length, { timeout: 15_000 })
+        .toBe(count + 1)
+      return (await records(leftOut)).at(-1)
+    }
+    await step('Live follows the running Run you open, with no search', async () => {
+      await open(leftOut)
+      const next = await nextCall()
+      await expect.poll(shown, { timeout: 15_000 }).toBe(next)
+    })
+    await step('Search with no match, and Live stops following the open Run', async () => {
+      const opened = shown()
+      await search(word)
+      await page.getByText('No matching activity').waitFor()
+      await nextCall()
+      await page.waitForTimeout(3_000)
+      expect(shown()).toBe(opened)
       expect(address().get('live')).toBe('latest')
+    })
+    await step('A matching Run starts, and Live moves to it', async () => {
+      const matching = await hold('Weekly chores', `Export ${word} invoices`)
+      await expect
+        .poll(async () => (await records(matching)).includes(shown() ?? ''), { timeout: 15_000 })
+        .toBe(true)
     })
   })
 })

@@ -867,15 +867,10 @@ describe('live scopes', () => {
   ])('latest action: %s', (_, current, actionable, expected) => {
     expect(liveTarget(current, 'latest', now, actionable)).toEqual(expected)
   })
-  // Under a search, a Run the search leaves out gives way to a matching Run that waits
-  // or runs. With neither, nothing says what Live does instead, so it stays as it was.
+  // Under a search, a Run the search leaves out holds nothing: Live picks among the matches
+  // as it picks among all records without a search, and waits with none.
   const left = taskRow('left')
   const outside = runRow('outside', left.name, { state: 'running', endedAt: null })
-  const holdsOutside: ReturnType<typeof liveTarget> = {
-    kind: 'run',
-    run: outside.name,
-    chain: [left.name, outside.name],
-  }
   const searched = (liveLatest: ActivityPage['liveLatest'], more: Partial<ActivityPage> = {}) =>
     activityPage({
       query: 'invoice',
@@ -885,6 +880,10 @@ describe('live scopes', () => {
       liveLatest,
       ...more,
     })
+  const later = {
+    ...elsewhere,
+    startedAt: new Date(Date.parse(running.startedAt) + 60_000).toISOString(),
+  }
   it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
     [
       'moves to a matching Run that runs',
@@ -897,28 +896,69 @@ describe('live scopes', () => {
       followsAsks,
     ],
     [
+      'moves to the action before a matching Run that runs',
+      searched({
+        heldOutside: true,
+        action: { task: work.name, action: named },
+        running: { [other.name]: later },
+      }),
+      followsAsks,
+    ],
+    [
+      'moves to the matching Run that runs and was submitted last',
+      searched({ heldOutside: true, running: { [work.name]: running, [other.name]: later } }),
+      { kind: 'run', run: later.name, chain: [other.name, later.name] },
+    ],
+    [
       'reads the newest records first when newer ones may hold a match',
       searched({ heldOutside: true }, { hasBefore: true }),
       { kind: 'newest' },
     ],
     [
-      'stays with no matching Run that waits or runs',
-      searched({ heldOutside: true }),
-      holdsOutside,
-    ],
-    [
-      'stays when the newest match is a record of a Run that ended',
+      'moves to the newest match when every matching Run ended',
       searched({
         heldOutside: true,
         running: {},
         complete: true,
-        latest: { root: work.name, record: lookup.name, run: false },
+        latest: { root: work.name, record: first.name, run: true },
       }),
-      holdsOutside,
+      { kind: 'expand', chain: [work.name] },
     ],
-    ['stays on a Run the search keeps', searched(undefined), holdsOutside],
+    [
+      'moves to the newest match past the loaded list when every matching Run ended',
+      searched({
+        heldOutside: true,
+        running: {},
+        complete: true,
+        latest: { root: other.name, record: lookup.name, run: false },
+      }),
+      { kind: 'select', record: lookup.name, chain: [other.name] },
+    ],
+    ['waits with no match', searched({ heldOutside: true }, { rows: [] }), { kind: 'wait' }],
+    [
+      'waits while Reef cannot name the newest match',
+      searched({ heldOutside: true }),
+      { kind: 'wait' },
+    ],
   ])('with a search that leaves out the Run it holds, it %s', (_, current, expected) => {
     expect(liveTarget(current, 'latest', now)).toEqual(expected)
+    // Catches: a priority of its own. Without a search, the Run you left open has ended.
+    const { heldOutside: _held, ...latest } = current.liveLatest!
+    const withoutSearch: ActivityPage = {
+      ...current,
+      query: activityPage().query,
+      selectedRow: { ...outside, state: 'succeeded', endedAt: done.endedAt },
+      liveLatest: latest,
+    }
+    expect(liveTarget(withoutSearch, 'latest', now)).toEqual(expected)
+  })
+
+  it('stays on a Run the search keeps', () => {
+    expect(liveTarget(searched(undefined), 'latest', now)).toEqual({
+      kind: 'run',
+      run: outside.name,
+      chain: [left.name, outside.name],
+    })
   })
 
   it('steps to the action the target names in its Run', () => {

@@ -359,8 +359,8 @@ export type RunRow = Extract<ActivityRow, { kind: 'run' }>
 /** What page live mode knows past the list and its loaded windows. */
 export interface LiveLatest {
   /**
-   * The search leaves out the Run that holds live mode. A matching Run that waits or runs
-   * then takes over, as this names it.
+   * The search leaves out the Run you have open, which then holds nothing: live mode
+   * chooses among the matches this names, and waits with none.
    */
   heldOutside?: boolean
   /**
