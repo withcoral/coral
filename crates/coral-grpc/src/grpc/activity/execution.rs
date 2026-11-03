@@ -405,6 +405,13 @@ fn failure_code(code: coral_run::RunFailureCode) -> i32 {
     }
     .into()
 }
+fn run_context_impact(value: coral_run::RunContextImpact) -> wire::ActivityRunContextImpact {
+    wire::ActivityRunContextImpact {
+        final_value_bytes: value.final_value_bytes,
+        output_bytes: value.output_bytes,
+        tool_result_bytes: value.tool_result_bytes,
+    }
+}
 pub(super) async fn inspect_run(
     services: &GrpcServices,
     request: Request<wire::InspectRunRequest>,
@@ -473,6 +480,7 @@ pub(super) async fn inspect_run(
             .last()
             .map_or(input.event_after, coral_run::RunEvent::sequence),
         has_more_events: detail.has_more_events,
+        context_impact: detail.context_impact.map(run_context_impact),
         trace_id: detail
             .trace_id
             .as_ref()

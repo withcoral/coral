@@ -1,6 +1,7 @@
 import { style } from '@/wax/css'
 
 import { breakpoints } from '@/styles/breakpoints'
+import { theme } from '@/wax/theme/theme.css'
 
 export const section = style({ display: 'flex', flexDirection: 'column', minWidth: 0 })
 export const title = style({ paddingBottom: 8 })
@@ -40,4 +41,9 @@ export const value = style({
   minWidth: 0,
   overflowWrap: 'anywhere',
   whiteSpace: 'pre-wrap',
+})
+// A total closes the sum above it, as on a receipt.
+export const total = style({
+  borderTop: `1px solid ${theme.stroke.secondary}`,
+  marginTop: 4,
 })

@@ -21,9 +21,8 @@ export function ContextImpact({ bytes, partial = false }: { bytes?: string; part
   )
 }
 
-/** Rounded label, spoken meaning, one-word change, exact title and tone for net context bytes. */
-export function describeContextImpact(value: bigint, partial: boolean) {
-  const magnitude = value < 0n ? -value : value
+/** A byte count rounded to three significant digits in the unit that reads best. */
+function formatSize(magnitude: bigint) {
   // Round before selecting the unit so 999.5 kB becomes 1 MB, not 1,000 kB.
   let size = Number(Number(magnitude).toPrecision(3))
   let unit = 0
@@ -31,9 +30,33 @@ export function describeContextImpact(value: bigint, partial: boolean) {
     size /= 1000
     unit++
   }
-  const formatted = `${size.toLocaleString('en-US', { maximumSignificantDigits: 3 })} ${units[unit]}`
+  return `${size.toLocaleString('en-US', { maximumSignificantDigits: 3 })} ${units[unit]}`
+}
+
+/** An exact byte count, as a title states it. */
+function exactBytes(magnitude: bigint) {
+  return `${magnitude.toLocaleString('en-US')} ${magnitude === 1n ? 'byte' : 'bytes'}`
+}
+
+/** One part of a total, in neutral text: only the total says whether it helped. */
+export function Bytes({ bytes }: { bytes: bigint }) {
+  return (
+    <Typography.CodeSmallInline
+      // Monospaced like every context size, in primary text: only the net takes a tone.
+      variant="primary"
+      title={exactBytes(bytes)}
+    >
+      {formatSize(bytes)}
+    </Typography.CodeSmallInline>
+  )
+}
+
+/** Rounded label, spoken meaning, one-word change, exact title and tone for net context bytes. */
+export function describeContextImpact(value: bigint, partial: boolean) {
+  const magnitude = value < 0n ? -value : value
+  const formatted = formatSize(magnitude)
   const direction = value < 0n ? 'saved' : 'added'
-  const exact = `${magnitude.toLocaleString('en-US')} ${magnitude === 1n ? 'byte' : 'bytes'}${value === 0n ? '' : ` ${direction}`}`
+  const exact = `${exactBytes(magnitude)}${value === 0n ? '' : ` ${direction}`}`
   return {
     label: `${value < 0n ? '−' : value > 0n ? '+' : ''}${formatted}`,
     change: value < 0n ? 'Saved' : value > 0n ? 'Added' : 'No change',

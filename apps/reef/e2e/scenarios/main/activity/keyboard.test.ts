@@ -56,7 +56,7 @@ test('The keyboard drives workspace Activity records, sparse child windows and t
       accessToken: token,
       taskIntent: 'Keyboard goal',
     })
-    // More emissions than one child window holds, then a final value.
+    // More emissions than one child window holds, then a return value, which is no child row.
     const observed = await observeRun(
       runner,
       await runner.exec('for (let i = 0; i < 230; i++) await coral.emit({ i }); return "done";'),
@@ -131,14 +131,16 @@ test('The keyboard drives workspace Activity records, sparse child windows and t
       expect((await cursor(page))?.index).toBe(gap.index! + 1)
     })
 
-    await step('↓ crosses later windows to the final value, then leaves the Run', async () => {
+    // The Run's start is Event 1, so its 230 emissions are Events 2 to 231.
+    const last = `${run}/events/231`
+    await step('↓ crosses later windows to the last emission, then leaves the Run', async () => {
       for (let attempt = 0; attempt < 20; attempt++) {
-        const stop = (await walk('return value'))!
-        if (stop.label === 'return value') break
+        const stop = (await walk('emission #231'))!
+        if (stop.label === 'emission #231') break
         // Reveal-driven loading fills the next window; wait for it, never past it.
         await table.locator(`[data-window-index="${stop.index! + 1}"]`).waitFor({ timeout: 10_000 })
       }
-      expect((await cursor(page))?.key).toBe(`${run}/final`)
+      expect((await cursor(page))?.key).toBe(last)
       await page.keyboard.press('ArrowDown')
       const after = await cursor(page)
       expect(after?.key.startsWith(run)).toBe(false)
@@ -150,14 +152,13 @@ test('The keyboard drives workspace Activity records, sparse child windows and t
       await page.keyboard.press('Enter')
       const rail = page.getByRole('dialog', { name: 'Activity details' })
       await rail.waitFor()
-      await page.waitForURL(() => record(page) === `${run}/final`)
+      await page.waitForURL(() => record(page) === last)
       expect(await tableFocused(page)).toBe(true)
-      // The table keeps the final value revealed, not the Run that its detail shows.
-      expect(await cursor(page)).toMatchObject({ key: `${run}/final`, inView: true })
+      expect(await cursor(page)).toMatchObject({ key: last, inView: true })
       await rail.evaluate((element) => (element.dataset.reel = 'opened'))
       const entries = await page.evaluate(() => history.length)
       await page.keyboard.press('ArrowUp')
-      await page.waitForURL(() => record(page)?.startsWith(`${run}/events/`) === true)
+      await page.waitForURL(() => record(page) === `${run}/events/230`)
       expect(await rail.getAttribute('data-reel')).toBe('opened')
       expect(await page.evaluate(() => history.length)).toBe(entries)
       expect(await tableFocused(page)).toBe(true)

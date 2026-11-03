@@ -106,10 +106,16 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
           await page.goto(`/workspaces/${workspace}/activity?${query}`)
           expect(await root.getByRole('cell').last().innerText()).toBe(total)
           expect(await table.locator('[aria-label$="B saved"]').count()).toBe(4)
-          expect(await table.locator('[aria-label$="B added"]').count()).toBe(3)
+          // The log and the emission; the return value is the Run's own, on its panel.
+          expect(await table.locator('[aria-label$="B added"]').count()).toBe(2)
           expect(await page.content()).not.toContain('x'.repeat(100))
-          await table.getByRole('link', { name: 'return value', exact: true }).click()
+          await table.locator(`[data-record-key="${run}"]`).locator('a[href]').click()
           await shownPayload(page, '"ok"').waitFor()
+          await page
+            .getByRole('region', { name: 'Agent context', exact: true })
+            .locator('div', { has: page.getByText('Return value sent', { exact: true }) })
+            .getByText('4 B', { exact: true })
+            .waitFor()
           await page.getByRole('button', { name: 'Close details', exact: true }).click()
           await page.waitForURL((url) => !url.searchParams.has('record'))
         },

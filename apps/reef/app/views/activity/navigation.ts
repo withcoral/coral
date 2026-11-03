@@ -669,25 +669,17 @@ export interface StopPosition {
   parents: string[]
 }
 
-/** A Run's final value is its own record, although its Run's detail shows it. */
-export const finalValue = (run: string) => `${run}/final`
-
-/** The record a selection shows: its Run's final value when the URL's `record` names it. */
-export const shownRecordOf = (selected: string | null, record: string | null) =>
-  selected && record === finalValue(selected) ? record : selected
-
 /** Where the keys start from when they rest on `stop`. */
 export const stopPosition = (stop: RecordStop): StopPosition => ({
   name: stop.row.name,
   parents: stop.parents,
 })
 
-/** The Tasks and Runs that enclose a record, nearest first. `shown` names a final value. */
-export function recordParents(row: ActivityRow, shown = row.name): string[] {
-  const own = shown === finalValue(row.name) ? [row.name] : []
+/** The Tasks and Runs that enclose a record, nearest first. */
+export function recordParents(row: ActivityRow): string[] {
   const run = row.kind === 'invocation' || row.kind === 'output' ? row.run : ''
   const task = row.kind === 'task' ? '' : (row.task ?? '')
-  return [...own, run, task].filter(Boolean)
+  return [run, task].filter(Boolean)
 }
 
 /**
@@ -763,7 +755,7 @@ export function stepStop(
 /**
  * The position among its Run's records, as Coral ordered them, of a record inside a
  * Run: a Tool Invocation or any Program Run Event, its lifecycle included.
- * Undefined for any other record, such as the Run itself or its final value, or when its Run's
+ * Undefined for any other record, such as the Run itself, or when its Run's
  * loaded window does not hold it.
  */
 export function orderedRecordPosition(page: ActivityPage, row: ActivityRow | null) {

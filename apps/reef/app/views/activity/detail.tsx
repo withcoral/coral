@@ -1,14 +1,14 @@
 import { useId } from 'react'
-import { duration } from './duration'
+import { ElapsedDuration } from './duration'
 import { Link } from 'react-router'
 import { List, Typography } from '@/wax/components'
 import { CodeChip } from '@/wax/components/code-chip'
 import { Disclosure } from '@/wax/components/disclosure'
-import { Elapsed } from '@/wax/components/elapsed'
 import { CodeBlock as Native } from '@/wax/components/code-block'
 import * as DescriptionList from '@/wax/components/description-list'
 import type {
   ActivityPage,
+  RunContextImpact,
   RunDetail,
   InvocationDetail,
   InvocationResult,
@@ -25,7 +25,7 @@ import { Arguments } from '../actions/arguments'
 import { DescribeParameters, DiscoveryEvidence, SearchParameters } from './discovery/discovery'
 import { DetailHeader, StateBadge } from './detail-header'
 import { useCallProvider } from './call-tool'
-import { ContextImpact } from './context-impact'
+import { Bytes, ContextImpact } from './context-impact'
 import { Instant } from './instant'
 import { PayloadViewer, type PayloadViewerProps } from '@/wax/components/payload-viewer'
 import { invocationOutcomeLabels, requestedBy, resultUnknown } from './labels'
@@ -33,9 +33,6 @@ import { Panel } from './panel'
 import { useActivityConnected, useActivityInspect } from './live'
 import { useActivityNavigation } from './navigation'
 import * as styles from './task-activity.css'
-
-/** An elapsed time in whole seconds, as the Activity table shows it. */
-const seconds = (milliseconds: number) => duration(milliseconds * 1_000_000)
 
 /** The Run whose accepted source a selected record shows beside its own detail, if any.
  * A tool or an output carries it as context; it never replaces the record's detail. */
@@ -89,12 +86,10 @@ function ExecutionDetail({
       <DescriptionList.Row label="Requested by">{requestedBy(run)}</DescriptionList.Row>
       {/* A connection request records no start of its own; these times are the Run's. */}
       <DescriptionList.Row label="Run duration">
-        <Elapsed
+        <ElapsedDuration
           milliseconds={Number(run.durationNanos) / 1_000_000}
           running={connected && running}
-        >
-          {seconds}
-        </Elapsed>
+        />
       </DescriptionList.Row>
       <DescriptionList.Row label="Run started">
         <Instant value={run.startedAt} />
@@ -117,12 +112,10 @@ function ExecutionDetail({
           {/* Its times together, last. */}
           <DescriptionList.List>
             <DescriptionList.Row label="Duration">
-              <Elapsed
+              <ElapsedDuration
                 milliseconds={Number(detail.run.durationNanos) / 1_000_000}
                 running={connected && running}
-              >
-                {seconds}
-              </Elapsed>
+              />
             </DescriptionList.Row>
             <DescriptionList.Row label="Started">
               <Instant value={detail.run.startedAt} />
@@ -133,6 +126,9 @@ function ExecutionDetail({
               </DescriptionList.Row>
             )}
           </DescriptionList.List>
+          {detail.contextImpact && (
+            <RunContextBreakdown parts={detail.contextImpact} net={detail.run.contextImpactBytes} />
+          )}
         </>
       )}
       <RunActions
@@ -167,6 +163,50 @@ function ExecutionDetail({
       )}
     </Panel>
   )
+}
+
+/** What the Run kept out of its agent's context and what it sent, summed to the net. Only
+ * the net is coloured: a part is neither good nor bad on its own. A part of zero bytes says
+ * nothing, so it does not show. */
+function RunContextBreakdown({ parts, net }: { parts: RunContextImpact; net?: string }) {
+  const keptOut = BigInt(parts.toolResultBytes)
+  const sent = [
+    ['Return value sent', BigInt(parts.finalValueBytes)],
+    ['Emissions and logs sent', BigInt(parts.outputBytes)],
+  ] as const
+  const saved = net === undefined ? 0n : -BigInt(net)
+  return (
+    <DescriptionList.List title="Agent context" heading="h3">
+      {keptOut > 0n && (
+        <DescriptionList.Row label="Tool results kept out">
+          <Bytes bytes={keptOut} />
+        </DescriptionList.Row>
+      )}
+      {sent.map(
+        ([label, bytes]) =>
+          bytes > 0n && (
+            <DescriptionList.Row key={label} label={label}>
+              <Bytes bytes={bytes} />
+            </DescriptionList.Row>
+          ),
+      )}
+      <DescriptionList.Row label="Net" total>
+        <ContextImpact bytes={net} />
+        {saved > 0n && keptOut > 0n && (
+          <Typography.BodySmall as="span" variant="secondary">
+            {` (${savedShare(saved, keptOut)} saved)`}
+          </Typography.BodySmall>
+        )}
+      </DescriptionList.Row>
+    </DescriptionList.List>
+  )
+}
+
+/** The saving as a share of the tool results, rounded down: it never claims more than was
+ * saved. */
+function savedShare(saved: bigint, keptOut: bigint) {
+  const percent = Number((saved * 100n) / keptOut)
+  return percent === 0 ? '<1%' : `${percent}%`
 }
 
 /** One exact call, leading with its own identity and ending with its own outcome. Its Run, when
@@ -223,20 +263,16 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
           )}
         </DescriptionList.Row>
         <DescriptionList.Row label="Waiting time">
-          <Elapsed
+          <ElapsedDuration
             milliseconds={Number(detail.invocation.waitingNanos) / 1_000_000}
             running={connected && detail.invocation.state === 'pending'}
-          >
-            {seconds}
-          </Elapsed>
+          />
         </DescriptionList.Row>
         <DescriptionList.Row label="Duration">
-          <Elapsed
+          <ElapsedDuration
             milliseconds={Number(call.durationNanos) / 1_000_000}
             running={connected && ['pending', 'dispatching'].includes(call.state)}
-          >
-            {seconds}
-          </Elapsed>
+          />
         </DescriptionList.Row>
         <DescriptionList.Row label="Started">
           <Instant value={call.startedAt} />
@@ -384,12 +420,10 @@ function RecordDetail({ page }: { page: ActivityPage }) {
           </DescriptionList.Row>
           {row && 'durationNanos' in row && (
             <DescriptionList.Row label="Duration">
-              <Elapsed
+              <ElapsedDuration
                 milliseconds={Number(row.durationNanos) / 1_000_000}
                 running={connected && ['running', 'pending', 'dispatching'].includes(row.state)}
-              >
-                {seconds}
-              </Elapsed>
+              />
             </DescriptionList.Row>
           )}
           {row && 'endedAt' in row && row.endedAt && (

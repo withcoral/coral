@@ -1,4 +1,4 @@
-import { duration } from './duration'
+import { duration, ElapsedDuration } from './duration'
 import {
   createContext,
   memo,
@@ -15,10 +15,8 @@ import { Link, useLocation, useNavigate, useNavigation } from 'react-router'
 import { CopyMcpEndpoint } from '@/components/copy-mcp-endpoint'
 import { EmptyPage } from '@/components/empty-page'
 import { Button, Typography } from '@/wax/components'
-import { Elapsed } from '@/wax/components/elapsed'
 import * as Dialog from '@/wax/components/dialog'
-import { Icon, type IconName } from '@/wax/components/icon'
-import { Pill } from '@/wax/components/pill'
+import type { IconName } from '@/wax/components/icon'
 import { Tooltip } from '@/wax/components/tooltip'
 import * as Table from '@/wax/components/table'
 import {
@@ -42,7 +40,6 @@ import {
   resolveStop,
   revealHref,
   selectionKeys,
-  shownRecordOf,
   stepStop,
   stopPosition,
   useActivityNavigation,
@@ -179,12 +176,10 @@ function rowStatus(row: ActivityRow): RowStatus | undefined {
 function rowDuration(row: ActivityRow) {
   if ('durationNanos' in row)
     return (
-      <Elapsed
+      <ElapsedDuration
         milliseconds={Number(row.durationNanos) / 1_000_000}
         running={['running', 'pending', 'dispatching'].includes(row.state)}
-      >
-        {(ms) => duration(ms * 1_000_000)}
-      </Elapsed>
+      />
     )
   const end = row.kind === 'task' ? row.endedAt : row.kind === 'tool' ? row.completedAt : null
   return end ? duration((Date.parse(end) - Date.parse(row.startedAt)) * 1_000_000) : '—'
@@ -230,8 +225,6 @@ interface RowScope {
   expanded: Set<string>
   /** The expansion bound is reached; collapsed records cannot expand. */
   full: boolean
-  /** A selected Run whose detail found a final value. */
-  finalValueRun: string | null
   /**
    * The address a row's link shows: this URL with that record selected, or for a
    * glimpse, the record on its own Activity page.
@@ -366,19 +359,6 @@ const RecordRow = memo(function RecordRow({
           disabled={!expanded && scope.full}
           onToggle={expandable ? () => actions.toggle(row.name) : undefined}
           marker={row.kind === 'invocation' && row.requiresAction ? 'needs action' : undefined}
-          metadata={
-            row.kind === 'run' &&
-            (row.hasFinalValue || scope.finalValueRun === row.name) && (
-              <Pill
-                color="graySubtle"
-                role="img"
-                aria-label="return value"
-                title="Open this run to see its return value"
-              >
-                <Icon name="FileOutput" size="14" />
-              </Pill>
-            )
-          }
         >
           <Link
             to={scope.href(row)}
@@ -655,21 +635,18 @@ export function Activity({
       : undefined
   // The rail's own navigation carries a fresh token in its state; Back and Forward do not.
   const pendingToken = railToken(transition.location?.state)
-  // The record the rail shows, exactly: a Run's final value has its own name,
-  // although its Run's detail shows it.
-  const shownRecord = shownRecordOf(selected, new URLSearchParams(search).get('record'))
   // The records whose rail is closing: the one it shows, and the one a step is about
   // to show. It plays its exit while the address catches up, and a load that lands
   // meanwhile, the step's own included, cannot reopen it. A new selection ends it.
   const [closing, setClosing] = useState<readonly string[] | null>(null)
-  if (closing !== null && !(shownRecord !== null && closing.includes(shownRecord))) setClosing(null)
+  if (closing !== null && !(selected !== null && closing.includes(selected))) setClosing(null)
   // A closing rail keeps showing its record until its exit ends, even when a step
   // the close covers renders meanwhile.
-  const [shown, setShown] = useState({ page, record: shownRecord })
+  const [shown, setShown] = useState({ page, record: selected })
   const showing = selected !== null && closing === null
-  if (showing && (shown.page !== page || shown.record !== shownRecord))
-    setShown({ page, record: shownRecord })
-  const detail = showing ? { page, record: shownRecord } : shown
+  if (showing && (shown.page !== page || shown.record !== selected))
+    setShown({ page, record: selected })
+  const detail = showing ? { page, record: selected } : shown
   const detailPage = detail.page
   // Every detail panel names its own record, so it replaces the rail's generic header.
   const ownHeader = !detailPage.unavailable && Boolean(detailPage.detail)
@@ -692,8 +669,8 @@ export function Activity({
   const popupRef = useRef<HTMLDivElement>(null)
   // Another record starts at its top, in the same rail.
   useLayoutEffect(() => {
-    if (shownRecord && popupRef.current) popupRef.current.scrollTop = 0
-  }, [shownRecord])
+    if (selected && popupRef.current) popupRef.current.scrollTop = 0
+  }, [selected])
   const observed = live !== undefined
   const glimpse = more !== undefined
   // A glimpse never loads more, and lists only the latest roots a live update merged in.
@@ -711,10 +688,10 @@ export function Activity({
   // The records that lead to the selected one stay expanded while live mode moves on.
   const selectedChain = liveChain(page.selectedRow)
   // With the rail open, the keys start from the record it shows, or is about to.
-  const shownPosition: StopPosition | null = shownRecord
+  const shownPosition: StopPosition | null = selected
     ? {
-        name: shownRecord,
-        parents: page.selectedRow ? recordParents(page.selectedRow, shownRecord) : [],
+        name: selected,
+        parents: page.selectedRow ? recordParents(page.selectedRow) : [],
       }
     : null
   const pendingStop =
@@ -754,9 +731,7 @@ export function Activity({
     // it, so it cannot reopen the rail when it renders. `pending` names one whose
     // record the table does not show, such as live mode's.
     if (!unsent)
-      setClosing([
-        ...new Set([shownRecord, pending, position?.name].filter((name) => name != null)),
-      ])
+      setClosing([...new Set([selected, pending, position?.name].filter((name) => name != null))])
     void navigate(nav.backHref, {
       preventScrollReset: true,
       state: tokens.next(),
@@ -777,7 +752,6 @@ export function Activity({
     live,
     more,
     selected,
-    shownRecord,
     shownPosition,
     pending,
     pendingToken,
@@ -818,11 +792,11 @@ export function Activity({
           ? null
           : current.pending !== undefined
             ? current.pending
-            : current.shownRecord
+            : current.selected
       if (row.name === target) return
       // Picking the closed record again reopens it. Picking the record a pending step
       // was going to show leaves the rail closed until that record loads.
-      if (row.name === current.shownRecord) setClosing(null)
+      if (row.name === current.selected) setClosing(null)
       else if (current.closing?.includes(row.name))
         setClosing(current.closing.filter((name) => name !== row.name))
       setKeyStep(null)
@@ -830,7 +804,7 @@ export function Activity({
       // Going back to the shown record cancels the rail's own pending navigation,
       // which has no history entry yet, so the address is replaced. Back or Forward
       // already moved through history, so a pick after either is a new entry.
-      const replace = row.name === current.shownRecord && tokens.current(current.pendingToken)
+      const replace = row.name === current.selected && tokens.current(current.pendingToken)
       void current.navigate(current.nav.recordHref(row.name), {
         preventScrollReset: true,
         replace,
@@ -886,7 +860,7 @@ export function Activity({
       const current = latest.current
       const row = owner === 'rail' ? current.selectedRow : current.activeStop?.row
       // The rail toggles only a Task or Run it shows itself, never a final value.
-      if (!row || (owner === 'rail' && (!current.open || row.name !== current.shownRecord)))
+      if (!row || (owner === 'rail' && (!current.open || row.name !== current.selected)))
         return false
       if (row.kind === 'task' || row.kind === 'run') {
         if (!current.expanded.includes(row.name) && current.full) return false
@@ -959,14 +933,14 @@ export function Activity({
   useLayoutEffect(() => {
     const noted = refocus.current
     const rail = popupRef.current
-    if (!noted || noted.record === shownRecord) return
+    if (!noted || noted.record === selected) return
     refocus.current = null
     const active = document.activeElement
     if (!rail || (active && active !== document.body && document.contains(active))) return
     const target =
       noted.on === 'toggle' ? rail.querySelector<HTMLElement>(`[${liveToggleAttribute}]`) : null
     ;(target ?? rail).focus({ preventScroll: true })
-  }, [shownRecord])
+  }, [selected])
   // The step live mode last took, and the location it left. It takes each step
   // once, so a step that cannot land never repeats. Back, Forward or any other
   // navigation starts afresh.
@@ -988,14 +962,14 @@ export function Activity({
   // a step gave way at, for a navigation of yours that has not landed.
   const armed = useRef<{ since: number; issued: number; held?: string } | null>(null)
   useLayoutEffect(() => {
-    if (presented.current?.record !== shownRecord)
-      presented.current = { record: shownRecord, at: Date.now() }
-  }, [shownRecord])
+    if (presented.current?.record !== selected)
+      presented.current = { record: selected, at: Date.now() }
+  }, [selected])
   useLayoutEffect(() => {
     if (presentedScope.current !== liveScope && liveScope === 'latest')
-      presented.current = { record: shownRecord, at: -Infinity }
+      presented.current = { record: selected, at: -Infinity }
     presentedScope.current = liveScope
-  }, [liveScope, shownRecord])
+  }, [liveScope, selected])
   const connected = live?.connected ?? true
   // How many payload or source viewers you have open expanded. Live mode holds the record
   // meanwhile.
@@ -1038,7 +1012,7 @@ export function Activity({
     return liveFollow(page, nav, {
       scope: liveScope,
       actionable: !archived,
-      shownRecord,
+      shownRecord: selected,
       reviewed: reviewed?.name,
     })
   })()
@@ -1054,7 +1028,7 @@ export function Activity({
     !advancing &&
     open &&
     step?.record !== undefined &&
-    step.record !== shownRecord
+    step.record !== selected
   // A read an advance takes first carries its mark, so the advance holds through it.
   const followMark = advancing && step && !step.last ? advance : undefined
   // A selection that opens the rail leaves focus where it is.
@@ -1110,7 +1084,7 @@ export function Activity({
     refocus.current =
       rail && active && active !== rail && rail.contains(active)
         ? {
-            record: shownRecord,
+            record: selected,
             on: active.closest(`[${liveToggleAttribute}]`) ? 'toggle' : 'rail',
           }
         : null
@@ -1130,7 +1104,7 @@ export function Activity({
     followOpens,
     followReplaces,
     rested,
-    shownRecord,
+    selected,
     navigate,
     tokens,
   ])
@@ -1183,32 +1157,18 @@ export function Activity({
   // The cursor row shows while focus is in the table.
   const activeRecord = tableFocused ? (activeStop?.row.name ?? null) : null
   const expandedKey = page.expanded.join('\n')
-  const finalValueRun =
-    page.selectedRow?.kind === 'run' && page.selectedRow.hasFinalValue
-      ? page.selectedRow.name
-      : null
   const loadable = more ? undefined : list
   const scope = useMemo<RowScope>(
     () => ({
-      selected: shownRecord,
+      selected,
       active: activeRecord,
       expanded: new Set(expandedKey ? expandedKey.split('\n') : []),
       full: (expandedKey ? expandedKey.split('\n').length : 0) >= MAX_EXPANDED_RECORDS,
-      finalValueRun,
       href: glimpse ? revealHref : (row) => selectionHref(page.listPath, search, row.name),
       observed,
       glimpse,
     }),
-    [
-      shownRecord,
-      activeRecord,
-      expandedKey,
-      finalValueRun,
-      page.listPath,
-      search,
-      observed,
-      glimpse,
-    ],
+    [selected, activeRecord, expandedKey, page.listPath, search, observed, glimpse],
   )
   const rows = (items: ActivityRow[]) =>
     items.map((row) => (

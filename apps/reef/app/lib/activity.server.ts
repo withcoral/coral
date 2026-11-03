@@ -649,6 +649,11 @@ function runDetailView(value: InspectRunResponse, run: ExecutionRow): RunDetail 
       source,
     })),
     terminal: runTerminalView(value),
+    contextImpact: value.contextImpact && {
+      finalValueBytes: value.contextImpact.finalValueBytes.toString(),
+      outputBytes: value.contextImpact.outputBytes.toString(),
+      toolResultBytes: value.contextImpact.toolResultBytes.toString(),
+    },
   }
 }
 
@@ -757,6 +762,7 @@ async function selectedDetail(
         break
       }
       case 'run':
+      // A link from before a Run's return value left its rows opens the Run, which shows it.
       case 'final': {
         const run = name.replace(/\/final$/, '')
         const value = await api.activity.inspectRun(
@@ -775,13 +781,6 @@ async function selectedDetail(
         )
         retainedConnection = value.accountConnection || undefined
         if (!value.run) throw new ConnectError('unavailable', Code.NotFound)
-        const terminal = runTerminalView(value)
-        if (
-          name.endsWith('/final') &&
-          (terminal.kind !== 'succeeded' || terminal.finalValue === null)
-        ) {
-          throw new ConnectError('unavailable', Code.NotFound)
-        }
         const row = runView(value.run)
         // The Run's list, and a review opened from it, keep the page a "More actions" link named.
         // A separate read, so a page that fails leaves the Run and its exact review readable.
@@ -801,7 +800,6 @@ async function selectedDetail(
           ...row,
           kind: 'run',
           submission: page.detail.submission,
-          hasFinalValue: terminal.kind === 'succeeded' && terminal.finalValue !== null,
         }
         break
       }
@@ -1738,29 +1736,23 @@ export async function loadActivity(
             },
           ]
         if (record.case !== 'event') return []
-        const event = {
-          ...outputRow(
-            row.name,
-            {
-              sequence: record.value.sequence.toString(),
-              kind: record.value.kind,
-              contextImpactBytes: record.value.contextImpactBytes,
-              occurredAt: timestamp(record.value.occurredAtUnixNanos),
-              sourceLocation: record.value.sourceLocation,
-            },
-            row.task,
-            row.agent,
-          ),
-          position,
-        }
-        if (
-          record.value.kind === 'run.ended' &&
-          (record.value.contextImpactBytes ?? 0n) > 0n &&
-          event.name !== page.selected &&
-          event.name !== anchor(row.name)
-        )
-          return [{ ...event, name: `${row.name}/final`, label: 'return value' }]
-        return [event]
+        return [
+          {
+            ...outputRow(
+              row.name,
+              {
+                sequence: record.value.sequence.toString(),
+                kind: record.value.kind,
+                contextImpactBytes: record.value.contextImpactBytes,
+                occurredAt: timestamp(record.value.occurredAtUnixNanos),
+                sourceLocation: record.value.sourceLocation,
+              },
+              row.task,
+              row.agent,
+            ),
+            position,
+          },
+        ]
       }),
     }
   }
@@ -1827,7 +1819,6 @@ export async function loadActivity(
         parent.rows.push(row)
         parent.rows.sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
       }
-      row.hasFinalValue = value.hasFinalValue
       page.branches[name] = executionBranch(value, row)
     } catch (error) {
       if (!unavailable(error)) throw error

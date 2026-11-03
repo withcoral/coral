@@ -49,3 +49,16 @@ export const Compact: Story = {
     </DescriptionList.List>
   ),
 }
+/** Amounts that add up: the total row closes the sum. */
+export const Total: Story = {
+  render: () => (
+    <DescriptionList.List title="Invoice" heading="h3">
+      <DescriptionList.Row label="Subscription">€1,200.00</DescriptionList.Row>
+      <DescriptionList.Row label="Usage">€84.50</DescriptionList.Row>
+      <DescriptionList.Row label="Credit">−€100.00</DescriptionList.Row>
+      <DescriptionList.Row label="Total" total>
+        €1,184.50
+      </DescriptionList.Row>
+    </DescriptionList.List>
+  ),
+}

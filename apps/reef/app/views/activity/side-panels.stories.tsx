@@ -210,7 +210,6 @@ const runPage = (detail: RunDetail, overrides?: Partial<ActivityPage>) =>
       ...detail.run,
       kind: 'run',
       submission: detail.submission,
-      hasFinalValue: detail.terminal.kind === 'succeeded' && detail.terminal.finalValue !== null,
     },
     detail,
     overrides,
@@ -1467,9 +1466,8 @@ export const RunSucceededWithFinalValue = panel(
 /** What the program returned, with a precise amount and a trailing zero Coral keeps as stored. */
 const returned = '{"reminded":24,"owners":9,"totalOverdue":18450.70,"skipped":["INV-4180"]}'
 /**
- * The panel a "final value" row opens. That row names `<run>/final`; the loader answers
- * with its succeeded Run, so the Run panel shows the value the program returned. That is
- * the program's result, not an intermediate `coral.emit` output.
+ * A succeeded Run's panel shows the value its program returned. That is the program's
+ * result, not an intermediate `coral.emit` output.
  */
 export const FinalValue: Story = {
   ...panel(

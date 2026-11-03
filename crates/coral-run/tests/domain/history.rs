@@ -241,9 +241,7 @@ async fn deleted_agent_execution_is_readable_only_in_owner_authorized_history() 
         .unwrap();
     assert_eq!(page.run.id, *accepted.run_id());
     assert_eq!(page.run.context_impact_bytes, Some(4));
-    assert!(
-        matches!(page.entries.as_slice(), [RunEntry::Event { kind, context_impact_bytes: 4, .. }] if kind == "run.ended")
-    );
+    assert!(page.entries.is_empty(), "a returned null is no child row");
     assert_eq!(
         fixture
             .runs
@@ -352,7 +350,6 @@ async fn emissions_before_a_failure_stay_readable_and_exact_events_stay_private(
     };
     assert_eq!(kind, "program.emitted");
     assert!(first.has_more);
-    assert!(!first.has_final_value);
     let rest = fixture
         .runs
         .activity_entries(

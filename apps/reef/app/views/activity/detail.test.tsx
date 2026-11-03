@@ -250,11 +250,11 @@ it.each([true, false])(
     const fact = (term: string) =>
       within(container).getByText(term, { selector: 'dt' }).nextElementSibling
     expectInstant(fact('Started'), call.startedAt, '22 Sep 2026, 09:00:05 UTC')
-    expect(fact('Duration')).toHaveTextContent('2s')
+    expect(fact('Duration')).toHaveTextContent('2.0s')
     expectInstant(fact('Ended'), call.endedAt!, '22 Sep 2026, 09:00:07 UTC')
     expect(within(container).queryByText('Initiated by')).toBeNull()
-    // Under a second of waiting reads as none: no time shows that has not passed.
-    expect(fact('Waiting time')).toHaveTextContent('0s')
+    // Under a second of waiting reads in milliseconds, rounded down.
+    expect(fact('Waiting time')).toHaveTextContent('1ms')
     expectInstant(fact('Dispatch'), call.dispatchedAt!, '22 Sep 2026, 09:00:06 UTC')
     // The header badge states the call's outcome; no State row repeats it.
     expect(within(container).queryByText('State', { selector: 'dt' })).toBeNull()
@@ -2923,8 +2923,45 @@ describe('each record states only what helps, once', () => {
     expect(container.textContent).not.toMatch(/^Started$/m)
   })
 
-  // Catches: a duration with fractions of a second, ended or still counting.
-  it("states a Run's duration in whole seconds", () => {
+  // Catches: a part of zero bytes that adds a row, or a saving claimed for a Run that added
+  // context or read no tool results.
+  it.each([
+    [
+      'a Run that saved context',
+      { toolResultBytes: '2000', finalValueBytes: '15', outputBytes: '0' },
+      '-1985',
+      ['Tool results kept out', 'Return value sent', 'Net'],
+      '(99% saved)',
+    ],
+    [
+      'a Run that called no tool',
+      { toolResultBytes: '0', finalValueBytes: '15', outputBytes: '4' },
+      '19',
+      ['Return value sent', 'Emissions and logs sent', 'Net'],
+      null,
+    ],
+    [
+      'a Run that sent nothing back',
+      { toolResultBytes: '0', finalValueBytes: '0', outputBytes: '0' },
+      '0',
+      ['Net'],
+      null,
+    ],
+  ])('shows the context parts of %s', (_, contextImpact, net, rows, share) => {
+    const container = show({
+      ...runPanel({ state: 'succeeded', contextImpactBytes: net, requiresAction: false }),
+      contextImpact,
+    })
+    const section = within(container)
+      .getByRole('heading', { name: 'Agent context' })
+      .closest('section')!
+    expect(terms(section)).toEqual(rows)
+    if (share) expect(section).toHaveTextContent(share)
+    else expect(section).not.toHaveTextContent('saved)')
+  })
+
+  // Catches: an ended Run's minutes that drop their seconds, or round up time not yet passed.
+  it("states an ended Run's duration in minutes and whole seconds", () => {
     const container = show(
       runPanel({
         state: 'succeeded',
@@ -2935,6 +2972,7 @@ describe('each record states only what helps, once', () => {
     )
     expect(factIn(container.querySelector('dl')!, 'Duration')).toHaveTextContent('4m 23s')
   })
+  // Catches: a counting duration whose last digit sits still between its one-second ticks.
   it('counts a running Run up in whole seconds', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] })
     try {

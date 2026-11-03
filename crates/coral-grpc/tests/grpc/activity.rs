@@ -361,13 +361,27 @@ async fn execution_transport_keeps_large_exact_output_out_of_roots_and_detail_in
         .await
         .unwrap()
         .into_inner();
-    assert!(children.has_final_value);
-    assert!(
-        matches!(children.entries.as_slice(), [wire::ActivityRunEntry {
-            record: Some(wire::activity_run_entry::Record::Event(event))
-        }] if event.kind == "run.ended" && event.context_impact_bytes == Some(1)),
-        "{:?}",
-        children.entries
+    // The Final Value is the Run's own: no child row carries it, and InspectRun names its bytes.
+    assert!(children.entries.is_empty(), "{:?}", children.entries);
+    let exact = client
+        .inspect_run(request(
+            wire::InspectRunRequest {
+                name: exact_agent.name.clone(),
+                ..Default::default()
+            },
+            &owner,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        exact.context_impact,
+        Some(wire::ActivityRunContextImpact {
+            final_value_bytes: 1,
+            output_bytes: 0,
+            tool_result_bytes: 0,
+        })
     );
     let mcp = f.token(&f.member, "mcp");
     assert_eq!(

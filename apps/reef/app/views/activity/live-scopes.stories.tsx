@@ -61,7 +61,6 @@ type Root =
 /** When a call started, by the number in its name. */
 const startOf = (call: string) => Number(call.split('-op-').at(-1))
 const approvalOf = (call: string) => `${workspace}/approvals/${call.split('/').at(-1)}`
-const finalOf = (run: string) => `${run}/final`
 
 function newRun(id: string, task = '', order = 0): RunModel {
   return {
@@ -219,27 +218,12 @@ const runView = (model: RunModel): Run => ({
   state: model.failed ? 'failed' : model.ended ? 'succeeded' : 'running',
   endedAt: model.ended ? at : null,
   requiresAction: Boolean(model.waiting),
-  hasFinalValue: model.ended && !model.failed,
 })
 function children(model: RunModel): ActivityRow[] {
   const calls = model.calls.map((row): ActivityRow =>
     row.name === model.waiting ? { ...row, state: 'pending', requiresAction: true } : row,
   )
-  if (!model.ended || model.failed) return calls
-  return [
-    ...calls,
-    {
-      kind: 'output',
-      name: finalOf(model.row.name),
-      workspace,
-      run: model.row.name,
-      task: model.row.task,
-      label: 'return value',
-      startedAt: at,
-      eventKind: 'run.ended',
-      agent: '',
-    },
-  ]
+  return calls
 }
 /** The records of a Task, its Runs and tools, each with its order, oldest first. */
 const orderedRecords = (root: Extract<Root, { kind: 'task' }>) =>
@@ -351,12 +335,7 @@ function pageFor(url: URL): ActivityPage {
     .find((row) => row.name === record)
   const owner = world
     .runs()
-    .find(
-      (model) =>
-        record === model.row.name ||
-        record === finalOf(model.row.name) ||
-        model.calls.some((row) => row.name === record),
-    )
+    .find((model) => record === model.row.name || model.calls.some((row) => row.name === record))
   const call = owner?.calls.find((row) => row.name === record)
   const selectedRow: ActivityRow | null =
     task?.kind === 'task'
