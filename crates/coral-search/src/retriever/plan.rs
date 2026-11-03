@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 
+use super::MatchStrength;
 use crate::indexer::compact_identifier_variant;
 
 /// Terms shorter than this cannot meet a trigram index; both backends drop them.
@@ -52,6 +53,15 @@ pub(crate) struct QueryPlan {
     pub(super) variant_words: Vec<String>,
     /// Terms that yield no word, kept as substring patterns.
     pub(super) wordless: Vec<String>,
+    /// The content words of the whole query that word points count, each
+    /// once: runs of ASCII letters and digits of at least three characters,
+    /// as the phrase test splits them, less the filler words.
+    strength_words: Vec<String>,
+    /// Every typed term, so a term can equal a Provider Namespace.
+    typed_terms: BTreeSet<String>,
+    /// Every word of every typed term, of any length, so a Provider's
+    /// display name can be found among them.
+    typed_words: BTreeSet<String>,
 }
 
 impl QueryPlan {
@@ -59,16 +69,33 @@ impl QueryPlan {
     /// longest term, the whole query, holds no letter or digit: the ranking
     /// is then empty, never a rejection.
     pub(crate) fn build(terms: &[String]) -> Option<Self> {
-        let terms = with_compact_variants(terms)
+        let expanded = with_compact_variants(terms);
+        let typed_terms = expanded
+            .iter()
+            .filter(|term| !term.compact_variant)
+            .map(|term| term.text.clone())
+            .collect::<BTreeSet<_>>();
+        let typed_words = typed_terms
+            .iter()
+            .flat_map(|term| ascii_runs(term))
+            .collect::<BTreeSet<_>>();
+        let terms = expanded
             .into_iter()
             .filter(|term| term.text.chars().count() >= MIN_TERM_CHARS)
             .collect::<Vec<_>>();
-        let phrase = PhrasePatterns::build(
-            &terms
-                .iter()
-                .max_by_key(|term| term.text.chars().count())?
-                .text,
-        )?;
+        let longest = &terms
+            .iter()
+            .max_by_key(|term| term.text.chars().count())?
+            .text;
+        let phrase = PhrasePatterns::build(longest)?;
+        let strength_words = field_words(longest)
+            .into_iter()
+            .filter(|word| {
+                word.chars().count() >= MIN_TERM_CHARS && !FILLER_WORDS.contains(&word.as_str())
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         let mut given_words = BTreeSet::new();
         let mut variant_words = BTreeSet::new();
         let mut wordless = BTreeSet::new();
@@ -106,7 +133,58 @@ impl QueryPlan {
             words,
             variant_words: variant_words.difference(&given_words).cloned().collect(),
             wordless: wordless.into_iter().collect(),
+            strength_words,
+            typed_terms,
+            typed_words,
         })
+    }
+
+    /// How strongly a ranked row matches, by one rule for every kind, so
+    /// the engine can compare the windows of different retrievers. The
+    /// phrase points and the named Provider are the keys the row's statement
+    /// ordered by first. Word points add, for each content word of the
+    /// query, the weight of every field that holds it as a whole word, by
+    /// the phrase test's word rule: separators and camelCase edges end words,
+    /// and case does not count.
+    pub(super) fn strength<'a>(
+        &self,
+        phrase_points: i64,
+        named_provider: bool,
+        fields: impl IntoIterator<Item = (&'a str, u32)>,
+    ) -> MatchStrength {
+        let fields = fields
+            .into_iter()
+            .map(|(text, weight)| (field_words(text), weight))
+            .collect::<Vec<_>>();
+        let word_points = self
+            .strength_words
+            .iter()
+            .flat_map(|word| {
+                fields
+                    .iter()
+                    .filter(move |(words, _weight)| words.contains(word))
+                    .map(|(_words, weight)| weight)
+            })
+            .sum();
+        MatchStrength {
+            phrase_points,
+            named_provider,
+            word_points,
+        }
+    }
+
+    /// Whether the query names a Provider: a typed term is its namespace,
+    /// or the query holds every word of its display name, filler words
+    /// apart. Case does not count. The Built-in Provider has no namespace,
+    /// so only its display name can name it.
+    pub(crate) fn names_provider(&self, namespace: Option<&str>, display_name: &str) -> bool {
+        if namespace.is_some_and(|namespace| self.typed_terms.contains(&namespace.to_lowercase())) {
+            return true;
+        }
+        let words = ascii_runs(display_name)
+            .filter(|word| !FILLER_WORDS.contains(&word.as_str()))
+            .collect::<Vec<_>>();
+        !words.is_empty() && words.iter().all(|word| self.typed_words.contains(word))
     }
 
     /// The typed words that no row holds as an exact word and that are long
@@ -295,6 +373,45 @@ fn contained_pattern(content: &[&&str], filler: &str) -> String {
     };
     pattern.push_str(&ending);
     pattern
+}
+
+/// The runs of ASCII letters and digits in `text`, lowercased: the words
+/// the phrase test sees apart from camelCase edges.
+fn ascii_runs(text: &str) -> impl Iterator<Item = String> + '_ {
+    ascii_runs_cased(text).map(str::to_ascii_lowercase)
+}
+
+fn ascii_runs_cased(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|run| !run.is_empty())
+}
+
+/// The whole words of a field, lowercased, as the contained phrase pattern
+/// finds them: each run of ASCII letters and digits, and each camelCase part
+/// of it, where a capital after a lowercase letter or a digit starts a part.
+/// So `openIssues` holds `open`, `issues` and `openissues`.
+fn field_words(text: &str) -> BTreeSet<String> {
+    let mut words = BTreeSet::new();
+    for run in ascii_runs_cased(text) {
+        let mut part = String::new();
+        let mut previous: Option<char> = None;
+        for character in run.chars() {
+            let edge = character.is_ascii_uppercase()
+                && previous.is_some_and(|previous| {
+                    previous.is_ascii_lowercase() || previous.is_ascii_digit()
+                });
+            if edge {
+                words.insert(std::mem::take(&mut part));
+            }
+            part.push(character.to_ascii_lowercase());
+            previous = Some(character);
+        }
+        if part.len() < run.len() {
+            words.insert(part);
+        }
+        words.insert(run.to_ascii_lowercase());
+    }
+    words
 }
 
 /// The capital that starts a camelCase word with this letter, for an ASCII
