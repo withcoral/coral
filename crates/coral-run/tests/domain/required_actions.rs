@@ -847,11 +847,27 @@ async fn required_actions_name_their_request_and_ignore_event_paging() {
         connection_action.deadline_at_unix_nanos,
         mixed.request.expires_at_unix_nanos
     );
+    assert_eq!(
+        connection_action.call_path.as_deref(),
+        Some("coral.providers.weather.getForecast"),
+        "a shared connection request of one Tool names it"
+    );
     for action in waiting.required_actions() {
         assert_eq!(action.required_actor, crate::RequiredActor::InvokingUser);
         assert_eq!(
             action.run_status_path,
             format!("/workspaces/{scope}/runs/{}", mixed.run)
+        );
+        assert!(
+            action
+                .call_path
+                .as_deref()
+                .is_some_and(|path| path.ends_with(".getForecast")),
+            "each action names its waiting Tool: {action:?}"
+        );
+        assert!(
+            action.provider_label.is_some(),
+            "each action names its Provider: {action:?}"
         );
     }
     let replay = runs

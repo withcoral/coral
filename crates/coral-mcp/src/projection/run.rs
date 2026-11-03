@@ -90,10 +90,20 @@ enum State {
     "then" = {"properties":{"required_actor":{"const":"invoking_user"}}}
 ))]
 struct Action {
+    /// What the person must do: approve one Tool call, or connect their account with the Provider.
     kind: ActionKind,
+    /// Identifies the request on the Run Status Page. It grants no authority.
     #[schemars(schema_with = "crate::arguments::uuid_schema")]
     request_id: String,
+    /// Who can act: the user who started the Run, or a workspace owner.
     required_actor: Actor,
+    /// The Call Path of the Tool that waits. Absent when one connection request is shared by calls to different Tools.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool: Option<String>,
+    /// The display name of the Provider whose Tool waits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    /// When acting stops helping this Run: the Run ends `timed_out` at its deadline.
     #[schemars(schema_with = "timestamp_schema")]
     deadline_at: String,
     /// Absolute URL that opens authenticated human review. It grants no approval or access authority.
@@ -375,6 +385,8 @@ fn required_action(action: &RequiredAction, human_interface: &crate::HumanInterf
             RequiredActor::InvokingUser => Actor::InvokingUser,
             RequiredActor::WorkspaceOwner => Actor::WorkspaceOwner,
         },
+        tool: action.call_path.clone(),
+        provider: action.provider_label.clone(),
         deadline_at: timestamp(action.deadline_at_unix_nanos),
         run_status_url: human_interface.page_url(&action.run_status_path),
     }

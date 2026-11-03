@@ -151,6 +151,11 @@ pub struct RequiredAction {
     pub deadline_at_unix_nanos: i64,
     /// Stable, non-secret root-relative Reef path. Adapters resolve the Reef origin.
     pub run_status_path: String,
+    /// The waiting Tool's Call Path; absent when one shared connection request
+    /// spans Invocations of different Tools.
+    pub call_path: Option<String>,
+    /// The waiting Tool's Provider display label; absent once the Provider is removed.
+    pub provider_label: Option<String>,
 }
 
 /// Non-authorizing keyset position in one Run's current action summaries.
@@ -397,6 +402,8 @@ pub(crate) async fn snapshot(
             required_actor,
             deadline_at_unix_nanos: deadline,
             run_status_path: path.clone(),
+            call_path: None,
+            provider_label: None,
         });
     }
     if observer.kind() == PrincipalKind::User && observer == &run.principal {
@@ -415,11 +422,54 @@ pub(crate) async fn snapshot(
                     required_actor: RequiredActor::InvokingUser,
                     deadline_at_unix_nanos: deadline,
                     run_status_path: path.clone(),
+                    call_path: None,
+                    provider_label: None,
                 });
             }
         }
     }
+    name_waiting_tools(tx, run, now, &mut actions).await?;
     Ok(actions)
+}
+
+/// Names each action's waiting Tool and Provider from the Run's Invocation
+/// evidence, so the assistant can say what is asked without the arguments.
+async fn name_waiting_tools(
+    tx: &mut Transaction<'_>,
+    run: &RunRecord,
+    now: i64,
+    actions: &mut [RequiredAction],
+) -> Result<(), Error> {
+    if actions.is_empty() {
+        return Ok(());
+    }
+    let mut after = None;
+    loop {
+        let (evidence, _total, has_more) = crate::required_actions_repository::page(
+            tx,
+            &run.workspace_id,
+            &run.id,
+            after.as_ref(),
+            now,
+            100,
+        )
+        .await?;
+        let last = evidence.last().map(|row| ActionCursor(row.request.clone()));
+        for row in evidence {
+            if let Some(action) = actions
+                .iter_mut()
+                .find(|action| action.request == row.request)
+            {
+                let call_path = row.shared_call_path();
+                action.call_path = (!call_path.is_empty()).then(|| call_path.to_owned());
+                action.provider_label = row.provider_label;
+            }
+        }
+        if !has_more {
+            return Ok(());
+        }
+        after = last;
+    }
 }
 
 pub(crate) fn revision(actions: &[RequiredAction]) -> [u8; 32] {

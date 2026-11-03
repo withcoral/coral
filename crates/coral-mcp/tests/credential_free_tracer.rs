@@ -1965,9 +1965,15 @@ async fn check_raw_human_action(endpoint: &str, task: &str, version: &ProtocolVe
             update["run_id"].as_str().expect("Run identity")
         )))
     );
+    let action = actions.first().expect("approval action");
+    assert_eq!(action["kind"], "invocation_approval");
     assert_eq!(
-        actions.first().expect("approval action")["kind"],
-        "invocation_approval"
+        action["tool"], "coral.providers.weather.getForecast",
+        "the entry names the waiting Tool"
+    );
+    assert!(
+        action["provider"].is_string(),
+        "the entry names the Tool's Provider: {action}"
     );
     let observed = session
         .tool(

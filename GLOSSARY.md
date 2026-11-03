@@ -909,7 +909,8 @@ outcome appears on the final output page; `has_more` means authored records or t
 The required actions are a current snapshot, not a Run state or Program Run Events. Several can exist for
 concurrent Invocations. Each visible Request appears once, even if several Invocations wait on it. Required actions
 identify an account connection or Invocation approval, its required actor, deadline, opaque non-authorizing request
-identifier, and stable non-secret Run Status Page URL. An Account Connection Request appears only to its invoking User.
+identifier, stable non-secret Run Status Page URL, the waiting Tool's Call Path (absent when one connection request is
+shared by Invocations of different Tools) and its Provider's display name. An Account Connection Request appears only to its invoking User.
 An Agent can see that its own Run requires a Workspace Owner action, but cannot inspect or resolve the request. A
 terminal Run has no required actions. The cursor identifies authored-record delivery progress and the last visible
 required-action revision; internal execution bookkeeping alone is not a meaningful update. Adapters may project a Run

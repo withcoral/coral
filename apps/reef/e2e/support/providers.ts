@@ -708,6 +708,10 @@ export interface RunUpdate {
     kind: 'account_connection' | 'invocation_approval'
     request_id: string
     required_actor: 'invoking_user' | 'workspace_owner'
+    /** The waiting Tool's Call Path; absent when one connection request spans different Tools. */
+    tool?: string
+    /** The waiting Tool's Provider display name. */
+    provider?: string
     /** Exact RFC 3339 UTC date-time text; Date conversion is lossy. */
     deadline_at: string
     run_status_url: string
