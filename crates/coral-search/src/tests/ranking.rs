@@ -10,7 +10,7 @@
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 use super::{TestModules, organization_user};
-use crate::{SearchPage, SearchQuery, SearchRequest};
+use crate::{SearchQuery, SearchRequest};
 
 const USER: &str = "user:search-ranking";
 
@@ -112,13 +112,6 @@ async fn catalog() -> (TestModules, AuthenticatedPrincipal, WorkspaceId) {
     (modules, principal, workspace)
 }
 
-fn paths(page: &SearchPage) -> Vec<&str> {
-    page.hits()
-        .iter()
-        .map(|item| item.call_path().as_str())
-        .collect()
-}
-
 #[tokio::test]
 async fn each_query_ranks_its_most_relevant_entity_first() {
     let (modules, principal, workspace) = catalog().await;
@@ -158,19 +151,10 @@ async fn each_query_ranks_its_most_relevant_entity_first() {
     ];
     let mut misranked = Vec::new();
     for (query, expected, most_above, reason) in cases {
-        let page = modules
-            .search
-            .search(
-                &principal,
-                &workspace,
-                &SearchRequest::query(SearchQuery::parse(query).unwrap()),
-            )
-            .await
-            .unwrap();
-        let ranked = paths(&page);
+        let ranked = ranked(&modules, &principal, &workspace, query).await;
         if ranked
             .iter()
-            .position(|path| *path == expected)
+            .position(|path| path == expected)
             .is_none_or(|position| position > most_above)
         {
             misranked.push(format!("{query}: {reason}; order {ranked:?}"));
@@ -283,6 +267,7 @@ async fn a_saved_function_between_two_tools_follows_both_when_it_is_weak() {
     );
 }
 
+/// The Call Paths of the first page for `query`, in rank order.
 async fn ranked(
     modules: &TestModules,
     principal: &AuthenticatedPrincipal,
@@ -298,5 +283,8 @@ async fn ranked(
         )
         .await
         .unwrap();
-    paths(&page).into_iter().map(str::to_string).collect()
+    page.hits()
+        .iter()
+        .map(|item| item.call_path().as_str().to_string())
+        .collect()
 }

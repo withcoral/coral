@@ -308,9 +308,10 @@ impl EntityRetriever for ToolRetriever {
 /// Whether a ranked Tool is a strong match, by the Tool retriever's own
 /// rule: a field holds the query's words in order, the query names its
 /// Provider, or its name and title start words with at least half of the
-/// query's content words, as the statement's name score counts prefixes. A
-/// Tool that meets the query only through its description, its schema text,
-/// a near-spelling or a minority of its words is weak.
+/// query's content words, as the statement's name score counts prefixes. So
+/// a Tool of an unnamed Provider whose name and title start fewer than half
+/// of those words, and that holds them in order in no field, is weak however
+/// often its description, schema text or a near-spelling meets the query.
 fn strong_tool(plan: &QueryPlan, matched: &repository::RowMatch, named: bool) -> bool {
     let words = plan.content_word_count();
     matched.phrase_points > 0

@@ -158,26 +158,17 @@ struct RankedRow {
     provider_id: Option<String>,
     tool_key: Option<String>,
     saved_function_id: Option<String>,
-    phrase_points: i64,
-    qualified_name: String,
-    title: String,
-}
-
-impl RankedRow {
-    fn matched(&self) -> RowMatch {
-        RowMatch {
-            phrase_points: self.phrase_points,
-            name: self.qualified_name.clone(),
-            title: self.title.clone(),
-        }
-    }
+    #[sqlx(flatten)]
+    matched: RowMatch,
 }
 
 /// What a ranked row's statement saw that its retriever's strong-match rule
 /// reads: the phrase points the statement ordered by first, and the row's
 /// name and title. No score leaves the retriever.
+#[derive(sqlx::FromRow)]
 pub(super) struct RowMatch {
     pub(super) phrase_points: i64,
+    #[sqlx(rename = "qualified_name")]
     pub(super) name: String,
     pub(super) title: String,
 }
@@ -256,7 +247,6 @@ pub(super) async fn rank_tools(
     let entities = rows
         .into_iter()
         .map(|row| {
-            let matched = row.matched();
             let (Some(provider_id), Some(tool_key)) = (row.provider_id, row.tool_key) else {
                 return Err(RetrievalError::Corrupt("a Tool row has no owner keys"));
             };
@@ -266,7 +256,7 @@ pub(super) async fn rank_tools(
                 tool_key: ToolKey::parse(&tool_key)
                     .map_err(|_invalid| RetrievalError::Corrupt("invalid Tool Key"))?,
                 call_path: call_path(&row.call_path)?,
-                matched,
+                matched: row.matched,
             })
         })
         .collect::<Result<_, RetrievalError>>()?;
@@ -293,7 +283,6 @@ pub(super) async fn rank_functions(
     let entities = rows
         .into_iter()
         .map(|row| {
-            let matched = row.matched();
             let saved_function_id = row.saved_function_id.ok_or(RetrievalError::Corrupt(
                 "a Saved Function row has no function id",
             ))?;
@@ -301,7 +290,7 @@ pub(super) async fn rank_functions(
                 saved_function_id: SavedFunctionId::parse(&saved_function_id)
                     .map_err(|_invalid| RetrievalError::Corrupt("invalid Saved Function id"))?,
                 call_path: call_path(&row.call_path)?,
-                matched,
+                matched: row.matched,
             })
         })
         .collect::<Result<_, RetrievalError>>()?;
