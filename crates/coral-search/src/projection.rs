@@ -1,7 +1,7 @@
 //! Safe discovery responses: what discovery found, as the result types
-//! coral-catalog declares for `coral.workspace.search`. MCP `search` and
-//! `describe` return the same types, and Task history retains them as JSON,
-//! so no surface can show a field another does not.
+//! coral-catalog declares for `coral.workspace.search`. The `search` and
+//! `describe` records Task history retains hold the same types as JSON, so
+//! no surface can show a field another does not.
 use crate::{
     ApprovalRequirement, AuthoringDescription, Discovery, ExactAuthoringDescription, ExactLookup,
     RetrieverState, RetrieverStatus, SearchHit, SearchPage,

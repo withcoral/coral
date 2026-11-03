@@ -9,18 +9,39 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
 use coral_run::RUN_TIMEOUT_MAX_MS;
-use coral_search::SEARCH_DEFAULT_LIMIT;
 use coral_task::{TASK_FEEDBACK_MAX_CHARS, TASK_INTENT_MAX_CHARS};
 
 const TASK_ID_DESCRIPTION: &str = "The task_id from start_task.";
 const RUN_ID_DESCRIPTION: &str = "The run_id from exec.";
 const CALL_INTENT_DESCRIPTION: &str = "Why this call is needed, in one short phrase.";
-const DESCRIBE_INTENT_DESCRIPTION: &str =
-    "What the search result did not show that you need from this declaration.";
 const FUNCTION_PATH_DESCRIPTION: &str =
     "Dotted path under coral.functions, without that prefix, such as reports.summarize.";
-const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible provider tools and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when it is `complete`. Call describe first when it is not, or before a write. When the user names the service, pass its namespace in `provider`, or `coral.workspace` for the Built-in Provider's tools. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows provider tools to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
 const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
+/// `exec`'s description, with the one example of discovery an agent reads.
+/// A test runs its first Program against a real `coral.workspace.search` and
+/// saves it as a Saved Function to type-check it, so keep that Program whole.
+pub(crate) const EXEC_TOOL_DESCRIPTION: &str = r#"Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.
+
+Find provider tools and Saved Functions with `coral.workspace.search`. A `query` returns `hits`. Call a read from a hit when it is `complete`. Otherwise, and before a write, pass its `call_path` in `paths` to read its declaration. A path that names nothing comes back in `missing`, with `suggestions`.
+```ts
+const { data } = await coral.workspace.search({ query: "list pull requests", limit: 5 });
+const paths = data.hits.filter((hit) => !hit.complete).map((hit) => hit.call_path);
+const read = paths.length ? (await coral.workspace.search({ paths })).data : undefined;
+return {
+  hits: data.hits.map((hit) => [hit.call_path, hit.signature_line, hit.description_snippet]),
+  declarations: read?.descriptions.map((description) => description.typescript_declaration),
+  missing: read?.missing.map((path) => [path.call_path, path.suggestions]),
+};
+```
+Then call it in a later Program by its literal Call Path:
+```ts
+return (await coral.providers.github.pulls.list({ owner: "acme", repo: "api" })).data.map((pull) => pull.title);
+```"#;
+
+// Claude Code 2.1.296 keeps the first 4096 characters of a tool's
+// description. `exec` stays within 2048, the budget the server instructions
+// keep, so a client with a smaller limit still reads the example whole.
+const _: () = assert!(EXEC_TOOL_DESCRIPTION.len() <= 2048);
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
 pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 30_000;
 pub(crate) const DEFAULT_WAIT_MS: u64 = 0;
@@ -47,72 +68,6 @@ pub(crate) struct StartTaskArguments {
 
 impl ToolArguments for StartTaskArguments {
     const NAME: &'static str = "start_task";
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(deny_unknown_fields)]
-pub(crate) struct SearchArguments {
-    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
-    pub(crate) task_id: String,
-    #[schemars(
-        length(min = 1, max = TASK_INTENT_MAX_CHARS),
-        description = CALL_INTENT_DESCRIPTION
-    )]
-    pub(crate) intent: String,
-    #[schemars(
-        length(min = 1),
-        description = format!("Keywords for the capability you need, such as `list pull requests`. Omit only to page through visible items, {SEARCH_DEFAULT_LIMIT} per page.")
-    )]
-    pub(crate) query: Option<String>,
-    #[schemars(
-        length(min = 1, max = 128),
-        regex(pattern = r"^([A-Za-z_$][A-Za-z0-9_$]*|coral\.workspace)$"),
-        description = "Namespace from coral.providers.<namespace>.<tool>, as listed by start_task, or coral.workspace for the Built-in Provider's tools. Omit unless the user names the service."
-    )]
-    pub(crate) provider: Option<String>,
-    #[schemars(
-        range(min = 1, max = 50),
-        extend("default" = SEARCH_DEFAULT_LIMIT),
-        description = format!("Maximum results. Default {SEARCH_DEFAULT_LIMIT}.")
-    )]
-    pub(crate) limit: Option<u16>,
-    #[schemars(
-        length(min = 1),
-        description = "The next_cursor from the previous page, with the same query and provider."
-    )]
-    pub(crate) cursor: Option<String>,
-}
-
-impl ToolArguments for SearchArguments {
-    const NAME: &'static str = "search";
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(deny_unknown_fields)]
-pub(crate) struct DescribeArguments {
-    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
-    pub(crate) task_id: String,
-    #[schemars(
-        length(min = 1, max = TASK_INTENT_MAX_CHARS),
-        description = DESCRIBE_INTENT_DESCRIPTION
-    )]
-    pub(crate) intent: String,
-    #[schemars(
-        length(min = 1),
-        description = "Complete Call Path: coral.providers.<namespace>.<tool>, coral.workspace.<tool> or coral.functions.<path>."
-    )]
-    pub(crate) path: String,
-    #[schemars(
-        length(max = 32),
-        description = "Type names from this path's declaration. Returns those types whole instead of the inputs and the function."
-    )]
-    pub(crate) types: Option<Vec<String>>,
-}
-
-impl ToolArguments for DescribeArguments {
-    const NAME: &'static str = "describe";
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -330,14 +285,6 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
             "Start one Coral Task for one unit of user work.",
             mutation_annotations("Start Task", false, false),
         )),
-        always_loaded(tool::<SearchArguments, coral_catalog::SearchResult>(
-            SEARCH_TOOL_DESCRIPTION,
-            read_annotations("Search"),
-        )),
-        always_loaded(tool::<DescribeArguments, coral_catalog::Description>(
-            "Describe one exact Call Path: the inputs and result types needed to call it. Result types beyond a size limit appear as field names only or are not shown; describe the same path with types to see them. To compare candidates, call describe for each of them in parallel.",
-            read_annotations("Describe"),
-        )),
         tool::<SaveFunctionArguments, crate::projection::SavedFunctionResult<'_>>(
             "Atomically create or replace one Saved Function. Programs call it as `coral.functions.<path>(...)`.",
             mutation_annotations("Save Function", true, false),
@@ -348,7 +295,7 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
         ),
         always_loaded(
             tool::<ExecArguments, crate::projection::RunUpdateResult<'_>>(
-                "Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.",
+                EXEC_TOOL_DESCRIPTION,
                 mutation_annotations("Execute Program", true, true),
             ),
         ),
@@ -485,11 +432,9 @@ mod tests {
             .collect();
         let expected = [
             ("start_task", Some(json!(true))),
-            ("search", Some(json!(true))),
             ("exec", Some(json!(true))),
             ("wait", Some(json!(true))),
             ("end_task", Some(json!(true))),
-            ("describe", Some(json!(true))),
             ("save_function", None),
             ("delete_function", None),
             ("cancel", None),
@@ -498,45 +443,26 @@ mod tests {
         assert_eq!(advertised, BTreeMap::from(expected));
     }
 
-    /// The `types` schema caps the item count; the per-name byte limit is
-    /// domain-validated and not advertised.
+    /// Task history keeps the `search` and `describe` responses agents
+    /// received before discovery moved into Programs, and Reef's Activity
+    /// detail parses them by these keys; a Reef test reads the same two
+    /// files. No tool advertises them now, so the schemas come from the
+    /// types Task history retains. A difference rewrites the file and fails:
+    /// review the diff, change Reef's parser to match, and commit both.
     #[test]
-    fn describe_types_schema_caps_the_item_count() {
-        let tools = tools();
-        let describe = tools
-            .iter()
-            .find(|tool| tool.name == "describe")
-            .expect("advertised tool");
-        let types = describe
-            .input_schema
-            .get("properties")
-            .and_then(|properties| properties.get("types"))
-            .expect("types schema");
-        assert_eq!(
-            types.get("maxItems").and_then(Value::as_u64),
-            u64::try_from(coral_search::DESCRIBE_TYPES_MAX).ok()
-        );
-    }
-
-    /// Reef's Activity detail parses retained `search` and `describe`
-    /// responses by these keys, and a Reef test reads the same two files. A
-    /// difference rewrites the file and fails: review the diff, change Reef's
-    /// parser to match, and commit both.
-    #[test]
-    fn search_and_describe_output_schemas_match_their_snapshots() {
-        let tools = tools();
+    fn retained_search_and_describe_schemas_match_their_snapshots() {
         let mut changed = Vec::new();
-        for name in ["search", "describe"] {
-            let tool = tools
-                .iter()
-                .find(|tool| tool.name == name)
-                .expect("advertised tool");
-            let advertised = Value::Object(
-                tool.output_schema
-                    .as_deref()
-                    .expect("advertised output schema")
-                    .clone(),
-            );
+        for (name, schema) in [
+            (
+                "search",
+                crate::projection::output_schema::<coral_catalog::SearchResult>(),
+            ),
+            (
+                "describe",
+                crate::projection::output_schema::<coral_catalog::Description>(),
+            ),
+        ] {
+            let retained = Value::Object(schema);
             let path = format!(
                 "{}/tests/output-schema/{name}.json",
                 env!("CARGO_MANIFEST_DIR")
@@ -544,8 +470,8 @@ mod tests {
             let snapshot = std::fs::read_to_string(&path)
                 .ok()
                 .and_then(|text| serde_json::from_str::<Value>(&text).ok());
-            if snapshot.as_ref() != Some(&advertised) {
-                let mut text = serde_json::to_string_pretty(&advertised).expect("schema as JSON");
+            if snapshot.as_ref() != Some(&retained) {
+                let mut text = serde_json::to_string_pretty(&retained).expect("schema as JSON");
                 text.push('\n');
                 std::fs::write(&path, text).expect("write the output schema snapshot");
                 changed.push(path);
@@ -553,7 +479,7 @@ mod tests {
         }
         assert!(
             changed.is_empty(),
-            "the advertised output schema differs from its snapshot; rewrote {changed:?}"
+            "the retained output schema differs from its snapshot; rewrote {changed:?}"
         );
     }
 

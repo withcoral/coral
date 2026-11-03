@@ -1,10 +1,6 @@
-//! Search Hits and complete public TypeScript descriptions, not authoritative Provider
-//! schemas. coral-search builds both as the result types coral-catalog declares
-//! for `coral.workspace.search`, so MCP, the Built-in Tool and Task history
-//! show the same fields.
-use coral_catalog::{Description, SearchResult};
+//! The Saved Function a `save_function` call saved: its public TypeScript
+//! declaration and diagnostics.
 use coral_functions::SavedFunction;
-use coral_search::{ExactAuthoringDescription, SearchPage};
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -19,16 +15,6 @@ pub(crate) struct SavedFunctionResult<'a> {
     declaration: &'a str,
     diagnostics: Vec<Diagnostic>,
     diagnostics_truncated: bool,
-}
-
-pub(crate) fn search(page: &SearchPage) -> SearchResult {
-    coral_search::projection::search_result(page)
-}
-
-/// A Saved Function's detail is absent when `describe` returned only the
-/// `types` it was asked for.
-pub(crate) fn exact_description(exact: &ExactAuthoringDescription) -> Description {
-    coral_search::projection::description(exact)
 }
 
 pub(crate) fn saved_function(

@@ -62,13 +62,14 @@ async fn content_only_clients_read_results_and_actionable_rejections() {
             .tool("start_task", json!({"intent":"Read results as text"}))
             .await;
         let task = text_json(&started)["task_id"].clone();
-        let searched = session
+        assert!(task.is_string(), "{version}: {started}");
+        let continued = session
             .tool(
-                "search",
-                json!({"task_id":task, "intent":"Continue from the text"}),
+                "exec",
+                json!({"task_id":task, "intent":"Continue from the text", "program":"return 1;"}),
             )
             .await;
-        assert_eq!(searched["isError"], false, "{version}: {searched}");
+        assert_eq!(continued["isError"], false, "{version}: {continued}");
         // The alias rule applies once the aliased Saved Function exists.
         let saved = session
             .tool(
@@ -298,29 +299,41 @@ async fn run_tool(session: &RawSession, tool: &str, run: &Value) -> Value {
     session.tool(tool, arguments).await
 }
 
-/// A disabled Tool and a path that never existed give one result.
+/// A disabled Tool and a path that never existed are both missing, and no
+/// suggestion names the disabled one.
 async fn check_concealed_descriptions(
     session: &RawSession,
     task: &Value,
     version: &ProtocolVersion,
 ) {
-    let describe = |path: &str| {
-        session.tool(
-            "describe",
-            json!({"task_id":task, "intent":"Describe one exact path", "path":path}),
+    let read = session
+        .program_value(
+            task.as_str().expect("Task id"),
+            r#"return (await coral.workspace.search({
+  paths: ["coral.providers.gmail.send_message", "coral.providers.weather.lostWorker"],
+})).data;"#,
         )
-    };
-    let absent = describe("coral.providers.gmail.send_message").await;
-    let concealed = describe("coral.providers.weather.lostWorker").await;
-    assert_eq!(absent["isError"], true, "{version}");
+        .await;
+    assert_eq!(read["descriptions"], json!([]), "{version}: {read}");
+    let missing = read["missing"].as_array().expect("missing paths");
     assert_eq!(
-        text_json(&absent)["code"],
-        "authoring_description_not_found",
-        "{version}"
-    );
-    assert_eq!(
-        untraced_result(&concealed),
-        untraced_result(&absent),
+        missing
+            .iter()
+            .map(|path| path["call_path"].as_str().expect("Call Path"))
+            .collect::<Vec<_>>(),
+        [
+            "coral.providers.gmail.send_message",
+            "coral.providers.weather.lostWorker"
+        ],
         "{version}: a disabled Tool looks absent"
     );
+    for path in missing {
+        assert!(
+            !path["suggestions"]
+                .as_array()
+                .expect("suggestions")
+                .contains(&json!("coral.providers.weather.lostWorker")),
+            "{version}: no suggestion names the disabled Tool: {read}"
+        );
+    }
 }

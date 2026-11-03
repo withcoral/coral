@@ -42,48 +42,34 @@ async fn search_defaults_return_ten_visible_descriptions(
         assert_ne!(saved.get("isError"), Some(&json!(true)));
     }
     index.reconcile().await;
-    let exact = session
-        .tool(
-            "describe",
-            json!({
-                "task_id":task, "intent":"Read saved source and advisory diagnostics",
-                "path":"coral.functions.optionalDefaults.item0"
-            }),
+    // Discovery runs in a Program, so these defaults are coral.workspace.search's.
+    let found = session
+        .program_value(
+            task,
+            r#"const exact = await coral.workspace.search({ paths: ["coral.functions.optionalDefaults.item0"] });
+const pages = [];
+for (const limit of [undefined, 3, 12]) {
+  pages.push((await coral.workspace.search({ query: "optionalDefaults", limit })).data);
+}
+return { exact: exact.data.descriptions[0], pages };"#,
         )
         .await;
+    let found = &found;
+    let exact = &found["exact"];
     assert!(
-        !exact
-            .pointer("/structuredContent/diagnostics")
-            .and_then(Value::as_array)
+        !exact["diagnostics"]
+            .as_array()
             .expect("advisory diagnostics")
             .is_empty()
     );
     assert!(
-        exact
-            .pointer("/structuredContent/source")
-            .and_then(Value::as_str)
+        exact["source"]
+            .as_str()
             .expect("saved source")
             .contains("advisory")
     );
-    let mut default_page = None;
-    for (limit, count) in [
-        (None, 10),
-        (Some(Value::Null), 10),
-        (Some(json!(3)), 3),
-        (Some(json!(12)), 12),
-    ] {
-        let mut arguments = json!({
-            "task_id":task, "intent":"Observe the search result limit", "query":"optionalDefaults"
-        });
-        if let Some(limit) = limit {
-            arguments
-                .as_object_mut()
-                .expect("arguments")
-                .insert("limit".into(), limit);
-        }
-        let result = session.tool("search", arguments).await;
-        assert_ne!(result.get("isError"), Some(&json!(true)));
-        let page = result.get("structuredContent").expect("search page");
+    let pages = found["pages"].as_array().expect("pages");
+    for (page, count) in pages.iter().zip([10, 3, 12]) {
         for hit in page["hits"].as_array().expect("hits") {
             assert!(hit.get("source").is_none());
             assert!(hit.get("diagnostics").is_none());
@@ -94,24 +80,11 @@ async fn search_defaults_return_ten_visible_descriptions(
                     .contains("number")
             );
         }
-        assert_eq!(
-            page.get("hits")
-                .and_then(Value::as_array)
-                .expect("hits")
-                .len(),
-            count
-        );
+        assert_eq!(page["hits"].as_array().expect("hits").len(), count);
         assert_eq!(
             page.get("next_cursor").is_some_and(Value::is_string),
             count < 12
         );
-        if count == 10 {
-            if let Some(expected) = &default_page {
-                assert_eq!(page, expected, "omission and null return the same page");
-            } else {
-                default_page = Some(page.clone());
-            }
-        }
     }
     for index in 0..12 {
         let deleted = session
@@ -272,7 +245,6 @@ fn property<'a>(tools: &'a [Value], name: &str, field: &str) -> &'a Value {
 
 fn check_schema(tools: &[Value]) {
     for (name, field, default) in [
-        ("search", "limit", 10),
         ("exec", "run_timeout_ms", 900_000),
         ("exec", "wait_ms", 30_000),
         ("wait", "wait_ms", 0),

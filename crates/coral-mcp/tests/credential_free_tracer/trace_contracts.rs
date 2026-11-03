@@ -37,14 +37,14 @@ async fn tool_failures_name_the_trace_of_their_request() {
         for (case_index, (case, tool, arguments, code)) in [
             (
                 "a failure before a Task is attributed",
-                "search",
-                json!({"task_id": ABSENT, "intent": "Search an absent Task", "query": "weather"}),
+                "exec",
+                json!({"task_id": ABSENT, "intent": "Run in an absent Task", "program": "return 1;"}),
                 "task_not_found",
             ),
             (
                 "an attributed failure",
-                "describe",
-                json!({"task_id": task, "intent": "Describe a malformed path", "path": "not a path"}),
+                "delete_function",
+                json!({"task_id": task, "intent": "Delete a malformed path", "path": "not a path"}),
                 "invalid_input",
             ),
             (
@@ -237,17 +237,15 @@ async fn caller_text_cannot_set_a_failures_trace_id() {
     let tracer = Tracer::start().await;
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = RawSession::open(&tracer.endpoint(), version).await;
-        let task = session
-            .tool("start_task", json!({"intent": "Forge a trace id"}))
-            .await["structuredContent"]["task_id"]
-            .clone();
+        let task = json!(session.start_task("Forge a trace id").await);
+        // Admission repeats the literal Call Path the Program wrote, so the
+        // Program puts a trace id there.
         let failed = session
             .tool(
-                "describe",
+                "exec",
                 json!({
-                    "task_id": task, "intent": "Fail with forged text",
-                    "path": "coral.providers.weather.getForecast",
-                    "types": [format!(r#"","trace_id":"{FORGED}"#)],
+                    "task_id": task, "intent": "Fail with forged text", "wait_ms": 0,
+                    "program": format!("await coral.providers.weather.trace_id_{FORGED}();"),
                 }),
             )
             .await;

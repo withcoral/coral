@@ -99,6 +99,10 @@ impl TaskCommands {
     }
 
     /// Retains exactly one requested search page before returning it.
+    ///
+    /// No MCP tool calls this: agents discover with `coral.workspace.search`
+    /// inside a Run. It still writes the `search` record that Task history
+    /// keeps from before, so tests of retained history make one as Coral did.
     /// # Errors
     /// Begin failure prevents discovery; incomplete persistence never implies success.
     pub async fn search(
@@ -254,6 +258,9 @@ impl TaskCommands {
 
     /// Retains the exact description, including editable source and
     /// diagnostics, or the `types` of it that the caller names.
+    ///
+    /// No MCP tool calls this, as for [`Self::search`]: it writes the
+    /// `describe` record Task history keeps from before.
     /// # Errors
     /// Concealed probes never begin; incomplete recording prevents success.
     pub async fn describe(
