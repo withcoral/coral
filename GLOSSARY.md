@@ -34,8 +34,8 @@ the User created them or provisioned their Provider Accounts. _Avoid_: User dele
 reactivation, Agent disablement
 
 **OAuth Client**: Client software that a User signs in to Coral through, identified by a DCR client ID or a CIMD URL.
-A public client proves only that it holds the redirect and the PKCE verifier. A confidential client also proves that it
-holds the secret issued when it registered. A client grants no authority, and its secret is never a Coral credential.
+A public client proves only that it holds the PKCE verifier for a code issued to its redirect. A confidential client
+also proves that it holds the secret issued when it registered. A client grants no authority, and its secret is never a Coral credential.
 _Avoid_: Agent Registration, client credential, app
 
 **Refresh Grant**: The durable right one sign-in gives one OAuth Client to obtain new User access tokens without
