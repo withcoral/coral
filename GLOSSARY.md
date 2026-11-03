@@ -556,8 +556,9 @@ Tool arguments for review on the Approvals Page and the Run Status Page independ
 Invocation with `approval_expired`; declining settles it with `approval_declined`. The first durable terminal decision
 wins. A later decision returns that result without changing it. If policy becomes `disabled`, Coral settles the
 Invocation with `tool_disabled`; if it becomes `enabled`, Coral closes the Request and continues after its other
-checks. A later Invocation can create a new request. The invoking User decides it on the Run Status Page, which the
-assistant's link opens; Reef remains available for every Request. An active browser is not required, and existing Requests
+checks. A later Invocation can create a new request. The person the Request names decides it on the Run Status Page:
+the invoking User for a Run a User invoked, which the assistant's link opens, or a Workspace Owner for a Run an Agent
+invoked; Reef remains available for every Request. An active browser is not required, and existing Requests
 survive a temporary Reef outage. _Avoid_: per-Invocation approval URL, Program pause payload
 
 **Approvals Page**: The Workspace page in Reef where a person decides the Approval Requests waiting on them and reads
