@@ -2874,10 +2874,6 @@ async fn create_workspace(
         .clone()
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one fixture publishes the tracer Provider and sets each Tool's policy"
-)]
 async fn publish_tools(
     providers: &ProviderModule,
     policies: &ToolPolicyModule,
