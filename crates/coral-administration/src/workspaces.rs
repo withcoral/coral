@@ -5,8 +5,9 @@
 //! then writes "Coral" at `coral.workspace` with the creator as its actor.
 //! The workflow commits only when both succeed, so a failure leaves neither.
 //!
-//! Per ADR 0006, the workflow notifies Universal Search after the commit. The
-//! reconcile task converges what a lost notification missed.
+//! Per ADR 0017, the workflow notifies Universal Search after the commit,
+//! through the mapping every Provider change shares. The reconcile task
+//! converges what a lost notification missed.
 use std::sync::Arc;
 
 use coral_db::Database;
@@ -60,13 +61,12 @@ impl WorkspaceWorkflow {
             .workspaces
             .create_in_transaction(&mut transaction, context, display_name)
             .await?;
-        let provider = self
+        let installed = self
             .providers
             .install_builtin_in_transaction(&mut transaction, context, workspace.id())
             .await?;
         transaction.commit().await?;
-        self.search
-            .index_active_generation(workspace.id().clone(), provider.id().clone());
+        crate::providers::notify(&self.search, installed);
         Ok(workspace)
     }
 }

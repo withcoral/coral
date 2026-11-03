@@ -205,11 +205,32 @@ Use these signals together to separate database admission, compiler saturation, 
 
 ### `[auth.session]`
 
-| Key                        | Description                                                                                                                  | Required                                                                                                   | Default                     |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------- |
-| `signing_key_env`          | Name of the environment variable holding the key used to sign Coral's auth server tokens. Must be a base64 PKCS#8 P-256 key. | No, but if `[auth]` is present the environment variable must exist or `signing_key_file` must be defined   | `CORAL_SESSION_SIGNING_KEY` |
-| `signing_key_file`         | File path containing the key used to sign Coral's auth server tokens. Must be a PKCS#8 P-256 key in DER format.              | Yes, if `[auth]` section is present and if the environment variable defined in `signing_key_env` is absent | N/A                         |
-| `access_token_ttl_seconds` | Duration of Coral's access tokens, in seconds.                                                                               | No                                                                                                         | `2592000` (720h)            |
+| Key                         | Description                                                                                                                  | Required                                                                                                   | Default                     |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------- |
+| `signing_key_env`           | Name of the environment variable holding the key used to sign Coral's auth server tokens. Must be a base64 PKCS#8 P-256 key. | No, but if `[auth]` is present the environment variable must exist or `signing_key_file` must be defined   | `CORAL_SESSION_SIGNING_KEY` |
+| `signing_key_file`          | File path containing the key used to sign Coral's auth server tokens. Must be a PKCS#8 P-256 key in DER format.              | Yes, if `[auth]` section is present and if the environment variable defined in `signing_key_env` is absent | N/A                         |
+| `access_token_ttl_seconds`  | Duration of Coral's access tokens, in seconds.                                                                               | No                                                                                                         | `2592000` (720h)            |
+| `refresh_token_ttl_seconds` | How long a client can refresh after one sign-in, in seconds. Refresh never extends it.                                       | No                                                                                                         | `2592000` (720h)            |
+
+#### Refresh tokens
+
+Coral gives a refresh token with each access token to a client that lists `refresh_token` in its `grant_types`. This applies to registered clients and to clients with a Client ID Metadata Document. Other clients get access tokens only.
+
+- **Lifetime.** Your users can refresh for `refresh_token_ttl_seconds` after they sign in. A refresh does not extend this time. When it ends, your users must sign in again.
+- **Single use.** Each refresh returns a new refresh token, and the old one stops working. If a client sends a used token again, refresh stops for that sign-in, also for the newest token. Your clients must not refresh with the same token twice at the same time. If a refresh response is lost, the user may have to sign in again.
+- **Current access.** Each refresh checks that the user is still an enabled member of the organization. For a workspace token, it also checks that the user is still a member of the workspace. A refresh does not contact your OIDC issuer. Changes you make at the issuer apply at the next sign-in. If you remove a membership, refresh stops for good, even if the user joins again.
+- **Revocation.** To revoke a refresh token, send `token` and `client_id` to `<listeners.auth.public_url>/oauth/revoke`. Revocation stops refresh only. Access tokens that Coral already issued work until they expire.
+- **Storage.** Coral stores only a SHA-256 digest of each refresh token, in its database. Refresh tokens survive restarts. If you run more than one Coral process, give them the same database so that each process can refresh any token.
+
+#### Web sessions
+
+The web interface keeps your users signed in through a web session that Coral holds. At sign-in, the web interface gives its refresh token to Coral and keeps only a random session handle in a signed cookie. On each request, Coral mints a new access token for that session, which lasts at most five minutes. Your users stay signed in when an access token expires.
+
+- **Lifetime.** A web session lasts `CORAL_WEB_SESSION_MAX_AGE_SECONDS` (default 2592000, 30 days) or until `refresh_token_ttl_seconds` ends, whichever comes first, and never longer than one year. Activity does not extend it. To keep users signed in longer, increase both values. To sign them out sooner, decrease the value that limits the session, or both.
+- **Several processes.** Every web interface process reads sessions from Coral. You do not need shared storage for the web interface itself. Give every Coral process the same database and the same session signing key, and every web interface process the same `CORAL_WEB_SESSION_SECRET`, so that each process can finish a sign-in and serve a session that another one started.
+- **Sign-out.** Signing out ends the session and its refresh token at Coral, and a copied session cookie stops working. Access tokens that Coral minted for the session before sign-out work until they expire, within five minutes.
+- **Sign-out when Coral does not answer.** The browser still signs out. The next visit to the sign-in page finishes the sign-out at Coral. Until then, a copied session cookie still works, at most until the session would end.
+- **Outages.** If Coral does not answer, the web interface shows an error and keeps the session. Your users stay signed in when Coral recovers.
 
 ### `[auth.provider]`
 

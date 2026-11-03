@@ -1,6 +1,6 @@
-//! Bounded summary-only request evidence. Call only after authorizing the exact Run
-//! in the same snapshot. Shared connection waiters collapse before the page limit.
-use crate::{Error, RequiredActionRequest, RunId};
+//! Summary-only request evidence. Pages are bounded; shared connection waiters
+//! collapse before the page limit. Call only after authorizing in the same snapshot.
+use crate::{Error, RequiredActionKind, RequiredActionRequest, RunId};
 use coral_db::Transaction;
 use coral_db::{col, column};
 use coral_workspace::WorkspaceId;
@@ -160,29 +160,70 @@ pub(crate) async fn next_authority_deadline(
     Ok(actor)
 }
 
-/// Counts identities through the same current-request relation as exact Run summaries.
-/// No exact payloads or per-Run enumeration leave this repository.
+/// Each current request once, through the same current-request relation as
+/// exact Run summaries.
+fn distinct_requests(authority: &coral_workspace::HistoryAuthority, now: i64) -> SelectStatement {
+    Query::select()
+        .from_subquery(
+            requests(&authorized_candidates(authority, now)),
+            Alias::new("requests"),
+        )
+        .columns(["workspace", "kind", "request"].map(Alias::new))
+        .distinct()
+        .to_owned()
+}
+
+fn kind_label(kind: RequiredActionKind) -> &'static str {
+    match kind {
+        RequiredActionKind::Approval => RequiredActionRequest::APPROVAL,
+        RequiredActionKind::AccountConnection => RequiredActionRequest::CONNECTION,
+    }
+}
+
+/// Counts current requests in SQL, of one kind or every kind.
 pub(crate) async fn count(
     tx: &mut Transaction<'_>,
     authority: &coral_workspace::HistoryAuthority,
+    kind: Option<RequiredActionKind>,
     now: i64,
 ) -> Result<i64, Error> {
-    let candidates = authorized_candidates(authority, now);
-    let identities = Query::select()
-        .from_subquery(requests(&candidates), Alias::new("requests"))
-        .columns(["workspace", "kind", "request"].map(Alias::new))
-        .distinct()
-        .to_owned();
-    let (count,): (i64,) = tx
-        .fetch_optional(
-            Query::select()
-                .expr(Expr::col(Alias::new("request")).count())
-                .from_subquery(identities, Alias::new("identities"))
+    let mut query = Query::select();
+    query
+        .expr(Expr::col(Alias::new("request")).count())
+        .from_subquery(distinct_requests(authority, now), Alias::new("identities"));
+    if let Some(kind) = kind {
+        query.and_where(col("identities", "kind").eq(kind_label(kind)));
+    }
+    let (count,): (i64,) = tx.fetch_optional(query).await?.ok_or(Error::RunNotFound)?;
+    Ok(count)
+}
+
+/// Every current request's identity, in a stable order, for the fingerprint of
+/// each kind. This reads the caller's whole pending set, unlike the bounded
+/// pages here, and returns identities alone, with no exact payload.
+pub(crate) async fn current_requests(
+    tx: &mut Transaction<'_>,
+    authority: &coral_workspace::HistoryAuthority,
+    now: i64,
+) -> Result<Vec<(WorkspaceId, RequiredActionRequest)>, Error> {
+    let rows: Vec<(String, String, String)> = tx
+        .fetch_all(
+            distinct_requests(authority, now)
+                .order_by(Alias::new("workspace"), sea_query::Order::Asc)
+                .order_by(Alias::new("kind"), sea_query::Order::Asc)
+                .order_by(Alias::new("request"), sea_query::Order::Asc)
                 .to_owned(),
         )
-        .await?
-        .ok_or(Error::RunNotFound)?;
-    Ok(count)
+        .await?;
+    rows.into_iter()
+        .map(|(workspace, kind, request)| {
+            Ok((
+                WorkspaceId::parse(&workspace)?,
+                RequiredActionRequest::from_parts(&kind, &request)
+                    .ok_or_else(|| Error::CorruptData("invalid action request".into()))?,
+            ))
+        })
+        .collect()
 }
 
 fn grouped_requests(workspace: &WorkspaceId, run: &RunId, now: i64) -> SelectStatement {
@@ -339,9 +380,11 @@ fn queued_requests(authority: &coral_workspace::HistoryAuthority, now: i64) -> S
 }
 
 /// A page of the queue, most urgent first, after `after` = (deadline, request).
+/// A `kind` keeps that kind alone.
 pub(crate) async fn queue(
     tx: &mut Transaction<'_>,
     authority: &coral_workspace::HistoryAuthority,
+    kind: Option<RequiredActionKind>,
     after: Option<(i64, &RequiredActionRequest)>,
     now: i64,
     limit: u16,
@@ -359,6 +402,9 @@ pub(crate) async fn queue(
         request_deadline: i64,
     }
     let mut window = queued_requests(authority, now);
+    if let Some(kind) = kind {
+        window.and_where(col("queue", "kind").eq(kind_label(kind)));
+    }
     // Seek past the position, not the live row: resolving it cannot move the page.
     if let Some((deadline, request)) = after {
         let (kind, id) = (request.kind(), request.id());

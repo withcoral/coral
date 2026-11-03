@@ -17,7 +17,8 @@ async fn search_and_describe_show_each_builtin_tool_to_the_principals_it_reaches
         .providers
         .install_builtin_in_transaction(&mut transaction, &context, &workspace)
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
 
     let member = organization_user(database.clone(), "user:builtin-member").await;
@@ -103,7 +104,8 @@ async fn the_search_tool_hit_is_not_complete_while_its_line_shows_one_overload()
         .providers
         .install_builtin_in_transaction(&mut transaction, &context, &workspace)
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
     fixture.converge().await;
 

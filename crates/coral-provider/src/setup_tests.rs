@@ -157,7 +157,8 @@ async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
 
     let inspected = harness
         .providers
@@ -361,7 +362,8 @@ async fn update_reviews_saved_configuration_instead_of_new_document_defaults() {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let provider = publication.published_provider().unwrap();
     let replacement = harness
         .providers
@@ -429,7 +431,8 @@ async fn update_reviews_saved_configuration_instead_of_new_document_defaults() {
                 .with_account_setting(CredentialRoute::None),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(result.outcome(), ProviderPublicationOutcome::Succeeded);
 }
 
@@ -561,7 +564,8 @@ async fn protected_update(borrow: bool, route: CredentialRoute) {
             .with_account_grant(grant_id),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let provider = publication.published_provider().unwrap();
     let account_scope = if route == CredentialRoute::Caller {
         AccountScope::User
@@ -637,7 +641,8 @@ async fn protected_update(borrow: bool, route: CredentialRoute) {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(result.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(
         harness
@@ -829,7 +834,8 @@ async fn anonymous_mcp_catalog_still_requires_explicit_configuration_confirmatio
         .providers
         .publish_workspace_provider(&context, publication)
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(published.outcome(), ProviderPublicationOutcome::Succeeded);
     assert!(
         harness
@@ -1360,7 +1366,8 @@ async fn openapi_url_source_is_pinned_once_and_publication_never_refetches() {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     server.verify().await;
 }
@@ -1590,7 +1597,8 @@ async fn mcp_bearer_source_seals_a_credential_that_publication_promotes_to_the_s
             .with_account_grant(grant_id),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let published = publication.published_provider().unwrap();
     assert_eq!(
@@ -1707,7 +1715,8 @@ async fn caller_route_discards_discovery_credentials_without_creating_a_personal
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider = publication.published_provider().unwrap().clone();
     assert!(matches!(
@@ -1841,7 +1850,8 @@ async fn workspace_publication_promotes_the_exact_grant_to_the_shared_account() 
             .with_account_grant(grant_id),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider = publication.published_provider().unwrap().clone();
     let stored = harness
@@ -1922,7 +1932,8 @@ async fn route_none_with_a_sealed_credential_fails_publication_and_scrubs_it() {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Failed);
     assert_eq!(publication.diagnostic().unwrap().code(), "account_required");
     assert!(publication.published_provider().is_none());
@@ -2277,7 +2288,8 @@ async fn a_program_setup_fails_before_any_fetch_or_setup() {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let published = publications(&harness, &owner, workspace.id()).await;
 
     let in_use = harness
@@ -2455,6 +2467,7 @@ async fn published_for_update(
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .expect("a published Provider")
         .clone()
@@ -2729,7 +2742,8 @@ async fn an_mcp_update_takes_the_server_it_reads() {
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let provider = published
         .published_provider()
         .expect("a published Provider");
@@ -3228,7 +3242,8 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
             .with_account_grant(grant_id),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(
         published.outcome(),
         ProviderPublicationOutcome::Succeeded,
@@ -3330,12 +3345,14 @@ async fn publication_replay_returns_the_committed_result_without_a_second_accoun
             publication_request.clone(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let replay = harness
         .providers
         .publish_workspace_provider(&change_context(owner.clone(), 25, '4'), publication_request)
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(first, replay);
     let events = harness
         .providers
@@ -3396,6 +3413,7 @@ async fn compatible_regeneration_discards_temporary_credentials_without_reconnec
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap()
         .clone();
@@ -3422,7 +3440,8 @@ async fn compatible_regeneration_discards_temporary_credentials_without_reconnec
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(result.outcome(), ProviderPublicationOutcome::Succeeded);
     assert!(
         !harness

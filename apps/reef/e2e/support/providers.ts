@@ -966,7 +966,7 @@ export async function openReview(page: Page, paused: RunUpdate, tool: string) {
   const name = `Review coral.workspace.${tool}`
   await page.getByRole('link', { name, exact: true }).click()
   const review = page.getByRole('region', { name, exact: true })
-  await review.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()
+  await review.getByRole('button', { name: 'Approve', exact: true }).waitFor()
   return review
 }
 

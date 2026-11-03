@@ -74,7 +74,7 @@ services:
       CORAL_WEB_AUTH_MODE: required
       CORAL_WEB_PUBLIC_URL: https://<coral-host>
       CORAL_WEB_AUTH_ISSUER: https://auth.<coral-host>
-      CORAL_WEB_SESSION_SECRET: ${CORAL_WEB_SESSION_SECRET} # to encrypt session cookies
+      CORAL_WEB_SESSION_SECRET: ${CORAL_WEB_SESSION_SECRET} # to sign session cookies
 
 volumes:
   coral-state:

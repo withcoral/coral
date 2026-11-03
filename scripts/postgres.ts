@@ -76,6 +76,11 @@ export class LocalPostgres {
           'POSTGRES_PASSWORD=postgres',
           '-p',
           `127.0.0.1:${port}:5432`,
+          // Parallel queries and index builds take Postgres' dynamic shared
+          // memory from /dev/shm. Docker's 64 MB default fills partway
+          // through the Rust suite.
+          '--shm-size',
+          '1g',
           this.image,
         ])
     } catch {

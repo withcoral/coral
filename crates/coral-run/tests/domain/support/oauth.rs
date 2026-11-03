@@ -139,7 +139,8 @@ pub(crate) async fn oauth_account(
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let authorization = accounts
         .start_user_authorization(
             &context,

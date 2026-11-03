@@ -40,6 +40,7 @@ async fn historical_account_selection_verifies_the_original_run_reference() {
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap();
     let run = start(&f, "await coral.providers.evidence.read({});").await;
@@ -467,6 +468,7 @@ async fn invocation_wire_rejects_an_mcp_is_error_and_keeps_its_native_data() {
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap();
     let run = start(
@@ -1006,6 +1008,285 @@ async fn submission_position_is_only_projected_for_activity_browsing_not_exact_e
     );
 }
 
+/// Over the wire, counts split by kind and add up to the total, a connection
+/// request two Runs share counts once, and the kind filter selects one list
+/// that pages, while a read with no filter still lists every kind.
+#[tokio::test]
+async fn required_actions_count_and_filter_by_kind() {
+    use wire::ActivityRequiredActionKind as Kind;
+    let f = Fixture::new().await;
+    let server = MockServer::start().await;
+    publish_http(&f, &server.uri()).await;
+    publish_individual(&f, &server.uri()).await;
+    let token = f.token(&f.member, "reef");
+    let mut client = f.activity();
+
+    let count = async |client: &mut wire::activity_service_client::ActivityServiceClient<_>| {
+        client
+            .count_required_actions(request(
+                wire::CountRequiredActionsRequest::default(),
+                &token,
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+    };
+    let before = count(&mut client).await;
+
+    start(
+        &f,
+        "await Promise.all([1, 2].map(() => coral.providers.evidence.read({body: {}})));",
+    )
+    .await;
+    for _ in 0..2 {
+        start(&f, "await coral.providers.personal.read({});").await;
+    }
+    wait_for_action_page(&f, 0, |page| page.action_count == before.action_count + 3).await;
+
+    let after = count(&mut client).await;
+    assert_eq!(after.approval_count - before.approval_count, 2);
+    assert_eq!(
+        after.connection_count - before.connection_count,
+        1,
+        "two Runs wait on one connection request"
+    );
+    assert_eq!(
+        after.action_count,
+        after.approval_count + after.connection_count
+    );
+
+    let browse = async |client: &mut wire::activity_service_client::ActivityServiceClient<_>,
+                        kind: Kind,
+                        after: String,
+                        page_size: u32| {
+        client
+            .browse_required_actions(request(
+                wire::BrowseRequiredActionsRequest {
+                    kind: kind.into(),
+                    after,
+                    page_size,
+                    ..Default::default()
+                },
+                &token,
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+    };
+    let is_approval = |action: &wire::ActivityRequiredAction| {
+        matches!(
+            action
+                .action
+                .as_ref()
+                .unwrap()
+                .request
+                .as_ref()
+                .unwrap()
+                .request,
+            Some(wire::activity_request_reference::Request::Approval(_))
+        )
+    };
+
+    let first = browse(&mut client, Kind::Approval, String::new(), 1).await;
+    assert_eq!(first.action_count, after.approval_count);
+    assert!(first.actions.iter().all(is_approval));
+    assert!(!first.next_after.is_empty());
+    let rest = browse(&mut client, Kind::Approval, first.next_after, 100).await;
+    assert_eq!(
+        i64::try_from(1 + rest.actions.len()).unwrap(),
+        after.approval_count,
+        "the filtered list pages to the filtered count"
+    );
+    assert!(rest.actions.iter().all(is_approval));
+
+    let connections = browse(&mut client, Kind::AccountConnection, String::new(), 100).await;
+    assert_eq!(connections.action_count, after.connection_count);
+    assert_eq!(
+        i64::try_from(connections.actions.len()).unwrap(),
+        after.connection_count
+    );
+    assert!(!connections.actions.iter().any(is_approval));
+
+    let unfiltered = browse(&mut client, Kind::Unspecified, String::new(), 100).await;
+    assert_eq!(unfiltered.action_count, after.action_count);
+    assert_eq!(
+        i64::try_from(unfiltered.actions.len()).unwrap(),
+        after.action_count
+    );
+}
+
+/// A filter this server does not know fails the read. It never lists every kind.
+#[tokio::test]
+async fn required_actions_reject_an_unknown_kind() {
+    let f = Fixture::new().await;
+    let status = f
+        .activity()
+        .browse_required_actions(request(
+            wire::BrowseRequiredActionsRequest {
+                kind: 99,
+                ..Default::default()
+            },
+            &f.token(&f.member, "reef"),
+            "reef",
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+}
+
+/// A revision follows the set of one kind of pending request: every way a
+/// request joins or leaves that set moves it, including one request ending as
+/// another starts at the same count, and the other kind's stays put. A read with
+/// nothing pending changed moves neither. Expiry is proved where the owner's
+/// timer can be shortened, in `coral-run`'s approval tests.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey moves one set of pending requests through every way it changes"
+)]
+async fn required_action_revisions_follow_each_kinds_pending_set() {
+    use wire::activity_request_reference::Request::{AccountConnection, Approval};
+    let f = Fixture::new().await;
+    let server = MockServer::start().await;
+    let evidence = publish_http(&f, &server.uri()).await;
+    publish_individual(&f, &server.uri()).await;
+    let token = f.token(&f.member, "reef");
+    let mut client = f.activity();
+    let mut accounts = f.accounts();
+    let count = async || {
+        f.activity()
+            .count_required_actions(request(
+                wire::CountRequiredActionsRequest::default(),
+                &f.token(&f.member, "reef"),
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+    };
+    let requests = async |wanted: i64| {
+        wait_for_action_page(&f, 100, |page| page.action_count == wanted)
+            .await
+            .actions
+            .into_iter()
+            .map(|action| action.action.unwrap().request.unwrap().request.unwrap())
+            .collect::<Vec<_>>()
+    };
+    let approvals = async |wanted| -> Vec<String> {
+        requests(wanted)
+            .await
+            .into_iter()
+            .filter_map(|request| match request {
+                Approval(name) => Some(name),
+                AccountConnection(_) => None,
+            })
+            .collect()
+    };
+    let idle = count().await;
+    let (approval, connection) = (&idle.approval_revision, &idle.connection_revision);
+    assert_eq!(
+        (idle.action_count, count().await),
+        (0, idle.clone()),
+        "nothing pending changed"
+    );
+
+    // Created.
+    let first_run = start(&f, "await coral.providers.evidence.read({body: {}});").await;
+    let first = approvals(1).await;
+    let one = count().await;
+    assert_ne!(&one.approval_revision, approval);
+    assert_eq!(&one.connection_revision, connection);
+
+    // Activity that creates no request moves neither revision.
+    let unrelated = start(&f, "return 1;").await;
+    terminal(&f, &unrelated).await;
+    assert_eq!(count().await, one, "nothing pending changed");
+
+    // An ended Run closes its request, and another request of the same count starts.
+    let swap_run = start(&f, "await coral.providers.evidence.read({body: {}});").await;
+    approvals(2).await;
+    assert_ne!(count().await.approval_revision, one.approval_revision);
+    cancel(&f, &first_run).await;
+    assert_ne!(approvals(1).await, first);
+    let swapped = count().await;
+    assert_eq!(swapped.approval_count, one.approval_count);
+    assert_ne!(swapped.approval_revision, one.approval_revision);
+    assert_eq!(&swapped.connection_revision, connection);
+
+    // Decided, while a third request keeps the count level.
+    let [decided]: [String; 1] = approvals(1).await.try_into().unwrap();
+    let closing_run = start(&f, "await coral.providers.evidence.read({body: {}});").await;
+    approvals(2).await;
+    client
+        .decide_approval(request(
+            wire::DecideApprovalRequest {
+                name: decided,
+                decision: "approve".into(),
+                comment: None,
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap();
+    approvals(1).await;
+    let after_decision = count().await;
+    assert_eq!(after_decision.approval_count, swapped.approval_count);
+    assert_ne!(after_decision.approval_revision, swapped.approval_revision);
+    terminal(&f, &swap_run).await;
+
+    // Closed by a policy that no longer asks.
+    policy(&f, &evidence, coral_policy::ToolAccessState::Enabled).await;
+    requests(0).await;
+    let after_policy = count().await;
+    assert_ne!(
+        after_policy.approval_revision,
+        after_decision.approval_revision
+    );
+    terminal(&f, &closing_run).await;
+
+    // A connection request moves its own kind's revision alone.
+    let waiting = start(&f, "await coral.providers.personal.read({});").await;
+    let [AccountConnection(name)]: [_; 1] = requests(1).await.try_into().unwrap() else {
+        panic!("connection request")
+    };
+    let waiting_count = count().await;
+    assert_ne!(&waiting_count.connection_revision, connection);
+    assert_eq!(
+        waiting_count.approval_revision,
+        after_policy.approval_revision
+    );
+    let joining = start(&f, "await coral.providers.personal.read({});").await;
+    wait_invocation(&f, &joining, true).await;
+    assert_eq!(
+        count().await,
+        waiting_count,
+        "a second Run waits on the same request"
+    );
+    accounts
+        .resolve_account_connection_request(request(
+            wire::ResolveAccountConnectionRequestRequest {
+                name,
+                decision: Some(
+                    wire::resolve_account_connection_request_request::Decision::Decline(()),
+                ),
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap();
+    requests(0).await;
+    assert_ne!(
+        count().await.connection_revision,
+        waiting_count.connection_revision
+    );
+    terminal(&f, &waiting).await;
+    terminal(&f, &joining).await;
+}
+
 /// Browses the member's action queue until `ready` accepts a page. Actions appear asynchronously.
 async fn wait_for_action_page(
     f: &Fixture,
@@ -1031,20 +1312,15 @@ async fn wait_for_action_page(
     .await
 }
 
+/// Starts `source` as the member, with a minute to run.
 async fn start(f: &Fixture, source: &str) -> coral_run::RunId {
-    f.runs
-        .start(
-            &AuthenticatedPrincipal::user(f.member.clone()),
-            f.workspace.id(),
-            coral_run::RunSubmission::new(
-                coral_run::ProgramSource::parse(source).unwrap(),
-                coral_run::RunTimeout::from_millis(60_000).unwrap(),
-            ),
-        )
-        .await
-        .unwrap()
-        .run_id()
-        .clone()
+    start_as(
+        f,
+        &AuthenticatedPrincipal::user(f.member.clone()),
+        source,
+        60_000,
+    )
+    .await
 }
 
 async fn terminal(f: &Fixture, id: &coral_run::RunId) -> wire::InspectRunResponse {
@@ -1073,6 +1349,45 @@ async fn terminal(f: &Fixture, id: &coral_run::RunId) -> wire::InspectRunRespons
 }
 
 async fn publish_http(f: &Fixture, url: &str) -> coral_provider::ProviderId {
+    publish_openapi(
+        f,
+        "evidence",
+        &json!({
+            "openapi": "3.1.0", "info": {"title": "Evidence", "version": "1"},
+            "servers": [{"url": url}], "paths": {"/result": {"post": {
+                "operationId": "read", "requestBody": {"content": {"application/json": {"schema": {"type": "object"}}}},
+                "responses": {"200": {"description": "Native result", "content": {"application/json": {"schema": {"type": "object"}}}}}
+            }}}
+        }),
+        coral_provider::CredentialRoute::None,
+    )
+    .await
+}
+
+/// Publishes a Provider whose Tools run with each User's own Account, so a call
+/// by a User with no Account waits on a connection request.
+async fn publish_individual(f: &Fixture, url: &str) -> coral_provider::ProviderId {
+    publish_openapi(
+        f,
+        "personal",
+        &json!({
+            "openapi": "3.1.0", "info": {"title": "Personal", "version": "1"},
+            "servers": [{"url": url}],
+            "components": {"securitySchemes": {"bearer": {"type": "http", "scheme": "bearer"}}},
+            "security": [{"bearer": []}],
+            "paths": {"/result": {"get": {"operationId": "read", "responses": {"200": {"description": "Native result"}}}}}
+        }),
+        coral_provider::CredentialRoute::Caller,
+    )
+    .await
+}
+
+async fn publish_openapi(
+    f: &Fixture,
+    namespace: &str,
+    document: &serde_json::Value,
+    route: coral_provider::CredentialRoute,
+) -> coral_provider::ProviderId {
     let providers = coral_provider::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
@@ -1080,15 +1395,14 @@ async fn publish_http(f: &Fixture, url: &str) -> coral_provider::ProviderId {
         f.workspaces.clone(),
     );
     let context = super::super::change(&f.owner);
-    let setup = providers.prepare_openapi_fixture(&context, f.workspace.id(),
-        coral_catalog::OpenApiDocument::parse(&json!({
-            "openapi": "3.1.0", "info": {"title": "Evidence", "version": "1"},
-            "servers": [{"url": url}], "paths": {"/result": {"post": {
-                "operationId": "read", "requestBody": {"content": {"application/json": {"schema": {"type": "object"}}}},
-                "responses": {"200": {"description": "Native result", "content": {"application/json": {"schema": {"type": "object"}}}}}
-            }}}
-        }).to_string()).unwrap()
-    ).await.unwrap();
+    let setup = providers
+        .prepare_openapi_fixture(
+            &context,
+            f.workspace.id(),
+            coral_catalog::OpenApiDocument::parse(&document.to_string()).unwrap(),
+        )
+        .await
+        .unwrap();
     providers
         .publish_workspace_provider(
             &context,
@@ -1097,12 +1411,13 @@ async fn publish_http(f: &Fixture, url: &str) -> coral_provider::ProviderId {
                     .unwrap(),
                 f.workspace.id().clone(),
                 setup.id().clone(),
-                coral_provider::ProviderNamespace::parse("evidence").unwrap(),
-                coral_provider::CredentialRoute::None,
+                coral_provider::ProviderNamespace::parse(namespace).unwrap(),
+                route,
             ),
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap()
         .id()
@@ -1472,4 +1787,260 @@ async fn activity_summary_wire_rejects_malformed_and_hidden_windows_and_labels_i
     };
     assert_eq!(summary.callers, std::slice::from_ref(&you));
     assert_eq!(tool.callers, [you]);
+}
+
+/// Who sees a settled row follows who invoked its Run, not who decided it: a User sees
+/// their own Runs, and every Owner sees Agent Runs, including another Owner's decision.
+/// Another User's Run stays hidden from an Owner. No row carries arguments or comments.
+/// What history holds and how it pages are `coral-run`'s rules, tested there.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one role table over a single arranged history"
+)]
+async fn settled_approvals_follow_who_invoked_the_run() {
+    use wire::ActivityApprovalOutcome::{Approved, Declined, Expired};
+    let f = Fixture::new().await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    publish_http(&f, &server.uri()).await;
+    let co_owner = coral_workspace::AuthenticatedUser::organization_member(
+        coral_workspace::UserId::parse("co-owner").unwrap(),
+        coral_workspace::OrganizationRole::Member,
+    );
+    coral_workspace::OrganizationModule::new(f.database.database())
+        .provision_login(&super::super::change(&co_owner))
+        .await
+        .unwrap();
+    f.workspaces
+        .set_membership(
+            &super::super::change(&f.owner),
+            f.workspace.id(),
+            &co_owner,
+            coral_workspace::WorkspaceRole::Owner,
+        )
+        .await
+        .unwrap();
+    let issued = f
+        .workspaces
+        .create_agent(
+            &super::super::change(&f.owner),
+            f.workspace.id(),
+            coral_workspace::AgentDisplayName::parse("History agent").unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let agent = f
+        .workspaces
+        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 2)
+        .await
+        .unwrap();
+    let member = AuthenticatedPrincipal::user(f.member.clone());
+    let owner = AuthenticatedPrincipal::user(f.owner.clone());
+    let (member_token, owner_token, co_owner_token) = (
+        f.token(&f.member, "reef"),
+        f.token(&f.owner, "reef"),
+        f.token(&co_owner, "reef"),
+    );
+    let call = r#"await coral.providers.evidence.read({body: {secret: "private-argument"}});"#;
+    let decide = async |token: &str, name: &str, decision: &str| {
+        f.activity()
+            .decide_approval(request(
+                wire::DecideApprovalRequest {
+                    name: name.to_owned(),
+                    decision: decision.into(),
+                    comment: Some("private-comment".into()),
+                },
+                token,
+                "reef",
+            ))
+            .await
+            .unwrap();
+    };
+
+    let run = start_as(&f, &member, call, 60_000).await;
+    let member_approved = pending_approval(&f, &member_token, &run).await;
+    decide(&member_token, &member_approved, "approve").await;
+    f.settle(&member, &run).await;
+    let run = start_as(&f, &owner, call, 60_000).await;
+    let owner_declined = pending_approval(&f, &owner_token, &run).await;
+    decide(&owner_token, &owner_declined, "decline").await;
+    f.settle(&owner, &run).await;
+    let run = start_as(&f, &agent, call, 60_000).await;
+    let agent_approved = pending_approval(&f, &owner_token, &run).await;
+    decide(&owner_token, &agent_approved, "approve").await;
+    f.settle(&agent, &run).await;
+    // Nobody answers before the Run's timeout.
+    let run = start_as(&f, &member, call, 1_000).await;
+    let member_expired = pending_approval(&f, &member_token, &run).await;
+    f.settle(&member, &run).await;
+
+    let browse = async |token: &str, workspace: String, after: String, page_size: u32| {
+        f.activity()
+            .browse_settled_approvals(request(
+                wire::BrowseSettledApprovalsRequest {
+                    workspace,
+                    after,
+                    page_size,
+                },
+                token,
+                "reef",
+            ))
+            .await
+            .map(tonic::Response::into_inner)
+    };
+    let workspace = format!("workspaces/{}", f.workspace.id());
+    // (viewer, the rows they see as (request, outcome, approver label))
+    let cases = [
+        (
+            "member",
+            &member_token,
+            vec![
+                (&member_expired, Expired, ""),
+                (&member_approved, Approved, "You"),
+            ],
+        ),
+        (
+            "owner",
+            &owner_token,
+            vec![
+                (&agent_approved, Approved, "You"),
+                (&owner_declined, Declined, "You"),
+            ],
+        ),
+        (
+            "co-owner",
+            &co_owner_token,
+            vec![(&agent_approved, Approved, "Unavailable user")],
+        ),
+    ];
+    for (viewer, token, expected) in cases {
+        let page = browse(token, workspace.clone(), String::new(), 100)
+            .await
+            .unwrap();
+        let seen: Vec<_> = page
+            .approvals
+            .iter()
+            .map(|row| (&row.name, row.outcome(), row.approver_label.as_str()))
+            .collect();
+        assert_eq!(seen, expected, "{viewer}");
+        assert!(page.next_after.is_empty(), "{viewer}");
+        let encoded = String::from_utf8_lossy(&prost::Message::encode_to_vec(&page)).into_owned();
+        assert!(!encoded.contains("private-argument"), "{viewer}");
+        assert!(!encoded.contains("private-comment"), "{viewer}");
+    }
+
+    let rows = browse(&member_token, workspace.clone(), String::new(), 100)
+        .await
+        .unwrap()
+        .approvals;
+    let expired = rows.iter().find(|row| row.name == member_expired).unwrap();
+    assert!(expired.approver.is_empty(), "nobody decided");
+    let agent_row = browse(&co_owner_token, workspace.clone(), String::new(), 100)
+        .await
+        .unwrap()
+        .approvals
+        .remove(0);
+    assert_eq!(agent_row.approver, f.owner.user_id().as_str());
+    assert_eq!(agent_row.call_path, "coral.providers.evidence.read");
+    assert_eq!(
+        agent_row.run.unwrap().agent,
+        format!(
+            "workspaces/{}/agents/{}",
+            f.workspace.id(),
+            agent.principal().id()
+        )
+    );
+    // Another Workspace shows none of these rows, and one the member cannot open is refused.
+    let other = f
+        .workspaces
+        .create(
+            &super::super::change(&f.owner),
+            coral_workspace::WorkspaceDisplayName::parse("elsewhere").unwrap(),
+        )
+        .await
+        .unwrap();
+    let elsewhere = format!("workspaces/{}", other.id());
+    assert!(
+        browse(&owner_token, elsewhere.clone(), String::new(), 100)
+            .await
+            .unwrap()
+            .approvals
+            .is_empty()
+    );
+    assert_eq!(
+        browse(&member_token, elsewhere, String::new(), 100)
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::NotFound
+    );
+    for (workspace, after) in [
+        (String::new(), String::new()),
+        (workspace.clone(), "not-a-cursor".to_owned()),
+    ] {
+        assert_eq!(
+            browse(&member_token, workspace, after, 100)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+    }
+}
+
+/// Starts `source` as `actor`, with `timeout_ms` to run.
+async fn start_as(
+    f: &Fixture,
+    actor: &AuthenticatedPrincipal,
+    source: &str,
+    timeout_ms: u64,
+) -> coral_run::RunId {
+    f.runs
+        .start(
+            actor,
+            f.workspace.id(),
+            coral_run::RunSubmission::new(
+                coral_run::ProgramSource::parse(source).unwrap(),
+                coral_run::RunTimeout::from_millis(timeout_ms).unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .run_id()
+        .clone()
+}
+
+/// The name of the approval `run` waits on, as `token`'s holder reads it.
+async fn pending_approval(f: &Fixture, token: &str, run: &coral_run::RunId) -> String {
+    let mut client = f.activity();
+    on_activity_change(f, async || {
+        let detail = client
+            .inspect_run(request(
+                wire::InspectRunRequest {
+                    name: format!("workspaces/{}/runs/{run}", f.workspace.id()),
+                    page_size: 1,
+                    ..Default::default()
+                },
+                token,
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        detail
+            .run
+            .and_then(|run| run.action_page)
+            .and_then(|page| page.actions.into_iter().next())
+            .and_then(|action| action.request)
+            .and_then(|reference| match reference.request {
+                Some(wire::activity_request_reference::Request::Approval(name)) => Some(name),
+                _ => None,
+            })
+    })
+    .await
 }

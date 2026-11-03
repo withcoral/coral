@@ -27,6 +27,7 @@ import { Banner, Button } from '@/wax/components'
 import { AgentActivityPage } from '@/views/management/agent-activity-page'
 import { trail } from '@/views/management/layout'
 import { loadActivity } from '@/lib/activity.server'
+import { activityProviderMarks } from '@/lib/providers.server'
 import { loadActivityPage } from '@/lib/activity-page-fetch'
 import { ACTIVITY_PAGE_SIZE } from '@/lib/activity-list'
 
@@ -35,6 +36,8 @@ export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/man
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   const api = management(context)
   const name = agentName(params.workspace, params.agent)
+  // Read beside whatever the page reads; it never fails the page.
+  const providerMarks = activityProviderMarks(api, workspaceName(params.workspace), request)
   try {
     const history = await api.activity.inspectAgentHistory({ name })
     if (history.deleted) {
@@ -50,6 +53,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
           workspace: workspaceView(workspace),
           displayName: history.displayName,
           activity,
+          providerMarks: await providerMarks,
         },
         { headers: privateHeaders },
       )
@@ -75,6 +79,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
           })) ?? null,
         form: formContext(context),
         activity,
+        providerMarks: await providerMarks,
         // Only a history Coral could read shows the agent never called.
         idle: !activity.listUnavailable && !activity.rows.length && !activity.hasBefore,
       },
@@ -93,7 +98,10 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         const activity = await loadActivity(request, api, {
           scope: { workspace: workspaceName(params.workspace), agent: name },
         })
-        return data({ mode: 'unavailable' as const, activity }, { headers: privateHeaders })
+        return data(
+          { mode: 'unavailable' as const, activity, providerMarks: await providerMarks },
+          { headers: privateHeaders },
+        )
       } catch (selectionError) {
         managementFailure(selectionError)
       }
@@ -168,7 +176,7 @@ export default function AgentRoute({ loaderData, params }: Route.ComponentProps)
           </Banner>
         }
       >
-        <LiveActivity initial={loaderData.activity} />
+        <LiveActivity initial={loaderData.activity} providers={loaderData.providerMarks} />
       </PageLayout>
     )
   if (loaderData.mode === 'history')
@@ -185,7 +193,7 @@ export default function AgentRoute({ loaderData, params }: Route.ComponentProps)
           </Banner>
         }
       >
-        <LiveActivity initial={loaderData.activity} />
+        <LiveActivity initial={loaderData.activity} providers={loaderData.providerMarks} />
       </PageLayout>
     )
   return (
@@ -195,10 +203,11 @@ export default function AgentRoute({ loaderData, params }: Route.ComponentProps)
       agent={loaderData.agent}
       providers={loaderData.providers}
       form={loaderData.form}
-      activity={<LiveActivity initial={loaderData.activity} />}
+      activity={<LiveActivity initial={loaderData.activity} providers={loaderData.providerMarks} />}
       recentActivity={
         <LiveActivity
           initial={loaderData.activity}
+          providers={loaderData.providerMarks}
           more={{
             to: `${loaderData.agent.path}?view=activity`,
             label: 'View all activity',

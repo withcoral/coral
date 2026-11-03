@@ -47,7 +47,8 @@ async fn caller_publication_discards_discovery_grant_and_preserves_application()
         .providers
         .publish_workspace_provider(&context, request.clone())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider = publication.published_provider().unwrap();
     for scope in [AccountScope::User, AccountScope::Shared] {
@@ -74,7 +75,8 @@ async fn caller_publication_discards_discovery_grant_and_preserves_application()
             .providers
             .publish_workspace_provider(&context, request)
             .await
-            .unwrap(),
+            .unwrap()
+            .skip_search(),
         publication
     );
     assert_eq!(upstream.knobs.tokens.load(Ordering::SeqCst), 1);
@@ -150,7 +152,8 @@ async fn discarding_discovery_grant_keeps_confidential_application_after_restart
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider = publication.published_provider().unwrap();
     assert!(
@@ -318,7 +321,8 @@ async fn publication_preserves_exact_reviewed_grant_on_failure_and_replay() {
         .providers
         .publish_workspace_provider(&context, request.clone())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(result.outcome(), ProviderPublicationOutcome::Failed);
     assert_eq!(result.diagnostic().unwrap().code(), "account_required");
     assert!(
@@ -342,7 +346,8 @@ async fn publication_preserves_exact_reviewed_grant_on_failure_and_replay() {
             .providers
             .publish_workspace_provider(&context, request.clone())
             .await
-            .unwrap(),
+            .unwrap()
+            .skip_search(),
         result
     );
     assert!(matches!(
@@ -387,7 +392,8 @@ async fn publication_cannot_retain_another_setups_grant_and_scrubs_only_its_own(
         .providers
         .publish_workspace_provider(&context, request)
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(result.outcome(), ProviderPublicationOutcome::Failed);
     assert_eq!(result.diagnostic().unwrap().code(), "account_required");
     assert!(
@@ -426,7 +432,8 @@ async fn publication_cannot_retain_another_setups_grant_and_scrubs_only_its_own(
         .providers
         .publish_workspace_provider(&context, valid)
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(result.outcome(), ProviderPublicationOutcome::Succeeded);
     let account = harness
         .accounts
@@ -493,7 +500,8 @@ async fn shared_publication_requires_both_compatible_credentials_and_explicit_re
             .providers
             .publish_workspace_provider(&context, request.clone())
             .await
-            .unwrap();
+            .unwrap()
+            .skip_search();
         assert_eq!(publication.outcome(), ProviderPublicationOutcome::Failed);
         assert_eq!(publication.diagnostic().unwrap().code(), "account_required");
         assert!(publication.published_provider().is_none());
@@ -510,7 +518,8 @@ async fn shared_publication_requires_both_compatible_credentials_and_explicit_re
                 .providers
                 .publish_workspace_provider(&context, request)
                 .await
-                .unwrap(),
+                .unwrap()
+                .skip_search(),
             publication
         );
     }
@@ -669,7 +678,8 @@ async fn discovery_replacement_requires_exact_grant_and_obsolete_callbacks_canno
         .providers
         .publish_workspace_provider(&context, request.clone())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let account = harness
         .accounts
@@ -695,7 +705,8 @@ async fn discovery_replacement_requires_exact_grant_and_obsolete_callbacks_canno
             .providers
             .publish_workspace_provider(&context, request.clone())
             .await
-            .unwrap(),
+            .unwrap()
+            .skip_search(),
         publication
     );
     assert!(matches!(

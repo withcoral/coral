@@ -163,17 +163,16 @@ async fn save_types_calls_from_what_the_caller_can_discover() {
 async fn search_types_each_mode_with_the_result_it_returns() {
     let fixture = Fixture::new().await;
     let database = fixture.test_database.database();
-    let mut transaction = database.begin().await.unwrap();
-    coral_provider::ProviderModule::with_running_catalog(
+    let (installed, _search) = coral_provider::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default(),
         database.clone(),
         WorkspaceModule::new(database.clone()),
     )
-    .install_missing_builtin_in_transaction(&mut transaction, &fixture.workspace, 20)
+    .install_missing_builtin(&fixture.workspace, 20)
     .await
     .unwrap()
-    .expect("the Workspace has no Built-in Provider yet");
-    transaction.commit().await.unwrap();
+    .into_parts();
+    installed.expect("the Workspace has no Built-in Provider yet");
     let cases: &[(&str, &str, Located)] = &[
         (
             "a query reads its page",
