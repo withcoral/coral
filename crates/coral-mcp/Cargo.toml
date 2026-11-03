@@ -13,7 +13,6 @@ workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }
-coral-catalog.workspace = true
 coral-run.workspace = true
 coral-functions.workspace = true
 coral-identifier.workspace = true
@@ -33,6 +32,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+coral-catalog.workspace = true
 coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-outbound.workspace = true
 coral-workspace = { workspace = true, features = ["test-fixtures"] }

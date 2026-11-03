@@ -540,6 +540,234 @@ async fn a_run_reports_its_submission_intent_only_to_who_can_see_its_task() {
     );
 }
 
+/// A call that states a goal starts its Task with its first Run, and keeps
+/// the goal and the call's own intent apart. A refused Program starts no
+/// Task, so an agent that retries with the same goal leaves one Task.
+#[tokio::test]
+async fn a_goal_starts_its_task_with_the_first_run_and_a_refused_program_starts_none() {
+    let fixture = Fixture::new().await;
+    let call = NewTaskCommand::new(
+        fixture.actor.clone(),
+        fixture.workspace.clone(),
+        TaskIntent::parse("Summarize the forecast").unwrap(),
+        TaskIntent::parse("Read the forecast").unwrap(),
+        coral_test_support::trace('1'),
+    );
+    let tasks = async || {
+        fixture
+            .tasks
+            .list(&fixture.actor, &fixture.workspace)
+            .await
+            .unwrap()
+            .len()
+    };
+    let before = tasks().await;
+    for (source, refusal) in [
+        ("return (", "admission"),
+        (&*"x".repeat(65 * 1024), "source limit"),
+    ] {
+        let refused = fixture
+            .commands
+            .submit_new_task(&call, source, 30_000)
+            .await;
+        assert!(
+            matches!(
+                refused,
+                Err(Error::Run(
+                    coral_run::Error::ProgramAdmission(_) | coral_run::Error::InvalidInput(_)
+                ))
+            ),
+            "{refusal}"
+        );
+        assert_eq!(tasks().await, before, "a refused Program starts no Task");
+    }
+
+    let (task, accepted) = fixture
+        .commands
+        .submit_new_task(&call, "return 1;", 30_000)
+        .await
+        .unwrap();
+    let accepted = accepted.unwrap();
+    assert_eq!(tasks().await, before + 1);
+    assert_eq!(task.intent().as_str(), "Summarize the forecast");
+    assert_eq!(task.outcome(), None);
+    let history = fixture
+        .tasks
+        .interactions(&fixture.actor, &fixture.workspace, task.id(), None, 100)
+        .await
+        .unwrap();
+    let [first] = history.as_slice() else {
+        panic!("one attempt: {history:?}");
+    };
+    assert_eq!(first.kind, AttemptKind::Submit);
+    assert_eq!(first.intent.as_str(), "Read the forecast");
+    assert_eq!(first.outcome, AttemptOutcome::Succeeded);
+    assert_eq!(first.run.as_ref(), Some(accepted.run_id()));
+    assert_eq!(
+        fixture
+            .tasks
+            .run_task(&fixture.actor, &fixture.workspace, accepted.run_id())
+            .await
+            .unwrap()
+            .map(|found| found.id().clone()),
+        Some(task.id().clone()),
+        "the call that started the Task can read it back from its Run"
+    );
+    let later = fixture
+        .commands
+        .submit(&fixture.call(&task, "Read it again"), "return 2;", 30_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .tasks
+            .run_task(&fixture.actor, &fixture.workspace, later.run_id())
+            .await
+            .unwrap()
+            .map(|found| found.id().clone()),
+        Some(task.id().clone())
+    );
+    fixture.wait_for_terminal(accepted.run_id()).await;
+    fixture.wait_for_terminal(later.run_id()).await;
+}
+
+/// A launch that fails after the Task and its first Run commit still returns
+/// the Task. The caller only had the goal, so without the Task a retry would
+/// start a second one.
+#[tokio::test]
+async fn a_launch_failure_after_commit_still_returns_the_started_task() {
+    let fixture = Fixture::new().await;
+    let call = NewTaskCommand::new(
+        fixture.actor.clone(),
+        fixture.workspace.clone(),
+        TaskIntent::parse("Summarize the forecast").unwrap(),
+        TaskIntent::parse("Read the forecast").unwrap(),
+        coral_test_support::trace('1'),
+    );
+    fixture.commands.control.arm(Checkpoint::AfterCommit);
+    let commands = fixture.commands.clone();
+    let request =
+        tokio::spawn(async move { commands.submit_new_task(&call, "return 1;", 30_000).await });
+    fixture.commands.control.reached.notified().await;
+    // The fixture holds this one Run. Launch rereads it and finds it corrupt.
+    fixture
+        .test_database
+        .execute_fixture_sql("UPDATE program_run_records SET principal_id = 'not a principal'")
+        .await
+        .expect("corrupt the accepted Run");
+    fixture.commands.control.release.notify_one();
+    let result = request.await.unwrap();
+    let Ok((task, launched)) = &result else {
+        panic!("a launch failure lost the started Task: {result:?}");
+    };
+    assert!(
+        matches!(launched, Err(Error::Run(coral_run::Error::CorruptData(_)))),
+        "{launched:?}"
+    );
+    assert_eq!(task.intent().as_str(), "Summarize the forecast");
+    let history = fixture
+        .tasks
+        .interactions(&fixture.actor, &fixture.workspace, task.id(), None, 100)
+        .await
+        .unwrap();
+    let [first] = history.as_slice() else {
+        panic!("one attempt: {history:?}");
+    };
+    assert_eq!(first.outcome, AttemptOutcome::Succeeded);
+    assert!(first.run.is_some(), "the Run stays accepted");
+}
+
+/// Only the Principal a Task is attributed to reads it from a Run. An Agent
+/// cannot inspect Task history but reads the Task it started; the Workspace
+/// Owner, who can inspect that Task, and another Member get none, as does a
+/// Run without a Task.
+#[tokio::test]
+async fn only_the_tasks_own_principal_reads_it_from_a_run() {
+    let fixture = Fixture::new().await;
+    let issued = fixture
+        .tasks
+        .workspaces
+        .create_agent(
+            &ChangeContext::new(
+                fixture.user.clone(),
+                wall_time(),
+                coral_test_support::trace('1'),
+            ),
+            &fixture.workspace,
+            coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let agent = fixture
+        .tasks
+        .workspaces
+        .authenticate_agent(&fixture.workspace, issued.credential.expose(), wall_time())
+        .await
+        .unwrap();
+    let (task, accepted) = fixture
+        .commands
+        .submit_new_task(
+            &NewTaskCommand::new(
+                agent.clone(),
+                fixture.workspace.clone(),
+                TaskIntent::parse("Answer as the Agent").unwrap(),
+                TaskIntent::parse("Run once").unwrap(),
+                coral_test_support::trace('1'),
+            ),
+            "return 1;",
+            30_000,
+        )
+        .await
+        .unwrap();
+    let accepted = accepted.unwrap();
+    let task_of = |actor: AuthenticatedPrincipal, run: coral_run::RunId| {
+        let tasks = fixture.tasks.clone();
+        let workspace = fixture.workspace.clone();
+        async move {
+            tasks
+                .run_task(&actor, &workspace, &run)
+                .await
+                .unwrap()
+                .map(|task| task.id().clone())
+        }
+    };
+    assert_eq!(
+        task_of(agent.clone(), accepted.run_id().clone()).await,
+        Some(task.id().clone())
+    );
+    let member = AuthenticatedPrincipal::user(
+        fixture
+            .workspace_user("user:task-member", coral_workspace::WorkspaceRole::Member)
+            .await,
+    );
+    for (other, who) in [(fixture.actor.clone(), "owner"), (member, "member")] {
+        assert_eq!(
+            task_of(other, accepted.run_id().clone()).await,
+            None,
+            "{who}"
+        );
+    }
+    let standalone = fixture
+        .runs
+        .start(
+            &fixture.actor,
+            &fixture.workspace,
+            coral_run::RunSubmission::new(
+                coral_run::ProgramSource::parse("return 42;").unwrap(),
+                coral_run::RunTimeout::from_millis(30_000).unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        task_of(fixture.actor.clone(), standalone.run_id().clone()).await,
+        None,
+        "a Run without a Task has none"
+    );
+    fixture.wait_for_terminal(standalone.run_id()).await;
+}
+
 #[tokio::test]
 async fn real_run_acceptance_is_not_goal_success_and_admission_failures_have_no_run() {
     let fixture = Fixture::new().await;

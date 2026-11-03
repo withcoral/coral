@@ -56,14 +56,14 @@ const FAILING_PROGRAMS: &[&str] = &[
 fn refused_calls(task: &Value) -> [(&'static str, Value, &'static str); 7] {
     [
         (
-            "search",
-            json!({"task_id": "task-c0ral-private", "intent": "Search", "query": "weather"}),
+            "delete_function",
+            json!({"task_id": "task-c0ral-private", "intent": "Delete", "path": "weather"}),
             "invalid input: task id is invalid: identifier must be four or five lowercase words joined by hyphens, or a canonical lowercase UUID",
         ),
         (
-            "describe",
-            json!({"task_id": task, "intent": "Describe", "path": "coral.providers.weather.c0ral-private"}),
-            "Discovery input is invalid",
+            "delete_function",
+            json!({"task_id": task, "intent": "Delete", "path": "weather.c0ral-private"}),
+            "invalid input: Saved Function Path must contain 1 through 16 non-reserved safe JavaScript identifier segments and be at most 256 UTF-8 bytes",
         ),
         (
             "wait",
@@ -81,9 +81,9 @@ fn refused_calls(task: &Value) -> [(&'static str, Value, &'static str); 7] {
             "invalid arguments for 'end_task': the value of `outcome` does not match the tool's input schema",
         ),
         (
-            "start_task",
-            json!({"intent": "Start", "key-c0ral-private": true}),
-            "invalid arguments for 'start_task': an argument is not one the tool takes. It takes: intent",
+            "exec",
+            json!({"goal": "Start", "intent": "Start", "program": "return null;", "key-c0ral-private": true}),
+            "invalid arguments for 'exec': an argument is not one the tool takes. It takes: task_id, goal, intent, program, run_timeout_ms, wait_ms",
         ),
         ("no-such-tool-c0ral-private", json!({}), "tool not found"),
     ]
@@ -267,25 +267,18 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
     let capture = capture();
     let tracer = Tracer::start().await;
     let session = RawSession::open(&tracer.endpoint(), &SUPPORTED_PROTOCOL_VERSIONS[0]).await;
-    let task = session
-        .tool_with_headers(
-            "start_task",
-            json!({"intent": format!("task-intent-{CANARY}")}),
-            HEADERS,
-        )
-        .await["structuredContent"]["task_id"]
-        .clone();
-
     let answered = session
         .tool_with_headers(
             "exec",
             json!({
-                "task_id": task, "intent": format!("run-intent-{CANARY}"),
+                "goal": format!("task-intent-{CANARY}"), "intent": format!("run-intent-{CANARY}"),
                 "wait_ms": 5000, "program": PROGRAM,
             }),
             HEADERS,
         )
         .await;
+    let task = answered["structuredContent"]["task_id"].clone();
+    assert!(task.is_string(), "{answered}");
     assert_eq!(
         answered["structuredContent"]["state"], "succeeded",
         "{answered}"
@@ -330,13 +323,13 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         .await;
     assert_eq!(linked["structuredContent"]["state"], "failed", "{linked}");
 
-    let searched = session
-        .tool(
-            "search",
-            json!({"task_id": task, "intent": "Search", "query": format!("query-{CANARY}")}),
+    // A Program's search is part of its Run, so its query is Program text.
+    session
+        .program_value(
+            task.as_str().expect("Task id"),
+            &format!(r#"return (await coral.workspace.search({{ query: "query-{CANARY}" }})).data.hits.length;"#),
         )
         .await;
-    assert_ne!(searched["isError"], true, "{searched}");
 
     let mut public_errors = answers_to_private_sessions(&tracer).await;
     for (tool, arguments, expected) in refused_calls(&task) {
@@ -396,7 +389,7 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         .filter(|point| point.name == "coral.request.duration")
         .filter_map(|point| point.attributes.get("operation").cloned())
         .collect::<std::collections::BTreeSet<_>>();
-    for tool in ["start_task", "exec", "save_function", "end_task"] {
+    for tool in ["exec", "save_function", "end_task"] {
         assert!(
             operations.contains(&format!("tools/call {tool}")),
             "each tool call's request is named by its tool: {operations:?}"

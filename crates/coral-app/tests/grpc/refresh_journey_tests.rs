@@ -221,7 +221,7 @@ impl Mcp {
         result["structuredContent"].clone()
     }
 
-    /// Discovers tools, starts a Task, runs one Program, and observes it.
+    /// Discovers tools, runs one Program that starts a Task, and observes it.
     async fn work(&self, bearer: &str, intent: &str) -> Value {
         let tools = self.result(bearer, "tools/list", json!({})).await;
         assert!(
@@ -232,14 +232,11 @@ impl Mcp {
                 .any(|tool| tool["name"] == "exec"),
             "{tools}"
         );
-        let task = self
-            .tool(bearer, "start_task", json!({"intent": intent}))
-            .await;
         let mut update = self
             .tool(
                 bearer,
                 "exec",
-                json!({"task_id": task["task_id"], "intent": intent,
+                json!({"goal": intent, "intent": intent,
                        "wait_ms": 5000, "program": "return 2 + 3;"}),
             )
             .await;

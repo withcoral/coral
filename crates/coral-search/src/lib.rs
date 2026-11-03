@@ -12,13 +12,13 @@
 //!
 //! # Interface
 //!
-//! - [`UniversalSearchModule::discover`] is the one discovery operation that
-//!   MCP `search` and `describe` and the Built-in Tool `coral.workspace.search`
-//!   all reach, each request in one read snapshot. A query runs one ranked
-//!   statement per Search Entity kind, one retriever each, and fuses their
-//!   windows by position, strong matches first, into bounded pages of Search
-//!   Hits with one status per retriever. An omitted query lists current items in Call Path order and
-//!   reads no index. Exact Call Paths resolve to their Authoring
+//! - [`UniversalSearchModule::discover`] is the one discovery operation, which
+//!   the Built-in Tool `coral.workspace.search` reaches, each request in one
+//!   read snapshot. A query runs one ranked statement per Search Entity kind,
+//!   one retriever each, and fuses their windows by position, strong matches
+//!   first, into bounded pages of Search Hits with one status per retriever.
+//!   An omitted query lists current items in Call Path order and reads no
+//!   index. Exact Call Paths resolve to their Authoring
 //!   Descriptions and read no index; `signature::abridge` shortens the
 //!   declaration each returns, while search reads the complete one. A path
 //!   that names nothing the caller can discover comes back missing, with
@@ -26,8 +26,8 @@
 //!   [`UniversalSearchModule::search`] and [`UniversalSearchModule::describe`]
 //!   are its query mode and its one-path mode.
 //! - [`projection`] turns what discovery found into the result types
-//!   coral-catalog declares for `coral.workspace.search`, which MCP returns
-//!   and Task history retains unchanged.
+//!   coral-catalog declares for `coral.workspace.search`, the shape the
+//!   `search` and `describe` records in Task history retain.
 //! - [`UniversalSearchModule::searchable_providers`] lists the Provider
 //!   Call Roots a search's filter accepts from the caller. A filter that names
 //!   another is refused with that list.

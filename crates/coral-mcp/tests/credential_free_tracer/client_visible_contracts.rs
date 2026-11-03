@@ -58,17 +58,26 @@ async fn content_only_clients_read_results_and_actionable_rejections() {
         .expect("disable an installed Tool");
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = RawSession::open(&tracer.endpoint(), version).await;
+        // A content-only client reads the Task its first exec started from
+        // the text.
         let started = session
-            .tool("start_task", json!({"intent":"Read results as text"}))
-            .await;
-        let task = text_json(&started)["task_id"].clone();
-        let searched = session
             .tool(
-                "search",
-                json!({"task_id":task, "intent":"Continue from the text"}),
+                "exec",
+                json!({
+                    "goal":"Read results as text", "intent":"Start the Task",
+                    "program":"return null;"
+                }),
             )
             .await;
-        assert_eq!(searched["isError"], false, "{version}: {searched}");
+        let task = text_json(&started)["task_id"].clone();
+        assert!(task.is_string(), "{version}: {started}");
+        let continued = session
+            .tool(
+                "exec",
+                json!({"task_id":task, "intent":"Continue from the text", "program":"return 1;"}),
+            )
+            .await;
+        assert_eq!(continued["isError"], false, "{version}: {continued}");
         // The alias rule applies once the aliased Saved Function exists.
         let saved = session
             .tool(
@@ -275,14 +284,13 @@ async fn agents_observe_and_cancel_only_their_own_runs() {
 
 /// Starts a Run that waits for approval, so it stays running without work.
 async fn parked(session: &RawSession) -> Value {
-    let task = session
-        .tool("start_task", json!({"intent":"Hold a Run open"}))
-        .await["structuredContent"]["task_id"]
-        .clone();
     let update = session
         .tool(
             "exec",
-            json!({"task_id":task, "intent":"Wait for approval", "wait_ms":0, "program":PARKED}),
+            json!({
+                "goal":"Hold a Run open", "intent":"Wait for approval", "wait_ms":0,
+                "program":PARKED
+            }),
         )
         .await;
     assert_eq!(update["isError"], false, "{update}");
@@ -298,29 +306,41 @@ async fn run_tool(session: &RawSession, tool: &str, run: &Value) -> Value {
     session.tool(tool, arguments).await
 }
 
-/// A disabled Tool and a path that never existed give one result.
+/// A disabled Tool and a path that never existed are both missing, and no
+/// suggestion names the disabled one.
 async fn check_concealed_descriptions(
     session: &RawSession,
     task: &Value,
     version: &ProtocolVersion,
 ) {
-    let describe = |path: &str| {
-        session.tool(
-            "describe",
-            json!({"task_id":task, "intent":"Describe one exact path", "path":path}),
+    let read = session
+        .program_value(
+            task.as_str().expect("Task id"),
+            r#"return (await coral.workspace.search({
+  paths: ["coral.providers.gmail.send_message", "coral.providers.weather.lostWorker"],
+})).data;"#,
         )
-    };
-    let absent = describe("coral.providers.gmail.send_message").await;
-    let concealed = describe("coral.providers.weather.lostWorker").await;
-    assert_eq!(absent["isError"], true, "{version}");
+        .await;
+    assert_eq!(read["descriptions"], json!([]), "{version}: {read}");
+    let missing = read["missing"].as_array().expect("missing paths");
     assert_eq!(
-        text_json(&absent)["code"],
-        "authoring_description_not_found",
-        "{version}"
-    );
-    assert_eq!(
-        untraced_result(&concealed),
-        untraced_result(&absent),
+        missing
+            .iter()
+            .map(|path| path["call_path"].as_str().expect("Call Path"))
+            .collect::<Vec<_>>(),
+        [
+            "coral.providers.gmail.send_message",
+            "coral.providers.weather.lostWorker"
+        ],
         "{version}: a disabled Tool looks absent"
     );
+    for path in missing {
+        assert!(
+            !path["suggestions"]
+                .as_array()
+                .expect("suggestions")
+                .contains(&json!("coral.providers.weather.lostWorker")),
+            "{version}: no suggestion names the disabled Tool: {read}"
+        );
+    }
 }

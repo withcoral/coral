@@ -21,30 +21,65 @@ fn validator(schema: &Value) -> jsonschema::Validator {
 pub(super) async fn check(session: &RawSession, tools: &[Value]) {
     let started = session
         .tool(
-            "start_task",
-            json!({"intent":"Check advertised input constraints"}),
+            "exec",
+            json!({
+                "goal":"Check advertised input constraints", "intent":"Start the Task",
+                "program":"return null;"
+            }),
         )
         .await;
     let task = started
         .pointer("/structuredContent/task_id")
         .and_then(Value::as_str)
         .expect("Task id");
-    check_identities(session, task, tools).await;
-    check_text(session, task, tools).await;
+    check_task_choice(session, task).await;
+    check_identities(session, tools).await;
+    check_text(session, tools).await;
     check_authoring_limits(tools);
     check_paths(session, task, tools).await;
     check_sources(session, task, tools).await;
-    check_offsets(session, task, tools).await;
     check_cursors(session, task, tools).await;
     session
         .tool("end_task", json!({"task_id":task, "outcome":"success"}))
         .await;
 }
 
-async fn check_text(session: &RawSession, task: &str, tools: &[Value]) {
+/// An `exec` names its Task or states the goal of a new one. Coral never
+/// guesses which Task a call belongs to, so neither and both are refused
+/// with the same message, which names both options.
+async fn check_task_choice(session: &RawSession, task: &str) {
+    for (arguments, case) in [
+        (
+            json!({"intent":"Name no Task", "program":"return null;"}),
+            "neither",
+        ),
+        (
+            json!({
+                "task_id":task, "goal":"Start another Task", "intent":"Name both",
+                "program":"return null;"
+            }),
+            "both",
+        ),
+    ] {
+        let error = session
+            .result("tools/call", json!({"name":"exec", "arguments":arguments}))
+            .await
+            .expect_err(case);
+        assert_eq!(error.get("code"), Some(&json!(-32602)), "{case}");
+        assert_eq!(
+            error.get("message"),
+            Some(&json!(
+                "exec takes exactly one of `task_id` or `goal`: pass `task_id` to continue a Task, or `goal` to start a new one"
+            )),
+            "{case}"
+        );
+    }
+}
+
+async fn check_text(session: &RawSession, tools: &[Value]) {
     for tool in tools {
         let name = tool.get("name").and_then(Value::as_str).expect("tool name");
-        for field in ["intent", "query", "feedback"] {
+        for field in ["intent", "goal", "feedback"] {
             let Some(schema) = tool.pointer(&format!("/inputSchema/properties/{field}")) else {
                 continue;
             };
@@ -76,14 +111,8 @@ async fn check_text(session: &RawSession, task: &str, tools: &[Value]) {
                 .as_str(),
             value
         );
-        assert_eq!(
-            coral_search::SearchQuery::parse(value)
-                .expect("valid Unicode query")
-                .as_str(),
-            value
-        );
     }
-    let intent_schema = validator(property(tools, "start_task", "intent"));
+    let intent_schema = validator(property(tools, "exec", "goal"));
     for (value, valid) in [("🪸".repeat(80), true), ("🪸".repeat(81), false)] {
         assert_eq!(intent_schema.is_valid(&json!(value)), valid);
         assert_eq!(coral_task::TaskIntent::parse(&value).is_ok(), valid);
@@ -92,46 +121,20 @@ async fn check_text(session: &RawSession, task: &str, tools: &[Value]) {
         let error = session
             .result(
                 "tools/call",
-                json!({"name":"start_task", "arguments":{"intent":invalid}}),
+                json!({"name":"exec", "arguments":{
+                    "goal":invalid, "intent":"Check the goal", "program":"return null;"
+                }}),
             )
             .await
             .expect_err("intent remains validated at the handler");
         assert_eq!(error.get("code"), Some(&json!(-32602)));
-        let rejected = session
-            .tool(
-                "search",
-                json!({
-                    "task_id":task, "intent":"Check invalid query", "query":invalid
-                }),
-            )
-            .await;
-        assert_eq!(
-            rejected.pointer("/structuredContent/code"),
-            Some(&json!("invalid_input"))
+        // exec also takes the call's own `intent`, which fails with the same
+        // text, so the refusal names `goal`.
+        let message = error.get("message").and_then(Value::as_str);
+        assert!(
+            message.is_some_and(|it| it.starts_with("`goal`: ")),
+            "{error:?}"
         );
-    }
-    let query_schema = validator(property(tools, "search", "query"));
-    assert!(query_schema.is_valid(&Value::Null));
-    let listed = session
-        .tool(
-            "search",
-            json!({"task_id":task, "intent":"List with null query", "query":null}),
-        )
-        .await;
-    assert_ne!(listed.get("isError"), Some(&json!(true)));
-    for (value, valid) in [("🪸".repeat(1024), true), ("🪸".repeat(1025), false)] {
-        // JSON Schema character counts cannot enforce the domain's UTF-8 byte limit.
-        assert!(query_schema.is_valid(&json!(value)));
-        assert_eq!(coral_search::SearchQuery::parse(&value).is_ok(), valid);
-        let result = session
-            .tool(
-                "search",
-                json!({
-                    "task_id":task, "intent":"Check Unicode query bytes", "query":value
-                }),
-            )
-            .await;
-        assert_eq!(result.get("isError") == Some(&json!(true)), !valid);
     }
     check_feedback(session, tools).await;
 }
@@ -143,12 +146,7 @@ async fn check_feedback(session: &RawSession, tools: &[Value]) {
         Some(json!("  café 🪸\n")),
         Some(json!("🪸".repeat(4096))),
     ] {
-        let started = session
-            .tool("start_task", json!({"intent":"Check completion feedback"}))
-            .await;
-        let id = started
-            .pointer("/structuredContent/task_id")
-            .expect("Task id");
+        let id = session.start_task("Check completion feedback").await;
         for invalid in [" \n".to_string(), "a\0b".to_string(), "🪸".repeat(4097)] {
             let rejected = session
                 .tool(
@@ -178,28 +176,15 @@ async fn check_feedback(session: &RawSession, tools: &[Value]) {
 }
 
 fn check_authoring_limits(tools: &[Value]) {
-    for name in ["save_function", "delete_function", "describe"] {
+    for name in ["save_function", "delete_function"] {
         let schema = property(tools, name, "path");
         let validator = validator(schema);
-        let valid = if name == "describe" {
-            "coral.functions.éclair.$value"
-        } else {
-            "éclair.$value"
-        };
-        assert!(validator.is_valid(&json!(valid)));
+        assert!(validator.is_valid(&json!("éclair.$value")));
         assert!(!validator.is_valid(&json!("")));
         for domain_invalid in ["a..b", "a\0b"] {
             assert!(validator.is_valid(&json!(domain_invalid)));
         }
     }
-    let describe_path = property(tools, "describe", "path");
-    assert!(
-        validator(describe_path).is_valid(&json!(format!(
-            "coral.providers.x.{}",
-            "a".repeat(1025 - "coral.providers.x.".len())
-        ))),
-        "the Call Path byte bound is domain-validated"
-    );
     let description_schema = validator(property(tools, "save_function", "description"));
     for invalid in ["a\0b", "line\nbreak", "text\n", "a\u{85}b"] {
         assert!(
@@ -253,25 +238,6 @@ async fn check_paths(session: &RawSession, task: &str, tools: &[Value]) {
                 Some(&json!("invalid_input"))
             );
         }
-    }
-    for path in [
-        "a/b",
-        "coral.providers.onlyNamespace",
-        "coral.functions.a..b",
-        "coral.functions.1b",
-        "coral.functions.a\0b",
-    ] {
-        coral_search::CallPath::parse(path).expect_err("invalid complete path");
-        let rejected = session
-            .tool(
-                "describe",
-                json!({"task_id":task, "intent":"Check complete path", "path":path}),
-            )
-            .await;
-        assert_eq!(
-            rejected.pointer("/structuredContent/code"),
-            Some(&json!("invalid_input"))
-        );
     }
     // The schema describes, rather than reimplements, Unicode identifier and reserved-word semantics.
     assert!(validator(property(tools, "save_function", "path")).is_valid(&json!("a.then")));
@@ -355,8 +321,17 @@ async fn check_sources(session: &RawSession, task: &str, tools: &[Value]) {
             }
         }
     }
-    let described = session.tool("describe", json!({"task_id":task, "intent":"Describe valid Unicode path", "path":"coral.functions.éclair.$value"})).await;
-    assert_ne!(described.get("isError"), Some(&json!(true)));
+    let found = session
+        .program_value(
+            task,
+            r#"return (await coral.workspace.search({ paths: ["coral.functions.éclair.$value"] })).data;"#,
+        )
+        .await;
+    assert_eq!(
+        found.pointer("/descriptions/0/call_path"),
+        Some(&json!("coral.functions.éclair.$value")),
+        "{found}"
+    );
     let deleted = session
         .tool(
             "delete_function",
@@ -364,46 +339,6 @@ async fn check_sources(session: &RawSession, task: &str, tools: &[Value]) {
         )
         .await;
     assert_ne!(deleted.get("isError"), Some(&json!(true)));
-}
-
-/// A search page starts after a plain count of results, so the advertised
-/// schema refuses any other value, and `search` takes no `cursor`.
-async fn check_offsets(session: &RawSession, task: &str, tools: &[Value]) {
-    let schema = validator(property(tools, "search", "offset"));
-    for valid in [Value::Null, json!(0), json!(20)] {
-        assert!(schema.is_valid(&valid), "{valid}");
-    }
-    for invalid in [json!(-1), json!(1.5), json!("20"), json!("")] {
-        assert!(!schema.is_valid(&invalid), "{invalid}");
-    }
-    let wrong_value = "the value of `offset` does not match the tool's input schema";
-    for (arguments, problem) in [
-        (json!({"offset":-1}), wrong_value),
-        (json!({"offset":1.5}), wrong_value),
-        (json!({"offset":"20"}), wrong_value),
-        (
-            json!({"cursor":"eyJ2ZXJzaW9uIjoyfQ"}),
-            "an argument is not one the tool takes. It takes: task_id, intent, query, provider, limit, offset",
-        ),
-    ] {
-        let mut arguments = arguments;
-        let fields = arguments.as_object_mut().expect("arguments");
-        fields.insert("task_id".into(), json!(task));
-        fields.insert("intent".into(), json!("Check offsets"));
-        let error = session
-            .result(
-                "tools/call",
-                json!({"name":"search", "arguments":arguments}),
-            )
-            .await
-            .expect_err("a value that is not an offset is a protocol rejection");
-        assert_eq!(error.get("code"), Some(&json!(-32602)), "{arguments}");
-        assert_eq!(
-            error.get("message"),
-            Some(&json!(format!("invalid arguments for 'search': {problem}"))),
-            "{arguments}"
-        );
-    }
 }
 
 async fn check_cursors(session: &RawSession, task: &str, tools: &[Value]) {
@@ -442,7 +377,7 @@ async fn check_cursors(session: &RawSession, task: &str, tools: &[Value]) {
     }
 }
 
-async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
+async fn check_identities(session: &RawSession, tools: &[Value]) {
     let canonical = "abcdef12-1234-4123-8123-123456789abc";
     for tool in tools {
         let name = tool.get("name").and_then(Value::as_str).expect("tool name");
@@ -465,7 +400,9 @@ async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
             ] {
                 assert!(validator.is_valid(&json!(valid)), "{name}.{field}: {valid}");
             }
-            assert!(!validator.is_valid(&Value::Null));
+            // Only `exec` may leave its Task out, when it states a goal.
+            let optional = (name, field) == ("exec", "task_id");
+            assert_eq!(validator.is_valid(&Value::Null), optional, "{name}.{field}");
             for invalid in [
                 "height-word-database".to_string(),
                 "Height-word-database-library".to_string(),
@@ -487,8 +424,8 @@ async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
         coral_run::RunId::parse(invalid).expect_err("invalid Run id");
         for (name, arguments) in [
             (
-                "search",
-                json!({"task_id": invalid, "intent": "Check Task identity"}),
+                "delete_function",
+                json!({"task_id": invalid, "intent": "Check Task identity", "path": "absent"}),
             ),
             ("wait", json!({"run_id": invalid})),
             ("cancel", json!({"run_id": invalid})),
@@ -500,46 +437,4 @@ async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
             assert_eq!(error.get("code"), Some(&json!(-32602)));
         }
     }
-    // `provider` is a namespace, or coral.workspace; an id or complete Call Path is not one.
-    let provider_schema = validator(property(tools, "search", "provider"));
-    assert!(provider_schema.is_valid(&json!("weather")));
-    assert!(provider_schema.is_valid(&json!("coral.workspace")));
-    for invalid in [
-        canonical,
-        "coral.providers.weather",
-        "coral.providers.weather.getForecast",
-        "not-a-uuid",
-        "ABCDEF12-1234-4123-8123-123456789ABC",
-    ] {
-        assert!(!provider_schema.is_valid(&json!(invalid)), "{invalid}");
-        let rejected = session
-            .tool(
-                "search",
-                json!({
-                    "task_id": task, "intent": "Check Provider namespace", "provider": invalid
-                }),
-            )
-            .await;
-        assert_eq!(
-            rejected.pointer("/structuredContent/code"),
-            Some(&json!("invalid_input")),
-            "{invalid}"
-        );
-    }
-    for provider in [None, Some(Value::Null), Some(json!("weather"))] {
-        let mut arguments = json!({"task_id": task, "intent": "Check optional Provider namespace"});
-        if let Some(provider) = provider {
-            arguments
-                .as_object_mut()
-                .expect("arguments")
-                .insert("provider".into(), provider);
-        }
-        let result = session.tool("search", arguments).await;
-        assert_ne!(result.get("isError"), Some(&json!(true)));
-    }
-    // Also assert the optional type itself, not just format-validation behavior.
-    assert_eq!(
-        property(tools, "search", "provider")["type"],
-        json!(["string", "null"])
-    );
 }

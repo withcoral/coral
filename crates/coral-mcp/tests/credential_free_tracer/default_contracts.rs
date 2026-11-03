@@ -6,60 +6,13 @@ pub(super) async fn check(
     index: &coral_search::SearchIndex,
 ) {
     check_schema(tools);
-    let started = session
-        .tool(
-            "start_task",
-            json!({"intent":"Check optional search defaults"}),
-        )
-        .await;
-    let task = started
-        .pointer("/structuredContent/task_id")
-        .and_then(Value::as_str)
-        .expect("Task id");
+    let task = session.start_task("Check optional search defaults").await;
+    let task = task.as_str();
     search_defaults_return_ten_visible_descriptions(session, task, index).await;
-    the_next_offset_reads_the_next_page(session, task).await;
     remove_default_limit_fixtures(session, task).await;
     session
         .tool("end_task", json!({"task_id":task, "outcome":"success"}))
         .await;
-}
-
-/// The `offset` argument reaches search, and `next_offset` reads on: the next
-/// page holds no hit of the first. Paging itself is coral-search's rule.
-async fn the_next_offset_reads_the_next_page(session: &super::RawSession, task: &str) {
-    let page = |offset: Option<Value>| async move {
-        let mut arguments = json!({
-            "task_id":task, "intent":"Read a search page", "query":"optionalDefaults", "limit":3
-        });
-        if let Some(offset) = offset {
-            arguments
-                .as_object_mut()
-                .expect("arguments")
-                .insert("offset".into(), offset);
-        }
-        let result = session.tool("search", arguments).await;
-        result
-            .get("structuredContent")
-            .cloned()
-            .expect("search page")
-    };
-    let call_paths = |page: &Value| {
-        page["hits"]
-            .as_array()
-            .expect("hits")
-            .iter()
-            .map(|hit| hit["call_path"].clone())
-            .collect::<Vec<_>>()
-    };
-    let first = page(None).await;
-    let next_offset = first.get("next_offset").cloned().expect("next_offset");
-    let next = page(Some(next_offset)).await;
-    assert!(!call_paths(&next).is_empty());
-    assert!(
-        call_paths(&next)
-            .iter()
-            .all(|path| !call_paths(&first).contains(path))
-    );
 }
 
 async fn search_defaults_return_ten_visible_descriptions(
@@ -82,48 +35,34 @@ async fn search_defaults_return_ten_visible_descriptions(
         assert_ne!(saved.get("isError"), Some(&json!(true)));
     }
     index.reconcile().await;
-    let exact = session
-        .tool(
-            "describe",
-            json!({
-                "task_id":task, "intent":"Read saved source and advisory diagnostics",
-                "path":"coral.functions.optionalDefaults.item0"
-            }),
+    // Discovery runs in a Program, so these defaults are coral.workspace.search's.
+    let found = session
+        .program_value(
+            task,
+            r#"const exact = await coral.workspace.search({ paths: ["coral.functions.optionalDefaults.item0"] });
+const pages = [];
+for (const limit of [undefined, 3, 12]) {
+  pages.push((await coral.workspace.search({ query: "optionalDefaults", limit })).data);
+}
+return { exact: exact.data.descriptions[0], pages };"#,
         )
         .await;
+    let found = &found;
+    let exact = &found["exact"];
     assert!(
-        !exact
-            .pointer("/structuredContent/diagnostics")
-            .and_then(Value::as_array)
+        !exact["diagnostics"]
+            .as_array()
             .expect("advisory diagnostics")
             .is_empty()
     );
     assert!(
-        exact
-            .pointer("/structuredContent/source")
-            .and_then(Value::as_str)
+        exact["source"]
+            .as_str()
             .expect("saved source")
             .contains("advisory")
     );
-    let mut default_page = None;
-    for (limit, count) in [
-        (None, 10),
-        (Some(Value::Null), 10),
-        (Some(json!(3)), 3),
-        (Some(json!(12)), 12),
-    ] {
-        let mut arguments = json!({
-            "task_id":task, "intent":"Observe the search result limit", "query":"optionalDefaults"
-        });
-        if let Some(limit) = limit {
-            arguments
-                .as_object_mut()
-                .expect("arguments")
-                .insert("limit".into(), limit);
-        }
-        let result = session.tool("search", arguments).await;
-        assert_ne!(result.get("isError"), Some(&json!(true)));
-        let page = result.get("structuredContent").expect("search page");
+    let pages = found["pages"].as_array().expect("pages");
+    for (page, count) in pages.iter().zip([10, 3, 12]) {
         for hit in page["hits"].as_array().expect("hits") {
             assert!(hit.get("source").is_none());
             assert!(hit.get("diagnostics").is_none());
@@ -134,24 +73,11 @@ async fn search_defaults_return_ten_visible_descriptions(
                     .contains("number")
             );
         }
-        assert_eq!(
-            page.get("hits")
-                .and_then(Value::as_array)
-                .expect("hits")
-                .len(),
-            count
-        );
+        assert_eq!(page["hits"].as_array().expect("hits").len(), count);
         assert_eq!(
             page.get("next_offset").and_then(Value::as_u64),
             (count < 12).then_some(count as u64)
         );
-        if count == 10 {
-            if let Some(expected) = &default_page {
-                assert_eq!(page, expected, "omission and null return the same page");
-            } else {
-                default_page = Some(page.clone());
-            }
-        }
     }
 }
 
@@ -176,17 +102,7 @@ pub(super) async fn check_exec_defaults(
     user: &coral_workspace::AuthenticatedUser,
     workspace: &coral_workspace::WorkspaceId,
 ) {
-    let started = super::call(
-        client,
-        "start_task",
-        json!({"intent":"Check optional execution defaults"}),
-    )
-    .await;
-    let task = super::structured(&started)
-        .get("task_id")
-        .and_then(Value::as_str)
-        .expect("Task id")
-        .to_string();
+    let task = super::start_task(client, "Check optional execution defaults").await;
     initial_wait_batches_until_terminal_unless_explicitly_zero(client, &task).await;
     let actor = coral_workspace::AuthenticatedPrincipal::user(user.clone());
     for (timeout, expected_nanos) in [
@@ -315,7 +231,6 @@ fn property<'a>(tools: &'a [Value], name: &str, field: &str) -> &'a Value {
 
 fn check_schema(tools: &[Value]) {
     for (name, field, default) in [
-        ("search", "limit", 10),
         ("exec", "run_timeout_ms", 900_000),
         ("exec", "wait_ms", 30_000),
         ("wait", "wait_ms", 0),

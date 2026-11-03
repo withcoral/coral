@@ -387,7 +387,8 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
         "the User may see the caller-route Provider"
     );
     // A Call Root the caller cannot search is refused, and the refusal lists
-    // only the Call Roots the caller can search: those `start_task` shows.
+    // only the Call Roots the caller can search: those `searchable_providers`
+    // returns.
     for (principal, call_root, searchable) in [
         (
             &corpus.principal,

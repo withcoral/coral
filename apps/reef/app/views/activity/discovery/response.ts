@@ -11,10 +11,11 @@ import type {
 } from '../types'
 
 /*
- * The keys Reef reads from a stored `search` or `describe` response. Coral
- * writes them in `crates/coral-search/src/projection.rs` and advertises them as
- * the tools' output schemas. `response.test.ts` checks each key and type here
- * against the snapshots of those schemas, so change both together.
+ * The keys Reef reads from a stored `search` or `describe` response. Agents
+ * discover in Programs now, so these are retained records only. Coral wrote
+ * them in `crates/coral-search/src/projection.rs`, and coral-mcp snapshots
+ * their schemas. `response.test.ts` checks each key and type here against
+ * those snapshots, so change both together.
  */
 const entityKind = z.enum(['provider_tool', 'saved_function'])
 const hints = z.object({

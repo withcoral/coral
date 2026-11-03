@@ -1,7 +1,7 @@
 //! Attributed command choreography. Tool decisions and writes stay with their owners.
 use crate::{
     AttemptEvidence, AttemptKind, AttributedCommand, DiscoveryContext, Error, InteractionId,
-    TaskModule,
+    NewTaskCommand, TaskModule,
 };
 use crate::{interaction_repository, repository};
 use coral_db::Transaction;
@@ -83,22 +83,11 @@ impl TaskCommands {
         }
     }
 
-    /// The Call Roots of the Providers the caller can search, as Universal
-    /// Search decides them. Retains nothing.
-    /// # Errors
-    /// Discovery authority and persistence failures.
-    pub async fn searchable_providers(
-        &self,
-        actor: &coral_workspace::AuthenticatedPrincipal,
-        workspace_id: &coral_workspace::WorkspaceId,
-    ) -> Result<Vec<coral_search::ProviderCallRoot>, Error> {
-        Ok(self
-            .search
-            .searchable_providers(actor, workspace_id)
-            .await?)
-    }
-
     /// Retains exactly one requested search page before returning it.
+    ///
+    /// No MCP tool calls this: agents discover with `coral.workspace.search`
+    /// inside a Run. It still writes the `search` record that Task history
+    /// keeps from before, so tests of retained history make one as Coral did.
     /// # Errors
     /// Begin failure prevents discovery; incomplete persistence never implies success.
     pub async fn search(
@@ -254,6 +243,9 @@ impl TaskCommands {
 
     /// Retains the exact description, including editable source and
     /// diagnostics, or the `types` of it that the caller names.
+    ///
+    /// No MCP tool calls this, as for [`Self::search`]: it writes the
+    /// `describe` record Task history keeps from before.
     /// # Errors
     /// Concealed probes never begin; incomplete recording prevents success.
     pub async fn describe(
@@ -351,6 +343,79 @@ impl TaskCommands {
             .pause(crate::command_tests::Checkpoint::AfterCommit)
             .await;
         Ok(self.runs.launch(staged).await?)
+    }
+
+    /// Starts a Task for the call's goal and accepts its first Run in one
+    /// commit, then launches the Run. Admission comes first, so a refused
+    /// Program starts no Task and leaves nothing to record.
+    ///
+    /// Once that commit succeeds, the Task is returned beside the launch's
+    /// result, even when the launch fails. The caller only has the goal, so
+    /// without the Task a retry would start a second one.
+    /// # Errors
+    /// Safe admission failures create no Task and no Run. A launch error
+    /// comes back beside the Task and never undoes acceptance.
+    pub async fn submit_new_task(
+        &self,
+        call: &NewTaskCommand,
+        source: &str,
+        timeout_ms: u64,
+    ) -> Result<(crate::Task, Result<coral_run::RunUpdate, Error>), Error> {
+        let submission = coral_run::RunSubmission::new(
+            coral_run::ProgramSource::parse(source)?,
+            coral_run::RunTimeout::from_millis(timeout_ms)?,
+        );
+        let prepared = self
+            .runs
+            .prepare(&call.actor, &call.workspace_id, submission)
+            .await?;
+        let started_at = now()?;
+        let mut transaction = self.tasks.database.begin().await?;
+        let task = self
+            .tasks
+            .start_in_transaction(
+                &mut transaction,
+                &call.actor,
+                &call.workspace_id,
+                call.goal.clone(),
+                started_at,
+            )
+            .await?;
+        tracing::Span::current().record("coral.task.id", safe::id(&task.telemetry_id()));
+        let attributed = AttributedCommand::new(
+            call.actor.clone(),
+            call.workspace_id.clone(),
+            task.id().clone(),
+            call.intent.clone(),
+            call.trace_id.clone(),
+        );
+        let id = InteractionId::generate();
+        interaction_repository::insert(
+            &mut transaction,
+            &attributed,
+            &id,
+            AttemptKind::Submit,
+            started_at,
+        )
+        .await?;
+        let staged = self
+            .runs
+            .accept_in_transaction(&mut transaction, prepared)
+            .await?;
+        self.complete(
+            &mut transaction,
+            &attributed,
+            &id,
+            &AttemptEvidence::Run(staged.run_id().clone()),
+        )
+        .await?;
+        transaction.commit().await?;
+        #[cfg(test)]
+        self.control
+            .pause(crate::command_tests::Checkpoint::AfterCommit)
+            .await;
+        let launched = self.runs.launch(staged).await.map_err(Error::from);
+        Ok((task, launched))
     }
 
     fn function_context(

@@ -2,10 +2,10 @@
 //! schemas a Program is typed from, the arguments Coral reads against the
 //! input schema, and the result types Coral writes against the output schema.
 //!
-//! The result types are also the shape MCP `search` and `describe` return
-//! and the shape Task history retains, so every surface that shows a search
-//! page or an exact description shows the same fields. coral-search builds
-//! them from its own page and descriptions.
+//! The result types are also the shape of the `search` and `describe`
+//! records Task history retains from before discovery moved into Programs,
+//! so a retained page or description shows the same fields a Program reads.
+//! coral-search builds them from its own page and descriptions.
 
 use std::borrow::Cow;
 
