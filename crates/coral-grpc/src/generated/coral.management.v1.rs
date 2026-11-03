@@ -6070,11 +6070,25 @@ pub struct CountRequiredActionsRequest {
     pub workspace: ::prost::alloc::string::String,
 }
 /// Number of pending requests. A failed read is an error, never a zero count.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CountRequiredActionsResponse {
-    /// Pending requests. A connection request shared by several Runs counts once.
+    /// Pending requests of every kind. A connection request shared by several Runs counts once.
     #[prost(int64, tag = "1")]
     pub action_count: i64,
+    /// Pending Approval Requests.
+    #[prost(int64, tag = "2")]
+    pub approval_count: i64,
+    /// Pending Account Connection Requests.
+    #[prost(int64, tag = "3")]
+    pub connection_count: i64,
+    /// Opaque. Changes whenever the caller's pending Approval Requests change, and only then.
+    /// Compare it for equality. It grants no authority.
+    #[prost(string, tag = "4")]
+    pub approval_revision: ::prost::alloc::string::String,
+    /// Opaque. Changes whenever the caller's pending Account Connection Requests change, and
+    /// only then. Compare it for equality. It grants no authority.
+    #[prost(string, tag = "5")]
+    pub connection_revision: ::prost::alloc::string::String,
 }
 /// Selects the Workspace and the window to summarize.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6227,12 +6241,16 @@ pub struct BrowseRequiredActionsRequest {
     /// 1 to 100; zero means 50.
     #[prost(uint32, tag = "3")]
     pub page_size: u32,
+    /// Lists only this kind. Unspecified lists every kind. A cursor continues only the
+    /// read that returned it, with the same kind.
+    #[prost(enumeration = "ActivityRequiredActionKind", tag = "4")]
+    pub kind: i32,
 }
 /// A page of pending requests, most urgent first. Never includes arguments, comments,
 /// source or Account details.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BrowseRequiredActionsResponse {
-    /// Pending requests across the whole scope, not just this page.
+    /// Pending requests of the selected kind across the whole scope, not just this page.
     #[prost(int64, tag = "1")]
     pub action_count: i64,
     /// This page, ordered by deadline.
@@ -6252,6 +6270,59 @@ pub struct ActivityRequiredAction {
     /// A Run that waits on the request. For a shared connection request, the Run whose
     /// deadline comes first. Its action_page is absent.
     #[prost(message, optional, tag = "2")]
+    pub run: ::core::option::Option<ActivityRun>,
+}
+/// Selects a page of one Workspace's settled approval requests.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BrowseSettledApprovalsRequest {
+    /// Required workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub workspace: ::prost::alloc::string::String,
+    /// next_after from the previous page. Empty starts at the newest request.
+    #[prost(string, tag = "2")]
+    pub after: ::prost::alloc::string::String,
+    /// 1 to 100; zero means 50.
+    #[prost(uint32, tag = "3")]
+    pub page_size: u32,
+}
+/// A page of settled approval requests, newest first. Requests Coral closed are left out.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BrowseSettledApprovalsResponse {
+    /// This page.
+    #[prost(message, repeated, tag = "1")]
+    pub approvals: ::prost::alloc::vec::Vec<ActivitySettledApproval>,
+    /// Pass as after to get the next page; empty on the last page. A newer decision
+    /// does not move a page already read.
+    #[prost(string, tag = "2")]
+    pub next_after: ::prost::alloc::string::String,
+}
+/// One settled approval request. Never includes arguments, comments or where the
+/// decision came from.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ActivitySettledApproval {
+    /// workspaces/{workspace}/approvals/{approval}.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// How it ended. New values may be added; treat unknown values as unspecified.
+    #[prost(enumeration = "ActivityApprovalOutcome", tag = "2")]
+    pub outcome: i32,
+    /// When it settled. For an expired request, its deadline.
+    #[prost(int64, tag = "3")]
+    pub settled_at_unix_nanos: i64,
+    /// Principal whose decision won; empty for an expired request.
+    #[prost(string, tag = "4")]
+    pub approver: ::prost::alloc::string::String,
+    /// Label for who decided: "You", their name, or "Unavailable user". Empty if nobody decided.
+    #[prost(string, tag = "5")]
+    pub approver_label: ::prost::alloc::string::String,
+    /// Path the Program called.
+    #[prost(string, tag = "6")]
+    pub call_path: ::prost::alloc::string::String,
+    /// The Provider's current display name, or "Unavailable provider" if it was removed.
+    #[prost(string, tag = "7")]
+    pub provider_label: ::prost::alloc::string::String,
+    /// The Run that asked. Its action_page is absent.
+    #[prost(message, optional, tag = "8")]
     pub run: ::core::option::Option<ActivityRun>,
 }
 /// Approves or declines one request, after the caller has reviewed its arguments.
@@ -6874,6 +6945,78 @@ impl ActivityRunFailureCode {
         }
     }
 }
+/// One kind of pending request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActivityRequiredActionKind {
+    /// Every kind.
+    Unspecified = 0,
+    /// Approval Requests.
+    Approval = 1,
+    /// Account Connection Requests.
+    AccountConnection = 2,
+}
+impl ActivityRequiredActionKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ACTIVITY_REQUIRED_ACTION_KIND_UNSPECIFIED",
+            Self::Approval => "ACTIVITY_REQUIRED_ACTION_KIND_APPROVAL",
+            Self::AccountConnection => "ACTIVITY_REQUIRED_ACTION_KIND_ACCOUNT_CONNECTION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACTIVITY_REQUIRED_ACTION_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "ACTIVITY_REQUIRED_ACTION_KIND_APPROVAL" => Some(Self::Approval),
+            "ACTIVITY_REQUIRED_ACTION_KIND_ACCOUNT_CONNECTION" => {
+                Some(Self::AccountConnection)
+            }
+            _ => None,
+        }
+    }
+}
+/// How a settled approval request ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActivityApprovalOutcome {
+    /// Unknown to this client.
+    Unspecified = 0,
+    /// A person approved it.
+    Approved = 1,
+    /// A person declined it.
+    Declined = 2,
+    /// Its deadline passed with nobody deciding.
+    Expired = 3,
+}
+impl ActivityApprovalOutcome {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ACTIVITY_APPROVAL_OUTCOME_UNSPECIFIED",
+            Self::Approved => "ACTIVITY_APPROVAL_OUTCOME_APPROVED",
+            Self::Declined => "ACTIVITY_APPROVAL_OUTCOME_DECLINED",
+            Self::Expired => "ACTIVITY_APPROVAL_OUTCOME_EXPIRED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACTIVITY_APPROVAL_OUTCOME_UNSPECIFIED" => Some(Self::Unspecified),
+            "ACTIVITY_APPROVAL_OUTCOME_APPROVED" => Some(Self::Approved),
+            "ACTIVITY_APPROVAL_OUTCOME_DECLINED" => Some(Self::Declined),
+            "ACTIVITY_APPROVAL_OUTCOME_EXPIRED" => Some(Self::Expired),
+            _ => None,
+        }
+    }
+}
 /// Generated client implementations.
 pub mod activity_service_client {
     #![allow(
@@ -7267,6 +7410,38 @@ pub mod activity_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Lists one Workspace's approved, declined and expired approval requests, newest
+        /// first: the caller's own, plus Agent requests in Workspaces the caller owns. Rows
+        /// never include arguments or comments; read those with InspectApproval.
+        pub async fn browse_settled_approvals(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BrowseSettledApprovalsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BrowseSettledApprovalsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.ActivityService/BrowseSettledApprovals",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.ActivityService",
+                        "BrowseSettledApprovals",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// Sums the caller's recent work in one Workspace: call outcomes, stopped and
         /// busiest Tools, approval decisions, and context impact. Counts the caller's
         /// own work and, in a Workspace the caller owns, its Agents' work, like the
@@ -7521,6 +7696,16 @@ pub(crate) mod activity_service_server {
             request: tonic::Request<super::CountRequiredActionsRequest>,
         ) -> std::result::Result<
             tonic::Response<super::CountRequiredActionsResponse>,
+            tonic::Status,
+        >;
+        /// Lists one Workspace's approved, declined and expired approval requests, newest
+        /// first: the caller's own, plus Agent requests in Workspaces the caller owns. Rows
+        /// never include arguments or comments; read those with InspectApproval.
+        async fn browse_settled_approvals(
+            &self,
+            request: tonic::Request<super::BrowseSettledApprovalsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BrowseSettledApprovalsResponse>,
             tonic::Status,
         >;
         /// Sums the caller's recent work in one Workspace: call outcomes, stopped and
@@ -8105,6 +8290,55 @@ pub(crate) mod activity_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = CountRequiredActionsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.ActivityService/BrowseSettledApprovals" => {
+                    #[allow(non_camel_case_types)]
+                    struct BrowseSettledApprovalsSvc<T: ActivityService>(pub Arc<T>);
+                    impl<
+                        T: ActivityService,
+                    > tonic::server::UnaryService<super::BrowseSettledApprovalsRequest>
+                    for BrowseSettledApprovalsSvc<T> {
+                        type Response = super::BrowseSettledApprovalsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BrowseSettledApprovalsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ActivityService>::browse_settled_approvals(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BrowseSettledApprovalsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

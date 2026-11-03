@@ -57,7 +57,7 @@ it('returns the winning decision rather than asserting that a stale requested ap
   )
   expect(JSON.stringify(response.data)).not.toContain('Reviewed exact arguments')
 })
-it('decides from the pending queue, which sends no comment field', async () => {
+it('decides from a row, which sends no comment field', async () => {
   const response = await action(
     authRouteTestArgs(
       new Request('http://reef.test/activity/resolve', {

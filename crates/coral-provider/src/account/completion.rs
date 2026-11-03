@@ -65,8 +65,15 @@ impl AccountModule {
             .scope_authority(&mut tx, context.actor(), owner)
             .await?;
         let provider = repository::authorization_provider(&mut tx, owner, id).await?;
-        crate::repository::hold_active_provider_for_workspace_in_transaction(
-            &mut tx, owner, &provider,
+        // Hold the Provider before the Authorization, so a concurrent
+        // Provider change waits. A disabled Provider is held too, which
+        // decides nothing: `provider_contract` below refuses it for an open
+        // Authorization.
+        crate::repository::current_provider(
+            &mut tx,
+            owner,
+            crate::repository::ProviderKey::Id(&provider),
+            crate::repository::ProviderHold::Exclusive,
         )
         .await?;
         let mut row = load_authorization(&mut tx, owner, id).await?;

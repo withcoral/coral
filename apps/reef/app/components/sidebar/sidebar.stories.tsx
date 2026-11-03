@@ -69,17 +69,23 @@ export const Owner: Story = {}
 export const Activity: Story = {
   parameters: { initialEntry: '/workspaces/demo/activity' },
 }
-// The open Workspace shows its count on Activity; the closed one on its name.
+// The open Workspace shows each count on its page; the closed one the total on its name.
 export const ActionCount: Story = {
   ...Activity,
   args: {
-    actionCounts: { '/workspaces/demo': '3', '/workspaces/research': '12' },
+    actionCounts: {
+      '/workspaces/demo': { total: '5', approvals: '3', connections: '2' },
+      '/workspaces/research': { total: '12', approvals: '12', connections: '0' },
+    },
   },
 }
 export const LargeActionCount: Story = {
   ...Activity,
   args: {
-    actionCounts: { '/workspaces/demo': '1000', '/workspaces/research': '0' },
+    actionCounts: {
+      '/workspaces/demo': { total: '1000', approvals: '1000', connections: '0' },
+      '/workspaces/research': { total: '0', approvals: '0', connections: '0' },
+    },
   },
 }
 export const CollapsedActionCount: Story = {

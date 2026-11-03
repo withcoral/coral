@@ -5,11 +5,10 @@ import { csrfTokenForRequest, validateCsrfToken } from './csrf.server'
 import {
   commitCoralWebSession,
   commitOAuthTransaction,
-  readCoralWebSession,
+  coralWebSessionHandle,
   readOAuthTransaction,
 } from './session.server'
 import { requiredAuthConfig } from './test-config'
-import type { AuthSession } from './types'
 
 // Reef signs every cookie it sets, and that proves nothing here: Mallory holds
 // a Coral account of her own, so each cookie she tosses was minted by this same
@@ -31,12 +30,12 @@ const DEEP_PATH = '/workspaces/analytics'
 // assertions below would pass for the wrong reason.
 const CANARY = 'tossed_canary'
 
-const alice: AuthSession = {
-  accessToken: 'alice-coral-access-token',
-  expiresAt: unixTimestamp() + 1800,
-  tokenType: 'Bearer',
+const alice = {
+  endpoint: `${config.issuer}/oauth/session`,
+  expiresIn: 1800,
+  handle: 'coral_ws_alice',
 }
-const mallory: AuthSession = { ...alice, accessToken: 'mallory-coral-access-token' }
+const mallory = { ...alice, handle: 'coral_ws_mallory' }
 
 interface Visit {
   setCookie: string[]
@@ -94,7 +93,7 @@ describe('hosted Reef cookies', () => {
 
     expect(cookieHeader).toContain(`${CANARY}=1`)
     const request = new Request(new URL(DEEP_PATH, reef), { headers: { cookie: cookieHeader } })
-    await expect(readCoralWebSession(request, config)).resolves.toEqual(alice)
+    await expect(coralWebSessionHandle(request, config)).resolves.toBe(alice.handle)
     await expect(readOAuthTransaction(request, config)).resolves.toBeNull()
     await expect(
       validateCsrfToken(postRequest(cookieHeader, aliceCsrf.token), config, alice),
@@ -144,8 +143,4 @@ function postRequest(cookieHeader: string, csrf: string): Request {
     headers: { cookie: cookieHeader },
     method: 'POST',
   })
-}
-
-function unixTimestamp(): number {
-  return Math.floor(Date.now() / 1000)
 }

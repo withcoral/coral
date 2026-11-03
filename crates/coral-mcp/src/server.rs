@@ -210,7 +210,9 @@ impl McpServer {
             )
             .await
             .map_err(task_failure)?;
-        projection::success(projection::exact_description(&result)).map_err(DispatchError::Tool)
+        projection::exact_description(&result)
+            .and_then(projection::success)
+            .map_err(DispatchError::Tool)
     }
 
     async fn save_function(

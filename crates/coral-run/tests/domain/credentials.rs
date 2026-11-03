@@ -336,7 +336,8 @@ impl PublicClientAccount {
                 .with_incompatible_configuration_confirmation(),
             )
             .await
-            .unwrap();
+            .unwrap()
+            .skip_search();
         let broken = Self::mount_token_endpoint(&server).await;
         let account_id = Self::connect(&accounts, &context, &tool).await;
         let runs = fixture.live_runs(Some(accounts.clone()));
@@ -1063,7 +1064,8 @@ async fn agent_caller_dispatch_uses_only_preprovisioned_credentials_without_inte
                     .with_incompatible_configuration_confirmation(),
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .skip_search();
         } else if stage == 0 {
             let authorization = accounts
                 .start_agent_authorization(

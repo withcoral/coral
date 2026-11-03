@@ -12,6 +12,7 @@ import { trail } from '@/views/management/layout'
 import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
 import { activityPage, approvalContext, approvalRequest, run, workspace } from './fixtures'
+import { leavesActivityReview } from './navigation'
 import type { ActivityPage, ActivityRow } from './types'
 import { emulateReducedMotion, resizeViewport } from '../../../.storybook/browser'
 
@@ -81,8 +82,9 @@ function RailRoute() {
   const navigate = useNavigate()
   const { search } = useLocation()
   const { state } = useNavigation()
+  const request = page.detail?.kind === 'run' ? page.detail.request : null
   return (
-    <ActionReviewSession request={page.detail?.kind === 'run' ? page.detail.request : null}>
+    <ActionReviewSession request={request} leaves={leavesActivityReview(request)}>
       <code aria-label="Address">{search}</code>
       <output aria-label="Navigation">{state}</output>
       <button type="button" onClick={() => navigate(-1)}>

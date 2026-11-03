@@ -6,21 +6,18 @@ test('The shell remembers navigation preferences and recovers from a missing pag
   await withOwnerSession(context, async ({ page, target, step, actor }) => {
     const name = `Navigation ${crypto.randomUUID()}`
     const workspace = await createWorkspace(actor.accessToken, name)
-    await step('Open Coral on a workspace Activity', async () => {
+    await step('Open Coral on a workspace Overview', async () => {
       expect((await page.request.get('/readyz')).status()).toBe(200)
       if (target.mcpURL)
         expect((await page.request.get(`${target.mcpURL}/readyz`)).status()).toBe(200)
       await page.goto('/')
-      await breadcrumb(page, 'Activity').waitFor()
+      await breadcrumb(page, 'Overview').waitFor()
       // Other scenarios share this Owner, so home may open any of their Workspaces.
-      expect(new URL(page.url()).pathname).toMatch(/^\/workspaces\/[^/]+\/activity$/)
+      expect(new URL(page.url()).pathname).toMatch(/^\/workspaces\/[^/]+$/)
       await page.getByRole('navigation', { name: 'Coral', exact: true }).waitFor()
       await page.getByRole('button', { name: 'Collapse sidebar', exact: true }).waitFor()
     })
     await step('Open Activity from the workspace in the sidebar', async () => {
-      expect(await page.getByRole('link', { name: 'Needs your action', exact: true }).count()).toBe(
-        0,
-      )
       await page.goto(`/workspaces/${workspace}`)
       await page
         .getByRole('navigation', { name: 'Coral', exact: true })

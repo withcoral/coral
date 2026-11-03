@@ -53,14 +53,6 @@ export const list = style({
   minWidth: 0,
   gap: 16,
 })
-/** Sized by its rows; the history list below takes the remaining height. */
-export const pending = style({
-  display: 'flex',
-  flexDirection: 'column',
-  flexShrink: 0,
-  minWidth: 0,
-  gap: 12,
-})
 export const metadata = style({
   display: 'flex',
   flexDirection: 'column',

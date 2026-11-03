@@ -126,8 +126,9 @@ struct QueryInput {
 struct PathsInput {
     #[schemars(
         length(min = 1, max = 10),
-        description = "1 to 10 complete Call Paths to read exactly, such as \
-                       coral.providers.github.repos.get."
+        inner(length(max = SEARCH_PATH_MAX_BYTES)),
+        description = "1 to 10 complete Call Paths to read exactly, each at most 1024 UTF-8 \
+                       bytes, such as coral.providers.github.repos.get."
     )]
     paths: Vec<String>,
 }
@@ -142,7 +143,8 @@ struct PathsInput {
 struct TypesInput {
     #[schemars(
         schema_with = "one_path_schema",
-        description = "The one complete Call Path whose types to read."
+        description = "The one complete Call Path whose types to read, at most 1024 UTF-8 \
+                       bytes."
     )]
     paths: (String,),
     #[schemars(
@@ -157,7 +159,7 @@ struct TypesInput {
 fn one_path_schema(_generator: &mut SchemaGenerator) -> Schema {
     schemars::json_schema!({
         "type": "array",
-        "prefixItems": [{ "type": "string" }],
+        "prefixItems": [{ "type": "string", "maxLength": SEARCH_PATH_MAX_BYTES }],
         "items": false,
         "minItems": 1,
     })
@@ -252,10 +254,11 @@ impl SearchArguments {
                 format!("a Call Path is at most {SEARCH_PATH_MAX_BYTES} UTF-8 bytes"),
             ));
         }
-        let types = arguments.types.unwrap_or_default();
-        if !types.is_empty() && paths.len() != 1 {
+        // As the schema reads it: `types`, even empty, names one path's types.
+        if arguments.types.is_some() && paths.len() != 1 {
             problems.push(ArgumentProblem::new("types", "pass types with one path"));
         }
+        let types = arguments.types.unwrap_or_default();
         if !problems.is_empty() {
             return Err(problems);
         }
@@ -284,6 +287,32 @@ impl SearchOutput {
     pub fn into_tool_result(self) -> Value {
         tool_result(&self)
     }
+
+    /// Whether a JSON reader holds every integer in it exactly. One past
+    /// 2^53 − 1 comes only from corrupt stored data, and a reader such as V8
+    /// would round it, so a surface fails rather than return it.
+    #[must_use]
+    pub fn is_exact_in_json(&self) -> bool {
+        match self {
+            Self::Page(page) => page.retriever_statuses.iter().all(|status| {
+                let coverage = &status.coverage;
+                [
+                    coverage.eligible_units,
+                    coverage.searched_units,
+                    coverage.failed_units,
+                    coverage.returned_count,
+                ]
+                .into_iter()
+                .all(exact_in_json)
+            }),
+            Self::Paths(paths) => paths.descriptions.iter().all(Description::is_exact_in_json),
+        }
+    }
+}
+
+/// Whether a JSON reader holds `value` exactly.
+const fn exact_in_json(value: u64) -> bool {
+    value <= JSON_SAFE_INTEGER_MAX
 }
 
 /// One page of Search Hits, and only what the caller acts on besides: the
@@ -320,7 +349,7 @@ pub struct SearchResult {
 #[schemars(
     deny_unknown_fields,
     description = "One Search Hit. Call a read from it when its signature line is complete: \
-                   no cut marker (`…`) and no type named in its input that the line does not \
+                   no `…` anywhere in it and no type named in its input that the line does not \
                    show. Read its exact description first otherwise, and before a write."
 )]
 pub struct SearchHit {
@@ -332,8 +361,9 @@ pub struct SearchHit {
     /// The callable's signature, cut to its byte limit.
     #[schemars(
         description = "The callable's input members one level deep; a provider tool's result \
-                       data types by name, an unnamed object as `{…}`; a Saved Function's result \
-                       members one level deep. At most 512 UTF-8 bytes."
+                       data types by name; a Saved Function's result members one level deep. \
+                       `{…}` marks an object the line does not show, a bare `…` what it cannot \
+                       read, and a final `…` cut text. At most 512 UTF-8 bytes."
     )]
     pub signature_line: String,
     /// The description around the first matched term.
@@ -584,6 +614,27 @@ pub enum Description {
     },
 }
 
+impl Description {
+    /// Whether a JSON reader holds every integer in it exactly: a saved
+    /// diagnostic's code, line and column. See
+    /// [`SearchOutput::is_exact_in_json`].
+    #[must_use]
+    pub fn is_exact_in_json(&self) -> bool {
+        match self {
+            Self::ProviderTool { .. } | Self::SavedFunction { detail: None, .. } => true,
+            Self::SavedFunction {
+                detail: Some(detail),
+                ..
+            } => detail.diagnostics.iter().all(|diagnostic| {
+                [Some(diagnostic.code), diagnostic.line, diagnostic.column]
+                    .into_iter()
+                    .flatten()
+                    .all(exact_in_json)
+            }),
+        }
+    }
+}
+
 /// What every exact description has.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(rename = "Authoring", description = "")]
@@ -667,9 +718,10 @@ pub(super) mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        DeclaredHints, Description, DescriptionAuthoring, MissingPath, PathsResult, SavedDetail,
-        SavedDiagnostic, SavedDiagnosticCategory, SearchHit, SearchOutput, SearchResult,
-        SearchRetriever, SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus,
+        DeclaredHints, Description, DescriptionAuthoring, MissingPath, PathsResult,
+        SEARCH_PATH_MAX_BYTES, SavedDetail, SavedDiagnostic, SavedDiagnosticCategory,
+        SearchArguments, SearchHit, SearchOutput, SearchResult, SearchRetriever,
+        SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus,
     };
 
     /// Arguments that use every part of `search`'s input schema.
@@ -803,5 +855,122 @@ pub(super) mod tests {
         .into_iter()
         .map(SearchOutput::into_tool_result)
         .collect()
+    }
+
+    /// Asserts that the input schema and Coral's reading both accept, or
+    /// both refuse, each of `cases`.
+    fn schema_and_parser_agree(cases: &[(Value, bool)]) {
+        let schema = jsonschema::validator_for(&super::definition().input).expect("schema");
+        for (arguments, accepted) in cases {
+            assert_eq!(schema.is_valid(arguments), *accepted, "schema: {arguments}");
+            assert_eq!(
+                SearchArguments::parse(arguments).is_ok(),
+                *accepted,
+                "parser: {arguments}"
+            );
+        }
+    }
+
+    // Catches: Coral reading an empty `types` beside several paths, which a
+    // typed Program cannot send. The one-change mutations of
+    // `valid_arguments` never reach it.
+    #[test]
+    fn types_go_with_one_path_even_when_empty() {
+        schema_and_parser_agree(&[
+            (json!({ "paths": ["a", "b"], "types": [] }), false),
+            (json!({ "paths": ["a"], "types": [] }), true),
+        ]);
+    }
+
+    // Catches: a schema that accepts a path longer than Coral reads, so a
+    // typed Program learns the limit only from a refusal.
+    #[test]
+    fn the_schema_bounds_each_path_as_coral_reads_it() {
+        let at_limit = "a".repeat(SEARCH_PATH_MAX_BYTES);
+        let past_limit = "a".repeat(SEARCH_PATH_MAX_BYTES + 1);
+        schema_and_parser_agree(&[
+            (json!({ "paths": [at_limit] }), true),
+            (json!({ "paths": ["a", past_limit] }), false),
+            (json!({ "paths": [at_limit], "types": ["T"] }), true),
+            (json!({ "paths": [past_limit], "types": ["T"] }), false),
+        ]);
+    }
+
+    // Catches: a hit that calls every `…` a cut, so a caller cannot tell an
+    // object the line leaves out, or a result it cannot read, from cut text.
+    #[test]
+    fn a_hit_says_what_each_signature_marker_means() {
+        let schema = serde_json::to_value(schemars::schema_for!(SearchHit)).expect("schema");
+        let text = |pointer: &str| {
+            schema
+                .pointer(pointer)
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("{pointer} in {schema}"))
+                .to_owned()
+        };
+        let hit = text("/description");
+        assert!(!hit.contains("cut marker"), "{hit}");
+        let line = text("/properties/signature_line/description");
+        for meaning in [
+            "`{…}` marks an object the line does not show",
+            "a bare `…` what it cannot read",
+            "a final `…` cut text",
+        ] {
+            assert!(line.contains(meaning), "{line} lacks {meaning}");
+        }
+    }
+
+    // Catches: an integer past 2^53 − 1, in a page's coverage or a saved
+    // diagnostic, that a surface would hand a JSON reader to round.
+    #[test]
+    fn an_output_is_exact_in_json_only_within_the_safe_range() {
+        const SAFE: u64 = 9_007_199_254_740_991;
+        let page = |units| {
+            SearchOutput::Page(SearchResult {
+                hits: Vec::new(),
+                has_more: false,
+                next_cursor: None,
+                retriever_statuses: vec![SearchRetrieverStatus {
+                    retriever: SearchRetriever::SavedFunction,
+                    state: SearchRetrieverState::Partial,
+                    coverage: SearchRetrieverCoverage {
+                        eligible_units: units,
+                        searched_units: 0,
+                        failed_units: 0,
+                        returned_count: 0,
+                        has_more: false,
+                    },
+                }],
+            })
+        };
+        let paths = |code, line, column| {
+            SearchOutput::Paths(PathsResult {
+                descriptions: vec![Description::SavedFunction {
+                    authoring: authoring("coral.functions.weekly"),
+                    detail: Some(SavedDetail {
+                        source: "export default async function weekly() {}".to_owned(),
+                        diagnostics: vec![SavedDiagnostic {
+                            category: SavedDiagnosticCategory::Warning,
+                            code,
+                            message: "unused".to_owned(),
+                            line,
+                            column,
+                        }],
+                        diagnostics_truncated: false,
+                    }),
+                }],
+                missing: Vec::new(),
+            })
+        };
+        for (output, exact) in [
+            (page(SAFE), true),
+            (page(SAFE + 1), false),
+            (paths(SAFE, Some(SAFE), Some(SAFE)), true),
+            (paths(SAFE + 1, None, None), false),
+            (paths(6133, Some(SAFE + 1), None), false),
+            (paths(6133, Some(1), Some(SAFE + 1)), false),
+        ] {
+            assert_eq!(output.is_exact_in_json(), exact, "{output:?}");
+        }
     }
 }

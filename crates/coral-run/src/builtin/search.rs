@@ -97,7 +97,15 @@ impl Search {
             .discover(host.actor, host.workspace_id, &self.request)
             .await
             .map_err(failure)?;
-        Ok(coral_search::projection::discovery(&found).into_tool_result())
+        let output = coral_search::projection::discovery(&found);
+        // As MCP `describe` does: fail rather than hand the Program a number
+        // V8 rounds. Only corrupt stored data holds one.
+        if !output.is_exact_in_json() {
+            return Err(Error::CorruptData(
+                "a discovery result holds an integer past the exact JSON range".to_owned(),
+            ));
+        }
+        Ok(output.into_tool_result())
     }
 }
 

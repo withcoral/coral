@@ -2,7 +2,7 @@ type SettledApprovalState = 'approved' | 'declined' | 'expired' | 'closed'
 
 const settledApprovals: Record<SettledApprovalState, { label: string }> = {
   approved: { label: 'Approved' },
-  declined: { label: 'Denied' },
+  declined: { label: 'Declined' },
   expired: { label: 'Expired' },
   closed: { label: 'Closed' },
 }

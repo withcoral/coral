@@ -55,5 +55,20 @@ export const accountStatus = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 4,
-  paddingBlock: 8,
+})
+// Decline, then Connect, at the end of a row.
+export const rowActions = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 8,
+  justifyContent: 'flex-end',
+  paddingBlock: 6,
+})
+// The provider's logo, then its name.
+export const provider = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: 8,
+  minWidth: 0,
 })

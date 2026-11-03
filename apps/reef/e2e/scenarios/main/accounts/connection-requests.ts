@@ -68,9 +68,11 @@ export async function connectionRequests(context: TestContext) {
         const review = page.getByRole('dialog', { name: 'Review action', exact: true })
         await review.getByRole('button', { name: 'Connect Connections', exact: true }).waitFor()
         await review.getByRole('button', { name: 'Decline', exact: true }).waitFor()
-        // Accounts sits in the workspace navigation.
+        // Accounts sits in the workspace navigation and counts the request on any page.
         await page.goto(`/workspaces/${workspace}`)
-        await page.getByRole('link', { name: 'Accounts', exact: true }).click()
+        await page
+          .getByRole('link', { name: 'Accounts. 1 pending connection request', exact: true })
+          .click()
         await page.getByRole('heading', { name: 'Accounts', exact: true, level: 1 }).waitFor()
         await page.getByText('A connection request is waiting.', { exact: true }).waitFor()
         await page.getByText('Not connected', { exact: true }).waitFor()
@@ -106,7 +108,7 @@ export async function connectionRequests(context: TestContext) {
       // The same run continues to its approval instead of failing the connection.
       await openRun()
       await page.getByRole('link', { name: /^Review .*connections\.listEntries$/ }).click()
-      await page.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Approve', exact: true }).waitFor()
     })
     await step(
       'Decline on the run fails the waiting call and leaves the account alone',

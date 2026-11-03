@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
+coral-auth.workspace = true
 coral-db.workspace = true
 coral-telemetry.workspace = true
 coral-workspace.workspace = true

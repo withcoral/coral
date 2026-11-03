@@ -349,7 +349,7 @@ impl ProviderPublication {
 /// Only the write knows these facts. A replay rebuilds the durable result
 /// from storage but never this evidence, so the result stays equal on replay.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PublicationEvidence {
+pub(crate) enum PublicationEvidence {
     /// The write activated a new Generation.
     Activated(ActivatedGeneration),
     /// The request had already committed; the write changed nothing.
@@ -412,7 +412,7 @@ impl ActivatedGeneration {
 
 /// A terminal publication result and its write evidence, before the caller commits.
 #[derive(Debug)]
-pub struct Published<T> {
+pub(crate) struct Published<T> {
     /// The durable terminal result, equal to what an exact replay returns.
     pub publication: T,
     /// What the write changed. The caller acts on it only after its commit.

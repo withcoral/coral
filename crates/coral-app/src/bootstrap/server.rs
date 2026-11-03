@@ -767,11 +767,8 @@ pub(crate) async fn start_server(
     // reconcile task's first pass runs in the background, so neither boot nor
     // a request waits for it.
     let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
-    let provider_workflow = coral_administration::ProviderWorkflow::new(
-        database.clone(),
-        providers.clone(),
-        search_index.clone(),
-    );
+    let provider_workflow =
+        coral_administration::ProviderWorkflow::new(providers.clone(), search_index.clone());
     // Every Workspace has a Built-in Provider with this process's catalog
     // before the process takes requests. A rollback moves Workspaces back the
     // same way.

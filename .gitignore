@@ -39,3 +39,4 @@ tasks/
 # Recorded UI evidence (videos, traces, logs and scenario snapshots)
 /apps/reef/e2e/runs/
 /apps/reef/e2e/generated/
+/node_modules/

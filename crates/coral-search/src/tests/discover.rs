@@ -359,7 +359,8 @@ async fn a_tool_named_with_a_word_of_the_path_is_suggested_before_one_whose_name
             &scope.workspace_id,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
     fixture.converge().await;
 

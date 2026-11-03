@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { startCoralOAuthLogin } from '@/auth/coral-oauth.server'
 import { localRuntimeConfig, publicRouteTestArgs } from '@/auth/server-context.test-helper'
-import { oauthCookieName, readCoralWebSession } from '@/auth/session.server'
+import { coralWebSessionHandle, oauthCookieName } from '@/auth/session.server'
 import { hostedRuntimeConfig, requiredAuthConfig } from '@/auth/test-config'
 
 import AuthCallback, { ErrorBoundary, loader } from './auth.callback'
@@ -12,6 +12,7 @@ import AuthCallback, { ErrorBoundary, loader } from './auth.callback'
 const config = requiredAuthConfig
 const metadata = {
   authorization_endpoint: `${config.issuer}/authorize`,
+  coral_web_session_endpoint: `${config.issuer}/oauth/session`,
   issuer: config.issuer,
   token_endpoint: `${config.issuer}/token`,
 }
@@ -22,11 +23,16 @@ let token: () => Promise<Response>
 
 describe('auth callback route', () => {
   beforeEach(() => {
-    token = async () => Response.json({ access_token: 'opaque-coral-token', expires_in: 3600 })
+    token = async () =>
+      Response.json({ access_token: 'opaque', expires_in: 3600, refresh_token: 'coral_rt_r' })
     fetch.mockReset()
-    fetch.mockImplementation(async (input) =>
-      String(input) === metadata.token_endpoint ? token() : Response.json(metadata),
-    )
+    fetch.mockImplementation(async (input) => {
+      if (String(input) === metadata.token_endpoint) return token()
+      if (String(input) === metadata.coral_web_session_endpoint) {
+        return Response.json({ expires_in: 3600, session: 'coral_ws_handle' }, { status: 201 })
+      }
+      return Response.json(metadata)
+    })
     vi.stubGlobal('fetch', fetch)
   })
 
@@ -59,13 +65,13 @@ describe('auth callback route', () => {
     )
     const session = cookies.find((cookie) => cookie.startsWith(`${config.cookieName}=`))
     await expect(
-      readCoralWebSession(
+      coralWebSessionHandle(
         new Request('https://coral-web.example.test/', {
           headers: { cookie: session!.split(';', 1)[0] },
         }),
         config,
       ),
-    ).resolves.toMatchObject({ accessToken: 'opaque-coral-token' })
+    ).resolves.toBe('coral_ws_handle')
   })
 
   it('marks expected callback failures private before the error boundary handles them', async () => {

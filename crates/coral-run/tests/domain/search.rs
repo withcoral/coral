@@ -205,3 +205,58 @@ async fn an_invalid_argument_names_what_to_correct() {
         );
     }
 }
+
+// Catches: a saved diagnostic integer past 2^53 − 1 reaching a Program as a
+// number V8 rounds, where MCP `describe` fails instead.
+#[tokio::test]
+async fn a_lookup_fails_rather_than_round_a_saved_diagnostic_integer() {
+    let scope = AdminScope::new("user:search-diagnostics").await;
+    SavedFunctionModule::new(
+        scope.fixture.database.clone(),
+        scope.fixture.workspaces.clone(),
+        crate::IsolateLimits::default(),
+    )
+    .expect("start Saved Function compiler")
+    .save(
+        &saved_function_change(scope.owner.clone(), 30, 'a'),
+        &scope.workspace_id,
+        SavedFunctionSave::new(
+            SavedFunctionPath::parse("reports.weekly").expect("path"),
+            SavedFunctionDescription::parse("The weekly report").expect("description"),
+            SavedFunctionSource::parse("export default async function weekly() { return 1; }")
+                .expect("source"),
+        ),
+    )
+    .await
+    .expect("save Saved Function");
+    // 2^53 + 1, which a JSON reader rounds to 2^53.
+    scope
+        .fixture
+        .test_database
+        .execute_fixture_sql(
+            "UPDATE saved_function_records SET diagnostics_json = \
+             '[{\"category\":\"warning\",\"code\":9007199254740993,\"message\":\"unused\",\
+             \"line\":1,\"column\":1}]'",
+        )
+        .await
+        .expect("store an oversized diagnostic code");
+    let run = scope
+        .start(
+            &scope.owner,
+            workspace_call(
+                "search",
+                r#"{ "paths": ["coral.functions.reports.weekly"] }"#,
+            ),
+        )
+        .await;
+    // Corrupt stored data ends the Run as any other host error in this
+    // lookup does, such as diagnostics past their stored bounds.
+    let terminal = scope.terminal(&scope.owner, &run).await;
+    assert!(
+        matches!(
+            terminal.terminal_outcome(),
+            Some(RunTerminalOutcome::Interrupted)
+        ),
+        "{terminal:?}"
+    );
+}
