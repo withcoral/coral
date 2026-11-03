@@ -331,34 +331,6 @@ impl TaskModule {
         Ok(page)
     }
 
-    /// Returns the intent the agent declared when it submitted a Run.
-    /// A Run without a Task, or whose Task the caller cannot see, has none.
-    /// # Errors
-    /// Returns persistence failures.
-    pub async fn run_intent(
-        &self,
-        actor: &AuthenticatedPrincipal,
-        workspace: &WorkspaceId,
-        run: &coral_run::RunId,
-    ) -> Result<Option<TaskIntent>, Error> {
-        let mut transaction = self.database.begin_read_snapshot().await?;
-        let Some((task, intent)) =
-            interaction_repository::run_intent(&mut transaction, workspace, run).await?
-        else {
-            return Ok(None);
-        };
-        match self
-            .visible_in_transaction(&mut transaction, actor, workspace, &task)
-            .await
-        {
-            Ok(_task) => {}
-            Err(Error::TaskNotFound) => return Ok(None),
-            Err(error) => return Err(error),
-        }
-        transaction.commit().await?;
-        Ok(Some(intent))
-    }
-
     /// Reads exact retained evidence without consulting today's catalog.
     /// # Errors
     /// Conceals inaccessible goals and unavailable interactions.

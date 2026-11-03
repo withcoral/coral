@@ -8,7 +8,6 @@ mod authentication;
 mod http;
 mod instructions;
 mod projection;
-mod prompts;
 mod server;
 mod urls;
 

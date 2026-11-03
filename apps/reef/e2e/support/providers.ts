@@ -52,7 +52,10 @@ export async function createWorkspaceViaUi(page: Page, name: string) {
 
 /** The dialog a new workspace's overview opens once for its creator. */
 export function onboardingDialog(page: Page) {
-  return page.getByRole('dialog', { name: 'Ask your agent to set up this workspace', exact: true })
+  return page.getByRole('dialog', {
+    name: 'Ask your agent to set up this workspace',
+    exact: true,
+  })
 }
 
 /** Closes the onboarding a workspace created through Reef opens on its overview. */
@@ -64,7 +67,10 @@ export async function dismissOnboarding(page: Page) {
 
 /** The breadcrumb trail, or the crumb that reads exactly `text`. */
 export function breadcrumb(page: Page, text?: string) {
-  const trail = page.getByRole('navigation', { name: 'breadcrumb', exact: true })
+  const trail = page.getByRole('navigation', {
+    name: 'breadcrumb',
+    exact: true,
+  })
   return text === undefined ? trail : trail.getByText(text, { exact: true })
 }
 
@@ -87,7 +93,10 @@ export async function openCustomSource(page: Page) {
  * limit then outlasts the action timeout on a busy runner.
  */
 export async function chooseFile(page: Page, name: string, buffer: Buffer) {
-  const replace = page.getByRole('link', { name: 'Replace document', exact: true })
+  const replace = page.getByRole('link', {
+    name: 'Replace document',
+    exact: true,
+  })
   const input = page.getByLabel('OpenAPI file', { exact: true })
   await input.or(replace).first().waitFor({ state: 'attached' })
   if (await replace.count()) await replace.click()
@@ -467,9 +476,9 @@ export async function enableTool(page: Page, name: string) {
 /** The tools an update lists under `group`, such as New or Removed. An open group's
  * toggle names it. */
 export function toolGroup(page: Page, group: string) {
-  return page
-    .getByRole('treeitem')
-    .filter({ has: page.getByRole('button', { name: `Collapse ${group}`, exact: true }) })
+  return page.getByRole('treeitem').filter({
+    has: page.getByRole('button', { name: `Collapse ${group}`, exact: true }),
+  })
 }
 
 /**
@@ -503,7 +512,10 @@ export async function addAtLink(page: Page, link: string) {
 export async function readTools(page: Page, secret: string) {
   const dialog = await openDialog(
     page,
-    page.getByRole('button', { name: 'Enter a token to read the tools', exact: true }),
+    page.getByRole('button', {
+      name: 'Enter a token to read the tools',
+      exact: true,
+    }),
   )
   await dialog.getByLabel('Token', { exact: true }).fill(secret)
   await dialog.getByRole('button', { name: 'List tools', exact: true }).click()
@@ -554,7 +566,10 @@ export async function openDialog(page: Page, trigger: Locator) {
 export async function connectSharedAccount(page: Page, secret: string) {
   const dialog = await openDialog(
     page,
-    page.getByRole('button', { name: 'Connect the shared account', exact: true }),
+    page.getByRole('button', {
+      name: 'Connect the shared account',
+      exact: true,
+    }),
   )
   await dialog.getByLabel('Token', { exact: true }).fill(secret)
   await dialog.getByRole('button', { name: 'Save and share the account', exact: true }).click()
@@ -756,22 +771,14 @@ export async function programWorkspace(
   return workspace
 }
 
-/** A 2026-07-28 tool result that asks the client before the call can finish. */
-export interface InputRequired {
-  resultType: 'input_required'
-  /** Keyed by request, such as `approval/<id>` for an Approval Request. */
-  inputRequests: Record<string, unknown>
-  requestState: string
-}
-
 /**
  * One real MCP client. By default, acquire the browser User's genuine
  * Workspace OAuth grant. Supply an Agent Registration bearer to act as an Agent.
  * Local checks use the implicit User. `wait` observes the original Run without replay.
  * Calling the helper directly retains the serialized result used by older scenarios.
  * Coral keeps no session on either version. On protocol 2026-07-28 each request
- * describes itself and accepts form prompts, so an approval comes back as
- * `InputRequired`, which `answer` answers.
+ * describes itself and declares form elicitation, which Coral never uses: a
+ * required action is reported in the Run Update, whatever the client declares.
  */
 export function programRunner(
   page: Page,
@@ -815,8 +822,13 @@ export function programRunner(
               ...params,
               _meta: {
                 'io.modelcontextprotocol/protocolVersion': version,
-                'io.modelcontextprotocol/clientInfo': { name: 'Reel', version: '1' },
-                'io.modelcontextprotocol/clientCapabilities': { elicitation: { form: {} } },
+                'io.modelcontextprotocol/clientInfo': {
+                  name: 'Reel',
+                  version: '1',
+                },
+                'io.modelcontextprotocol/clientCapabilities': {
+                  elicitation: { form: {} },
+                },
               },
             }
           : params,
@@ -857,7 +869,9 @@ export function programRunner(
       }
       const task = await rpc('tools/call', {
         name: 'start_task',
-        arguments: { intent: options.taskIntent ?? 'Recorded Provider scenario' },
+        arguments: {
+          intent: options.taskIntent ?? 'Recorded Provider scenario',
+        },
       })
       expect(task.isError).not.toBe(true)
       taskId = task.structuredContent.task_id
@@ -871,29 +885,13 @@ export function programRunner(
   })
   const exec = async (program: string): Promise<ToolResult<RunUpdate>> => {
     await initialize()
-    return rpc('tools/call', { name: 'exec', arguments: execArguments(program) })
+    return rpc('tools/call', {
+      name: 'exec',
+      arguments: execArguments(program),
+    })
   }
   return Object.assign(async (program: string) => JSON.stringify(await exec(program)), {
     exec,
-    /** On 2026-07-28: starts `program` and returns the prompt its first required action asks. */
-    async ask(program: string): Promise<InputRequired> {
-      const asked: unknown = await exec(program)
-      expect(asked).toMatchObject({ resultType: 'input_required' })
-      return asked as InputRequired
-    },
-    /** Answers a prompt by retrying the exec that asked it, with the same arguments. */
-    async answer(
-      program: string,
-      asked: InputRequired,
-      inputResponses: Record<string, { action: 'accept' | 'decline' | 'cancel' }>,
-    ): Promise<ToolResult<RunUpdate>> {
-      return rpc('tools/call', {
-        name: 'exec',
-        arguments: execArguments(program),
-        requestState: asked.requestState,
-        inputResponses,
-      })
-    },
     calls,
     taskId: () => taskId,
     async endTask(outcome: 'success' | 'failure', feedback?: string): Promise<ToolResult> {
@@ -950,7 +948,10 @@ export function programRunner(
     async callTool(
       name: string,
       args: object,
-    ): Promise<{ result?: ToolResult; error?: { code: number; message: string } }> {
+    ): Promise<{
+      result?: ToolResult
+      error?: { code: number; message: string }
+    }> {
       await initialize()
       return post('tools/call', { name, arguments: args })
     },
@@ -960,14 +961,17 @@ export function programRunner(
 /** Starts `program` and returns the Run Update that waits for the invoking User's approval. */
 export async function pausedForApproval(runner: ReturnType<typeof programRunner>, program: string) {
   const started = await runner.exec(program)
-  // A 2026-07-28 runner gets the approval as a prompt; use its ask instead.
+  // No client is asked in-band, whatever it declares.
   expect(started).not.toMatchObject({ resultType: 'input_required' })
   expect(started.isError).not.toBe(true)
   let paused = started.structuredContent
   for (let pages = 0; pages < 10 && !paused.required_actions.length; pages++)
     paused = (await runner.wait(paused)).structuredContent
   expect(paused.required_actions).toEqual([
-    expect.objectContaining({ kind: 'invocation_approval', required_actor: 'invoking_user' }),
+    expect.objectContaining({
+      kind: 'invocation_approval',
+      required_actor: 'invoking_user',
+    }),
   ])
   return paused
 }
@@ -1034,7 +1038,10 @@ async function confirmFixtureConfiguration(
   const configuration = setup.configuration?.suggested
   if (!configuration) throw new Error('fixture document has no configuration suggestions')
   if (!configuration.authentication.case)
-    configuration.authentication = { case: 'none', value: { $typeName: 'google.protobuf.Empty' } }
+    configuration.authentication = {
+      case: 'none',
+      value: { $typeName: 'google.protobuf.Empty' },
+    }
   await api.setups.confirmProviderSetupConfiguration({
     name: setup.name,
     expectedRevision: setup.configuration!.revision,

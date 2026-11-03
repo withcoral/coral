@@ -199,8 +199,9 @@ async fn start_server(
     });
     // No MCP session: every request stands on its own credential, so any Coral
     // Instance can serve it. A pre-2026-07-28 client still gets its
-    // `initialize` answer, without a session id, and asks about human actions
-    // through the Run Update instead of an in-band prompt (ADR 0026).
+    // `initialize` answer, without a session id. No client is asked anything
+    // in-band: a Run that waits on a person reports it in the Run Update with
+    // the Run Status Page link (ADR 0026).
     let streamable_config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
         .with_allowed_hosts(allowed_hosts)

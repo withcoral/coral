@@ -32,16 +32,22 @@ export function addProviderProgram() {
 
 /**
  * Starts addProviderProgram through the Coral Instance `owner`, which then
- * holds the Run, and returns once the Run waits for approval.
+ * holds the Run, and returns once the Run waits for approval. The client
+ * speaks `protocolVersion`; on either version the approval is a required
+ * action in the Run Update, never a prompt.
  */
 export async function runWaitingForApproval(
   page: Page,
   target: Target,
   accessToken: string | undefined,
   owner: number,
+  protocolVersion: '2025-11-25' | '2026-07-28' = '2025-11-25',
 ) {
   const workspace = await createWorkspace(accessToken, `Instances ${crypto.randomUUID()}`)
-  const runner = programRunner(page, target, workspace, { taskIntent: 'Add the weather provider' })
+  const runner = programRunner(page, target, workspace, {
+    taskIntent: 'Add the weather provider',
+    protocolVersion,
+  })
   let paused!: RunUpdate
   const run = await coralInstances().startOn(owner, async () => {
     paused = await pausedForApproval(runner, addProviderProgram())

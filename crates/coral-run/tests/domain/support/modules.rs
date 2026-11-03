@@ -1242,9 +1242,8 @@ pub(crate) async fn wait_for_terminal(
     panic!("Run did not become terminal");
 }
 
-/// Every Run-addressed read and command answers `RunNotFound` for `run`, and
-/// no action prompt is offered: the answer an absent Run gets. `case` names
-/// the scenario in the failure message.
+/// Every Run-addressed read and command answers `RunNotFound` for `run`: the
+/// answer an absent Run gets. `case` names the scenario in the failure message.
 pub(crate) async fn assert_run_not_found(
     runs: &RunModule,
     caller: &AuthenticatedPrincipal,
@@ -1294,13 +1293,6 @@ pub(crate) async fn assert_run_not_found(
         runs.cancel(caller, workspace, run, &immediate(None, 100))
             .await
             .map(drop),
-    );
-    assert!(
-        runs.action_prompts(caller, workspace, run)
-            .await
-            .unwrap()
-            .is_empty(),
-        "{case}: no prompt is offered"
     );
 }
 

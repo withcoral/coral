@@ -42,7 +42,6 @@ use tokio::sync::{Notify, oneshot};
 use tower as _;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
-use uuid as _;
 
 #[path = "credential_free_tracer/contracts.rs"]
 mod contracts;
@@ -1861,12 +1860,12 @@ async fn check_raw_terminal_states(session: &RawSession, task: &str) {
 mod client_visible_contracts;
 #[path = "credential_free_tracer/default_contracts.rs"]
 mod default_contracts;
+#[path = "credential_free_tracer/handoff_contracts.rs"]
+mod handoff_contracts;
 #[path = "credential_free_tracer/input_contracts.rs"]
 mod input_contracts;
 #[path = "credential_free_tracer/private_data_contracts.rs"]
 mod private_data_contracts;
-#[path = "credential_free_tracer/prompt_contracts.rs"]
-mod prompt_contracts;
 #[path = "credential_free_tracer/trace_contracts.rs"]
 mod trace_contracts;
 
@@ -2385,10 +2384,6 @@ impl RawSession {
     /// returns its `result`, or its `error`.
     fn interpret(&self, method: &str, params: &Value, message: &Value) -> Result<Value, Value> {
         match message.get("result") {
-            Some(result) if result.get("resultType") == Some(&json!("input_required")) => {
-                assert_conforms(&self.protocol_version, "InputRequiredResult", result);
-                Ok(result.clone())
-            }
             Some(result) => {
                 assert_conforms(&self.protocol_version, result_definition(method), result);
                 if method == "tools/call" {

@@ -1290,29 +1290,6 @@ pub(super) async fn pending_connection_deadline(
     Ok(row.map(|(deadline,)| deadline))
 }
 
-pub(super) async fn pending_connection_provider(
-    tx: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    user: &UserId,
-    request: ConnectionRequestId,
-) -> Result<Option<ProviderId>, Error> {
-    let mut query = pending_connection_statement(
-        Expr::val(workspace.to_string()),
-        Expr::val(user.as_str()),
-        Expr::val(request.to_string()),
-    );
-    query.clear_selects();
-    let row: Option<(String,)> = tx
-        .fetch_optional(
-            query
-                .column(AccountConnectionRequests::ProviderId)
-                .to_owned(),
-        )
-        .await?;
-    row.map(|(provider,)| ProviderId::parse(&provider))
-        .transpose()
-}
-
 /// One request's deadline while it is recorded `pending`: a request past
 /// its deadline stays pending until a holder records its expiry, so readers
 /// show the recorded state beside the deadline.

@@ -549,19 +549,6 @@ human actions for the Run and receives Run, approval, and account-connection cha
 Authorized Workspace Owners find Agent approval actions on the Approvals Page. _Avoid_: Per-Invocation action URL,
 bearer URL, MCP session state
 
-**Action Prompt**: A negotiated MCP elicitation that asks the invoking User about one current Approval Request or
-Account Connection Request of their own Run, returned as an `input_required` result that the client answers by
-retrying the same call. Each observing tool call asks about each current request at most once; a later call asks again
-while the request is still pending. An approval prompt is a form: accepting it approves that exact Invocation and
-declining it declines the Invocation, with the same first-wins rules as Reef. A connection prompt is a URL elicitation
-to the User's Reef page for that Provider Account, sent only to clients that support URL mode; declining it declines the
-request, and accepting it only opens the page. Dismissing a prompt without an answer decides nothing, and a later answer
-to an obsolete prompt decides nothing. The prompt keeps no durable state and grants no authority beyond the
-authenticated User's own. Coral keeps no MCP session, so a client on a protocol version before 2026-07-28 is never
-prompted in-band: its Run Update names the required actions and the Run Status Page. Agent bearer sessions, other
-Users, and Owners observing Agent Runs are never prompted. _Avoid_: one prompt per Run, form connection prompt, in-band
-prompt
-
 **Approval Request**: A durable host-owned request for a human decision on one pending Tool Invocation. Reef is
 the v1 human resolution interface that every Request can use, in local and remote deployments; a deployment without its
 local or hosted Reef interface is not ready. Coral creates a Request whenever an Invocation requires approval. It records the exact logical
@@ -569,8 +556,8 @@ Tool arguments for review on the Approvals Page and the Run Status Page independ
 Invocation with `approval_expired`; declining settles it with `approval_declined`. The first durable terminal decision
 wins. A later decision returns that result without changing it. If policy becomes `disabled`, Coral settles the
 Invocation with `tool_disabled`; if it becomes `enabled`, Coral closes the Request and continues after its other
-checks. A later Invocation can create a new request. The invoking User can also decide it through an Action Prompt in
-their MCP client; Reef remains available for every Request. An active browser is not required, and existing Requests
+checks. A later Invocation can create a new request. The invoking User decides it on the Run Status Page, which the
+assistant's link opens; Reef remains available for every Request. An active browser is not required, and existing Requests
 survive a temporary Reef outage. _Avoid_: per-Invocation approval URL, Program pause payload
 
 **Approvals Page**: The Workspace page in Reef where a person decides the Approval Requests waiting on them and reads

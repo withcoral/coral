@@ -42,7 +42,7 @@ records it.
   request was Recorded when it was not.
 - **Several Coral Instances share one Postgres database.** Each may own Runs and serve outside requests. MCP requests
   carry no session, so any instance serves them
-  ([ADR 0026](0026-mcp-requests-are-served-without-sessions.md)).
+  ([ADR 0026](0026-mcp-requests-are-served-without-sessions-and-a-required-action-reaches-its-user-through-the-assistants-link.md)).
 
 ## Rejected
 
