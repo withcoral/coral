@@ -15,7 +15,7 @@
 //! Workspace authorizes and locks the mutation and prepares transaction-bound
 //! lost-access evidence. Provider retires credentials and pending workflows;
 //! Functions removes current definitions and writes private deletion evidence;
-//! Auth ends the Refresh Grants the lost access supported.
+//! Auth retires the Refresh Grants for the access being removed.
 //! Workspace then removes authority in the caller's transaction. Standalone
 //! commands open and commit that transaction; [`AccessLifecycleModule::apply_in_transaction`]
 //! joins an existing one without committing. Any failed facet or lifecycle event

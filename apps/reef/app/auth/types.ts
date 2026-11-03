@@ -24,7 +24,7 @@ export interface AuthSession {
   accessToken: string
   /** When `accessToken` expires, in Unix seconds. */
   expiresAt: number
-  /** The session's opaque handle. It is a bearer secret and never leaves the server. */
+  /** The session's opaque handle, a bearer secret carried in the session cookie. */
   handle: string
   /** When the session itself ends, in Unix seconds. It never moves later. */
   sessionExpiresAt: number

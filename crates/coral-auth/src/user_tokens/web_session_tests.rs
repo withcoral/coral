@@ -161,11 +161,19 @@ async fn a_session_ends_at_the_earlier_of_its_age_and_its_grant() {
     for (grant_lifetime, max_age, ends_after) in [
         (Duration::from_hours(24), Duration::from_secs(10), 10),
         (Duration::from_secs(5), HOUR, 5),
+        // A request for more than a year is shortened to one.
+        (
+            Duration::from_hours(24 * 730),
+            Duration::from_hours(24 * 3650),
+            365 * 24 * 3600,
+        ),
     ] {
         let fixture = Fixture::with_lifetime(grant_lifetime).await;
         let handle = fixture.web_session(max_age).await;
         // The grant started at NOW and the session one second later.
-        let session_end = NOW + SECOND + i64::try_from(max_age.as_nanos()).unwrap();
+        let session_end = NOW
+            + SECOND
+            + i64::try_from(max_age.min(Duration::from_hours(24 * 365)).as_nanos()).unwrap();
         let grant_end = NOW + 1 + i64::try_from(grant_lifetime.as_nanos()).unwrap();
         let end = session_end.min(grant_end);
         // Tokens carry whole seconds, so the session's last usable instant

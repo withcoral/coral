@@ -102,13 +102,17 @@ The insecure endpoint flag relaxes only the Reef-to-Coral hop. It does not
 relax `CORAL_WEB_PUBLIC_URL`, the OAuth issuer, browser-to-Reef transport, audience,
 cookie, or callback validation.
 
-`CORAL_WEB_SESSION_MAX_AGE_SECONDS` defaults to 3600 and caps how long Reef keeps a
-login, even if Coral issues a longer-lived access token. A shorter token expiry
-still wins. When the encrypted Reef session expires, or Coral rejects its token
-with `UNAUTHENTICATED`, Reef clears the session and sends the browser through a
-new login while preserving the requested path. There is no token refresh,
-silent renewal, token revocation, or upstream IdP logout in this release;
-signing out clears only the Reef session.
+Reef keeps a sign-in as a Coral Web Session. The session cookie carries only
+the session's handle, a bearer secret; Coral holds the Refresh Grant and mints
+a short-lived Reef access token for each request, so a session outlives its
+access tokens. `CORAL_WEB_SESSION_MAX_AGE_SECONDS` defaults to 2592000 (30 days)
+and caps a session's length; Coral's `refresh_token_ttl_seconds` caps it too,
+and the earlier limit wins. Activity never extends a session. When Coral ends
+a session, Reef keeps showing that it expired until the reader signs in again.
+When Coral rejects an access token with `UNAUTHENTICATED`, Reef clears the
+session and sends the browser through a new login, preserving the requested
+path. Signing out ends the session and its grant at Coral; there is no
+upstream IdP logout.
 
 Over HTTPS, Reef names its session and CSRF cookies with the `__Host-` prefix:
 `__Host-coral_web_session` and `__Host-coral_web_session_csrf` by default. The

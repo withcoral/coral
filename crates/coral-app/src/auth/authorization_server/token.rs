@@ -417,7 +417,7 @@ pub(super) fn token_error(error: TokenError) -> Response {
         TokenError::InvalidScope => ("invalid_scope", "scope is not supported"),
         TokenError::InvalidTarget => (
             "invalid_target",
-            "resource is required and must be a valid resource URI",
+            "resource or coral_audience is missing, invalid, or not this grant's",
         ),
         TokenError::UnsupportedGrantType => ("unsupported_grant_type", "grant type is unsupported"),
         TokenError::ServerError => ("server_error", "token issuance failed"),

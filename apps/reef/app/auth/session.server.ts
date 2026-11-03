@@ -316,7 +316,7 @@ function isPositiveSeconds(value: unknown): value is number {
 }
 
 function sessionUnavailable(): Response {
-  return new Response('Sign-in is temporarily unavailable. Try again.', { status: 503 })
+  return new Response('You cannot sign in right now. Try again.', { status: 503 })
 }
 
 async function readStoredSession(

@@ -242,9 +242,7 @@ async function startWebSession(
     !Number.isInteger(body.expires_in) ||
     body.expires_in <= 0
   ) {
-    throw new Error(
-      'Coral web session response did not include a session and a positive expires_in',
-    )
+    throw callbackError('Sign-in failed. Try again.')
   }
   return {
     endpoint: metadata.coral_web_session_endpoint,

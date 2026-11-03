@@ -24,7 +24,7 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   const config = context.get(runtimeConfigContext).auth
   if (config.mode === 'disabled') return redirect('/')
 
-  // A sign-out Coral did not answer is finished here, before anything else.
+  // Sign-outs Coral did not answer are retried here, before anything else.
   const cookies = new Headers()
   const pending = await finishPendingSignOuts(request, config)
   if (pending) cookies.append('Set-Cookie', pending.setCookie)
@@ -34,7 +34,11 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   try {
     session = await resolveCoralWebSession(request, config)
   } catch (error) {
-    if (error instanceof Response) throw markAuthResponsePrivate(error)
+    if (error instanceof Response) {
+      // Keep what the retry above learned, so a finished sign-out is not retried.
+      for (const cookie of cookies.getSetCookie()) error.headers.append('Set-Cookie', cookie)
+      throw markAuthResponsePrivate(error)
+    }
     throw error
   }
   if (session) return markAuthResponsePrivate(redirect('/', { headers: cookies }))
@@ -73,9 +77,7 @@ export default function Login({ loaderData }: Route.ComponentProps) {
             {loaderData?.sessionExpired ? 'Your session expired' : 'You are signed out'}
           </Typography.HeadingMedium>
           {loaderData?.signOutPending ? (
-            <Typography.Body role="status">
-              Sign-out is not complete. Reload this page to finish it.
-            </Typography.Body>
+            <Typography.Body role="status">Reload this page to finish signing out.</Typography.Body>
           ) : null}
           {/* GET, so submitting replaces the query wholesale — the interstitial flag drops
               away and the loader starts a real login on the next pass. */}

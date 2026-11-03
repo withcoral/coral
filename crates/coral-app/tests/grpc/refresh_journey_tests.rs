@@ -243,7 +243,10 @@ impl Mcp {
                        "wait_ms": 5000, "program": "return 2 + 3;"}),
             )
             .await;
+        // A Run that never ends fails here, not later on an expired token.
+        let deadline = Instant::now() + Duration::from_secs(30);
         while update["state"] == "running" {
+            assert!(Instant::now() < deadline, "the Run never ended: {update}");
             update = self
                 .tool(
                     bearer,

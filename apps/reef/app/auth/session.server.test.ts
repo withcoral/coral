@@ -97,6 +97,13 @@ describe('Coral web auth sessions', () => {
         ),
     ],
     [
+      'carries an end that is not a time',
+      async () =>
+        requestWith(
+          await signedSessionCookie({ endpoint: ENDPOINT, endsAt: 'soon', handle: HANDLE }),
+        ),
+    ],
+    [
       'carries no handle',
       async () => requestWith(await signedSessionCookie({ endpoint: ENDPOINT })),
     ],

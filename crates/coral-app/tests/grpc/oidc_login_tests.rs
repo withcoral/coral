@@ -293,8 +293,10 @@ pub(super) async fn redeem(
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 200, "the code redeems");
-    response.json().await.unwrap()
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    assert!(status.is_success(), "the code redeems: {status}: {body}");
+    serde_json::from_str(&body).unwrap()
 }
 
 /// The first `name=value` pair a response sets whose name starts with `prefix`.

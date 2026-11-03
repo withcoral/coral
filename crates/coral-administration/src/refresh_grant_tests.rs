@@ -239,9 +239,6 @@ async fn a_removal_racing_a_refresh_leaves_nothing_refreshable() {
     let fixture = Fixture::new().await;
     let peer = fixture.peer().await;
     for round in 0..3 {
-        if round > 0 {
-            fixture.join_workspace().await;
-        }
         let token = fixture
             .sign_in(AccessTarget::PrivateMcp(fixture.workspace.clone()))
             .await;
@@ -249,12 +246,21 @@ async fn a_removal_racing_a_refresh_leaves_nothing_refreshable() {
             fixture.refresh(&peer, &token),
             fixture.remove_from_workspace(),
         );
-        if let Ok(successor) = refreshed {
-            assert_eq!(
+        // Rejoin first, so only the removal's retirement can refuse what the
+        // race left behind, not the missing Membership.
+        fixture.join_workspace().await;
+        match refreshed {
+            Ok(successor) => assert_eq!(
                 fixture.refresh(&fixture.tokens, &successor).await,
                 Err(TokenRefusal::InvalidGrant),
                 "round {round}"
-            );
+            ),
+            Err(refusal) => assert_eq!(refusal, TokenRefusal::InvalidGrant, "round {round}"),
         }
+        assert_eq!(
+            fixture.refresh(&fixture.tokens, &token).await,
+            Err(TokenRefusal::InvalidGrant),
+            "round {round}"
+        );
     }
 }

@@ -72,6 +72,9 @@ const MAX_GRANTS_PER_CLIENT: u64 = 64;
 /// request, so few remain valid once the session ends.
 const WEB_SESSION_TOKEN_LIFETIME: Duration = Duration::from_mins(5);
 
+/// The longest a Web Session lasts; a longer request is shortened to it.
+const MAX_WEB_SESSION_AGE: Duration = Duration::from_hours(24 * 365);
+
 /// The most times one Refresh Grant rotates. A client refreshing more often
 /// than this over the grant's lifetime has to sign in again.
 const MAX_ROTATIONS: i64 = 10_000;
@@ -399,8 +402,8 @@ impl UserTokens {
     }
 
     /// Takes the Reef Refresh Grant `refresh_token` belongs to from
-    /// `client_id` and holds it in a new Web Session that lasts `max_age`,
-    /// never past the grant's own expiry.
+    /// `client_id` and holds it in a new Web Session that lasts `max_age`, a
+    /// year at most, and never past the grant's own expiry.
     ///
     /// The refresh token is spent: presenting it again is a replay that ends
     /// the grant and its session. The client then keeps only the handle.
@@ -425,7 +428,7 @@ impl UserTokens {
             .current_refresh_token(refresh_token, reef_grant, now_unix_nanos)
             .await?;
         let grant_id = presented.grant_id.as_str();
-        let expires_at = i64::try_from(max_age.as_nanos())
+        let expires_at = i64::try_from(max_age.min(MAX_WEB_SESSION_AGE).as_nanos())
             .ok()
             .and_then(|max_age| now_unix_nanos.checked_add(max_age))
             .unwrap_or(i64::MAX)
@@ -495,7 +498,18 @@ impl UserTokens {
                 WEB_SESSION_TOKEN_LIFETIME,
                 session_end,
             )
-            .map_err(|_text| TokenRefusal::Issuance)?;
+            .map_err(|_text| {
+                // The second the session ends can pass between the check above
+                // and minting; the session is then over, not failing.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(u64::MAX, |elapsed| elapsed.as_secs());
+                if now >= session_end {
+                    TokenRefusal::InvalidGrant
+                } else {
+                    TokenRefusal::Issuance
+                }
+            })?;
         Ok(WebSessionToken {
             access_token,
             session_expires_at_unix_nanos: session.expires_at_unix_nanos,

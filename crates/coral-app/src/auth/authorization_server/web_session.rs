@@ -34,9 +34,6 @@ use super::token::{
     now_unix_nanos, parse_form, token_error, valid_content_type,
 };
 
-/// The longest Web Session a client may ask for.
-const MAX_SESSION_AGE: Duration = Duration::from_hours(24 * 365);
-
 pub(super) async fn start(
     State(state): State<AuthorizationServerHttpState>,
     request: Request,
@@ -157,13 +154,13 @@ fn present(value: Option<&Zeroizing<String>>) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
-/// A positive whole number of seconds, at most a year.
+/// A positive whole number of seconds. `UserTokens` bounds the session.
 fn session_age(value: &str) -> Option<Duration> {
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
     let seconds = value.parse::<u64>().ok().filter(|seconds| *seconds > 0)?;
-    Some(Duration::from_secs(seconds)).filter(|age| *age <= MAX_SESSION_AGE)
+    Some(Duration::from_secs(seconds))
 }
 
 /// Whole seconds until `deadline`, rounded up: a session with any time left
@@ -279,7 +276,7 @@ mod tests {
                 vec![
                     ("refresh_token", refresh),
                     ("client_id", CLIENT),
-                    ("max_age", "31536001"),
+                    ("max_age", "18446744073709551616"),
                 ],
                 "invalid_request",
             ),

@@ -397,6 +397,11 @@ describe('Coral OAuth adapter', () => {
   it.each([
     ['returns no refresh token', jsonResponse({ access_token: 'token', expires_in: 3600 }), null],
     [
+      'starts a session without saying which',
+      jsonResponse(tokens),
+      jsonResponse({ expires_in: 0 }, { status: 201 }),
+    ],
+    [
       'refuses to start a session',
       jsonResponse(tokens),
       jsonResponse({ error: 'invalid_grant' }, { status: 400 }),

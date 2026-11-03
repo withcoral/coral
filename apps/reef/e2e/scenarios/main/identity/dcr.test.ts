@@ -193,7 +193,7 @@ test('URL-only MCP client registers, obtains consent, signs in, and uses the exa
           await again.close()
         }
         const refused = await fetch(`${target.mcpURL}/${other.name}/mcp`, {
-          headers: { Authorization: `Bearer ${tokens!.access_token}` },
+          headers: { Authorization: `Bearer ${refreshed!.access_token}` },
         })
         expect(refused.status).toBe(401)
         const replay = await page.request.post(`${target.authentication.issuerURL}/oauth/token`, {
@@ -201,6 +201,21 @@ test('URL-only MCP client registers, obtains consent, signs in, and uses the exa
         })
         expect(replay.status()).toBe(400)
         expect(await replay.json()).toMatchObject({ error: 'invalid_grant' })
+        // The spent refresh token is single-use: presenting it again is a
+        // replay that ends the grant, the newest token included.
+        const refresh = (token: string) =>
+          page.request.post(`${target.authentication.issuerURL}/oauth/token`, {
+            form: {
+              grant_type: 'refresh_token',
+              refresh_token: token,
+              client_id: correct.client_id,
+            },
+          })
+        for (const token of [tokens!.refresh_token!, refreshed!.refresh_token!]) {
+          const refusedRefresh = await refresh(token)
+          expect(refusedRefresh.status()).toBe(400)
+          expect(await refusedRefresh.json()).toMatchObject({ error: 'invalid_grant' })
+        }
       })
     },
     { actor: owner.label, label: 'URL-only MCP sign-in' },

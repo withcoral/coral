@@ -15,10 +15,14 @@ const issuer = requiredAuthConfig.issuer
 const started = { endpoint: `${issuer}/oauth/session`, expiresIn: 3600, handle: 'coral_ws_handle' }
 /** How Coral answers ending a session, unless a test changes it. */
 let endAnswer = 200
+/** How Coral answers resolving a session, unless a test changes it. */
+let tokenAnswer = 200
 // Discovery, session resolves, and session ends, routed by URL.
 const discovery = vi.fn(async (input: string | URL | Request) => {
   const url = input.toString()
   if (url.endsWith('/oauth/session/token')) {
+    if (tokenAnswer !== 200)
+      return Response.json({ error: 'server_error' }, { status: tokenAnswer })
     return Response.json({ access_token: 'minted', expires_in: 300, session_expires_in: 3000 })
   }
   if (url.endsWith('/oauth/session/end')) return new Response(null, { status: endAnswer })
@@ -33,6 +37,7 @@ const discovery = vi.fn(async (input: string | URL | Request) => {
 describe('login route', () => {
   beforeEach(() => {
     endAnswer = 200
+    tokenAnswer = 200
     discovery.mockClear()
     vi.stubGlobal('fetch', discovery)
   })
@@ -73,7 +78,7 @@ describe('login route', () => {
     [200, false],
     [503, true],
   ])(
-    'finishes a pending sign-out on the next visit when Coral answers %i',
+    'retries a pending sign-out on the next visit; Coral answering %i leaves it pending: %s',
     async (status, stillPending) => {
       endAnswer = 503
       const signOut = await signOutCoralWebSession(
@@ -104,6 +109,33 @@ describe('login route', () => {
       expect(cleared).toBe(!stillPending)
     },
   )
+
+  // Catches an outage answer that drops the finished retry's cookie, so the
+  // browser would keep retrying a sign-out Coral already finished.
+  it('keeps a finished sign-out finished when Coral cannot resolve the session', async () => {
+    endAnswer = 503
+    const session = (await commitCoralWebSession(started, requiredAuthConfig)).split(';', 1)[0]
+    const signOut = await signOutCoralWebSession(
+      new Request('https://coral-web.example.test/', { headers: { cookie: session } }),
+      requiredAuthConfig,
+    )
+    const pending = signOut.setCookies
+      .find((cookie) => cookie.startsWith(`${requiredAuthConfig.cookieName}_signout=`))!
+      .split(';', 1)[0]
+    endAnswer = 200
+    tokenAnswer = 503
+
+    const thrown = await runLoaderValue('https://coral-web.example.test/login', {
+      cookie: `${session}; ${pending}`,
+    }).catch((error: unknown) => error)
+
+    expect((thrown as Response).status).toBe(503)
+    expect(
+      (thrown as Response).headers
+        .getSetCookie()
+        .some((cookie) => cookie.startsWith(`${requiredAuthConfig.cookieName}_signout=;`)),
+    ).toBe(true)
+  })
 
   it('renders the signed-out interstitial without immediately restarting SSO', async () => {
     expect(

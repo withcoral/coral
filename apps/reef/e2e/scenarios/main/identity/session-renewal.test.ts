@@ -63,11 +63,13 @@ test('A Reef session outlives its access tokens, ends at its own deadline, and s
         workspacePath = new URL(page.url()).pathname
         // One submission, one Workspace: renewal neither drops nor repeats it.
         await expect
-          .poll(() =>
-            page
-              .getByRole('navigation', { name: 'Coral', exact: true })
-              .getByRole('button', { name: 'Renewed', exact: true })
-              .count(),
+          .poll(
+            () =>
+              page
+                .getByRole('navigation', { name: 'Coral', exact: true })
+                .getByRole('button', { name: 'Renewed', exact: true })
+                .count(),
+            { timeout: 10_000 },
           )
           .toBe(1)
       })

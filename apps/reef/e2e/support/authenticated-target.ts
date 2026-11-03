@@ -30,7 +30,7 @@ export async function reservePort() {
 
 /** Shortened credential lifetimes, for scenarios that wait for them to pass. */
 export interface SessionLifetimes {
-  /** Coral's `auth.session.access_token_ttl_seconds`; 3600 by default. */
+  /** Coral's `auth.session.access_token_ttl_seconds`; this fixture uses 3600 unless told otherwise. */
   accessTokenTtlSeconds?: number
   /** Reef's `CORAL_WEB_SESSION_MAX_AGE_SECONDS`; Reef's own default otherwise. */
   webSessionMaxAgeSeconds?: number
@@ -122,7 +122,7 @@ bootstrap_owner_subject = ${q(idp.owner.subject)}
         CORAL_WEB_PUBLIC_URL: web.url,
         CORAL_WEB_AUTH_ISSUER: authURL,
         CORAL_WEB_SESSION_SECRET: randomBytes(32).toString('hex'),
-        ...(session.webSessionMaxAgeSeconds
+        ...(session.webSessionMaxAgeSeconds !== undefined
           ? { CORAL_WEB_SESSION_MAX_AGE_SECONDS: String(session.webSessionMaxAgeSeconds) }
           : {}),
       },

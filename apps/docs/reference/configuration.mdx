@@ -226,8 +226,8 @@ Coral gives a refresh token with each access token to a client that lists `refre
 
 The web interface keeps your users signed in through a web session that Coral holds. At sign-in, the web interface gives its refresh token to Coral and keeps only a random session handle in a signed cookie. On each request, Coral mints a new access token for that session, which lasts at most five minutes. Your users stay signed in when an access token expires.
 
-- **Lifetime.** A web session lasts `CORAL_WEB_SESSION_MAX_AGE_SECONDS` (default 2592000, 30 days) or until `refresh_token_ttl_seconds` ends, whichever comes first. Activity does not extend it. To keep users signed in longer, increase both values. To sign them out sooner, decrease either one.
-- **Several processes.** Every web interface process reads sessions from Coral. You do not need shared storage for the web interface itself.
+- **Lifetime.** A web session lasts `CORAL_WEB_SESSION_MAX_AGE_SECONDS` (default 2592000, 30 days) or until `refresh_token_ttl_seconds` ends, whichever comes first. Activity does not extend it. To keep users signed in longer, increase both values. To sign them out sooner, decrease the value that limits the session, or both.
+- **Several processes.** Every web interface process reads sessions from Coral. You do not need shared storage for the web interface itself. Give every Coral process the same database and the same session signing key, so that each one can finish a sign-in and serve a session that another one started.
 - **Sign-out.** Signing out ends the session and its refresh token at Coral, and a copied session cookie stops working. Access tokens that Coral minted for the session before sign-out work until they expire, within five minutes.
 - **Sign-out when Coral does not answer.** The browser still signs out. The next visit to the sign-in page finishes the sign-out at Coral. Until then, a copied session cookie still works, at most until the session would end.
 - **Outages.** If Coral does not answer, the web interface shows an error and keeps the session. Your users stay signed in when Coral recovers.
