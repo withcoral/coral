@@ -1,5 +1,6 @@
 import { Button } from '@/wax/components'
 import * as Dialog from '@/wax/components/dialog'
+import { promptCopyFailure } from './onboarding-prompt'
 import { PromptPreview } from './prompt-preview'
 import * as styles from './management.css'
 
@@ -30,7 +31,12 @@ export function OnboardingDialog({
             <Button.TextButton type="button" variant="secondary" onClick={onClose}>
               Dismiss
             </Button.TextButton>
-            <Button.CopyButton variant="primary" ariaLabel="Copy prompt" textToCopy={prompt}>
+            <Button.CopyButton
+              variant="primary"
+              ariaLabel="Copy prompt"
+              failureDescription={promptCopyFailure}
+              textToCopy={prompt}
+            >
               <Button.Text>Copy prompt</Button.Text>
             </Button.CopyButton>
           </Dialog.Actions>

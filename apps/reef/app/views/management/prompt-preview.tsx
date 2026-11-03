@@ -1,4 +1,5 @@
 import { Button, Card, Typography } from '@/wax/components'
+import { promptCopyFailure } from './onboarding-prompt'
 import * as styles from './management.css'
 
 /**
@@ -15,6 +16,7 @@ export function PromptPreview({ prompt, copyLabel }: { prompt: string; copyLabel
         <Button.CopyButton
           variant="bare"
           ariaLabel={copyLabel}
+          failureDescription={promptCopyFailure}
           tooltipText={copyLabel}
           textToCopy={prompt}
         />
