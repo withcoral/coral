@@ -59,6 +59,7 @@ use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::authorization_codes::{AuthorizationCodes, AuthorizationGrant, CodeRedemption};
+use crate::oauth_clients::AuthenticatedClient;
 use crate::{IssuedAccessToken, PrivateAudience, SessionTokenIssuer};
 
 /// How long a Refresh Grant can refresh when the operator sets no lifetime.
@@ -106,8 +107,9 @@ pub enum AccessTarget {
 /// The bindings a refresh presents beside its refresh token.
 #[derive(Clone, Copy, Debug)]
 pub struct RefreshRequest<'a> {
-    /// The client the grant was issued to.
-    pub client_id: &'a str,
+    /// The client the grant was issued to, which has already authenticated,
+    /// so no refresh spends a token before its client's check.
+    pub client: &'a AuthenticatedClient,
     /// The canonical resource, when the request names one.
     pub resource: Option<&'a str>,
     /// The private audience, when the request names one.
@@ -381,7 +383,7 @@ impl UserTokens {
     }
 
     /// Ends the Refresh Grant `refresh_token` belongs to, current or
-    /// consumed, when `client_id` is the client it was issued to.
+    /// consumed, when `client` is the client it was issued to.
     ///
     /// An unknown token, or one issued to another client, changes nothing
     /// and is not reported, so revocation discloses no token's existence.
@@ -389,12 +391,16 @@ impl UserTokens {
     /// # Errors
     ///
     /// [`TokenRefusal::Unavailable`] when the database does not answer.
-    pub async fn revoke(&self, refresh_token: &str, client_id: &str) -> Result<(), TokenRefusal> {
+    pub async fn revoke(
+        &self,
+        refresh_token: &str,
+        client: &AuthenticatedClient,
+    ) -> Result<(), TokenRefusal> {
         let Some(digest) = digest(refresh_token) else {
             return Ok(());
         };
         match repository::find(&self.database, &digest).await? {
-            Some(presented) if presented.scope.client_id == client_id => {
+            Some(presented) if presented.scope.client_id == client.client_id() => {
                 self.end_grant(&presented.grant_id).await
             }
             _ => Ok(()),
@@ -402,7 +408,7 @@ impl UserTokens {
     }
 
     /// Takes the Reef Refresh Grant `refresh_token` belongs to from
-    /// `client_id` and holds it in a new Web Session that lasts `max_age`, a
+    /// `client` and holds it in a new Web Session that lasts `max_age`, a
     /// year at most, and never past the grant's own expiry.
     ///
     /// The refresh token is spent: presenting it again is a replay that ends
@@ -417,12 +423,13 @@ impl UserTokens {
     pub async fn start_web_session(
         &self,
         refresh_token: &str,
-        client_id: &str,
+        client: &AuthenticatedClient,
         max_age: Duration,
         now_unix_nanos: i64,
     ) -> Result<StartedWebSession, TokenRefusal> {
         let reef_grant = |scope: &Scope| {
-            scope.client_id == client_id && scope.private_audience == Some(PrivateAudience::Reef)
+            scope.client_id == client.client_id()
+                && scope.private_audience == Some(PrivateAudience::Reef)
         };
         let (digest, presented) = self
             .current_refresh_token(refresh_token, reef_grant, now_unix_nanos)
@@ -463,7 +470,7 @@ impl UserTokens {
     pub async fn web_session_token(
         &self,
         handle: &str,
-        client_id: &str,
+        client: &AuthenticatedClient,
         now_unix_nanos: i64,
     ) -> Result<WebSessionToken, TokenRefusal> {
         let digest = digest(handle).ok_or(TokenRefusal::InvalidGrant)?;
@@ -471,7 +478,8 @@ impl UserTokens {
             .await?
             .ok_or(TokenRefusal::InvalidGrant)?;
         let scope = &session.scope;
-        if scope.client_id != client_id || session.expires_at_unix_nanos <= now_unix_nanos {
+        if scope.client_id != client.client_id() || session.expires_at_unix_nanos <= now_unix_nanos
+        {
             return Err(TokenRefusal::InvalidGrant);
         }
         self.organization
@@ -516,19 +524,23 @@ impl UserTokens {
         })
     }
 
-    /// Ends the Web Session `handle` names, with its grant, when `client_id`
+    /// Ends the Web Session `handle` names, with its grant, when `client`
     /// started it. An unknown or ended session, or another client's, changes
     /// nothing and is not reported.
     ///
     /// # Errors
     ///
     /// [`TokenRefusal::Unavailable`] when the database does not answer.
-    pub async fn end_web_session(&self, handle: &str, client_id: &str) -> Result<(), TokenRefusal> {
+    pub async fn end_web_session(
+        &self,
+        handle: &str,
+        client: &AuthenticatedClient,
+    ) -> Result<(), TokenRefusal> {
         let Some(digest) = digest(handle) else {
             return Ok(());
         };
         match repository::find_session(&self.database, &digest).await? {
-            Some(session) if session.scope.client_id == client_id => {
+            Some(session) if session.scope.client_id == client.client_id() => {
                 self.end_grant(&session.grant_id).await
             }
             _ => Ok(()),
@@ -765,7 +777,7 @@ impl Scope {
     /// omitted resource or audience keeps the grant's own; a supplied one
     /// must equal it, so a refresh can never retarget the grant.
     fn accepts(&self, request: RefreshRequest<'_>) -> bool {
-        self.client_id == request.client_id
+        self.client_id == request.client.client_id()
             && request
                 .resource
                 .is_none_or(|resource| resource == self.resource)

@@ -5,6 +5,10 @@ use std::time::Duration;
 use crate::AccessLifecycleModule;
 use coral_auth::SessionTokenIssuer;
 use coral_auth::authorization_codes::{AuthorizationCodes, AuthorizationGrant, CodeRedemption};
+use coral_auth::oauth_clients::{
+    AuthenticatedClient, ClientMetadataError, ClientMetadataResolver, OAuthClientRegistration,
+    OAuthClients, PresentedCredential,
+};
 use coral_auth::user_tokens::{AccessTarget, RefreshRequest, TokenRefusal, UserTokens};
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
@@ -26,6 +30,19 @@ struct Fixture {
     member: AuthenticatedUser,
     workspace: WorkspaceId,
     sign_ins: std::sync::atomic::AtomicUsize,
+    /// `CLIENT`, authenticated as its token requests would be.
+    client: AuthenticatedClient,
+}
+
+/// A URL client authenticates without its metadata document, so no test
+/// here ever resolves one.
+struct NoFetch;
+
+#[async_trait::async_trait]
+impl ClientMetadataResolver for NoFetch {
+    async fn resolve(&self, _: &str) -> Result<OAuthClientRegistration, ClientMetadataError> {
+        panic!("client authentication must never fetch URLs")
+    }
 }
 
 fn change(user: &AuthenticatedUser) -> ChangeContext {
@@ -54,7 +71,12 @@ impl Fixture {
             .unwrap()
             .id()
             .clone();
+        let client = OAuthClients::new(db.clone(), Arc::new(NoFetch))
+            .authenticate(CLIENT, &PresentedCredential::None)
+            .await
+            .unwrap();
         let fixture = Self {
+            client,
             tokens: UserTokens::new(db.clone(), issuer.clone()),
             issuer,
             organization: OrganizationModule::new(db.clone()),
@@ -124,7 +146,7 @@ impl Fixture {
             .redeem_code(
                 &code,
                 CodeRedemption {
-                    client_id: CLIENT,
+                    client: &self.client,
                     redirect_uri: &grant.redirect_uri,
                     code_challenge: "challenge",
                     resource: &resource,
@@ -140,7 +162,7 @@ impl Fixture {
     /// Refreshes `token` and returns its successor, or the refusal.
     async fn refresh(&self, tokens: &UserTokens, token: &str) -> Result<String, TokenRefusal> {
         let request = RefreshRequest {
-            client_id: CLIENT,
+            client: &self.client,
             resource: None,
             audience: None,
         };
@@ -174,7 +196,7 @@ async fn removal_ends_the_grants_it_takes_away_and_rejoining_revives_none() {
         .tokens
         .start_web_session(
             &fixture.sign_in(AccessTarget::Reef).await,
-            CLIENT,
+            &fixture.client,
             Duration::from_hours(1),
             NOW + 2,
         )
@@ -224,7 +246,7 @@ async fn removal_ends_the_grants_it_takes_away_and_rejoining_revives_none() {
     assert_eq!(
         fixture
             .tokens
-            .web_session_token(session.expose(), CLIENT, NOW + 3)
+            .web_session_token(session.expose(), &fixture.client, NOW + 3)
             .await
             .err(),
         Some(TokenRefusal::InvalidGrant),

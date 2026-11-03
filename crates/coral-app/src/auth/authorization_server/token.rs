@@ -10,11 +10,13 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
+use super::client_authentication::{HeaderCredential, authenticate};
 use super::query::{MAX_PARAMETER_NAME_BYTES, MAX_PARAMETER_VALUE_BYTES, MAX_PARAMETERS};
 use super::response::security_headers;
 use super::{AuthorizationResource, AuthorizationServerHttpState};
 use coral_auth::PrivateAudience;
 use coral_auth::authorization_codes::CodeRedemption;
+use coral_auth::oauth_clients::AuthenticatedClient;
 use coral_auth::user_tokens::{AccessTarget, IssuedTokens, RefreshRequest, TokenRefusal};
 use coral_mcp::McpEndpoint;
 use coral_telemetry::safe;
@@ -30,9 +32,10 @@ pub(super) async fn oauth_token(
     State(state): State<AuthorizationServerHttpState>,
     request: Request,
 ) -> Response {
-    if let Some(response) = client_auth_rejection(request.headers()) {
-        return response;
-    }
+    let header = match HeaderCredential::parse(request.headers()) {
+        Ok(header) => header,
+        Err(response) => return *response,
+    };
     if !valid_content_type(request.headers()) {
         return token_error(TokenError::InvalidRequest);
     }
@@ -41,18 +44,27 @@ pub(super) async fn oauth_token(
         Err(_error) => return token_error(TokenError::InvalidRequest),
     };
     let body = Zeroizing::new(Vec::from(body));
-    let form = match parse_form(&body) {
+    let mut form = match parse_form(&body) {
         Ok(form) => form,
-        Err(FormError::InvalidClient) => return token_error(TokenError::InvalidClient),
         Err(FormError::InvalidScope) => return token_error(TokenError::InvalidScope),
         Err(FormError::Malformed) => return token_error(TokenError::InvalidRequest),
+    };
+    // A confidential client authenticates before either grant spends its
+    // code or refresh token, so a refusal spends nothing.
+    let client = match authenticate(&state, header, &mut form, || {
+        token_error(TokenError::ServerError)
+    })
+    .await
+    {
+        Ok(client) => client,
+        Err(response) => return *response,
     };
     let Some(now_unix_nanos) = now_unix_nanos() else {
         return token_error(TokenError::ServerError);
     };
     let issued = match form.grant_type.as_ref().map(|value| value.as_str()) {
-        Some("authorization_code") => redeem_code(&state, &form, now_unix_nanos).await,
-        Some("refresh_token") => refresh(&state, &form, now_unix_nanos).await,
+        Some("authorization_code") => redeem_code(&state, &form, &client, now_unix_nanos).await,
+        Some("refresh_token") => refresh(&state, &form, &client, now_unix_nanos).await,
         None => Err(TokenError::InvalidRequest),
         Some(_) => Err(TokenError::UnsupportedGrantType),
     };
@@ -66,11 +78,11 @@ pub(super) async fn oauth_token(
 async fn redeem_code(
     state: &AuthorizationServerHttpState,
     form: &TokenForm,
+    client: &AuthenticatedClient,
     now_unix_nanos: i64,
 ) -> Result<IssuedTokens, TokenError> {
-    let (Some(code), Some(client_id), Some(redirect_uri), Some(verifier)) = (
+    let (Some(code), Some(redirect_uri), Some(verifier)) = (
         form.code.as_deref(),
-        form.client_id.as_deref(),
         form.redirect_uri.as_deref(),
         form.code_verifier.as_deref(),
     ) else {
@@ -85,11 +97,7 @@ async fn redeem_code(
     };
     let resource = super::canonical_authorization_resource(resource)
         .map_err(|_error| TokenError::InvalidTarget)?;
-    if code.is_empty()
-        || client_id.is_empty()
-        || redirect_uri.is_empty()
-        || !valid_code_verifier(verifier)
-    {
+    if code.is_empty() || redirect_uri.is_empty() || !valid_code_verifier(verifier) {
         return Err(TokenError::InvalidRequest);
     }
     let target = access_target(
@@ -100,7 +108,7 @@ async fn redeem_code(
     .ok_or(TokenError::InvalidTarget)?;
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let redemption = CodeRedemption {
-        client_id,
+        client,
         redirect_uri,
         code_challenge: &challenge,
         resource: &resource,
@@ -121,16 +129,14 @@ async fn redeem_code(
 async fn refresh(
     state: &AuthorizationServerHttpState,
     form: &TokenForm,
+    client: &AuthenticatedClient,
     now_unix_nanos: i64,
 ) -> Result<IssuedTokens, TokenError> {
-    let (Some(refresh_token), Some(client_id)) = (
-        form.refresh_token
-            .as_deref()
-            .filter(|token| !token.is_empty()),
-        form.client_id
-            .as_deref()
-            .filter(|client| !client.is_empty()),
-    ) else {
+    let Some(refresh_token) = form
+        .refresh_token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+    else {
         return Err(TokenError::InvalidRequest);
     };
     let resource = form
@@ -145,7 +151,7 @@ async fn refresh(
         .map(|audience| PrivateAudience::parse(audience).ok_or(TokenError::InvalidTarget))
         .transpose()?;
     let request = RefreshRequest {
-        client_id,
+        client,
         resource: resource.as_deref(),
         audience,
     };
@@ -244,35 +250,6 @@ fn access_target(
     }
 }
 
-pub(super) fn client_auth_rejection(headers: &axum::http::HeaderMap) -> Option<Response> {
-    let mut values = headers.get_all(header::AUTHORIZATION).iter();
-    let value = values.next()?;
-    // RFC 6749 section 5.2 requires the 401 challenge to name the scheme the
-    // client authenticated with. A duplicated or malformed header names no
-    // single scheme, so it stays a plain `invalid_client` without a challenge.
-    let challenge = if values.next().is_some() {
-        None
-    } else {
-        value
-            .to_str()
-            .ok()
-            .and_then(|value| value.split_once(' '))
-            .filter(|(scheme, _credentials)| {
-                axum::http::HeaderName::from_bytes(scheme.as_bytes()).is_ok()
-            })
-            .and_then(|(scheme, _credentials)| {
-                axum::http::HeaderValue::try_from(format!("{scheme} realm=\"Coral OAuth\"")).ok()
-            })
-    };
-    let mut response = token_error(TokenError::InvalidClient);
-    if let Some(challenge) = challenge {
-        *response.status_mut() = StatusCode::UNAUTHORIZED;
-        let headers = response.headers_mut();
-        headers.insert(header::WWW_AUTHENTICATE, challenge);
-    }
-    Some(response)
-}
-
 pub(super) fn valid_content_type(headers: &axum::http::HeaderMap) -> bool {
     let mut values = headers.get_all(header::CONTENT_TYPE).iter();
     let (Some(value), None) = (values.next(), values.next()) else {
@@ -293,6 +270,8 @@ pub(super) struct TokenForm {
     code: Option<Zeroizing<String>>,
     redirect_uri: Option<Zeroizing<String>>,
     pub(super) client_id: Option<Zeroizing<String>>,
+    /// The secret a `client_secret_post` client presents.
+    pub(super) client_secret: Option<Zeroizing<String>>,
     code_verifier: Option<Zeroizing<String>>,
     pub(super) refresh_token: Option<Zeroizing<String>>,
     /// The token a revocation request names.
@@ -307,7 +286,6 @@ pub(super) struct TokenForm {
 
 pub(super) enum FormError {
     Malformed,
-    InvalidClient,
     InvalidScope,
 }
 
@@ -327,9 +305,6 @@ pub(super) fn parse_form(raw: &[u8]) -> Result<TokenForm, FormError> {
         if name.len() > MAX_PARAMETER_NAME_BYTES || value.len() > MAX_PARAMETER_VALUE_BYTES {
             return Err(FormError::Malformed);
         }
-        if name == "client_secret" {
-            return Err(FormError::InvalidClient);
-        }
         if name == "scope" {
             return Err(FormError::InvalidScope);
         }
@@ -341,6 +316,7 @@ pub(super) fn parse_form(raw: &[u8]) -> Result<TokenForm, FormError> {
             "code" => &mut form.code,
             "redirect_uri" => &mut form.redirect_uri,
             "client_id" => &mut form.client_id,
+            "client_secret" => &mut form.client_secret,
             "code_verifier" => &mut form.code_verifier,
             "refresh_token" => &mut form.refresh_token,
             "token" => &mut form.token,
@@ -412,7 +388,7 @@ pub(super) fn token_error(error: TokenError) -> Response {
     };
     let (error, description) = match error {
         TokenError::InvalidRequest => ("invalid_request", "token request is malformed"),
-        TokenError::InvalidClient => ("invalid_client", "client authentication is not supported"),
+        TokenError::InvalidClient => ("invalid_client", "client authentication failed"),
         TokenError::InvalidGrant => ("invalid_grant", "grant is invalid or expired"),
         TokenError::InvalidScope => ("invalid_scope", "scope is not supported"),
         TokenError::InvalidTarget => (
@@ -844,7 +820,7 @@ pub(super) mod tests {
         let wrong_verifier = format!("{}B", "a".repeat(42));
         let mut canonical = None;
         for (index, (client, redirect, verifier)) in [
-            ("wrong-client", REDIRECT, VERIFIER),
+            ("https://other.example.test/client.json", REDIRECT, VERIFIER),
             (CLIENT, "http://127.0.0.1/wrong", VERIFIER),
             (CLIENT, REDIRECT, wrong_verifier.as_str()),
         ]
@@ -1074,6 +1050,132 @@ pub(super) mod tests {
             assert_ne!(next, token);
             token = next;
         }
+    }
+
+    /// A `client_secret_post` client and one unspent, refresh-eligible code
+    /// it holds for `MEMBER`.
+    pub(in crate::auth::authorization_server) struct ConfidentialSignIn {
+        pub(in crate::auth::authorization_server) client: String,
+        secret: String,
+        /// The code's redemption form, which carries no secret.
+        pub(in crate::auth::authorization_server) redeem: String,
+    }
+
+    impl ConfidentialSignIn {
+        /// `body` with the client's secret added.
+        pub(in crate::auth::authorization_server) fn with_secret(&self, body: &str) -> String {
+            set_field(body, "client_secret", Some(&self.secret))
+        }
+
+        /// Redeems the code with the secret and returns the refresh token.
+        pub(in crate::auth::authorization_server) async fn refresh_token(
+            &self,
+            state: &AuthorizationServerHttpState,
+        ) -> String {
+            let redeem = request(self.with_secret(&self.redeem));
+            let (status, _headers, body) = send(state.clone(), redeem).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let issued: Value = serde_json::from_str(&body).unwrap();
+            issued["refresh_token"].as_str().unwrap().to_owned()
+        }
+    }
+
+    /// Registers a `client_secret_post` client and issues it a code that
+    /// signs `MEMBER` in.
+    pub(in crate::auth::authorization_server) async fn confidential_sign_in(
+        state: &AuthorizationServerHttpState,
+        database: &TestDatabase,
+    ) -> ConfidentialSignIn {
+        let registration = serde_json::from_value(serde_json::json!({
+            "redirect_uris": [REDIRECT],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "token_endpoint_auth_method": "client_secret_post",
+        }))
+        .unwrap();
+        let registered =
+            serde_json::to_value(state.clients.register(registration, 1000).await.unwrap())
+                .unwrap();
+        let client = registered["client_id"].as_str().unwrap().to_owned();
+        let secret = registered["client_secret"].as_str().unwrap().to_owned();
+        coral_test_support::provision_user(
+            database.database(),
+            MEMBER,
+            coral_workspace::OrganizationRole::Member,
+        )
+        .await;
+        let grant = AuthorizationGrant {
+            user_id: MEMBER.into(),
+            client_id: client.clone(),
+            redirect_uri: REDIRECT.into(),
+            code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes())),
+            resource: RESOURCE.into(),
+            workspace_id: None,
+            refresh_eligible: true,
+        };
+        let code = format!("confidential-{client}");
+        state
+            .codes
+            .issue(&code, &code, &grant, now_unix_nanos())
+            .await
+            .unwrap();
+        let redeem = form(&code, &client, REDIRECT, VERIFIER);
+        ConfidentialSignIn {
+            client,
+            secret,
+            redeem,
+        }
+    }
+
+    /// Both grants authenticate the client before they spend anything. A
+    /// refusal is `invalid_client`: 401 with a challenge when the request
+    /// used an `Authorization` header, which no client may, alone or beside
+    /// a form secret. Which form credentials authenticate is `OAuthClients`'
+    /// rule.
+    #[tokio::test]
+    async fn the_grants_authenticate_a_confidential_client_first() {
+        let (state, _codes, _session, database) = state().await;
+        let sign_in = confidential_sign_in(&state, &database).await;
+        let basic = Some("Basic Y2xpZW50OnNlY3JldA==");
+        let refused = [
+            (sign_in.redeem.clone(), None),
+            (sign_in.redeem.clone(), basic),
+            (sign_in.with_secret(&sign_in.redeem), basic),
+            (set_field(&sign_in.redeem, "client_id", None), basic),
+        ];
+        for (body, authorization) in refused {
+            let mut request = request(body);
+            if let Some(authorization) = authorization {
+                request.headers_mut().insert(
+                    header::AUTHORIZATION,
+                    HeaderValue::from_static(authorization),
+                );
+            }
+            let (status, headers, body) = send(state.clone(), request).await;
+            assert_security(&headers);
+            let expected =
+                authorization.map_or(StatusCode::BAD_REQUEST, |_| StatusCode::UNAUTHORIZED);
+            assert_eq!(status, expected, "{authorization:?}");
+            assert_eq!(
+                headers
+                    .get(header::WWW_AUTHENTICATE)
+                    .map(|value| value.to_str().unwrap()),
+                authorization.map(|_| "Basic realm=\"Coral OAuth\""),
+            );
+            let value: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(value["error"], "invalid_client", "{authorization:?}");
+            assert!(!body.contains(&sign_in.secret));
+        }
+        // The refusals left the code unspent.
+        let refresh_token = sign_in.refresh_token(&state).await;
+        let refresh = set_field(
+            &refresh_form(&refresh_token),
+            "client_id",
+            Some(&sign_in.client),
+        );
+        expect_error(state.clone(), request(refresh.clone()), "invalid_client").await;
+        let (status, _headers, body) =
+            send(state.clone(), request(sign_in.with_secret(&refresh))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     #[tokio::test]

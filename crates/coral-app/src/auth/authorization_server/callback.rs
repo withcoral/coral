@@ -346,7 +346,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::super::AuthorizationServerHttpState;
-    use super::super::test_state::{database, http_state};
+    use super::super::test_state::{authenticated, database, http_state};
     use super::*;
     use crate::auth::id_token::tests::{
         claims as id_token_claims, rsa_key, set_claim, token as id_token,
@@ -393,11 +393,12 @@ mod tests {
     /// Redeems `code` with the bindings of the seeded sign-in.
     async fn redeem(database: &Arc<Database>, code: &str) -> Option<AuthorizationGrant> {
         let session = session();
+        let client = authenticated(database.clone(), &session.request.client_id).await;
         AuthorizationCodes::new(database.clone())
             .redeem(
                 code,
                 CodeRedemption {
-                    client_id: &session.request.client_id,
+                    client: &client,
                     redirect_uri: REDIRECT_URI,
                     code_challenge: &session.request.code_challenge,
                     resource: RESOURCE,
@@ -1131,11 +1132,12 @@ mod tests {
             .find(|(key, _value)| key == "code")?
             .1;
         let session = organization_session();
+        let client = authenticated(database.clone(), &session.request.client_id).await;
         AuthorizationCodes::new(database.clone())
             .redeem(
                 &code,
                 CodeRedemption {
-                    client_id: &session.request.client_id,
+                    client: &client,
                     redirect_uri: REDIRECT_URI,
                     code_challenge: &session.request.code_challenge,
                     resource: ORGANIZATION_RESOURCE,

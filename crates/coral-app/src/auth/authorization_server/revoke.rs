@@ -1,4 +1,7 @@
-//! RFC 7009 revocation of refresh tokens, for public clients.
+//! RFC 7009 revocation of refresh tokens.
+//!
+//! A confidential client authenticates first (RFC 7009 section 2.1), so a
+//! leaked refresh token without the client's secret cannot end its grant.
 //!
 //! Revocation ends the Refresh Grant a refresh token belongs to, whether the
 //! token is current or already rotated, so a logout racing a refresh still
@@ -14,19 +17,21 @@ use coral_telemetry::safe;
 use zeroize::Zeroizing;
 
 use super::AuthorizationServerHttpState;
+use super::client_authentication::{HeaderCredential, authenticate};
 use super::response::security_headers;
 use super::token::{
-    FormError, MAX_BODY_BYTES, TokenError, client_auth_rejection, json_response, parse_form,
-    token_error, valid_content_type,
+    FormError, MAX_BODY_BYTES, TokenError, json_response, parse_form, token_error,
+    valid_content_type,
 };
 
 pub(super) async fn oauth_revoke(
     State(state): State<AuthorizationServerHttpState>,
     request: Request,
 ) -> Response {
-    if let Some(response) = client_auth_rejection(request.headers()) {
-        return response;
-    }
+    let header = match HeaderCredential::parse(request.headers()) {
+        Ok(header) => header,
+        Err(response) => return *response,
+    };
     if !valid_content_type(request.headers()) {
         return token_error(TokenError::InvalidRequest);
     }
@@ -34,38 +39,40 @@ pub(super) async fn oauth_revoke(
         return token_error(TokenError::InvalidRequest);
     };
     let body = Zeroizing::new(Vec::from(body));
-    let form = match parse_form(&body) {
+    let mut form = match parse_form(&body) {
         Ok(form) => form,
-        Err(FormError::InvalidClient) => return token_error(TokenError::InvalidClient),
         Err(FormError::Malformed | FormError::InvalidScope) => {
             return token_error(TokenError::InvalidRequest);
         }
     };
-    // A public client identifies itself; without that, no grant can be bound.
-    let (Some(token), Some(client_id)) = (
-        form.token.as_deref().filter(|token| !token.is_empty()),
-        form.client_id
-            .as_deref()
-            .filter(|client| !client.is_empty()),
-    ) else {
+    // Every client identifies itself; without that, no grant can be bound.
+    let client = match authenticate(&state, header, &mut form, unavailable).await {
+        Ok(client) => client,
+        Err(response) => return *response,
+    };
+    let Some(token) = form.token.as_deref().filter(|token| !token.is_empty()) else {
         return token_error(TokenError::InvalidRequest);
     };
-    match state.tokens.revoke(token, client_id).await {
+    match state.tokens.revoke(token, &client).await {
         Ok(()) => (StatusCode::OK, security_headers()).into_response(),
         Err(refusal) => {
             tracing::warn!(
                 error.type = safe::kind(refusal.code()),
                 "revocation endpoint could not revoke the token"
             );
-            json_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                &serde_json::json!({
-                    "error": "server_error",
-                    "error_description": "revocation is unavailable",
-                }),
-            )
+            unavailable()
         }
     }
+}
+
+fn unavailable() -> Response {
+    json_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        &serde_json::json!({
+            "error": "server_error",
+            "error_description": "revocation is unavailable",
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -80,7 +87,7 @@ mod tests {
     use url::form_urlencoded;
 
     use super::super::token::tests::{
-        CLIENT, expect_error, refresh_form, request, signed_in, state,
+        CLIENT, confidential_sign_in, expect_error, refresh_form, request, send, signed_in, state,
     };
     use super::oauth_revoke;
 
@@ -139,5 +146,38 @@ mod tests {
             assert_eq!(revoke(&state, request).await, expected);
         }
         expect_error(state, request(refresh_form(token)), "invalid_grant").await;
+    }
+
+    /// Revocation authenticates the client before it ends anything: without
+    /// its secret a confidential client is `invalid_client` and the grant
+    /// still refreshes.
+    #[tokio::test]
+    async fn revocation_authenticates_a_confidential_client_first() {
+        let (state, _codes, _session, database) = state().await;
+        let sign_in = confidential_sign_in(&state, &database).await;
+        let client = sign_in.client.as_str();
+        let form = |pairs: &[(&str, &str)]| {
+            let mut form = form_urlencoded::Serializer::new(String::new());
+            form.extend_pairs(pairs).append_pair("client_id", client);
+            sign_in.with_secret(&form.finish())
+        };
+        let token = sign_in.refresh_token(&state).await;
+        expect_error(
+            state.clone(),
+            revocation(Some(&token), Some(client)),
+            "invalid_client",
+        )
+        .await;
+        let refresh = form(&[("grant_type", "refresh_token"), ("refresh_token", &token)]);
+        let (status, _headers, body) = send(state.clone(), request(refresh)).await;
+        assert_eq!(status, StatusCode::OK, "the refusal left the grant live");
+        let issued: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let token = issued["refresh_token"].as_str().unwrap();
+        assert_eq!(
+            revoke(&state, request(form(&[("token", token)]))).await,
+            StatusCode::OK
+        );
+        let refresh = form(&[("grant_type", "refresh_token"), ("refresh_token", token)]);
+        expect_error(state, request(refresh), "invalid_grant").await;
     }
 }

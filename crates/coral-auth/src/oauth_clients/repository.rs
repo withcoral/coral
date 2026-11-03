@@ -3,7 +3,10 @@
 use coral_db::{Database, Transaction};
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 
-use super::{ClientMetadataError, OAuthClientRegistration, RegisteredClient, RegistrationError};
+use super::{
+    ClientAuthenticationError, ClientMetadataError, OAuthClientRegistration, RegisteredClient,
+    RegistrationError, StoredAuthentication,
+};
 
 #[derive(Iden)]
 enum OAuthClients {
@@ -14,14 +17,26 @@ enum OAuthClients {
     RedirectUris,
     IssuedAt,
     RefreshEligible,
+    TokenEndpointAuthMethod,
+    ClientSecretVerifier,
 }
+
+const NONE: &str = "none";
+const CLIENT_SECRET_POST: &str = "client_secret_post";
 
 pub(super) async fn insert(
     tx: &mut Transaction<'_>,
     client: &RegisteredClient,
+    authentication: &StoredAuthentication,
 ) -> Result<(), RegistrationError> {
     let redirects = serde_json::to_string(&client.metadata.redirect_uris)
         .map_err(|_error| RegistrationError::Unavailable)?;
+    let (method, verifier) = match authentication {
+        StoredAuthentication::None => (NONE, None),
+        StoredAuthentication::ClientSecretPost { verifier } => {
+            (CLIENT_SECRET_POST, Some(verifier.clone()))
+        }
+    };
     tx.execute(
         Query::insert()
             .into_table(OAuthClients::Table)
@@ -31,6 +46,8 @@ pub(super) async fn insert(
                 OAuthClients::RedirectUris,
                 OAuthClients::IssuedAt,
                 OAuthClients::RefreshEligible,
+                OAuthClients::TokenEndpointAuthMethod,
+                OAuthClients::ClientSecretVerifier,
             ])
             .values_panic([
                 client.client_id.clone().into(),
@@ -38,6 +55,8 @@ pub(super) async fn insert(
                 redirects.into(),
                 client.client_id_issued_at.into(),
                 client.metadata.refresh_eligible.into(),
+                method.into(),
+                verifier.into(),
             ])
             .to_owned(),
     )
@@ -159,4 +178,45 @@ pub(super) async fn resolve(
             .map_err(|_error| ClientMetadataError::InvalidMetadata)?,
         refresh_eligible: row.refresh_eligible,
     })
+}
+
+#[derive(sqlx::FromRow)]
+struct AuthenticationRow {
+    token_endpoint_auth_method: String,
+    client_secret_verifier: Option<String>,
+}
+
+/// How the registered client `id` authenticates, or `None` when no such
+/// client is registered.
+pub(super) async fn authentication(
+    database: &Database,
+    id: &str,
+) -> Result<Option<StoredAuthentication>, ClientAuthenticationError> {
+    let row: Option<AuthenticationRow> = database
+        .fetch_optional(
+            Query::select()
+                .columns([
+                    OAuthClients::TokenEndpointAuthMethod,
+                    OAuthClients::ClientSecretVerifier,
+                ])
+                .from(OAuthClients::Table)
+                .and_where(Expr::col(OAuthClients::ClientId).eq(id))
+                .to_owned(),
+        )
+        .await
+        .map_err(|_error| ClientAuthenticationError::Unavailable)?;
+    row.map(|row| {
+        match (
+            row.token_endpoint_auth_method.as_str(),
+            row.client_secret_verifier,
+        ) {
+            (NONE, None) => Ok(StoredAuthentication::None),
+            (CLIENT_SECRET_POST, Some(verifier)) => {
+                Ok(StoredAuthentication::ClientSecretPost { verifier })
+            }
+            // The schema forbids any other pair; a row that holds one is corrupt.
+            _ => Err(ClientAuthenticationError::Unavailable),
+        }
+    })
+    .transpose()
 }

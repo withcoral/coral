@@ -89,10 +89,12 @@ on SQLite and Postgres and do not use the five-minute OAuth handshake lifetime.
 
 ### Accepted registration metadata
 
-Coral supports only public clients and authorization-code grants with `code`
-responses. Explicit confidential-client authentication methods fail. If the method
-is omitted, Coral explicitly overrides RFC 7591's confidential default by returning
-`token_endpoint_auth_method: "none"`. Omitted grants and response types use the RFC
+Coral supports authorization-code grants with `code` responses, for public clients
+and for confidential clients that use `client_secret_post`. Any other method, such as
+`client_secret_basic` or `private_key_jwt`, fails. If the method is omitted, Coral
+explicitly overrides RFC 7591's confidential default by returning
+`token_endpoint_auth_method: "none"`
+([ADR 0030](../../../../docs/adr/0030-dcr-clients-may-authenticate-with-client-secret-post.md)). Omitted grants and response types use the RFC
 `authorization_code` and `code` defaults. Requests containing those supported values
 are accepted; the response contains only that supported subset. In particular,
 Pi's `["authorization_code", "refresh_token"]` request is accepted without claiming
@@ -113,8 +115,22 @@ refresh-token support. A request with no usable supported flow fails.
   Unrecognized metadata is ignored rather than stored. Coral does not fetch or render
   client logos, homepages, or other optional URLs. Requested scopes grant nothing;
   the accepted response explicitly returns an empty `scope`.
-- No client secret, registration access token, access token, or refresh token is
-  issued by registration. Malformed/unsupported requests return
+- A `client_secret_post` registration returns a `dcrs_` `client_secret` and
+  `client_secret_expires_at: 0`. Coral returns the secret only in this response:
+  it stores only the secret's SHA-256 verifier and cannot show it again. The secret never
+  expires or rotates, and there is no RFC 7592 management endpoint. A client that
+  loses its secret registers again, which counts against the registration capacity.
+- A confidential client sends `client_secret` in the form body at `/oauth/token`, for
+  both grants, at `/oauth/revoke`, and at the `/oauth/session` endpoints. A client must use the
+  method it registered. A public client that sends any secret, even an empty one, and
+  a confidential client that sends none, the wrong one, or an HTTP Basic header all
+  get `invalid_client`. So does an unknown client. A refusal spends no code and ends
+  no grant. CIMD clients stay public: a document that declares a secret method fails.
+- A secret proves only that the caller holds it, so whoever holds it authenticates as
+  that client. It changes no consent, client label, or trust, and it is never a Coral
+  credential.
+- No registration access token, access token, or refresh token is issued by
+  registration. Malformed/unsupported requests return
   `invalid_client_metadata`; invalid redirect lists return `invalid_redirect_uri`.
 
 Every new DCR client requires ordinary Coral consent, upstream OIDC sign-in, and

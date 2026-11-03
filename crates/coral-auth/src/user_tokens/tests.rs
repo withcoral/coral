@@ -13,6 +13,8 @@ use coral_workspace::{
 
 use super::{AccessTarget, IssuedTokens, RefreshRequest, TokenRefusal, UserTokens};
 use crate::authorization_codes::{AuthorizationCodes, AuthorizationGrant, CodeRedemption};
+use crate::oauth_clients::AuthenticatedClient;
+use crate::oauth_clients::test_support::authenticated;
 use crate::{PrincipalAuthentication, PrivateAudience, SessionTokenIssuer};
 
 pub(super) const NOW: i64 = 1_800_000_000_000_000_000;
@@ -30,6 +32,10 @@ pub(super) struct Fixture {
     pub(super) user: AuthenticatedUser,
     pub(super) workspace: WorkspaceId,
     pub(super) codes_issued: std::sync::atomic::AtomicUsize,
+    /// `CLIENT`, authenticated.
+    pub(super) client: AuthenticatedClient,
+    /// `OTHER_CLIENT`, authenticated.
+    pub(super) other: AuthenticatedClient,
 }
 
 impl Fixture {
@@ -66,7 +72,11 @@ impl Fixture {
             .unwrap()
             .id()
             .clone();
+        let client = authenticated(database.database(), CLIENT).await;
+        let other = authenticated(database.database(), OTHER_CLIENT).await;
         Self {
+            client,
+            other,
             tokens: UserTokens::new(database.database(), issuer.clone())
                 .with_refresh_grant_lifetime(lifetime),
             codes: AuthorizationCodes::new(database.database()),
@@ -140,11 +150,12 @@ impl Fixture {
             .issue(&code, &sign_in, &grant, now)
             .await
             .unwrap();
+        let client = authenticated(self.database.database(), client).await;
         self.tokens
             .redeem_code(
                 &code,
                 CodeRedemption {
-                    client_id: client,
+                    client: &client,
                     redirect_uri: REDIRECT,
                     code_challenge: "challenge",
                     resource,
@@ -178,7 +189,9 @@ impl Fixture {
         token: &str,
         now: i64,
     ) -> Result<IssuedTokens, TokenRefusal> {
-        self.tokens.refresh(token, plain_refresh(), now).await
+        self.tokens
+            .refresh(token, plain_refresh(&self.client), now)
+            .await
     }
 
     /// Authenticates `access_token` at the fixture Workspace's private MCP surface.
@@ -196,9 +209,9 @@ impl Fixture {
     }
 }
 
-const fn plain_refresh() -> RefreshRequest<'static> {
+fn plain_refresh(client: &AuthenticatedClient) -> RefreshRequest<'_> {
     RefreshRequest {
-        client_id: CLIENT,
+        client,
         resource: None,
         audience: None,
     }
@@ -297,8 +310,8 @@ async fn a_refresh_must_repeat_the_grants_bindings_and_a_mismatch_spends_nothing
         (
             "another client",
             RefreshRequest {
-                client_id: "https://other.example.test/client.json",
-                ..plain_refresh()
+                client: &fixture.other,
+                ..plain_refresh(&fixture.client)
             },
             false,
         ),
@@ -306,7 +319,7 @@ async fn a_refresh_must_repeat_the_grants_bindings_and_a_mismatch_spends_nothing
             "another resource",
             RefreshRequest {
                 resource: Some("https://mcp.example.test/mcp"),
-                ..plain_refresh()
+                ..plain_refresh(&fixture.client)
             },
             false,
         ),
@@ -314,7 +327,7 @@ async fn a_refresh_must_repeat_the_grants_bindings_and_a_mismatch_spends_nothing
             "another audience",
             RefreshRequest {
                 audience: Some(PrivateAudience::Reef),
-                ..plain_refresh()
+                ..plain_refresh(&fixture.client)
             },
             false,
         ),
@@ -323,7 +336,7 @@ async fn a_refresh_must_repeat_the_grants_bindings_and_a_mismatch_spends_nothing
             RefreshRequest {
                 resource: Some(&resource),
                 audience: Some(PrivateAudience::Mcp),
-                ..plain_refresh()
+                ..plain_refresh(&fixture.client)
             },
             true,
         ),
@@ -391,22 +404,19 @@ async fn each_target_keeps_its_audience_and_workspace_across_refresh() {
 async fn revocation_ends_the_grant_for_its_own_client_only() {
     let fixture = Fixture::new().await;
     assert_eq!(
-        fixture.tokens.revoke("coral_rt_unknown", CLIENT).await,
+        fixture
+            .tokens
+            .revoke("coral_rt_unknown", &fixture.client)
+            .await,
         Ok(())
     );
     let first = fixture.refreshable().await;
     let issued = fixture.refresh(&first, NOW + SECOND).await.unwrap();
     let current = refresh_token(&issued);
-    assert_eq!(
-        fixture
-            .tokens
-            .revoke(&first, "https://other.example.test/client.json")
-            .await,
-        Ok(())
-    );
+    assert_eq!(fixture.tokens.revoke(&first, &fixture.other).await, Ok(()));
     let current = refresh_token(&fixture.refresh(&current, NOW + 2 * SECOND).await.unwrap());
     // The consumed first token revokes, as a logout racing a rotation would.
-    assert_eq!(fixture.tokens.revoke(&first, CLIENT).await, Ok(()));
+    assert_eq!(fixture.tokens.revoke(&first, &fixture.client).await, Ok(()));
     assert_eq!(
         fixture.refresh(&current, NOW + 3 * SECOND).await.err(),
         Some(TokenRefusal::InvalidGrant)
@@ -433,8 +443,12 @@ async fn concurrent_rotations_of_one_token_never_both_succeed() {
         } else {
             peer.clone()
         };
-        let token = token.clone();
-        refreshes.spawn(async move { tokens.refresh(&token, plain_refresh(), NOW + SECOND).await });
+        let (token, client) = (token.clone(), fixture.client.clone());
+        refreshes.spawn(async move {
+            tokens
+                .refresh(&token, plain_refresh(&client), NOW + SECOND)
+                .await
+        });
     }
     let mut successors = Vec::new();
     while let Some(outcome) = refreshes.join_next().await {
@@ -446,7 +460,7 @@ async fn concurrent_rotations_of_one_token_never_both_succeed() {
     assert!(successors.len() <= 1, "{} rotations won", successors.len());
     for successor in successors {
         assert_eq!(
-            peer.refresh(&successor, plain_refresh(), NOW + 2 * SECOND)
+            peer.refresh(&successor, plain_refresh(&fixture.client), NOW + 2 * SECOND)
                 .await
                 .err(),
             Some(TokenRefusal::InvalidGrant)
@@ -464,7 +478,7 @@ async fn a_revocation_racing_a_refresh_leaves_nothing_refreshable() {
         let token = fixture.refreshable().await;
         let (refreshed, revoked) = tokio::join!(
             fixture.refresh(&token, NOW + SECOND),
-            peer.revoke(&token, CLIENT),
+            peer.revoke(&token, &fixture.client),
         );
         assert_eq!(revoked, Ok(()));
         if let Ok(issued) = refreshed {
@@ -545,7 +559,7 @@ async fn a_storage_outage_is_unavailable_and_strands_no_token() {
         Some(TokenRefusal::Unavailable)
     );
     assert_eq!(
-        fixture.tokens.revoke(&token, CLIENT).await,
+        fixture.tokens.revoke(&token, &fixture.client).await,
         Err(TokenRefusal::Unavailable)
     );
     fixture
@@ -591,8 +605,8 @@ async fn a_user_holds_a_bounded_number_of_grants_per_client() {
         .refresh(
             &other,
             RefreshRequest {
-                client_id: OTHER_CLIENT,
-                ..plain_refresh()
+                client: &fixture.other,
+                ..plain_refresh(&fixture.client)
             },
             later,
         )

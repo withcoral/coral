@@ -6,13 +6,17 @@ use super::{
     AUTHORIZATION_CODE_TTL, AuthorizationCodeError, AuthorizationCodes, AuthorizationGrant,
     CodeIssue, CodeRedemption,
 };
+use crate::oauth_clients::AuthenticatedClient;
+use crate::oauth_clients::test_support::authenticated;
 
 const NOW: i64 = 1_800_000_000_000_000_000;
+const CLIENT: &str = "https://client.example.test/oauth/client.json";
+const OTHER_CLIENT: &str = "https://other.example.test/oauth/client.json";
 
 fn grant() -> AuthorizationGrant {
     AuthorizationGrant {
         user_id: "0199f7a2-6a6e-7c3d-9a51-2f4e8b7d1c05".into(),
-        client_id: "https://client.example.test/oauth/client.json".into(),
+        client_id: CLIENT.into(),
         redirect_uri: "http://127.0.0.1:14554/callback".into(),
         code_challenge: "client-challenge".into(),
         resource: "https://mcp.example.test/workspaces/w/mcp".into(),
@@ -21,9 +25,13 @@ fn grant() -> AuthorizationGrant {
     }
 }
 
-fn redemption(grant: &AuthorizationGrant) -> CodeRedemption<'_> {
+/// The redemption that repeats every binding of `grant`, by `client`.
+fn redemption<'a>(
+    grant: &'a AuthorizationGrant,
+    client: &'a AuthenticatedClient,
+) -> CodeRedemption<'a> {
     CodeRedemption {
-        client_id: &grant.client_id,
+        client,
         redirect_uri: &grant.redirect_uri,
         code_challenge: &grant.code_challenge,
         resource: &grant.resource,
@@ -43,6 +51,7 @@ async fn codes() -> (AuthorizationCodes, TestDatabase) {
 #[tokio::test]
 async fn a_code_issued_by_one_process_is_redeemed_once_by_any() {
     let (codes, fixture) = codes().await;
+    let client = authenticated(fixture.database(), CLIENT).await;
     let peer = AuthorizationCodes::new(Arc::new(fixture.connect_peer().await.unwrap()));
     assert_eq!(
         codes.issue("code", "sign-in", &grant(), NOW).await,
@@ -55,9 +64,12 @@ async fn a_code_issued_by_one_process_is_redeemed_once_by_any() {
         } else {
             peer.clone()
         };
+        let client = client.clone();
         redemptions.spawn(async move {
             let grant = grant();
-            module.redeem("code", redemption(&grant), NOW + 1).await
+            module
+                .redeem("code", redemption(&grant, &client), NOW + 1)
+                .await
         });
     }
     let mut granted = Vec::new();
@@ -72,6 +84,7 @@ async fn a_code_issued_by_one_process_is_redeemed_once_by_any() {
 #[tokio::test]
 async fn a_code_carries_the_workspace_its_sign_in_chose() {
     let (codes, fixture) = codes().await;
+    let client = authenticated(fixture.database(), CLIENT).await;
     let peer = AuthorizationCodes::new(Arc::new(fixture.connect_peer().await.unwrap()));
     let chosen = AuthorizationGrant {
         resource: "https://mcp.example.test/mcp".into(),
@@ -82,7 +95,8 @@ async fn a_code_carries_the_workspace_its_sign_in_chose() {
     };
     codes.issue("code", "sign-in", &chosen, NOW).await.unwrap();
     assert_eq!(
-        peer.redeem("code", redemption(&chosen), NOW + 1).await,
+        peer.redeem("code", redemption(&chosen, &client), NOW + 1)
+            .await,
         Ok(Some(chosen))
     );
 }
@@ -92,18 +106,20 @@ async fn a_code_carries_the_workspace_its_sign_in_chose() {
 #[tokio::test]
 async fn an_unspendable_code_is_refused_without_the_writer() {
     let (codes, fixture) = codes().await;
+    let client = authenticated(fixture.database(), CLIENT).await;
+    let other = authenticated(fixture.database(), OTHER_CLIENT).await;
     codes.issue("code", "sign-in", &grant(), NOW).await.unwrap();
     let database = fixture.database();
     let writer = database.begin().await.unwrap();
     let issued = grant();
     for (case, code, redemption) in [
-        ("an unknown code", "guess", redemption(&issued)),
+        ("an unknown code", "guess", redemption(&issued, &client)),
         (
             "the wrong client",
             "code",
             CodeRedemption {
-                client_id: "other",
-                ..redemption(&issued)
+                client: &other,
+                ..redemption(&issued, &client)
             },
         ),
     ] {
@@ -116,43 +132,47 @@ async fn an_unspendable_code_is_refused_without_the_writer() {
     }
     drop(writer);
     assert_eq!(
-        codes.redeem("code", redemption(&issued), NOW + 1).await,
+        codes
+            .redeem("code", redemption(&issued, &client), NOW + 1)
+            .await,
         Ok(Some(grant()))
     );
 }
 
 #[tokio::test]
 async fn a_redemption_must_repeat_every_binding_and_a_mismatch_spends_nothing() {
-    let (codes, _fixture) = codes().await;
+    let (codes, fixture) = codes().await;
+    let client = authenticated(fixture.database(), CLIENT).await;
+    let other = authenticated(fixture.database(), OTHER_CLIENT).await;
     codes.issue("code", "sign-in", &grant(), NOW).await.unwrap();
     let issued = grant();
     for (binding, mismatched) in [
         (
             "client_id",
             CodeRedemption {
-                client_id: "other",
-                ..redemption(&issued)
+                client: &other,
+                ..redemption(&issued, &client)
             },
         ),
         (
             "redirect_uri",
             CodeRedemption {
                 redirect_uri: "http://127.0.0.1/other",
-                ..redemption(&issued)
+                ..redemption(&issued, &client)
             },
         ),
         (
             "code_challenge",
             CodeRedemption {
                 code_challenge: "other",
-                ..redemption(&issued)
+                ..redemption(&issued, &client)
             },
         ),
         (
             "resource",
             CodeRedemption {
                 resource: "https://other.example.test/mcp",
-                ..redemption(&issued)
+                ..redemption(&issued, &client)
             },
         ),
     ] {
@@ -163,7 +183,9 @@ async fn a_redemption_must_repeat_every_binding_and_a_mismatch_spends_nothing() 
         );
     }
     assert_eq!(
-        codes.redeem("code", redemption(&issued), NOW + 1).await,
+        codes
+            .redeem("code", redemption(&issued, &client), NOW + 1)
+            .await,
         Ok(Some(grant()))
     );
 }
@@ -172,7 +194,8 @@ async fn a_redemption_must_repeat_every_binding_and_a_mismatch_spends_nothing() 
 /// code, before or after the first one is redeemed.
 #[tokio::test]
 async fn a_sign_in_issues_at_most_one_code() {
-    let (codes, _fixture) = codes().await;
+    let (codes, fixture) = codes().await;
+    let client = authenticated(fixture.database(), CLIENT).await;
     let issued = grant();
     assert_eq!(
         codes.issue("first", "sign-in", &issued, NOW).await,
@@ -185,14 +208,18 @@ async fn a_sign_in_issues_at_most_one_code() {
             "{replay}"
         );
         assert_eq!(
-            codes.redeem(replay, redemption(&grant()), at + 1).await,
+            codes
+                .redeem(replay, redemption(&grant(), &client), at + 1)
+                .await,
             Ok(None),
             "{replay}: the refused code must not be redeemable"
         );
     };
     refuse_replay("before-redemption", NOW + 1).await;
     assert_eq!(
-        codes.redeem("first", redemption(&issued), NOW + 3).await,
+        codes
+            .redeem("first", redemption(&issued, &client), NOW + 3)
+            .await,
         Ok(Some(grant()))
     );
     refuse_replay("after-redemption", NOW + 4).await;
@@ -200,19 +227,24 @@ async fn a_sign_in_issues_at_most_one_code() {
 
 #[tokio::test]
 async fn codes_expire_after_their_lifetime() {
-    let (codes, _fixture) = codes().await;
+    let (codes, fixture) = codes().await;
+    let client = authenticated(fixture.database(), CLIENT).await;
     let issued = grant();
     codes.issue("last-moment", "a", &issued, NOW).await.unwrap();
     codes.issue("too-late", "b", &issued, NOW).await.unwrap();
     assert_eq!(
         codes
-            .redeem("last-moment", redemption(&issued), NOW + ttl_nanos() - 1)
+            .redeem(
+                "last-moment",
+                redemption(&issued, &client),
+                NOW + ttl_nanos() - 1
+            )
             .await,
         Ok(Some(grant()))
     );
     assert_eq!(
         codes
-            .redeem("too-late", redemption(&issued), NOW + ttl_nanos())
+            .redeem("too-late", redemption(&issued, &client), NOW + ttl_nanos())
             .await,
         Ok(None)
     );
@@ -220,7 +252,8 @@ async fn codes_expire_after_their_lifetime() {
 
 #[tokio::test]
 async fn empty_secrets_are_refused_and_store_nothing() {
-    let (codes, _fixture) = codes().await;
+    let (codes, fixture) = codes().await;
+    let client = authenticated(fixture.database(), CLIENT).await;
     let issued = grant();
     for (code, sign_in) in [("", "sign-in"), ("code", "")] {
         assert_eq!(
@@ -229,10 +262,15 @@ async fn empty_secrets_are_refused_and_store_nothing() {
         );
     }
     assert_eq!(
-        codes.redeem("code", redemption(&issued), NOW).await,
+        codes
+            .redeem("code", redemption(&issued, &client), NOW)
+            .await,
         Ok(None)
     );
-    assert_eq!(codes.redeem("", redemption(&issued), NOW).await, Ok(None));
+    assert_eq!(
+        codes.redeem("", redemption(&issued, &client), NOW).await,
+        Ok(None)
+    );
 }
 
 #[tokio::test]
@@ -241,12 +279,15 @@ async fn an_unwritable_database_issues_no_code() {
         .await
         .unwrap();
     let codes = AuthorizationCodes::new(fixture.database());
+    let client = authenticated(fixture.database(), CLIENT).await;
     assert_eq!(
         codes.issue("code", "sign-in", &grant(), NOW).await,
         Err(AuthorizationCodeError::Unavailable)
     );
     assert_eq!(
-        codes.redeem("code", redemption(&grant()), NOW).await,
+        codes
+            .redeem("code", redemption(&grant(), &client), NOW)
+            .await,
         Err(AuthorizationCodeError::Unavailable)
     );
 }
