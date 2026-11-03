@@ -73,29 +73,6 @@ struct SearchHit {
     /// data types by name, an unnamed object as `{…}`; a Saved Function's
     /// result members one level deep. At most 512 UTF-8 bytes.
     signature_line: String,
-    /// At most 512 UTF-8 bytes of the description, around the first matched
-    /// term; `…` marks cut text.
-    description_snippet: String,
-    /// Present only when a query term matched the guidance.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    guidance_snippet: Option<String>,
-    /// The tags a query term matched; absent when none did.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    matched_tags: Vec<String>,
-    /// The arguments a query term matched that the signature line does not
-    /// show; absent when there are none.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    matched_inputs: Vec<String>,
-    /// Present only when the Provider declared a hint.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Hints")]
-    hints: Option<Hints>,
-    /// Present, and true, only when a person must approve each call.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    approval_required: bool,
-    /// Present, and true, only when the provider tool is deprecated.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    deprecated: bool,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -166,8 +143,20 @@ pub(crate) struct SavedFunctionResult<'a> {
     diagnostics_truncated: bool,
 }
 
+/// Compact-hit ablation: the agent sees each hit as its Call Path and signature
+/// line only. Task history still retains the shared, complete projection; only
+/// this MCP page is cut, so the control measures hit size alone.
 pub(crate) fn search(page: &SearchPage) -> Result<SearchResult, ToolFailure> {
-    from_snapshot(&coral_search::projection::search(page))
+    let mut snapshot = coral_search::projection::search(page);
+    let hits = snapshot
+        .get_mut("hits")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(ToolFailure::internal)?;
+    for hit in hits {
+        let fields = hit.as_object_mut().ok_or_else(ToolFailure::internal)?;
+        fields.retain(|name, _value| matches!(name.as_str(), "call_path" | "signature_line"));
+    }
+    from_snapshot(&snapshot)
 }
 
 /// A Saved Function's detail is absent when `describe` returned only the

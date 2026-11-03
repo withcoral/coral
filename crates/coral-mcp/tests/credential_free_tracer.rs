@@ -1129,7 +1129,11 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         Some(&json!("coral.providers.weather.getForecast"))
     );
     assert!(first_search_result["signature_line"].is_string());
-    assert!(first_search_result["description_snippet"].is_string());
+    assert_eq!(
+        first_search_result.as_object().map(Map::len),
+        Some(2),
+        "a compact hit carries only its Call Path and signature line"
+    );
     for gone in [
         "description",
         "typescript_declaration",

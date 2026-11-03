@@ -52,70 +52,13 @@
         "signature_line": {
           "type": "string",
           "description": "The callable's input members one level deep; a provider tool's result\ndata types by name, an unnamed object as `{…}`; a Saved Function's\nresult members one level deep. At most 512 UTF-8 bytes."
-        },
-        "description_snippet": {
-          "type": "string",
-          "description": "At most 512 UTF-8 bytes of the description, around the first matched\nterm; `…` marks cut text."
-        },
-        "guidance_snippet": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Present only when a query term matched the guidance."
-        },
-        "matched_tags": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "The tags a query term matched; absent when none did."
-        },
-        "matched_inputs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "The arguments a query term matched that the signature line does not\nshow; absent when there are none."
-        },
-        "hints": {
-          "$ref": "#/$defs/Hints",
-          "description": "Present only when the Provider declared a hint."
-        },
-        "approval_required": {
-          "type": "boolean",
-          "description": "Present, and true, only when a person must approve each call."
-        },
-        "deprecated": {
-          "type": "boolean",
-          "description": "Present, and true, only when the provider tool is deprecated."
         }
       },
       "required": [
         "call_path",
-        "signature_line",
-        "description_snippet"
+        "signature_line"
       ],
       "description": "One Search Hit. Call a read from it when its signature line is complete:\nno cut marker (`…`) and no type named in its input that the line does not\nshow. Describe first otherwise, and before a write."
-    },
-    "Hints": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "read_only": {
-          "type": "boolean"
-        },
-        "destructive": {
-          "type": "boolean"
-        },
-        "idempotent": {
-          "type": "boolean"
-        },
-        "open_world": {
-          "type": "boolean"
-        }
-      },
-      "description": "Effect hints the Provider declared. An absent field is undeclared, not a\nprotocol default."
     },
     "RetrieverStatus": {
       "type": "object",
