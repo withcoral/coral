@@ -20,6 +20,10 @@ const ABSENT: &str = "00000000-0000-4000-8000-000000000000";
 /// new trace for an invalid one, and is the trace of the exported request and
 /// tool spans either way.
 #[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of tool failures, each checked in every supported protocol version"
+)]
 async fn tool_failures_name_the_trace_of_their_request() {
     let capture = capture();
     let tracer = Tracer::start().await;

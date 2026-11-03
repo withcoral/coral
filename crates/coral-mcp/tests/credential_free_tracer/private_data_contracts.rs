@@ -358,7 +358,6 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         )
         .await;
     assert_eq!(ended["structuredContent"]["outcome"], "success", "{ended}");
-    session.close().await;
     tracer.server.shutdown().await.expect("stop MCP server");
 
     let owner = AuthenticatedPrincipal::user(tracer.local_user.clone());
