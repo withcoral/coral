@@ -7,11 +7,11 @@ status: accepted
 Universal Search has one engine and one retriever per Search Entity kind: Tools and Saved Functions. The engine
 normalizes the query, asks every retriever, fuses their ranked lists by position and pages the result; it never
 branches on kind. A retriever owns everything about its kind: applying its owners' visibility rules, matching, ranking,
-evidence, and exact resolution for `describe`. Only positions, evidence and whether each entry is a strong match cross
-into the engine; a strong match is an entry that its retriever judges to answer the query by where the query's words
-meet it, not only by sharing a word somewhere in its text. Raw scores are assumed incomparable across retrievers, so
-each retriever turns its own scores into that one judgment and the engine compares no score. Search applies visibility
-but decides none; those rules stay with the owning domains.
+evidence, and exact resolution for exact Call Path lookups. Only positions, evidence and whether each entry is a strong
+match cross into the engine; a strong match is an entry that its retriever judges to answer the query by where the
+query's words meet it, not only by sharing a word somewhere in its text. Raw scores are assumed incomparable across
+retrievers, so each retriever turns its own scores into that one judgment and the engine compares no score. Search
+applies visibility but decides none; those rules stay with the owning domains.
 
 Before the split, one module ranked lanes of material across every kind, and each new kind or kind-specific rule added
 a branch to every loop. Rejected: per-kind branches in the engine; a lanes-only trait that keeps ranking in the engine

@@ -115,8 +115,8 @@ pub(crate) async fn suggestions(
         Err(QueryError::Shared(error)) => return Err(error),
     };
     let written_words = path_words(relative_path);
-    let (named, others): (Vec<_>, Vec<_>) = window.into_iter().partition(|entity| {
-        ProviderCallRoot::split_call_path(entity.call_path().as_str()).is_some_and(
+    let (named, others): (Vec<_>, Vec<_>) = window.into_iter().partition(|entry| {
+        ProviderCallRoot::split_call_path(entry.entity.call_path().as_str()).is_some_and(
             |(_root, relative)| {
                 path_words(relative)
                     .iter()
@@ -124,8 +124,8 @@ pub(crate) async fn suggestions(
             },
         )
     });
-    for entity in named.into_iter().chain(others) {
-        let path = entity.call_path().as_str();
+    for entry in named.into_iter().chain(others) {
+        let path = entry.entity.call_path().as_str();
         if suggested.len() == SUGGESTIONS_MAX {
             break;
         }
