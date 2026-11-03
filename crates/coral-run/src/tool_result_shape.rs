@@ -4,6 +4,11 @@
 //! A shape is TypeScript-like text. An array shows the union of its elements'
 //! shapes, and a key that some of the merged objects lack is optional, since
 //! a Program most often crashes on results whose elements differ.
+//!
+//! Keys show where data lives, so a shape names an object's keys only when
+//! they read as field names. An object keyed by data (identifiers, emails,
+//! tokens, paths, names a person chose) shows as `Record<string, V>`, `V` the
+//! union of its values' shapes, since its keys are values.
 
 use std::collections::HashMap;
 
@@ -11,13 +16,17 @@ use serde_json::Value;
 
 /// Object levels a shape shows before it shows a deeper object as `{…}`.
 const MAX_DEPTH: usize = 6;
-/// Keys one object shows. The rest are counted, since some objects are maps
-/// keyed by data.
+/// Keys one object shows. The rest are counted.
 const KEYS_SHOWN: usize = 16;
-/// Distinct keys one object tracks, so a large map stays bounded.
+/// Distinct keys one object tracks. An object with more is a map.
 const KEYS_TRACKED: usize = 256;
-/// Bytes of one key name a shape shows.
-const KEY_NAME_MAX_BYTES: usize = 48;
+/// Bytes of the longest key that reads as a field name. Field names in the
+/// APIs Coral calls stay well under it; longer keys are tokens, URLs or text.
+const FIELD_NAME_MAX_BYTES: usize = 40;
+/// Keys past which an object whose values are all objects, or all arrays, is
+/// a map. Fixed groupings of sub-objects stay under a dozen (GitHub's
+/// `_links` has 8), while a collection keyed by data passes it quickly.
+const MAP_MIN_UNIFORM_KEYS: usize = 12;
 /// Text bytes of every Call Path and shape that one failure carries.
 pub(crate) const SHAPES_MAX_BYTES: usize = 4096;
 /// The latest Tool Results one failure reads.
@@ -156,10 +165,16 @@ impl Draft {
         } else {
             None
         };
+        let mut data = Shape::of(data, 0);
+        data.collapse_maps();
+        let parsed = parsed.map(|mut shape| {
+            shape.collapse_maps();
+            shape
+        });
         let mut draft = Self {
             call_path: result.call_path,
             invocations: 1,
-            data: Shape::of(data, 0),
+            data,
             parsed,
             depth: MAX_DEPTH,
             text: String::new(),
@@ -246,14 +261,23 @@ impl Scalar {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Compound {
+    Array,
+    Object,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct ObjectShape {
     /// How many objects merged into this one.
     seen: u64,
     fields: Vec<Field>,
     index: HashMap<String, usize>,
-    /// Keys beyond the ones tracked were seen.
-    overflow: bool,
+    /// The union of the values of keys beyond the ones tracked.
+    untracked: Option<Box<Shape>>,
+    /// The union of the values of an object keyed by data, whose keys a
+    /// shape does not show.
+    record: Option<Box<Shape>>,
     /// The object lies beyond the deepest level a shape shows.
     deeper: bool,
 }
@@ -327,6 +351,26 @@ impl Shape {
     fn is_never(&self) -> bool {
         *self == Self::default()
     }
+
+    /// Turns every object keyed by data into a record of its values' union.
+    fn collapse_maps(&mut self) {
+        if let Some(elements) = &mut self.array {
+            elements.collapse_maps();
+        }
+        if let Some(object) = &mut self.object {
+            object.collapse_maps();
+        }
+    }
+
+    /// The one compound kind of a shape that is only an object or only an
+    /// array.
+    const fn sole_compound_kind(&self) -> Option<Compound> {
+        match (self.scalars, &self.array, &self.object) {
+            (0, Some(_), None) => Some(Compound::Array),
+            (0, None, Some(_)) => Some(Compound::Object),
+            _ => None,
+        }
+    }
 }
 
 impl ObjectShape {
@@ -335,7 +379,8 @@ impl ObjectShape {
             seen: 1,
             fields: Vec::new(),
             index: HashMap::new(),
-            overflow: false,
+            untracked: None,
+            record: None,
             deeper: level >= MAX_DEPTH && !fields.is_empty(),
         };
         if object.deeper {
@@ -363,25 +408,69 @@ impl ObjectShape {
             self.index.insert(field.name.clone(), self.fields.len());
             self.fields.push(field);
         } else {
-            self.overflow = true;
+            merge_into(&mut self.untracked, field.shape);
         }
     }
 
     fn merge(&mut self, other: Self) {
         self.seen += other.seen;
-        self.overflow |= other.overflow;
         self.deeper |= other.deeper;
+        if let Some(untracked) = other.untracked {
+            merge_into(&mut self.untracked, *untracked);
+        }
+        if let Some(record) = other.record {
+            merge_into(&mut self.record, *record);
+        }
         for field in other.fields {
             self.add(field);
         }
     }
 
+    /// Whether the keys are data rather than field names: one of them does
+    /// not read as a field name, there are more than are tracked, or there
+    /// are many and every value is an object, or every value an array.
+    fn is_map(&self) -> bool {
+        if self.untracked.is_some() || self.fields.iter().any(|field| !is_field_name(&field.name)) {
+            return true;
+        }
+        let mut kinds = self
+            .fields
+            .iter()
+            .map(|field| field.shape.sole_compound_kind());
+        self.fields.len() >= MAP_MIN_UNIFORM_KEYS
+            && kinds
+                .next()
+                .flatten()
+                .is_some_and(|first| kinds.all(|kind| kind == Some(first)))
+    }
+
+    fn collapse_maps(&mut self) {
+        if self.is_map() {
+            self.index.clear();
+            for field in std::mem::take(&mut self.fields) {
+                merge_into(&mut self.record, field.shape);
+            }
+            if let Some(untracked) = self.untracked.take() {
+                merge_into(&mut self.record, *untracked);
+            }
+        }
+        if let Some(record) = &mut self.record {
+            record.collapse_maps();
+        }
+        for field in &mut self.fields {
+            field.shape.collapse_maps();
+        }
+    }
+
     fn render(&self, level: usize, depth: usize) -> String {
-        if self.fields.is_empty() && !self.overflow && !self.deeper {
+        if self.fields.is_empty() && self.record.is_none() && !self.deeper {
             return "{}".to_string();
         }
         if self.deeper || level >= depth {
             return "{…}".to_string();
+        }
+        if let Some(values) = &self.record {
+            return format!("Record<string, {}>", values.render(level + 1, depth));
         }
         let mut members: Vec<String> = self
             .fields
@@ -397,43 +486,82 @@ impl ObjectShape {
             })
             .collect();
         let more = self.fields.len().saturating_sub(KEYS_SHOWN);
-        if more > 0 || self.overflow {
-            let plus = if self.overflow { "+" } else { "" };
-            let keys = if more == 1 && !self.overflow {
-                "key"
-            } else {
-                "keys"
-            };
-            members.push(format!("… {more}{plus} more {keys}"));
+        if more > 0 {
+            let keys = if more == 1 { "key" } else { "keys" };
+            members.push(format!("… {more} more {keys}"));
         }
         format!("{{ {} }}", members.join("; "))
     }
 }
 
-/// A key as TypeScript writes it: bare when it is an identifier, quoted
-/// otherwise, and shortened when it is long.
-fn key(name: &str) -> String {
-    let mut end = name.len().min(KEY_NAME_MAX_BYTES);
-    while !name.is_char_boundary(end) {
-        end -= 1;
+fn merge_into(union: &mut Option<Box<Shape>>, shape: Shape) {
+    match union {
+        Some(union) => union.merge(shape),
+        None => *union = Some(Box::new(shape)),
     }
-    let shown = name.get(..end).unwrap_or_default();
-    let identifier = shown
-        .chars()
-        .next()
-        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_' || first == '$')
-        && shown
-            .chars()
-            .all(|next| next.is_ascii_alphanumeric() || next == '_' || next == '$');
-    let mut written = if identifier {
-        shown.to_string()
-    } else {
-        serde_json::to_string(shown).unwrap_or_else(|_never| "\"\"".to_string())
+}
+
+/// Whether a key reads as a field name an API chose rather than as data: at
+/// most [`FIELD_NAME_MAX_BYTES`] of ASCII letters, digits, `_`, `-` and `$`,
+/// starting with a letter, `_` or `$`, and not shaped like an ID, a hash or
+/// a token. Whitespace, `@`, `/`, `:`, `.` and other characters mark names a
+/// person chose, emails, paths, URLs and hosts.
+fn is_field_name(name: &str) -> bool {
+    let separator = |byte: u8| matches!(byte, b'_' | b'-' | b'$');
+    let bytes = name.as_bytes();
+    let Some(&first) = bytes.first() else {
+        return false;
     };
-    if end < name.len() {
-        written.push('…');
+    if bytes.len() > FIELD_NAME_MAX_BYTES
+        || !(first.is_ascii_alphabetic() || first == b'_' || first == b'$')
+        || !bytes
+            .iter()
+            .all(|&byte| byte.is_ascii_alphanumeric() || separator(byte))
+    {
+        return false;
     }
-    written
+    let alphanumeric = bytes
+        .iter()
+        .filter(|byte| byte.is_ascii_alphanumeric())
+        .count();
+    let digits = bytes.iter().filter(|byte| byte.is_ascii_digit()).count();
+    // Mostly digits: `user_98765432`.
+    if digits * 2 > alphanumeric {
+        return false;
+    }
+    // Hex with a digit: a hash, or a UUID that starts with a letter.
+    if alphanumeric >= 8
+        && digits > 0
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit() || separator(*byte))
+    {
+        return false;
+    }
+    // Letters and digits that alternate three times or more within one word
+    // read as a token (`U024BE7LH`, `4eC39Hq`), while field names carry at
+    // most a number or two (`sha256`, `x509Certificate`, `line2`).
+    !bytes.split(|&byte| separator(byte)).any(|word| {
+        word.windows(2)
+            .filter(
+                |pair| matches!(pair, [one, next] if one.is_ascii_digit() != next.is_ascii_digit()),
+            )
+            .count()
+            >= 3
+    })
+}
+
+/// A key as TypeScript writes it: bare when it is an identifier, quoted
+/// otherwise.
+fn key(name: &str) -> String {
+    if name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$')
+    {
+        name.to_string()
+    } else {
+        serde_json::to_string(name).unwrap_or_else(|_never| "\"\"".to_string())
+    }
 }
 
 #[cfg(test)]

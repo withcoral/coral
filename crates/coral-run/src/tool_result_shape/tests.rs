@@ -45,8 +45,8 @@ fn shapes_show_keys_and_types_of_data() {
         (json!({"empty": []}), "{ empty: [] }"),
         (json!([[1], ["x"]]), "Array<Array<string | number>>"),
         (
-            json!({"has space": 1, "9lives": 2, "$ok_1": 3}),
-            r#"{ "has space": number; "9lives": number; $ok_1: number }"#,
+            json!({"content-type": 1, "_id": 2, "$ok_1": 3}),
+            r#"{ "content-type": number; _id: number; $ok_1: number }"#,
         ),
     ] {
         assert_eq!(shape_of(http("coral.providers.a.b", data)).data(), expected);
@@ -107,21 +107,146 @@ fn deep_objects_and_many_keys_are_summarised() {
         .to_string();
     assert!(shown.ends_with("… 1 more key }"), "{shown}");
 
-    let huge: serde_json::Map<String, Value> = (0..KEYS_TRACKED + 10)
-        .map(|index| (format!("k{index:04}"), json!(index)))
+    // More keys than are tracked make a map, whatever their names.
+    let letters = |mut index: usize| {
+        let mut name = String::from("key_");
+        loop {
+            name.push(char::from(b'a' + u8::try_from(index % 26).unwrap()));
+            index /= 26;
+            if index == 0 {
+                return name;
+            }
+        }
+    };
+    let mut huge: serde_json::Map<String, Value> = (0..KEYS_TRACKED)
+        .map(|index| (letters(index), json!(index)))
         .collect();
-    let shown = shape_of(http("coral.providers.a.b", Value::Object(huge)))
-        .data()
-        .to_string();
-    assert!(
-        shown.ends_with(&format!("… {}+ more keys }}", KEYS_TRACKED - KEYS_SHOWN)),
-        "{shown}"
-    );
-
-    let long = "n".repeat(KEY_NAME_MAX_BYTES + 10);
+    huge.insert("key_beyond".to_string(), json!("text"));
     assert_eq!(
-        shape_of(http("coral.providers.a.b", json!({ long: 1 }))).data(),
-        format!("{{ {}…: number }}", "n".repeat(KEY_NAME_MAX_BYTES))
+        shape_of(http("coral.providers.a.b", Value::Object(huge))).data(),
+        "Record<string, string | number>"
+    );
+}
+
+#[test]
+fn objects_keyed_by_data_show_as_records_without_their_keys() {
+    let users = |count: usize| -> Value {
+        [
+            "ada", "bob", "cy", "dee", "eve", "fay", "gus", "hal", "ivy", "jo", "kai", "lu",
+        ]
+        .iter()
+        .take(count)
+        .enumerate()
+        .map(|(index, name)| {
+            let user = if index == 0 {
+                json!({"id": index, "email": "x"})
+            } else {
+                json!({"id": index})
+            };
+            ((*name).to_string(), user)
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+    };
+    for (data, expected) in [
+        // Property names a person chose.
+        (
+            json!({"object": "page", "properties": {
+                "Name": {"id": "title", "type": "title", "title": [{"plain_text": "c0ral"}]},
+                "Due date": {"id": "a%3Bc", "type": "date", "date": null},
+            }}),
+            "{ object: string; properties: Record<string, { id: string; type: string; title?: Array<{ plain_text: string }>; date?: null }> }",
+        ),
+        (
+            json!({"Name": 1, "Statut": 2, "Fällig": 3}),
+            "Record<string, number>",
+        ),
+        // Emails, UUIDs, numeric and hex identifiers, tokens.
+        (
+            json!({"members": {"ada@example.com": {"role": "admin"}, "bob@example.com": {"role": "member"}}}),
+            "{ members: Record<string, { role: string }> }",
+        ),
+        (
+            json!({"a7c9e2d4-5b1f-4c3e-9d8a-6f0b2e1c3d4a": true}),
+            "Record<string, boolean>",
+        ),
+        (
+            json!({"3f2b8c1e-0a9d-4e7f-b6c5-1d2e3f4a5b6c": true}),
+            "Record<string, boolean>",
+        ),
+        (
+            json!({"cafe1234beef": [1]}),
+            "Record<string, Array<number>>",
+        ),
+        (json!({"12345": "x"}), "Record<string, string>"),
+        (json!({"user_98765432": "x"}), "Record<string, string>"),
+        (
+            json!({"U024BE7LH": {"presence": "away"}}),
+            "Record<string, { presence: string }>",
+        ),
+        (
+            json!({"tok_4eC39HqLyjWDarjtT1zdp7dc": null}),
+            "Record<string, null>",
+        ),
+        // Paths, URLs, dotted and long names.
+        (json!({"/v1/users": {}}), "Record<string, {}>"),
+        (
+            json!({"https://example.com/x": 1}),
+            "Record<string, number>",
+        ),
+        (json!({"example.com": 1}), "Record<string, number>"),
+        (json!({"urn:team:1": 1}), "Record<string, number>"),
+        (json!({ "n".repeat(41): 1 }), "Record<string, number>"),
+        (json!({"": 1}), "Record<string, number>"),
+        // Many plain names whose values share one kind.
+        (
+            json!({"by_user": users(12)}),
+            "{ by_user: Record<string, { id: number; email?: string }> }",
+        ),
+    ] {
+        let shown = shape_of(http("coral.providers.a.b", data.clone()))
+            .data()
+            .to_string();
+        assert_eq!(shown, expected, "{data}");
+    }
+    // A few plain names keep their keys.
+    assert_eq!(
+        shape_of(http("coral.providers.a.b", users(3))).data(),
+        "{ ada: { id: number; email: string }; bob: { id: number }; cy: { id: number } }"
+    );
+}
+
+#[test]
+fn ordinary_api_objects_keep_their_field_names() {
+    let link = json!({"href": "https://api.example.com/c0ral"});
+    let data = json!({
+        "id": 1_234,
+        "node_id": "I_kwDOABCDEF",
+        "title": "c0ral",
+        "has_more": false,
+        "next_cursor": null,
+        "results": [{"object": "page", "created_time": "2026-01-01"}],
+        "customfield_10010": null,
+        "sha256": "e3b0",
+        "x509Certificate": null,
+        "content-type": "text/plain",
+        "$ref": "#/a",
+        "__typename": "Issue",
+        "_links": {
+            "self": link, "html": link, "issue": link, "comments": link,
+            "review_comments": link, "review_comment": link, "commits": link, "statuses": link,
+        },
+    });
+    assert_eq!(
+        shape_of(http("coral.providers.github.getPull", data)).data(),
+        concat!(
+            "{ id: number; node_id: string; title: string; has_more: boolean; next_cursor: null; ",
+            "results: Array<{ object: string; created_time: string }>; customfield_10010: null; ",
+            "sha256: string; x509Certificate: null; \"content-type\": string; $ref: string; ",
+            "__typename: string; _links: { self: { href: string }; html: { href: string }; ",
+            "issue: { href: string }; comments: { href: string }; review_comments: { href: string }; ",
+            "review_comment: { href: string }; commits: { href: string }; statuses: { href: string } } }",
+        )
     );
 }
 
@@ -278,6 +403,8 @@ fn no_value_ever_appears() {
         "flag": false,
         "items": [{"kind": "c0ral-canary-kind", "id": 1_234_567}, {"kind": "c0ral-canary-other"}],
         "map": {"key": "c0ral-canary-map"},
+        "members": {"c0ral-canary@example.com": {"role": "c0ral-canary-role"}},
+        "by_id": {"c0ral-canary-4eC39HqLyj": 1},
     });
     let text = serde_json::to_string(&data).unwrap();
     let sketched = sketch(
