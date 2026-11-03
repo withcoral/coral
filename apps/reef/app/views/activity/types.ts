@@ -439,7 +439,8 @@ export type DiscoveryContext =
       query: string | null
       provider: string | null
       limit: number
-      cursor: string | null
+      /** Ranked results the page skipped; 0 for the first page. */
+      offset: number
     }
   | { kind: 'describe'; callPath: string; types: string[] }
   | { kind: 'unknown' }

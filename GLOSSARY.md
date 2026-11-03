@@ -418,7 +418,7 @@ global provider type
 **Discoverable Tool**: A Tool that Principal-facing discovery returns to one Principal now. Current
 Workspace authority, Principal state, Provider lifecycle, Tool Availability, and Tool Access State permit it,
 and its Credential Route can serve that Principal. Discoverability is not Account readiness: a User's Discoverable
-Tool can still require that User to connect an Account before dispatch. Search indexes and cursors confer no
+Tool can still require that User to connect an Account before dispatch. Search indexes and page offsets confer no
 discoverability. _Avoid_: Ready Tool, discovery readiness
 
 **Universal Search**: Principal-filtered relevance discovery over the Principal's Discoverable Tools and Saved
