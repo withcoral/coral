@@ -95,7 +95,8 @@ activity. Making it the one way means removing each of those
 - **The accepted cost.** A Required Action nobody reads waits to the Run Deadline, the Run ends `TimedOut`, and the
   person reruns. An assistant running unattended with a person's credential gets no other way in: the person changes the
   Tool's policy in Reef beforehand ([no notification](https://github.com/withcoral/coral/issues/2740#issuecomment-6521160022)).
-- **Agent-invoked Runs get no link.** Their Required Actions name the Workspace Owner, who acts in Reef, as before.
+- **Agent-invoked Runs are unchanged.** Their Required Actions name the Workspace Owner, who acts in Reef; the Agent
+  sees that its Run waits on an Owner, cannot inspect or decide the request, and has no person to pass the link to.
 - **A Provider's own question to the User** (#2447) becomes a third kind of Required Action with the same shape: one
   exact person, one request with a deadline, the same link and the same first-wins rule.
 
