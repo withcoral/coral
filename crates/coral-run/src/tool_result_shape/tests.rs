@@ -421,6 +421,15 @@ fn shapes_fit_the_byte_budget_by_shrinking_the_largest_then_dropping_the_earlies
     let kept = sketched.shapes().len() as u64;
     assert!(kept > 0 && kept < RESULTS_READ);
     assert_eq!(sketched.unsketched(), 7 + RESULTS_READ - kept);
+    let kept_paths: Vec<_> = sketched
+        .shapes()
+        .iter()
+        .map(ToolResultShape::call_path)
+        .collect();
+    let latest: Vec<_> = (RESULTS_READ - kept..RESULTS_READ)
+        .map(|index| format!("coral.providers.a.tool{index}"))
+        .collect();
+    assert_eq!(kept_paths, latest, "the earliest results are dropped");
     assert_eq!(
         sketched.shapes().last().map(ToolResultShape::call_path),
         Some(format!("coral.providers.a.tool{}", RESULTS_READ - 1).as_str()),
