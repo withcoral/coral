@@ -5959,6 +5959,9 @@ pub struct InspectRunResponse {
     /// Give it to the operator to find the Run in Coral's telemetry.
     #[prost(string, tag = "14")]
     pub trace_id: ::prost::alloc::string::String,
+    /// The parts of run.context_impact_bytes. Absent when that total is absent.
+    #[prost(message, optional, tag = "15")]
+    pub context_impact: ::core::option::Option<ActivityRunContextImpact>,
     /// How the Run ended. Absent while running, or for an outcome unknown to this client.
     #[prost(oneof = "inspect_run_response::Terminal", tags = "7, 8, 9, 10, 11")]
     pub terminal: ::core::option::Option<inspect_run_response::Terminal>,
@@ -5984,6 +5987,20 @@ pub mod inspect_run_response {
         #[prost(message, tag = "11")]
         Interrupted(super::ActivityEmpty),
     }
+}
+/// The retained payload bytes that net to a Run's context impact:
+/// final_value_bytes + output_bytes - tool_result_bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivityRunContextImpact {
+    /// Bytes of the Final Value; zero if the Run returned none.
+    #[prost(int64, tag = "1")]
+    pub final_value_bytes: i64,
+    /// Bytes of the Run's Emissions and Logs.
+    #[prost(int64, tag = "2")]
+    pub output_bytes: i64,
+    /// Bytes of the Tool Results its Tool calls received.
+    #[prost(int64, tag = "3")]
+    pub tool_result_bytes: i64,
 }
 /// The Program finished.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6576,8 +6593,8 @@ pub struct BrowseRunEntriesRequest {
     /// Optional list scope the Run must belong to. Leave empty to select the Run on its own.
     #[prost(message, optional, tag = "4")]
     pub scope: ::core::option::Option<ActivityScope>,
-    /// Start the page at this Tool call, Event ({run}/events/{sequence}) or Final
-    /// Value ({run}/final). Cannot be combined with after.
+    /// Start the page at this Tool call or Event ({run}/events/{sequence}).
+    /// Cannot be combined with after.
     #[prost(string, tag = "5")]
     pub anchor: ::prost::alloc::string::String,
     /// Return the rows around a scroll position. Cannot be combined with after or anchor.
@@ -6639,9 +6656,6 @@ pub struct BrowseRunEntriesResponse {
     /// More children follow this page.
     #[prost(bool, tag = "4")]
     pub has_more: bool,
-    /// The Run has a Final Value, including null. Read it with InspectRun.
-    #[prost(bool, tag = "5")]
-    pub has_final_value: bool,
     /// The Task tool call that submitted this Run, if the caller can see it. Summary only.
     #[prost(message, optional, tag = "6")]
     pub submission: ::core::option::Option<ActivityInteraction>,
@@ -7172,7 +7186,7 @@ pub mod activity_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Lists one Run's Tools, Events and Final Value in order, as summaries.
+        /// Lists one Run's Tools and Events in order, as summaries. The Final Value is not a child.
         pub async fn browse_run_entries(
             &mut self,
             request: impl tonic::IntoRequest<super::BrowseRunEntriesRequest>,
@@ -7633,7 +7647,7 @@ pub(crate) mod activity_service_server {
             tonic::Response<super::BrowseActivityRootsResponse>,
             tonic::Status,
         >;
-        /// Lists one Run's Tools, Events and Final Value in order, as summaries.
+        /// Lists one Run's Tools and Events in order, as summaries. The Final Value is not a child.
         async fn browse_run_entries(
             &self,
             request: tonic::Request<super::BrowseRunEntriesRequest>,

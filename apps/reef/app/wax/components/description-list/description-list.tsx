@@ -9,7 +9,9 @@ import * as styles from './description-list.css'
  * the caller names: one under the heading the list sits in.
  *
  * `compact` suits a form's short facts: the labels take one column as wide as the widest,
- * and each row is as tall as a control, so a value can be a picker. */
+ * and each row is as tall as a control, so a value can be a picker.
+ *
+ * A `total` row closes a list of amounts that add up. */
 export function List({
   title,
   heading,
@@ -35,13 +37,22 @@ export function List({
 }
 
 /** One fact: what it is beside its exact value. The value can be text or a code block, or
- * in a compact list, a control. */
-export function Row({ label, children }: { label: string; children: ReactNode }) {
+ * in a compact list, a control. A `total` row sums the rows above it. */
+export function Row({
+  label,
+  total = false,
+  children,
+}: {
+  label: string
+  total?: boolean
+  children: ReactNode
+}) {
+  const Label = total ? Typography.BodySmallStrong : Typography.BodySmall
   return (
-    <div className={styles.row}>
-      <Typography.BodySmall as="dt" className={styles.label}>
+    <div className={classNames(styles.row, total && styles.total)}>
+      <Label as="dt" className={styles.label}>
         {label}
-      </Typography.BodySmall>
+      </Label>
       <Typography.BodySmall as="dd" variant="primary" className={styles.value}>
         {children}
       </Typography.BodySmall>

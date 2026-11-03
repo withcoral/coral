@@ -35,7 +35,8 @@
 //!   authorized read snapshots through transaction facets without Task dependencies.
 //!   Context impact subtracts retained Tool Result UTF-8 bytes from Emission,
 //!   Log-message, and Final Value bytes. Counts commit with their evidence; summaries
-//!   never load those payloads. Final Value bytes appear on the terminal child row.
+//!   never load those payloads. The child rows carry Emission, Log and Tool Result
+//!   bytes; [`RunModule::inspect_run`] adds the Final Value bytes as [`RunContextImpact`].
 //!   Running or indeterminate work has no complete total. This estimates payload
 //!   impact, not tokens, protocol envelopes, repeated observations, or actual client usage.
 //! - [`RunModule::inspect_run`] and [`RunModule::inspect_invocation`] independently
@@ -159,7 +160,8 @@ pub mod history_repository;
 mod inspection;
 mod inspection_repository;
 pub use inspection::{
-    InvocationDetail, InvocationOutcome, RunDetail, RunEventDetail, RunInspection, SourceSnapshot,
+    InvocationDetail, InvocationOutcome, RunContextImpact, RunDetail, RunEventDetail,
+    RunInspection, SourceSnapshot,
 };
 mod invocation;
 mod invocation_lifecycle;

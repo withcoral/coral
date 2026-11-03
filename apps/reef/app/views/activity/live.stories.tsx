@@ -100,13 +100,6 @@ function output(run: string, sequence: number, kind: 'program.logged' | 'program
     event,
   }
 }
-const finalRow: Child = {
-  ...output(program.name, 99, 'program.emitted').row,
-  sourceLocation: undefined,
-  name: `${program.name}/final`,
-  label: 'return value',
-  eventKind: 'run.ended',
-}
 
 /** A tool of the program that waits for your approval. */
 function waiting(sequence: number, callPath: string): Child {
@@ -220,7 +213,7 @@ function pageFor(url: URL): ActivityPage {
         }
       : row
   })
-  const children = world.ended ? [...current, finalRow] : current
+  const children = current
   const rows: ActivityRow[] = [task, other]
   const branches: ActivityPage['branches'] = {}
   if (expanded.includes(task.name))
@@ -235,7 +228,7 @@ function pageFor(url: URL): ActivityPage {
   if (expanded.includes(other.name)) branches[other.name] = branch(world.others, url, other.name)
   const child = [...children, ...world.others].find((row) => row.name === record)
   const selectedRow =
-    record === run.name || record === finalRow.name
+    record === run.name
       ? run
       : record === other.name
         ? other
@@ -496,7 +489,7 @@ export const FollowsNewRecords: Story = {
     await idle()
     await selects('mail.send', 'mail.send')
 
-    // Completion returns to the Run itself, not its final value.
+    // Completion returns to the Run itself.
     await press('End run')
     await selects('Send reminders', 'Reminder run')
     await expect(address().get('record')).toBe(program.name)

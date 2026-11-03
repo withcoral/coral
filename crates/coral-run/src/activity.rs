@@ -9,15 +9,12 @@ pub enum RunEntryAnchor {
     Event(u64),
     /// A Tool admission.
     Invocation(crate::InvocationId),
-    /// The terminal Event.
-    Final,
 }
 impl From<&RunEntryAnchor> for RunEntryWindow {
     fn from(anchor: &RunEntryAnchor) -> Self {
         match anchor {
             RunEntryAnchor::Event(sequence) => Self::Event(*sequence),
             RunEntryAnchor::Invocation(id) => Self::Invocation(id.clone()),
-            RunEntryAnchor::Final => Self::Final,
         }
     }
 }
@@ -34,8 +31,6 @@ pub enum RunEntryWindow {
     Event(u64),
     /// Start with one exact Tool admission.
     Invocation(crate::InvocationId),
-    /// Terminal event and optional Final Value.
-    Final,
     /// Bounded scroll viewport, reanchored in the same authorization snapshot.
     Viewport {
         /// First ordinal when the anchor is absent or unavailable.
@@ -58,7 +53,7 @@ pub enum RunEntry {
         kind: String,
         /// Durable occurrence time.
         occurred_at: i64,
-        /// Returned payload bytes. For run.ended this is the optional Final Value.
+        /// Returned payload bytes.
         context_impact_bytes: i64,
         /// Where authored source made an Emission or Log, when recorded.
         source_location: Option<crate::SourceLocation>,
@@ -74,8 +69,6 @@ pub struct RunEntries {
     pub next_after: u64,
     /// More children exist.
     pub has_more: bool,
-    /// A successful terminal Run retained a Final Value, including explicit null.
-    pub has_final_value: bool,
     /// Current child count, independent of the bounded reading window.
     pub total: i64,
     /// Current ordinal of the first returned child.
@@ -146,7 +139,7 @@ impl RunModule {
                 .await?;
             crate::history_repository::run_summary(tx, &authority, workspace, id, now).await?;
         }
-        let (summary, has_final_value) = crate::history_repository::visible_run_summary(
+        let summary = crate::history_repository::visible_run_summary(
             tx,
             actor.principal(),
             agents,
@@ -191,7 +184,6 @@ impl RunModule {
             entries,
             next_after,
             has_more,
-            has_final_value,
         })
     }
 }

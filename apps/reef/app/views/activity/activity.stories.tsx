@@ -444,7 +444,6 @@ export const ContextImpact: Story = {
               state: 'succeeded',
               requiresAction: false,
               contextImpactBytes: '-2025500',
-              hasFinalValue: true,
             },
           ],
           next: '',
@@ -458,15 +457,6 @@ export const ContextImpact: Story = {
               outcome: 'upstream_outcome',
               requiresAction: false,
               contextImpactBytes: '-2040000',
-            },
-            {
-              ...emission,
-              name: `${run}/final`,
-              eventKind: 'run.ended',
-              // A Run's end is no call of the program's.
-              sourceLocation: undefined,
-              label: 'return value',
-              contextImpactBytes: '14500',
             },
           ],
           next: '',
@@ -1119,33 +1109,35 @@ export const FinalValueOnExec: Story = {
     page: {
       ...page,
       selected: run,
-      selectedRow: { ...execution, hasFinalValue: true },
+      selectedRow: execution,
       branches: {
         [task]: {
-          rows: [{ ...execution, state: 'succeeded', requiresAction: false, hasFinalValue: true }],
+          rows: [
+            {
+              ...execution,
+              state: 'succeeded',
+              requiresAction: false,
+              contextImpactBytes: '-1981',
+            },
+          ],
           next: '',
           unavailable: false,
         },
         [run]: {
-          rows: [
-            emission,
-            {
-              ...emission,
-              name: `${run}/final`,
-              eventKind: 'run.ended',
-              // A Run's end is no call of the program's.
-              sourceLocation: undefined,
-              label: 'return value',
-              contextImpactBytes: '15',
-            },
-          ],
+          rows: [{ ...emission, contextImpactBytes: '4' }],
           next: '',
           unavailable: false,
         },
       },
       detail: {
         kind: 'run',
-        run: { ...execution, state: 'succeeded', requiresAction: false },
+        run: {
+          ...execution,
+          state: 'succeeded',
+          requiresAction: false,
+          contextImpactBytes: '-1981',
+        },
+        contextImpact: { finalValueBytes: '15', outputBytes: '4', toolResultBytes: '2000' },
         // The program that made the emission listed above and returned this value.
         source: program,
         linkedFunctions: [],
@@ -1156,15 +1148,24 @@ export const FinalValueOnExec: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const table = canvas.queryByRole('table', { name: 'Activity records' })
-    if (table) {
-      await expect(within(table).getByRole('img', { name: 'return value' })).toBeVisible()
-      await expect(within(table).getByRole('link', { name: 'return value' })).toBeVisible()
-    }
+    // The Run's panel shows its return value, so the table neither marks nor repeats it.
+    if (table) await expect(within(table).queryByText(/return value/i)).toBeNull()
     const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
     const value = drawer.getByRole('region', { name: 'Return value' })
     await expect(within(value).getByRole('group', { name: 'Structure' })).toHaveTextContent(
       '"invoices": 24',
     )
+    // The return value is the Run's own share; with the rows under it, the parts make the net.
+    const context = within(drawer.getByRole('region', { name: 'Agent context' }))
+    for (const [part, size] of [
+      ['Tool results kept out', '2 kB'],
+      ['Return value sent', '15 B'],
+      ['Emissions and logs sent', '4 B'],
+    ])
+      await expect(context.getByText(part).nextElementSibling).toHaveTextContent(size)
+    // Only the net says whether the Run helped, and by what share of the tool results.
+    await expect(context.getByLabelText('1.98 kB saved')).toBeVisible()
+    await expect(context.getByText('Net').nextElementSibling).toHaveTextContent('(99% saved)')
   },
 }
 export const NoFinalValue: Story = {

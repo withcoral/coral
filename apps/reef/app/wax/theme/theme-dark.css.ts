@@ -83,13 +83,15 @@ export const darkThemeValues = {
     code: {
       inlineBackground: paletteDark.GrayAlpha['02'],
       inlineColor: paletteDark.Amber['12'],
+      // Wax's own hues: the accent marks the language, amber the values, as in inline
+      // code, and grays the rest, so code reads as part of the page.
       syntax: {
-        comment: paletteDark.Gray['11'],
-        constant: paletteDark.Orange['11'],
-        function: paletteDark.Blue['11'],
-        keyword: paletteDark.Purple['11'],
-        string: paletteDark.Green['11'],
-        type: paletteDark.Amber['11'],
+        comment: paletteDark.GrayAlpha['09'],
+        constant: paletteDark.Amber['12'],
+        function: paletteDark.CoralGreen['12'],
+        keyword: paletteDark.CoralGreen['11'],
+        string: paletteDark.Amber['11'],
+        type: paletteDark.GrayAlpha['11'],
       },
     },
     disabled: paletteDark.GrayAlpha['07'],

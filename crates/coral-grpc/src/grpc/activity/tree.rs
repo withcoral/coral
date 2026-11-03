@@ -89,9 +89,6 @@ fn entry_anchor(
     workspace: &coral_workspace::WorkspaceId,
     anchor: &str,
 ) -> Result<coral_run::RunEntryAnchor, Status> {
-    if anchor == format!("{name}/final") {
-        return Ok(coral_run::RunEntryAnchor::Final);
-    }
     if let Some(sequence) = anchor.strip_prefix(&format!("{name}/events/")) {
         return Ok(coral_run::RunEntryAnchor::Event(sequence.parse().map_err(
             |_invalid| Status::invalid_argument("invalid Event identity"),
@@ -194,7 +191,6 @@ pub(super) async fn entries(
             .collect(),
         next_after: page.next_after,
         has_more: page.has_more,
-        has_final_value: page.has_final_value,
     }))
 }
 pub(super) async fn event(

@@ -9,6 +9,10 @@ use super::{ImmediateEngine, ScriptedUpstream, TestModules, submission, wait_for
 use crate::{FinalValue, InvocationResultKind, RunEventKind, RunFailureCode, RunTerminalOutcome};
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Run's children, viewports and exact parts must agree on the same bytes"
+)]
 async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
     let fixture = TestModules::with_upstream(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
@@ -44,7 +48,7 @@ async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
         // Two 150-byte Tool Results; log 2, emission 4, final value 4.
         assert_eq!(page.run.context_impact_bytes, Some(-290));
         assert_eq!(
-            page.total, 5,
+            page.total, 4,
             "a full child page still reports changes outside its window"
         );
         for entry in page.entries {
@@ -61,7 +65,27 @@ async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
         }
         window = crate::RunEntryWindow::After(page.next_after);
     }
-    assert_eq!(impacts, vec![2, 4, -150, -150, 4]);
+    // The Final Value is the Run's own share: no child row carries it.
+    assert_eq!(impacts, vec![2, 4, -150, -150]);
+    let detail = fixture
+        .runs
+        .inspect_run(
+            &tool.principal,
+            &tool.workspace_id,
+            accepted.run_id(),
+            &crate::RunInspection::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        detail.context_impact,
+        Some(crate::RunContextImpact {
+            final_value_bytes: 4,
+            output_bytes: 6,
+            tool_result_bytes: 300,
+        }),
+        "the parts net to the Run's -290"
+    );
     let page = fixture
         .runs
         .activity_entries(
@@ -100,7 +124,7 @@ async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
         .await
         .unwrap();
     assert_eq!(anchored.offset, 1);
-    assert_eq!(anchored.total, 5);
+    assert_eq!(anchored.total, 4);
     assert!(
         matches!(anchored.entries.get(1), Some(crate::RunEntry::Invocation(value)) if value.id == invocation.id)
     );

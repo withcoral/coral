@@ -490,18 +490,24 @@ it('keeps a child that started after midnight under its parent and its day', () 
   expect(screen.getByText('00:04:00')).toHaveAttribute('title', '2026-09-29 00:04:00 UTC')
 })
 
-// Catches: a duration that shows fractions of a second, or time that has not passed yet.
+// Catches: a short call that reads "0s", a unit that shows time that has not passed yet, or
+// a counting duration whose last digit sits still between its one-second ticks.
 it.each([
-  [0, '0s'],
-  [999_999_999, '0s'],
-  [1_000_000_000, '1s'],
-  [1_999_999_999, '1s'],
-  [59_999_999_999, '59s'],
-  [263_001_000_000, '4m 23s'],
-  [3_600_000_000_000, '1h 0m'],
-])('shows %d ns as whole time, %s', (nanos, text) => {
-  expect(duration(nanos)).toBe(text)
-  expect(duration(String(nanos))).toBe(text)
+  [0, '0ms', '0s'],
+  [400_000, '<1ms', '0s'],
+  [263_900_000, '263ms', '0s'],
+  [999_999_999, '999ms', '0s'],
+  [1_000_000_000, '1.0s', '1s'],
+  [2_490_000_000, '2.4s', '2s'],
+  [9_999_999_999, '9.9s', '9s'],
+  [10_000_000_000, '10s', '10s'],
+  [59_999_999_999, '59s', '59s'],
+  [263_001_000_000, '4m 23s', '4m 23s'],
+  [3_600_000_000_000, '1h 0m', '1h 0m'],
+])('shows %d ns as %s, or %s while it counts', (nanos, ended, counting) => {
+  expect(duration(nanos)).toBe(ended)
+  expect(duration(String(nanos))).toBe(ended)
+  expect(duration(nanos, { counting: true })).toBe(counting)
 })
 
 const line = (number: number) => document.querySelector(`[data-line="${number}"]`)

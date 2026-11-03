@@ -298,13 +298,14 @@ async fn child_anchors_seek_later_history_without_loading_preceding_pages() {
             &fixture.actor,
             &fixture.workspace,
             accepted.run_id(),
-            &coral_run::RunEntryWindow::Final,
+            &coral_run::RunEntryWindow::After(31),
             1,
             None,
         )
         .await
         .unwrap();
-    assert!(last.has_final_value);
+    // The Final Value is the Run's own, not a child after its last Emission.
+    assert!(last.entries.is_empty());
     assert!(!last.has_more);
 }
 
