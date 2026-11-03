@@ -6,7 +6,6 @@ import * as styles from './management.css'
 /** Opens once on a new workspace's overview with a prompt for the viewer's MCP client. */
 export function OnboardingDialog({
   prompt,
-  owner,
   open,
   onClose,
 }: {
@@ -22,12 +21,9 @@ export function OnboardingDialog({
       <Dialog.Portal>
         <Dialog.Backdrop />
         <Dialog.Popup className={styles.stack}>
-          <Dialog.Title>Let’s set up this workspace</Dialog.Title>
+          <Dialog.Title>Ask your agent to set up this workspace</Dialog.Title>
           <Dialog.Description>
-            Paste this prompt into your MCP client.{' '}
-            {owner
-              ? 'Use it to connect this workspace and add a provider.'
-              : 'Use it to connect this workspace.'}
+            Copy this prompt into your agent to connect Coral and add a provider.
           </Dialog.Description>
           <PromptPreview prompt={prompt} />
           <Dialog.Actions>

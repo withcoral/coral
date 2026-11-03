@@ -52,7 +52,7 @@ export async function createWorkspaceViaUi(page: Page, name: string) {
 
 /** The dialog a new workspace's overview opens once for its creator. */
 export function onboardingDialog(page: Page) {
-  return page.getByRole('dialog', { name: 'Let’s set up this workspace', exact: true })
+  return page.getByRole('dialog', { name: 'Ask your agent to set up this workspace', exact: true })
 }
 
 /** Closes the onboarding a workspace created through Reef opens on its overview. */

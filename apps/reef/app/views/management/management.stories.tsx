@@ -287,7 +287,7 @@ export const FreshOverview: Story = {
   render: () => <WorkspaceOverview {...overview} agents={[]} providers={[]} />,
 }
 // Onboarding: the overview a workspace's creator lands on.
-const onboardingTitle = 'Let’s set up this workspace'
+const onboardingTitle = 'Ask your agent to set up this workspace'
 const localUser = { user: 'users/coral:local', name: 'Local user', email: '', local: true }
 const onboarding = (
   displayName = workspace.displayName,
@@ -644,11 +644,8 @@ const afterOnboarding = (
     const fromDialog = await copyPrompt()
     await expect(fromDialog).toBe(expected)
     const dialog = screen.getByRole('dialog', { name: onboardingTitle })
-    // Catches: a member's dialog that tells them to add a provider, which only an owner can.
     await expect(dialog).toHaveAccessibleDescription(
-      effectiveRole === 'owner'
-        ? 'Paste this prompt into your MCP client. Use it to connect this workspace and add a provider.'
-        : 'Paste this prompt into your MCP client. Use it to connect this workspace.',
+      'Copy this prompt into your agent to connect Coral and add a provider.',
     )
     await userEvent.click(within(dialog).getByRole('button', { name: 'Dismiss' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
