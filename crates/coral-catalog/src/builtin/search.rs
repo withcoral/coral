@@ -252,10 +252,11 @@ impl SearchArguments {
                 format!("a Call Path is at most {SEARCH_PATH_MAX_BYTES} UTF-8 bytes"),
             ));
         }
-        let types = arguments.types.unwrap_or_default();
-        if !types.is_empty() && paths.len() != 1 {
+        // As the schema reads it: `types`, even empty, names one path's types.
+        if arguments.types.is_some() && paths.len() != 1 {
             problems.push(ArgumentProblem::new("types", "pass types with one path"));
         }
+        let types = arguments.types.unwrap_or_default();
         if !problems.is_empty() {
             return Err(problems);
         }
@@ -661,8 +662,9 @@ pub(super) mod tests {
 
     use super::{
         DeclaredHints, Description, DescriptionAuthoring, MissingPath, PathsResult, SavedDetail,
-        SavedDiagnostic, SavedDiagnosticCategory, SearchHit, SearchOutput, SearchResult,
-        SearchRetriever, SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus,
+        SavedDiagnostic, SavedDiagnosticCategory, SearchArguments, SearchHit, SearchOutput,
+        SearchResult, SearchRetriever, SearchRetrieverCoverage, SearchRetrieverState,
+        SearchRetrieverStatus,
     };
 
     /// Arguments that use every part of `search`'s input schema.
@@ -791,5 +793,30 @@ pub(super) mod tests {
         .into_iter()
         .map(SearchOutput::into_tool_result)
         .collect()
+    }
+
+    /// Asserts that the input schema and Coral's reading both accept, or
+    /// both refuse, each of `cases`.
+    fn schema_and_parser_agree(cases: &[(Value, bool)]) {
+        let schema = jsonschema::validator_for(&super::definition().input).expect("schema");
+        for (arguments, accepted) in cases {
+            assert_eq!(schema.is_valid(arguments), *accepted, "schema: {arguments}");
+            assert_eq!(
+                SearchArguments::parse(arguments).is_ok(),
+                *accepted,
+                "parser: {arguments}"
+            );
+        }
+    }
+
+    // Catches: Coral reading an empty `types` beside several paths, which a
+    // typed Program cannot send. The one-change mutations of
+    // `valid_arguments` never reach it.
+    #[test]
+    fn types_go_with_one_path_even_when_empty() {
+        schema_and_parser_agree(&[
+            (json!({ "paths": ["a", "b"], "types": [] }), false),
+            (json!({ "paths": ["a"], "types": [] }), true),
+        ]);
     }
 }
