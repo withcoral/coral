@@ -120,16 +120,28 @@ impl ExactLookup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MissingPath {
     call_path: String,
+    suggestions: Vec<String>,
 }
 
 impl MissingPath {
-    pub(crate) const fn new(call_path: String) -> Self {
-        Self { call_path }
+    pub(crate) const fn new(call_path: String, suggestions: Vec<String>) -> Self {
+        Self {
+            call_path,
+            suggestions,
+        }
     }
 
     /// The path as the caller wrote it.
     #[must_use]
     pub fn call_path(&self) -> &str {
         &self.call_path
+    }
+
+    /// Up to [`crate::SUGGESTIONS_MAX`] Discoverable Call Paths of the same
+    /// Call Root near this one, nearest first; empty when none is near or
+    /// the path names no Call Root the caller can search.
+    #[must_use]
+    pub fn suggestions(&self) -> &[String] {
+        &self.suggestions
     }
 }

@@ -1367,14 +1367,21 @@ async fn members_and_agents_list_providers_and_get_policy_but_reach_no_owner_too
                 serde_json::json!({ "namespace": "weather", "tools": { "getForecast": "disabled" } }),
             ),
         ] {
+            // A path built at run time, which admission cannot check.
             let run = scope
-                .start(&principal, workspace_call(tool, &arguments.to_string()))
+                .start(
+                    &principal,
+                    computed_workspace_call(tool, &arguments.to_string()),
+                )
                 .await;
             assert_eq!(
                 final_value(&scope.terminal(&principal, &run).await),
                 serde_json::json!({
                     "code": "tool_not_found",
-                    "message": "Tool Call Path was not found",
+                    "message": format!(
+                        "coral.workspace.{tool} names no Tool that you can call. Find one with \
+                         coral.workspace.search."
+                    ),
                 }),
                 "{tool}"
             );
@@ -1478,16 +1485,31 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
 /// JavaScript argument list, and returns its Tool Result or the failure
 /// it catches.
 pub(super) fn workspace_call(tool: &str, arguments: &str) -> RunSubmission {
+    calling(&format!("coral.workspace.{tool}"), arguments)
+}
+
+/// [`workspace_call`] through a path the Program builds as it runs, which
+/// admission cannot check.
+fn computed_workspace_call(tool: &str, arguments: &str) -> RunSubmission {
+    calling(
+        &format!("coral.workspace[[\"{tool}\"].join(\"\")]"),
+        arguments,
+    )
+}
+
+/// Calls `callee` with `arguments` and returns a Tool error's code and
+/// message.
+fn calling(callee: &str, arguments: &str) -> RunSubmission {
     submission(
         &"
         try {
-            return await coral.workspace.TOOL(ARGUMENTS);
+            return await CALLEE(ARGUMENTS);
         } catch (error) {
             if (!(error instanceof coral.ToolError)) throw error;
             return { code: error.code, message: error.message };
         }
     "
-        .replace("TOOL", tool)
+        .replace("CALLEE", callee)
         .replace("ARGUMENTS", arguments),
     )
 }

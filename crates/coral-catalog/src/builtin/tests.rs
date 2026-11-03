@@ -396,3 +396,25 @@ fn each_result_meets_its_output_schema() {
         assert!(errors.is_empty(), "{}: {data}: {errors:?}", tool.key());
     }
 }
+
+// Catches: a search output schema that lets a missing path carry more
+// suggestions than its description promises and discovery returns.
+#[test]
+fn a_missing_path_carries_at_most_three_suggestions() {
+    let schema = validator(&definition(BuiltinTool::Search).output);
+    let missing = super::search::tests::results()
+        .into_iter()
+        .filter_map(|result| result.get("data").cloned())
+        .filter(|data| data.pointer("/missing/0/suggestions").is_some())
+        .collect::<Vec<_>>();
+    assert!(!missing.is_empty(), "some result names a missing path");
+    for data in missing {
+        for (count, valid) in [(3, true), (4, false)] {
+            let mut suggested = data.clone();
+            if let Some(suggestions) = suggested.pointer_mut("/missing/0/suggestions") {
+                *suggestions = json!(vec!["coral.providers.notion.retrieveAPage"; count]);
+            }
+            assert_eq!(schema.is_valid(&suggested), valid, "{count}: {suggested}");
+        }
+    }
+}

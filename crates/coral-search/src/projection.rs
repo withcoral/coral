@@ -56,6 +56,7 @@ fn paths_result(lookup: &ExactLookup) -> PathsResult {
             .iter()
             .map(|missing| MissingPath {
                 call_path: missing.call_path().to_owned(),
+                suggestions: missing.suggestions().to_vec(),
             })
             .collect(),
     }

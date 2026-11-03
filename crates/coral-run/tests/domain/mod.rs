@@ -3,6 +3,7 @@ mod admission;
 mod agents;
 mod approvals;
 mod binary;
+mod call_paths;
 mod cancellation;
 mod connections;
 mod credentials;

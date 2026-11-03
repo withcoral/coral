@@ -547,6 +547,13 @@ pub struct MissingPath {
     /// The path as the caller wrote it.
     #[schemars(description = "The path as you wrote it.")]
     pub call_path: String,
+    /// Up to three Call Paths of the same Call Root that the caller can
+    /// call, nearest first.
+    #[schemars(
+        length(max = 3),
+        description = "Up to 3 call paths you can call under the same root, nearest first."
+    )]
+    pub suggestions: Vec<String>,
 }
 
 /// One exact description: the callable's current contract, with the
@@ -829,6 +836,7 @@ pub(super) mod tests {
                 ],
                 missing: vec![MissingPath {
                     call_path: "coral.providers.notion.retrievePage".to_owned(),
+                    suggestions: vec!["coral.providers.notion.retrieveAPage".to_owned()],
                 }],
             }),
             SearchOutput::Paths(PathsResult {

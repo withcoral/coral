@@ -46,6 +46,8 @@ declare namespace coral {
     readonly status?: number;
     readonly data?: unknown;
     readonly metadata?: unknown;
+    /** For \`tool_not_found\`, up to 3 Call Paths you can call, nearest first. */
+    readonly suggestions?: readonly string[];
   }
 }
 
@@ -110,8 +112,10 @@ function typedRoot(sources, prefix, entries) {
 // call. Their open namespaces make them any, so one Coral diagnostic replaces
 // every cascading TypeScript one. A resolved sibling must not make a callable
 // namespace look absent. A chain that is not called may be a namespace whose
-// Tools an alias reaches, so it is not reported.
-function unknownTools(tools) {
+// Tools an alias reaches, so it is not reported. With `namespaceCalls`, a
+// called chain that ends at a namespace is reported too; typing reports
+// that call as not callable itself.
+function unknownTools(tools, { namespaceCalls = false } = {}) {
   const resolved = new Set();
   const namespaces = new Set();
   for (const { pathSegments } of tools.declarations) {
@@ -121,17 +125,35 @@ function unknownTools(tools) {
     }
   }
   const unknown = [];
-  for (const { segments, start, called } of tools.chains) {
+  for (const { segments, start, line, column, called } of tools.chains) {
     if (!called) continue;
     for (let length = 2; length <= segments.length; length += 1) {
       const key = segments.slice(0, length).join('.');
       if (resolved.has(key)) break;
-      if (namespaces.has(key)) continue;
-      unknown.push({ start, callPath: `coral.${segments.join('.')}` });
+      if (namespaces.has(key) && (length < segments.length || !namespaceCalls)) continue;
+      unknown.push({ start, line, column, callPath: `coral.${segments.join('.')}` });
       break;
     }
   }
   return unknown;
+}
+
+// The called chains that name no Tool among `callPaths`, the complete
+// Call Paths the caller can call: the rule of the unknown-Tool diagnostic,
+// which Program Admission applies before a Run is created. A call to a
+// namespace of a Tool fails with `tool_not_found` when it runs, so it is
+// unknown too.
+function unknownToolCalls(chains, callPaths) {
+  const declarations = callPaths.map((callPath) => ({
+    pathSegments: callPath.split('.').slice(1),
+  }));
+  return unknownTools({ chains, declarations }, { namespaceCalls: true }).map(
+    ({ callPath, line, column }) => ({
+      callPath,
+      line,
+      column,
+    }),
+  );
 }
 
 // The declaration files that type the `coral` namespace, and the Tool
