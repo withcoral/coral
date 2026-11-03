@@ -3,6 +3,7 @@ mod describe;
 mod describe_tools;
 mod discover;
 mod index;
+mod ranking;
 mod retrieval;
 mod storage;
 
