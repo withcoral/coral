@@ -13,11 +13,10 @@ use super::diagnostics::{Diagnostic, saved_diagnostics};
 #[serde(deny_unknown_fields)]
 pub(crate) struct SearchResult {
     hits: Vec<SearchHit>,
-    has_more: bool,
-    /// Present only while `has_more` is true.
+    /// The `offset` of the next page; absent on the last page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "String")]
-    next_cursor: Option<String>,
+    #[schemars(with = "u32")]
+    next_offset: Option<u32>,
     /// The retrievers whose results may be missing; absent when none are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     retriever_statuses: Vec<RetrieverStatus>,

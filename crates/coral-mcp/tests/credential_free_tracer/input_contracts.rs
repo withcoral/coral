@@ -34,6 +34,7 @@ pub(super) async fn check(session: &RawSession, tools: &[Value]) {
     check_authoring_limits(tools);
     check_paths(session, task, tools).await;
     check_sources(session, task, tools).await;
+    check_offsets(session, task, tools).await;
     check_cursors(session, task, tools).await;
     session
         .tool("end_task", json!({"task_id":task, "outcome":"success"}))
@@ -365,8 +366,35 @@ async fn check_sources(session: &RawSession, task: &str, tools: &[Value]) {
     assert_ne!(deleted.get("isError"), Some(&json!(true)));
 }
 
+/// A search page starts after a plain count of results, so the advertised
+/// schema refuses any other value, and `search` takes no `cursor`.
+async fn check_offsets(session: &RawSession, task: &str, tools: &[Value]) {
+    let schema = validator(property(tools, "search", "offset"));
+    for valid in [Value::Null, json!(0), json!(20)] {
+        assert!(schema.is_valid(&valid), "{valid}");
+    }
+    for invalid in [json!(-1), json!(1.5), json!("20"), json!("")] {
+        assert!(!schema.is_valid(&invalid), "{invalid}");
+    }
+    for arguments in [
+        json!({"task_id":task, "intent":"Check offsets", "offset":-1}),
+        json!({"task_id":task, "intent":"Check offsets", "offset":1.5}),
+        json!({"task_id":task, "intent":"Check offsets", "offset":"20"}),
+        json!({"task_id":task, "intent":"Check offsets", "cursor":"eyJ2ZXJzaW9uIjoyfQ"}),
+    ] {
+        let error = session
+            .result(
+                "tools/call",
+                json!({"name":"search", "arguments":arguments}),
+            )
+            .await
+            .expect_err("a value that is not an offset is a protocol rejection");
+        assert_eq!(error.get("code"), Some(&json!(-32602)), "{arguments}");
+    }
+}
+
 async fn check_cursors(session: &RawSession, task: &str, tools: &[Value]) {
-    for name in ["search", "wait", "cancel"] {
+    for name in ["wait", "cancel"] {
         let schema = property(tools, name, "cursor");
         assert!(
             schema.get("pattern").is_none(),
@@ -375,17 +403,6 @@ async fn check_cursors(session: &RawSession, task: &str, tools: &[Value]) {
         assert!(validator(schema).is_valid(&Value::Null));
         assert!(!validator(schema).is_valid(&json!("")));
     }
-    // Malformed opaque tokens remain domain rejections, not a new schema prevalidation layer.
-    let rejected = session
-        .tool(
-            "search",
-            json!({"task_id":task, "intent":"Check opaque cursor", "cursor":"!"}),
-        )
-        .await;
-    assert_eq!(
-        rejected.pointer("/structuredContent/code"),
-        Some(&json!("invalid_cursor"))
-    );
     let accepted = session
         .tool(
             "exec",

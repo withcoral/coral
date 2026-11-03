@@ -747,7 +747,7 @@ async fn a_stale_match_without_evidence_leaves_an_empty_page() {
 
     let page = corpus.search(Corpus::query("closed")).await;
     assert!(page.hits().is_empty(), "the stale match leaves the page");
-    assert!(!page.has_more());
+    assert_eq!(page.next_offset(), None);
 }
 
 #[tokio::test]

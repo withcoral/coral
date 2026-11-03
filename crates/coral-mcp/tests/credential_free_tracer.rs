@@ -645,7 +645,7 @@ async fn advertised_schemas_defaults_and_output_contracts_hold_on_every_version(
             .clone()
     };
     let search_properties = properties("search");
-    for property in ["query", "provider", "limit", "cursor"] {
+    for property in ["query", "provider", "limit", "offset"] {
         assert!(search_properties.contains_key(property));
     }
     let exec_properties = properties("exec");
@@ -1146,8 +1146,7 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         );
     }
     assert!(first_search_result.get("summary").is_none());
-    assert_eq!(structured(&searched)["has_more"], false);
-    assert!(structured(&searched).get("next_cursor").is_none());
+    assert!(structured(&searched).get("next_offset").is_none());
     assert!(first_search_result.get("score").is_none());
     assert!(
         serde_json::to_vec(structured(&searched))
@@ -1301,7 +1300,6 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
             "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
             "invalid_input",
         ),
-        ("cursor", "!", "invalid_cursor"),
     ] {
         let rejected = call(
             &client_a,

@@ -6423,9 +6423,10 @@ pub struct ActivitySearchContext {
     /// Page size used, including the default when the caller gave none.
     #[prost(uint32, tag = "3")]
     pub limit: u32,
-    /// Page cursor the caller passed. Absent for the first page.
-    #[prost(string, optional, tag = "4")]
-    pub cursor: ::core::option::Option<::prost::alloc::string::String>,
+    /// Ranked results the page skipped. 0 for the first page, and for a page
+    /// retained before pages had an offset.
+    #[prost(uint32, tag = "5")]
+    pub offset: u32,
 }
 /// The description a Task asked for.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

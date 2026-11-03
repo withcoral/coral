@@ -78,10 +78,9 @@ pub(crate) struct SearchArguments {
     )]
     pub(crate) limit: Option<u16>,
     #[schemars(
-        length(min = 1),
-        description = "The next_cursor from the previous page, with the same query and provider."
+        description = "The next_offset from the previous page, with the same query and provider."
     )]
-    pub(crate) cursor: Option<String>,
+    pub(crate) offset: Option<u32>,
 }
 
 impl ToolArguments for SearchArguments {

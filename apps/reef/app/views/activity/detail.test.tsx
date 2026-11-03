@@ -662,7 +662,7 @@ const interaction: InteractionRow = {
 }
 const searched = (query: string | null): InteractionEvidence => ({
   kind: 'discovery',
-  context: { kind: 'search', query, provider: null, limit: 5, cursor: null },
+  context: { kind: 'search', query, provider: null, limit: 5, offset: 0 },
   response: '{}',
   view: { kind: 'raw' },
 })
@@ -950,7 +950,7 @@ const searchContext = {
   query: 'github pulls',
   provider: null,
   limit: 5,
-  cursor: null,
+  offset: 0,
 } as const
 const discovered = (context: DiscoveryContext, response: string): InteractionEvidence => ({
   kind: 'discovery',
@@ -1013,14 +1013,14 @@ it('leads a search with what it asked, then its intent and timing, and only its 
 })
 
 /** A stored trimmed search page with `count` tool hits. */
-const trimmedPage = (count: number, more: boolean, statuses?: unknown[]) =>
+const trimmedPage = (count: number, nextOffset?: number, statuses?: unknown[]) =>
   JSON.stringify({
     hits: Array.from({ length: count }, (_, index) => ({
       call_path: `coral.providers.github.pulls.op${index}`,
       signature_line: `op${index}(input: {}): Promise<unknown>`,
       description_snippet: '',
     })),
-    has_more: more,
+    ...(nextOffset !== undefined && { next_offset: nextOffset }),
     ...(statuses && { retriever_statuses: statuses }),
   })
 const failedTools = {
@@ -1038,13 +1038,13 @@ const failedTools = {
 // Catches: a heading that counts the limit, invents a total, or drops a coverage warning.
 // Coral stores no total match count: only the page's hits and whether more remain.
 it.each<[string, string, typeof searchContext | undefined, string, string[]]>([
-  ['a complete page', trimmedPage(2, false), undefined, 'Results (2)', []],
+  ['a complete page', trimmedPage(2), undefined, 'Results (2)', []],
   ['a page with more after it', stored.complete, undefined, 'Results (5+)', []],
-  ['an empty page', trimmedPage(0, false), undefined, 'Results (0)', []],
+  ['an empty page', trimmedPage(0), undefined, 'Results (0)', []],
   [
     'a later page, counting only its own results',
-    trimmedPage(3, true),
-    { ...searchContext, cursor: 'next-page' } as unknown as typeof searchContext,
+    trimmedPage(3, 23),
+    { ...searchContext, offset: 20 } as unknown as typeof searchContext,
     'Results (3+)',
     [],
   ],
@@ -1064,7 +1064,7 @@ it.each<[string, string, typeof searchContext | undefined, string, string[]]>([
   ],
   [
     'an empty page whose search failed',
-    trimmedPage(0, false, [failedTools]),
+    trimmedPage(0, undefined, [failedTools]),
     undefined,
     'Results (0)',
     ['could not search', 'Results are missing.'],

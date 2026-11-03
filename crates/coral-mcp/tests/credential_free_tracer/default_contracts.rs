@@ -17,9 +17,28 @@ pub(super) async fn check(
         .and_then(Value::as_str)
         .expect("Task id");
     search_defaults_return_ten_visible_descriptions(session, task, index).await;
+    the_next_offset_reads_the_rest(session, task).await;
+    remove_default_limit_fixtures(session, task).await;
     session
         .tool("end_task", json!({"task_id":task, "outcome":"success"}))
         .await;
+}
+
+/// The default page of the twelve Saved Functions says `next_offset` 10, and
+/// that offset reads the last two.
+async fn the_next_offset_reads_the_rest(session: &super::RawSession, task: &str) {
+    let rest = session
+        .tool(
+            "search",
+            json!({
+                "task_id":task, "intent":"Read the next page", "query":"optionalDefaults",
+                "offset":10
+            }),
+        )
+        .await;
+    let rest = rest.get("structuredContent").expect("next search page");
+    assert_eq!(rest["hits"].as_array().expect("hits").len(), 2);
+    assert!(rest.get("next_offset").is_none());
 }
 
 async fn search_defaults_return_ten_visible_descriptions(
@@ -102,8 +121,8 @@ async fn search_defaults_return_ten_visible_descriptions(
             count
         );
         assert_eq!(
-            page.get("next_cursor").is_some_and(Value::is_string),
-            count < 12
+            page.get("next_offset").and_then(Value::as_u64),
+            (count < 12).then_some(count as u64)
         );
         if count == 10 {
             if let Some(expected) = &default_page {
@@ -113,6 +132,9 @@ async fn search_defaults_return_ten_visible_descriptions(
             }
         }
     }
+}
+
+async fn remove_default_limit_fixtures(session: &super::RawSession, task: &str) {
     for index in 0..12 {
         let deleted = session
             .tool(
