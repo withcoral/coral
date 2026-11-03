@@ -2,33 +2,51 @@
 status: accepted
 ---
 
-# A Required Action reaches its User through the assistant's link
+# MCP requests are served without sessions, and a Required Action reaches its User through the assistant's link
 
-A Program Run that a User invoked from their AI app stops when a Tool Invocation needs that User: an Approval
-Request under an `approval_required` Tool Access State, or an Account Connection Request when the `caller` Credential
-Route finds no usable Account. Only that User can decide, and the Run waits until they do. Coral's MCP Adapter used to
-ask through MCP elicitation where the client negotiated it, and the sessionless Adapter
-([ADR 0026](0026-mcp-requests-are-served-without-sessions.md), PR #2719) could keep that only for clients on the
-current protocol revision. The [client survey](https://github.com/withcoral/coral/issues/2734#issuecomment-6501368670)
-and the [live check](https://github.com/withcoral/coral/issues/2735#issuecomment-6599973987) showed what elicitation
-delivers today: one client in nine renders it, that client's model sees nothing of the prompt and narrates the Run
-wrongly afterwards, an unanswered prompt outlives the Run's deadline, and one client declares the capability and shows
-nothing.
+Coral's MCP Adapter used to open one RMCP session per client that sent `initialize`, keyed by Workspace and Principal
+and held in the memory of the Coral Instance that answered. Every later request had to reach that instance: the
+session held the client's declared capabilities and, while a tool call waited on a human, the live connection that
+carried an in-band elicitation and received its answer. With two Coral Instances behind a load balancer, a request that
+landed elsewhere found no session. It was the last piece of per-instance state in the request path once the Run Inbox
+([ADR 0025](0025-outside-run-requests-reach-the-run-owner-through-the-run-inbox.md)) let any instance accept an outside
+Run Request. The session existed for the elicitation, and the elicitation is what a Run that a User invoked from their
+AI app relied on when a Tool Invocation needed that User: an Approval Request under an `approval_required` Tool Access
+State, or an Account Connection Request when the `caller` Credential Route finds no usable Account. Only that User can
+decide, and the Run waits until they do. The
+[client survey](https://github.com/withcoral/coral/issues/2734#issuecomment-6501368670) and the
+[live check](https://github.com/withcoral/coral/issues/2735#issuecomment-6599973987) showed what elicitation delivers
+today: one client in nine renders it, that client's model sees nothing of the prompt and narrates the Run wrongly
+afterwards, an unanswered prompt outlives the Run's deadline, and one client declares the capability and shows nothing.
 
-Coral calls such a request a **Required Action** and the act of putting it in front of the one User who can decide it a
-**Human Handoff**. Every Required Action is offered through one **Handoff Route**, the assistant's link: the tool call
-that observes the Run returns the Run Update with the Required Action and the Run Status Page link, the assistant passes
-the link and the Run identifier to the person, and the person decides on the Run Status Page, signed in to Reef, with
-the exact Tool arguments in view. Reef is the standing place: the Run Status Page holds every Required Action, and the
-Approvals Page every Approval Request, from the moment it exists, and the first answer counts wherever it comes from.
-Coral sends no MCP elicitation and no notification, and it offers the assistant no tool, argument or path by which to
-decide: the assistant can only pass the request on. Nothing in the request (protocol revision, declared capabilities,
-client name) chooses anything, so Coral keeps no list of known clients, and a client it has never seen gets the same
-handoff. The map that decided this is [#2732](https://github.com/withcoral/coral/issues/2732); the parent of the
-implementation is #2825.
+Coral now serves every MCP request on its own. No session id is issued and nothing is kept between requests: each
+request's credential and endpoint name its Principal and Workspace (a Workspace MCP Endpoint fixes the Workspace in its
+URL, the Organization MCP Endpoint takes it from the credential, and a credential-free request to a local Workspace
+endpoint acts as the implicit local User, as before). The protocol made the same move: revision 2026-07-28 removed
+sessions and server-initiated requests (SEP-2567 and SEP-2322); the research behind that, which harnesses negotiate
+which revision and how each handles elicitation, is in
+[docs/research/2026-10-28-mcp-client-protocol-versions.md](../research/2026-10-28-mcp-client-protocol-versions.md).
+
+With the session goes the prompt. Coral calls a request that a Run waits on a **Required Action** and the act of
+putting it in front of the one User who can decide it a **Human Handoff**. Every Required Action is offered through one
+**Handoff Route**, the assistant's link: the tool call that observes the Run returns the Run Update with the Required
+Action and the Run Status Page link, the assistant passes the link and the Run identifier to the person, and the person
+decides on the Run Status Page, signed in to Reef, with the exact Tool arguments in view. Reef is the standing place:
+the Run Status Page holds every Required Action, and the Approvals Page every Approval Request, from the moment it
+exists, and the first answer counts wherever it comes from. Coral sends no MCP elicitation and no notification, and it
+offers the assistant no tool, argument or path by which to decide: the assistant can only pass the request on. Nothing
+in the request (protocol revision, declared capabilities, client name) chooses anything, so Coral keeps no list of
+known clients, and a client it has never seen gets the same handoff. The map that decided this is
+[#2732](https://github.com/withcoral/coral/issues/2732); the parent of the implementation is #2825.
 
 ## Consequences
 
+- **Any Coral Instance serves any MCP request.** A load balancer needs no affinity, and a rolling deploy ends no
+  conversation, since no client holds a session that one instance owned.
+- **No standalone stream.** The MCP endpoints serve only requests, never a stream a client opens on its own or a
+  request to end a session. Nothing is announced to a client outside the response to its own request; the next Run
+  Update shows a decision made elsewhere.
+- **A stale session header is ignored.** A request that still names a session is served like any other.
 - **The assistant is told, not asked.** Each Required Action in the Run Update names its kind, the waiting Tool and
   Provider, the actor, the deadline and the link; nothing from the arguments or the Account travels with it, and no
   field says whether the person saw anything. The server instructions and the observing tools' descriptions tell the
@@ -75,6 +93,12 @@ The page a Human Handoff opens is where the person decides, so it is a handoff s
 
 ## Rejected
 
+- **Session affinity at the load balancer.** It keeps the in-band prompt for older clients, but couples the deployment
+  to an ingress feature, and a deploy or a lost instance still drops every session it held.
+- **A shared session store.** RMCP can restore a session on another instance from a store, but the pending in-band
+  request lives in the first instance's memory, so an answer that lands elsewhere is lost until the prompt's deadline.
+- **Routing client messages to the instance that holds the session.** A second Run Inbox for MCP traffic, built to keep
+  a feature the current protocol revision removed.
 - **MCP elicitation as a Route, chosen per client.** It renders in one client today, blinds that client's model to what
   was asked and answered, and outlives the Run Deadline. It returns only when a client renders every elicitation mode
   and tells its model what was asked and answered ([the Route decision](https://github.com/withcoral/coral/issues/2737#issuecomment-6602262606)).
