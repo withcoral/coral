@@ -320,6 +320,37 @@ it('Escape before a step renders closes the rail for good', async () => {
   expect(cursor()).toBe('Find tools')
 })
 
+// Catches: a pending navigation to a record outside the table, such as live mode's,
+// missing from the close, so its late render reopens the rail.
+it('Escape before a navigation outside the table renders closes the rail for good', async () => {
+  let landLoad!: () => void
+  const load = new Promise<void>((resolve) => (landLoad = resolve))
+  let renderIt!: () => void
+  const render = new Promise<void>((resolve) => (renderIt = resolve))
+  let closing = false
+  const { user, table, record, router } = await renderActivity(opened(search.name), {
+    loader: async ({ request }) => {
+      const requested = new URL(request.url).searchParams.get('record')
+      if (requested === elsewhere.name) await load
+      if (closing && requested === null) await new Promise(() => {})
+      return null
+    },
+    holdRender: (location) =>
+      new URLSearchParams(location.search).get('record') === elsewhere.name ? render : undefined,
+  })
+  act(() => table.focus())
+  act(() => void router.navigate(opened(elsewhere.name)))
+  await waitFor(() => expect(router.state.navigation.state).toBe('loading'))
+  await act(async () => landLoad())
+  await waitFor(() => expect(record()).toBe(elsewhere.name))
+  closing = true
+  await user.keyboard('{Escape}')
+  await waitFor(() => expect(rail()).toBeNull())
+  await act(async () => renderIt())
+  expect(rail()).toBeNull()
+  expect(table).toHaveFocus()
+})
+
 // Catches: picking, while the rail closes, the record a pending step was going to
 // show reopening the record you closed until the pick loads.
 it('a pick of the pending step’s record during a close leaves the rail closed until it loads', async () => {

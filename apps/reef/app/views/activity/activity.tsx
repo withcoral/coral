@@ -750,10 +750,13 @@ export function Activity({
   const activeStop = positionStop?.kind === 'record' ? positionStop : null
   const close = () => {
     // With an unsent comment, the rail stays while the review asks whether to discard it.
-    // A step or pick whose page has not rendered yet closes with it, so it cannot
-    // reopen the rail when it renders.
+    // A step, pick or other navigation whose page has not rendered yet closes with
+    // it, so it cannot reopen the rail when it renders. `pending` names one whose
+    // record the table does not show, such as live mode's.
     if (!unsent)
-      setClosing([...new Set([shownRecord, position?.name].filter((name) => name != null))])
+      setClosing([
+        ...new Set([shownRecord, pending, position?.name].filter((name) => name != null)),
+      ])
     void navigate(nav.backHref, {
       preventScrollReset: true,
       state: tokens.next(),
