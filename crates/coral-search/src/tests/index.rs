@@ -3325,17 +3325,17 @@ impl Retry {
 
 /// Records every event of this crate with its level, target, and fields.
 #[derive(Clone, Default)]
-struct CapturedLogs(Arc<std::sync::Mutex<Vec<CapturedEvent>>>);
+pub(super) struct CapturedLogs(Arc<std::sync::Mutex<Vec<CapturedEvent>>>);
 
 #[derive(Debug)]
-struct CapturedEvent {
-    level: tracing::Level,
-    target: String,
-    fields: BTreeMap<String, String>,
+pub(super) struct CapturedEvent {
+    pub(super) level: tracing::Level,
+    pub(super) target: String,
+    pub(super) fields: BTreeMap<String, String>,
 }
 
 impl CapturedLogs {
-    fn events(&self) -> Vec<CapturedEvent> {
+    pub(super) fn events(&self) -> Vec<CapturedEvent> {
         std::mem::take(&mut *self.0.lock().expect("captured logs"))
     }
 }

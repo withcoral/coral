@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use coral_db::Transaction;
+use coral_telemetry::safe;
 
 use crate::retriever::{
     EntityRetriever, QueryError, QueryRequest, RequestContext, abandon_query, begin_query,
@@ -100,8 +101,14 @@ pub(crate) async fn suggestions(
             end_query(transaction).await?;
             answer.window
         }
-        Err(QueryError::Retriever(_error)) => {
+        Err(QueryError::Retriever(error)) => {
             abandon_query(transaction).await?;
+            tracing::error!(
+                coral.search.retriever = safe::kind(tools.kind().as_str()),
+                coral.workspace.id = safe::id(&context.workspace_id),
+                error.type = safe::kind(error.code()),
+                "a Universal Search retriever could not rank the paths near a missing one"
+            );
             Vec::new()
         }
         Err(QueryError::Shared(error)) => return Err(error),
@@ -144,15 +151,16 @@ fn path_words(relative_path: &str) -> BTreeSet<String> {
 }
 
 /// Whether two path words are one word: equal, or one starts with the other
-/// and is at least [`SHORTEST_WORD_STEM`] long, as `repo` and `repos`, or
-/// `org` and `organization`, are.
+/// and is at least [`SHORTEST_WORD_STEM`] characters long, as `repo` and
+/// `repos`, or `org` and `organization`, are.
 fn same_word(one: &str, other: &str) -> bool {
     let (shorter, longer) = if one.len() <= other.len() {
         (one, other)
     } else {
         (other, one)
     };
-    shorter == longer || (shorter.len() >= SHORTEST_WORD_STEM && longer.starts_with(shorter))
+    shorter == longer
+        || (shorter.chars().count() >= SHORTEST_WORD_STEM && longer.starts_with(shorter))
 }
 
 /// The lowercase words of `text`: split on every character that is not a
@@ -231,6 +239,10 @@ mod tests {
             ("a", "add", false),
             ("ge", "get", false),
             ("policy", "providers", false),
+            // Characters count, not bytes: `é` and `你` are one each.
+            ("é", "éte", false),
+            ("你", "你好", false),
+            ("你好吗", "你好吗们", true),
         ] {
             assert_eq!(same_word(one, other), same, "{one} {other}");
         }
