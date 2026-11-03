@@ -81,6 +81,18 @@ impl ToolFailure {
     pub(crate) fn internal() -> Self {
         Self::stable("internal_error", "Coral could not complete the tool call")
     }
+
+    /// Adds the Task this failed call had already started, so the caller
+    /// continues that Task rather than starting another. The code stays.
+    pub(crate) fn naming_started_task(self, task: &coral_task::TaskId) -> Self {
+        Self {
+            code: self.code,
+            message: format!(
+                "{}. This call started Task {task}: pass it as `task_id` to later calls instead of `goal`.",
+                self.message.trim_end_matches('.')
+            ),
+        }
+    }
 }
 
 fn bounded_message(message: &str) -> String {

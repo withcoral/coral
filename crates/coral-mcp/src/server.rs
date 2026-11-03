@@ -271,13 +271,15 @@ impl McpServer {
                 (None, accepted)
             }
             ExecTarget::Goal(call) => {
-                let (task, accepted) = self
+                let (task, launched) = self
                     .runtime
                     .modules
                     .commands
                     .submit_new_task(&call, &arguments.program, timeout)
                     .await
                     .map_err(task_failure)?;
+                let accepted = launched
+                    .map_err(|error| started_task_failure(task_failure(error), task.id()))?;
                 (Some(task.id().clone()), accepted)
             }
         };
@@ -752,6 +754,16 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
         | coral_task::Error::Database(_) => ToolFailure::internal(),
     };
     DispatchError::Tool(failure)
+}
+
+/// A failure after an `exec` with `goal` started its Task. It names the Task,
+/// so the agent continues it with `task_id` instead of starting another with
+/// `goal`.
+fn started_task_failure(error: DispatchError, task: &TaskId) -> DispatchError {
+    match error {
+        DispatchError::Tool(failure) => DispatchError::Tool(failure.naming_started_task(task)),
+        protocol @ DispatchError::Protocol(_) => protocol,
+    }
 }
 
 fn search_failure(error: coral_search::Error) -> DispatchError {

@@ -341,15 +341,19 @@ impl TaskCommands {
     /// Starts a Task for the call's goal and accepts its first Run in one
     /// commit, then launches the Run. Admission comes first, so a refused
     /// Program starts no Task and leaves nothing to record.
+    ///
+    /// Once that commit succeeds, the Task is returned beside the launch's
+    /// result, even when the launch fails. The caller only has the goal, so
+    /// without the Task a retry would start a second one.
     /// # Errors
     /// Safe admission failures create no Task and no Run. A launch error
-    /// never undoes acceptance.
+    /// comes back beside the Task and never undoes acceptance.
     pub async fn submit_new_task(
         &self,
         call: &NewTaskCommand,
         source: &str,
         timeout_ms: u64,
-    ) -> Result<(crate::Task, coral_run::RunUpdate), Error> {
+    ) -> Result<(crate::Task, Result<coral_run::RunUpdate, Error>), Error> {
         let submission = coral_run::RunSubmission::new(
             coral_run::ProgramSource::parse(source)?,
             coral_run::RunTimeout::from_millis(timeout_ms)?,
@@ -399,7 +403,12 @@ impl TaskCommands {
         )
         .await?;
         transaction.commit().await?;
-        Ok((task, self.runs.launch(staged).await?))
+        #[cfg(test)]
+        self.control
+            .pause(crate::command_tests::Checkpoint::AfterCommit)
+            .await;
+        let launched = self.runs.launch(staged).await.map_err(Error::from);
+        Ok((task, launched))
     }
 
     fn function_context(
