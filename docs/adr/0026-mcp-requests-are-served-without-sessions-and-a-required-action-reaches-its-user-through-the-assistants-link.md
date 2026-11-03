@@ -19,7 +19,7 @@ decide, and the Run waits until they do. The
 today: one client in nine renders it, that client's model sees nothing of the prompt and narrates the Run wrongly
 afterwards, an unanswered prompt outlives the Run's deadline, and one client declares the capability and shows nothing.
 
-Coral now serves every MCP request on its own. No session id is issued and nothing is kept between requests: each
+Coral now serves every MCP request on its own. No session id is issued and no MCP session state is kept between requests: each
 request's credential and endpoint name its Principal and Workspace (a Workspace MCP Endpoint fixes the Workspace in its
 URL, the Organization MCP Endpoint takes it from the credential, and a credential-free request to a local Workspace
 endpoint acts as the implicit local User, as before). The protocol made the same move: revision 2026-07-28 removed
@@ -28,8 +28,8 @@ which revision and how each handles elicitation, is in
 [docs/research/2026-10-28-mcp-client-protocol-versions.md](../research/2026-10-28-mcp-client-protocol-versions.md).
 
 With the session goes the prompt. Coral calls a request that a Run waits on a **Required Action** and the act of
-putting it in front of the one User who can decide it a **Human Handoff**. Every Required Action is offered through one
-**Handoff Route**, the assistant's link: the tool call that observes the Run returns the Run Update with the Required
+putting it in front of the one User who can decide it a **Human Handoff**. Every Required Action of a Run that a User
+invoked is offered through one **Handoff Route**, the assistant's link: the tool call that observes the Run returns the Run Update with the Required
 Action and the Run Status Page link, the assistant passes the link and the Run identifier to the person, and the person
 decides on the Run Status Page, signed in to Reef, with the exact Tool arguments in view. Reef is the standing place:
 the Run Status Page holds every Required Action, and the Approvals Page every Approval Request, from the moment it
@@ -47,8 +47,9 @@ they had acted, named the Tool by guesswork, and left the person to find the req
 activity. Making it the one Route means removing each of those
 ([what the assistant receives](https://github.com/withcoral/coral/issues/2736#issuecomment-6519311420)):
 
-- **The Run Update says what is asked.** Each Required Action names its kind, the waiting Tool and its Provider, the
-  actor, the deadline and the Run Status Page link, naming the request. The assistant phrases the request for the
+- **The Run Update says what is asked.** Each Required Action names its kind, the Provider, the waiting Tool where one
+  Tool waits (a connection request shared by Invocations of different Tools names none), the actor, the deadline and
+  the Run Status Page link, naming the request. The assistant phrases the request for the
   person from these fields alone; Coral supplies no ready-made sentence, and the link travels only in its own field,
   never inside prose.
 - **The assistant's loop is written down, in the tools, not only in the instructions.** The server instructions state
@@ -72,8 +73,8 @@ activity. Making it the one Route means removing each of those
 
 ## Consequences
 
-- **Any Coral Instance serves any MCP request.** A load balancer needs no affinity, and a rolling deploy ends no
-  conversation, since no client holds a session that one instance owned.
+- **Any Coral Instance serves any MCP request.** A load balancer needs no affinity, and a rolling deploy breaks no
+  client's connection to Coral, since no client holds a session that one instance owned.
 - **No standalone stream.** The MCP endpoints serve only requests, never a stream a client opens on its own or a
   request to end a session. Nothing is announced to a client outside the response to its own request; the next Run
   Update shows a decision made elsewhere.
@@ -85,7 +86,7 @@ activity. Making it the one Route means removing each of those
   Request has no deadline of its own, so an approval never expires while its Run lives: a decline is the Program's
   error, silence is the timeout. An Account Connection Request keeps its own expiry across Runs; the deadline the Run
   Update shows for it is the earlier of that expiry and the Run Deadline. A decision that arrives after the Run ended
-  does nothing. The maximum timeout is one deployment-wide constant with no operator setting; if one is ever added it is
+  does nothing for that Run. The maximum timeout is one deployment-wide constant with no operator setting; if one is ever added it is
   deployment-wide, never per Workspace ([time limits](https://github.com/withcoral/coral/issues/2738#issuecomment-6520221759)).
 - **Where a Required Action reaches the person is never policy.** The Tool Access State keeps its three values: a Tool
   is enabled, needs approval, or is disabled, and nothing about it decides where or how the person is asked
@@ -107,7 +108,7 @@ The page a Human Handoff opens is where the person decides, so it is a handoff s
   is its own card with its own decision; an approval card shows the exact arguments. The Program follows, folded. Cards
   are in the order the requests were made, and the request the link names is not marked, since every card is decided
   the same way.
-- "Approve all" decides each request on its own, and there is no "Deny all".
+- "Approve all" decides each open Approval Request on its own, and there is no "Deny all".
 - From the card, a Workspace Owner can stop the Tool from asking again, through a confirmed change that sets the Tool's
   policy to `enabled`; the waiting call continues, as the glossary's Approval Request entry says.
 - After the last decision the page tells the person to close the tab and go back to their AI app, and that the Run

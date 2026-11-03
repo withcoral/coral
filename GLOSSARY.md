@@ -540,12 +540,12 @@ Tool Availability, allow/ask/deny
 Emissions, Logs and Final Value, minus the bytes of its Invocations' retained Tool Results. Negative means saved. A
 Run that is running or has incomplete Invocation evidence has none. _Avoid_: token savings
 
-**Required Action**: A request of one Program Run that one person must decide before the Run can go on: the invoking
-User for a Run a User invoked, a Workspace Owner for a Run an Agent invoked. Today it is an Approval Request or an
+**Required Action**: A request of one Program Run that a person must decide before the Run can go on: the invoking
+User for a Run a User invoked, any Workspace Owner for a Run an Agent invoked. Today it is an Approval Request or an
 Account Connection Request; any later kind (a Provider's own question to the User, #2447) keeps the same shape: one
-exact person, one request with a deadline, one Handoff Route, and the first answer counts. A Run Update's
-`required_actions` lists the Run's current Required Actions. One Required Action handed over is one Human Handoff, even
-when several Runs wait on it. _Avoid_: pending action, human action, elicitation, prompt
+request with a deadline, decided by the person or role the Run names, and the first answer counts. A Run a User invoked
+also has one Handoff Route for it. A Run Update's `required_actions` lists the Run's current Required Actions. One
+Required Action handed over is one Human Handoff, even when several Runs wait on it. _Avoid_: pending action, human action, elicitation, prompt
 
 **Human Handoff**: The act of Coral putting a Required Action in front of the one User who can decide it. Coral offers
 each through exactly one Handoff Route, keeps Reef as the standing place where the request is already waiting, counts the
