@@ -10,7 +10,7 @@ use coral_db::{Database, Transaction};
 use coral_workspace::{UserId, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
 
-use super::{Scope, TokenRefusal};
+use super::{Scope, TokenRefusal, WorkspaceBinding};
 use crate::PrivateAudience;
 
 #[derive(Iden)]
@@ -92,13 +92,13 @@ impl PresentedRow {
                 client_id: self.client_id,
                 resource: self.resource,
                 private_audience,
-                workspace_id: self
-                    .workspace_id
-                    .as_deref()
-                    .map(WorkspaceId::parse)
-                    .transpose()
-                    .map_err(corrupt)?,
-                scoped_tokens: self.scoped_tokens,
+                workspace: match self.workspace_id.as_deref().map(WorkspaceId::parse) {
+                    None => WorkspaceBinding::None,
+                    Some(workspace) if self.scoped_tokens => {
+                        WorkspaceBinding::InToken(workspace.map_err(corrupt)?)
+                    }
+                    Some(workspace) => WorkspaceBinding::ByUrl(workspace.map_err(corrupt)?),
+                },
             },
             expires_at_unix_nanos: self.expires_at_unix_nanos,
             consumed: self.consumed_at_unix_nanos.is_some(),
@@ -292,8 +292,8 @@ pub(super) async fn insert_grant(
                     .private_audience
                     .map(|audience| audience.as_str().to_owned())
                     .into(),
-                scope.workspace_id.as_ref().map(ToString::to_string).into(),
-                scope.scoped_tokens.into(),
+                scope.workspace.authority().map(ToString::to_string).into(),
+                scope.workspace.in_token().is_some().into(),
                 created_at_unix_nanos.into(),
                 expires_at_unix_nanos.into(),
                 0_i64.into(),
@@ -426,10 +426,12 @@ pub(super) async fn purge_expired(
     Ok(())
 }
 
-/// Deletes a User's oldest grants until at most `keep` remain.
+/// Deletes the oldest grants a User holds through `client_id` until at most
+/// `keep` remain.
 pub(super) async fn evict_oldest(
     tx: &mut Transaction<'_>,
     user_id: &UserId,
+    client_id: &str,
     keep: u64,
 ) -> Result<(), TokenRefusal> {
     let grants: Vec<(String,)> = tx
@@ -438,6 +440,7 @@ pub(super) async fn evict_oldest(
                 .column(Grants::GrantId)
                 .from(Grants::Table)
                 .and_where(Expr::col(Grants::UserId).eq(user_id.as_str()))
+                .and_where(Expr::col(Grants::ClientId).eq(client_id))
                 .order_by(Grants::CreatedAtUnixNanos, Order::Desc)
                 .order_by(Grants::GrantId, Order::Desc)
                 .to_owned(),

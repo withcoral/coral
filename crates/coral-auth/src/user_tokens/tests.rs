@@ -20,6 +20,7 @@ pub(super) const SECOND: i64 = 1_000_000_000;
 pub(super) const CLIENT: &str = "https://client.example.test/oauth/client.json";
 const REDIRECT: &str = "http://127.0.0.1:14554/callback";
 pub(super) const REEF: &str = "https://reef.example.test";
+const OTHER_CLIENT: &str = "https://other.example.test/oauth/client.json";
 
 pub(super) struct Fixture {
     pub(super) database: TestDatabase,
@@ -37,11 +38,17 @@ impl Fixture {
     }
 
     pub(super) async fn with_lifetime(lifetime: Duration) -> Self {
+        Self::with_lifetimes(lifetime, Duration::from_mins(5)).await
+    }
+
+    /// A deployment whose Refresh Grants last `lifetime` and whose access
+    /// tokens last `access_token_ttl`.
+    pub(super) async fn with_lifetimes(lifetime: Duration, access_token_ttl: Duration) -> Self {
         let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let issuer = SessionTokenIssuer::new(
             Some("https://auth.example.test"),
             coral_test_support::p256_pkcs8(),
-            Duration::from_mins(5),
+            access_token_ttl,
         )
         .unwrap();
         let user = provision_user(
@@ -102,13 +109,26 @@ impl Fixture {
         refresh_eligible: bool,
         now: i64,
     ) -> Result<IssuedTokens, TokenRefusal> {
+        self.sign_in_with(CLIENT, resource, target, refresh_eligible, now)
+            .await
+    }
+
+    /// Signs in through `client` instead of the fixture's usual one.
+    pub(super) async fn sign_in_with(
+        &self,
+        client: &str,
+        resource: &str,
+        target: AccessTarget,
+        refresh_eligible: bool,
+        now: i64,
+    ) -> Result<IssuedTokens, TokenRefusal> {
         let index = self
             .codes_issued
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (code, sign_in) = (format!("code-{index}"), format!("sign-in-{index}"));
         let grant = AuthorizationGrant {
             user_id: self.user.user_id().to_string(),
-            client_id: CLIENT.into(),
+            client_id: client.into(),
             redirect_uri: REDIRECT.into(),
             code_challenge: "challenge".into(),
             resource: resource.into(),
@@ -124,7 +144,7 @@ impl Fixture {
             .redeem_code(
                 &code,
                 CodeRedemption {
-                    client_id: CLIENT,
+                    client_id: client,
                     redirect_uri: REDIRECT,
                     code_challenge: "challenge",
                     resource,
@@ -536,14 +556,20 @@ async fn a_storage_outage_is_unavailable_and_strands_no_token() {
     fixture.refresh(&token, NOW + 2 * SECOND).await.unwrap();
 }
 
-/// Each User holds a bounded number of grants; starting one past the bound
-/// ends the oldest.
+/// Each User holds a bounded number of grants per client; starting one past
+/// the bound ends that client's oldest, and no other client's.
 #[tokio::test]
-async fn a_user_holds_a_bounded_number_of_grants() {
+async fn a_user_holds_a_bounded_number_of_grants_per_client() {
     let fixture = Fixture::new().await;
+    let other = refresh_token(
+        &fixture
+            .sign_in_with(OTHER_CLIENT, REEF, AccessTarget::Reef, true, NOW)
+            .await
+            .unwrap(),
+    );
     let mut tokens = Vec::new();
-    for index in 0..=super::MAX_GRANTS_PER_USER {
-        let at = NOW + i64::try_from(index).unwrap();
+    for index in 0..=super::MAX_GRANTS_PER_CLIENT {
+        let at = NOW + 1 + i64::try_from(index).unwrap();
         let issued = fixture
             .sign_in_at(REEF, AccessTarget::Reef, true, at)
             .await
@@ -560,6 +586,18 @@ async fn a_user_holds_a_bounded_number_of_grants() {
         .refresh(tokens.last().unwrap(), later)
         .await
         .unwrap();
+    fixture
+        .tokens
+        .refresh(
+            &other,
+            RefreshRequest {
+                client_id: OTHER_CLIENT,
+                ..plain_refresh()
+            },
+            later,
+        )
+        .await
+        .expect("another client's grant survives");
 }
 
 #[test]

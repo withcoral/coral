@@ -317,3 +317,26 @@ async fn resolving_rechecks_membership_and_reports_outages() {
         Some(TokenRefusal::Unavailable)
     );
 }
+
+/// A Web Session's tokens serve one request each, so each lasts minutes, not
+/// the deployment's access-token lifetime: few outlive a sign-out.
+#[tokio::test]
+async fn a_web_session_mints_short_lived_tokens() {
+    let fixture = Fixture::with_lifetimes(
+        super::DEFAULT_REFRESH_GRANT_LIFETIME,
+        Duration::from_hours(720),
+    )
+    .await;
+    let handle = fixture.web_session(HOUR).await;
+    let claims = claims(
+        &fixture
+            .session_token(&handle, NOW + 2 * SECOND)
+            .await
+            .unwrap(),
+    );
+    let lifetime = claims["exp"].as_i64().unwrap() - claims["iat"].as_i64().unwrap();
+    assert!(
+        lifetime <= i64::try_from(super::WEB_SESSION_TOKEN_LIFETIME.as_secs()).unwrap(),
+        "a Web Session token lasts {lifetime}s"
+    );
+}

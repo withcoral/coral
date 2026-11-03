@@ -64,8 +64,13 @@ use crate::{IssuedAccessToken, PrivateAudience, SessionTokenIssuer};
 /// How long a Refresh Grant can refresh when the operator sets no lifetime.
 pub const DEFAULT_REFRESH_GRANT_LIFETIME: Duration = Duration::from_hours(24 * 30);
 
-/// The most Refresh Grants one User holds. Starting another ends the oldest.
-const MAX_GRANTS_PER_USER: u64 = 64;
+/// The most Refresh Grants one User holds through one client. Starting
+/// another ends that client's oldest, never another client's.
+const MAX_GRANTS_PER_CLIENT: u64 = 64;
+
+/// How long a Web Session's access token lasts at most. Each serves one
+/// request, so few remain valid once the session ends.
+const WEB_SESSION_TOKEN_LIFETIME: Duration = Duration::from_mins(5);
 
 /// The most times one Refresh Grant rotates. A client refreshing more often
 /// than this over the grant's lifetime has to sign in again.
@@ -294,7 +299,13 @@ impl UserTokens {
                 return Err(refusal);
             }
         }
-        repository::evict_oldest(&mut tx, &scope.user_id, MAX_GRANTS_PER_USER - 1).await?;
+        repository::evict_oldest(
+            &mut tx,
+            &scope.user_id,
+            &scope.client_id,
+            MAX_GRANTS_PER_CLIENT - 1,
+        )
+        .await?;
         let grant_id = uuid::Uuid::new_v4().to_string();
         repository::insert_grant(&mut tx, &grant_id, &scope, now_unix_nanos, expires_at).await?;
         let (refresh_token, digest) = RefreshToken::generate()?;
@@ -336,38 +347,16 @@ impl UserTokens {
         request: RefreshRequest<'_>,
         now_unix_nanos: i64,
     ) -> Result<IssuedTokens, TokenRefusal> {
-        let digest = digest(refresh_token).ok_or(TokenRefusal::InvalidGrant)?;
-        // Anyone can present a token, and on SQLite every writer queues behind
-        // `BEGIN`. Only a token that can refresh, or a replay that must end
-        // its grant, opens a write transaction.
-        let presented = repository::find(&self.database, &digest)
-            .await?
-            .ok_or(TokenRefusal::InvalidGrant)?;
-        let scope = &presented.scope;
-        if !scope.accepts(request) || presented.expires_at_unix_nanos <= now_unix_nanos {
-            return Err(TokenRefusal::InvalidGrant);
-        }
-        let grant_id = presented.grant_id.as_str();
-        if presented.consumed {
-            self.end_grant(grant_id).await?;
-            return Err(TokenRefusal::InvalidGrant);
-        }
-        let mut tx = self.database.begin().await.map_err(unavailable)?;
-        if let Err(refusal) = self.hold_authority(&mut tx, scope, now_unix_nanos).await {
-            rollback(tx).await;
-            return Err(refusal);
-        }
-        // The grant row is held after the authority rows, in the order access
-        // removal takes them, so a revocation or removal racing this refresh
-        // either ends the grant first or ends the successor too.
-        if !repository::hold_live_grant(&mut tx, grant_id, now_unix_nanos).await? {
-            rollback(tx).await;
-            return Err(TokenRefusal::InvalidGrant);
-        }
-        // A refresh that loses the race for one token is a replay of it.
-        if !repository::consume(&mut tx, &digest, now_unix_nanos).await?
-            || !repository::record_rotation(&mut tx, grant_id, MAX_ROTATIONS).await?
-        {
+        let (digest, presented) = self
+            .current_refresh_token(
+                refresh_token,
+                |scope| scope.accepts(request),
+                now_unix_nanos,
+            )
+            .await?;
+        let (scope, grant_id) = (&presented.scope, presented.grant_id.as_str());
+        let mut tx = self.spend(&digest, &presented, now_unix_nanos).await?;
+        if !repository::record_rotation(&mut tx, grant_id, MAX_ROTATIONS).await? {
             repository::delete_grant(&mut tx, grant_id).await?;
             tx.commit().await.map_err(unavailable)?;
             return Err(TokenRefusal::InvalidGrant);
@@ -429,22 +418,13 @@ impl UserTokens {
         max_age: Duration,
         now_unix_nanos: i64,
     ) -> Result<StartedWebSession, TokenRefusal> {
-        let digest = digest(refresh_token).ok_or(TokenRefusal::InvalidGrant)?;
-        let presented = repository::find(&self.database, &digest)
-            .await?
-            .ok_or(TokenRefusal::InvalidGrant)?;
-        let scope = &presented.scope;
-        if scope.client_id != client_id
-            || scope.private_audience != Some(PrivateAudience::Reef)
-            || presented.expires_at_unix_nanos <= now_unix_nanos
-        {
-            return Err(TokenRefusal::InvalidGrant);
-        }
+        let reef_grant = |scope: &Scope| {
+            scope.client_id == client_id && scope.private_audience == Some(PrivateAudience::Reef)
+        };
+        let (digest, presented) = self
+            .current_refresh_token(refresh_token, reef_grant, now_unix_nanos)
+            .await?;
         let grant_id = presented.grant_id.as_str();
-        if presented.consumed {
-            self.end_grant(grant_id).await?;
-            return Err(TokenRefusal::InvalidGrant);
-        }
         let expires_at = i64::try_from(max_age.as_nanos())
             .ok()
             .and_then(|max_age| now_unix_nanos.checked_add(max_age))
@@ -453,20 +433,7 @@ impl UserTokens {
         if expires_at <= now_unix_nanos {
             return Err(TokenRefusal::InvalidGrant);
         }
-        let mut tx = self.database.begin().await.map_err(unavailable)?;
-        if let Err(refusal) = self.hold_authority(&mut tx, scope, now_unix_nanos).await {
-            rollback(tx).await;
-            return Err(refusal);
-        }
-        if !repository::hold_live_grant(&mut tx, grant_id, now_unix_nanos).await? {
-            rollback(tx).await;
-            return Err(TokenRefusal::InvalidGrant);
-        }
-        if !repository::consume(&mut tx, &digest, now_unix_nanos).await? {
-            repository::delete_grant(&mut tx, grant_id).await?;
-            tx.commit().await.map_err(unavailable)?;
-            return Err(TokenRefusal::InvalidGrant);
-        }
+        let mut tx = self.spend(&digest, &presented, now_unix_nanos).await?;
         let (handle, session_digest) = generate_secret(WEB_SESSION_PREFIX)?;
         repository::insert_session(&mut tx, &session_digest, grant_id, expires_at).await?;
         tx.commit().await.map_err(unavailable)?;
@@ -481,8 +448,9 @@ impl UserTokens {
     /// the User's current authority, at host time `now_unix_nanos`.
     ///
     /// Minting writes nothing, so any number of requests and processes can
-    /// resolve one session at once. Each token expires with its session at
-    /// the latest.
+    /// resolve one session at once. Each token serves one request, so it
+    /// lasts [`WEB_SESSION_TOKEN_LIFETIME`] at most, and never past its
+    /// session.
     ///
     /// # Errors
     ///
@@ -520,10 +488,11 @@ impl UserTokens {
             .as_str();
         let access_token = self
             .issuer
-            .issue_access_token_expiring_by(
+            .issue_bounded_access_token(
                 scope.user_id.as_str(),
                 &scope.client_id,
                 audience,
+                WEB_SESSION_TOKEN_LIFETIME,
                 session_end,
             )
             .map_err(|_text| TokenRefusal::Issuance)?;
@@ -565,6 +534,68 @@ impl UserTokens {
         }
     }
 
+    /// Finds the unexpired grant a presented refresh token belongs to, when
+    /// `binds` accepts its scope. A token that does not bind changes nothing;
+    /// a consumed one that does is a replay, and its grant ends before the
+    /// refusal. Returns the token's digest and what was found.
+    ///
+    /// Anyone can present a token, and on SQLite every writer queues behind
+    /// `BEGIN`. Only a replay that must end its grant opens a write here.
+    async fn current_refresh_token(
+        &self,
+        refresh_token: &str,
+        binds: impl FnOnce(&Scope) -> bool,
+        now_unix_nanos: i64,
+    ) -> Result<(String, repository::PresentedToken), TokenRefusal> {
+        let digest = digest(refresh_token).ok_or(TokenRefusal::InvalidGrant)?;
+        let presented = repository::find(&self.database, &digest)
+            .await?
+            .ok_or(TokenRefusal::InvalidGrant)?;
+        if !binds(&presented.scope) || presented.expires_at_unix_nanos <= now_unix_nanos {
+            return Err(TokenRefusal::InvalidGrant);
+        }
+        if presented.consumed {
+            self.end_grant(&presented.grant_id).await?;
+            return Err(TokenRefusal::InvalidGrant);
+        }
+        Ok((digest, presented))
+    }
+
+    /// Spends a current refresh token under its grant's current authority,
+    /// and returns the write transaction for the caller to finish.
+    ///
+    /// The grant row is held after the authority rows, in the order access
+    /// removal takes them, so a revocation or removal racing the spend either
+    /// ends the grant first or ends what the spend goes on to write. A spend
+    /// that loses the race for its token is a replay: the grant ends, and that
+    /// commits before the refusal.
+    async fn spend(
+        &self,
+        digest: &str,
+        presented: &repository::PresentedToken,
+        now_unix_nanos: i64,
+    ) -> Result<Transaction<'_>, TokenRefusal> {
+        let grant_id = presented.grant_id.as_str();
+        let mut tx = self.database.begin().await.map_err(unavailable)?;
+        if let Err(refusal) = self
+            .hold_authority(&mut tx, &presented.scope, now_unix_nanos)
+            .await
+        {
+            rollback(tx).await;
+            return Err(refusal);
+        }
+        if !repository::hold_live_grant(&mut tx, grant_id, now_unix_nanos).await? {
+            rollback(tx).await;
+            return Err(TokenRefusal::InvalidGrant);
+        }
+        if !repository::consume(&mut tx, digest, now_unix_nanos).await? {
+            repository::delete_grant(&mut tx, grant_id).await?;
+            tx.commit().await.map_err(unavailable)?;
+            return Err(TokenRefusal::InvalidGrant);
+        }
+        Ok(tx)
+    }
+
     async fn end_grant(&self, grant_id: &str) -> Result<(), TokenRefusal> {
         let mut tx = self.database.begin().await.map_err(unavailable)?;
         repository::delete_grant(&mut tx, grant_id).await?;
@@ -583,7 +614,7 @@ impl UserTokens {
             .hold_member_in_transaction(tx, &scope.user_id)
             .await
             .map_err(|error| refusal(&error))?;
-        if let Some(workspace) = &scope.workspace_id {
+        if let Some(workspace) = scope.workspace.authority() {
             self.workspaces
                 .check_principal_inspection_in_transaction(
                     tx,
@@ -603,7 +634,7 @@ impl UserTokens {
             None => scope.resource.as_str(),
         };
         let user_id = scope.user_id.as_str();
-        match scope.workspace_id.as_ref().filter(|_| scope.scoped_tokens) {
+        match scope.workspace.in_token() {
             Some(workspace) => self.issuer.issue_workspace_access_token(
                 user_id,
                 &scope.client_id,
@@ -651,39 +682,68 @@ struct Scope {
     client_id: String,
     resource: String,
     private_audience: Option<PrivateAudience>,
+    workspace: WorkspaceBinding,
+}
+
+/// The Workspace a grant answers to, if any, and whether its tokens name it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WorkspaceBinding {
+    /// No Workspace: Reef, or a registered resource.
+    None,
+    /// A Workspace's public MCP URL fixes the Workspace, so tokens name none.
+    ByUrl(WorkspaceId),
+    /// Each token names the Workspace.
+    InToken(WorkspaceId),
+}
+
+impl WorkspaceBinding {
     /// The Workspace whose authority the grant answers to.
-    workspace_id: Option<WorkspaceId>,
-    /// Whether each access token names that Workspace.
-    scoped_tokens: bool,
+    const fn authority(&self) -> Option<&WorkspaceId> {
+        match self {
+            Self::None => None,
+            Self::ByUrl(workspace) | Self::InToken(workspace) => Some(workspace),
+        }
+    }
+
+    /// The Workspace each access token names.
+    const fn in_token(&self) -> Option<&WorkspaceId> {
+        match self {
+            Self::InToken(workspace) => Some(workspace),
+            Self::None | Self::ByUrl(_) => None,
+        }
+    }
 }
 
 impl Scope {
     fn for_code(target: AccessTarget, grant: &AuthorizationGrant) -> Result<Self, TokenRefusal> {
-        let scoped = |workspace| (Some(workspace), true);
-        let (private_audience, (workspace_id, scoped_tokens)) = match target {
-            AccessTarget::Resource => (None, (None, false)),
-            AccessTarget::WorkspaceResource(workspace) => (None, (Some(workspace), false)),
+        let (private_audience, workspace) = match target {
+            AccessTarget::Resource => (None, WorkspaceBinding::None),
+            AccessTarget::WorkspaceResource(workspace) => {
+                (None, WorkspaceBinding::ByUrl(workspace))
+            }
             // Only the Workspace picker issues a code for the Organization
             // MCP Endpoint, so a code naming no Workspace is not one.
             AccessTarget::PickedWorkspace => (
                 None,
-                scoped(
+                WorkspaceBinding::InToken(
                     grant
                         .workspace_id
                         .clone()
                         .ok_or(TokenRefusal::InvalidGrant)?,
                 ),
             ),
-            AccessTarget::PrivateMcp(workspace) => (Some(PrivateAudience::Mcp), scoped(workspace)),
-            AccessTarget::Reef => (Some(PrivateAudience::Reef), (None, false)),
+            AccessTarget::PrivateMcp(workspace) => (
+                Some(PrivateAudience::Mcp),
+                WorkspaceBinding::InToken(workspace),
+            ),
+            AccessTarget::Reef => (Some(PrivateAudience::Reef), WorkspaceBinding::None),
         };
         Ok(Self {
             user_id: UserId::parse(&grant.user_id).map_err(|_error| TokenRefusal::InvalidGrant)?,
             client_id: grant.client_id.clone(),
             resource: grant.resource.clone(),
             private_audience,
-            workspace_id,
-            scoped_tokens,
+            workspace,
         })
     }
 

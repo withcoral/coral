@@ -150,13 +150,15 @@ impl SessionTokenIssuer {
         )
     }
 
-    /// Issues unscoped User access that expires by `latest_expires_at` (Unix
-    /// seconds) when that comes before the configured lifetime ends.
-    pub(crate) fn issue_access_token_expiring_by(
+    /// Issues unscoped User access that lasts at most `lifetime`, and
+    /// expires by `latest_expires_at` (Unix seconds), whichever comes first,
+    /// and never later than the configured lifetime allows.
+    pub(crate) fn issue_bounded_access_token(
         &self,
         user_id: &str,
         client_id: &str,
         audience: &str,
+        lifetime: Duration,
         latest_expires_at: u64,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
         self.mint(
@@ -165,7 +167,7 @@ impl SessionTokenIssuer {
             audience,
             PrincipalKind::User,
             None,
-            Some(latest_expires_at),
+            Some((lifetime, latest_expires_at)),
         )
     }
 
@@ -199,7 +201,7 @@ impl SessionTokenIssuer {
         audience: &str,
         principal_kind: PrincipalKind,
         workspace_id: Option<String>,
-        latest_expires_at: Option<u64>,
+        bound: Option<(Duration, u64)>,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
         if external_user_id(user_id).is_err() {
             return Err(config_error(
@@ -216,10 +218,13 @@ impl SessionTokenIssuer {
             ));
         }
         let issued_at = unix_timestamp()?;
+        let lifetime = bound.map_or(self.access_token_ttl, |(lifetime, _latest)| {
+            lifetime.min(self.access_token_ttl)
+        });
         let expires_at = issued_at
-            .checked_add(self.access_token_ttl.as_secs())
+            .checked_add(lifetime.as_secs())
             .ok_or_else(|| config_error("access token expiry overflowed"))?
-            .min(latest_expires_at.unwrap_or(u64::MAX));
+            .min(bound.map_or(u64::MAX, |(_lifetime, latest)| latest));
         if expires_at <= issued_at {
             return Err(config_error("access token would expire as it is issued"));
         }
