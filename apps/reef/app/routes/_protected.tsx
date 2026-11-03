@@ -38,7 +38,12 @@ export const middleware: Route.MiddlewareFunction[] = [
       throw error
     }
     if (!session) {
-      throw await loginRedirect(request, url, config, await hasCoralWebSession(request, config))
+      // A refused session keeps its cookie, which lapses soon after the
+      // session's end. Every request then shows that the session expired,
+      // even when a background request found out first, instead of the next
+      // page load signing in again by itself.
+      const refused = await hasCoralWebSession(request, config)
+      throw await loginRedirect(request, url, config, refused, refused)
     }
     const csrf = await csrfTokenForRequest(request, config, session)
     context.set(requestAuthContext, {
@@ -72,9 +77,10 @@ async function loginRedirect(
   url: URL,
   config: RequiredAuthConfig,
   sessionExpired = false,
+  keepSession = false,
 ): Promise<Response> {
   const headers = new Headers()
-  if (hasSessionCookie(request, config.cookieName)) {
+  if (!keepSession && hasSessionCookie(request, config.cookieName)) {
     headers.append('Set-Cookie', await clearCoralWebSession(config))
   }
 

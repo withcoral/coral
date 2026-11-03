@@ -140,20 +140,31 @@ describe('protected route boundary', () => {
     for (const cookie of response.headers.getSetCookie()) expect(cookie).toMatch(/Max-Age=0/)
   })
 
-  it('signs in again, clearing the session, once Coral refuses it', async () => {
+  // Catches a background request that clears the cookie when Coral refuses
+  // the session: the next page load would then find no session and sign in
+  // again by itself instead of showing that the session expired.
+  it('keeps the refused session cookie so every request shows the session expired', async () => {
     coral = () => Promise.resolve(Response.json({ error: 'invalid_grant' }, { status: 400 }))
-    const { response, thrown, next } = await protect(
-      hostedRuntimeConfig,
-      async () => Response.json({}),
-      { cookie: await signedIn() },
-    )
+    const cookie = await signedIn()
+    for (const [path, method] of [
+      ['/activity/count', 'POST'],
+      ['/activity?tab=mine', 'GET'],
+    ] as const) {
+      const { response, thrown, next } = await protect(
+        hostedRuntimeConfig,
+        async () => Response.json({}),
+        { cookie, method, path },
+      )
 
-    expect(thrown).toBe(true)
-    expect(response.headers.get('Location')).toBe(
-      '/login?returnTo=%2Factivity%3Ftab%3Dmine&sessionExpired=1',
-    )
-    expect(cookieNames(response)).toContain(config.cookieName)
-    expect(next).not.toHaveBeenCalled()
+      expect(thrown).toBe(true)
+      expect(
+        new URL(response.headers.get('Location')!, 'https://reef').searchParams.get(
+          'sessionExpired',
+        ),
+      ).toBe('1')
+      expect(cookieNames(response)).not.toContain(config.cookieName)
+      expect(next).not.toHaveBeenCalled()
+    }
   })
 
   // A session Coral cannot answer for may still be valid: the visitor keeps it
