@@ -224,6 +224,11 @@ fn access_target(
             Some(AuthorizationResource::Mcp(McpEndpoint::Organization)) => {
                 AccessTarget::PickedWorkspace
             }
+            // A Workspace's public MCP URL: the grant answers to that
+            // Workspace's authority, though the URL alone scopes its tokens.
+            Some(AuthorizationResource::Mcp(McpEndpoint::Workspace(workspace))) => {
+                AccessTarget::WorkspaceResource(workspace)
+            }
             _ => AccessTarget::Resource,
         });
     };
@@ -1007,10 +1012,11 @@ pub(super) mod tests {
             .finish()
     }
 
-    /// The refresh grant needs only the token and client; a supplied resource
-    /// or audience must name the grant's own, and a refusal spends nothing.
+    /// The refresh grant needs only the token and client. Malformed input maps
+    /// to its OAuth error without echoing the token; the grant's own rules
+    /// are `UserTokens`'.
     #[tokio::test]
-    async fn refresh_rotates_and_refuses_what_the_grant_does_not_bind() {
+    async fn refresh_maps_its_form_and_returns_a_rotated_token_pair() {
         let (state, _codes, _session, database) = state().await;
         let issued = signed_in(&state, &database, Some("reef")).await;
         let mut token = issued["refresh_token"].as_str().unwrap().to_owned();
@@ -1024,13 +1030,7 @@ pub(super) mod tests {
                 "invalid_grant",
             ),
             ("resource", Some("not a resource URI"), "invalid_target"),
-            (
-                "resource",
-                Some("https://other.example.test/mcp"),
-                "invalid_grant",
-            ),
             ("coral_audience", Some("unknown"), "invalid_target"),
-            ("coral_audience", Some("mcp"), "invalid_grant"),
             ("scope", Some("coral:access"), "invalid_scope"),
             ("client_secret", Some("secret"), "invalid_client"),
         ] {
@@ -1041,7 +1041,7 @@ pub(super) mod tests {
         let duplicate = format!("{}&refresh_token=again", refresh_form(&token));
         expect_error(state.clone(), request(duplicate), "invalid_request").await;
 
-        let mut previous = None;
+        // A supplied resource is canonicalized before the grant compares it.
         for (resource, audience) in [
             (None, None),
             (Some("https://API.EXAMPLE.TEST/mcp"), Some("reef")),
@@ -1066,12 +1066,8 @@ pub(super) mod tests {
             assert_eq!(claims["sub"], MEMBER);
             let next = value["refresh_token"].as_str().unwrap().to_owned();
             assert_ne!(next, token);
-            previous = Some(std::mem::replace(&mut token, next));
+            token = next;
         }
-        let replay = refresh_form(&previous.unwrap());
-        expect_error(state.clone(), request(replay), "invalid_grant").await;
-        let ended = refresh_form(&token);
-        expect_error(state, request(ended), "invalid_grant").await;
     }
 
     #[tokio::test]

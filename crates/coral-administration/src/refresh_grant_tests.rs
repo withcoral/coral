@@ -100,7 +100,7 @@ impl Fixture {
             .sign_ins
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let resource = match target {
-            AccessTarget::PrivateMcp(_) => {
+            AccessTarget::PrivateMcp(_) | AccessTarget::WorkspaceResource(_) => {
                 format!("https://mcp.example.test/workspaces/{}/mcp", self.workspace)
             }
             _ => "https://reef.example.test".to_owned(),
@@ -166,15 +166,20 @@ async fn removal_ends_the_grants_it_takes_away_and_rejoining_revives_none() {
     let workspace_grant = fixture
         .sign_in(AccessTarget::PrivateMcp(fixture.workspace.clone()))
         .await;
+    let public_workspace_grant = fixture
+        .sign_in(AccessTarget::WorkspaceResource(fixture.workspace.clone()))
+        .await;
     let reef_grant = fixture.sign_in(AccessTarget::Reef).await;
 
     fixture.remove_from_workspace().await;
     fixture.join_workspace().await;
-    assert_eq!(
-        fixture.refresh(&fixture.tokens, &workspace_grant).await,
-        Err(TokenRefusal::InvalidGrant),
-        "rejoining the Workspace revives no grant"
-    );
+    for grant in [workspace_grant, public_workspace_grant] {
+        assert_eq!(
+            fixture.refresh(&fixture.tokens, &grant).await,
+            Err(TokenRefusal::InvalidGrant),
+            "rejoining the Workspace revives no grant"
+        );
+    }
     let reef_grant = fixture
         .refresh(&fixture.tokens, &reef_grant)
         .await

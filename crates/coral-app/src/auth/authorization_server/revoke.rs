@@ -80,7 +80,7 @@ mod tests {
     use url::form_urlencoded;
 
     use super::super::token::tests::{
-        CLIENT, assert_security, expect_error, refresh_form, request, send, signed_in, state,
+        CLIENT, expect_error, refresh_form, request, signed_in, state,
     };
     use super::oauth_revoke;
 
@@ -110,53 +110,34 @@ mod tests {
         status
     }
 
-    /// Revocation answers alike for unknown tokens and other clients' tokens,
-    /// and ends refresh only for the grant's own client.
+    /// Revocation validates its form, answers an empty no-store 200 whether
+    /// or not the token is known, and ends refresh for a known one. Client
+    /// binding and consumed tokens are `UserTokens`' rules.
     #[tokio::test]
-    async fn revocation_is_idempotent_and_bound_to_the_grants_client() {
+    async fn revocation_validates_its_form_and_answers_alike() {
         let (state, _codes, _session, database) = state().await;
         let issued = signed_in(&state, &database, Some("reef")).await;
         let token = issued["refresh_token"].as_str().unwrap();
-        let access_token = issued["access_token"].as_str().unwrap();
 
         let mut typed = revocation(Some(token), Some(CLIENT));
         typed.headers_mut().insert(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
+        let secret = format!("{}&client_secret=secret", refresh_form(token));
         for (request, expected) in [
             (typed, StatusCode::BAD_REQUEST),
             (revocation(None, Some(CLIENT)), StatusCode::BAD_REQUEST),
             (revocation(Some(token), None), StatusCode::BAD_REQUEST),
+            (request(secret), StatusCode::BAD_REQUEST),
             (
                 revocation(Some("coral_rt_unknown"), Some(CLIENT)),
                 StatusCode::OK,
             ),
-            (revocation(Some(access_token), Some(CLIENT)), StatusCode::OK),
-            (
-                revocation(Some(token), Some("https://other.example.test/client.json")),
-                StatusCode::OK,
-            ),
+            (revocation(Some(token), Some(CLIENT)), StatusCode::OK),
         ] {
             assert_eq!(revoke(&state, request).await, expected);
         }
-        let secret = format!("{}&client_secret=secret", refresh_form(token));
-        let response = oauth_revoke(State(state.clone()), request(secret)).await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        let (status, headers, body) = send(state.clone(), request(refresh_form(token))).await;
-        assert_security(&headers);
-        assert_eq!(status, StatusCode::OK, "nothing above ended the grant");
-        let refreshed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let current = refreshed["refresh_token"].as_str().unwrap();
-
-        // The consumed token still revokes, as a logout racing a refresh would.
-        for _ in 0..2 {
-            assert_eq!(
-                revoke(&state, revocation(Some(token), Some(CLIENT))).await,
-                StatusCode::OK
-            );
-        }
-        expect_error(state, request(refresh_form(current)), "invalid_grant").await;
+        expect_error(state, request(refresh_form(token)), "invalid_grant").await;
     }
 }

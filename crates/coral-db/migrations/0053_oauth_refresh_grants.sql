@@ -11,8 +11,11 @@ CREATE TABLE oauth_refresh_grants (
     -- `mcp` or `reef` for a first-party private audience; null when the
     -- access token's audience is the resource itself.
     private_audience TEXT,
-    -- The Workspace every access token from this grant is scoped to, if any.
+    -- The Workspace whose authority the grant answers to, if any.
     workspace_id TEXT,
+    -- Whether each access token names that Workspace. A Workspace's public
+    -- MCP URL fixes the Workspace itself, so its tokens name none.
+    scoped_tokens BOOLEAN NOT NULL,
     created_at_unix_nanos BIGINT NOT NULL,
     -- Fixed at the sign-in; rotation never extends it.
     expires_at_unix_nanos BIGINT NOT NULL,

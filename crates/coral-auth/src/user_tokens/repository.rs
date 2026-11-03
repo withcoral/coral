@@ -11,6 +11,7 @@ use coral_workspace::{UserId, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
 
 use super::{Scope, TokenRefusal};
+use crate::PrivateAudience;
 
 #[derive(Iden)]
 enum Grants {
@@ -22,6 +23,7 @@ enum Grants {
     Resource,
     PrivateAudience,
     WorkspaceId,
+    ScopedTokens,
     CreatedAtUnixNanos,
     ExpiresAtUnixNanos,
     Rotations,
@@ -36,20 +38,11 @@ enum Tokens {
     ConsumedAtUnixNanos,
 }
 
-/// A grant as stored, before the domain checks what it binds.
-pub(super) struct StoredGrant {
-    pub(super) grant_id: String,
-    pub(super) user_id: String,
-    pub(super) client_id: String,
-    pub(super) resource: String,
-    pub(super) private_audience: Option<String>,
-    pub(super) workspace_id: Option<String>,
-    pub(super) expires_at_unix_nanos: i64,
-}
-
 /// A presented refresh token's grant, and whether the token was spent.
 pub(super) struct PresentedToken {
-    pub(super) grant: StoredGrant,
+    pub(super) grant_id: String,
+    pub(super) scope: Scope,
+    pub(super) expires_at_unix_nanos: i64,
     pub(super) consumed: bool,
 }
 
@@ -61,8 +54,40 @@ struct PresentedRow {
     resource: String,
     private_audience: Option<String>,
     workspace_id: Option<String>,
+    scoped_tokens: bool,
     expires_at_unix_nanos: i64,
     consumed_at_unix_nanos: Option<i64>,
+}
+
+impl PresentedRow {
+    /// Decodes the row; a value no grant could have written is corrupt.
+    fn decode(self) -> Result<PresentedToken, TokenRefusal> {
+        let corrupt = |_error| TokenRefusal::Unavailable;
+        let private_audience = match self.private_audience.as_deref() {
+            Some(audience) => {
+                Some(PrivateAudience::parse(audience).ok_or(TokenRefusal::Unavailable)?)
+            }
+            None => None,
+        };
+        Ok(PresentedToken {
+            grant_id: self.grant_id,
+            scope: Scope {
+                user_id: UserId::parse(&self.user_id).map_err(corrupt)?,
+                client_id: self.client_id,
+                resource: self.resource,
+                private_audience,
+                workspace_id: self
+                    .workspace_id
+                    .as_deref()
+                    .map(WorkspaceId::parse)
+                    .transpose()
+                    .map_err(corrupt)?,
+                scoped_tokens: self.scoped_tokens,
+            },
+            expires_at_unix_nanos: self.expires_at_unix_nanos,
+            consumed: self.consumed_at_unix_nanos.is_some(),
+        })
+    }
 }
 
 const fn unavailable(_error: &coral_db::Error) -> TokenRefusal {
@@ -84,6 +109,7 @@ pub(super) async fn find(
                     (Grants::Table, Grants::Resource),
                     (Grants::Table, Grants::PrivateAudience),
                     (Grants::Table, Grants::WorkspaceId),
+                    (Grants::Table, Grants::ScopedTokens),
                     (Grants::Table, Grants::ExpiresAtUnixNanos),
                 ])
                 .column((Tokens::Table, Tokens::ConsumedAtUnixNanos))
@@ -98,18 +124,7 @@ pub(super) async fn find(
         )
         .await
         .map_err(|error| unavailable(&error))?;
-    Ok(row.map(|row| PresentedToken {
-        consumed: row.consumed_at_unix_nanos.is_some(),
-        grant: StoredGrant {
-            grant_id: row.grant_id,
-            user_id: row.user_id,
-            client_id: row.client_id,
-            resource: row.resource,
-            private_audience: row.private_audience,
-            workspace_id: row.workspace_id,
-            expires_at_unix_nanos: row.expires_at_unix_nanos,
-        },
-    }))
+    row.map(PresentedRow::decode).transpose()
 }
 
 pub(super) async fn insert_grant(
@@ -129,6 +144,7 @@ pub(super) async fn insert_grant(
                 Grants::Resource,
                 Grants::PrivateAudience,
                 Grants::WorkspaceId,
+                Grants::ScopedTokens,
                 Grants::CreatedAtUnixNanos,
                 Grants::ExpiresAtUnixNanos,
                 Grants::Rotations,
@@ -143,6 +159,7 @@ pub(super) async fn insert_grant(
                     .map(|audience| audience.as_str().to_owned())
                     .into(),
                 scope.workspace_id.as_ref().map(ToString::to_string).into(),
+                scope.scoped_tokens.into(),
                 created_at_unix_nanos.into(),
                 expires_at_unix_nanos.into(),
                 0_i64.into(),
@@ -247,15 +264,27 @@ pub(super) async fn delete_grant(
     Ok(())
 }
 
-/// Deletes every grant that can no longer refresh, with its tokens.
+/// Deletes up to `batch` of the grants that expired longest ago, with their
+/// tokens.
 pub(super) async fn purge_expired(
     tx: &mut Transaction<'_>,
     now_unix_nanos: i64,
+    batch: u64,
 ) -> Result<(), TokenRefusal> {
     tx.execute(
         Query::delete()
             .from_table(Grants::Table)
-            .and_where(Expr::col(Grants::ExpiresAtUnixNanos).lte(now_unix_nanos))
+            .and_where(
+                Expr::col(Grants::GrantId).in_subquery(
+                    Query::select()
+                        .column(Grants::GrantId)
+                        .from(Grants::Table)
+                        .and_where(Expr::col(Grants::ExpiresAtUnixNanos).lte(now_unix_nanos))
+                        .order_by(Grants::ExpiresAtUnixNanos, Order::Asc)
+                        .limit(batch)
+                        .to_owned(),
+                ),
+            )
             .to_owned(),
     )
     .await

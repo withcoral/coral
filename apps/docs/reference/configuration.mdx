@@ -210,17 +210,17 @@ Use these signals together to separate database admission, compiler saturation, 
 | `signing_key_env`           | Name of the environment variable holding the key used to sign Coral's auth server tokens. Must be a base64 PKCS#8 P-256 key. | No, but if `[auth]` is present the environment variable must exist or `signing_key_file` must be defined   | `CORAL_SESSION_SIGNING_KEY` |
 | `signing_key_file`          | File path containing the key used to sign Coral's auth server tokens. Must be a PKCS#8 P-256 key in DER format.              | Yes, if `[auth]` section is present and if the environment variable defined in `signing_key_env` is absent | N/A                         |
 | `access_token_ttl_seconds`  | Duration of Coral's access tokens, in seconds.                                                                               | No                                                                                                         | `2592000` (720h)            |
-| `refresh_token_ttl_seconds` | How long a client can refresh after one sign-in, in seconds. Refresh never extends it.                                       | No                                                                                                         | `2592000` (30 days)         |
+| `refresh_token_ttl_seconds` | How long a client can refresh after one sign-in, in seconds. Refresh never extends it.                                       | No                                                                                                         | `2592000` (720h)            |
 
 #### Refresh tokens
 
-A client whose registration or Client ID Metadata Document lists `refresh_token` in `grant_types` gets a refresh token with each access token. Other clients get access tokens only.
+Coral gives a refresh token with each access token to a client that lists `refresh_token` in its `grant_types`. This applies to registered clients and to clients with a Client ID Metadata Document. Other clients get access tokens only.
 
-- **Absolute lifetime.** A client can refresh for `refresh_token_ttl_seconds` after the sign-in. Refreshing does not extend it. After it ends, the user signs in again.
-- **Single use.** Each refresh returns a new refresh token and spends the old one. If a spent token is presented again, Coral ends refresh for that sign-in, including the newest token. A client must not refresh twice at once with one token. If a refresh response is lost, the user may have to sign in again.
-- **Current authority.** Each refresh checks that the user is still an enabled member of the organization and, for a workspace token, still a member of the workspace. A refresh does not contact the OIDC issuer, so a change the issuer makes takes effect at the next sign-in. Removing a membership ends refresh for good; rejoining does not restore it.
-- **Revocation.** Clients revoke a refresh token at `<listeners.auth.public_url>/oauth/revoke` with `token` and `client_id`. Revocation ends refresh only. Access tokens already issued work until they expire.
-- **Storage.** Refresh tokens are kept in Coral's database as SHA-256 digests. Every Coral process that shares the database can refresh them, and they survive restarts.
+- **Lifetime.** Your users can refresh for `refresh_token_ttl_seconds` after they sign in. A refresh does not extend this time. When it ends, your users must sign in again.
+- **Single use.** Each refresh returns a new refresh token, and the old one stops working. If a client sends a used token again, refresh stops for that sign-in, also for the newest token. Your clients must not refresh with the same token twice at the same time. If a refresh response is lost, the user may have to sign in again.
+- **Current access.** Each refresh checks that the user is still an enabled member of the organization. For a workspace token, it also checks that the user is still a member of the workspace. A refresh does not contact your OIDC issuer. Changes you make at the issuer apply at the next sign-in. If you remove a membership, refresh stops for good, even if the user joins again.
+- **Revocation.** To revoke a refresh token, send `token` and `client_id` to `<listeners.auth.public_url>/oauth/revoke`. Revocation stops refresh only. Access tokens that Coral already issued work until they expire.
+- **Storage.** Coral stores only a SHA-256 digest of each refresh token, in its database. Refresh tokens survive restarts. If you run more than one Coral process, give them the same database so that each process can refresh any token.
 
 ### `[auth.provider]`
 

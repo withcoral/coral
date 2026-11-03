@@ -332,6 +332,12 @@ async fn each_target_keeps_its_audience_and_workspace_across_refresh() {
             Some(fixture.workspace.to_string()),
         ),
         (REEF, AccessTarget::Reef, "reef", None),
+        (
+            fixture.workspace_resource().as_str(),
+            AccessTarget::WorkspaceResource(fixture.workspace.clone()),
+            fixture.workspace_resource().as_str(),
+            None,
+        ),
         (REEF, AccessTarget::Resource, REEF, None),
     ] {
         let first = fixture.sign_in(resource, target, true).await.unwrap();
@@ -449,8 +455,9 @@ async fn a_revocation_racing_a_refresh_leaves_nothing_refreshable() {
     }
 }
 
-/// Disablement refuses refresh while it lasts, and refuses to start a grant;
-/// it ends no grant, so re-enabling restores refresh.
+/// Disablement refuses refresh while it lasts and starts no grant, though the
+/// sign-in still gets an access token. It ends no grant, so re-enabling
+/// restores refresh.
 #[tokio::test]
 async fn refresh_rechecks_current_organization_membership() {
     let fixture = Fixture::new().await;
@@ -473,18 +480,29 @@ async fn refresh_rechecks_current_organization_membership() {
                 .unwrap();
         }
     };
+    let issued = fixture.refresh(&token, NOW + SECOND).await.unwrap();
+    let token = refresh_token(&issued);
     set_enabled(false, 1).await;
-    assert_eq!(
-        fixture.refresh(&token, NOW + SECOND).await.err(),
-        Some(TokenRefusal::InvalidGrant)
+    assert!(
+        !fixture
+            .authenticates(&issued.access_token.access_token)
+            .await,
+        "live checks still block an issued access token"
     );
     assert_eq!(
-        fixture.sign_in(REEF, AccessTarget::Reef, true).await.err(),
-        Some(TokenRefusal::InvalidGrant),
+        fixture.refresh(&token, NOW + 2 * SECOND).await.err(),
+        Some(TokenRefusal::InvalidGrant)
+    );
+    let access_only = fixture
+        .sign_in(REEF, AccessTarget::Reef, true)
+        .await
+        .unwrap();
+    assert!(
+        access_only.refresh_token.is_none(),
         "a disabled User starts no grant"
     );
     set_enabled(true, 2).await;
-    fixture.refresh(&token, NOW + 2 * SECOND).await.unwrap();
+    fixture.refresh(&token, NOW + 3 * SECOND).await.unwrap();
 }
 
 /// A storage outage is unavailability, never a rejected credential, and

@@ -65,6 +65,10 @@ const MAX_GRANTS_PER_USER: u64 = 64;
 /// than this over the grant's lifetime has to sign in again.
 const MAX_ROTATIONS: i64 = 10_000;
 
+/// The most expired grants one cleanup pass deletes, so no sign-in pays for
+/// a backlog.
+const PURGE_BATCH: u64 = 128;
+
 const REFRESH_TOKEN_PREFIX: &str = "coral_rt_";
 
 /// What the access tokens from a sign-in are for, as the Adapter resolved it
@@ -73,6 +77,9 @@ const REFRESH_TOKEN_PREFIX: &str = "coral_rt_";
 pub enum AccessTarget {
     /// The approved resource itself, with no Workspace scope.
     Resource,
+    /// One Workspace's public MCP URL. Its tokens name no Workspace, since
+    /// the URL fixes it, but the grant answers to that Workspace's authority.
+    WorkspaceResource(WorkspaceId),
     /// The approved resource, scoped to the Workspace picked at sign-in.
     PickedWorkspace,
     /// The private MCP surface of one Workspace.
@@ -193,13 +200,13 @@ impl UserTokens {
     /// access token for `target` at host time `now_unix_nanos`.
     ///
     /// A code whose client declared the `refresh_token` grant also starts a
-    /// Refresh Grant, under the User's current authority.
+    /// Refresh Grant when the User holds the authority a refresh would need;
+    /// otherwise it issues the access token alone, as for any other client.
     ///
     /// # Errors
     ///
-    /// [`TokenRefusal::InvalidGrant`] for a code that cannot be spent, a
-    /// target the code does not support, or, for a refresh-eligible code, a
-    /// User without the authority a refresh would need.
+    /// [`TokenRefusal::InvalidGrant`] for a code that cannot be spent or a
+    /// target the code does not support.
     pub async fn redeem_code(
         &self,
         code: &str,
@@ -225,11 +232,20 @@ impl UserTokens {
             .and_then(|lifetime| now_unix_nanos.checked_add(lifetime))
             .ok_or(TokenRefusal::Issuance)?;
         let mut tx = self.database.begin().await.map_err(unavailable)?;
-        if let Err(refusal) = self.hold_authority(&mut tx, &scope, now_unix_nanos).await {
-            rollback(tx).await;
-            return Err(refusal);
+        match self.hold_authority(&mut tx, &scope, now_unix_nanos).await {
+            Ok(()) => {}
+            Err(TokenRefusal::InvalidGrant) => {
+                rollback(tx).await;
+                return Ok(IssuedTokens {
+                    access_token: self.mint(&scope)?,
+                    refresh_token: None,
+                });
+            }
+            Err(refusal) => {
+                rollback(tx).await;
+                return Err(refusal);
+            }
         }
-        repository::purge_expired(&mut tx, now_unix_nanos).await?;
         repository::evict_oldest(&mut tx, &scope.user_id, MAX_GRANTS_PER_USER - 1).await?;
         let grant_id = uuid::Uuid::new_v4().to_string();
         repository::insert_grant(&mut tx, &grant_id, &scope, now_unix_nanos, expires_at).await?;
@@ -237,10 +253,25 @@ impl UserTokens {
         repository::insert_token(&mut tx, &digest, &grant_id).await?;
         let access_token = self.mint(&scope)?;
         tx.commit().await.map_err(unavailable)?;
+        self.purge_expired(now_unix_nanos).await;
         Ok(IssuedTokens {
             access_token,
             refresh_token: Some(refresh_token),
         })
+    }
+
+    /// Deletes a bounded batch of grants that can no longer refresh, in a
+    /// transaction of its own. A failed pass is retried by the next sign-in.
+    async fn purge_expired(&self, now_unix_nanos: i64) {
+        let Ok(mut tx) = self.database.begin().await else {
+            return;
+        };
+        if repository::purge_expired(&mut tx, now_unix_nanos, PURGE_BATCH)
+            .await
+            .is_ok()
+        {
+            let _result = tx.commit().await;
+        }
     }
 
     /// Exchanges `refresh_token` for a new access token and its successor at
@@ -264,38 +295,38 @@ impl UserTokens {
         let presented = repository::find(&self.database, &digest)
             .await?
             .ok_or(TokenRefusal::InvalidGrant)?;
-        let stored = presented.grant;
-        if !stored.matches(request) || stored.expires_at_unix_nanos <= now_unix_nanos {
+        let scope = &presented.scope;
+        if !scope.accepts(request) || presented.expires_at_unix_nanos <= now_unix_nanos {
             return Err(TokenRefusal::InvalidGrant);
         }
-        let scope = stored.scope()?;
+        let grant_id = presented.grant_id.as_str();
         if presented.consumed {
-            self.end_grant(&stored.grant_id).await?;
+            self.end_grant(grant_id).await?;
             return Err(TokenRefusal::InvalidGrant);
         }
         let mut tx = self.database.begin().await.map_err(unavailable)?;
-        if let Err(refusal) = self.hold_authority(&mut tx, &scope, now_unix_nanos).await {
+        if let Err(refusal) = self.hold_authority(&mut tx, scope, now_unix_nanos).await {
             rollback(tx).await;
             return Err(refusal);
         }
         // The grant row is held after the authority rows, in the order access
         // removal takes them, so a revocation or removal racing this refresh
         // either ends the grant first or ends the successor too.
-        if !repository::hold_live_grant(&mut tx, &stored.grant_id, now_unix_nanos).await? {
+        if !repository::hold_live_grant(&mut tx, grant_id, now_unix_nanos).await? {
             rollback(tx).await;
             return Err(TokenRefusal::InvalidGrant);
         }
         // A refresh that loses the race for one token is a replay of it.
         if !repository::consume(&mut tx, &digest, now_unix_nanos).await?
-            || !repository::record_rotation(&mut tx, &stored.grant_id, MAX_ROTATIONS).await?
+            || !repository::record_rotation(&mut tx, grant_id, MAX_ROTATIONS).await?
         {
-            repository::delete_grant(&mut tx, &stored.grant_id).await?;
+            repository::delete_grant(&mut tx, grant_id).await?;
             tx.commit().await.map_err(unavailable)?;
             return Err(TokenRefusal::InvalidGrant);
         }
         let (successor, successor_digest) = RefreshToken::generate()?;
-        repository::insert_token(&mut tx, &successor_digest, &stored.grant_id).await?;
-        let access_token = match self.mint(&scope) {
+        repository::insert_token(&mut tx, &successor_digest, grant_id).await?;
+        let access_token = match self.mint(scope) {
             Ok(token) => token,
             Err(refusal) => {
                 rollback(tx).await;
@@ -323,8 +354,8 @@ impl UserTokens {
             return Ok(());
         };
         match repository::find(&self.database, &digest).await? {
-            Some(presented) if presented.grant.client_id == client_id => {
-                self.end_grant(&presented.grant.grant_id).await
+            Some(presented) if presented.scope.client_id == client_id => {
+                self.end_grant(&presented.grant_id).await
             }
             _ => Ok(()),
         }
@@ -368,7 +399,7 @@ impl UserTokens {
             None => scope.resource.as_str(),
         };
         let user_id = scope.user_id.as_str();
-        match &scope.workspace_id {
+        match scope.workspace_id.as_ref().filter(|_| scope.scoped_tokens) {
             Some(workspace) => self.issuer.issue_workspace_access_token(
                 user_id,
                 &scope.client_id,
@@ -416,26 +447,31 @@ struct Scope {
     client_id: String,
     resource: String,
     private_audience: Option<PrivateAudience>,
+    /// The Workspace whose authority the grant answers to.
     workspace_id: Option<WorkspaceId>,
+    /// Whether each access token names that Workspace.
+    scoped_tokens: bool,
 }
 
 impl Scope {
     fn for_code(target: AccessTarget, grant: &AuthorizationGrant) -> Result<Self, TokenRefusal> {
-        let (private_audience, workspace_id) = match target {
-            AccessTarget::Resource => (None, None),
+        let scoped = |workspace| (Some(workspace), true);
+        let (private_audience, (workspace_id, scoped_tokens)) = match target {
+            AccessTarget::Resource => (None, (None, false)),
+            AccessTarget::WorkspaceResource(workspace) => (None, (Some(workspace), false)),
             // Only the Workspace picker issues a code for the Organization
             // MCP Endpoint, so a code naming no Workspace is not one.
             AccessTarget::PickedWorkspace => (
                 None,
-                Some(
+                scoped(
                     grant
                         .workspace_id
                         .clone()
                         .ok_or(TokenRefusal::InvalidGrant)?,
                 ),
             ),
-            AccessTarget::PrivateMcp(workspace) => (Some(PrivateAudience::Mcp), Some(workspace)),
-            AccessTarget::Reef => (Some(PrivateAudience::Reef), None),
+            AccessTarget::PrivateMcp(workspace) => (Some(PrivateAudience::Mcp), scoped(workspace)),
+            AccessTarget::Reef => (Some(PrivateAudience::Reef), (None, false)),
         };
         Ok(Self {
             user_id: UserId::parse(&grant.user_id).map_err(|_error| TokenRefusal::InvalidGrant)?,
@@ -443,43 +479,21 @@ impl Scope {
             resource: grant.resource.clone(),
             private_audience,
             workspace_id,
+            scoped_tokens,
         })
     }
-}
 
-impl repository::StoredGrant {
     /// Whether a refresh presenting `request` is bound to this grant. An
     /// omitted resource or audience keeps the grant's own; a supplied one
     /// must equal it, so a refresh can never retarget the grant.
-    fn matches(&self, request: RefreshRequest<'_>) -> bool {
+    fn accepts(&self, request: RefreshRequest<'_>) -> bool {
         self.client_id == request.client_id
             && request
                 .resource
                 .is_none_or(|resource| resource == self.resource)
             && request
                 .audience
-                .is_none_or(|audience| self.private_audience.as_deref() == Some(audience.as_str()))
-    }
-
-    fn scope(&self) -> Result<Scope, TokenRefusal> {
-        let corrupt = |_error| TokenRefusal::Unavailable;
-        Ok(Scope {
-            user_id: UserId::parse(&self.user_id).map_err(corrupt)?,
-            client_id: self.client_id.clone(),
-            resource: self.resource.clone(),
-            private_audience: match self.private_audience.as_deref() {
-                Some(audience) => {
-                    Some(PrivateAudience::parse(audience).ok_or(TokenRefusal::Unavailable)?)
-                }
-                None => None,
-            },
-            workspace_id: self
-                .workspace_id
-                .as_deref()
-                .map(WorkspaceId::parse)
-                .transpose()
-                .map_err(corrupt)?,
-        })
+                .is_none_or(|audience| self.private_audience == Some(audience))
     }
 }
 
