@@ -829,17 +829,6 @@ pub(crate) fn tool_error_fields(
     let status = fields.get_index(scope, 2)?;
     let body = fields.get_index(scope, 3)?;
     let body_truncated = fields.get_index(scope, 4)?;
-    let suggested = fields.get_index(scope, 5)?;
-    let suggestions = match v8::Local::<v8::Array>::try_from(suggested) {
-        Ok(paths) => (0..paths.length())
-            .map(|index| {
-                paths
-                    .get_index(scope, index)
-                    .map(|path| path.to_rust_string_lossy(scope))
-            })
-            .collect::<Option<Vec<_>>>()?,
-        Err(_undefined) => Vec::new(),
-    };
     Some(crate::ProgramToolError {
         code: code.to_rust_string_lossy(scope),
         trace_id: (!trace.is_undefined()).then(|| trace.to_rust_string_lossy(scope)),
@@ -849,7 +838,6 @@ pub(crate) fn tool_error_fields(
             .and_then(|status| u16::try_from(status).ok()),
         body: (!body.is_undefined()).then(|| body.to_rust_string_lossy(scope)),
         body_truncated: body_truncated.is_true(),
-        suggestions,
     })
 }
 
@@ -969,7 +957,7 @@ fn reject_tool_error(
         let body_truncated = v8::Boolean::new(scope, body_truncated).into();
         let fields = v8::Array::new_with_elements(
             scope,
-            &[code.into(), trace, status, body, body_truncated, suggested],
+            &[code.into(), trace, status, body, body_truncated],
         );
         if object.set_private(scope, key, fields.into()) != Some(true) {
             return None;

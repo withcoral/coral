@@ -235,14 +235,18 @@ async fn a_computed_path_runs_and_its_tool_error_names_the_nearest_paths() {
     let Some(RunTerminalOutcome::Failed(failure)) = terminal.terminal_outcome() else {
         panic!("an uncaught ToolError fails the Run: {terminal:?}");
     };
-    let tool = failure
-        .error()
-        .and_then(|error| error.tool.as_ref())
-        .expect("the Tool fields of the uncaught error");
-    assert_eq!(tool.code, "tool_not_found");
+    let error = failure.error().expect("the uncaught error");
     assert_eq!(
-        tool.suggestions.first().map(String::as_str),
-        Some("coral.providers.github.repos.get")
+        error.tool.as_ref().map(|tool| tool.code.as_str()),
+        Some("tool_not_found")
+    );
+    assert!(
+        error.message.starts_with(
+            "coral.providers.github.getRepo names no Tool that you can call. Nearest: \
+             coral.providers.github.repos.get"
+        ),
+        "{}",
+        error.message
     );
 }
 

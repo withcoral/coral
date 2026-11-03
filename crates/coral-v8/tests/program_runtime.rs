@@ -1433,7 +1433,6 @@ fn an_uncaught_error_response_retains_its_status_and_a_bounded_body() {
             status: Some(422),
             body: Some(r#"{"field":"city"}"#.to_string()),
             body_truncated: false,
-            suggestions: Vec::new(),
         }
     );
 
@@ -1714,8 +1713,25 @@ fn tool_error_preserves_optional_trace_and_resists_program_replacement() {
     );
 }
 
-// Catches: suggestions a Program cannot read from the error it caught, can
-// change, or that an uncaught error does not retain.
+/// The Tool fields of a retained Program error that the previous release
+/// reads, denying the ones it does not know.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[expect(dead_code, reason = "only decoding the retained fields is tested")]
+struct PreviousReleaseToolFields {
+    code: String,
+    trace_id: Option<String>,
+    #[serde(default)]
+    status: Option<u16>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    body_truncated: bool,
+}
+
+// Catches: suggestions a Program cannot read from the error it caught or
+// can change, or an uncaught error whose retained Tool fields an older
+// Coral cannot read during a rolling update.
 #[test]
 fn a_tool_not_found_error_carries_the_suggested_paths() {
     let compiler =
@@ -1762,13 +1778,15 @@ fn a_tool_not_found_error_carries_the_suggested_paths() {
     let Error::ProgramRejected(error) = error else {
         panic!("{error}");
     };
-    assert_eq!(
-        error.tool.expect("trusted Tool fields").suggestions,
-        [
-            "coral.providers.notion.retrieveAPage",
-            "coral.providers.notion.updatePage",
-        ]
-    );
+    // The failure's message names the suggestions instead.
+    let retained = serde_json::to_value(&*error).expect("encode the retained error");
+    let tool = retained
+        .get("tool")
+        .cloned()
+        .map(serde_json::from_value::<PreviousReleaseToolFields>)
+        .expect("trusted Tool fields")
+        .unwrap_or_else(|decode| panic!("an older Coral reads {retained}: {decode}"));
+    assert_eq!(tool.code, "tool_not_found");
 }
 
 /// Names a trace and lets each value crossing to it encode to at most

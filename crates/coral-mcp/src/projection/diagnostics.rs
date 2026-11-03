@@ -114,9 +114,6 @@ struct ToolError<'a> {
     body: Option<&'a str>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     body_truncated: bool,
-    /// For `tool_not_found`, up to 3 call paths you can call, nearest first.
-    #[serde(skip_serializing_if = "<[_]>::is_empty")]
-    suggestions: &'a [String],
 }
 
 impl<'a> TryFrom<&'a coral_run::ProgramError> for ProgramError<'a> {
@@ -141,7 +138,6 @@ impl<'a> TryFrom<&'a coral_run::ProgramError> for ProgramError<'a> {
                 status: tool.status,
                 body: tool.body.as_deref(),
                 body_truncated: tool.body_truncated,
-                suggestions: &tool.suggestions,
             }),
             cause: error
                 .cause
@@ -205,7 +201,6 @@ mod tests {
                 status: Some(404),
                 body: Some(r#"{"message":"missing"}"#.to_string()),
                 body_truncated: true,
-                suggestions: Vec::new(),
             }),
             serde_json::json!({
                 "code": "error_response",
@@ -214,8 +209,7 @@ mod tests {
                 "body_truncated": true,
             })
         );
-        // A Coral Failure has no upstream evidence to project, and only
-        // tool_not_found names the paths to call instead.
+        // A Coral Failure has no upstream evidence to project.
         assert_eq!(
             rejected(coral_run::ProgramToolError {
                 code: "tool_not_found".to_string(),
@@ -223,12 +217,8 @@ mod tests {
                 status: None,
                 body: None,
                 body_truncated: false,
-                suggestions: vec!["coral.providers.notion.retrieveAPage".to_string()],
             }),
-            serde_json::json!({
-                "code": "tool_not_found",
-                "suggestions": ["coral.providers.notion.retrieveAPage"],
-            })
+            serde_json::json!({"code": "tool_not_found"})
         );
     }
 }
