@@ -40,6 +40,9 @@ globalThis.__coralAnalyzeSavedFunctionPaths = function analyzeVirtualProgramPath
 ) {
   return compilerResultJson(analyzeSavedFunctionPaths(source, fileName, targetName));
 };
+globalThis.__coralUnknownToolCalls = function unknownVirtualToolCalls(chainsJson, callPathsJson) {
+  return compilerResultJson(unknownToolCalls(JSON.parse(chainsJson), JSON.parse(callPathsJson)));
+};
 globalThis.__coralAnalyzeSavedFunctionDependencies =
   function analyzeVirtualSavedFunctionDependencies(source, fileName, targetName) {
     return compilerResultJson(analyzeSavedFunctionDependencies(source, fileName, targetName));

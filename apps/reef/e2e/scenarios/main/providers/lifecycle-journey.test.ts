@@ -173,8 +173,13 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
           // Reef offers no control for this; an operator changes it through Coral.
           await setProviderEnabled(actor.accessToken, providerPath, false)
           expect((await run.describe('coral.providers.weather.getForecast')).isError).toBe(true)
-          const blocked = await run.exec('return await coral.providers.weather.getForecast();')
-          expect(blocked.structuredContent.state).toBe('failed')
+          // Coral refuses the Program before it runs: it names a tool nobody can call.
+          expect(
+            await run.exec('return await coral.providers.weather.getForecast();'),
+          ).toMatchObject({
+            isError: true,
+            structuredContent: { code: 'program_admission_failed' },
+          })
           expect(calls).toBe(3)
           await setProviderEnabled(actor.accessToken, providerPath, true)
           await execute('weather')

@@ -190,6 +190,17 @@ impl std::fmt::Display for CoralFailure {
 pub struct Rejection {
     failure: CoralFailure,
     problems: Vec<InputProblem>,
+    /// For `tool_not_found`, the Call Path the Program wrote and the nearest
+    /// Discoverable Call Paths of its Call Root.
+    not_found: Option<NotFound>,
+}
+
+/// A Call Path that names no Tool the caller can call, and what it can call
+/// near it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NotFound {
+    call_path: String,
+    suggestions: Vec<String>,
 }
 
 /// One argument to correct. Coral writes each reason; it never holds a
@@ -227,7 +238,34 @@ impl Rejection {
     /// `failure` naming each argument that caused it, such as each Call Path
     /// that names no Tool.
     pub(crate) const fn naming(failure: CoralFailure, problems: Vec<InputProblem>) -> Self {
-        Self { failure, problems }
+        Self {
+            failure,
+            problems,
+            not_found: None,
+        }
+    }
+
+    /// `tool_not_found` for the Call Path the Program wrote, with up to
+    /// three Discoverable Call Paths near it, nearest first. The path is code
+    /// the Program wrote, not a value it submitted, so the message repeats it.
+    pub(crate) fn tool_not_found(call_path: &str, suggestions: Vec<String>) -> Self {
+        Self {
+            failure: CoralFailure::ToolNotFound,
+            problems: Vec::new(),
+            not_found: Some(NotFound {
+                call_path: call_path.to_owned(),
+                suggestions,
+            }),
+        }
+    }
+
+    /// The Call Paths near the one that names no Tool, nearest first; empty
+    /// for every other failure.
+    #[must_use]
+    pub fn suggestions(&self) -> &[String] {
+        self.not_found
+            .as_ref()
+            .map_or(&[], |not_found| not_found.suggestions.as_slice())
     }
 
     /// The durable failure.
@@ -245,6 +283,17 @@ impl Rejection {
     /// Safe, bounded message, naming each argument to correct when Coral knows it.
     #[must_use]
     pub fn message(&self) -> std::borrow::Cow<'static, str> {
+        if let Some(NotFound {
+            call_path,
+            suggestions,
+        }) = &self.not_found
+        {
+            return coral_v8::bounded_diagnostic_message(&unknown_call_path_message(
+                call_path,
+                suggestions,
+            ))
+            .into();
+        }
         let message = match self.problems.as_slice() {
             [] => return self.failure.message().into(),
             [InputProblem { field, reason }] if !field.is_empty() => {
@@ -271,10 +320,36 @@ impl Rejection {
 
 impl From<CoralFailure> for Rejection {
     fn from(failure: CoralFailure) -> Self {
-        Self {
-            failure,
-            problems: Vec::new(),
+        Self::naming(failure, Vec::new())
+    }
+}
+
+/// What a Program reads when `call_path` names no Tool it can call: the
+/// path, cut to the longest a lookup accepts, and what to call instead.
+///
+/// A Program can compute the path, or write a literal segment that holds
+/// any string, so each control character and line separator in it is
+/// escaped and the message stays one line.
+pub(crate) fn unknown_call_path_message(call_path: &str, suggestions: &[String]) -> String {
+    let mut end = call_path.len().min(coral_catalog::SEARCH_PATH_MAX_BYTES);
+    while !call_path.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut written = String::with_capacity(end);
+    for character in call_path.get(..end).unwrap_or_default().chars() {
+        if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
+            written.extend(character.escape_default());
+        } else {
+            written.push(character);
         }
+    }
+    if suggestions.is_empty() {
+        format!("{written} names no Tool that you can call. Find one with coral.workspace.search.")
+    } else {
+        format!(
+            "{written} names no Tool that you can call. Nearest: {}.",
+            suggestions.join(", ")
+        )
     }
 }
 
@@ -594,6 +669,27 @@ mod tests {
             Some(CoralFailure::ResultTooLarge)
         );
         assert_eq!(CoralFailure::from_code("unknown"), None);
+    }
+
+    // Catches: a Call Path a Program computed, or wrote as a literal
+    // segment, putting a line break or another control character into the
+    // durable ToolError message or an admission refusal.
+    #[test]
+    fn a_call_path_names_its_control_characters_escaped() {
+        let rejection = super::Rejection::tool_not_found(
+            "coral.providers.notion.retrieve\nPage\u{1b}[31m\u{2028}",
+            vec!["coral.providers.notion.retrieveAPage".to_owned()],
+        );
+        assert_eq!(
+            rejection.message(),
+            "coral.providers.notion.retrieve\\nPage\\u{1b}[31m\\u{2028} names no Tool \
+             that you can call. Nearest: coral.providers.notion.retrieveAPage."
+        );
+        assert_eq!(
+            super::Rejection::tool_not_found("coral.providers.a\tb", Vec::new()).message(),
+            "coral.providers.a\\tb names no Tool that you can call. Find one with \
+             coral.workspace.search."
+        );
     }
 
     #[test]

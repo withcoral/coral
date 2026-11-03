@@ -1,24 +1,36 @@
 //! Program admission: bounded source-closure resolution, compilation outside
 //! write transactions, and atomic acceptance of one complete package.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::time::Instant;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
+use coral_catalog::SEARCH_PATHS_MAX;
 use coral_db::Transaction;
 use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
 use coral_telemetry::safe;
 use coral_v8::CompileFailure;
 use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
-use tokio::time::timeout;
+use tokio::time::{timeout, timeout_at};
 use uuid::Uuid;
 
-use crate::engine::{ProgramPackage, SavedFunctionReference};
+use crate::engine::{ProgramEngine, ProgramPackage, ProgramReferences, SavedFunctionReference};
 use crate::shutdown::Admitted;
 use crate::types::AcceptedRun;
 use crate::{
     COMBINED_TYPESCRIPT_MAX_BYTES, COMPILATION_TIMEOUT, Error, LINKED_SAVED_FUNCTION_MAX_COUNT,
     ProgramSource, RunCursor, RunId, RunModule, RunState, RunSubmission, RunUpdate, run_repository,
 };
+
+/// The most candidate Call Paths admission checks, as Saved Function typing
+/// bounds them. A Program that names more has its paths checked when called.
+const TOOL_CHECK_MAX_PATHS: usize = 128;
+
+/// The longest admission's Call Path check may take.
+const TOOL_CHECK_BUDGET: Duration = Duration::from_millis(500);
+
+/// The compilation time the Call Path check always leaves, so the check never
+/// makes a Program time out that would have compiled without it.
+const TOOL_CHECK_COMPILATION_RESERVE: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 enum SavedFunctionReferenceSource {
@@ -305,15 +317,15 @@ impl RunModule {
         compilation_started: Instant,
     ) -> Result<(ProgramPackage, Vec<SavedFunctionSelection>), Error> {
         let source = submitted_source.as_str().to_string();
-        let roots = self
-            .analyze_saved_function_paths(
-                source.clone(),
-                SavedFunctionReferenceSource::SubmittedProgram,
-                compilation_started,
-            )
+        let named = self
+            .analyze_program(source.clone(), compilation_started)
             .await?;
+        if let Some(tools) = &named.tools {
+            self.check_tool_calls(actor, workspace_id, tools, compilation_started)
+                .await?;
+        }
         let linked = self
-            .read_source_closure(actor, workspace_id, roots, compilation_started)
+            .read_source_closure(actor, workspace_id, named.functions, compilation_started)
             .await?;
 
         validate_source_closure(
@@ -388,7 +400,7 @@ impl RunModule {
             let referenced = self
                 .analyze_saved_function_paths(
                     snapshot.source().as_str().to_string(),
-                    SavedFunctionReferenceSource::SavedFunction(path.clone()),
+                    path.clone(),
                     compilation_started,
                 )
                 .await?;
@@ -412,25 +424,173 @@ impl RunModule {
         order_saved_function_closure(&root_paths, &dependencies, &snapshots)
     }
 
+    async fn analyze_program(
+        &self,
+        source: String,
+        compilation_started: Instant,
+    ) -> Result<ProgramReferences, Error> {
+        self.analyze(compilation_started, move |engine, deadline| {
+            engine.program_references(deadline, &source)
+        })
+        .await
+    }
+
+    /// Refuses a Program whose literal `coral.providers` or
+    /// `coral.workspace` call names no Tool the caller can call, naming
+    /// each such path and the nearest ones it can discover. A computed path
+    /// is checked only when called.
+    ///
+    /// A path names a Tool when Invocation admission would resolve it now,
+    /// so the check refuses exactly the calls that would fail with
+    /// `tool_not_found`, and a call to a disabled Tool still runs to be
+    /// recorded and refused. The unknown-Tool diagnostic's rule decides
+    /// which chains those paths leave unknown. Neither reads the search
+    /// index. The check is bounded like Saved Function typing: a Program
+    /// that names more candidate paths, or a check that fails or runs out of
+    /// its time, leaves the paths to be checked when called.
+    async fn check_tool_calls(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        tools: &coral_v8::ToolReferences,
+        compilation_started: Instant,
+    ) -> Result<(), Error> {
+        let candidates = tools.call_paths();
+        if candidates.is_empty() || candidates.len() > TOOL_CHECK_MAX_PATHS {
+            return Ok(());
+        }
+        let compilation_deadline = compilation_started + COMPILATION_TIMEOUT;
+        let now = Instant::now();
+        let Some(deadline) = compilation_deadline
+            .checked_sub(TOOL_CHECK_COMPILATION_RESERVE)
+            .map(|latest| latest.min(now + TOOL_CHECK_BUDGET))
+            .filter(|deadline| *deadline > now)
+        else {
+            tracing::warn!("No time is left to check the Program's Call Paths before it runs");
+            return Ok(());
+        };
+        let search = coral_search::UniversalSearchModule::new(
+            self.database.clone(),
+            self.workspaces.clone(),
+        );
+        let check = async {
+            let callable = self
+                .callable_tools(actor, workspace_id, candidates)
+                .await
+                .map_err(|_error| "catalog_unavailable")?;
+            let engine = self.engine.clone();
+            let tools = tools.clone();
+            tokio::task::spawn_blocking(move || {
+                engine.unknown_tool_calls(deadline, &tools, &callable)
+            })
+            .await
+            .map_err(|_join_error| "compiler_stopped")?
+            .map_err(|_failure| "compiler_failed")
+        };
+        let unknown = match timeout_at(deadline.into(), check).await {
+            Ok(Ok(unknown)) => unknown,
+            Ok(Err(kind)) => {
+                tracing::warn!(
+                    error.type = safe::kind(kind),
+                    "The Program's Call Paths are checked only when called"
+                );
+                return Ok(());
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    "Checking the Program's Call Paths took too long; they are checked only when called"
+                );
+                return Ok(());
+            }
+        };
+        if unknown.is_empty() {
+            return Ok(());
+        }
+        let mut named = Vec::<&coral_v8::UnknownToolCall>::new();
+        for call in &unknown {
+            if !named
+                .iter()
+                .any(|known| known.call_path() == call.call_path())
+            {
+                named.push(call);
+            }
+        }
+        let suggestions = timeout_at(
+            compilation_deadline.into(),
+            unknown_path_suggestions(&search, actor, workspace_id, &named),
+        )
+        .await
+        .unwrap_or_default();
+        let message = named
+            .iter()
+            .map(|call| {
+                format!(
+                    "Program:{}:{}: {}",
+                    call.line(),
+                    call.column(),
+                    crate::error::unknown_call_path_message(
+                        call.call_path(),
+                        suggestions
+                            .get(call.call_path())
+                            .map_or(&[][..], Vec::as_slice),
+                    )
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        Err(Error::ProgramAdmission(
+            coral_v8::bounded_diagnostic_message(&message),
+        ))
+    }
+
+    /// The paths among `call_paths` that Invocation admission would
+    /// resolve for `actor` now, from one read snapshot.
+    async fn callable_tools(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        call_paths: &[String],
+    ) -> Result<Vec<String>, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let now = self.now()?;
+        let mut callable = Vec::new();
+        for call_path in call_paths {
+            if coral_provider::resolves_invocation_tool_in_snapshot(
+                &mut transaction,
+                workspace_id,
+                coral_provider::InvocationCaller::new(&self.workspaces, actor, now),
+                call_path,
+            )
+            .await?
+            {
+                callable.push(call_path.clone());
+            }
+        }
+        transaction.commit().await?;
+        Ok(callable)
+    }
+
     async fn analyze_saved_function_paths(
         &self,
         source: String,
-        source_kind: SavedFunctionReferenceSource,
+        path: SavedFunctionPath,
         compilation_started: Instant,
     ) -> Result<Vec<SavedFunctionReference>, Error> {
+        self.analyze(compilation_started, move |engine, deadline| {
+            engine.saved_function_dependency_references(deadline, &path, &source)
+        })
+        .await
+    }
+
+    /// Runs one analysis on a blocking worker within the admission deadline.
+    async fn analyze<T: Send + 'static>(
+        &self,
+        compilation_started: Instant,
+        analysis: impl FnOnce(&dyn ProgramEngine, Instant) -> Result<T, CompileFailure> + Send + 'static,
+    ) -> Result<T, Error> {
         let engine = self.engine.clone();
-        let analyze = tokio::task::spawn_blocking(move || match source_kind {
-            SavedFunctionReferenceSource::SubmittedProgram => engine
-                .program_saved_function_references(
-                    compilation_started + COMPILATION_TIMEOUT,
-                    &source,
-                ),
-            SavedFunctionReferenceSource::SavedFunction(path) => engine
-                .saved_function_dependency_references(
-                    compilation_started + COMPILATION_TIMEOUT,
-                    &path,
-                    &source,
-                ),
+        let analyze = tokio::task::spawn_blocking(move || {
+            analysis(engine.as_ref(), compilation_started + COMPILATION_TIMEOUT)
         });
         let remaining_compilation_time = COMPILATION_TIMEOUT
             .checked_sub(compilation_started.elapsed())
@@ -439,8 +599,49 @@ impl RunModule {
             Err(_elapsed) => Err(Error::CompilationTimedOut),
             Ok(Err(_join_error)) => Err(Error::ProgramWorkerStopped),
             Ok(Ok(Err(failure))) => Err(domain_error(failure)),
-            Ok(Ok(Ok(paths))) => Ok(paths),
+            Ok(Ok(Ok(analyzed))) => Ok(analyzed),
         }
+    }
+}
+
+/// The nearest Discoverable Call Paths to the first [`SEARCH_PATHS_MAX`]
+/// unknown paths, by path, from one lookup. Discovery is advice: a failed
+/// lookup suggests nothing.
+async fn unknown_path_suggestions(
+    search: &coral_search::UniversalSearchModule,
+    actor: &AuthenticatedPrincipal,
+    workspace_id: &WorkspaceId,
+    unknown: &[&coral_v8::UnknownToolCall],
+) -> HashMap<String, Vec<String>> {
+    let paths = unknown
+        .iter()
+        .map(|call| call.call_path())
+        .filter(|path| path.len() <= coral_catalog::SEARCH_PATH_MAX_BYTES)
+        .take(SEARCH_PATHS_MAX)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let Ok(paths) = coral_search::ExactPaths::new(paths, Vec::new()) else {
+        return HashMap::new();
+    };
+    match search
+        .discover(
+            actor,
+            workspace_id,
+            &coral_search::DiscoveryRequest::Paths(paths),
+        )
+        .await
+    {
+        Ok(coral_search::Discovery::Exact(lookup)) => lookup
+            .missing()
+            .iter()
+            .map(|missing| {
+                (
+                    missing.call_path().to_owned(),
+                    missing.suggestions().to_vec(),
+                )
+            })
+            .collect(),
+        Ok(coral_search::Discovery::Page(_)) | Err(_) => HashMap::new(),
     }
 }
 

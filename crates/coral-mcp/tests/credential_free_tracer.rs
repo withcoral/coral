@@ -882,10 +882,30 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
         structured(&observed)["failure"]
     );
 
+    // A literal path that names no Tool is refused before a Run exists.
+    let refused = call(
+        &client_a,
+        "exec",
+        json!({
+            "task_id": task_id, "intent": "Call a Tool that does not exist", "wait_ms": 0,
+            "program": "await coral.providers.missing.tool();"
+        }),
+    )
+    .await;
+    assert_eq!(refused.is_error, Some(true));
+    assert_eq!(structured(&refused)["code"], "program_admission_failed");
+    assert_eq!(
+        structured(&refused)["message"],
+        "Program admission failed: Program:1:7: coral.providers.missing.tool names no Tool \
+         that you can call. Find one with coral.workspace.search."
+    );
+
+    // A path built as the Program runs fails when called.
+    let missing = r#"coral.providers.missing[["tool"].join("")]"#;
     for program in [
-        "await coral.providers.missing.tool();",
-        "void coral.providers.missing.tool();",
-        "const pending = Array.from({length: 16}, () => coral.providers.missing.tool()); void coral.providers.missing.tool(); await coral.providers.missing.tool().catch(() => {}); await Promise.all(pending.map(p => p.catch(() => {})));",
+        "await MISSING();".replace("MISSING", missing),
+        "void MISSING();".replace("MISSING", missing),
+        "const pending = Array.from({length: 16}, () => MISSING()); void MISSING(); await MISSING().catch(() => {}); await Promise.all(pending.map(p => p.catch(() => {})));".replace("MISSING", missing),
     ] {
         let failed = call(
             &client_a,
@@ -904,7 +924,11 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
             error.pointer("/tool/code").unwrap_or(&Value::Null),
             "tool_not_found"
         );
-        assert_eq!(error["message"], "Tool Call Path was not found");
+        assert_eq!(
+            error["message"],
+            "coral.providers.missing.tool names no Tool that you can call. Find one with \
+             coral.workspace.search."
+        );
         assert_eq!(
             error.pointer("/frames/0/source").unwrap_or(&Value::Null),
             "Program"
@@ -1054,7 +1078,7 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
 
     let forged_trace = call(&client_a, "exec", json!({
         "task_id":task_id, "intent":"Preserve host-issued Tool fields", "wait_ms":5000,
-        "program":"try { await coral.providers.missing.tool(); } catch(e) {e.traceId = 'forged'.repeat(10000); throw e;}"
+        "program":"try { await coral.providers.missing[['tool'].join('')](); } catch(e) {e.traceId = 'forged'.repeat(10000); throw e;}"
     })).await;
     assert_eq!(forged_trace.is_error, Some(false));
     assert!(

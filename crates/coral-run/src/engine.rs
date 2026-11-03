@@ -47,12 +47,44 @@ pub(crate) struct SavedFunctionReference {
     pub(crate) column: u64,
 }
 
+/// What one Program body names: the Saved Functions admission links and,
+/// from an engine that finds them, the Tool chains admission checks.
+pub(crate) struct ProgramReferences {
+    pub(crate) functions: Vec<SavedFunctionReference>,
+    pub(crate) tools: Option<coral_v8::ToolReferences>,
+}
+
 pub(crate) trait ProgramEngine: Send + Sync {
     fn program_saved_function_references(
         &self,
         _deadline: Instant,
         _source: &str,
     ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
+        Ok(Vec::new())
+    }
+
+    /// The Saved Functions and Tools one Program body names, from one
+    /// analysis. An engine that finds no Tool chains names its Saved
+    /// Functions alone, and admission checks no Call Path.
+    fn program_references(
+        &self,
+        deadline: Instant,
+        source: &str,
+    ) -> Result<ProgramReferences, CompileFailure> {
+        Ok(ProgramReferences {
+            functions: self.program_saved_function_references(deadline, source)?,
+            tools: None,
+        })
+    }
+
+    /// The called chains of `tools` that name none of the `callable`
+    /// Call Paths.
+    fn unknown_tool_calls(
+        &self,
+        _deadline: Instant,
+        _tools: &coral_v8::ToolReferences,
+        _callable: &[String],
+    ) -> Result<Vec<coral_v8::UnknownToolCall>, CompileFailure> {
         Ok(Vec::new())
     }
 
@@ -122,17 +154,31 @@ impl V8ProgramEngine {
 }
 
 impl ProgramEngine for V8ProgramEngine {
-    fn program_saved_function_references(
+    fn program_references(
         &self,
         deadline: Instant,
         source: &str,
-    ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
+    ) -> Result<ProgramReferences, CompileFailure> {
         let source_name = "Program";
-        let references = self
+        let named = self
             .compiler
-            .saved_function_paths(deadline, source)
+            .program_call_paths(deadline, source)
             .map_err(|error| compile_failure_for_source(error, source_name))?;
-        Ok(parse_saved_function_references(references, source_name)?)
+        Ok(ProgramReferences {
+            functions: parse_saved_function_references(named.functions().to_vec(), source_name)?,
+            tools: Some(named.tools().clone()),
+        })
+    }
+
+    fn unknown_tool_calls(
+        &self,
+        deadline: Instant,
+        tools: &coral_v8::ToolReferences,
+        callable: &[String],
+    ) -> Result<Vec<coral_v8::UnknownToolCall>, CompileFailure> {
+        Ok(self
+            .compiler
+            .unknown_tool_calls(deadline, tools, callable)?)
     }
 
     fn saved_function_dependency_references(

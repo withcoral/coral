@@ -481,6 +481,8 @@ function referenceAnalysisProgram(source, fileName, targetName) {
   return { program, sourceFile };
 }
 
+// The Saved Functions and Tools one Program body names, from one analysis:
+// what Program Admission links and checks.
 function analyzeSavedFunctionPaths(body, fileName, targetName) {
   const wrapped = wrapProgramBody(body);
   const { program, sourceFile } = referenceAnalysisProgram(wrapped.source, fileName, targetName);
@@ -495,7 +497,25 @@ function analyzeSavedFunctionPaths(body, fileName, targetName) {
     };
   }
 
-  return savedFunctionPathAnalysis(sourceFile, program, wrapped.authoredMappings);
+  const functions = savedFunctionPathAnalysis(sourceFile, program, wrapped.authoredMappings);
+  if (functions.validationError !== undefined) return functions;
+  const chains = calledPathChains(
+    toolReferenceChains(sourceFile, program, wrapped.authoredMappings),
+  );
+  return {
+    ...functions,
+    tools: { callPaths: candidateToolPaths(chains), chains },
+  };
+}
+
+// The chains as the running Program calls them: it joins segments with
+// dots, so `github["repos.get"]` calls `github.repos.get`, and admission
+// must not refuse it.
+function calledPathChains(chains) {
+  return chains.map((chain) => ({
+    ...chain,
+    segments: chain.segments.flatMap((segment) => segment.split('.')),
+  }));
 }
 
 function savedFunctionDependencyAnalysis(sourceFile, program) {
@@ -537,7 +557,7 @@ function toolCallRootLength(segments) {
 // to `coral` and cut before its first computed segment, where it starts, and
 // whether it is called. A cut chain is not called: its computed segment may
 // name the Tool. Aliased roots are not followed.
-function toolReferenceChains(sourceFile, program) {
+function toolReferenceChains(sourceFile, program, authoredMappings) {
   const checker = program.getTypeChecker();
   const chains = [];
   walkRuntimeNodes(sourceFile, (node) => {
@@ -552,7 +572,12 @@ function toolReferenceChains(sourceFile, program) {
         const called =
           computed === -1 && ts.isCallExpression(node.parent) && node.parent.expression === node;
         if (segments.length > 1) {
-          chains.push({ segments, start: node.getStart(sourceFile), called });
+          chains.push({
+            segments,
+            start: node.getStart(sourceFile),
+            called,
+            ...authoredReferenceLocation(sourceFile, node, authoredMappings),
+          });
         }
       }
     }
