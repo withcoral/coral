@@ -867,6 +867,100 @@ describe('live scopes', () => {
   ])('latest action: %s', (_, current, actionable, expected) => {
     expect(liveTarget(current, 'latest', now, actionable)).toEqual(expected)
   })
+  // Under a search, a Run the search leaves out holds nothing: Live picks among the matches
+  // as it picks among all records without a search, and waits with none.
+  const left = taskRow('left')
+  const outside = runRow('outside', left.name, { state: 'running', endedAt: null })
+  const searched = (liveLatest: ActivityPage['liveLatest'], more: Partial<ActivityPage> = {}) =>
+    activityPage({
+      query: 'invoice',
+      rows: [work],
+      selected: outside.name,
+      selectedRow: outside,
+      liveLatest,
+      ...more,
+    })
+  const later = {
+    ...elsewhere,
+    startedAt: new Date(Date.parse(running.startedAt) + 60_000).toISOString(),
+  }
+  it.each<[string, ActivityPage, ReturnType<typeof liveTarget>]>([
+    [
+      'moves to a matching Run that runs',
+      searched({ heldOutside: true, running: { [work.name]: running } }),
+      { kind: 'run', run: first.name, chain: [work.name, first.name] },
+    ],
+    [
+      'moves to the action in a matching Run',
+      searched({ heldOutside: true, action: { task: work.name, action: named } }),
+      followsAsks,
+    ],
+    [
+      'moves to the action before a matching Run that runs',
+      searched({
+        heldOutside: true,
+        action: { task: work.name, action: named },
+        running: { [other.name]: later },
+      }),
+      followsAsks,
+    ],
+    [
+      'moves to the matching Run that runs and was submitted last',
+      searched({ heldOutside: true, running: { [work.name]: running, [other.name]: later } }),
+      { kind: 'run', run: later.name, chain: [other.name, later.name] },
+    ],
+    [
+      'reads the newest records first when newer ones may hold a match',
+      searched({ heldOutside: true }, { hasBefore: true }),
+      { kind: 'newest' },
+    ],
+    [
+      'moves to the newest match when every matching Run ended',
+      searched({
+        heldOutside: true,
+        running: {},
+        complete: true,
+        latest: { root: work.name, record: first.name, run: true },
+      }),
+      { kind: 'expand', chain: [work.name] },
+    ],
+    [
+      'moves to the newest match past the loaded list when every matching Run ended',
+      searched({
+        heldOutside: true,
+        running: {},
+        complete: true,
+        latest: { root: other.name, record: lookup.name, run: false },
+      }),
+      { kind: 'select', record: lookup.name, chain: [other.name] },
+    ],
+    ['waits with no match', searched({ heldOutside: true }, { rows: [] }), { kind: 'wait' }],
+    [
+      'waits while Reef cannot name the newest match',
+      searched({ heldOutside: true }),
+      { kind: 'wait' },
+    ],
+  ])('with a search that leaves out the Run it holds, it %s', (_, current, expected) => {
+    expect(liveTarget(current, 'latest', now)).toEqual(expected)
+    // Catches: a priority of its own. Without a search, the Run you left open has ended.
+    const { heldOutside: _held, ...latest } = current.liveLatest!
+    const withoutSearch: ActivityPage = {
+      ...current,
+      query: activityPage().query,
+      selectedRow: { ...outside, state: 'succeeded', endedAt: done.endedAt },
+      liveLatest: latest,
+    }
+    expect(liveTarget(withoutSearch, 'latest', now)).toEqual(expected)
+  })
+
+  it('stays on a Run the search keeps', () => {
+    expect(liveTarget(searched(undefined), 'latest', now)).toEqual({
+      kind: 'run',
+      run: outside.name,
+      chain: [left.name, outside.name],
+    })
+  })
+
   it('steps to the action the target names in its Run', () => {
     const current = { ...asked(lookup), expanded: [work.name, first.name] }
     expect(liveStep(current, first.name, true, named)).toEqual({
@@ -1520,4 +1614,150 @@ it.each([
   ],
 ])('moving from %s leaves the review: %s', (_, leaves, from, to) => {
   expect(leavesActivityReview(approvalRequest)(reviewAt(from), reviewAt(to))).toBe(leaves)
+})
+
+describe('search navigation', () => {
+  const searched = activityPage({
+    expanded: [task],
+    query: 'invoices',
+    listPath: '/workspaces/w/activity',
+  })
+  const location = `?q=invoices&tree=1&expand=${task}&anchor=${task}&offset.${task}=4&record=${run}&live=latest&liveExpanded=${task}`
+
+  it('opens the list for a new search from its newest records, with the open record and live mode', () => {
+    const nav = activityNavigation(searched, '/workspaces/w/activity', location)
+    expect([...target(nav.searchHref('billing'))]).toEqual([
+      ['record', run],
+      ['live', 'latest'],
+      ['q', 'billing'],
+    ])
+    expect(target(nav.searchHref('')).has('q')).toBe(false)
+  })
+
+  // Catches: a paste on a Run's own address closing the Run, which only the path names.
+  it('keeps the Run a Run address opens when a search starts', () => {
+    const nav = activityNavigation(
+      { ...searched, query: '', expanded: [], selected: run },
+      `/${run}`,
+      '',
+    )
+    const opened = target(nav.searchHref('billing'))
+    expect(opened.get('record')).toBe(run)
+    expect(opened.get('q')).toBe('billing')
+  })
+
+  it('keeps the list where it is while the text is too short to search', () => {
+    const nav = activityNavigation(
+      { ...searched, query: '' },
+      '/workspaces/w/activity',
+      `?tree=1&expand=${task}&anchor=${task}`,
+    )
+    const short = target(nav.searchHref('in'))
+    expect(short.get('q')).toBe('in')
+    expect(short.getAll('expand')).toEqual([task])
+    expect(short.get('anchor')).toBe(task)
+  })
+
+  it('keeps a Task you collapse during a search collapsed, and forgets it when you open it', () => {
+    const nav = activityNavigation(searched, '/workspaces/w/activity', location)
+    const closed = target(nav.toggleHref(task))
+    expect(closed.getAll('expand')).toEqual([])
+    expect(closed.getAll('collapse')).toEqual([task])
+    const reopened = activityNavigation(
+      { ...searched, expanded: [] },
+      '/workspaces/w/activity',
+      `?${closed}`,
+    ).toggleHref(task)
+    expect(target(reopened).getAll('expand')).toEqual([task])
+    expect(target(reopened).has('collapse')).toBe(false)
+    const unsearched = activityNavigation(
+      { ...searched, query: '' },
+      '/workspaces/w/activity',
+      location,
+    )
+    expect(target(unsearched.toggleHref(task)).has('collapse')).toBe(false)
+  })
+
+  describe('a Task the search opens', () => {
+    const other = 'workspaces/w/tasks/other'
+    const keptTask = { ...taskRow('t'), name: task, intentMatches: false }
+    const opened = (overrides: Partial<ActivityPage> = {}) =>
+      activityPage({
+        rows: [keptTask],
+        expanded: [task, other],
+        query: 'invoices',
+        listPath: '/workspaces/w/activity',
+        ...overrides,
+      })
+    const at = (value: ActivityPage, search: string) =>
+      activityNavigation(value, '/workspaces/w/activity', search, {
+        anchor: null,
+        branches: value.expanded.includes(task)
+          ? { [task]: { offset: 200, anchor: '', preceding: 0 } }
+          : {},
+      })
+
+    // Catches: a search-opened Task that uses up the limit on records you expand.
+    it('never joins the records you expand, in the address or at the limit', () => {
+      const nav = at(opened(), `?q=invoices&tree=1&expand=${other}`)
+      expect(target(nav.recordHref(run)).getAll('expand')).toEqual([other])
+      expect(target(nav.toggleHref(run)).getAll('expand')).toEqual([other, run])
+      expect(nav.expandedByYou).toEqual([other])
+    })
+
+    // Catches: re-opening that takes a place among the records you expand.
+    it('collapses and opens again through the collapse key alone', () => {
+      const nav = at(opened(), `?q=invoices&tree=1&expand=${other}`)
+      const closed = target(nav.toggleHref(task))
+      expect(closed.getAll('expand')).toEqual([other])
+      expect(closed.getAll('collapse')).toEqual([task])
+      const reopened = at(
+        opened({ expanded: [other], collapsed: [task] }),
+        `?${closed}`,
+      ).toggleHref(task)
+      expect(target(reopened).getAll('expand')).toEqual([other])
+      expect(target(reopened).has('collapse')).toBe(false)
+    })
+
+    // Catches: an address that grows with every Task the search opens.
+    it('keeps a child window you scrolled, and only that, in the address', () => {
+      const scrolled = target(at(opened(), `?q=invoices&tree=1&expand=${other}`).recordHref(run))
+      expect(scrolled.get(`offset.${task}`)).toBe('200')
+      const start = target(
+        activityNavigation(opened(), '/workspaces/w/activity', `?q=invoices&tree=1`, {
+          anchor: null,
+          branches: { [task]: { offset: 0, anchor: '', preceding: 0 } },
+        }).recordHref(run),
+      )
+      expect(start.has(`offset.${task}`)).toBe(false)
+    })
+
+    // Catches: a window you scrolled back to the start that returns to its old place.
+    it('forgets the place of a child window you scrolled back to its start', () => {
+      const back = target(
+        activityNavigation(
+          opened(),
+          '/workspaces/w/activity',
+          `?q=invoices&tree=1&offset.${task}=200&preceding.${task}=3&anchor.${task}=${run}`,
+          { anchor: null, branches: { [task]: { offset: 0, anchor: '', preceding: 0 } } },
+        ).recordHref(run),
+      )
+      for (const key of ['offset', 'preceding', 'anchor'])
+        expect(back.has(`${key}.${task}`)).toBe(false)
+    })
+
+    // Catches: live mode refused at the limit for a Task that is already open.
+    it('needs no room to follow live', () => {
+      const chosen = Array.from({ length: 20 }, (_, index) => `workspaces/w/runs/c${index}`)
+      const nav = at(
+        opened({ expanded: [task, ...chosen] }),
+        `?q=invoices&tree=1${chosen.map((name) => `&expand=${name}`).join('')}`,
+      )
+      expect(nav.liveRoom([task])).toBe(true)
+    })
+  })
+
+  it('shows the complete list while a search is typed', () => {
+    expect(readsActivity(new URLSearchParams('q=in'))).toBe(true)
+  })
 })

@@ -34,6 +34,7 @@ async fn activity_roots_page_tasks_and_standalone_runs_without_duplicating_accep
             &scope,
             &crate::ActivityWindow::Edge,
             1,
+            None,
         )
         .await
         .unwrap();
@@ -47,6 +48,7 @@ async fn activity_roots_page_tasks_and_standalone_runs_without_duplicating_accep
             &scope,
             &crate::ActivityWindow::At(page.rows.first().unwrap().identity()),
             2,
+            None,
         )
         .await
         .unwrap();
@@ -70,6 +72,7 @@ async fn activity_roots_page_tasks_and_standalone_runs_without_duplicating_accep
             &scope,
             &crate::ActivityWindow::After(page.rows.first().unwrap().identity()),
             1,
+            None,
         )
         .await
         .unwrap();
@@ -86,6 +89,7 @@ async fn activity_roots_page_tasks_and_standalone_runs_without_duplicating_accep
             &scope,
             &crate::ActivityWindow::Before(next.rows.first().unwrap().identity()),
             1,
+            None,
         )
         .await
         .unwrap();
@@ -103,6 +107,7 @@ async fn activity_roots_page_tasks_and_standalone_runs_without_duplicating_accep
                 coral_run::RunId::parse("00000000-0000-4000-8000-000000000099").unwrap(),
             )),
             1,
+            None,
         )
         .await
         .unwrap();
@@ -120,6 +125,7 @@ async fn activity_roots_page_tasks_and_standalone_runs_without_duplicating_accep
             &scope,
             &crate::ActivityWindow::Edge,
             10,
+            None,
         )
         .await
         .unwrap();
@@ -156,6 +162,7 @@ async fn a_failed_run_is_still_an_accepted_submission_child() {
             },
             &InteractionWindow::Start,
             10,
+            None,
             None,
         )
         .await
@@ -210,6 +217,7 @@ async fn child_anchors_seek_later_history_without_loading_preceding_pages() {
             &InteractionWindow::Start,
             25,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -224,6 +232,7 @@ async fn child_anchors_seek_later_history_without_loading_preceding_pages() {
             &identity,
             &InteractionWindow::Run(accepted.run_id().clone()),
             1,
+            None,
             None,
         )
         .await
@@ -351,6 +360,7 @@ async fn scoped_task_children_and_exact_execution_reads_keep_associations_privat
             &scope,
             &ActivityWindow::Edge,
             25,
+            None,
         )
         .await
         .unwrap();
@@ -385,6 +395,7 @@ async fn scoped_task_children_and_exact_execution_reads_keep_associations_privat
             &InteractionWindow::Start,
             25,
             Some(&scope),
+            None,
         )
         .await
         .unwrap();
@@ -499,7 +510,8 @@ async fn scoped_task_children_and_exact_execution_reads_keep_associations_privat
                 &mismatched,
                 &InteractionWindow::Start,
                 25,
-                Some(&scope)
+                Some(&scope),
+                None
             )
             .await,
         Err(Error::TaskNotFound)
@@ -531,7 +543,8 @@ async fn scoped_task_children_and_exact_execution_reads_keep_associations_privat
                 25,
                 Some(&coral_workspace::HistoryScope::Personal(Some(
                     other.id().clone()
-                )))
+                ))),
+                None
             )
             .await,
         Err(Error::TaskNotFound)

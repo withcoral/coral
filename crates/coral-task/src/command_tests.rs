@@ -5,6 +5,8 @@ use coral_workspace::{
     AuthenticatedPrincipal, ChangeContext, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
 };
 
+#[path = "activity_search_tests.rs"]
+mod activity_search_tests;
 #[path = "activity_tests.rs"]
 mod activity_tests;
 #[path = "execution_history_tests.rs"]

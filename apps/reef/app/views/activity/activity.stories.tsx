@@ -362,6 +362,8 @@ export const LiveToggleOrder: Story = {
     await expect(heading.nextElementSibling).toContainElement(live)
     live.focus()
     await userEvent.tab()
+    await expect(canvas.getByRole('searchbox', { name: 'Search intent' })).toHaveFocus()
+    await userEvent.tab()
     await expect(canvas.getByRole('table', { name: 'Activity records' })).toHaveFocus()
   },
 }
@@ -400,6 +402,33 @@ export const Empty: Story = {
   args: {
     page: { ...page, rows: [], branches: {}, selected: null, selectedRow: null, detail: null },
     connect: { endpoint: 'https://coral.example/mcp/finance' },
+  },
+}
+/** A search that matches nothing keeps the open Task as one row above its status. */
+export const SearchWithoutMatches: Story = {
+  args: {
+    page: {
+      ...page,
+      rows: [],
+      branches: {},
+      expanded: [],
+      query: 'arstaroienarst',
+      selected: task,
+      selectedRow: goal,
+      detail: { kind: 'task', task: goal },
+    },
+  },
+  parameters: {
+    initialEntry: `/workspaces/finance/activity?q=arstaroienarst&record=${task}`,
+  },
+  play: async ({ canvasElement }) => {
+    const table = within(canvasElement).getByRole('table', { name: 'Activity records' })
+    const [head, open] = within(table).getAllByRole('row')
+    await expect(within(open!).getByText('Outside this search:')).toBeVisible()
+    // The open record is an ordinary row, not stretched over the spare height.
+    await expect(open!.getBoundingClientRect().height).toBeLessThan(
+      head!.getBoundingClientRect().height * 2,
+    )
   },
 }
 export const ObservationUnavailable: Story = {

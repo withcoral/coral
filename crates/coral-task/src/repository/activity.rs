@@ -1,5 +1,5 @@
-use crate::{ActivityIdentity, ActivityWindow, Error, TaskId};
-use coral_db::Transaction;
+use crate::{ActivityIdentity, ActivityWindow, Error, IntentQuery, TaskId};
+use coral_db::{DatabaseSystem, Transaction};
 use coral_workspace::{HistoryAuthority, WorkspaceId};
 mod window;
 use sea_query::{Alias, Expr, ExprTrait as _, IntoColumnRef as _, Order, Query, UnionType};
@@ -140,6 +140,37 @@ pub(crate) async fn discovery_context(
         .collect()
 }
 
+/// `"{table}"."intent"` contains the query, ignoring case. One pattern serves
+/// Postgres's `~` and `SQLite`'s `REGEXP` alike, and its explicit classes need
+/// neither backend's locale, case folding or character classes.
+pub(crate) fn intent_contains(system: DatabaseSystem, table: &str, query: &IntentQuery) -> Expr {
+    let operator = match system {
+        DatabaseSystem::Postgres => "~",
+        DatabaseSystem::Sqlite => "REGEXP",
+    };
+    coral_db::col(table, "intent").binary(
+        sea_query::BinOper::Custom(operator),
+        Expr::val(intent_pattern(query)),
+    )
+}
+
+/// One class per query character, so every character stands for itself. Both
+/// regular expression dialects read a backslash inside a class as an escape.
+fn intent_pattern(query: &IntentQuery) -> String {
+    let mut pattern = String::new();
+    for variants in query.variants() {
+        pattern.push('[');
+        for &character in variants {
+            if matches!(character, '\\' | '[' | ']' | '^' | '-') {
+                pattern.push('\\');
+            }
+            pattern.push(character);
+        }
+        pattern.push(']');
+    }
+    pattern
+}
+
 pub(crate) struct RootPage {
     pub identities: Vec<ActivityIdentity>,
     pub has_before: bool,
@@ -158,29 +189,23 @@ fn identity(value: &ActivityIdentity) -> PositionIdentity {
         },
     }
 }
-pub(crate) async fn roots(
-    tx: &mut Transaction<'_>,
-    authority: &HistoryAuthority,
-    window: &ActivityWindow,
-    limit: u16,
-) -> Result<RootPage, Error> {
-    use super::TaskRecords as T;
-    let mut tasks = Query::select();
-    tasks
-        .from(T::Table)
-        .column(T::WorkspaceId)
-        .expr_as(
-            Expr::val("task:").binary(sea_query::BinOper::Custom("||"), Expr::col(T::Id)),
-            Alias::new("id"),
-        )
-        .expr_as(Expr::col(T::StartedAtUnixNanos), Alias::new("sort_key"));
-    coral_workspace::history_repository::restrict(
-        &mut tasks,
-        authority,
-        T::WorkspaceId.into_column_ref(),
-        T::PrincipalId.into_column_ref(),
-        T::PrincipalKind.into_column_ref(),
-    );
+/// The Task's intent, or the intent of one of its Run submissions, contains the query.
+fn task_matches(system: DatabaseSystem, query: &IntentQuery) -> sea_query::Condition {
+    use coral_db::col;
+    let submission = Query::select()
+        .expr(Expr::val(1_i64))
+        .from_as(Alias::new("task_interactions"), Alias::new("submission"))
+        .and_where(col("submission", "workspace_id").eq(col("task_records", "workspace_id")))
+        .and_where(col("submission", "task_id").eq(col("task_records", "id")))
+        .and_where(col("submission", "run_id").is_not_null())
+        .and_where(intent_contains(system, "submission", query))
+        .to_owned();
+    sea_query::Condition::any()
+        .add(intent_contains(system, "task_records", query))
+        .add(Expr::exists(submission))
+}
+/// Root positions of the Runs started outside any Task.
+fn standalone_runs(authority: &HistoryAuthority) -> sea_query::SelectStatement {
     let mut runs = Query::select();
     runs.from_subquery(
         coral_run::history_repository::run_positions(authority),
@@ -212,7 +237,39 @@ pub(crate) async fn roots(
         )
         .not(),
     );
-    tasks.union(UnionType::All, runs);
+    runs
+}
+pub(crate) async fn roots(
+    tx: &mut Transaction<'_>,
+    authority: &HistoryAuthority,
+    window: &ActivityWindow,
+    limit: u16,
+    query: Option<&IntentQuery>,
+) -> Result<RootPage, Error> {
+    use super::TaskRecords as T;
+    let mut tasks = Query::select();
+    tasks
+        .from(T::Table)
+        .column(T::WorkspaceId)
+        .expr_as(
+            Expr::val("task:").binary(sea_query::BinOper::Custom("||"), Expr::col(T::Id)),
+            Alias::new("id"),
+        )
+        .expr_as(Expr::col(T::StartedAtUnixNanos), Alias::new("sort_key"));
+    coral_workspace::history_repository::restrict(
+        &mut tasks,
+        authority,
+        T::WorkspaceId.into_column_ref(),
+        T::PrincipalId.into_column_ref(),
+        T::PrincipalKind.into_column_ref(),
+    );
+    if let Some(query) = query {
+        tasks.cond_where(task_matches(tx.system(), query));
+    }
+    // Standalone Runs have no intent, so a query never keeps them.
+    if query.is_none() {
+        tasks.union(UnionType::All, standalone_runs(authority));
+    }
     let positions = Query::select()
         .column(sea_query::Asterisk)
         .from_subquery(tasks, Alias::new("activity_roots"))

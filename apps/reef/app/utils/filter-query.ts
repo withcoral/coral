@@ -39,8 +39,9 @@ export function filterQuery(input: string): FilterQuery {
   if (!text) return EVERYTHING
   // Keep ordinary filters literal, as on main. Payload Find alone reads patterns.
   const literal = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const finds = new RegExp(literal, 'i')
-  const marks = new RegExp(literal, 'gi')
+  // `u` folds case by Unicode, as Coral matches an Activity search.
+  const finds = new RegExp(literal, 'iu')
+  const marks = new RegExp(literal, 'giu')
   const ranges = (marked: string): Range[] =>
     [...marked.matchAll(marks)].map((match) => [match.index, match.index + match[0].length])
   return {

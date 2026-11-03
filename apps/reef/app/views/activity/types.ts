@@ -45,6 +45,7 @@ export interface ActivityLoadControl {
   automatic: boolean
 }
 
+/** Records you can expand at once. A search opens more, without counting them. */
 export const MAX_EXPANDED_RECORDS = 20
 export const runStates = [
   'running',
@@ -294,6 +295,8 @@ export interface ActivityPage {
   rows: ActivityRow[]
   branches: Record<string, ActivityBranch>
   expanded: string[]
+  /** The Tasks you collapsed that the search would open. */
+  collapsed?: string[]
   anchors?: Record<string, string>
   hasBefore: boolean
   hasAfter: boolean
@@ -336,6 +339,8 @@ export interface ActivityPage {
    */
   liveLatest?: LiveLatest
   selectedRow: ActivityRow | null
+  /** The search Coral read the list for, or empty for all activity. */
+  query?: string
   listPath: string
 }
 
@@ -353,6 +358,11 @@ export type RunRow = Extract<ActivityRow, { kind: 'run' }>
 
 /** What page live mode knows past the list and its loaded windows. */
 export interface LiveLatest {
+  /**
+   * The search leaves out the Run you have open, which then holds nothing: live mode
+   * chooses among the matches this names, and waits with none.
+   */
+  heldOutside?: boolean
   /**
    * The oldest action you can take in any Run page live mode may follow, timed by when
    * the tool that waits on it started, not by when the request was made. `task`
@@ -420,6 +430,11 @@ export interface TaskRow {
   endedAt: string | null
   actor: string
   agent: string
+  /**
+   * Set while a search lists the Task: true if its intent matches, false if it shows
+   * only for its matching Runs.
+   */
+  intentMatches?: boolean
 }
 export interface InteractionRow {
   position?: number

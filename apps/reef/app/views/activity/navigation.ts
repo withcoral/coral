@@ -20,6 +20,12 @@ import {
   type RunRow,
   type TaskRow,
 } from './types'
+import {
+  activitySearch,
+  activitySearchKey,
+  keptForRuns,
+  revealedTasks,
+} from '@/lib/activity-search'
 
 export const ActivityNavigationContext = createContext<ReturnType<
   typeof activityNavigation
@@ -41,8 +47,10 @@ export const selectionKeys = ['record', 'request', 'actionsAfter', 'live', 'live
 const clearSelection = Object.fromEntries(selectionKeys.map((key) => [key, null]))
 const listKeys = new Set<string>([
   ...selectionKeys,
+  activitySearchKey,
   'tree',
   'expand',
+  'collapse',
   'anchor',
   'before',
   'after',
@@ -134,10 +142,17 @@ export function activityNavigation(
 ) {
   const query = new URLSearchParams(search)
   const context = activitySelection(page, search)
+  // What the search opens is not yours to carry: the list decides it again.
+  const revealed = new Set(
+    revealedTasks(page.rows, page.collapsed).filter(
+      (name) => !query.getAll('expand').includes(name),
+    ),
+  )
+  const expandedByYou = page.expanded.filter((name) => !revealed.has(name))
   if (!context.has('tree')) {
     context.set('tree', '1')
     context.delete('expand')
-    for (const name of page.expanded) context.append('expand', name)
+    for (const name of expandedByYou) context.append('expand', name)
     for (const [parent, record] of Object.entries(page.anchors ?? {})) {
       if (!context.has(`anchor.${parent}`)) context.set(`anchor.${parent}`, record)
     }
@@ -149,6 +164,12 @@ export function activityNavigation(
   for (const parent of page.expanded) {
     const viewport = reading.branches[parent]
     if (!viewport) continue
+    // Each Task the search opens starts at its first child, so only a moved one needs a place.
+    if (revealed.has(parent) && !viewport.offset && !viewport.anchor) {
+      for (const prefix of ['offset', 'preceding', 'anchor', 'cursor'])
+        context.delete(`${prefix}.${parent}`)
+      continue
+    }
     const branch = page.branches[parent]
     const first = branch?.rows.find((row) => row.position === viewport.offset)
     // Buffering is not navigation away from an explicitly revealed Event. Keep its
@@ -186,7 +207,11 @@ export function activityNavigation(
       next.delete(key)
       for (const item of Array.isArray(value) ? value : value ? [value] : []) next.append(key, item)
     }
-    const expanded = new Set(next.getAll('expand'))
+    const collapsed = next.getAll('collapse')
+    const expanded = new Set([
+      ...next.getAll('expand'),
+      ...[...revealed].filter((name) => !collapsed.includes(name)),
+    ])
     const keys = [...next.keys()]
     for (const key of keys) {
       const parent = branchCoordinate(key)
@@ -195,23 +220,52 @@ export function activityNavigation(
     return `${path}?${next}`
   }
   const recordHref = (name: string) => href({ ...clearSelection, record: name })
+  /**
+   * The records a search keeps collapsed once `name` opens or closes. A search opens a
+   * Task it lists only for its Runs, so closing one is kept apart from never opening it.
+   */
+  const collapsing = (name: string, close: boolean) => {
+    const collapsed = context.getAll('collapse').filter((item) => item !== name)
+    return close && page.query ? [...collapsed, name] : collapsed
+  }
   /** `stopLive` also turns live mode off, for a collapse that hides the Run it follows. */
-  const toggleHref = (name: string, stopLive = false) =>
-    href({
+  const toggleHref = (name: string, stopLive = false) => {
+    const close = page.expanded.includes(name)
+    const others = expandedByYou.filter((item) => item !== name)
+    // Taking a Task off the collapsed list is enough for the search to open it again.
+    const reopens = page.rows.some((row) => row.name === name && keptForRuns(row))
+    return href({
       ...(stopLive && { live: null, liveExpanded: null }),
       tree: '1',
-      expand: page.expanded.includes(name)
-        ? page.expanded.filter((item) => item !== name)
-        : [...page.expanded, name],
+      expand: close || reopens ? others : [...others, name],
+      collapse: collapsing(name, close),
     })
+  }
   /** Collapses `name` and selects it, for a collapse that hides the selected record. */
   const collapseHref = (name: string) =>
     href({
       ...clearSelection,
       record: name,
       tree: '1',
-      expand: page.expanded.filter((item) => item !== name),
+      expand: expandedByYou.filter((item) => item !== name),
+      collapse: collapsing(name, true),
     })
+  /**
+   * The list for the typed search, from its newest records. It keeps the open record,
+   * its review and live mode. Text too short to search changes only the address.
+   */
+  const searchHref = (typed: string) => {
+    // Text that does not change what Coral searches keeps the list where it is.
+    if (activitySearch(typed) === (page.query ?? ''))
+      return href({ [activitySearchKey]: typed || null })
+    const next = new URLSearchParams()
+    for (const key of selectionKeys)
+      if (key !== 'liveExpanded') for (const value of context.getAll(key)) next.append(key, value)
+    // Stable Run routes carry their selection in the path, not a query value.
+    if (pathname !== page.listPath && page.selected) next.set('record', page.selected)
+    if (typed) next.set(activitySearchKey, typed)
+    return `${page.listPath}?${next}`
+  }
   const backHref = href(clearSelection)
   /** What live mode follows, or null while it is off. */
   const liveScope = liveScopeOf(query.get('live'))
@@ -225,7 +279,9 @@ export function activityNavigation(
     const open = context.getAll('expand')
     const kept = new Set([...chain, ...keep])
     const stays = (name: string) => !scope || kept.has(name) || !owned.includes(name)
-    const expand = [...new Set([...open.filter(stays), ...chain])]
+    const expand = [
+      ...new Set([...open.filter(stays), ...chain.filter((name) => !revealed.has(name))]),
+    ]
     const nextOwned = scope
       ? expand.filter((name) => kept.has(name) && (owned.includes(name) || !open.includes(name)))
       : null
@@ -295,11 +351,13 @@ export function activityNavigation(
     recordHref,
     toggleHref,
     collapseHref,
+    searchHref,
     revealHref,
     backHref,
     liveScope,
     liveHref,
     liveRoom,
+    expandedByYou,
     followHref,
     followWindowHref,
   }
@@ -394,7 +452,9 @@ export function liveTarget(
  * What page live mode follows. Only an open Run that runs holds it; a Task never does.
  * In order:
  * 1. The open record's Run while it runs (`liveHold`), whatever arrives. `liveStep`
- *    then picks its oldest action, else its newest record.
+ *    then picks its oldest action, else its newest record. A Run the search leaves out
+ *    (`liveLatest.heldOutside`) holds nothing, so 2 to 4 choose among the matches, or it
+ *    waits with none.
  * 2. The oldest action you can take in any Run it may follow, as the loader names it
  *    (`liveLatest`). `actionable` is false where you cannot act, such as in an archived
  *    workspace.
@@ -415,7 +475,7 @@ export function liveTarget(
  */
 function latestTarget(page: ActivityPage, now: number, actionable: boolean): LiveTarget {
   const current = liveRun(page.selectedRow)
-  if (current && liveHold(page)) return { kind: 'run', ...current }
+  if (current && liveHold(page) && !page.liveLatest?.heldOutside) return { kind: 'run', ...current }
   if (page.hasBefore) return { kind: 'newest' }
   const roots = page.rows.filter(
     (root) => root.kind === 'run' || (root.kind === 'task' && recentTask(root, now)),

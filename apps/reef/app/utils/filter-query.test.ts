@@ -23,6 +23,19 @@ test.each([
   expect(names.filter((name) => query.matches(name))).toEqual(expected)
 })
 
+// Catches: a filter that folds case by the regular expression's legacy rules, which
+// leave out forms such as the final sigma that Unicode case folding joins.
+test.each([
+  ['été', 'Été', [0, 3]],
+  ['σας', 'ΣΑΣ', [0, 3]],
+  ['\u212aelvin', 'kelvin', [0, 6]],
+  ['\u{10428}\u{10429}\u{1042a}', '\u{10400}\u{10401}\u{10402}', [0, 6]],
+])('%j finds %j, ignoring case by Unicode', (input, text, range) => {
+  const query = filterQuery(input)
+  expect(query.matches(text)).toBe(true)
+  expect(query.ranges(text)).toEqual([range])
+})
+
 // Catches: a query that tests only its first text, or fails on a missing one.
 test('a query matches when any of its texts matches', () => {
   const query = filterQuery('ada@')

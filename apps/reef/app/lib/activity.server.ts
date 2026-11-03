@@ -85,6 +85,13 @@ import {
 } from './activity-live-types'
 import { ACTIVITY_PAGE_SIZE } from './activity-list'
 import { activityPageFetchKey } from './activity-page-fetch'
+import {
+  keptForRuns,
+  ACTIVITY_SEARCH_MAX_CHARS,
+  activitySearch,
+  activitySearchKey,
+  revealedTasks,
+} from './activity-search'
 
 /** Activity and its requests, and the current catalog that discovery links open. */
 export type ActivityApi = Pick<
@@ -130,6 +137,7 @@ function taskView(task: ActivityTask): TaskRow {
     endedAt: task.endedAtUnixNanos === undefined ? null : timestamp(task.endedAtUnixNanos),
     actor: task.actor,
     agent: task.agent,
+    ...(task.intentMatches !== undefined && { intentMatches: task.intentMatches }),
   }
 }
 function interactionView(value: ActivityInteraction): InteractionRow {
@@ -1070,6 +1078,51 @@ function noteEnd(seen: LoadEvidence, task: string, value: TaskRead) {
  * can carry no impact at all. The flag can lag a Run's end, so only the Run's own
  * record counts as running.
  */
+/** Whether `search` keeps `submission`, a child of `task`. Coral anchors none it leaves out. */
+async function searchKeeps(
+  task: string,
+  submission: string,
+  search: string,
+  api: ActivityApi,
+  scope: ActivityScope,
+  signal: AbortSignal,
+) {
+  const { anchorUnavailable } = await api.activity.inspectTask(
+    {
+      name: task,
+      pageSize: 1,
+      scope,
+      query: search,
+      viewport: { offset: 0n, anchor: submission, preceding: 0 },
+    },
+    { signal },
+  )
+  return !anchorUnavailable
+}
+
+/**
+ * Whether `search` leaves out `run`: a standalone Run, which no search keeps, or one
+ * Coral does not keep in its Task. False while Reef cannot read it, so a read that fails
+ * keeps live mode where it is.
+ */
+async function searchLeavesOut(
+  run: string,
+  search: string,
+  api: ActivityApi,
+  scope: ActivityScope,
+  signal: AbortSignal,
+) {
+  try {
+    const value = await api.activity.browseRunEntries({ name: run, pageSize: 1, scope }, { signal })
+    if (!value.run?.task) return Boolean(value.run)
+    if (!value.submission) return false
+    return !(await searchKeeps(value.run.task, value.submission.name, search, api, scope, signal))
+  } catch (error) {
+    if (!unavailable(error)) throw error
+    return false
+  }
+}
+
 async function liveLatestWork(
   page: ActivityPage,
   newestPage: ActivityRow[] | undefined,
@@ -1079,11 +1132,18 @@ async function liveLatestWork(
   scope: ActivityScope,
   signal: AbortSignal,
 ): Promise<LiveLatest | undefined> {
-  // A Run that runs holds live mode, whatever waits elsewhere. A page that newer
-  // records come before reads the newest first. A snapshot of only the records you
-  // watch says newer ones exist too, which this reads from the top.
-  if (liveScopeOf(query.get('live')) !== 'latest' || liveHold(page)) return undefined
-  if (newestPage && page.hasBefore) return undefined
+  // Live mode follows only what the search lists.
+  const search = page.query ?? ''
+  if (liveScopeOf(query.get('live')) !== 'latest') return undefined
+  // A Run that runs holds live mode, whatever waits elsewhere, unless the search leaves
+  // it out. A page that newer records come before reads the newest first. A snapshot of
+  // only the records you watch says newer ones exist too, which this reads from the top.
+  const held = liveHold(page)
+  const heldOutside = Boolean(
+    held && search && (await searchLeavesOut(held, search, api, scope, signal)),
+  )
+  if (held && !heldOutside) return undefined
+  if (newestPage && page.hasBefore) return heldOutside ? { heldOutside } : undefined
   const now = Date.now()
   const { roots, complete } = await everyRoot()
   const tasks = roots.filter(
@@ -1101,7 +1161,7 @@ async function liveLatestWork(
   for (const task of tasks)
     for (const row of page.branches[task.name]?.rows ?? [])
       if (unfinishedRun(page, row) && row.requiresAction) asking.set(row.name, task.name)
-  const found: LiveLatest = {}
+  const found: LiveLatest = heldOutside ? { heldOutside } : {}
   const actionable =
     (asking.size > 0 || tasks.length > 0) &&
     (!api.workspaces ||
@@ -1109,12 +1169,18 @@ async function liveLatestWork(
         WorkspaceState.ARCHIVED)
   if (actionable) {
     const waiting = tasks.length ? await pendingActions(api, scope.workspace, signal) : []
-    const eligible = new Set(tasks.map((task) => task.name))
+    // A Task the search lists only for its Runs may follow only those, which its read holds.
+    const eligible = new Set(tasks.filter((task) => !keptForRuns(task)).map((task) => task.name))
     for (const { run } of waiting)
       if (unfinishedRun(page, run) && (eligible.has(run.task) || asking.has(run.name)))
         asking.set(run.name, run.task)
-    if (waiting.some(({ action }) => action.kind === 'account_connection'))
-      for (const task of tasks) await readRuns(task.name, { waiting: true })
+    const sharesConnection = waiting.some(({ action }) => action.kind === 'account_connection')
+    for (const task of tasks)
+      if (
+        sharesConnection ||
+        (keptForRuns(task) && waiting.some(({ run }) => run.task === task.name))
+      )
+        await readRuns(task.name, { waiting: true })
     const timed = await Promise.all(
       [...asking.keys()].map((run) => runActions(run, undefined, api, scope, signal)),
     )
@@ -1206,7 +1272,7 @@ async function liveLatestWork(
       let value
       try {
         value = await api.activity.browseActivityRoots(
-          { scope, after: rows.at(-1)?.name ?? '', pageSize: ROOT_SCAN_PAGE },
+          { scope, after: rows.at(-1)?.name ?? '', pageSize: ROOT_SCAN_PAGE, query: search },
           { signal },
         )
       } catch (error) {
@@ -1270,6 +1336,7 @@ async function liveLatestWork(
           name,
           pageSize: offset === undefined ? 1 : size,
           scope,
+          query: search,
           viewport:
             offset === undefined ? undefined : { offset: BigInt(offset), anchor: '', preceding: 0 },
         },
@@ -1533,7 +1600,12 @@ const missingBranch = (): ActivityBranch => ({ rows: [], next: '', unavailable: 
  * Before continuous loading, a page link named the record next to it. The reader now
  * opens at an anchor, so the link redirects to the first record of the page it named.
  */
-async function redirectToAnchor(request: Request, api: ActivityApi, scope: ActivityScope) {
+async function redirectToAnchor(
+  request: Request,
+  api: ActivityApi,
+  scope: ActivityScope,
+  search: string,
+) {
   const url = new URL(request.url)
   const before = url.searchParams.get('before') ?? ''
   const after = url.searchParams.get('after') ?? ''
@@ -1544,7 +1616,7 @@ async function redirectToAnchor(request: Request, api: ActivityApi, scope: Activ
   url.searchParams.delete('anchor')
   try {
     const value = await api.activity.browseActivityRoots(
-      { scope, before, after, anchor: '', pageSize: ACTIVITY_PAGE_SIZE },
+      { scope, before, after, anchor: '', pageSize: ACTIVITY_PAGE_SIZE, query: search },
       { signal: request.signal },
     )
     const first = value.roots[0]?.record.value?.name
@@ -1570,6 +1642,8 @@ export async function loadActivity(
   const query = new URL(request.url).searchParams
   const { signal } = request
   const seen: LoadEvidence = { roots: new Map(), ends: new Map() }
+  const search = activitySearch(query.get(activitySearchKey))
+  if ([...search].length > ACTIVITY_SEARCH_MAX_CHARS) invalid('Invalid activity search')
   // Observation names its reading window directly; navigation names only an anchor.
   const reading = options.reading
   if (
@@ -1577,7 +1651,7 @@ export async function loadActivity(
     (query.has('before') || query.has('after')) &&
     query.get(activityPageFetchKey) !== 'page'
   )
-    await redirectToAnchor(request, api, options.scope)
+    await redirectToAnchor(request, api, options.scope, search)
   const expanded = [...new Set(query.getAll('expand'))]
   if (expanded.length > MAX_EXPANDED_RECORDS) invalid('Expand at most 20 records at a time')
   for (const name of expanded)
@@ -1605,6 +1679,8 @@ export async function loadActivity(
     unavailable: false,
     selected,
     selectedRow: null,
+    query: search,
+    collapsed: [...new Set(query.getAll('collapse'))],
     listPath:
       options.listPath ?? (scope.agent ? `/${scope.agent}` : `/${scope.workspace}/activity`),
   }
@@ -1639,6 +1715,7 @@ export async function loadActivity(
         scope,
         anchor: viewport(name) ? '' : anchor(name),
         viewport: viewport(name),
+        query: search,
       },
       { signal },
     )
@@ -1697,6 +1774,7 @@ export async function loadActivity(
         anchor: reading || query.has('before') || query.has('after') ? '' : (rootAnchor ?? ''),
         retained: reading && !reading.followRoot ? { names: reading.roots } : undefined,
         pageSize: ACTIVITY_PAGE_SIZE,
+        query: search,
       },
       { signal },
     )
@@ -1710,6 +1788,8 @@ export async function loadActivity(
     page.hasBefore = value.hasBefore
     page.hasAfter = value.hasAfter
     page.anchorUnavailable = value.anchorUnavailable
+    for (const name of revealedTasks(page.rows, page.collapsed))
+      if (!page.expanded.includes(name)) page.expanded.push(name)
   } catch (error) {
     if (!unavailable(error)) throw error
     page.rows = []
@@ -1817,6 +1897,11 @@ export async function loadActivity(
       if (!row) {
         const parent = value.run?.task && page.branches[value.run.task]
         if (!parent || parent.unavailable || !value.run || value.submission?.position === undefined)
+          continue
+        if (
+          page.rows.some((item) => item.name === value.run?.task && keptForRuns(item)) &&
+          !(await searchKeeps(value.run.task, value.submission.name, search, api, scope, signal))
+        )
           continue
         row = {
           ...runView(value.run),

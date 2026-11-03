@@ -1,6 +1,7 @@
 use std::fmt;
 
 use coral_workspace::{Principal, WorkspaceId};
+use regex_syntax::hir::{ClassUnicode, ClassUnicodeRange};
 
 use crate::Error;
 
@@ -91,6 +92,71 @@ impl TaskIntent {
     }
 }
 
+/// Fewest characters an Activity intent search accepts.
+pub const INTENT_QUERY_MIN_CHARS: usize = 3;
+/// Most characters an Activity intent search accepts. A query longer than
+/// [`TASK_INTENT_MAX_CHARS`] matches nothing; this only bounds the input.
+pub const INTENT_QUERY_MAX_CHARS: usize = 1024;
+
+/// A literal Activity search over Task intent and Run submission intent.
+///
+/// Matching is substring containment that ignores case by Unicode simple case
+/// folding, the same on `SQLite` and Postgres under any locale. One character
+/// matches one character: `ß` does not match `SS`, and a composed `é` does not
+/// match `e` with a combining accent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntentQuery(Vec<Vec<char>>);
+
+impl IntentQuery {
+    /// Trims surrounding whitespace and validates the query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] when the trimmed query has fewer than
+    /// [`INTENT_QUERY_MIN_CHARS`] or more than [`INTENT_QUERY_MAX_CHARS`]
+    /// characters, or contains a null character.
+    pub fn parse(value: &str) -> Result<Self, Error> {
+        let value = value.trim();
+        let length = value.chars().count();
+        if !(INTENT_QUERY_MIN_CHARS..=INTENT_QUERY_MAX_CHARS).contains(&length)
+            || value.contains('\0')
+        {
+            return Err(Error::InvalidInput(format!(
+                "intent query must be {INTENT_QUERY_MIN_CHARS} to {INTENT_QUERY_MAX_CHARS} characters with no null character"
+            )));
+        }
+        Ok(Self(value.chars().map(case_variants).collect()))
+    }
+
+    /// Whether `intent` contains the query.
+    #[must_use]
+    pub fn matches(&self, intent: &TaskIntent) -> bool {
+        let intent: Vec<char> = intent.as_str().chars().collect();
+        intent.windows(self.0.len()).any(|window| {
+            window
+                .iter()
+                .zip(&self.0)
+                .all(|(character, variants)| variants.contains(character))
+        })
+    }
+
+    /// Each query character's case variants, the character included.
+    pub(crate) fn variants(&self) -> &[Vec<char>] {
+        &self.0
+    }
+}
+
+/// `character` and every character it equals under Unicode simple case folding.
+fn case_variants(character: char) -> Vec<char> {
+    let mut class = ClassUnicode::new([ClassUnicodeRange::new(character, character)]);
+    class.case_fold_simple();
+    class
+        .ranges()
+        .iter()
+        .flat_map(|range| range.start()..=range.end())
+        .collect()
+}
+
 /// Terminal Task outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskOutcome {
@@ -131,6 +197,7 @@ pub(crate) struct ContextImpact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     pub(crate) context_impact: Option<ContextImpact>,
+    pub(crate) intent_match: Option<bool>,
     id: TaskId,
     workspace_id: WorkspaceId,
     principal: Principal,
@@ -178,6 +245,7 @@ impl Task {
     ) -> Self {
         Self {
             context_impact: None,
+            intent_match: None,
             id,
             workspace_id,
             principal,
@@ -203,6 +271,14 @@ impl Task {
     #[must_use]
     pub fn context_impact_partial(&self) -> bool {
         self.context_impact.is_some_and(|impact| impact.partial)
+    }
+
+    /// Whether the Task's own intent contains an activity read's intent query.
+    /// False when the read keeps the Task only for its matching Runs. Absent
+    /// without a query.
+    #[must_use]
+    pub const fn intent_matches(&self) -> Option<bool> {
+        self.intent_match
     }
 
     /// Returns the Coral-generated stable identity.
