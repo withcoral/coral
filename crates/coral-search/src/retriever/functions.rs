@@ -17,7 +17,7 @@ use super::plan::QueryPlan;
 use super::repository;
 use super::{
     Answer, EntityRef, EntityRetriever, Hydrated, Listing, QueryError, QueryRequest,
-    RequestContext, SavedFunctionRef, count,
+    RequestContext, SavedFunctionRef, WindowEntry, count,
 };
 use crate::evidence::{EvidenceBuilder, EvidenceTerms};
 use crate::hit::{HitMaterial, hit_text};
@@ -123,11 +123,14 @@ impl EntityRetriever for SavedFunctionRetriever {
             let Some(material) = functions.get(&function.saved_function_id) else {
                 continue;
             };
-            window.push(EntityRef::SavedFunction(SavedFunctionRef {
-                material: material.clone(),
-                call_path: function.call_path,
-                near_spellings: Arc::clone(&near_spellings),
-            }));
+            window.push(WindowEntry {
+                entity: EntityRef::SavedFunction(SavedFunctionRef {
+                    material: material.clone(),
+                    call_path: function.call_path,
+                    near_spellings: Arc::clone(&near_spellings),
+                }),
+                strong: strong_function(&plan, &function.matched),
+            });
         }
         Ok(Answer {
             coverage: RetrieverCoverage::new(
@@ -247,6 +250,14 @@ impl EntityRetriever for SavedFunctionRetriever {
             exact.detail().clone(),
         )))
     }
+}
+
+/// Whether a ranked Saved Function is a strong match, by its retriever's own
+/// rule: a field holds the query's words in order, or a word of its path
+/// starts with a content word of the query. One that shares only description
+/// words with the query is weak, so it follows every strong Tool.
+fn strong_function(plan: &QueryPlan, matched: &repository::RowMatch) -> bool {
+    matched.phrase_points > 0 || plan.content_words_starting([matched.name.as_str()]) > 0
 }
 
 /// The Principal's current Saved Functions. Reads no source or declaration.

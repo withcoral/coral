@@ -13,9 +13,10 @@
 //! # Interface
 //!
 //! - [`UniversalSearchModule::search`] runs one ranked statement per Search
-//!   Entity kind, one retriever each, and fuses their windows by rank into
-//!   bounded pages of Search Hits with one status per retriever. An omitted
-//!   query lists current items in Call Path order and reads no index.
+//!   Entity kind, one retriever each, and fuses their windows by position,
+//!   strong matches first, into bounded pages of Search Hits with one status
+//!   per retriever. An omitted query lists current items in Call Path order
+//!   and reads no index.
 //! - [`UniversalSearchModule::describe`] resolves one exact complete Call Path
 //!   and reads no index. `signature::abridge` shortens the declaration it
 //!   returns; search reads the complete one.
@@ -35,8 +36,8 @@
 //!   index on what the owners hold.
 //!
 //! The engine inside [`UniversalSearchModule`] normalizes the query, hands the
-//! same terms to every retriever, fuses by rank, and pages by a plain offset
-//! that authorizes nothing. It never names a Search Entity kind. Every search
+//! same terms to every retriever, fuses by position, and pages by a plain
+//! offset that authorizes nothing. It never names a Search Entity kind. Every search
 //! page and exact description applies the owners' current visibility rules.
 //! Discovery never starts an interactive authorization or refreshes credentials.
 
@@ -69,8 +70,8 @@ use page::{Ranked, hydrate_page_in_transaction};
 use retriever::functions::SavedFunctionRetriever;
 use retriever::tools::ToolRetriever;
 use retriever::{
-    Answer, EntityRetriever, QueryError, QueryRequest, RequestContext, abandon_query, begin_query,
-    count, end_query,
+    Answer, EntityRetriever, QueryError, QueryRequest, RequestContext, WindowEntry, abandon_query,
+    begin_query, count, end_query,
 };
 
 pub use error::Error;
@@ -96,8 +97,10 @@ const RETRIEVAL_WINDOW: usize = 100;
 pub struct UniversalSearchModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
-    /// One retriever per Search Entity kind. At equal rank, an earlier
-    /// retriever's Entity comes first: Saved Functions, then Tools.
+    /// One retriever per Search Entity kind. At equal mark and position, an
+    /// earlier retriever's Entity comes first: Tools, then Saved Functions.
+    /// A strong Saved Function therefore leads every Tool below its
+    /// position, but not the strong Tool at its own.
     retrievers: Arc<[Arc<dyn EntityRetriever>]>,
 }
 
@@ -148,8 +151,8 @@ impl UniversalSearchModule {
             database,
             workspaces,
             retrievers: Arc::new([
-                Arc::new(functions) as Arc<dyn EntityRetriever>,
-                Arc::new(tools),
+                Arc::new(tools) as Arc<dyn EntityRetriever>,
+                Arc::new(functions),
             ]),
         }
     }
@@ -157,9 +160,10 @@ impl UniversalSearchModule {
     /// Searches visible Search Entities and returns a page of Search Hits.
     ///
     /// Each retriever applies current visibility and ranks its own kind; the
-    /// engine fuses the windows by position. Only the page's items are
-    /// hydrated, each into a hit with a signature line, snippets, and
-    /// evidence of why it matched. Every page carries one status per retriever. An omitted query
+    /// engine fuses the windows by position, strong matches first. Only the
+    /// page's items are hydrated, each into a hit with a signature line,
+    /// snippets, and evidence of why it matched. Every page carries one
+    /// status per retriever. An omitted query
     /// lists every visible Entity in Call Path order and reads no index.
     ///
     /// # Errors
@@ -299,7 +303,7 @@ impl UniversalSearchModule {
         context: RequestContext<'_>,
         request: &QueryRequest<'_>,
     ) -> Result<(Vec<Ranked>, Vec<RetrieverStatus>), Error> {
-        let mut fused = Vec::new();
+        let mut windows = Vec::with_capacity(self.retrievers.len());
         let mut statuses = Vec::with_capacity(self.retrievers.len());
         let mut applied = 0usize;
         let mut failed = 0usize;
@@ -310,15 +314,7 @@ impl UniversalSearchModule {
                 Ok(Answer { window, coverage }) => {
                     end_query(transaction).await?;
                     applied += 1;
-                    fused.extend(window.into_iter().enumerate().map(|(rank, entity)| {
-                        (
-                            rank,
-                            Ranked {
-                                retriever_index,
-                                entity,
-                            },
-                        )
-                    }));
+                    windows.push((retriever_index, window));
                     ranked_status(retriever.kind(), coverage)
                 }
                 Err(QueryError::Retriever(error)) => {
@@ -345,20 +341,7 @@ impl UniversalSearchModule {
         if applied > 0 && failed == applied {
             return Err(Error::ServiceUnavailable);
         }
-        // Reciprocal-rank fusion with equal weights. No Entity comes from two
-        // retrievers, since Call Paths are kind-prefixed, so its fused score
-        // is 1 / (k + rank) and the fused order is the order of rank. At equal
-        // rank the earlier retriever comes first, then the Call Path.
-        fused.sort_by(|(left_rank, left), (right_rank, right)| {
-            left_rank
-                .cmp(right_rank)
-                .then_with(|| left.retriever_index.cmp(&right.retriever_index))
-                .then_with(|| left.entity.call_path().cmp(right.entity.call_path()))
-        });
-        Ok((
-            fused.into_iter().map(|(_rank, ranked)| ranked).collect(),
-            statuses,
-        ))
+        Ok((fuse(windows), statuses))
     }
 
     /// Describes one exact complete current Call Path independently of relevance health.
@@ -536,6 +519,35 @@ fn query_terms(query: &str) -> Vec<String> {
     terms.sort();
     terms.dedup();
     terms
+}
+
+/// Fuses the retrievers' windows, each `(retriever index, window)` in
+/// retriever order: the strong entries of every window by position, then the
+/// weak ones by position. At equal position the earlier retriever comes
+/// first. Each retriever marks its own entries by its own rule and signals,
+/// so only a position and that mark cross into the engine, and no score is
+/// compared across kinds. A weak entry is demoted below every strong one,
+/// never dropped.
+fn fuse(windows: Vec<(usize, Vec<WindowEntry>)>) -> Vec<Ranked> {
+    let mut entries = windows
+        .into_iter()
+        .flat_map(|(retriever_index, window)| {
+            window
+                .into_iter()
+                .enumerate()
+                .map(move |(position, entry)| (!entry.strong, position, retriever_index, entry))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(weak, position, retriever_index, _entry)| {
+        (*weak, *position, *retriever_index)
+    });
+    entries
+        .into_iter()
+        .map(|(_weak, _position, retriever_index, entry)| Ranked {
+            retriever_index,
+            entity: entry.entity,
+        })
+        .collect()
 }
 
 /// A ranked retriever's state follows from its coverage.
