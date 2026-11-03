@@ -13,6 +13,7 @@
 //! `POST /oauth/session/end` takes `session` and `client_id` and answers an
 //! empty `200`, whether or not the session existed.
 //!
+//! `invalid_client` means the client did not authenticate as it registered.
 //! `invalid_grant` means the client must sign in again. `503` means storage
 //! did not answer and the request may be retried: none of these requests
 //! changes anything that a retry could repeat.
@@ -23,28 +24,29 @@ use axum::body::to_bytes;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use coral_auth::oauth_clients::AuthenticatedClient;
 use coral_auth::user_tokens::TokenRefusal;
 use coral_telemetry::safe;
 use zeroize::Zeroizing;
 
 use super::AuthorizationServerHttpState;
+use super::client_authentication::{HeaderCredential, authenticate};
 use super::response::security_headers;
 use super::token::{
-    FormError, MAX_BODY_BYTES, TokenError, TokenForm, client_auth_rejection, json_response,
-    now_unix_nanos, parse_form, token_error, valid_content_type,
+    FormError, MAX_BODY_BYTES, TokenError, TokenForm, json_response, now_unix_nanos, parse_form,
+    token_error, valid_content_type,
 };
 
 pub(super) async fn start(
     State(state): State<AuthorizationServerHttpState>,
     request: Request,
 ) -> Response {
-    let form = match read_form(request).await {
-        Ok(form) => form,
+    let (client, form) = match read_form(&state, request).await {
+        Ok(read) => read,
         Err(response) => return *response,
     };
-    let (Some(refresh_token), Some(client_id), Some(max_age)) = (
+    let (Some(refresh_token), Some(max_age)) = (
         present(form.refresh_token.as_ref()),
-        present(form.client_id.as_ref()),
         form.max_age.as_deref().and_then(|value| session_age(value)),
     ) else {
         return token_error(TokenError::InvalidRequest);
@@ -54,7 +56,7 @@ pub(super) async fn start(
     };
     match state
         .tokens
-        .start_web_session(refresh_token, client_id, max_age, now)
+        .start_web_session(refresh_token, &client, max_age, now)
         .await
     {
         Ok(started) => json_response(
@@ -72,24 +74,17 @@ pub(super) async fn token(
     State(state): State<AuthorizationServerHttpState>,
     request: Request,
 ) -> Response {
-    let form = match read_form(request).await {
-        Ok(form) => form,
+    let (client, form) = match read_form(&state, request).await {
+        Ok(read) => read,
         Err(response) => return *response,
     };
-    let (Some(session), Some(client_id)) = (
-        present(form.session.as_ref()),
-        present(form.client_id.as_ref()),
-    ) else {
+    let Some(session) = present(form.session.as_ref()) else {
         return token_error(TokenError::InvalidRequest);
     };
     let Some(now) = now_unix_nanos() else {
         return token_error(TokenError::ServerError);
     };
-    match state
-        .tokens
-        .web_session_token(session, client_id, now)
-        .await
-    {
+    match state.tokens.web_session_token(session, &client, now).await {
         Ok(minted) => {
             // The token expires after `now` by construction; one second is
             // the least a client can schedule its next request against.
@@ -112,27 +107,26 @@ pub(super) async fn end(
     State(state): State<AuthorizationServerHttpState>,
     request: Request,
 ) -> Response {
-    let form = match read_form(request).await {
-        Ok(form) => form,
+    let (client, form) = match read_form(&state, request).await {
+        Ok(read) => read,
         Err(response) => return *response,
     };
-    let (Some(session), Some(client_id)) = (
-        present(form.session.as_ref()),
-        present(form.client_id.as_ref()),
-    ) else {
+    let Some(session) = present(form.session.as_ref()) else {
         return token_error(TokenError::InvalidRequest);
     };
-    match state.tokens.end_web_session(session, client_id).await {
+    match state.tokens.end_web_session(session, &client).await {
         Ok(()) => (StatusCode::OK, security_headers()).into_response(),
         Err(refusal) => refused(refusal),
     }
 }
 
-/// Reads a bounded, public-client OAuth form, or the response refusing it.
-async fn read_form(request: Request) -> Result<TokenForm, Box<Response>> {
-    if let Some(response) = client_auth_rejection(request.headers()) {
-        return Err(Box::new(response));
-    }
+/// Reads a bounded OAuth form and authenticates the client it names, or
+/// returns the response refusing it.
+async fn read_form(
+    state: &AuthorizationServerHttpState,
+    request: Request,
+) -> Result<(AuthenticatedClient, TokenForm), Box<Response>> {
+    let header = HeaderCredential::parse(request.headers())?;
     if !valid_content_type(request.headers()) {
         return Err(Box::new(token_error(TokenError::InvalidRequest)));
     }
@@ -140,12 +134,16 @@ async fn read_form(request: Request) -> Result<TokenForm, Box<Response>> {
         return Err(Box::new(token_error(TokenError::InvalidRequest)));
     };
     let body = Zeroizing::new(Vec::from(body));
-    parse_form(&body).map_err(|error| {
+    let mut form = parse_form(&body).map_err(|error| {
         Box::new(token_error(match error {
-            FormError::InvalidClient => TokenError::InvalidClient,
             FormError::Malformed | FormError::InvalidScope => TokenError::InvalidRequest,
         }))
+    })?;
+    let client = authenticate(state, header, &mut form, || {
+        refused(TokenRefusal::Unavailable)
     })
+    .await?;
+    Ok((client, form))
 }
 
 fn present(value: Option<&Zeroizing<String>>) -> Option<&str> {
@@ -212,7 +210,9 @@ mod tests {
     use serde_json::Value;
     use url::form_urlencoded;
 
-    use super::super::token::tests::{CLIENT, request, signed_in, state};
+    use super::super::token::tests::{
+        CLIENT, confidential_sign_in, request, send, signed_in, state,
+    };
     use super::{end, start, token};
 
     fn form(pairs: &[(&str, &str)]) -> Request<Body> {
@@ -353,5 +353,36 @@ mod tests {
         let value: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(value["error"], "invalid_grant");
         assert!(!body.contains(session));
+    }
+
+    /// A confidential client's refresh token starts no session without the
+    /// client's secret, and the refusal leaves its grant live.
+    #[tokio::test]
+    async fn a_session_start_authenticates_a_confidential_client_first() {
+        let (state, _codes, _session, database) = state().await;
+        let sign_in = confidential_sign_in(&state, &database).await;
+        let token = sign_in.refresh_token(&state).await;
+        let pairs = [
+            ("refresh_token", token.as_str()),
+            ("client_id", sign_in.client.as_str()),
+            ("max_age", "3600"),
+        ];
+        let (status, body) = read(start(State(state.clone()), form(&pairs)).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let value: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["error"], "invalid_client");
+        let refresh = form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("grant_type", "refresh_token"),
+                ("refresh_token", token.as_str()),
+                ("client_id", sign_in.client.as_str()),
+            ])
+            .finish();
+        let (status, _headers, body) = send(state, request(sign_in.with_secret(&refresh))).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the refusal left the grant live: {body}"
+        );
     }
 }

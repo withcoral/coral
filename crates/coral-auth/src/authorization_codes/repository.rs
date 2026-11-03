@@ -106,7 +106,7 @@ fn spendable(code_digest: &str, redemption: CodeRedemption<'_>, now_unix_nanos: 
         .add(Expr::col(Codes::CodeDigest).eq(code_digest))
         .add(Expr::col(Codes::RedeemedAtUnixNanos).is_null())
         .add(Expr::col(Codes::ExpiresAtUnixNanos).gt(now_unix_nanos))
-        .add(Expr::col(Codes::ClientId).eq(redemption.client_id))
+        .add(Expr::col(Codes::ClientId).eq(redemption.client.client_id()))
         .add(Expr::col(Codes::RedirectUri).eq(redemption.redirect_uri))
         .add(Expr::col(Codes::CodeChallenge).eq(redemption.code_challenge))
         .add(Expr::col(Codes::Resource).eq(redemption.resource))

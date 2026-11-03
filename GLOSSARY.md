@@ -33,7 +33,12 @@ Membership removal, cannot be undone by signing in again, and does not disable W
 the User created them or provisioned their Provider Accounts. _Avoid_: User deletion, automatic session-based
 reactivation, Agent disablement
 
-**Refresh Grant**: The durable right one sign-in gives one OAuth client to obtain new User access tokens without
+**OAuth Client**: Client software that a User signs in to Coral through, identified by a DCR client ID or a CIMD URL.
+A public client proves only that it holds the redirect and the PKCE verifier. A confidential client also proves that it
+holds the secret issued when it registered. A client grants no authority, and its secret is never a Coral credential.
+_Avoid_: Agent Registration, client credential, app
+
+**Refresh Grant**: The durable right one sign-in gives one OAuth Client to obtain new User access tokens without
 signing in again, until an absolute expiry fixed at the sign-in. Only a client that declares the `refresh_token` grant
 gets one. It fixes the User, client, resource, private audience, and Workspace of the sign-in; a refresh cannot change
 them. Each refresh spends one single-use refresh token and returns its successor; presenting a spent token ends the
