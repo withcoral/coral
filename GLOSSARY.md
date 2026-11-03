@@ -33,6 +33,24 @@ Membership removal, cannot be undone by signing in again, and does not disable W
 the User created them or provisioned their Provider Accounts. _Avoid_: User deletion, automatic session-based
 reactivation, Agent disablement
 
+**Refresh Grant**: The durable right one sign-in gives one OAuth client to obtain new User access tokens without
+signing in again, until an absolute expiry fixed at the sign-in. Only a client that declares the `refresh_token` grant
+gets one. It fixes the User, client, resource, private audience, and Workspace of the sign-in; a refresh cannot change
+them. Each refresh spends one single-use refresh token and returns its successor; presenting a spent token ends the
+grant. A refresh rechecks enabled Organization Membership and, for a Workspace-scoped grant, Workspace Membership, and
+never consults the upstream identity provider. Removing either Membership ends the grants it supported, and rejoining
+revives none. Ending a grant stops refresh only; access tokens already issued keep their expiry. _Avoid_: session,
+offline access, sliding expiry
+_In Reef_: never named
+
+**Web Session**: Coral's hold on one Reef sign-in's Refresh Grant, named by an opaque handle carried in the browser's
+Reef session cookie. Reef resolves the handle into a fresh Reef access token on each request, so the session
+outlives its access tokens; resolving changes nothing, so any number of requests and Reef processes share one session.
+A Web Session ends at the earlier of its own maximum age and its grant's absolute expiry, and never extends. Signing
+out ends the session and its grant; so do revocation, replay of its spent refresh token, and Membership removal. Only a
+Reef grant can back one. _Avoid_: session token, browser session, refresh cookie
+_In Reef_: never named
+
 **User Profile**: A User's mutable name and email, neither guaranteed unique, distinct from the stable User identity and
 never a grant of authority. Conflicting emails do not merge Users or transfer access. Workspace Owners can see names
 and emails in authorized people and Agent-creator views; Members can see their own profile and the designated Owners'
@@ -400,7 +418,7 @@ global provider type
 **Discoverable Tool**: A Tool that Principal-facing discovery returns to one Principal now. Current
 Workspace authority, Principal state, Provider lifecycle, Tool Availability, and Tool Access State permit it,
 and its Credential Route can serve that Principal. Discoverability is not Account readiness: a User's Discoverable
-Tool can still require that User to connect an Account before dispatch. Search indexes and cursors confer no
+Tool can still require that User to connect an Account before dispatch. Search indexes and page offsets confer no
 discoverability. _Avoid_: Ready Tool, discovery readiness
 
 **Universal Search**: Principal-filtered relevance discovery over the Principal's Discoverable Tools and Saved

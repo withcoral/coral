@@ -897,8 +897,11 @@ message ActivitySearchContext {
   optional string provider = 2;
   // Page size used, including the default when the caller gave none.
   uint32 limit = 3;
-  // Page cursor the caller passed. Absent for the first page.
-  optional string cursor = 4;
+  reserved 4;
+  reserved "cursor";
+  // Ranked results the page skipped. 0 for the first page, and for a page
+  // retained before pages had an offset.
+  uint32 offset = 5;
 }
 // The description a Task asked for.
 message ActivityDescribeContext {

@@ -1,0 +1,64 @@
+-- Refresh Grants: after one interactive sign-in, an OAuth client that declared
+-- the refresh_token grant may exchange single-use refresh tokens for new
+-- access tokens until the grant's absolute expiry. They are deployment-level
+-- OAuth state, like authorization codes, found by a refresh token's digest.
+CREATE TABLE oauth_refresh_grants (
+    grant_id TEXT NOT NULL PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    -- The canonical resource the sign-in approved.
+    resource TEXT NOT NULL,
+    -- `mcp` or `reef` for a first-party private audience; null when the
+    -- access token's audience is the resource itself.
+    private_audience TEXT,
+    -- The Workspace whose authority the grant answers to, if any.
+    workspace_id TEXT,
+    -- Whether each access token names that Workspace. A Workspace's public
+    -- MCP URL fixes the Workspace itself, so its tokens name none.
+    scoped_tokens BOOLEAN NOT NULL,
+    created_at_unix_nanos BIGINT NOT NULL,
+    -- Fixed at the sign-in; rotation never extends it.
+    expires_at_unix_nanos BIGINT NOT NULL,
+    rotations BIGINT NOT NULL CHECK (rotations >= 0)
+);
+
+CREATE INDEX oauth_refresh_grants_user_idx
+    ON oauth_refresh_grants (user_id, created_at_unix_nanos);
+CREATE INDEX oauth_refresh_grants_expiry_idx
+    ON oauth_refresh_grants (expires_at_unix_nanos);
+
+-- Every refresh token a grant issued, current or consumed. A consumed token
+-- stays while its grant can refresh, so presenting it again is detected as a
+-- replay. Only the base64url SHA-256 of each token is stored.
+CREATE TABLE oauth_refresh_tokens (
+    token_digest TEXT NOT NULL PRIMARY KEY,
+    grant_id TEXT NOT NULL
+        REFERENCES oauth_refresh_grants (grant_id) ON DELETE CASCADE,
+    consumed_at_unix_nanos BIGINT
+);
+
+CREATE INDEX oauth_refresh_tokens_grant_idx ON oauth_refresh_tokens (grant_id);
+
+-- Whether the client that started the sign-in declared the refresh_token grant.
+ALTER TABLE oauth_authorization_codes
+    ADD COLUMN refresh_eligible BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Whether a dynamically registered client declared the refresh_token grant.
+ALTER TABLE oauth_clients
+    ADD COLUMN refresh_eligible BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- A web session holds one Reef Refresh Grant on Reef's behalf, so the browser
+-- carries only an opaque handle and no Reef process holds a refresh token.
+-- Ending the grant ends its session.
+CREATE TABLE oauth_web_sessions (
+    -- Base64url SHA-256 of the session handle. The handle is never stored.
+    session_digest TEXT NOT NULL PRIMARY KEY,
+    grant_id TEXT NOT NULL
+        REFERENCES oauth_refresh_grants (grant_id) ON DELETE CASCADE,
+    -- Fixed at the start, never later than the grant's own expiry.
+    expires_at_unix_nanos BIGINT NOT NULL,
+    CONSTRAINT oauth_web_sessions_grant_uq UNIQUE (grant_id)
+);
+
+CREATE INDEX oauth_web_sessions_expiry_idx
+    ON oauth_web_sessions (expires_at_unix_nanos);

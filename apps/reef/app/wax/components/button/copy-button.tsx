@@ -13,6 +13,8 @@ interface CopyButtonProps {
   children?: ReactNode
   className?: string
   disabled?: boolean
+  /** What the failure toast tells the reader to do. */
+  failureDescription?: string
   iconName?: IconName
   onCopy?: () => void
   size?: ButtonSize
@@ -31,6 +33,7 @@ export function CopyButton({
   children,
   className,
   disabled = false,
+  failureDescription = 'Select and copy the text manually.',
   iconName = 'Copy',
   onCopy,
   size = '32',
@@ -51,10 +54,10 @@ export function CopyButton({
       setCopied(false)
       addToast('error', {
         title: 'Copy failed',
-        description: 'Select and copy the text manually.',
+        description: failureDescription,
       })
     }
-  }, [textToCopy, onCopy])
+  }, [failureDescription, textToCopy, onCopy])
 
   const button = (
     <Container

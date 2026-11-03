@@ -16,7 +16,7 @@ use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 
 use crate::access::ProviderCallRoot;
-use crate::{Error, Provider, ProviderId, ProviderState, ToolAuthoringMaterial, repository};
+use crate::{Error, Provider, ProviderId, ToolAuthoringMaterial, repository};
 
 /// Everything Universal Search may index about one Generation: the Provider's
 /// identity and one entry per structurally available Tool.
@@ -199,8 +199,13 @@ pub async fn prepare_active_generation_entries_in_transaction(
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
 ) -> Result<Option<GenerationEntries>, Error> {
-    let Some(stored) =
-        repository::provider_in_transaction(transaction, workspace_id, provider_id).await?
+    let Some(stored) = repository::current_provider(
+        transaction,
+        workspace_id,
+        repository::ProviderKey::Id(provider_id),
+        repository::ProviderHold::None,
+    )
+    .await?
     else {
         return Ok(None);
     };
@@ -371,7 +376,7 @@ pub(crate) async fn active_providers(
         repository::management_providers(transaction, workspace_id, provider_filter)
             .await?
             .into_iter()
-            .filter(|stored| stored.provider.state() == ProviderState::Active)
+            .filter_map(repository::ProviderWithActiveGeneration::into_active)
             .map(|stored| ActiveProvider {
                 provider: stored.provider,
                 generation_id: stored.generation_id,

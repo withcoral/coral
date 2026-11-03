@@ -80,6 +80,15 @@ impl PreparedAccessRemoval {
     pub fn lost_access(&self) -> &[LostWorkspaceAccess] {
         &self.lost
     }
+    /// The User whose Organization Membership ends, when it does. Their
+    /// authority ends everywhere, including outside every Workspace.
+    #[must_use]
+    pub const fn departing_organization_member(&self) -> Option<&UserId> {
+        match &self.target {
+            PreparedTarget::OrganizationMember { user, .. } => Some(user),
+            PreparedTarget::WorkspaceMember(..) | PreparedTarget::Agent(..) => None,
+        }
+    }
     /// Authorized source for domain-owned lifecycle evidence.
     #[must_use]
     pub const fn authority_source(&self) -> AuthoritySource {

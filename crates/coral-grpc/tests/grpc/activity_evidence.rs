@@ -40,6 +40,7 @@ async fn historical_account_selection_verifies_the_original_run_reference() {
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap();
     let run = start(&f, "await coral.providers.evidence.read({});").await;
@@ -467,6 +468,7 @@ async fn invocation_wire_rejects_an_mcp_is_error_and_keeps_its_native_data() {
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap();
     let run = start(
@@ -557,7 +559,7 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
                 query: Some("  private missing café  ".into()),
                 provider: Some(provider.into()),
                 limit: Some(7),
-                cursor: None,
+                offset: Some(3),
             },
         )
         .await
@@ -639,7 +641,7 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
                         query: Some("  private missing café  ".into()),
                         provider: Some(provider.into()),
                         limit: 7,
-                        cursor: None,
+                        offset: 3,
                     }
                 ))
             );
@@ -1415,6 +1417,7 @@ async fn publish_openapi(
         )
         .await
         .unwrap()
+        .skip_search()
         .published_provider()
         .unwrap()
         .id()

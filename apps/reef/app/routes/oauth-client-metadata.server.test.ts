@@ -19,7 +19,7 @@ describe('OAuth client metadata route', () => {
     expect(body).toEqual({
       client_id: 'https://coral-web.example.test/.well-known/oauth-client',
       client_name: 'Coral',
-      grant_types: ['authorization_code'],
+      grant_types: ['authorization_code', 'refresh_token'],
       redirect_uris: [
         'https://coral-web.example.test/auth/callback',
         'https://coral-web.example.test/provider-setup/oauth/callback',

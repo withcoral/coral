@@ -160,34 +160,60 @@ async fn unsafe_metadata_is_rejected_without_spending_admission_and_ids_never_fe
     }
 }
 
+/// A registration that declares the `refresh_token` grant is told so and
+/// resolves as refresh-eligible after reopening; one that omits it is not.
 #[tokio::test]
 async fn pi_public_registration_resolves_after_reopening_the_module() {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let clients = OAuthClients::new(fixture.database(), Arc::new(NoFetch));
-    let request = serde_json::from_value(json!({
-        "redirect_uris": ["http://127.0.0.1:49152/callback"],
-        "client_name": "pi-mcp-adapter",
-        "token_endpoint_auth_method": "none",
-        "grant_types": ["authorization_code", "refresh_token"],
-        "response_types": ["code"],
-        "logo_uri": "http://169.254.169.254/private",
-        "scope": "admin"
-    }))
-    .unwrap();
-    let registered = clients.register(request, 1000).await.unwrap();
-    assert!(registered.client_id.starts_with("dcr_"));
-    let accepted = serde_json::to_value(&registered).unwrap();
-    assert_eq!(accepted["grant_types"], json!(["authorization_code"]));
-    assert_eq!(accepted["token_endpoint_auth_method"], "none");
-    assert_eq!(accepted["scope"], "");
-    assert!(accepted.get("client_secret").is_none());
-    assert!(accepted.get("logo_uri").is_none());
+    let mut registered = Vec::new();
+    for (grant_types, eligible, echoed) in [
+        (
+            json!(["authorization_code", "refresh_token"]),
+            true,
+            json!(["authorization_code", "refresh_token"]),
+        ),
+        (
+            json!(["authorization_code"]),
+            false,
+            json!(["authorization_code"]),
+        ),
+        (
+            serde_json::Value::Null,
+            false,
+            json!(["authorization_code"]),
+        ),
+    ] {
+        let request = serde_json::from_value(json!({
+            "redirect_uris": ["http://127.0.0.1:49152/callback"],
+            "client_name": "pi-mcp-adapter",
+            "token_endpoint_auth_method": "none",
+            "grant_types": grant_types,
+            "response_types": ["code"],
+            "logo_uri": "http://169.254.169.254/private",
+            "scope": "admin"
+        }))
+        .unwrap();
+        let client = clients.register(request, 1000).await.unwrap();
+        assert!(client.client_id.starts_with("dcr_"));
+        let accepted = serde_json::to_value(&client).unwrap();
+        assert_eq!(accepted["grant_types"], echoed, "{grant_types}");
+        assert_eq!(accepted["token_endpoint_auth_method"], "none");
+        assert_eq!(accepted["scope"], "");
+        assert!(accepted.get("client_secret").is_none());
+        assert!(accepted.get("logo_uri").is_none());
+        assert!(accepted.get("refresh_eligible").is_none());
+        registered.push((client.client_id, eligible));
+    }
     drop(clients);
     let reopened = OAuthClients::new(
         Arc::new(fixture.connect_peer().await.unwrap()),
         Arc::new(NoFetch),
     );
-    let resolved = reopened.resolve(&registered.client_id).await.unwrap();
-    assert_eq!(resolved.client_name, "pi-mcp-adapter");
-    assert_eq!(resolved.redirect_uris, ["http://127.0.0.1:49152/callback"]);
+    for (client_id, eligible) in registered {
+        let resolved = reopened.resolve(&client_id).await.unwrap();
+        assert_eq!(resolved.client_name, "pi-mcp-adapter");
+        assert_eq!(resolved.redirect_uris, ["http://127.0.0.1:49152/callback"]);
+        assert_eq!(resolved.refresh_eligible, eligible, "{client_id}");
+    }
 }
