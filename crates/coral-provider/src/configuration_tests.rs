@@ -235,13 +235,13 @@ async fn publication_configuration_race(aba: bool) {
         .publish_workspace_provider(&context, request.clone())
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(result.outcome(), ProviderPublicationOutcome::Succeeded);
     let replay = providers
         .publish_workspace_provider(&context, request)
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(replay, result);
     assert_eq!(
         providers
@@ -285,7 +285,7 @@ async fn update_acceptance_is_bound_to_the_reviewed_configuration_revision() {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     let provider = initial.published_provider().unwrap();
     let replacement = h
         .providers
@@ -360,7 +360,7 @@ async fn update_acceptance_is_bound_to_the_reviewed_configuration_revision() {
             .regenerate_provider(&context, fresh)
             .await
             .unwrap()
-            .value
+            .skip_search()
             .outcome(),
         ProviderPublicationOutcome::Succeeded
     );
@@ -484,7 +484,7 @@ async fn reviewed_public_application_changes_cancel_consent_and_persist_for_call
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     let provider = published.published_provider().unwrap();
     let tool = h
         .providers
@@ -546,7 +546,7 @@ async fn reviewed_public_application_changes_cancel_consent_and_persist_for_call
             .regenerate_provider(&context, request)
             .await
             .unwrap()
-            .value
+            .skip_search()
             .outcome(),
         ProviderPublicationOutcome::Succeeded
     );
@@ -872,7 +872,7 @@ async fn oauth_configuration_edit(phase: OAuthStage) {
             )
             .await
             .unwrap()
-            .value;
+            .skip_search();
         assert_eq!(publication.outcome(), ProviderPublicationOutcome::Failed);
         assert_eq!(publication.diagnostic().unwrap().code(), "account_required");
         assert!(publication.published_provider().is_none());
@@ -994,7 +994,7 @@ async fn incompatible_update_preserves_route_and_reconnect_repairs_only_the_exac
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     let provider = published.published_provider().unwrap();
     let shared_account = h
         .accounts
@@ -1154,7 +1154,7 @@ async fn incompatible_update_preserves_route_and_reconnect_repairs_only_the_exac
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(updated.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(
         credential_for(
@@ -1353,7 +1353,7 @@ async fn update_retains_saved_variables_and_exposes_changed_defaults_and_removed
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     let provider = published.published_provider().unwrap();
     let replacement = h
         .providers
@@ -1655,7 +1655,7 @@ async fn anonymous_and_normalized_destination_updates_do_not_warn_but_new_creden
             )
             .await
             .unwrap()
-            .value;
+            .skip_search();
         let provider = published.published_provider().unwrap();
         let replacement = h
             .providers
@@ -1706,7 +1706,7 @@ async fn anonymous_and_normalized_destination_updates_do_not_warn_but_new_creden
                     .regenerate_provider(&context, request)
                     .await
                     .unwrap()
-                    .value
+                    .skip_search()
                     .outcome(),
                 ProviderPublicationOutcome::Succeeded
             );
@@ -1836,7 +1836,7 @@ async fn scope_header_and_method_differences_require_confirmation_only_when_owne
             )
             .await
             .unwrap()
-            .value;
+            .skip_search();
         let provider = published.published_provider().unwrap();
         let replacement = h
             .providers
@@ -1908,7 +1908,7 @@ async fn scope_header_and_method_differences_require_confirmation_only_when_owne
             )
             .await
             .unwrap()
-            .value;
+            .skip_search();
         assert_eq!(updated.outcome(), ProviderPublicationOutcome::Succeeded);
     }
 }
@@ -2458,7 +2458,7 @@ async fn modules_retain_independent_outbound_permissions_for_preview_and_publica
             )
             .await
             .unwrap()
-            .value;
+            .skip_search();
         if *enabled {
             assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
             assert!(publication.published_provider().is_some());

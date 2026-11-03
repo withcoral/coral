@@ -470,7 +470,7 @@ async fn provider_disablement_at_the_enforcement_point_blocks_dispatch() {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     let provider = publication.published_provider().unwrap();
     let selected_provider = provider;
     fixture

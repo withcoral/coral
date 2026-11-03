@@ -491,7 +491,7 @@ impl BuiltinWorkspace {
                 .update_builtin_catalog(&outdated, at)
                 .await
                 .unwrap()
-                .value
+                .skip_search()
             {
                 updated.push(outdated.provider_id().clone());
             }
@@ -677,19 +677,16 @@ async fn two_processes_that_boot_together_activate_one_generation() {
 
     // The winner tells search to read its Generation and drop the outdated
     // one; the process that found it replaced tells search nothing.
-    let (winner, loser) = if left.value {
-        (left, right)
-    } else {
-        (right, left)
-    };
-    assert!(winner.value && !loser.value, "{winner:?} {loser:?}");
-    let crate::SearchChange::Activated(activated) = &winner.search else {
-        panic!("an update activates a Generation: {:?}", winner.search);
+    let (left, right) = (left.into_parts(), right.into_parts());
+    let (winner, loser) = if left.0 { (left, right) } else { (right, left) };
+    assert!(winner.0 && !loser.0, "{winner:?} {loser:?}");
+    let crate::SearchChange::Activated(activated) = &winner.1 else {
+        panic!("an update activates a Generation: {:?}", winner.1);
     };
     assert_eq!(activated.provider(), outdated.provider_id());
     assert_eq!(activated.replaced(), Some(outdated.generation_id()));
     assert_ne!(activated.generation(), outdated.generation_id());
-    assert_eq!(loser.search, crate::SearchChange::Unchanged);
+    assert_eq!(loser.1, crate::SearchChange::Unchanged);
     assert_eq!(arranged.keys().await, keys);
     assert_eq!(arranged.events().await.len(), before + 1);
 }
@@ -960,13 +957,14 @@ async fn a_boot_installs_the_builtin_provider_only_where_a_workspace_has_none() 
     let before = arranged.events().await.len();
 
     for workspace in [&arranged.workspace, earlier, archived] {
-        let committed = arranged
+        let (installed, search) = arranged
             .providers
             .install_missing_builtin(workspace.id(), 20)
             .await
-            .unwrap();
+            .unwrap()
+            .into_parts();
         // Search reads the installed Provider's first Generation.
-        match (&committed.value, &committed.search) {
+        match (&installed, &search) {
             (Some(provider), crate::SearchChange::Activated(activated)) => {
                 assert_eq!(activated.workspace(), workspace.id());
                 assert_eq!(activated.provider(), provider.id());
@@ -975,7 +973,6 @@ async fn a_boot_installs_the_builtin_provider_only_where_a_workspace_has_none() 
             (None, crate::SearchChange::Unchanged) => {}
             other => panic!("an install names what it activated: {other:?}"),
         }
-        let installed = committed.value;
         let name = workspace.display_name().as_str();
         assert_eq!(
             installed.is_some(),
@@ -1035,7 +1032,7 @@ async fn two_processes_that_boot_together_install_one_builtin_provider() {
                 .install_missing_builtin(&workspace_id, at)
                 .await
                 .unwrap()
-                .value
+                .skip_search()
                 .is_some()
         }
     };

@@ -93,7 +93,7 @@ async fn an_mcp_is_error_rejects_the_call_and_provider_bound_reads_survive_run_o
             )
             .await
             .expect("publish")
-            .value
+            .skip_search()
             .published_provider()
             .expect("published MCP Provider");
     }

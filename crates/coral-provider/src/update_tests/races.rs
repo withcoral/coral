@@ -190,14 +190,14 @@ async fn first_shared_publication_wins_over_a_competing_prepared_replacement() {
         .regenerate_provider(&context, winner.clone())
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(first.outcome(), ProviderPublicationOutcome::Succeeded);
     let rejected = h
         .providers
         .regenerate_provider(&context, loser.clone())
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(rejected.outcome(), ProviderPublicationOutcome::Failed);
     assert_eq!(
         rejected.diagnostic().unwrap().code(),
@@ -215,7 +215,7 @@ async fn first_shared_publication_wins_over_a_competing_prepared_replacement() {
             .regenerate_provider(&context, winner)
             .await
             .unwrap()
-            .value,
+            .skip_search(),
         first
     );
     assert_eq!(

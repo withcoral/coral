@@ -229,7 +229,7 @@ async fn a_replay_a_reused_generation_or_a_failed_outcome_notifies_nothing() {
         .publish_workspace_provider(&change(&f.owner), creation.clone())
         .await
         .unwrap()
-        .value
+        .skip_search()
         .published_provider()
         .unwrap()
         .id()

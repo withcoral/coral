@@ -265,7 +265,7 @@ async fn agent_removal(shared: bool) {
             .regenerate_provider(&change_context(owner.clone(), 20, '2'), update)
             .await
             .unwrap()
-            .value,
+            .skip_search(),
         result
     );
     assert_eq!(

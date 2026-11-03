@@ -152,7 +152,7 @@ async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_
             .regenerate_provider(&context, request)
             .await
             .unwrap()
-            .value;
+            .skip_search();
         assert_eq!(
             published.outcome(),
             coral_provider::ProviderPublicationOutcome::Succeeded

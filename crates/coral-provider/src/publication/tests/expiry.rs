@@ -68,7 +68,7 @@ async fn account_grant_expiring_during_materialization_is_not_promoted() {
             providers
                 .publish_workspace_provider(&context, request)
                 .await
-                .map(|committed| committed.value)
+                .map(crate::Committed::skip_search)
         })
     };
     tokio::time::timeout(Duration::from_secs(5), materializer.held())
@@ -108,7 +108,7 @@ async fn account_grant_expiring_during_materialization_is_not_promoted() {
             .publish_workspace_provider(&before_expiry, request)
             .await
             .unwrap()
-            .value,
+            .skip_search(),
         result
     );
     assert_eq!(

@@ -69,7 +69,7 @@ async fn workspace_provider_deletion_removes_its_accounts_and_cancels_open_autho
         )
         .await
         .unwrap()
-        .value
+        .skip_search()
         .published_provider()
         .unwrap()
         .clone();

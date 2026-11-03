@@ -44,12 +44,12 @@ impl ProviderModule {
         )
         .await?;
         tx.commit().await?;
-        Ok(Committed {
-            value: (),
-            search: SearchChange::Removed {
+        Ok(Committed::new(
+            (),
+            SearchChange::Removed {
                 workspace: owner.clone(),
                 provider: provider.clone(),
             },
-        })
+        ))
     }
 }

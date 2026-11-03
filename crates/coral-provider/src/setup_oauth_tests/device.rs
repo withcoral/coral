@@ -310,7 +310,7 @@ async fn published_device_provider(
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider = publication.published_provider().unwrap().clone();
     (device, provider, completed)

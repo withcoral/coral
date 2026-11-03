@@ -120,11 +120,8 @@ impl ProviderModule {
             )
             .await?;
         transaction.commit().await?;
-        let committed = first_generation(provider, generation);
-        Ok(Committed {
-            value: Some(committed.value),
-            search: committed.search,
-        })
+        let (provider, search) = first_generation(provider, generation).into_parts();
+        Ok(Committed::new(Some(provider), search))
     }
 
     /// Writes the Built-in Provider with a Generation of the catalog this
@@ -183,15 +180,13 @@ impl ProviderModule {
 
 /// A new Built-in Provider, whose first Generation search must index.
 fn first_generation(provider: Provider, generation: ProviderGenerationId) -> Committed<Provider> {
-    Committed {
-        search: SearchChange::Activated(ActivatedGeneration::new(
-            provider.workspace_id().clone(),
-            provider.id().clone(),
-            generation,
-            None,
-        )),
-        value: provider,
-    }
+    let search = SearchChange::Activated(ActivatedGeneration::new(
+        provider.workspace_id().clone(),
+        provider.id().clone(),
+        generation,
+        None,
+    ));
+    Committed::new(provider, search)
 }
 
 /// The Built-in Provider's access, or `None` when the Workspace already has one.
@@ -264,15 +259,15 @@ impl ProviderModule {
             return Ok(Committed::unchanged(false));
         };
         transaction.commit().await?;
-        Ok(Committed {
-            value: true,
-            search: SearchChange::Activated(ActivatedGeneration::new(
+        Ok(Committed::new(
+            true,
+            SearchChange::Activated(ActivatedGeneration::new(
                 outdated.workspace_id().clone(),
                 outdated.provider_id().clone(),
                 generation,
                 Some(outdated.generation_id().clone()),
             )),
-        })
+        ))
     }
 
     /// The Generation that replaced `outdated`, or `None` when another

@@ -50,18 +50,19 @@ async fn a_creation_names_the_generation_it_activated_and_a_failure_names_none()
         CredentialRoute::None,
         "15000000-0000-4000-8000-000000000002",
     );
-    let failed = providers
+    let (failed, search) = providers
         .publish_workspace_provider(&context, conflict)
         .await
-        .expect("publish");
-    assert_eq!(failed.value.outcome(), ProviderPublicationOutcome::Failed);
-    assert_eq!(failed.search, SearchChange::Unchanged);
+        .expect("publish")
+        .into_parts();
+    assert_eq!(failed.outcome(), ProviderPublicationOutcome::Failed);
+    assert_eq!(search, SearchChange::Unchanged);
 
     let setup = fixture
         .replacement_setup(&providers, CREDENTIAL_FREE_OPENAPI, 60, '6')
         .await;
     let context = change_context(fixture.owner.clone(), 70, '7');
-    let created = providers
+    let (created, search) = providers
         .publish_workspace_provider(
             &context,
             publication_request(
@@ -73,15 +74,13 @@ async fn a_creation_names_the_generation_it_activated_and_a_failure_names_none()
             ),
         )
         .await
-        .expect("publish");
-    let provider = created
-        .value
-        .published_provider()
-        .expect("created Provider");
+        .expect("publish")
+        .into_parts();
+    let provider = created.published_provider().expect("created Provider");
     let generation = active_generation(&providers, &fixture.workspace_id, provider.id()).await;
     assert_ne!(generation, active);
     assert_eq!(
-        created.search,
+        search,
         SearchChange::Activated(ActivatedGeneration::new(
             fixture.workspace_id.clone(),
             provider.id().clone(),
@@ -126,13 +125,14 @@ async fn a_regeneration_names_the_generation_it_replaced_and_a_reuse_or_failure_
             .replacement_setup(&providers, document, 40, '4')
             .await;
         let context = change_context(fixture.owner.clone(), 50, '5');
-        let published = providers
+        let (published, search) = providers
             .regenerate_provider(
                 &context,
                 fixture.request(setup.id(), "15000000-0000-4000-8000-000000000012"),
             )
             .await
-            .expect("regenerate");
+            .expect("regenerate")
+            .into_parts();
         let after =
             active_generation(&providers, &fixture.workspace_id, &fixture.provider_id).await;
         let expected = match expected {
@@ -148,14 +148,14 @@ async fn a_regeneration_names_the_generation_it_replaced_and_a_reuse_or_failure_
             }
             Expected::Failed => {
                 assert_eq!(
-                    published.value.outcome(),
+                    published.outcome(),
                     ProviderPublicationOutcome::Failed,
                     "{case}"
                 );
                 SearchChange::Unchanged
             }
         };
-        assert_eq!(published.search, expected, "{case}");
+        assert_eq!(search, expected, "{case}");
     }
 }
 
@@ -189,12 +189,14 @@ async fn a_request_that_finds_its_committed_result_is_a_replay() {
         .expect("commit first");
     let events = fixture.events(&providers).await;
 
-    let replayed = providers
+    let (replayed, search) = providers
         .commit_publication(&context, second)
         .await
-        .expect("commit second");
-    assert_eq!(replayed.search, SearchChange::Unchanged);
-    assert_eq!(replayed.value, committed.value);
+        .expect("commit second")
+        .into_parts();
+    assert_eq!(search, SearchChange::Unchanged);
+    let committed = committed.skip_search();
+    assert_eq!(replayed, committed);
     assert_eq!(
         fixture.events(&providers).await,
         events,
@@ -208,5 +210,5 @@ async fn a_request_that_finds_its_committed_result_is_a_replay() {
     else {
         panic!("preparation replays a committed request");
     };
-    assert_eq!(stored, committed.value);
+    assert_eq!(stored, committed);
 }

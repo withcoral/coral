@@ -477,7 +477,7 @@ async fn challenge_produces_a_resumable_setup_that_consent_and_discovery_make_re
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider = publication.published_provider().unwrap().clone();
     // The Provider Configuration keeps what discovery found and the application
@@ -1577,7 +1577,7 @@ async fn automatic_bootstrap_prefers_metadata_documents_then_registration_else_n
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let shared = harness
         .accounts
@@ -2413,7 +2413,7 @@ async fn publication_without_material_takes_only_a_fitting_route_and_an_oauth_ap
         let case = format!("{source:?} under {route:?}");
         match expected {
             Expected::Published => {
-                let publication = published.unwrap().value;
+                let publication = published.unwrap().skip_search();
                 assert_eq!(
                     publication.outcome(),
                     ProviderPublicationOutcome::Succeeded,
@@ -2438,7 +2438,7 @@ async fn publication_without_material_takes_only_a_fitting_route_and_an_oauth_ap
                 }
             }
             Expected::Failed(code) => {
-                let publication = published.unwrap().value;
+                let publication = published.unwrap().skip_search();
                 assert_eq!(
                     publication.outcome(),
                     ProviderPublicationOutcome::Failed,
@@ -2891,7 +2891,7 @@ async fn a_ready_openapi_oauth_setup_signs_in_with_an_explicit_client_that_publi
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider = publication.published_provider().unwrap().clone();
     let contract = active_contract(&harness, workspace.id(), "oauth").await;
@@ -2951,7 +2951,7 @@ async fn a_ready_openapi_oauth_setup_signs_in_with_an_explicit_client_that_publi
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(regenerated.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(
         active_contract(&harness, workspace.id(), "oauth")
@@ -3760,7 +3760,7 @@ async fn confidential_application_lifecycle(organization: bool) {
             )
             .await
             .unwrap()
-            .value;
+            .skip_search();
         assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
         let published = publication.published_provider().unwrap();
         (published.clone(), published.access().clone())
@@ -4174,7 +4174,7 @@ async fn http_and_mcp_use_the_selected_authentication_for_exchange_and_refresh()
                     )
                     .await
                     .unwrap()
-                    .value;
+                    .skip_search();
                 assert_eq!(published.outcome(), ProviderPublicationOutcome::Succeeded);
                 let provider = published.published_provider().unwrap();
                 let result = credential_for(
@@ -4276,7 +4276,7 @@ async fn rotation_preserves_consent_but_contract_edits_cancel_pending_and_dispat
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     let provider = published.published_provider().unwrap();
     let oauth = || {
         OAuthClient::new(
@@ -4513,7 +4513,7 @@ async fn rotation_preserves_consent_but_contract_edits_cancel_pending_and_dispat
             )
             .await
             .unwrap()
-            .value;
+            .skip_search();
         assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
         assert_eq!(
             harness
@@ -4667,7 +4667,7 @@ async fn a_provider_configuration_holds_no_secret_or_credential_value() {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let document = json!({
         "openapi": "3.1.0", "info": { "title": "Private", "version": "1" },
@@ -4779,7 +4779,7 @@ async fn publication_enforces_application_secret_expiry_without_inspection() {
                     )
                     .await
                     .unwrap()
-                    .value;
+                    .skip_search();
                 (
                     publication.outcome(),
                     publication.diagnostic().map(|d| d.code().to_owned()),
@@ -4835,7 +4835,7 @@ async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_appli
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     let provider = publication.published_provider().unwrap();
     let rejection = Mock::given(method("POST"))
         .and(path("/token"))
@@ -4933,7 +4933,7 @@ async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_appli
             .regenerate_provider(&now_context, request.clone())
             .await
             .unwrap()
-            .value;
+            .skip_search();
         assert_eq!(
             result.outcome(),
             if succeeds {
@@ -4950,7 +4950,7 @@ async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_appli
             .regenerate_provider(&now_context, request)
             .await
             .unwrap()
-            .value;
+            .skip_search();
         assert_eq!(replay.id(), result.id());
         assert_eq!(replay.outcome(), result.outcome());
         assert_eq!(status().await.is_none(), repairs);
@@ -5116,7 +5116,7 @@ async fn successful_token_survives_application_status_write_failure() {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     let provider = publication.published_provider().unwrap();
     let authorization = harness
         .accounts
@@ -5240,7 +5240,7 @@ async fn published_account_denial_is_verified_terminal_and_replayable() {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     let provider = publication.published_provider().unwrap();
     let authorization = harness
         .accounts
@@ -5426,7 +5426,7 @@ async fn consent_issuance_rechecks_dns_on_setup_reads_account_reads_and_request_
                 )
                 .await
                 .unwrap()
-                .value;
+                .skip_search();
             let provider = publication.published_provider().unwrap();
             let request = super::account_tests::authorization_request();
             let client = crate::account::OAuthClient::new(

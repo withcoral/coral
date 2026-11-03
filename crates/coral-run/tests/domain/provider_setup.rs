@@ -411,7 +411,7 @@ impl AdminScope {
             )
             .await
             .unwrap()
-            .value
+            .skip_search()
             .published_provider()
             .expect("published Provider")
             .clone()
@@ -807,7 +807,7 @@ async fn a_tool_this_version_does_not_perform_fails_before_approval() {
             .update_builtin_catalog(&outdated, 20)
             .await
             .unwrap()
-            .value,
+            .skip_search(),
         "the newer Coral publishes its catalog"
     );
 

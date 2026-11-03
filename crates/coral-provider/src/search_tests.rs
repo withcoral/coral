@@ -133,7 +133,7 @@ async fn hits_hydrate_the_fields_the_stored_generations_entries_index() {
         )
         .await
         .unwrap()
-        .value
+        .skip_search()
         .published_provider()
         .expect("published MCP Provider")
         .clone();
@@ -255,7 +255,7 @@ async fn stored_entries_follow_the_providers_active_generation() {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(
         regeneration.outcome(),
         crate::ProviderPublicationOutcome::Succeeded
@@ -321,10 +321,10 @@ async fn a_committed_change_names_what_search_must_reread() {
     };
 
     // Search copies the display name, so it reads the Provider again.
-    let renamed = rename().await.unwrap();
-    assert_eq!(renamed.value.display_name(), "Renamed");
+    let (renamed, search) = rename().await.unwrap().into_parts();
+    assert_eq!(renamed.display_name(), "Renamed");
     assert_eq!(
-        renamed.search,
+        search,
         SearchChange::Refreshed {
             workspace: workspace.id().clone(),
             provider: provider.id().clone(),
@@ -345,15 +345,19 @@ async fn a_committed_change_names_what_search_must_reread() {
         (etag, events)
     };
     let before = stored().await;
-    assert_eq!(rename().await.unwrap().search, SearchChange::Unchanged);
+    assert_eq!(
+        rename().await.unwrap().into_parts().1,
+        SearchChange::Unchanged
+    );
     assert_eq!(stored().await, before, "the etag and the lifecycle events");
 
     let removed = providers
         .delete_provider(&context, workspace.id(), provider.id())
         .await
-        .unwrap();
+        .unwrap()
+        .into_parts();
     assert_eq!(
-        removed.search,
+        removed.1,
         SearchChange::Removed {
             workspace: workspace.id().clone(),
             provider: provider.id().clone(),

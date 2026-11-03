@@ -2896,7 +2896,7 @@ async fn publish_tools(
         .await
         .expect("publish tracer Provider");
     let provider_id = publication
-        .value
+        .skip_search()
         .published_provider()
         .expect("successful Provider publication")
         .id()

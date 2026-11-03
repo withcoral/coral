@@ -168,7 +168,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         .publish_workspace_provider(&context(&actor), request.clone())
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider = publication.published_provider().unwrap();
     assert_eq!(provider.call_root().as_str(), "coral.providers.weather");
@@ -202,7 +202,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(renamed.id(), provider.id());
     assert_eq!(renamed.call_root(), provider.call_root());
     assert_eq!(renamed.account_setting_version(), 1);
@@ -270,7 +270,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(conflict.outcome(), ProviderPublicationOutcome::Failed);
     assert_eq!(
         providers
@@ -460,7 +460,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
             .publish_workspace_provider(&context(&actor), request)
             .await
             .unwrap()
-            .value,
+            .skip_search(),
         publication
     );
     assert_eq!(
@@ -487,7 +487,7 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_ne!(
         replacement.published_provider().unwrap().id(),
         provider.id()
@@ -550,12 +550,12 @@ async fn publication_request_keys_are_workspace_scoped_and_actor_bound() {
         .publish_workspace_provider(&context(&actor), request_one.clone())
         .await
         .unwrap()
-        .value;
+        .skip_search();
     let b = providers
         .publish_workspace_provider(&context(&actor), request(two.id(), &second, "weather", key))
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_ne!(
         a.published_provider().unwrap().id(),
         b.published_provider().unwrap().id()
@@ -565,7 +565,7 @@ async fn publication_request_keys_are_workspace_scoped_and_actor_bound() {
             .publish_workspace_provider(&context(&actor), request_one.clone())
             .await
             .unwrap()
-            .value,
+            .skip_search(),
         a
     );
     let other = provision_user(db.database(), "user:other-owner", OrganizationRole::Owner).await;
@@ -623,14 +623,14 @@ async fn publication_request_keys_are_workspace_scoped_and_actor_bound() {
         .regenerate_provider(&context(&actor), update.clone())
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(committed.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(
         providers
             .regenerate_provider(&context(&actor), update.clone())
             .await
             .unwrap()
-            .value,
+            .skip_search(),
         committed
     );
     assert!(matches!(
@@ -668,7 +668,7 @@ async fn publication_request_keys_are_workspace_scoped_and_actor_bound() {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(independent.outcome(), ProviderPublicationOutcome::Succeeded);
 }
 
@@ -730,7 +730,7 @@ async fn existing_caller_binding_uses_the_workspace_provider_address() {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     let provider = publication.published_provider().unwrap();
     let authorization = accounts
         .start_user_authorization(
@@ -970,7 +970,7 @@ async fn foreign_workspace_mutations_are_denied_and_change_nothing() {
         )
         .await
         .unwrap()
-        .value
+        .skip_search()
         .published_provider()
         .unwrap()
         .clone();

@@ -242,7 +242,7 @@ async fn publishes_workspace_provider_catalog_and_access_atomically() {
         .publish_workspace_provider(&change_context(owner.clone(), 30, '3'), request.clone())
         .await
         .expect("publish Workspace-owned Provider")
-        .value;
+        .skip_search();
 
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     assert!(publication.diagnostic().is_none());
@@ -324,7 +324,7 @@ async fn publishes_workspace_provider_catalog_and_access_atomically() {
         .publish_workspace_provider(&change_context(owner.clone(), 40, '4'), request)
         .await
         .expect("replay terminal Publication")
-        .value;
+        .skip_search();
     assert_eq!(replay, publication);
     assert_eq!(
         providers
@@ -380,7 +380,7 @@ async fn successful_regeneration_atomically_activates_current_material_and_retai
         )
         .await
         .expect("regenerate Provider")
-        .value;
+        .skip_search();
 
     assert_eq!(
         regeneration.outcome(),
@@ -527,7 +527,7 @@ async fn regeneration_reuses_the_active_generation_only_for_an_unchanged_package
             )
             .await
             .expect("record regeneration")
-            .value;
+            .skip_search();
         let after = retained_tool(
             &providers,
             &fixture.workspace_id,
@@ -666,7 +666,7 @@ async fn failed_regeneration_consumes_setup_and_leaves_active_material_and_provi
         )
         .await
         .expect("record terminal regeneration failure")
-        .value;
+        .skip_search();
 
     assert_eq!(failed.outcome(), ProviderPublicationOutcome::Failed);
     assert_eq!(
@@ -715,7 +715,7 @@ async fn failed_regeneration_consumes_setup_and_leaves_active_material_and_provi
             .regenerate_provider(&change_context(fixture.owner.clone(), 60, '6'), request)
             .await
             .expect("replay failed regeneration")
-            .value,
+            .skip_search(),
         failed
     );
     let events = providers
@@ -766,7 +766,7 @@ async fn regeneration_materialization_holds_no_transaction_and_preserves_indepen
             providers
                 .regenerate_provider(&change_context(owner, 50, '5'), request)
                 .await
-                .map(|committed| committed.value)
+                .map(crate::Committed::skip_search)
         })
     };
     materializer.held().await;
@@ -907,7 +907,7 @@ async fn active_generation_race_records_no_outcome_and_leaves_setup_reusable() {
         )
         .await
         .expect("retry against the current active Generation")
-        .value;
+        .skip_search();
     assert_eq!(retried.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(
         tool_authoring_paths(&raced_providers, &fixture.workspace_id).await,
@@ -997,7 +997,7 @@ async fn regeneration_request_id_reuse_returns_conflict_without_changing_state()
         )
         .await
         .expect("the request UUID is independent in another Workspace")
-        .value;
+        .skip_search();
     assert_eq!(independent.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(materializer.calls(), 2);
     assert_eq!(
@@ -1113,7 +1113,7 @@ async fn archived_workspace_permits_exact_replay_and_safe_inspection() {
         .publish_workspace_provider(&change_context(owner.clone(), 43, '7'), request.clone())
         .await
         .expect("publish before archive")
-        .value;
+        .skip_search();
     let provider_id = publication
         .published_provider()
         .expect("published resources")
@@ -1133,7 +1133,7 @@ async fn archived_workspace_permits_exact_replay_and_safe_inspection() {
             .publish_workspace_provider(&change_context(owner.clone(), 45, '9'), request.clone())
             .await
             .expect("recover committed response after archive")
-            .value,
+            .skip_search(),
         publication
     );
     assert_eq!(
@@ -1211,7 +1211,7 @@ async fn malformed_openapi_records_terminal_structural_failures() {
         )
         .await
         .expect("record root structural failure")
-        .value;
+        .skip_search();
     assert_eq!(
         invalid_version.outcome(),
         ProviderPublicationOutcome::Failed
@@ -1245,7 +1245,7 @@ async fn malformed_openapi_records_terminal_structural_failures() {
         )
         .await
         .expect("record malformed Tool failure")
-        .value;
+        .skip_search();
     assert_eq!(
         malformed_tool.outcome(),
         ProviderPublicationOutcome::Succeeded
@@ -1292,7 +1292,7 @@ async fn malformed_openapi_records_terminal_structural_failures() {
         )
         .await
         .expect("publish catalog with unavailable Tool")
-        .value;
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider_id = publication
         .published_provider()
@@ -1367,7 +1367,7 @@ async fn structural_failure_consumes_setup_without_publishing_resources() {
         .publish_workspace_provider(&change_context(owner.clone(), 120, '7'), request.clone())
         .await
         .expect("record safe failed Publication")
-        .value;
+        .skip_search();
 
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Failed);
     assert!(publication.published_provider().is_none());
@@ -1413,7 +1413,7 @@ async fn structural_failure_consumes_setup_without_publishing_resources() {
         .publish_workspace_provider(&change_context(owner.clone(), 130, '8'), request)
         .await
         .expect("replay failed terminal Publication");
-    assert_eq!(replay.value, publication);
+    assert_eq!(replay.skip_search(), publication);
 
     let replacement_setup = providers
         .prepare_openapi_fixture(
@@ -1436,7 +1436,7 @@ async fn structural_failure_consumes_setup_without_publishing_resources() {
         )
         .await
         .expect("publish after structural failure")
-        .value;
+        .skip_search();
     assert_eq!(replacement.outcome(), ProviderPublicationOutcome::Succeeded);
 }
 
@@ -1556,14 +1556,14 @@ async fn request_id_reuse_with_different_content_fails_without_materializing() {
         )
         .await
         .expect("the same request UUID is independent in another Workspace")
-        .value;
+        .skip_search();
     assert_eq!(independent.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(
         providers
             .publish_workspace_provider(&change_context(owner, 240, '4'), other_request)
             .await
             .expect("replay the other Workspace's own terminal result")
-            .value,
+            .skip_search(),
         independent
     );
     assert_eq!(materializer.calls(), 2);
@@ -1629,7 +1629,7 @@ async fn duplicate_provider_namespace_is_one_terminal_domain_failure() {
         )
         .await
         .expect("record namespace conflict")
-        .value;
+        .skip_search();
 
     assert_eq!(conflict.outcome(), ProviderPublicationOutcome::Failed);
     assert!(conflict.published_provider().is_none());
@@ -1769,7 +1769,7 @@ fn spawn_publication(
         providers
             .publish_workspace_provider(&change_context(owner, at, trace_digit), request)
             .await
-            .map(|committed| committed.value)
+            .map(crate::Committed::skip_search)
     })
 }
 
@@ -1784,7 +1784,7 @@ fn spawn_regeneration(
         providers
             .regenerate_provider(&change_context(owner, at, trace_digit), request)
             .await
-            .map(|committed| committed.value)
+            .map(crate::Committed::skip_search)
     })
 }
 
@@ -1868,7 +1868,7 @@ async fn operational_materialization_failure_leaves_setup_reusable() {
         .publish_workspace_provider(&change_context(owner, 230, 'c'), request)
         .await
         .expect("retry reusable Setup")
-        .value;
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
 }
 
@@ -2139,7 +2139,7 @@ async fn materialization_holds_no_transaction_and_final_commit_rechecks_workspac
         .publish_workspace_provider(&change_context(owner, 550, 'b'), request)
         .await
         .expect("retry after restoring Workspace")
-        .value;
+        .skip_search();
     assert_eq!(retried.outcome(), ProviderPublicationOutcome::Succeeded);
 }
 
@@ -2346,11 +2346,17 @@ async fn interrupted_publications_leave_no_outcome_or_replay_the_committed_one()
                     Creation => providers
                         .publish_workspace_provider(&context, creation)
                         .await
-                        .map(|terminal| (terminal.value.id().clone(), terminal.value.outcome())),
+                        .map(|terminal| {
+                            let terminal = terminal.skip_search();
+                            (terminal.id().clone(), terminal.outcome())
+                        }),
                     Regeneration => providers
                         .regenerate_provider(&context, regeneration)
                         .await
-                        .map(|terminal| (terminal.value.id().clone(), terminal.value.outcome())),
+                        .map(|terminal| {
+                            let terminal = terminal.skip_search();
+                            (terminal.id().clone(), terminal.outcome())
+                        }),
                 }
             }
         };
@@ -2478,7 +2484,7 @@ async fn mixed_mcp_publication_atomically_persists_valid_unsupported_and_resourc
         )
         .await
         .expect("publish mixed MCP catalog")
-        .value;
+        .skip_search();
     assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     let provider_id = publication
         .published_provider()
@@ -2860,7 +2866,7 @@ impl WorkspaceRegenerationFixture {
             )
             .await
             .expect("publish initial Provider")
-            .value;
+            .skip_search();
         let published = publication
             .published_provider()
             .expect("initial Provider resources");

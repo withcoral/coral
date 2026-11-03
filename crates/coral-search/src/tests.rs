@@ -3923,7 +3923,7 @@ impl TestModules {
             )
             .await
             .unwrap()
-            .value;
+            .skip_search();
         assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     }
 
@@ -4113,7 +4113,7 @@ impl TestModules {
             )
             .await
             .expect("publish tracer Provider")
-            .value;
+            .skip_search();
         let published = publication
             .published_provider()
             .expect("successful Provider publication");

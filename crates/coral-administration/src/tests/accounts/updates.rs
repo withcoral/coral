@@ -300,7 +300,7 @@ async fn publication_before_offboarding_preserves_shared_accounts_but_retires_ca
                 .regenerate_provider(&change(&f.member), update)
                 .await
                 .unwrap()
-                .value;
+                .skip_search();
             assert_eq!(result.outcome(), ProviderPublicationOutcome::Succeeded);
             let before = providers
                 .inspect_provider(&f.owner, f.workspace.id(), &f.provider)

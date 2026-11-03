@@ -284,7 +284,7 @@ async fn workspace_uniqueness_and_invocation_follow_the_stored_call_root() {
                 )
                 .await
                 .unwrap()
-                .value;
+                .skip_search();
             published.push(publication);
         }
         let [earlier, later] = <[_; 2]>::try_from(published).unwrap();
@@ -673,7 +673,7 @@ async fn fixed_routes_require_exact_provider_and_eligible_administrative_owner()
             )
             .await
             .unwrap()
-            .value;
+            .skip_search();
         assert_eq!(
             publication.outcome(),
             crate::ProviderPublicationOutcome::Failed

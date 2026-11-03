@@ -138,7 +138,7 @@ async fn declared_read_only_and_safe_http_methods_select_the_default_policy() {
         )
         .await
         .expect("publish MCP Provider")
-        .value
+        .skip_search()
         .published_provider()
         .expect("published resources")
         .access()

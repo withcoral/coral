@@ -953,15 +953,15 @@ impl ProviderModule {
                 .reached(PublicationPoint::Committed)
                 .await;
         }
-        Ok(Committed {
-            value: published.publication,
-            search: match published.evidence {
+        Ok(Committed::new(
+            published.publication,
+            match published.evidence {
                 PublicationEvidence::Activated(activated) => SearchChange::Activated(activated),
                 PublicationEvidence::Replayed
                 | PublicationEvidence::ReusedActiveGeneration
                 | PublicationEvidence::Failed => SearchChange::Unchanged,
             },
-        })
+        ))
     }
 }
 

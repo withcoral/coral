@@ -445,12 +445,12 @@ impl ProviderModule {
         .ok_or(Error::ProviderNotFound)?
         .provider;
         tx.commit().await?;
-        Ok(crate::Committed {
-            value: updated,
-            search: crate::SearchChange::Refreshed {
+        Ok(crate::Committed::new(
+            updated,
+            crate::SearchChange::Refreshed {
                 workspace: workspace.clone(),
                 provider: id.clone(),
             },
-        })
+        ))
     }
 }

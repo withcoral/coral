@@ -74,7 +74,7 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
         )
         .await
         .unwrap()
-        .value
+        .skip_search()
         .published_provider()
         .unwrap()
         .clone();
@@ -227,7 +227,7 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(regenerated.outcome(), ProviderPublicationOutcome::Succeeded);
     let after = providers
         .inspect_providers(&owner, &scope)
@@ -496,7 +496,7 @@ async fn an_owner_reads_a_providers_configuration_by_namespace() {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     let disabled = providers
         .disable_provider(
             &with_etag(change_context(owner.clone(), 12, 'c'), &renamed.etag()),

@@ -79,7 +79,7 @@ async fn shared(h: &Harness, context: &ChangeContext, workspace: &WorkspaceId) -
         )
         .await
         .unwrap()
-        .value
+        .skip_search()
         .published_provider()
         .unwrap()
         .clone()
@@ -164,7 +164,7 @@ async fn account_setting_change_scrubs_old_credentials_and_requires_fresh_shared
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(changed.outcome(), ProviderPublicationOutcome::Succeeded);
     credential_for(
         &h,
@@ -216,7 +216,7 @@ async fn account_setting_change_scrubs_old_credentials_and_requires_fresh_shared
         .regenerate_provider(&context, request.with_account_grant(grant))
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(changed.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(
         credential_for(
@@ -320,7 +320,7 @@ async fn reconnect_after_update_preparation_fences_the_staged_replacement() {
             .with_account_grant(grant),
         )
         .await;
-    let rejected = result.unwrap().value;
+    let rejected = result.unwrap().skip_search();
     assert_eq!(rejected.outcome(), ProviderPublicationOutcome::Failed);
     assert_eq!(
         rejected.diagnostic().unwrap().code(),
@@ -402,14 +402,14 @@ async fn explicit_shared_replacement_publishes_configuration_and_account_togethe
         .regenerate_provider(&context, request.clone())
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(result.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(
         h.providers
             .regenerate_provider(&context, request)
             .await
             .unwrap()
-            .value,
+            .skip_search(),
         result
     );
     let secret = credential_for(
@@ -565,7 +565,7 @@ async fn an_update_to_a_credential_free_source_takes_only_the_none_route() {
             );
         } else {
             assert_eq!(
-                result.unwrap().value.outcome(),
+                result.unwrap().skip_search().outcome(),
                 ProviderPublicationOutcome::Succeeded,
                 "{route:?}"
             );

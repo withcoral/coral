@@ -329,7 +329,7 @@ impl TestModules {
             )
             .await
             .expect("publish the second Provider")
-            .value;
+            .skip_search();
         let provider = publication
             .published_provider()
             .expect("the second Provider published");
@@ -646,7 +646,7 @@ impl TestModules {
             )
             .await
             .expect("publish Provider")
-            .value;
+            .skip_search();
         let published = publication
             .published_provider()
             .expect("successful Publication");
@@ -976,7 +976,7 @@ pub(crate) async fn configure_authored_provider(
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     let provider = publication.published_provider().expect("published").clone();
     tool.provider_id = provider.id().clone();
     tool.policy_target = ToolPolicyTarget::new(

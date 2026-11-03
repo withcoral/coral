@@ -265,7 +265,7 @@ async fn rejected_regeneration(change: InterveningChange) {
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     assert_eq!(retried.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(
         providers

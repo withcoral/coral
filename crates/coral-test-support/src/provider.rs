@@ -152,7 +152,7 @@ macro_rules! provider_setup_fixtures {
                                 .with_incompatible_configuration_confirmation(),
                             )
                             .await?
-                            .value;
+                            .skip_search();
                     if publication.outcome() == providers::ProviderPublicationOutcome::Failed {
                         return Err(providers::Error::ProviderChangedDuringPublication);
                     }
@@ -200,7 +200,7 @@ macro_rules! provider_setup_fixtures {
                                 ),
                             )
                             .await?
-                            .value;
+                            .skip_search();
                     Ok(publication
                         .published_provider()
                         .expect("published shared Provider")
@@ -312,7 +312,7 @@ macro_rules! provider_setup_fixtures {
                         ),
                     )
                     .await
-                    .map(|committed| committed.value)
+                    .map(providers::Committed::skip_search)
                 }
             }
             fn fixture_configuration(document: &OpenApiDocument) -> ProviderConfiguration {

@@ -62,7 +62,7 @@ async fn publish_target(
         )
         .await
         .unwrap()
-        .value;
+        .skip_search();
     (
         workspace.id().clone(),
         publication.published_provider().unwrap().id().clone(),

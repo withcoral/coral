@@ -168,7 +168,8 @@ impl ProviderWorkflow {
 /// result. Every workflow that commits a Provider change notifies through
 /// this one mapping, after its commit.
 pub(crate) fn notify<T>(search: &SearchIndex, committed: Committed<T>) -> T {
-    match committed.search {
+    let (value, change) = committed.into_parts();
+    match change {
         SearchChange::Unchanged => {}
         // Search prepares the Generation's entries from storage, so the
         // change never waits for them (ADR 0017).
@@ -191,7 +192,7 @@ pub(crate) fn notify<T>(search: &SearchIndex, committed: Committed<T>) -> T {
             provider,
         } => search.remove_provider(workspace, provider),
     }
-    committed.value
+    value
 }
 
 /// A Built-in Tool renames through this workflow, so its rename and its search

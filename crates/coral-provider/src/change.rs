@@ -237,28 +237,37 @@ pub enum SearchChange {
 /// change's transaction commits. A change that commits its own transaction
 /// returns it after the commit. A change that found nothing to write, such as
 /// a replay, commits nothing and names [`SearchChange::Unchanged`].
+///
+/// Its fields are private, so a caller takes the result in one of two ways:
+/// [`Self::into_parts`] with the search change to hand on, or
+/// [`Self::skip_search`], which says it hands on nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[must_use = "hand `search` to Universal Search after the commit, or say why the caller need not"]
+#[must_use = "hand the search change to Universal Search after the commit, or call skip_search"]
 pub struct Committed<T> {
-    /// The change's result.
-    pub value: T,
-    /// What search must read again, now that the change has committed.
-    pub search: SearchChange,
+    value: T,
+    search: SearchChange,
 }
 
 impl<T> Committed<T> {
+    pub(crate) const fn new(value: T, search: SearchChange) -> Self {
+        Self { value, search }
+    }
+
+    /// A result that changed nothing search indexes.
+    pub(crate) const fn unchanged(value: T) -> Self {
+        Self::new(value, SearchChange::Unchanged)
+    }
+
+    /// The change's result, and what search must read again now that the
+    /// change has committed.
+    pub fn into_parts(self) -> (T, SearchChange) {
+        (self.value, self.search)
+    }
+
     /// Returns the result without telling search. Search stays stale until
     /// its reconcile pass, so only a test of Provider rules, or of what
     /// search misses, should call this.
     pub fn skip_search(self) -> T {
         self.value
-    }
-
-    /// A result that changed nothing search indexes.
-    pub(crate) const fn unchanged(value: T) -> Self {
-        Self {
-            value,
-            search: SearchChange::Unchanged,
-        }
     }
 }
