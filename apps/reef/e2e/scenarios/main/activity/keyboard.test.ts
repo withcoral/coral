@@ -217,6 +217,10 @@ test('The keyboard drives Agent Activity', async (context) => {
       expect(await tableFocused(page)).toBe(true)
       await page.keyboard.press('ArrowDown')
       await page.waitForURL(() => record(page) === run)
+      // The address changes before the rail renders the step, and Escape in that gap
+      // closes onto the Task the rail still shows. Vitest covers the gap; this journey
+      // lets the step render first.
+      await table.locator(`[data-record-key="${run}"][aria-selected="true"]`).waitFor()
       expect((await cursor(page))?.key).toBe(run)
       await page.keyboard.press('Escape')
       await rail.waitFor({ state: 'hidden' })

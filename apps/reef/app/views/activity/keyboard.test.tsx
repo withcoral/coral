@@ -1,8 +1,8 @@
 /** @vitest-environment happy-dom */
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useEffect, useState } from 'react'
-import type { Location } from 'react-router'
+import { use, useEffect, useState } from 'react'
+import type { LoaderFunction, Location } from 'react-router'
 import { expect, it } from 'vitest'
 import { renderRoute } from '@/test-support/route'
 import { Activity } from './activity'
@@ -77,7 +77,15 @@ function pageFor({ search: query }: Location, { roots, children }: Lists): Activ
   })
 }
 
-async function renderActivity(entry = list, more?: ActivityViewProps['more']) {
+interface RenderOptions {
+  more?: ActivityViewProps['more']
+  /** Runs for each navigation, so a test can hold a load. */
+  loader?: LoaderFunction
+  /** A pending promise holds the location's render, as a slow transition render does. */
+  holdRender?: (location: Location) => Promise<void> | undefined
+}
+
+async function renderActivity(entry = list, { more, loader, holdRender }: RenderOptions = {}) {
   const user = userEvent.setup()
   let publish!: (next: Partial<Lists>) => void
   function Live({ location }: { location: Location }) {
@@ -88,6 +96,8 @@ async function renderActivity(entry = list, more?: ActivityViewProps['more']) {
     useEffect(() => {
       publish = (next) => setLists((value) => ({ ...value, ...next }))
     }, [])
+    const held = holdRender?.(location)
+    if (held) use(held)
     const page = pageFor(location, lists)
     const request = page.detail?.kind === 'run' ? page.detail.request : null
     return (
@@ -97,8 +107,8 @@ async function renderActivity(entry = list, more?: ActivityViewProps['more']) {
       </ActionReviewSession>
     )
   }
-  const rendered = renderRoute((location) => <Live location={location} />, { entry })
-  const table = screen.getByRole('table', { name: 'Activity records' })
+  const rendered = renderRoute((location) => <Live location={location} />, { entry, loader })
+  const table = await screen.findByRole('table', { name: 'Activity records' })
   // A rail that opens takes focus; let it, as a reader would.
   if (entry.includes('record='))
     await waitFor(() => expect(rail()?.contains(document.activeElement)).toBe(true))
@@ -275,6 +285,103 @@ it('Escape from the table closes the rail onto the last record it showed; Enter 
   expect(router.state.historyAction).toBe('PUSH')
 })
 
+// Catches: a step the router has finished but React has not rendered reopening the
+// rail that Escape closed, which also takes focus from the table.
+it('Escape before a step renders closes the rail for good', async () => {
+  let renderStep!: () => void
+  const stepRender = new Promise<void>((resolve) => (renderStep = resolve))
+  let landClose!: () => void
+  const closeLoad = new Promise<void>((resolve) => (landClose = resolve))
+  let closing = false
+  const { user, table, record, cursor } = await renderActivity(opened(search.name), {
+    loader: async ({ request }) => {
+      if (closing && !new URL(request.url).searchParams.has('record')) await closeLoad
+      return null
+    },
+    holdRender: (location) =>
+      new URLSearchParams(location.search).get('record') === reminder.name ? stepRender : undefined,
+  })
+  act(() => table.focus())
+  await user.keyboard('{ArrowDown}')
+  // The address moves on; the rail still shows the record it showed.
+  await waitFor(() => expect(record()).toBe(reminder.name))
+  expect(detailHeading(rail())).toBe('Find tools')
+  closing = true
+  await user.keyboard('{Escape}')
+  await waitFor(() => expect(rail()).toBeNull())
+  // The step renders while the close is still loading.
+  await act(async () => renderStep())
+  expect(rail()).toBeNull()
+  expect(table).toHaveFocus()
+  await act(async () => landClose())
+  await waitFor(() => expect(record()).toBeNull())
+  expect(rail()).toBeNull()
+  expect(table).toHaveFocus()
+  expect(cursor()).toBe('Find tools')
+})
+
+// Catches: a pending navigation to a record outside the table, such as live mode's,
+// missing from the close, so its late render reopens the rail.
+it('Escape before a navigation outside the table renders closes the rail for good', async () => {
+  let landLoad!: () => void
+  const load = new Promise<void>((resolve) => (landLoad = resolve))
+  let renderIt!: () => void
+  const render = new Promise<void>((resolve) => (renderIt = resolve))
+  let closing = false
+  const { user, table, record, router } = await renderActivity(opened(search.name), {
+    loader: async ({ request }) => {
+      const requested = new URL(request.url).searchParams.get('record')
+      if (requested === elsewhere.name) await load
+      if (closing && requested === null) await new Promise(() => {})
+      return null
+    },
+    holdRender: (location) =>
+      new URLSearchParams(location.search).get('record') === elsewhere.name ? render : undefined,
+  })
+  act(() => table.focus())
+  act(() => void router.navigate(opened(elsewhere.name)))
+  await waitFor(() => expect(router.state.navigation.state).toBe('loading'))
+  await act(async () => landLoad())
+  await waitFor(() => expect(record()).toBe(elsewhere.name))
+  closing = true
+  await user.keyboard('{Escape}')
+  await waitFor(() => expect(rail()).toBeNull())
+  await act(async () => renderIt())
+  expect(rail()).toBeNull()
+  expect(table).toHaveFocus()
+})
+
+// Catches: picking, while the rail closes, the record a pending step was going to
+// show reopening the record you closed until the pick loads.
+it('a pick of the pending step’s record during a close leaves the rail closed until it loads', async () => {
+  let landStep!: () => void
+  const stepLoad = new Promise<void>((resolve) => (landStep = resolve))
+  let closing = false
+  const { user, table, link, record } = await renderActivity(opened(search.name), {
+    loader: async ({ request }) => {
+      const requested = new URL(request.url).searchParams.get('record')
+      if (requested === reminder.name) await stepLoad
+      // The close never lands, so only the pick can end it.
+      if (closing && requested === null) await new Promise(() => {})
+      return null
+    },
+  })
+  act(() => table.focus())
+  await user.keyboard('{ArrowDown}')
+  closing = true
+  await user.keyboard('{Escape}')
+  await waitFor(() => expect(rail()).toBeNull())
+  await user.click(link('Reminder run'))
+  await act(async () => {})
+  expect(rail()).toBeNull()
+  await act(async () => landStep())
+  await waitFor(() => expect(record()).toBe(reminder.name))
+  // The run's pending approval opens the rail as its review.
+  const dialog = await screen.findByRole('dialog')
+  expect(within(dialog).getAllByText('Reminder run').length).toBeGreaterThan(0)
+  expect(within(dialog).queryByText('Find tools')).toBeNull()
+})
+
 // Catches: a cursor kept by index, so arrivals retarget it, or one that outlives its record.
 it('the cursor keeps its record across live arrivals, follows acceptance, and clears on removal', async () => {
   const { user, table, cursor, update } = await renderActivity()
@@ -376,9 +483,7 @@ it("Enter and Space on a focused control stay the control's own", async () => {
 // Catches: a glimpse taking the page's keys, or losing its records' Tab stops.
 it('a glimpse takes no keys and keeps a Tab stop on each record', async () => {
   const { user, table, cursor } = await renderActivity(list, {
-    to: list,
-    label: 'View all activity',
-    roots: 2,
+    more: { to: list, label: 'View all activity', roots: 2 },
   })
   await user.keyboard('{ArrowDown}')
   expect(table).not.toHaveFocus()
