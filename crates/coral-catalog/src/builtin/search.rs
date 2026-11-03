@@ -842,11 +842,16 @@ pub(super) mod tests {
     #[test]
     fn a_hit_says_what_each_signature_marker_means() {
         let schema = serde_json::to_value(schemars::schema_for!(SearchHit)).expect("schema");
-        let hit = schema["description"].as_str().expect("hit description");
+        let text = |pointer: &str| {
+            schema
+                .pointer(pointer)
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("{pointer} in {schema}"))
+                .to_owned()
+        };
+        let hit = text("/description");
         assert!(!hit.contains("cut marker"), "{hit}");
-        let line = schema["properties"]["signature_line"]["description"]
-            .as_str()
-            .expect("signature line description");
+        let line = text("/properties/signature_line/description");
         for meaning in [
             "`{…}` marks an object the line does not show",
             "a bare `…` what it cannot read",
