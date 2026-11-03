@@ -242,7 +242,7 @@ async function startWebSession(
     !Number.isInteger(body.expires_in) ||
     body.expires_in <= 0
   ) {
-    throw callbackError('Sign-in failed. Try again.')
+    throw callbackError('Try signing in again.')
   }
   return {
     endpoint: metadata.coral_web_session_endpoint,

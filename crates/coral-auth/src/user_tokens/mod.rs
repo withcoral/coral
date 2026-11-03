@@ -501,10 +501,10 @@ impl UserTokens {
             .map_err(|_text| {
                 // The second the session ends can pass between the check above
                 // and minting; the session is then over, not failing.
-                let now = std::time::SystemTime::now()
+                let ended = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(u64::MAX, |elapsed| elapsed.as_secs());
-                if now >= session_end {
+                    .is_ok_and(|elapsed| elapsed.as_secs() >= session_end);
+                if ended {
                     TokenRefusal::InvalidGrant
                 } else {
                     TokenRefusal::Issuance
