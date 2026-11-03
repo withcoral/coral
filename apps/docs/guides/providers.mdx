@@ -3,15 +3,15 @@ title: "Providers"
 description: "Adding providers to Coral"
 ---
 
-Providers connect Coral to third-party data sources. Coral works with any data source that has either an OpenAPI 3.x document, or a streaming HTTP MCP server. For other providers, see [advanced scenarios](#advanced-scenarios).
+Providers connect Coral to third-party data sources. Coral works with any data source that has either an OpenAPI 3.0/3.1 document, or a Streamable HTTP MCP server. For other providers, see [advanced scenarios](#advanced-scenarios).
 
 <Note>Only workspace owners can add providers.</Note>
 
-## Adding a built-in provider
+## Adding a provider from Coral's catalog
 
-Coral has built-in configs for a range of popular providers.
+Coral has a catalog of popular providers. To add one of these providers:
 
-1. Go to your your workspace's **Providers** page
+1. Go to your workspace's **Providers** page
 2. Click **Add provider**
 3. Pick a provider from the list
 
@@ -25,7 +25,7 @@ From there you can enter the MCP server URL, enter the URL to an OpenAPI documen
 
 ## Adding a provider using your agent
 
-Coral exposes a set of tools for managing Coral. These include tools for managing providers. So once you've configured Coral in your agent, you can ask your agent to add new providers, for example:
+Coral's provider-management tools can prepare a provider; a workspace owner must then review and publish the returned setup in the Coral UI. For example:
 
 > Add a Coral provider for Mezmo
 
@@ -33,17 +33,23 @@ Coral exposes a set of tools for managing Coral. These include tools for managin
 
 ### Adding databases
 
-See [query datatases](/guides/query-databases).
+See [query databases](/guides/query-databases).
 
-### Adding a provider that only has a stdio MCP server
+### Adding a provider for a service that only has a stdio MCP server
 
-Use a bridge that runs the stdio server and exposes a streaming HTTP endpoint. There are plenty of libraries that can help with this, including:
+Use a bridge that runs the stdio server and exposes a Streamable HTTP endpoint. There are plenty of libraries that can help with this, including:
 
 - [Supergateway](https://github.com/supercorp-ai/supergateway) (Node)
 - [MCP Proxy](https://github.com/sparfenyuk/mcp-proxy) (Python)
-- [FastMCP](https://gofastmcp.com/getting-started/welcome) (`FastMCP.as_proxy(...)`) (Python)
+- [FastMCP](https://gofastmcp.com/getting-started/welcome) (Python)
 
-### Adding a provider that has no OpenAPI document and no MCP server
+<Note>
+  Coral denies access to private networks and loopback addresses by default. If
+  you run a stdio bridge on the same host as Coral, you may need tp update
+  [Coral's configuration](/reference/configuration#outbound) to allow access.
+</Note>
+
+### Adding a provider for a service that has no OpenAPI document and no MCP server
 
 If the provider has a well specified RESTful API, you can ask your agent to generate an OpenAPI document for it, then use that document to add the provider to Coral.
 
