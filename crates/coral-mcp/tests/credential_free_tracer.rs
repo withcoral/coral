@@ -86,8 +86,7 @@ const RUN_UPDATE_PAGE_BYTES: usize = 4096;
 /// The Program runtime's own bound on one encoded Program error.
 const PROGRAM_ERROR_MAX_BYTES: usize = 8 * 1024;
 
-const TOOL_NAMES: [&str; 9] = [
-    "start_task",
+const TOOL_NAMES: [&str; 8] = [
     "search",
     "describe",
     "save_function",
@@ -410,11 +409,17 @@ impl Tracer {
     }
 }
 
-async fn start_task(client: &SdkClient, intent: &str) -> String {
-    let task = call(client, "start_task", json!({"intent": intent})).await;
-    structured(&task)["task_id"]
+/// Starts a Task for `goal` the way an agent does: with its first `exec`.
+async fn start_task(client: &SdkClient, goal: &str) -> String {
+    let started = call(
+        client,
+        "exec",
+        json!({"goal": goal, "intent": "Start the Task", "program": "return null;"}),
+    )
+    .await;
+    structured(&started)["task_id"]
         .as_str()
-        .expect("generated Task id")
+        .unwrap_or_else(|| panic!("the first exec names its Task: {started:?}"))
         .to_string()
 }
 
@@ -1118,16 +1123,23 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
 async fn discovery_authoring_and_task_closure_report_wire_codes() {
     let tracer = Tracer::start().await;
     let client_a = tracer.sdk().await;
+    // The first exec states the goal: its Run answers, and its result names
+    // the Task it started.
     let started = call(
         &client_a,
-        "start_task",
-        json!({"intent": "Complete the credential-free tracer"}),
+        "exec",
+        json!({
+            "goal": "Complete the credential-free tracer",
+            "intent": "Read the forecast",
+            "program": "return (await coral.providers.weather.getForecast()).data.temperatureC;",
+            "wait_ms": 5_000
+        }),
     )
     .await;
+    assert_eq!(structured(&started)["state"], "succeeded", "{started:?}");
     assert_eq!(
-        structured(&started)["providers"],
-        json!(["weather"]),
-        "the result names the namespaces the caller can search"
+        structured(&started)["final_value"],
+        json!({"kind":"value", "value":18})
     );
     let task_id = structured(&started)["task_id"]
         .as_str()
@@ -1279,6 +1291,11 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     let executed_update = structured(&executed);
     assert_eq!(executed_update["state"], "succeeded");
     assert_eq!(
+        executed_update.get("task_id"),
+        None,
+        "a call that names its Task does not name it back"
+    );
+    assert_eq!(
         executed_update["final_value"],
         json!({"kind":"value", "value":18})
     );
@@ -1293,6 +1310,7 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     )
     .await;
     assert_eq!(structured(&waited)["state"], "succeeded");
+    assert_eq!(structured(&waited).get("task_id"), None);
     assert_eq!(
         structured(&waited)["final_value"],
         json!({"kind":"value", "value":18})
@@ -1388,6 +1406,20 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     )
     .await;
     assert_eq!(structured(&closed)["code"], "task_closed");
+    // With no start_task, the refusal must say how to start new work.
+    let closed_exec = call(
+        &client_a,
+        "exec",
+        json!({"task_id": task_id, "intent": "No new attempts", "program": "return 1;"}),
+    )
+    .await;
+    assert_eq!(
+        untraced(structured(&closed_exec)),
+        json!({
+            "code": "task_closed",
+            "message": "Task is closed to new attempts. For new work, call `exec` with `goal` instead of `task_id` to start a new Task."
+        })
+    );
     let observed_after_closure = call(
         &client_a,
         "wait",
@@ -2072,15 +2104,18 @@ async fn check_protocol_window(endpoint: &str) {
     }
 
     let session = RawSession::open(endpoint, newest).await;
-    let arguments = json!({"intent": "Rejected before dispatch"});
+    let arguments = json!({
+        "goal": "Rejected before dispatch", "intent": "Rejected before dispatch",
+        "program": "return null;"
+    });
     let mismatched = session
-        .tampered_tool("start_task", arguments.clone(), |headers| {
+        .tampered_tool("exec", arguments.clone(), |headers| {
             headers.insert("mcp-method", HeaderValue::from_static("tools/list"));
         })
         .await;
     assert_header_mismatch(mismatched, "mismatched Mcp-Method").await;
     let missing = session
-        .tampered_tool("start_task", arguments, |headers| {
+        .tampered_tool("exec", arguments, |headers| {
             headers.remove("mcp-method");
         })
         .await;
@@ -2412,6 +2447,21 @@ impl RawSession {
 
     async fn tool(&self, tool: &str, arguments: Value) -> Value {
         self.tool_with_headers(tool, arguments, &[]).await
+    }
+
+    /// Starts a Task for `goal` the way an agent does: with its first `exec`.
+    async fn start_task(&self, goal: &str) -> String {
+        let started = self
+            .tool(
+                "exec",
+                json!({"goal":goal, "intent":"Start the Task", "program":"return null;"}),
+            )
+            .await;
+        started
+            .pointer("/structuredContent/task_id")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("the first exec names its Task: {started}"))
+            .to_owned()
     }
 
     /// Like [`Self::tool`], with extra request headers such as W3C trace context.

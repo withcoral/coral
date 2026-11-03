@@ -6,16 +6,8 @@ pub(super) async fn check(
     index: &coral_search::SearchIndex,
 ) {
     check_schema(tools);
-    let started = session
-        .tool(
-            "start_task",
-            json!({"intent":"Check optional search defaults"}),
-        )
-        .await;
-    let task = started
-        .pointer("/structuredContent/task_id")
-        .and_then(Value::as_str)
-        .expect("Task id");
+    let task = session.start_task("Check optional search defaults").await;
+    let task = task.as_str();
     search_defaults_return_ten_visible_descriptions(session, task, index).await;
     session
         .tool("end_task", json!({"task_id":task, "outcome":"success"}))
@@ -133,17 +125,7 @@ pub(super) async fn check_exec_defaults(
     user: &coral_workspace::AuthenticatedUser,
     workspace: &coral_workspace::WorkspaceId,
 ) {
-    let started = super::call(
-        client,
-        "start_task",
-        json!({"intent":"Check optional execution defaults"}),
-    )
-    .await;
-    let task = super::structured(&started)
-        .get("task_id")
-        .and_then(Value::as_str)
-        .expect("Task id")
-        .to_string();
+    let task = super::start_task(client, "Check optional execution defaults").await;
     initial_wait_batches_until_terminal_unless_explicitly_zero(client, &task).await;
     let actor = coral_workspace::AuthenticatedPrincipal::user(user.clone());
     for (timeout, expected_nanos) in [

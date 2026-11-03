@@ -21,14 +21,18 @@ fn validator(schema: &Value) -> jsonschema::Validator {
 pub(super) async fn check(session: &RawSession, tools: &[Value]) {
     let started = session
         .tool(
-            "start_task",
-            json!({"intent":"Check advertised input constraints"}),
+            "exec",
+            json!({
+                "goal":"Check advertised input constraints", "intent":"Start the Task",
+                "program":"return null;"
+            }),
         )
         .await;
     let task = started
         .pointer("/structuredContent/task_id")
         .and_then(Value::as_str)
         .expect("Task id");
+    check_task_choice(session, task).await;
     check_identities(session, task, tools).await;
     check_text(session, task, tools).await;
     check_authoring_limits(tools);
@@ -40,10 +44,42 @@ pub(super) async fn check(session: &RawSession, tools: &[Value]) {
         .await;
 }
 
+/// An `exec` names its Task or states the goal of a new one. Coral never
+/// guesses which Task a call belongs to, so neither and both are refused
+/// with the same message, which names both options.
+async fn check_task_choice(session: &RawSession, task: &str) {
+    for (arguments, case) in [
+        (
+            json!({"intent":"Name no Task", "program":"return null;"}),
+            "neither",
+        ),
+        (
+            json!({
+                "task_id":task, "goal":"Start another Task", "intent":"Name both",
+                "program":"return null;"
+            }),
+            "both",
+        ),
+    ] {
+        let error = session
+            .result("tools/call", json!({"name":"exec", "arguments":arguments}))
+            .await
+            .expect_err(case);
+        assert_eq!(error.get("code"), Some(&json!(-32602)), "{case}");
+        assert_eq!(
+            error.get("message"),
+            Some(&json!(
+                "exec takes exactly one of `task_id` or `goal`: pass `task_id` to continue a Task, or `goal` to start a new one"
+            )),
+            "{case}"
+        );
+    }
+}
+
 async fn check_text(session: &RawSession, task: &str, tools: &[Value]) {
     for tool in tools {
         let name = tool.get("name").and_then(Value::as_str).expect("tool name");
-        for field in ["intent", "query", "feedback"] {
+        for field in ["intent", "goal", "query", "feedback"] {
             let Some(schema) = tool.pointer(&format!("/inputSchema/properties/{field}")) else {
                 continue;
             };
@@ -82,7 +118,7 @@ async fn check_text(session: &RawSession, task: &str, tools: &[Value]) {
             value
         );
     }
-    let intent_schema = validator(property(tools, "start_task", "intent"));
+    let intent_schema = validator(property(tools, "exec", "goal"));
     for (value, valid) in [("🪸".repeat(80), true), ("🪸".repeat(81), false)] {
         assert_eq!(intent_schema.is_valid(&json!(value)), valid);
         assert_eq!(coral_task::TaskIntent::parse(&value).is_ok(), valid);
@@ -91,11 +127,20 @@ async fn check_text(session: &RawSession, task: &str, tools: &[Value]) {
         let error = session
             .result(
                 "tools/call",
-                json!({"name":"start_task", "arguments":{"intent":invalid}}),
+                json!({"name":"exec", "arguments":{
+                    "goal":invalid, "intent":"Check the goal", "program":"return null;"
+                }}),
             )
             .await
             .expect_err("intent remains validated at the handler");
         assert_eq!(error.get("code"), Some(&json!(-32602)));
+        // exec also takes the call's own `intent`, which fails with the same
+        // text, so the refusal names `goal`.
+        let message = error.get("message").and_then(Value::as_str);
+        assert!(
+            message.is_some_and(|it| it.starts_with("`goal`: ")),
+            "{error:?}"
+        );
         let rejected = session
             .tool(
                 "search",
@@ -142,12 +187,7 @@ async fn check_feedback(session: &RawSession, tools: &[Value]) {
         Some(json!("  café 🪸\n")),
         Some(json!("🪸".repeat(4096))),
     ] {
-        let started = session
-            .tool("start_task", json!({"intent":"Check completion feedback"}))
-            .await;
-        let id = started
-            .pointer("/structuredContent/task_id")
-            .expect("Task id");
+        let id = session.start_task("Check completion feedback").await;
         for invalid in [" \n".to_string(), "a\0b".to_string(), "🪸".repeat(4097)] {
             let rejected = session
                 .tool(
@@ -435,7 +475,9 @@ async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
             ] {
                 assert!(validator.is_valid(&json!(valid)), "{name}.{field}: {valid}");
             }
-            assert!(!validator.is_valid(&Value::Null));
+            // Only `exec` may leave its Task out, when it states a goal.
+            let optional = (name, field) == ("exec", "task_id");
+            assert_eq!(validator.is_valid(&Value::Null), optional, "{name}.{field}");
             for invalid in [
                 "height-word-database".to_string(),
                 "Height-word-database-library".to_string(),

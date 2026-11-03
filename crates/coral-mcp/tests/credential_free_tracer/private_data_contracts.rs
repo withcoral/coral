@@ -81,9 +81,9 @@ fn refused_calls(task: &Value) -> [(&'static str, Value, &'static str); 7] {
             "invalid arguments for 'end_task': a value does not match the tool's input schema",
         ),
         (
-            "start_task",
-            json!({"intent": "Start", "key-c0ral-private": true}),
-            "invalid arguments for 'start_task': a value does not match the tool's input schema",
+            "exec",
+            json!({"goal": "Start", "intent": "Start", "program": "return null;", "key-c0ral-private": true}),
+            "invalid arguments for 'exec': a value does not match the tool's input schema",
         ),
         ("no-such-tool-c0ral-private", json!({}), "tool not found"),
     ]
@@ -267,25 +267,18 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
     let capture = capture();
     let tracer = Tracer::start().await;
     let session = RawSession::open(&tracer.endpoint(), &SUPPORTED_PROTOCOL_VERSIONS[0]).await;
-    let task = session
-        .tool_with_headers(
-            "start_task",
-            json!({"intent": format!("task-intent-{CANARY}")}),
-            HEADERS,
-        )
-        .await["structuredContent"]["task_id"]
-        .clone();
-
     let answered = session
         .tool_with_headers(
             "exec",
             json!({
-                "task_id": task, "intent": format!("run-intent-{CANARY}"),
+                "goal": format!("task-intent-{CANARY}"), "intent": format!("run-intent-{CANARY}"),
                 "wait_ms": 5000, "program": PROGRAM,
             }),
             HEADERS,
         )
         .await;
+    let task = answered["structuredContent"]["task_id"].clone();
+    assert!(task.is_string(), "{answered}");
     assert_eq!(
         answered["structuredContent"]["state"], "succeeded",
         "{answered}"
@@ -396,7 +389,7 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         .filter(|point| point.name == "coral.request.duration")
         .filter_map(|point| point.attributes.get("operation").cloned())
         .collect::<std::collections::BTreeSet<_>>();
-    for tool in ["start_task", "exec", "save_function", "end_task"] {
+    for tool in ["exec", "save_function", "end_task"] {
         assert!(
             operations.contains(&format!("tools/call {tool}")),
             "each tool call's request is named by its tool: {operations:?}"

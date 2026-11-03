@@ -20,6 +20,11 @@ use super::{ToolFailure, success};
     {"if":{"properties":{"state":{"not":{"const":"running"}}},"required":["state"]},"then":{"properties":{"required_actions":{"type":"array","maxItems":0}}}}
 ]))]
 pub(crate) struct RunUpdateResult<'a> {
+    /// The Task this call started from `goal`, only on that call's result.
+    /// Pass it as `task_id` to every later call for the same unit of work.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "crate::arguments::identifier_schema")]
+    task_id: Option<&'a str>,
     #[schemars(schema_with = "crate::arguments::identifier_schema")]
     run_id: String,
     state: State,
@@ -147,23 +152,26 @@ enum FailureCode {
     RunAuthorityLost,
 }
 
-/// Projects the largest prefix of `update` that fits `page_bytes`, or one item.
+/// Projects the largest prefix of `update` that fits `page_bytes`, or one
+/// item. `started` names the Task this call started, if it started one.
 pub(crate) fn run_update(
     update: &RunUpdate,
+    started: Option<&str>,
     human_interface: &crate::HumanInterfaceUrl,
     page_bytes: usize,
 ) -> Result<CallToolResult, ToolFailure> {
     let mut count = update.events().len();
     loop {
         let page = update.event_prefix(count);
-        let result = project_run_update(&page, human_interface)?;
+        let result = project_run_update(&page, started, human_interface)?;
         if fits(&result, page_bytes) {
             return Ok(result);
         }
         // Preserve the complete outcome for the final page. If only the
         // combination is too large, deliver these Events and advance first.
         if !page.events().is_empty() && page.terminal_outcome().is_some() {
-            let deferred = project_run_update(&page.defer_terminal_outcome(), human_interface)?;
+            let deferred =
+                project_run_update(&page.defer_terminal_outcome(), started, human_interface)?;
             if count <= 1 || fits(&deferred, page_bytes) {
                 return Ok(deferred);
             }
@@ -182,8 +190,9 @@ fn fits(result: &CallToolResult, page_bytes: usize) -> bool {
     serde_json::to_vec(result).is_ok_and(|bytes| bytes.len() <= page_bytes)
 }
 
-fn project_run_update(
-    update: &RunUpdate,
+fn project_run_update<'a>(
+    update: &'a RunUpdate,
+    started: Option<&'a str>,
     human_interface: &crate::HumanInterfaceUrl,
 ) -> Result<CallToolResult, ToolFailure> {
     let mut rich = Vec::new();
@@ -221,6 +230,7 @@ fn project_run_update(
         _ => (None, None),
     };
     let mut result = success(RunUpdateResult {
+        task_id: started,
         run_id: update.run_id().to_string(),
         state: match update.state() {
             RunState::Running => State::Running,

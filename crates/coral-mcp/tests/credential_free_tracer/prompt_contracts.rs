@@ -138,8 +138,14 @@ impl Session {
     }
 
     pub(super) async fn start_task(&self) -> String {
-        self.call("start_task", json!({"intent":"Answer required actions"}))
-            .await["task_id"]
+        self.call(
+            "exec",
+            json!({
+                "goal":"Answer required actions", "intent":"Start the Task",
+                "program":"return null;"
+            }),
+        )
+        .await["task_id"]
             .as_str()
             .expect("Task id")
             .to_owned()
@@ -621,14 +627,13 @@ async fn a_prompt_decided_in_reef_is_withdrawn(
 
 /// The 2026-07-28 wire shape that strict clients validate: an `input_required`
 /// result carrying a form elicitation, then a retry that completes the same call.
+/// The call is the Task's first `exec`, and `input_required` has no place for
+/// the Task it started, so the retry that completes it names that Task.
 async fn a_raw_retry_completes_the_call_that_asked(endpoint: &str, version: &ProtocolVersion) {
     let mut session = super::RawSession::open(endpoint, version).await;
     session.client_capabilities = json!({"elicitation": {"form": {}}});
-    let started = session
-        .tool("start_task", json!({"intent":"Answer on the wire"}))
-        .await;
     let arguments = json!({
-        "task_id":started["structuredContent"]["task_id"], "intent":"Invoke an approval-gated Tool",
+        "goal":"Answer on the wire", "intent":"Invoke an approval-gated Tool",
         "wait_ms":5000, "program":PROGRAM
     });
     let asked = session.tool("exec", arguments.clone()).await;
@@ -720,7 +725,32 @@ async fn a_raw_retry_completes_the_call_that_asked(endpoint: &str, version: &Pro
     session
         .tool("cancel", json!({"run_id":update["run_id"]}))
         .await;
+    let task = update["task_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the retry names the Task its call started: {retried}"));
+    continue_and_end(&session, task).await;
     session.close().await;
+}
+
+/// Later calls in the Task an `exec` started name it, and its result does
+/// not name it back.
+async fn continue_and_end(session: &super::RawSession, task: &str) {
+    let later = session
+        .tool(
+            "exec",
+            json!({"task_id":task, "intent":"Continue the Task", "program":"return null;"}),
+        )
+        .await;
+    assert_eq!(later["structuredContent"]["state"], "succeeded", "{later}");
+    assert_eq!(
+        later["structuredContent"].get("task_id"),
+        None,
+        "only the call that starts a Task names it"
+    );
+    let ended = session
+        .tool("end_task", json!({"task_id":task, "outcome":"success"}))
+        .await;
+    assert_eq!(ended["structuredContent"]["task_id"], task, "{ended}");
 }
 
 async fn agents_are_never_prompted(endpoint: &str, version: &ProtocolVersion, credential: &str) {
