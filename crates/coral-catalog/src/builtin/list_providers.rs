@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::{
-    ArgumentProblem, BuiltinCredentialRoute, BuiltinTool, Definition, ProviderFacts,
+    ArgumentProblem, BuiltinCredentialRoute, BuiltinTool, Declared, Definition, ProviderFacts,
     derived_schema, empty_object_schema, tool_result, words_schema,
 };
 use crate::{ToolHints, ToolPresentation};
@@ -43,6 +43,7 @@ pub(super) fn definition() -> Definition {
         hints: ToolHints::new(Some(true), None, Some(true), None),
         input: empty_object_schema(),
         output: derived_schema::<ListProvidersResult>(Contract::Serialize),
+        declared: Declared::Once,
     }
 }
 

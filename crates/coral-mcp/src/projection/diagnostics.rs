@@ -1,7 +1,7 @@
 //! Adapter-owned diagnostic projections. Numeric host fields remain exact JSON integers.
 use coral_functions::{SavedFunctionDiagnostic, SavedFunctionDiagnosticCategory};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::ToolFailure;
 
@@ -21,16 +21,7 @@ impl SafeInteger {
     }
 }
 
-impl<'de> Deserialize<'de> for SafeInteger {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = u64::deserialize(deserializer)?;
-        Self::new(value).map_err(|_error| {
-            serde::de::Error::custom("Coral result integer exceeds the exact JSON range")
-        })
-    }
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Diagnostic {
     category: DiagnosticCategory,
@@ -40,7 +31,7 @@ pub(super) struct Diagnostic {
     column: Option<SafeInteger>,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum DiagnosticCategory {
     Message,

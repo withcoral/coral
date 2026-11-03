@@ -23,6 +23,7 @@ fn valid_arguments(tool: BuiltinTool) -> Vec<Value> {
         BuiltinTool::GetPolicy => super::get_policy::valid_arguments(),
         BuiltinTool::UpdatePolicy => super::update_policy::valid_arguments(),
         BuiltinTool::UpdateProvider => super::update_provider::tests::valid_arguments(),
+        BuiltinTool::Search => super::search::tests::valid_arguments(),
     }
 }
 
@@ -375,6 +376,11 @@ fn each_result_meets_its_output_schema() {
         configured_providers().map(|saved| (BuiltinTool::GetProvider, saved.into_tool_result())),
     );
     results.extend(policies());
+    results.extend(
+        super::search::tests::results()
+            .into_iter()
+            .map(|result| (BuiltinTool::Search, result)),
+    );
     for (tool, result) in results {
         assert_eq!(
             result.get("metadata"),

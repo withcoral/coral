@@ -12,14 +12,21 @@
 //!
 //! # Interface
 //!
-//! - [`UniversalSearchModule::search`] runs one ranked statement per Search
-//!   Entity kind, one retriever each, and fuses their windows by match
-//!   strength into bounded pages of Search Hits with one status per
-//!   retriever. An omitted query lists current items in Call Path order and
-//!   reads no index.
-//! - [`UniversalSearchModule::describe`] resolves one exact complete Call Path
-//!   and reads no index. `signature::abridge` shortens the declaration it
-//!   returns; search reads the complete one.
+//! - [`UniversalSearchModule::discover`] is the one discovery operation that
+//!   MCP `search` and `describe` and the Built-in Tool `coral.workspace.search`
+//!   all reach, each request in one read snapshot. A query runs one ranked
+//!   statement per Search Entity kind, one retriever each, and fuses their
+//!   windows by match strength into bounded pages of Search Hits with one
+//!   status per retriever. An omitted query lists current items in Call Path order and
+//!   reads no index. Exact Call Paths resolve to their Authoring
+//!   Descriptions and read no index; `signature::abridge` shortens the
+//!   declaration each returns, while search reads the complete one. A path
+//!   that names nothing the caller can discover comes back missing.
+//!   [`UniversalSearchModule::search`] and [`UniversalSearchModule::describe`]
+//!   are its query mode and its one-path mode.
+//! - [`projection`] turns what discovery found into the result types
+//!   coral-catalog declares for `coral.workspace.search`, which MCP returns
+//!   and Task history retains unchanged.
 //! - [`UniversalSearchModule::searchable_providers`] lists the Provider
 //!   Call Roots a search's filter accepts from the caller. A filter that names
 //!   another is refused with that list.
@@ -42,6 +49,7 @@
 //! Discovery never starts an interactive authorization or refreshes credentials.
 
 mod cursor;
+mod discovery;
 mod eligibility;
 mod error;
 mod evidence;
@@ -78,6 +86,7 @@ use retriever::{
     begin_query, count, end_query,
 };
 
+pub use discovery::{Discovery, DiscoveryRequest, ExactLookup, ExactPaths, MissingPath};
 pub use error::Error;
 pub use index::SearchIndex;
 pub use storage::{StorageError, prepare_storage};
@@ -160,7 +169,37 @@ impl UniversalSearchModule {
         }
     }
 
-    /// Searches visible Search Entities and returns a page of Search Hits.
+    /// Discovers what the caller can call: a ranked page of Search Hits for
+    /// a query, or the exact descriptions of named Call Paths. Each request
+    /// reads one snapshot, so a page and the descriptions it holds come from
+    /// one catalog state.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::search`] for a query. For paths, authority and shared
+    /// persistence failures, and [`Error::UndeclaredTypes`] when `types`
+    /// names a type the one path does not declare. A path the caller cannot
+    /// discover is missing, not an error.
+    pub async fn discover(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        request: &DiscoveryRequest,
+    ) -> Result<Discovery, Error> {
+        match request {
+            DiscoveryRequest::Query(request) => self
+                .page(actor, workspace_id, request)
+                .await
+                .map(Discovery::Page),
+            DiscoveryRequest::Paths(paths) => self
+                .look_up(actor, workspace_id, paths)
+                .await
+                .map(Discovery::Exact),
+        }
+    }
+
+    /// Searches visible Search Entities and returns a page of Search Hits:
+    /// the query mode of [`Self::discover`].
     ///
     /// Each retriever applies current visibility and ranks its own kind; the
     /// engine fuses the windows by match strength. Only the page's items are
@@ -173,6 +212,15 @@ impl UniversalSearchModule {
     /// Returns invalid cursor, authority, or shared persistence failures, and
     /// [`Error::ServiceUnavailable`] when every applied retriever fails to rank.
     pub async fn search(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        request: &SearchRequest,
+    ) -> Result<SearchPage, Error> {
+        self.page(actor, workspace_id, request).await
+    }
+
+    async fn page(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
@@ -354,7 +402,8 @@ impl UniversalSearchModule {
         Ok((fuse(windows), statuses))
     }
 
-    /// Describes one exact complete current Call Path independently of relevance health.
+    /// Describes one exact complete current Call Path independently of
+    /// relevance health: the one-path mode of [`Self::discover`].
     ///
     /// The declaration is abridged. With `types`, it holds those types of the
     /// declaration instead, with their own nested types abridged the same
@@ -378,25 +427,62 @@ impl UniversalSearchModule {
         call_path: &CallPath,
         types: &[String],
     ) -> Result<ExactAuthoringDescription, Error> {
-        if types.len() > DESCRIBE_TYPES_MAX
-            || types
-                .iter()
-                .any(|name| name.len() > DESCRIBE_TYPE_NAME_MAX_BYTES)
-        {
-            return Err(Error::TypesLimit);
-        }
+        let paths = ExactPaths::one(call_path, types)?;
+        self.look_up(actor, workspace_id, &paths)
+            .await
+            .map_err(conceal_description_error)?
+            .descriptions
+            .into_iter()
+            .next()
+            .ok_or(Error::AuthoringDescriptionNotFound)
+    }
+
+    /// Describes each named path the caller can discover, in one read
+    /// snapshot, and reports the rest missing. A path that does not parse
+    /// is missing too: it names nothing.
+    async fn look_up(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        paths: &ExactPaths,
+    ) -> Result<ExactLookup, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
             .authorize(&mut transaction, actor, workspace_id)
-            .await
-            .map_err(conceal_description_error)?;
-        let exact = self
-            .describe_in_transaction(&mut transaction, actor, &authority, workspace_id, call_path)
-            .await
-            .map_err(conceal_description_error)?
-            .ok_or(Error::AuthoringDescriptionNotFound)?;
+            .await?;
+        let mut found = Vec::with_capacity(paths.paths().len());
+        let mut missing = Vec::new();
+        for written in paths.paths() {
+            let exact = match CallPath::parse(written) {
+                Ok(call_path) => self
+                    .describe_in_transaction(
+                        &mut transaction,
+                        actor,
+                        &authority,
+                        workspace_id,
+                        &call_path,
+                    )
+                    .await
+                    .map_err(conceal_description_error),
+                Err(_unparsable) => Ok(None),
+            };
+            match exact {
+                Ok(Some(exact)) => found.push(exact),
+                Ok(None) | Err(Error::AuthoringDescriptionNotFound) => {
+                    missing.push(MissingPath::new(written.clone()));
+                }
+                Err(error) => return Err(error),
+            }
+        }
         transaction.commit().await?;
-        exact.abridge(types)
+        let descriptions = found
+            .into_iter()
+            .map(|exact| exact.abridge(paths.types()))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ExactLookup {
+            descriptions,
+            missing,
+        })
     }
 
     /// Checks exact owning-resource visibility before an attributed attempt begins.

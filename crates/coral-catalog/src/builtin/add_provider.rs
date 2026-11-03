@@ -15,7 +15,7 @@ use super::provider_input::{
     ProviderSourceInput, ServerInput,
 };
 use super::{
-    ArgumentProblem, BuiltinCredentialRoute, BuiltinTool, Definition, NAMESPACE_REASON,
+    ArgumentProblem, BuiltinCredentialRoute, BuiltinTool, Declared, Definition, NAMESPACE_REASON,
     derived_schema, present, tool_result,
 };
 use crate::{ToolHints, ToolPresentation};
@@ -62,6 +62,7 @@ pub(super) fn definition() -> Definition {
         hints: ToolHints::default(),
         input: derived_schema::<Arguments>(Contract::Deserialize),
         output: derived_schema::<AddProviderResult>(Contract::Serialize),
+        declared: Declared::Once,
     }
 }
 

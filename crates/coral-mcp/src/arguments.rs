@@ -19,7 +19,7 @@ const DESCRIBE_INTENT_DESCRIPTION: &str =
     "What the search result did not show that you need from this declaration.";
 const FUNCTION_PATH_DESCRIPTION: &str =
     "Dotted path under coral.functions, without that prefix, such as reports.summarize.";
-const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible provider tools and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`, or `coral.workspace` for the Built-in Provider's tools. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows provider tools to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
+const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible provider tools and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when it is `complete`. Call describe first when it is not, or before a write. When the user names the service, pass its namespace in `provider`, or `coral.workspace` for the Built-in Provider's tools. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows provider tools to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
 const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
 pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 30_000;
@@ -330,14 +330,11 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
             "Start one Coral Task for one unit of user work.",
             mutation_annotations("Start Task", false, false),
         )),
-        always_loaded(tool::<SearchArguments, crate::projection::SearchResult>(
+        always_loaded(tool::<SearchArguments, coral_catalog::SearchResult>(
             SEARCH_TOOL_DESCRIPTION,
             read_annotations("Search"),
         )),
-        always_loaded(tool::<
-            DescribeArguments,
-            crate::projection::Description<Option<crate::projection::SavedDetail>>,
-        >(
+        always_loaded(tool::<DescribeArguments, coral_catalog::Description>(
             "Describe one exact Call Path: the inputs and result types needed to call it. Result types beyond a size limit appear as field names only or are not shown; describe the same path with types to see them. To compare candidates, call describe for each of them in parallel.",
             read_annotations("Describe"),
         )),

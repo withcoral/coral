@@ -126,6 +126,23 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
+        (
+            BuiltinTool::Search,
+            // Read-only, so the default Tool Access State is enabled.
+            ToolHints::new(Some(true), None, Some(true), None),
+            &[
+                // One overload per mode, each returning only its own result.
+                r#"export default function (input: { "cursor"?: string; "limit"?: number; "provider"?: string; "query"?: string }): Promise<{ data: SearchResult; metadata: { kind: "builtin" } }>;"#,
+                r#"export default function (input: { "paths": Array<string> }): Promise<{ data: PathsResult; metadata: { kind: "builtin" } }>;"#,
+                r#"export default function (input: { "paths": [string]; "types": Array<string> }): Promise<{ data: PathsResult; metadata: { kind: "builtin" } }>;"#,
+                r#""hits": Array<SearchHit>"#,
+                r#""signature_line": string"#,
+                r#""missing": Array<MissingPath>"#,
+                r#""kind": "provider_tool""#,
+                r#""kind": "saved_function""#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
     ] {
         let key = tool_key.key();
         let tool = tools
@@ -163,6 +180,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             "getPolicy",
             "getProvider",
             "listProviders",
+            "search",
             "updatePolicy",
             "updateProvider"
         ]

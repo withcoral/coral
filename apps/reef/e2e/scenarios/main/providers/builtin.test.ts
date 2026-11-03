@@ -96,11 +96,12 @@ test('Coral leads the providers page, offers nothing to change, stops calls whil
   await withBrowserSession(
     context,
     async ({ page, step }) => {
-      await step('A member sees Coral with listProviders and getPolicy only', async () => {
+      await step('A member sees Coral with listProviders, getPolicy and search only', async () => {
         await page.goto(providersPage)
         await waitForProviderStatus(page, 'Coral', 'Ready')
-        await page.getByRole('link', { name: 'listProviders', exact: true }).waitFor()
-        await page.getByRole('link', { name: 'getPolicy', exact: true }).waitFor()
+        for (const shown of ['listProviders', 'getPolicy', 'search']) {
+          await page.getByRole('link', { name: shown, exact: true }).waitFor()
+        }
         for (const hidden of ['addProvider', 'getProvider', 'updatePolicy']) {
           expect(await page.getByRole('link', { name: hidden, exact: true }).count()).toBe(0)
         }

@@ -191,9 +191,7 @@ impl McpServer {
             .search(&call, request)
             .await
             .map_err(task_failure)?;
-        projection::search(&results)
-            .and_then(projection::success)
-            .map_err(DispatchError::Tool)
+        projection::success(projection::search(&results)).map_err(DispatchError::Tool)
     }
 
     async fn describe(
@@ -212,9 +210,7 @@ impl McpServer {
             )
             .await
             .map_err(task_failure)?;
-        projection::exact_description(&result)
-            .and_then(projection::success)
-            .map_err(DispatchError::Tool)
+        projection::success(projection::exact_description(&result)).map_err(DispatchError::Tool)
     }
 
     async fn save_function(

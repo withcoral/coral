@@ -4,7 +4,9 @@ use serde_json::{Value, json};
 use crate::{
     ApprovalRequirement, CallPath, EntityKind, ProviderCallRoot, ProviderId, RetrieverCoverage,
     RetrieverState, RetrieverStatus, SearchCursor, SearchEvidence, SearchHit, SearchPage,
-    ToolAuthoringDescription, types::HitText,
+    ToolAuthoringDescription,
+    signature::{Callable, SignatureLine, signature_line},
+    types::HitText,
 };
 
 #[test]
@@ -29,14 +31,23 @@ fn hints_project_only_what_the_provider_declared() {
             json!({ "idempotent": true, "open_world": false }),
         ),
     ] {
-        assert_eq!(super::hints(hints), expected, "{hints:?}");
+        assert_eq!(
+            json!(coral_catalog::DeclaredHints::from(hints)),
+            expected,
+            "{hints:?}"
+        );
     }
 }
 
 #[test]
 fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
+    let line = "list(input: { repo: string }): Promise<{ data: Array<Pull> }>";
     let text = |guidance: Option<&str>, tags: &[&str]| HitText {
-        signature_line: "list(input: { repo: string }): Promise<{ data: Array<Pull> }>".into(),
+        signature: SignatureLine {
+            text: line.into(),
+            complete: true,
+            input_end: line.find("): ").expect("result") + 1,
+        },
         description_snippet: "Lists pull requests.".into(),
         guidance_snippet: guidance.map(Into::into),
         matched_tags: tags.iter().map(|&tag| tag.into()).collect(),
@@ -111,10 +122,11 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
             &mut expected,
             json!({
                 "signature_line": "list(input: { repo: string }): Promise<{ data: Array<Pull> }>",
+                "complete": true,
                 "description_snippet": "Lists pull requests.",
             }),
         );
-        assert_eq!(super::hit(&hit), expected, "{name}");
+        assert_eq!(json!(super::hit(&hit)), expected, "{name}");
     }
 }
 
@@ -206,4 +218,44 @@ fn merge(target: &mut Value, extra: Value) {
         panic!("objects");
     };
     target.extend(extra);
+}
+
+#[test]
+fn a_matched_argument_the_cut_input_leaves_out_is_listed_though_the_result_shows_its_name() {
+    // The line keeps the result, which here shows `{ data: { content: … } }`;
+    // the `data` and `content` arguments are cut from the input all the same.
+    let members = (0..80)
+        .map(|index| format!("\"field{index}\": string"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let declaration = format!(
+        "export default function (input: {{ {members}; \"content\": string; \"data\": string }}): Promise<{{ data: {{ content: Array<McpContentBlock>; structuredContent?: unknown; isError?: false }}; metadata: {{ kind: \"mcp\" }} }}>;"
+    );
+    let signature = signature_line(&declaration, Callable::Tool { leaf: "post" });
+    assert!(
+        signature.text.contains("{ data: { content: "),
+        "{}",
+        signature.text
+    );
+    let hit = tool_hit(
+        HitText {
+            signature,
+            description_snippet: String::new(),
+            guidance_snippet: None,
+            matched_tags: Vec::new(),
+        },
+        SearchEvidence::new(
+            vec!["declaration".into()],
+            vec![
+                "input.content".into(),
+                "input.data".into(),
+                "input.field0".into(),
+            ],
+        ),
+        ToolHints::default(),
+        ApprovalRequirement::NotRequired,
+        false,
+    );
+
+    assert_eq!(super::matched_inputs(&hit), ["content", "data"]);
 }
