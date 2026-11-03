@@ -663,11 +663,13 @@ export function Activity({
   // meanwhile, the step's own included, cannot reopen it. A new selection ends it.
   const [closing, setClosing] = useState<readonly string[] | null>(null)
   if (closing !== null && !(shownRecord !== null && closing.includes(shownRecord))) setClosing(null)
-  // A closing rail keeps showing its record until its exit ends.
+  // A closing rail keeps showing its record until its exit ends, even when a step
+  // the close covers renders meanwhile.
   const [shown, setShown] = useState({ page, record: shownRecord })
-  if (selected && (shown.page !== page || shown.record !== shownRecord))
+  const showing = selected !== null && closing === null
+  if (showing && (shown.page !== page || shown.record !== shownRecord))
     setShown({ page, record: shownRecord })
-  const detail = selected ? { page, record: shownRecord } : shown
+  const detail = showing ? { page, record: shownRecord } : shown
   const detailPage = detail.page
   // Every detail panel names its own record, so it replaces the rail's generic header.
   const ownHeader = !detailPage.unavailable && Boolean(detailPage.detail)
@@ -815,7 +817,11 @@ export function Activity({
             ? current.pending
             : current.shownRecord
       if (row.name === target) return
-      if (current.closing?.includes(row.name)) setClosing(null)
+      // Picking the closed record again reopens it. Picking the record a pending step
+      // was going to show leaves the rail closed until that record loads.
+      if (row.name === current.shownRecord) setClosing(null)
+      else if (current.closing?.includes(row.name))
+        setClosing(current.closing.filter((name) => name !== row.name))
       setKeyStep(null)
       openedByKey.current = keyboard
       // Going back to the shown record cancels the rail's own pending navigation,
