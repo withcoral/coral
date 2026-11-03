@@ -15,7 +15,7 @@ use tracing::instrument::WithSubscriber as _;
 use super::{SearchIndex, WriteTrigger, function_span, generation_span, in_write_span, skipped};
 use crate::indexer::functions::SavedFunctionIndexer;
 use crate::indexer::tools::ToolIndexer;
-use crate::indexer::{self, EntityIndexer, IndexError};
+use crate::indexer::{self, EntityIndexer, IndexError, Recount};
 
 /// A debug-level span for one step of a pass, ready for [`step`] to mark it
 /// failed.
@@ -517,7 +517,10 @@ impl SearchIndex {
             ..StatisticsWork::default()
         };
         for workspace_id in &check.stale {
-            match self.recount(workspace_id, WriteTrigger::Reconcile).await {
+            match self
+                .recount(workspace_id, WriteTrigger::Reconcile, Recount::IfStale)
+                .await
+            {
                 Ok(Some(rows)) => {
                     work.workspaces_recounted += 1;
                     work.rows_written += rows;

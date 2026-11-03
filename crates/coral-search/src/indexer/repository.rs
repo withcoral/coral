@@ -357,16 +357,15 @@ pub(super) async fn delete_rows_not_written(
     Ok(())
 }
 
-/// Deletes every Tool row of the Generation.
+/// Deletes every Tool row of the Generation. Returns the rows it deleted.
 pub(super) async fn delete_generation_rows(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     generation_id: &ProviderGenerationId,
-) -> Result<(), Error> {
+) -> Result<u64, Error> {
     transaction
         .execute(generation_rows(workspace_id, generation_id))
-        .await?;
-    Ok(())
+        .await
 }
 
 fn generation_rows(
@@ -485,8 +484,9 @@ pub(super) async fn write_generation_state(
 }
 
 /// Deletes one Generation's Tool rows and state row. Returns the Workspace
-/// its state row named, `None` when the index held no state for the
-/// Generation: the next reconcile pass then sees the changed rows.
+/// its state row named when Tool rows went, `None` when none went or the
+/// index held no state for the Generation: the next reconcile pass then sees
+/// the changed rows.
 pub(super) async fn delete_generation(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
@@ -502,7 +502,7 @@ pub(super) async fn delete_generation(
                 .to_owned(),
         )
         .await?;
-    transaction
+    let removed = transaction
         .execute(
             Query::delete()
                 .from_table(SearchEntities::Table)
@@ -525,20 +525,21 @@ pub(super) async fn delete_generation(
         )
         .await?;
     workspace
+        .filter(|_workspace| removed > 0)
         .map(|(workspace_id,)| parse_workspace_id(&workspace_id))
         .transpose()
 }
 
 /// Deletes the Tool rows and state rows of every Generation of one
-/// Provider.
+/// Provider. Returns the Tool rows it deleted.
 pub(super) async fn delete_provider(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
-) -> Result<(), Error> {
+) -> Result<u64, Error> {
     let workspace_id = workspace_id.to_string();
     let provider_id = provider_id.to_string();
-    transaction
+    let removed = transaction
         .execute(
             Query::delete()
                 .from_table(SearchEntities::Table)
@@ -558,7 +559,7 @@ pub(super) async fn delete_provider(
                 .to_owned(),
         )
         .await?;
-    Ok(())
+    Ok(removed)
 }
 
 /// The columns a Saved Function row sets, in [`FunctionRow::values`] order.
@@ -661,16 +662,18 @@ pub(super) async fn upsert_function_row(
     Ok(())
 }
 
-/// Deletes a Saved Function's row and state row.
+/// Deletes a Saved Function's row and state row. Returns the rows it
+/// deleted from the search table.
 pub(super) async fn delete_function_entry(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     function_id: &SavedFunctionId,
-) -> Result<(), Error> {
-    transaction
+) -> Result<u64, Error> {
+    let removed = transaction
         .execute(function_row(workspace_id, function_id))
         .await?;
-    delete_function_state(transaction, workspace_id, function_id).await
+    delete_function_state(transaction, workspace_id, function_id).await?;
+    Ok(removed)
 }
 
 fn function_row(workspace_id: &WorkspaceId, function_id: &SavedFunctionId) -> DeleteStatement {
@@ -682,16 +685,15 @@ fn function_row(workspace_id: &WorkspaceId, function_id: &SavedFunctionId) -> De
         .to_owned()
 }
 
-/// Deletes a Saved Function's row.
+/// Deletes a Saved Function's row. Returns the rows it deleted.
 pub(super) async fn delete_function_row(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     function_id: &SavedFunctionId,
-) -> Result<(), Error> {
+) -> Result<u64, Error> {
     transaction
         .execute(function_row(workspace_id, function_id))
-        .await?;
-    Ok(())
+        .await
 }
 
 /// Upserts a Saved Function's `failed` state row.
@@ -1181,13 +1183,13 @@ pub(super) async fn generations_with_rows(
 }
 
 /// Deletes one Generation's Tool rows and state row within its
-/// Workspace.
+/// Workspace. Returns the Tool rows it deleted.
 pub(super) async fn delete_generation_in_workspace(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     generation_id: &ProviderGenerationId,
-) -> Result<(), Error> {
-    transaction
+) -> Result<u64, Error> {
+    let removed = transaction
         .execute(generation_rows(workspace_id, generation_id))
         .await?;
     transaction
@@ -1203,7 +1205,7 @@ pub(super) async fn delete_generation_in_workspace(
                 .to_owned(),
         )
         .await?;
-    Ok(())
+    Ok(removed)
 }
 
 /// One Saved Function in its Workspace.

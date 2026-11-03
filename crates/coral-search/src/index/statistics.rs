@@ -4,10 +4,11 @@
 //! An index write upserts its own rows and counts no statistics. Once it
 //! commits, it marks its Workspace, and one recount follows the first mark by
 //! [`RECOUNT_DELAY`]. Every write that marks the Workspace in that time shares
-//! the recount. A recount runs only when the Workspace's statistics watermark
-//! no longer matches its rows, so a reconcile pass that already counted the
-//! same rows leaves nothing to do, and a lost recount leaves the watermark
-//! stale for the pass to find.
+//! the recount. That recount always counts: a write's stamps alone may not
+//! show the change when another host's clock runs ahead. The reconcile pass
+//! counts each Workspace whose watermark no longer matches its rows, so a
+//! recount that failed, or a process that stopped before it, leaves the
+//! statistics stale until the pass.
 //!
 //! Document frequency and mean length a few seconds stale barely move a BM25
 //! score. Candidate selection reads the text vectors, not the statistics, so
@@ -27,7 +28,7 @@ use tracing::field::Empty;
 use tracing::instrument::WithSubscriber as _;
 
 use super::{InFlightWork, SearchIndex, WriteTrigger, in_write_span};
-use crate::indexer::{self, IndexError};
+use crate::indexer::{self, IndexError, Recount};
 
 /// How long after the first change of a Workspace's rows its recount runs.
 /// A recount reads every row of the Workspace, so a burst of writes, such as a
@@ -63,11 +64,14 @@ impl SearchIndex {
     /// its recount unless one is scheduled already. Postgres only: `SQLite`'s
     /// FTS5 keeps its own statistics. A write of a reconcile pass schedules
     /// nothing: the pass's statistics step recounts it. The recount counts as
-    /// in flight, so [`Self::settled`] waits for it.
+    /// in flight from before it is scheduled, so [`Self::settled`] never sees
+    /// a scheduled recount it does not wait for.
     pub(super) fn rows_changed(&self, workspace_id: &WorkspaceId) {
         if !self.schedules_recounts || self.database.system() != DatabaseSystem::Postgres {
             return;
         }
+        self.in_flight.send_modify(|work| *work += 1);
+        let in_flight = InFlightWork(self.in_flight.clone());
         // No code panics while holding this lock, so a poisoned one still
         // holds a valid set.
         let schedule = {
@@ -80,10 +84,9 @@ impl SearchIndex {
             !std::mem::replace(&mut pending.scheduled, true)
         };
         if !schedule {
+            // The scheduled recount holds a count of its own.
             return;
         }
-        self.in_flight.send_modify(|work| *work += 1);
-        let in_flight = InFlightWork(self.in_flight.clone());
         let index = self.clone();
         let _recount = tokio::spawn(
             async move {
@@ -106,22 +109,27 @@ impl SearchIndex {
                 for workspace_id in &workspaces {
                     // A failure is logged; the reconcile pass finds the
                     // stale watermark.
-                    drop(index.recount(workspace_id, WriteTrigger::RowsChanged).await);
+                    drop(
+                        index
+                            .recount(workspace_id, WriteTrigger::RowsChanged, Recount::Always)
+                            .await,
+                    );
                 }
             }
             .with_current_subscriber(),
         );
     }
 
-    /// Recounts one Workspace's statistics in a transaction of its own, when
-    /// its rows changed after the last count, in a root span
-    /// `coral.search.refresh_statistics`, the name earlier releases gave it. A failure is logged and returned.
+    /// Recounts one Workspace's statistics in a transaction of its own, as
+    /// `when` decides, in a root span `coral.search.refresh_statistics`, the
+    /// name earlier releases gave it. A failure is logged and returned.
     /// Returns the statistics rows written or deleted, `None` when the
     /// statistics were current.
     pub(super) async fn recount(
         &self,
         workspace_id: &WorkspaceId,
         trigger: WriteTrigger,
+        when: Recount,
     ) -> Result<Option<u64>, IndexError> {
         let span = tracing::info_span!(
             parent: None,
@@ -137,7 +145,8 @@ impl SearchIndex {
             trigger,
             self.within_limit(async {
                 let mut transaction = self.database.begin().await?;
-                let rows = indexer::recount_statistics(&mut transaction, workspace_id).await?;
+                let rows =
+                    indexer::recount_statistics(&mut transaction, workspace_id, when).await?;
                 transaction.commit().await?;
                 Ok(rows)
             }),

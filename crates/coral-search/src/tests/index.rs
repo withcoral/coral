@@ -2357,6 +2357,55 @@ async fn an_index_write_updates_only_the_rows_it_changes_and_each_once() {
 }
 
 #[tokio::test]
+async fn a_write_whose_stamp_lags_another_hosts_still_gets_its_recount() {
+    // Another host's clock runs ahead and stamped one row past every stamp
+    // this host gives. A write here that changes another row changes neither
+    // the row count nor the newest stamp, so the watermark alone cannot show
+    // the change.
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let tracer_entries = world.stored_entries(&world.tracer).await;
+    notify(&world.index, &tracer_entries);
+    notify(&world.index, &world.stored_entries(&ledger).await);
+    world.index.settled().await;
+    let tracer_generation = tracer_entries.generation_id().to_string();
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE search_entities SET indexed_at_unix_nanos = {ahead} \
+                 WHERE provider_generation_id <> '{tracer_generation}'; \
+             UPDATE search_entities SET description = 'zanzibarstale' \
+                 WHERE provider_generation_id = '{tracer_generation}'",
+            ahead = i64::MAX - 1,
+        ))
+        .await
+        .expect("stamp the ledger ahead and make the tracer stale");
+    // The pass counts the stale text: the newest stamp moved.
+    world.index.reconcile().await;
+    assert!(world.has_term("zanzibarstale").await);
+    world
+        .modules
+        .fixture
+        .execute_fixture_sql(&format!(
+            "DELETE FROM search_index_states WHERE target_id = '{tracer_generation}'"
+        ))
+        .await
+        .expect("let the tracer index again");
+
+    notify(&world.index, &tracer_entries);
+    world.index.settled().await;
+
+    assert!(
+        !world.has_term("zanzibarstale").await,
+        "the write's recount counted the rows it rewrote"
+    );
+    world.assert_exact_statistics().await;
+}
+
+#[tokio::test]
 async fn one_statistics_recount_follows_a_burst_of_writes() {
     coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
@@ -2388,14 +2437,16 @@ async fn one_statistics_recount_follows_a_burst_of_writes() {
     assert_eq!(world.statistics().await, None, "no write counted");
     index.settled().await;
 
-    // A recount that a write marked after the first one started finds the
-    // statistics current and writes nothing.
+    // A recount that a write marked after the first one started counts the
+    // same rows again and writes nothing.
     let recounts = spans
         .recorded()
         .into_iter()
         .filter(|span| {
             span.name == "coral.search.refresh_statistics"
-                && !span.fields.contains_key("coral.search.skipped")
+                && span
+                    .u64_field("coral.search.rows_written")
+                    .is_some_and(|rows| rows > 0)
         })
         .collect::<Vec<_>>();
     let [recount] = recounts.as_slice() else {

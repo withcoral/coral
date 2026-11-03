@@ -844,20 +844,23 @@ impl SearchIndex {
         generation: AttemptedGeneration<'_>,
         error: &IndexError,
     ) -> Result<(), IndexError> {
-        self.within_limit(async {
-            let mut transaction = self.begin_when_writer_free().await?;
-            tools::record_failed_attempt(
-                &mut transaction,
-                generation,
-                error,
-                self.reconcile_interval,
-            )
+        let removed = self
+            .within_limit(async {
+                let mut transaction = self.begin_when_writer_free().await?;
+                let removed = tools::record_failed_attempt(
+                    &mut transaction,
+                    generation,
+                    error,
+                    self.reconcile_interval,
+                )
+                .await?;
+                transaction.commit().await?;
+                Ok(removed)
+            })
             .await?;
-            transaction.commit().await?;
-            Ok(())
-        })
-        .await?;
-        self.rows_changed(generation.workspace_id());
+        if removed {
+            self.rows_changed(generation.workspace_id());
+        }
         Ok(())
     }
     async fn record_failed_function(
@@ -865,20 +868,23 @@ impl SearchIndex {
         entry: &SavedFunctionEntry,
         error: &IndexError,
     ) -> Result<(), IndexError> {
-        self.within_limit(async {
-            let mut transaction = self.begin_when_writer_free().await?;
-            functions::record_failed_attempt(
-                &mut transaction,
-                entry,
-                error,
-                self.reconcile_interval,
-            )
+        let removed = self
+            .within_limit(async {
+                let mut transaction = self.begin_when_writer_free().await?;
+                let removed = functions::record_failed_attempt(
+                    &mut transaction,
+                    entry,
+                    error,
+                    self.reconcile_interval,
+                )
+                .await?;
+                transaction.commit().await?;
+                Ok(removed)
+            })
             .await?;
-            transaction.commit().await?;
-            Ok(())
-        })
-        .await?;
-        self.rows_changed(entry.workspace_id());
+        if removed {
+            self.rows_changed(entry.workspace_id());
+        }
         Ok(())
     }
 }

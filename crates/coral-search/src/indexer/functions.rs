@@ -69,15 +69,20 @@ impl EntityIndexer for SavedFunctionIndexer {
         Ok(super::IndexEffect::Updated)
     }
 
-    /// Removes the function's row and state row.
+    /// Removes the function's row and state row. A failed function has a
+    /// state row alone, whose removal leaves the statistics as they were.
     async fn remove(
         &self,
         transaction: &mut Transaction<'_>,
         removal: &FunctionRemoval,
     ) -> Result<Option<WorkspaceId>, IndexError> {
-        repository::delete_function_entry(transaction, &removal.workspace_id, &removal.function_id)
-            .await?;
-        Ok(Some(removal.workspace_id.clone()))
+        let removed = repository::delete_function_entry(
+            transaction,
+            &removal.workspace_id,
+            &removal.function_id,
+        )
+        .await?;
+        Ok((removed > 0).then(|| removal.workspace_id.clone()))
     }
 
     /// Returns each current function to index again:
@@ -227,19 +232,20 @@ impl SavedFunctionIndexer {
 /// this in a fresh transaction after the attempt's transaction rolled back.
 /// A row an earlier attempt wrote goes too: the search table holds only what
 /// indexed, so a function whose last attempt failed does not rank on stale
-/// text.
+/// text. Answers whether that row went.
 pub(crate) async fn record_failed_attempt(
     transaction: &mut Transaction<'_>,
     entry: &SavedFunctionEntry,
     error: &IndexError,
     reconcile_interval: Duration,
-) -> Result<(), IndexError> {
+) -> Result<bool, IndexError> {
     // A failure of another revision starts the count again.
     let prior = repository::failed_function(transaction, entry.workspace_id(), entry.id())
         .await?
         .filter(|failure| failure.revision == Some(entry.revision()))
         .map(|failure| failure.retry);
-    repository::delete_function_row(transaction, entry.workspace_id(), entry.id()).await?;
+    let removed =
+        repository::delete_function_row(transaction, entry.workspace_id(), entry.id()).await?;
     let attempted_at = now_unix_nanos()?;
     repository::write_failed_function_state(
         transaction,
@@ -259,7 +265,7 @@ pub(crate) async fn record_failed_attempt(
         },
     )
     .await?;
-    Ok(())
+    Ok(removed > 0)
 }
 
 fn function_row(entry: &SavedFunctionEntry) -> Result<FunctionRow<'_>, IndexError> {

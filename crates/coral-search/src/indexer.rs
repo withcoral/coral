@@ -171,8 +171,9 @@ pub(crate) trait EntityIndexer: Send + Sync {
     /// with the time it writes them. Writing the same entry again
     /// leaves the same rows. The caller holds the entry's Workspace lock, so
     /// the stamp is later than each stamp a statistics count saw before it
-    /// while the clock moves forward. The write counts no statistics: the
-    /// caller schedules the Workspace's recount once it commits.
+    /// while the clock moves forward. The write counts no statistics: once it
+    /// commits, the caller schedules the Workspace's recount, or, in a
+    /// reconcile pass, leaves it to the pass's statistics step.
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
@@ -181,7 +182,8 @@ pub(crate) trait EntityIndexer: Send + Sync {
     ) -> Result<IndexEffect, IndexError>;
 
     /// Removes the rows and state the removal names. Returns the Workspace
-    /// whose rows it removed, `None` when the index did not know it.
+    /// whose search rows it removed, `None` when it removed none, a state row
+    /// alone, or did not know the Workspace.
     async fn remove(
         &self,
         transaction: &mut Transaction<'_>,
@@ -252,22 +254,36 @@ fn is_stale(watermarks: &repository::WorkspaceWatermarks) -> bool {
     watermarks.counted != Some(watermarks.current)
 }
 
-/// On Postgres, takes the Workspace's statistics lock and, when its rows
-/// changed after the last count, as [`check_statistics`] compares them,
-/// rewrites its ranking statistics from its rows. Takes no write lock, so no
-/// index write waits for it. Returns the statistics rows written or deleted,
-/// `None` when the statistics were current. `SQLite` keeps no statistics, so
-/// it counts nothing.
+/// When a recount counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Recount {
+    /// Always: a write changed the Workspace's rows. Its stamps alone may not
+    /// show it, since another host's clock may run ahead.
+    Always,
+    /// Only when the Workspace's rows changed after the last count, as
+    /// [`check_statistics`] compares them: a reconcile pass, which has no
+    /// other sign of a change.
+    IfStale,
+}
+
+/// On Postgres, takes the Workspace's statistics lock and rewrites its
+/// ranking statistics from its rows, as `when` decides. Takes no write lock,
+/// so no index write waits for it. Returns the statistics rows written or
+/// deleted, `None` when the statistics were current. `SQLite` keeps no
+/// statistics, so it counts nothing.
 pub(crate) async fn recount_statistics(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
+    when: Recount,
 ) -> Result<Option<u64>, IndexError> {
     repository::lock_statistics(transaction, workspace_id).await?;
-    let stale = repository::workspace_watermark(transaction, workspace_id)
-        .await?
-        .is_some_and(|watermarks| is_stale(&watermarks));
-    if !stale {
-        return Ok(None);
+    if when == Recount::IfStale {
+        let stale = repository::workspace_watermark(transaction, workspace_id)
+            .await?
+            .is_some_and(|watermarks| is_stale(&watermarks));
+        if !stale {
+            return Ok(None);
+        }
     }
     Ok(Some(
         repository::recount_workspace_statistics(transaction, workspace_id).await?,

@@ -131,8 +131,9 @@ impl EntityIndexer for ToolIndexer {
                 workspace_id,
                 provider_id,
             } => {
-                repository::delete_provider(transaction, workspace_id, provider_id).await?;
-                Ok(Some(workspace_id.clone()))
+                let removed =
+                    repository::delete_provider(transaction, workspace_id, provider_id).await?;
+                Ok((removed > 0).then(|| workspace_id.clone()))
             }
             ToolRemoval::Generation(generation_id) => {
                 repository::delete_generation(transaction, generation_id).await
@@ -141,13 +142,13 @@ impl EntityIndexer for ToolIndexer {
                 workspace_id,
                 generation_id,
             } => {
-                repository::delete_generation_in_workspace(
+                let removed = repository::delete_generation_in_workspace(
                     transaction,
                     workspace_id,
                     generation_id,
                 )
                 .await?;
-                Ok(Some(workspace_id.clone()))
+                Ok((removed > 0).then(|| workspace_id.clone()))
             }
         }
     }
@@ -367,20 +368,20 @@ impl AttemptedGeneration<'_> {
 /// rows. The caller runs this in a fresh transaction after the attempt's
 /// transaction rolled back. Rows an earlier attempt wrote go too: a
 /// Generation whose state is `failed` counts as not searched, so none of its
-/// rows may rank.
+/// rows may rank. Answers whether any of those rows went.
 pub(crate) async fn record_failed_attempt(
     transaction: &mut Transaction<'_>,
     generation: AttemptedGeneration<'_>,
     error: &IndexError,
     reconcile_interval: Duration,
-) -> Result<(), IndexError> {
+) -> Result<bool, IndexError> {
     let prior = repository::failed_generation_retry_rule(
         transaction,
         generation.workspace_id,
         generation.generation_id,
     )
     .await?;
-    repository::delete_generation_rows(
+    let removed = repository::delete_generation_rows(
         transaction,
         generation.workspace_id,
         generation.generation_id,
@@ -397,7 +398,7 @@ pub(crate) async fn record_failed_attempt(
         generation_state(generation, attempted_at, state),
     )
     .await?;
-    Ok(())
+    Ok(removed > 0)
 }
 
 fn generation_state(
