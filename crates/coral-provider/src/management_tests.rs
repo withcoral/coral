@@ -875,6 +875,38 @@ async fn an_owner_sets_and_removes_a_providers_icon_that_members_read() {
         "another Workspace finds no Provider"
     );
 
+    // The schema refuses a stored icon that loses one part, whatever writes it.
+    // Each case clears or changes one column of the icon set above, so no case
+    // needs a binary literal, which the two databases spell differently.
+    for (case, column) in [
+        ("no media type", "icon_media_type = NULL"),
+        ("no content", "icon_content = NULL"),
+        ("no digest", "icon_digest = NULL"),
+        ("an unknown media type", "icon_media_type = 'image/gif'"),
+    ] {
+        let refused = db
+            .execute_fixture_sql(&format!(
+                "UPDATE provider_records SET {column} WHERE id = '{}'",
+                provider.id()
+            ))
+            .await
+            .expect_err(case);
+        assert!(
+            refused
+                .to_string()
+                .contains("provider_records_icon_complete"),
+            "{case}: {refused}"
+        );
+    }
+    assert_eq!(
+        providers
+            .inspect_provider_icon(&owner, workspace.id(), provider.id())
+            .await
+            .unwrap(),
+        Some(icon.clone()),
+        "a refused row changes nothing"
+    );
+
     let unchanged = providers
         .set_provider_icon(
             &with_etag(change_context(owner.clone(), 3, '3'), &set.etag()),
@@ -938,32 +970,4 @@ async fn an_owner_sets_and_removes_a_providers_icon_that_members_read() {
         .unwrap();
     assert_eq!(again, removed, "removing no icon writes nothing");
     assert_eq!(events().await.len(), before + 2);
-    // The schema refuses an icon row that is only partly set, whatever writes it.
-    for (case, columns) in [
-        ("no media type", "icon_content = X'00', icon_digest = 'd'"),
-        ("no content", "icon_media_type = 'image/png', icon_digest = 'd'"),
-        ("no digest", "icon_media_type = 'image/png', icon_content = X'00'"),
-        (
-            "an unknown media type",
-            "icon_media_type = 'image/gif', icon_content = X'00', icon_digest = 'd'",
-        ),
-    ] {
-        assert!(
-            db.execute_fixture_sql(&format!(
-                "UPDATE provider_records SET {columns} WHERE id = '{}'",
-                provider.id()
-            ))
-            .await
-            .is_err(),
-            "{case}"
-        );
-    }
-    assert_eq!(
-        providers
-            .inspect_provider_icon(&owner, workspace.id(), provider.id())
-            .await
-            .unwrap(),
-        None,
-        "a refused row changes nothing"
-    );
 }
