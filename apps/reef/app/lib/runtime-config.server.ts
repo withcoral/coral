@@ -12,6 +12,8 @@ export interface CoralWebRuntimeConfig {
   endpoint: CoralEndpointPolicy
   /** Where a local build asks upstream OAuth to return; empty uses the request origin. */
   upstreamOAuthCallbackUrl: string
+  /** The MCP clients that may have a Coral plugin; Reef does not check it. Empty offers none. */
+  clientsWithAvailablePlugins: readonly string[]
 }
 
 /**
@@ -37,7 +39,36 @@ export function readCoralWebRuntimeConfig(): CoralWebRuntimeConfig {
     auth,
     endpoint,
     upstreamOAuthCallbackUrl: process.env.CORAL_UPSTREAM_OAUTH_CALLBACK_URL ?? '',
+    clientsWithAvailablePlugins: clientNames(process.env.AGENTS_WITH_AVAILABLE_PLUGINS ?? ''),
   }
+}
+
+const MAX_CLIENT_NAMES = 8
+const MAX_CLIENT_NAME_LENGTH = 32
+/** Letters, digits and single spaces, dots, hyphens or underscores between them. */
+const CLIENT_NAME = /^[a-z0-9]+(?:[ ._-][a-z0-9]+)*$/
+
+/**
+ * A comma-separated list of MCP client names, in lowercase with single spaces, each
+ * once. The onboarding prompt quotes them to a client, so each is a short plain name.
+ */
+function clientNames(value: string): string[] {
+  const names = new Set(
+    value
+      .split(',')
+      .map((name) => name.trim().replace(/\s+/g, ' ').toLowerCase())
+      .filter(Boolean),
+  )
+  if (names.size > MAX_CLIENT_NAMES)
+    throw new Error(
+      `AGENTS_WITH_AVAILABLE_PLUGINS lists more than ${MAX_CLIENT_NAMES} client names`,
+    )
+  for (const name of names)
+    if (name.length > MAX_CLIENT_NAME_LENGTH || !CLIENT_NAME.test(name))
+      throw new Error(
+        `AGENTS_WITH_AVAILABLE_PLUGINS has an invalid client name ${JSON.stringify(name)}: use up to ${MAX_CLIENT_NAME_LENGTH} letters, digits, spaces, dots, hyphens or underscores`,
+      )
+  return [...names]
 }
 
 let bootstrap: CoralWebRuntimeConfig | undefined
