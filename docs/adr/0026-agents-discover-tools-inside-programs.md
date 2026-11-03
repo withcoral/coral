@@ -10,8 +10,8 @@ ranked Search Hits, and exact Call Paths return their Authoring Descriptions, ea
 the Program that receives them. Coral's MCP surface keeps only the tools that run, observe and record work.
 
 Measured in Duel, moving discovery into `exec` together with starting the Task there cut about 2.7 model turns per
-Task on a code-mode-only client and was neutral on Claude Code. On the same queries both surfaces ranked identically,
-so the choice is about turns and iteration, not ranking. One surface also lets the discovery API change without
+Task on a code-mode-only client and was neutral on Claude Code. Replaying 600 labelled queries, both surfaces gave
+the same rank on 597, so the choice is about turns and iteration, not ranking. One surface also lets the discovery API change without
 keeping two contracts in step.
 
 Rejected: MCP-only discovery (main before this), which costs code-mode clients their extra turns; serving both surfaces
