@@ -277,12 +277,16 @@ where
     T: ToolArguments,
 {
     let arguments = Value::Object(arguments.unwrap_or_default());
-    T::deserialize(&arguments).ok().ok_or_else(|| {
+    serde_path_to_error::deserialize(&arguments).map_err(|error| {
+        let field = match error.path().iter().next() {
+            Some(serde_path_to_error::Segment::Map { key }) => Some(key.as_str()),
+            _ => None,
+        };
         ErrorData::invalid_params(
             format!(
                 "invalid arguments for '{}': {}",
                 T::NAME,
-                argument_problem(T::NAME, &arguments)
+                argument_problem(T::NAME, &arguments, field)
             ),
             None,
         )
@@ -291,21 +295,44 @@ where
 
 /// What is wrong with `arguments` to tool `name`, read from the schema Coral
 /// advertises. A deserializer's message quotes the value or key it rejected,
-/// which can be private, so none reaches the caller.
-fn argument_problem(name: &str, arguments: &Value) -> String {
-    let required = TOOLS
+/// which can be private, so none reaches the caller: the problem names only
+/// the tool's own fields. `field` is where the deserializer failed, if it
+/// failed inside one.
+fn argument_problem(name: &str, arguments: &Value, field: Option<&str>) -> String {
+    let schema = TOOLS
         .iter()
         .find(|tool| tool.name == name)
-        .and_then(|tool| tool.input_schema.get("required"))
-        .and_then(Value::as_array);
-    let missing = required
+        .map(|tool| tool.input_schema.as_ref());
+    let properties = schema
+        .and_then(|schema| schema.get("properties"))
+        .and_then(Value::as_object);
+    let missing = schema
+        .and_then(|schema| schema.get("required"))
+        .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
         .find(|field| arguments.get(field).is_none());
-    match missing {
-        Some(field) => format!("missing field `{field}`"),
-        None => "a value does not match the tool's input schema".to_owned(),
+    if let Some(field) = missing {
+        return format!("missing field `{field}`");
+    }
+    let taken = |field: &str| properties.is_some_and(|properties| properties.contains_key(field));
+    if let Some(field) = field.filter(|field| taken(field)) {
+        return format!("the value of `{field}` does not match the tool's input schema");
+    }
+    let unknown = arguments
+        .as_object()
+        .is_some_and(|arguments| arguments.keys().any(|key| !taken(key)));
+    match properties {
+        Some(properties) if unknown => format!(
+            "an argument is not one the tool takes. It takes: {}",
+            properties
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => "a value does not match the tool's input schema".to_owned(),
     }
 }
 
@@ -440,21 +467,24 @@ mod tests {
 
     use super::*;
 
-    /// A caller learns which field is missing, but a rejected value or key
+    /// A caller learns which of the tool's fields is missing or has a wrong
+    /// value, and which fields the tool takes, but a rejected value or key
     /// does not come back in the error.
     #[test]
-    fn invalid_arguments_name_a_missing_field_and_never_quote_the_caller() {
-        const SCHEMA: &str = "a value does not match the tool's input schema";
+    fn invalid_arguments_name_the_tools_field_and_never_quote_the_caller() {
         for (arguments, problem) in [
             (json!({}), "missing field `task_id`"),
-            (json!({"task_id": "t", "outcome": "value-canary"}), SCHEMA),
+            (
+                json!({"task_id": "t", "outcome": "value-canary"}),
+                "the value of `outcome` does not match the tool's input schema",
+            ),
             (
                 json!({"task_id": ["value-canary"], "outcome": "success"}),
-                SCHEMA,
+                "the value of `task_id` does not match the tool's input schema",
             ),
             (
                 json!({"task_id": "t", "outcome": "success", "key-canary": 1}),
-                SCHEMA,
+                "an argument is not one the tool takes. It takes: task_id, outcome, feedback",
             ),
         ] {
             let Value::Object(arguments) = arguments else {

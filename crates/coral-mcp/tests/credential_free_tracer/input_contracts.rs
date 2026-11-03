@@ -376,12 +376,20 @@ async fn check_offsets(session: &RawSession, task: &str, tools: &[Value]) {
     for invalid in [json!(-1), json!(1.5), json!("20"), json!("")] {
         assert!(!schema.is_valid(&invalid), "{invalid}");
     }
-    for arguments in [
-        json!({"task_id":task, "intent":"Check offsets", "offset":-1}),
-        json!({"task_id":task, "intent":"Check offsets", "offset":1.5}),
-        json!({"task_id":task, "intent":"Check offsets", "offset":"20"}),
-        json!({"task_id":task, "intent":"Check offsets", "cursor":"eyJ2ZXJzaW9uIjoyfQ"}),
+    let wrong_value = "the value of `offset` does not match the tool's input schema";
+    for (arguments, problem) in [
+        (json!({"offset":-1}), wrong_value),
+        (json!({"offset":1.5}), wrong_value),
+        (json!({"offset":"20"}), wrong_value),
+        (
+            json!({"cursor":"eyJ2ZXJzaW9uIjoyfQ"}),
+            "an argument is not one the tool takes. It takes: task_id, intent, query, provider, limit, offset",
+        ),
     ] {
+        let mut arguments = arguments;
+        let fields = arguments.as_object_mut().expect("arguments");
+        fields.insert("task_id".into(), json!(task));
+        fields.insert("intent".into(), json!("Check offsets"));
         let error = session
             .result(
                 "tools/call",
@@ -390,6 +398,11 @@ async fn check_offsets(session: &RawSession, task: &str, tools: &[Value]) {
             .await
             .expect_err("a value that is not an offset is a protocol rejection");
         assert_eq!(error.get("code"), Some(&json!(-32602)), "{arguments}");
+        assert_eq!(
+            error.get("message"),
+            Some(&json!(format!("invalid arguments for 'search': {problem}"))),
+            "{arguments}"
+        );
     }
 }
 

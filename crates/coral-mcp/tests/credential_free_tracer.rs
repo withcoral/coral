@@ -35,6 +35,7 @@ use rmcp::{ClientLifecycleMode, ClientServiceExt as _, ServiceExt as _};
 use schemars as _;
 use serde as _;
 use serde_json::{Map, Value, json};
+use serde_path_to_error as _;
 use thiserror as _;
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, oneshot};
