@@ -239,7 +239,7 @@ it('reconnects when the access token expires before the session does', async () 
     activityStream(
       new Request('http://reef/activity/count'),
       api,
-      async () => ({ kind: 'count', counts: { '/workspaces/w': '1' } }),
+      async () => ({ kind: 'count', counts: { '/workspaces/w': counted('1') } }),
       { endsAt: Date.now() / 1000 + 3600, renewAt: Date.now() / 1000 + 5 },
     ),
   )

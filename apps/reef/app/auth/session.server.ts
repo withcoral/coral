@@ -156,7 +156,8 @@ export async function resolveCoralWebSession(
   ) {
     throw sessionUnavailable()
   }
-  if (body.session_expires_in <= CLOCK_SKEW_SECONDS) return null
+  // Coral decides when the session ends and never mints a token past it, so
+  // no local margin cuts the session short.
   const now = unixTimestamp()
   return {
     accessToken: body.access_token,

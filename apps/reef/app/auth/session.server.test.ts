@@ -99,11 +99,16 @@ describe('Coral web auth sessions', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it('has no session once Coral refuses it, or once it is about to end', async () => {
+  // Coral alone decides when a session ends: a session with a second left is
+  // still a session, and one Coral refuses is over.
+  it('keeps a session until Coral refuses it', async () => {
     const cookie = await startedSession()
-    mockFetch(jsonResponse({ error: 'invalid_grant' }, 400), minted('token', CLOCK_SKEW_SECONDS))
+    mockFetch(minted('last-token', 1), jsonResponse({ error: 'invalid_grant' }, 400))
 
-    await expect(resolveCoralWebSession(requestWith(cookie), config)).resolves.toBeNull()
+    await expect(resolveCoralWebSession(requestWith(cookie), config)).resolves.toMatchObject({
+      accessToken: 'last-token',
+      sessionExpiresAt: unixTimestamp() + 1,
+    })
     await expect(resolveCoralWebSession(requestWith(cookie), config)).resolves.toBeNull()
   })
 
