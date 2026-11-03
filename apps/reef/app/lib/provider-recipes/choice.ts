@@ -20,8 +20,11 @@ export type SourceLocation =
       document: string
     }
 
-/** A recipe's logo URLs. `light` serves both themes when `dark` is absent. */
-export type RecipeIcons = { light: string; dark?: string }
+/**
+ * The URLs of the logo that stands for a provider: a recipe's, an uploaded icon or Coral's
+ * mark. `light` serves both themes when `dark` is absent.
+ */
+export type ProviderLogo = { light: string; dark?: string }
 
 export type SourceChoice = SourceLocation & {
   /** The recipe's id; empty for a typed URL. */
@@ -37,7 +40,7 @@ export type SourceChoice = SourceLocation & {
   /** One line on the catalog row. */
   description: string
   /** URLs of the logos bundled beside the recipe; a lettermark when absent. */
-  icons?: RecipeIcons
+  icons?: ProviderLogo
   /** Non-secret service headers needed before reading the MCP catalog. */
   requestHeaders?: { name: string; value: string }[]
   /** Non-secret answers needed to locate this source before discovery. */

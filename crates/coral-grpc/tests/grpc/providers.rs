@@ -2119,6 +2119,92 @@ async fn metadata_and_lifecycle_changes_require_the_current_etag() {
     assert_eq!(restored.state(), management::ProviderState::Active);
 }
 
+/// An icon round-trips with its type read from the content, the Provider
+/// projects its digest, and a rejected image or an absent icon has a status.
+#[tokio::test]
+async fn an_icon_is_set_read_and_deleted_through_its_provider() {
+    let f = Fixture::new().await;
+    let token = f.token(&f.owner, "reef");
+    let provider = published_weather(&f, &token).await;
+    assert!(provider.icon_digest.is_empty());
+    let mut providers = f.providers();
+    let get = || management::GetProviderIconRequest {
+        name: provider.name.clone(),
+    };
+    let missing = providers
+        .get_provider_icon(request(get(), &token, "reef"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (missing.code(), error_reason(&missing).as_str()),
+        (tonic::Code::NotFound, "NOT_FOUND")
+    );
+    let rejected = providers
+        .set_provider_icon(request(
+            management::SetProviderIconRequest {
+                name: provider.name.clone(),
+                etag: provider.etag.clone(),
+                content: b"GIF89a".to_vec(),
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (rejected.code(), error_reason(&rejected).as_str()),
+        (tonic::Code::InvalidArgument, "INVALID_PROVIDER_INPUT")
+    );
+
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"/>"#.to_vec();
+    let set = providers
+        .set_provider_icon(request(
+            management::SetProviderIconRequest {
+                name: provider.name.clone(),
+                etag: provider.etag.clone(),
+                content: svg.clone(),
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!set.icon_digest.is_empty());
+    let icon = providers
+        .get_provider_icon(request(get(), &token, "reef"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        icon,
+        management::ProviderIcon {
+            media_type: "image/svg+xml".into(),
+            content: svg,
+            digest: set.icon_digest.clone(),
+        }
+    );
+
+    let deleted = providers
+        .delete_provider_icon(request(
+            management::DeleteProviderIconRequest {
+                name: provider.name.clone(),
+                etag: set.etag,
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(deleted.icon_digest.is_empty());
+    let gone = providers
+        .get_provider_icon(request(get(), &token, "reef"))
+        .await
+        .unwrap_err();
+    assert_eq!(gone.code(), tonic::Code::NotFound);
+}
+
 /// Regeneration is a Publication against the exact Provider and its etag.
 #[tokio::test]
 async fn regeneration_publishes_against_the_exact_provider_and_etag() {

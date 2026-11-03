@@ -5,7 +5,7 @@ import type {
   CreationAttempt,
   UpdateAttempt,
 } from '@/lib/provider-publication-attempt/model'
-import type { SourceChoice } from '@/lib/provider-recipes/choice'
+import type { ProviderLogo, SourceChoice } from '@/lib/provider-recipes/choice'
 import type { PersonalAccountState } from '@/views/accounts/types'
 import type { AccountLabel } from './account-labels'
 import type { SelectedTool } from './selection'
@@ -110,6 +110,8 @@ export interface ProviderView {
   path: string
   enabled: boolean
   tools: ToolView[]
+  /** The logo that stands for the provider; a lettermark shows without one. */
+  icons?: ProviderLogo
 }
 
 /** What the settings page can read about one provider without owner-only or write calls. */
@@ -136,6 +138,10 @@ export interface ProviderSettingsView {
   canReconnect: boolean
   /** Coral reports that the saved account setting no longer suits the provider. */
   accountSettingIncompatible: boolean
+  /** The logo that stands for the provider; a lettermark shows without one. */
+  icons?: ProviderLogo
+  /** An owner uploaded the logo, so an owner can remove it. */
+  uploadedIcon: boolean
 }
 
 /** The owner-only source read: its kind and a redacted address, or a failed read. */

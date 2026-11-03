@@ -3,7 +3,7 @@ import { useNavigation } from 'react-router'
 import { Button, Card, Typography } from '@/wax/components'
 import { Logo } from '@/wax/components/logo'
 import { StatusDot } from '@/wax/components/status'
-import type { RecipeIcons, SourceChoice } from '@/lib/provider-recipes/choice'
+import type { ProviderLogo, SourceChoice } from '@/lib/provider-recipes/choice'
 import { AddProviderLauncher } from '@/views/providers/add-provider'
 import { AgentKeyDialog } from './agent-key-dialog'
 import { ActionDialog, NameInput } from './forms'
@@ -29,7 +29,7 @@ export interface ProviderSummary {
   path: string
   /** Why its tools cannot run now; empty when ready. */
   blockers: string[]
-  icons?: RecipeIcons
+  icons?: ProviderLogo
 }
 
 export interface WorkspaceOverviewProps {

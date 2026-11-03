@@ -25,6 +25,7 @@ import { accountStates } from '@/views/accounts/account-states'
 import { ConnectAccountDialog } from '@/views/management/connect-account-dialog'
 import { accountLabels, useAccountAudience } from './account-labels'
 import { SourceUrl, sourceKinds } from './source-facts'
+import { IconCard } from './icon-card'
 import * as styles from './providers.css'
 
 /**
@@ -77,6 +78,7 @@ export function ProviderSettingsPage({
           canChange={canChange}
           pending={pending}
         />
+        {canChange && <IconCard provider={provider} form={form} />}
         {canChange && (
           <section aria-label="Configuration">
             <Card title="Configuration" description="Change destinations or sign-in settings.">

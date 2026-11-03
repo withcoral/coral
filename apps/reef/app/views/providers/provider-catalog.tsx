@@ -5,7 +5,7 @@ import {
   byService,
   sourceButtonLabel,
   sourcesInOrder,
-  type RecipeIcons,
+  type ProviderLogo,
   type ServiceChoices,
   type SourceChoice,
 } from '@/lib/provider-recipes/choice'
@@ -29,7 +29,7 @@ function ServiceRow({
   onRecipe,
 }: {
   name: string
-  icons?: RecipeIcons
+  icons?: ProviderLogo
   choices: readonly SourceChoice[]
   /** The recipe Coral is reading, when it is one of this card's. */
   reading?: SourceChoice

@@ -1,7 +1,7 @@
-import type { RecipeIcons } from '@/lib/provider-recipes/choice'
+import type { ProviderLogo } from '@/lib/provider-recipes/choice'
 import coralMarkDark from './coral-mark-dark.svg'
 import coralMarkLight from './coral-mark-light.svg'
 
 /** Coral's mark, which stands for the Built-in Provider on the Providers page and beside
  * the calls Activity and Approvals name. */
-export const CORAL_ICONS: RecipeIcons = { light: coralMarkLight, dark: coralMarkDark }
+export const CORAL_ICONS: ProviderLogo = { light: coralMarkLight, dark: coralMarkDark }

@@ -2,7 +2,7 @@ import { CORAL_ICONS } from '@/views/providers/coral-icons'
 import type { ProviderMark } from '@/views/activity/call-tool'
 import { activityPageFetchKey } from './activity-page-fetch'
 import { recipeChoiceById } from './provider-recipes/library.server'
-import type { RecipeIcons } from './provider-recipes/choice'
+import type { ProviderLogo } from './provider-recipes/choice'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { data } from 'react-router'
 import {
@@ -69,20 +69,39 @@ export async function listAllProviders(
   return providers
 }
 /**
- * Each provider of `workspace` with the logo that stands for it, as on the providers page:
- * Coral's mark for the Built-in Provider, else the logo of the recipe whose id its namespace
- * keeps. Logos only decorate, so none show while Coral cannot list the providers, and no
+ * Where the browser loads the icon an owner uploaded for `provider`, by its resource name.
+ * The digest changes with the icon, so a new icon gets a new URL and the browser can keep
+ * each one for good.
+ */
+export function uploadedIconPath(provider: string, digest: string) {
+  return `/${provider}/icon?${new URLSearchParams({ v: digest })}`
+}
+/**
+ * The logo that stands for a provider: Coral's mark for the Built-in Provider, the icon an
+ * owner uploaded, else the logo of the recipe whose id its namespace keeps. Without one, a
+ * lettermark shows.
+ */
+export function providerIcons(
+  provider: Pick<Provider, 'name' | 'builtin' | 'namespace' | 'iconDigest'>,
+): ProviderLogo | undefined {
+  if (provider.builtin) return CORAL_ICONS
+  if (provider.iconDigest) return { light: uploadedIconPath(provider.name, provider.iconDigest) }
+  return recipeChoiceById(provider.namespace)?.icons
+}
+/**
+ * Each provider of `workspace` with the logo that stands for it ({@link providerIcons}).
+ * Logos only decorate, so none show while Coral cannot list the providers, and no
  * page fails for them. A lapsed sign-in still fails, so you sign in again.
  */
 async function providersWithLogos(
   api: Pick<ManagementApi, 'providers'>,
   workspace: string,
   signal?: AbortSignal,
-): Promise<{ provider: Provider; icons?: RecipeIcons }[]> {
+): Promise<{ provider: Provider; icons?: ProviderLogo }[]> {
   try {
     return (await listAllProviders(api, workspace, signal)).map((provider) => ({
       provider,
-      icons: provider.builtin ? CORAL_ICONS : recipeChoiceById(provider.namespace)?.icons,
+      icons: providerIcons(provider),
     }))
   } catch (error) {
     if (error instanceof ConnectError && error.code === Code.Unauthenticated) throw error
@@ -118,7 +137,7 @@ export async function providerLogos(
   api: Pick<ManagementApi, 'providers'>,
   workspace: string,
   signal?: AbortSignal,
-): Promise<Map<string, RecipeIcons>> {
+): Promise<Map<string, ProviderLogo>> {
   const logos = await providersWithLogos(api, workspace, signal)
   return new Map(logos.flatMap(({ provider, icons }) => (icons ? [[provider.name, icons]] : [])))
 }
@@ -341,6 +360,7 @@ export async function providerView(
     path,
     enabled: isEnabled,
     tools: toolViews,
+    icons: providerIcons(provider),
   }
 }
 
@@ -383,6 +403,8 @@ export function providerSettingsView(
     accountSettingIncompatible: provider.blockers.includes(
       ProviderBlocker.ACCOUNT_SETTING_INCOMPATIBLE,
     ),
+    icons: providerIcons(provider),
+    uploadedIcon: Boolean(provider.iconDigest),
   }
 }
 

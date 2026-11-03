@@ -57,6 +57,10 @@ pub struct Provider {
     /// and manages under coral.workspace.
     #[prost(bool, tag = "13")]
     pub builtin: bool,
+    /// Digest of the uploaded icon's content, which changes with the icon.
+    /// Empty when the Provider has no uploaded icon.
+    #[prost(string, tag = "14")]
+    pub icon_digest: ::prost::alloc::string::String,
 }
 /// Lists Providers owned by one authorized Workspace.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1060,6 +1064,50 @@ pub struct UpdateProviderRequest {
     /// Nonblank display name; never changes the Program namespace.
     #[prost(string, tag = "3")]
     pub display_name: ::prost::alloc::string::String,
+}
+/// Reads one Provider's uploaded icon.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetProviderIconRequest {
+    /// Canonical Workspace Provider name.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+}
+/// An image an Owner uploaded to stand for a Provider in every theme.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProviderIcon {
+    /// image/png, image/jpeg, image/webp or image/svg+xml, read from the content.
+    #[prost(string, tag = "1")]
+    pub media_type: ::prost::alloc::string::String,
+    /// The image, at most 100 KiB.
+    #[prost(bytes = "vec", tag = "2")]
+    pub content: ::prost::alloc::vec::Vec<u8>,
+    /// Same as Provider.icon_digest.
+    #[prost(string, tag = "3")]
+    pub digest: ::prost::alloc::string::String,
+}
+/// Replaces one Provider's icon.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SetProviderIconRequest {
+    /// Canonical Workspace Provider name.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// Required current Provider concurrency token.
+    #[prost(string, tag = "2")]
+    pub etag: ::prost::alloc::string::String,
+    /// A PNG, JPEG, WebP or SVG image of at most 100 KiB. Coral reads its type
+    /// from the content and rejects anything else.
+    #[prost(bytes = "vec", tag = "3")]
+    pub content: ::prost::alloc::vec::Vec<u8>,
+}
+/// Removes one Provider's uploaded icon.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteProviderIconRequest {
+    /// Canonical Workspace Provider name.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// Required current Provider concurrency token.
+    #[prost(string, tag = "2")]
+    pub etag: ::prost::alloc::string::String,
 }
 /// Reversible lifecycle, separate from caller-specific readiness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -2699,6 +2747,89 @@ pub mod provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Reads the icon an Owner uploaded. Fails with NotFound when the Provider
+        /// has none.
+        pub async fn get_provider_icon(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetProviderIconRequest>,
+        ) -> std::result::Result<tonic::Response<super::ProviderIcon>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.ProviderService/GetProviderIcon",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.ProviderService",
+                        "GetProviderIcon",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Replaces the Provider's icon. The Built-in Provider keeps Coral's mark and
+        /// fails with FailedPrecondition.
+        pub async fn set_provider_icon(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SetProviderIconRequest>,
+        ) -> std::result::Result<tonic::Response<super::Provider>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.ProviderService/SetProviderIcon",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.ProviderService",
+                        "SetProviderIcon",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Removes the Provider's uploaded icon; a Provider without one is unchanged.
+        pub async fn delete_provider_icon(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeleteProviderIconRequest>,
+        ) -> std::result::Result<tonic::Response<super::Provider>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.ProviderService/DeleteProviderIcon",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.ProviderService",
+                        "DeleteProviderIcon",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// Blocks new Invocations and later pre-dispatch work without deleting credentials.
         pub async fn disable_provider(
             &mut self,
@@ -2891,6 +3022,23 @@ pub(crate) mod provider_service_server {
         async fn update_provider(
             &self,
             request: tonic::Request<super::UpdateProviderRequest>,
+        ) -> std::result::Result<tonic::Response<super::Provider>, tonic::Status>;
+        /// Reads the icon an Owner uploaded. Fails with NotFound when the Provider
+        /// has none.
+        async fn get_provider_icon(
+            &self,
+            request: tonic::Request<super::GetProviderIconRequest>,
+        ) -> std::result::Result<tonic::Response<super::ProviderIcon>, tonic::Status>;
+        /// Replaces the Provider's icon. The Built-in Provider keeps Coral's mark and
+        /// fails with FailedPrecondition.
+        async fn set_provider_icon(
+            &self,
+            request: tonic::Request<super::SetProviderIconRequest>,
+        ) -> std::result::Result<tonic::Response<super::Provider>, tonic::Status>;
+        /// Removes the Provider's uploaded icon; a Provider without one is unchanged.
+        async fn delete_provider_icon(
+            &self,
+            request: tonic::Request<super::DeleteProviderIconRequest>,
         ) -> std::result::Result<tonic::Response<super::Provider>, tonic::Status>;
         /// Blocks new Invocations and later pre-dispatch work without deleting credentials.
         async fn disable_provider(
@@ -3315,6 +3463,147 @@ pub(crate) mod provider_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = UpdateProviderSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.ProviderService/GetProviderIcon" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetProviderIconSvc<T: ProviderService>(pub Arc<T>);
+                    impl<
+                        T: ProviderService,
+                    > tonic::server::UnaryService<super::GetProviderIconRequest>
+                    for GetProviderIconSvc<T> {
+                        type Response = super::ProviderIcon;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetProviderIconRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ProviderService>::get_provider_icon(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetProviderIconSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.ProviderService/SetProviderIcon" => {
+                    #[allow(non_camel_case_types)]
+                    struct SetProviderIconSvc<T: ProviderService>(pub Arc<T>);
+                    impl<
+                        T: ProviderService,
+                    > tonic::server::UnaryService<super::SetProviderIconRequest>
+                    for SetProviderIconSvc<T> {
+                        type Response = super::Provider;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SetProviderIconRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ProviderService>::set_provider_icon(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SetProviderIconSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.ProviderService/DeleteProviderIcon" => {
+                    #[allow(non_camel_case_types)]
+                    struct DeleteProviderIconSvc<T: ProviderService>(pub Arc<T>);
+                    impl<
+                        T: ProviderService,
+                    > tonic::server::UnaryService<super::DeleteProviderIconRequest>
+                    for DeleteProviderIconSvc<T> {
+                        type Response = super::Provider;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::DeleteProviderIconRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ProviderService>::delete_provider_icon(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = DeleteProviderIconSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

@@ -17,7 +17,7 @@ import {
 } from '@/lib/management.server'
 import { agentView, membershipView, ownerView } from '@/lib/management-views.server'
 import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
-import { blockerLabel, listAllProviders, providerPath } from '@/lib/providers.server'
+import { blockerLabel, listAllProviders, providerIcons, providerPath } from '@/lib/providers.server'
 import { runtimeConfigContext } from '@/lib/runtime-config.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { ActivitySummary } from '@/views/activity/summary/summary'
@@ -69,7 +69,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         ...(provider.state === ProviderState.DISABLED ? ['Disabled'] : []),
         ...provider.blockers.map(blockerLabel),
       ],
-      icons: RECIPE_CHOICES.find((r) => r.id === provider.namespace)?.icons,
+      icons: providerIcons(provider),
     }))
     return data(
       {

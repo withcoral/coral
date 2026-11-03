@@ -190,6 +190,7 @@ async fn a_member_cannot_install_the_builtin_provider() {
 #[derive(Debug, Clone, Copy)]
 enum BuiltinChange {
     Rename,
+    SetIcon,
     Reconfigure,
     Regenerate,
     ConnectAccount,
@@ -240,6 +241,7 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
 
     for change in [
         BuiltinChange::Rename,
+        BuiltinChange::SetIcon,
         BuiltinChange::Reconfigure,
         BuiltinChange::Regenerate,
         BuiltinChange::ConnectAccount,
@@ -255,6 +257,15 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
                     workspace.id(),
                     builtin.id(),
                     ProviderDisplayName::parse("Renamed").unwrap(),
+                )
+                .await
+                .map(drop),
+            BuiltinChange::SetIcon => providers
+                .set_provider_icon(
+                    &context,
+                    workspace.id(),
+                    builtin.id(),
+                    Some(crate::ProviderIcon::parse(b"<svg/>".to_vec()).unwrap()),
                 )
                 .await
                 .map(drop),
