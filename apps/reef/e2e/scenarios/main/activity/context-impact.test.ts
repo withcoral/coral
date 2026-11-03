@@ -96,7 +96,7 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
           expect(await table.locator('[aria-label$="B saved"]').count()).toBe(3)
           expect(await table.locator('[aria-label$="B added"]').count()).toBe(4)
           expect(await page.content()).not.toContain('x'.repeat(100))
-          await table.getByRole('link', { name: 'final value', exact: true }).click()
+          await table.getByRole('link', { name: 'return value', exact: true }).click()
           await shownPayload(page, '"ok"').waitFor()
           await page.getByRole('button', { name: 'Close details', exact: true }).click()
           await page.waitForURL((url) => !url.searchParams.has('record'))

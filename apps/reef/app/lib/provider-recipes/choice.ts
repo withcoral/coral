@@ -31,6 +31,8 @@ export type SourceChoice = SourceLocation & {
    * namespace; the recipe's own id when absent.
    */
   service?: string
+  /** The word on this recipe's button; MCP or API by its kind when absent. */
+  buttonLabel?: string
   displayName: string
   /** One line on the catalog row. */
   description: string
@@ -47,9 +49,24 @@ function serviceOf(choice: SourceChoice): string {
   return choice.service ?? choice.id
 }
 
-/** The namespace Configuration first offers for a recipe: its service. */
+/**
+ * The namespace Configuration first offers for a recipe: its service. A button
+ * label marks a recipe that reads another API of the service, which a
+ * workspace may add beside the rest, so a labelled recipe offers its own id.
+ * The label therefore also sets the namespace, not only the button's word.
+ */
 export function recipeNamespace(choice: SourceChoice): string {
-  return serviceOf(choice)
+  return choice.buttonLabel ? choice.id : serviceOf(choice)
+}
+
+/** The word that tells a recipe's button apart from the other sources of its service. */
+export function sourceButtonLabel(choice: SourceChoice): string {
+  return choice.buttonLabel ?? (choice.kind === 'mcp' ? 'MCP' : 'API')
+}
+
+/** A service's recipes in button order: MCP first, then the rest in library order. */
+export function sourcesInOrder(choices: readonly SourceChoice[]): SourceChoice[] {
+  return choices.toSorted((a, b) => Number(b.kind === 'mcp') - Number(a.kind === 'mcp'))
 }
 
 /** The recipes of one service, which the catalog offers as one card. */
@@ -146,9 +163,13 @@ export function filledSourceUrl(choice: SourceChoice, answers: Record<string, st
   }
   let missing = false
   const inputs = new Map(choice.sourceInputs?.map((input) => [input.name, input]))
+  const query = choice.url.indexOf('?')
   const url = choice.url.replace(inputReference, (reference, name: string, offset: number) => {
     const answer = answers[name]?.trim() ?? ''
     if (!answer) missing = true
+    // An answer in the query is one value: `&`, `#` or `?` must not start another
+    // part. Commas stay, so a list such as all,apm reads as the service expects.
+    if (query !== -1 && offset > query) return encodeURIComponent(answer).replaceAll('%2C', ',')
     const type = inputs.get(name)?.type
     // Strip only the join separator. A complete endpoint may require its final slash.
     if (type === 'url' && choice.url[offset + reference.length] === '/')

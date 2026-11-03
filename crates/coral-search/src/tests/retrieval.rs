@@ -11,7 +11,7 @@ use coral_provider::ProviderId;
 use coral_provider::access::ProviderCallRoot;
 use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
 
-use super::{TestModules, change, organization_user};
+use super::{TestModules, change, organization_user, paths};
 use crate::{
     CallPath, EntityKind, RetrieverState, RetrieverStatus, SearchPage, SearchQuery, SearchRequest,
 };
@@ -174,13 +174,6 @@ impl Corpus {
     }
 }
 
-fn paths(page: &SearchPage) -> Vec<&str> {
-    page.hits()
-        .iter()
-        .map(|item| item.call_path().as_str())
-        .collect()
-}
-
 fn status(page: &SearchPage, kind: EntityKind) -> RetrieverStatus {
     *page
         .retriever_statuses()
@@ -194,7 +187,7 @@ fn state(page: &SearchPage, kind: EntityKind) -> RetrieverState {
 }
 
 #[tokio::test]
-async fn a_mixed_query_fuses_each_kinds_ranking_by_position() {
+async fn a_mixed_query_fuses_strong_matches_first_then_by_position() {
     let corpus = Corpus::new().await;
     let issues = SearchRequest::query(SearchQuery::parse("issues").unwrap());
 
@@ -202,12 +195,13 @@ async fn a_mixed_query_fuses_each_kinds_ranking_by_position() {
     assert_eq!(
         paths(&page),
         [
-            "coral.functions.triage.openIssues",
             "coral.providers.github.issues.list",
-            "coral.functions.reports.weekly",
+            "coral.functions.triage.openIssues",
             "coral.providers.github.pulls.list",
+            "coral.functions.reports.weekly",
         ],
-        "equal ranks put the Saved Function first"
+        "each kind keeps its own order, every Entity here is a strong match, \
+         and at equal position the Tool comes first"
     );
     assert_eq!(
         state(&page, EntityKind::ProviderTool),
@@ -378,8 +372,8 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
     assert_eq!(
         paths(&page),
         [
-            "coral.functions.triage.openIssues",
             "coral.providers.github.pulls.list",
+            "coral.functions.triage.openIssues",
             "coral.functions.reports.weekly",
         ],
         "neither a disabled Tool nor another Principal's Saved Function ranks"
@@ -747,7 +741,7 @@ async fn a_stale_match_without_evidence_leaves_an_empty_page() {
 
     let page = corpus.search(Corpus::query("closed")).await;
     assert!(page.hits().is_empty(), "the stale match leaves the page");
-    assert!(!page.has_more());
+    assert_eq!(page.next_offset(), None);
 }
 
 #[tokio::test]

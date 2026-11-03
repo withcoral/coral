@@ -238,6 +238,22 @@ impl OrganizationModule {
             ))
     }
 
+    /// Holds current enabled Organization Membership of any role through the
+    /// caller's commit, so removal and disablement wait for the decision.
+    /// # Errors
+    /// Denies missing and disabled Membership; never commits independently.
+    pub async fn hold_member_in_transaction(
+        &self,
+        tx: &mut Transaction<'_>,
+        user_id: &UserId,
+    ) -> Result<AuthenticatedUser, Error> {
+        let current = hold_user(tx, user_id).await?;
+        if current.organization_role().is_none() {
+            return Err(Error::PermissionDenied("User is disabled"));
+        }
+        Ok(current)
+    }
+
     /// Holds current Owner authority through the caller's administrative commit.
     /// # Errors
     /// Denies missing, disabled, and non-Owner Membership; never commits independently.

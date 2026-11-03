@@ -73,11 +73,7 @@ impl Fixture {
 
     /// A process that serves `catalog` boots at `at`.
     async fn boot(&self, catalog: BuiltinCatalog, at: i64) {
-        let workflow = ProviderWorkflow::new(
-            self.db.database(),
-            self.providers(catalog),
-            self.index.clone(),
-        );
+        let workflow = ProviderWorkflow::new(self.providers(catalog), self.index.clone());
         workflow.install_missing_builtins(at).await.unwrap();
         workflow.update_builtin_catalogs(at).await.unwrap();
     }

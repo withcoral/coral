@@ -9,8 +9,14 @@ import {
   SearchIndexState,
 } from '@/generated/coral/management/v1/provider_pb'
 import type { PersonalAccountState } from '@/views/accounts/types'
+import { fakeManagement } from './management.test-support'
+import { RECIPE_CHOICES } from './provider-recipes/library.server'
+import { CORAL_ICONS } from '@/views/providers/coral-icons'
 import {
+  activityProviderMarks,
   personalAccountAction,
+  providerLogos,
+  providerMarks,
   providerFailure,
   searchIndexView,
   toolName,
@@ -131,4 +137,116 @@ it.each([
   const tool = toolName(name, key)
   expect(tool).toBe(`${name}/tools/${encoded}`)
   expect(toolView(create(ToolAccessSchema, { tool })).key).toBe(key)
+})
+
+const withIcons = RECIPE_CHOICES.find((choice) => choice.icons)!
+const marksOf = (listProviders: () => object) =>
+  providerMarks(
+    fakeManagement({ providers: { listProviders } }),
+    'workspaces/w',
+    AbortSignal.any([]),
+  )
+
+// A provider usually keeps the id of the recipe it came from, so that recipe's logo stands for
+// it. Coral's mark stands for the Built-in Provider.
+it('marks each provider with the logo that stands for it', async () => {
+  const marks = await marksOf(() => ({
+    providers: [
+      {
+        callRoot: 'coral.workspace',
+        displayName: 'Workspace',
+        builtin: true,
+        namespace: 'workspace',
+      },
+      { callRoot: `coral.providers.${withIcons.id}`, displayName: 'Ours', namespace: withIcons.id },
+      { callRoot: 'coral.providers.handmade', displayName: 'Handmade', namespace: 'handmade' },
+    ],
+  }))
+  expect(marks).toEqual([
+    { callRoot: 'coral.workspace', displayName: 'Workspace', icons: CORAL_ICONS },
+    { callRoot: `coral.providers.${withIcons.id}`, displayName: 'Ours', icons: withIcons.icons },
+    { callRoot: 'coral.providers.handmade', displayName: 'Handmade' },
+  ])
+})
+
+// The marks only decorate rows that name their call, so an outage leaves the rows as they are.
+it('marks no provider while Coral cannot list them', async () => {
+  expect(
+    await marksOf(() => {
+      throw new ConnectError('down', Code.Unavailable)
+    }),
+  ).toEqual([])
+})
+
+// Catches: Activity failing its page because the logos could not load, or a later page of
+// a loaded list listing every provider again.
+it.each([
+  [
+    'a page',
+    '/activity',
+    () => ({ providers: [{ callRoot: 'coral.providers.p', displayName: 'P' }] }),
+    [{ callRoot: 'coral.providers.p', displayName: 'P' }],
+    1,
+  ],
+  [
+    'a refused read',
+    '/activity',
+    () => {
+      throw new ConnectError('no', Code.PermissionDenied)
+    },
+    [],
+    1,
+  ],
+  [
+    'a later page of a loaded list',
+    '/activity?load=page&after=x',
+    () => ({ providers: [] }),
+    [],
+    0,
+  ],
+])('names Activity calls for %s', async (_, path, listProviders, marks, reads) => {
+  let read = 0
+  const api = fakeManagement({
+    providers: {
+      listProviders: () => {
+        read++
+        return listProviders()
+      },
+    },
+  })
+  expect(
+    await activityProviderMarks(api, 'workspaces/w', new Request(`http://reef${path}`)),
+  ).toEqual(marks)
+  expect(read).toBe(reads)
+})
+
+// Catches: a decorative read that hides a lapsed sign-in, so the page never asks you to sign in.
+it('fails Activity for a lapsed sign-in', async () => {
+  const api = fakeManagement({
+    providers: {
+      listProviders: () => {
+        throw new ConnectError('expired', Code.Unauthenticated)
+      },
+    },
+  })
+  await expect(
+    activityProviderMarks(api, 'workspaces/w', new Request('http://reef/activity')),
+  ).rejects.toMatchObject({ code: Code.Unauthenticated })
+})
+
+it('keys each logo by its provider, and leaves out a provider without one', async () => {
+  const logos = await providerLogos(
+    fakeManagement({
+      providers: {
+        listProviders: () => ({
+          providers: [
+            { name: 'workspaces/w/providers/ours', namespace: withIcons.id },
+            { name: 'workspaces/w/providers/handmade', namespace: 'handmade' },
+          ],
+        }),
+      },
+    }),
+    'workspaces/w',
+  )
+  expect([...logos]).toEqual([['workspaces/w/providers/ours', withIcons.icons]])
 })

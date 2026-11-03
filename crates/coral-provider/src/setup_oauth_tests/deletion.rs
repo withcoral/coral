@@ -73,7 +73,8 @@ async fn provider_deletion_cancels_ready_updates_and_rejects_late_secrets() {
     h.providers
         .delete_provider(&context, owner, provider.id())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(
         h.providers
             .get_setup(&actor, owner, update.id())
@@ -169,7 +170,8 @@ async fn provider_deletion_scrubs_update_application_secrets_before_consent() {
     h.providers
         .delete_provider(&context, owner, provider.id())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let after = h
         .providers
         .inspect_setup(&actor, owner, update.id(), 11)
@@ -250,7 +252,8 @@ async fn deletion_fences_callback(in_flight: bool) {
     h.providers
         .delete_provider(&context, owner, provider.id())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     if let Some(completing) = completing {
         gate.release.notify_one();
         let completion = completing.await.unwrap().unwrap();
@@ -395,7 +398,8 @@ async fn provider_deletion_discards_in_flight_update_discovery() {
     h.providers
         .delete_provider(&context, owner, provider.id())
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert!(
         !completing.is_finished(),
         "deletion must commit while discovery is in flight"

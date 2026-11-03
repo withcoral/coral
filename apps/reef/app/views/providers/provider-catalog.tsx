@@ -3,6 +3,8 @@ import { Button, Card, Inputs, ScrollArea, Typography } from '@/wax/components'
 import { Logo } from '@/wax/components/logo'
 import {
   byService,
+  sourceButtonLabel,
+  sourcesInOrder,
   type RecipeIcons,
   type ServiceChoices,
   type SourceChoice,
@@ -13,7 +15,7 @@ import * as styles from './providers.css'
 
 /**
  * One service to add. The card names it and holds a button for each of its
- * sources, MCP before API, so every card asks the same question the same way.
+ * sources, MCP first, so every card asks the same question the same way.
  * A click elsewhere on the card adds the first source, and the button a click
  * would press looks pressed while the pointer is on the card. The buttons stay
  * the keyboard's way in, so the card itself is only a larger pointer target.
@@ -35,7 +37,7 @@ function ServiceRow({
   onRecipe: (recipe: SourceChoice) => void
 }) {
   const id = useId()
-  const sources = choices.toSorted((a, b) => Number(b.kind === 'mcp') - Number(a.kind === 'mcp'))
+  const sources = sourcesInOrder(choices)
   const first = sources[0]
   // The source a click would add now: the hovered button's, else the first.
   const [target, setTarget] = useState<string | null>(null)
@@ -54,7 +56,7 @@ function ServiceRow({
           onRecipe(first)
         }}
         action={sources.map((choice) => {
-          const source = choice.kind === 'mcp' ? 'MCP' : 'API'
+          const source = sourceButtonLabel(choice)
           const busy = reading?.id === choice.id
           return (
             <Button.Container

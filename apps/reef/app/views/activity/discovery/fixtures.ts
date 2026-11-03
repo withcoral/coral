@@ -221,6 +221,12 @@ const untrimmed = {
 /** Every retriever searched the captured page, so Coral states no coverage. */
 const complete = {
   hits: githubHits.map(trimmed),
+  next_offset: 5,
+}
+
+/** A trimmed page as Coral retained it before pages had an offset. */
+const withCursor = {
+  hits: githubHits.map(trimmed),
   next_cursor: untrimmed.next_cursor,
   has_more: true,
 }
@@ -239,8 +245,7 @@ const mixed = {
     githubHits[3],
     githubHits[4],
   ].map(trimmed),
-  next_cursor: untrimmed.next_cursor,
-  has_more: true,
+  next_offset: 6,
 }
 
 const sparse = {
@@ -248,12 +253,10 @@ const sparse = {
     trimmed(functionHit),
     { call_path: 'coral.providers.github.pulls.get', signature_line: '', description_snippet: '' },
   ],
-  has_more: false,
 }
 
 const partial = {
   hits: githubHits.slice(0, 3).map(trimmed),
-  has_more: false,
   retriever_statuses: [
     {
       retriever: 'provider_tool',
@@ -271,7 +274,6 @@ const partial = {
 
 const error = {
   hits: [trimmed(functionHit)],
-  has_more: false,
   retriever_statuses: [
     {
       retriever: 'provider_tool',
@@ -325,6 +327,7 @@ const describeFunction = {
 /** Each response as the stored JSON text. */
 export const stored = {
   complete: JSON.stringify(complete),
+  withCursor: JSON.stringify(withCursor),
   untrimmed: JSON.stringify(untrimmed),
   mixed: JSON.stringify(mixed),
   sparse: JSON.stringify(sparse),

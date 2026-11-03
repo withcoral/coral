@@ -2,6 +2,7 @@ mod builtin;
 mod describe;
 mod describe_tools;
 mod index;
+mod ranking;
 mod retrieval;
 mod storage;
 
@@ -34,8 +35,8 @@ use crate::hit::CUT_MARKER;
 use crate::signature::SIGNATURE_LINE_MAX_BYTES;
 use crate::snippet::SNIPPET_MAX_BYTES;
 use crate::{
-    ApprovalRequirement, AuthoringDescription, CallPath, EntityKind, Error, SearchCursor,
-    SearchLimit, SearchQuery, SearchRequest, UniversalSearchModule,
+    ApprovalRequirement, AuthoringDescription, CallPath, EntityKind, Error, SearchLimit,
+    SearchQuery, SearchRequest, UniversalSearchModule,
 };
 
 const ACCOUNT_LABEL_CANARY: &str = "private-account-label-canary";
@@ -589,7 +590,8 @@ async fn relevance_combines_metadata_and_schema_lanes_before_call_path_ties() {
             ),
         )
         .await
-        .expect("publish ranking Provider");
+        .expect("publish ranking Provider")
+        .skip_search();
 
     fixture.converge().await;
     let results = fixture
@@ -1178,7 +1180,8 @@ async fn mcp_publication_prepares_schema_field_paths_for_search() {
             ),
         )
         .await
-        .expect("publish MCP Provider");
+        .expect("publish MCP Provider")
+        .skip_search();
 
     fixture.converge().await;
     for (query, expected_path) in [
@@ -1292,7 +1295,8 @@ async fn regeneration_atomically_replaces_the_active_search_generation() {
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .expect("activate replacement Generation");
+        .expect("activate replacement Generation")
+        .skip_search();
 
     fixture.converge().await;
     let old = fixture
@@ -1599,7 +1603,8 @@ async fn oversized_complete_tool_description_is_unavailable_not_truncated() {
             ),
         )
         .await
-        .expect("publish catalog with unavailable large Tool");
+        .expect("publish catalog with unavailable large Tool")
+        .skip_search();
 
     let page = fixture
         .search
@@ -1683,7 +1688,8 @@ async fn query_evidence_is_bounded() {
             ),
         )
         .await
-        .expect("publish evidence Provider");
+        .expect("publish evidence Provider")
+        .skip_search();
 
     fixture.converge().await;
     let page = fixture
@@ -1890,15 +1896,15 @@ async fn response_bytes_bound_pages_that_continue_without_repeats() {
     fixture.converge().await;
 
     let limit = SearchLimit::parse(50).expect("maximum page limit");
-    let mut cursor = None;
+    let mut offset = None;
     let mut observed = std::collections::BTreeSet::new();
     let mut page_count = 0;
     loop {
         page_count += 1;
         let mut request = SearchRequest::query(SearchQuery::parse("pagedfield").expect("query"))
             .with_limit(limit);
-        if let Some(next) = cursor {
-            request = request.with_cursor(next);
+        if let Some(next) = offset {
+            request = request.with_offset(next);
         }
         let page = fixture
             .search
@@ -1912,10 +1918,10 @@ async fn response_bytes_bound_pages_that_continue_without_repeats() {
                 "unchanged paging must not repeat a hit"
             );
         }
-        if !page.has_more() {
+        let Some(next) = page.next_offset() else {
             break;
-        }
-        cursor = page.next_cursor().cloned();
+        };
+        offset = Some(next);
     }
     assert!(
         page_count > 1,
@@ -1977,11 +1983,7 @@ async fn provider_filter_selects_one_provider_and_keeps_saved_functions() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one pagination scenario proves cursor binding and current-visibility reapplication"
-)]
-async fn pages_complete_current_results_with_query_bound_non_authorizing_cursors() {
+async fn pages_current_results_by_offset_and_reapplies_visibility_on_each_page() {
     let fixture = TestModules::new().await;
     let user = organization_user(fixture.search.database.clone(), "user:search-pages").await;
     let principal = AuthenticatedPrincipal::user(user.clone());
@@ -2004,32 +2006,19 @@ async fn pages_complete_current_results_with_query_bound_non_authorizing_cursors
         .await
         .expect("first page");
     assert_eq!(first.hits().len(), 1);
-    assert!(first.has_more());
-    let cursor = first.next_cursor().expect("next cursor").clone();
+    assert_eq!(first.next_offset(), Some(1));
 
     let second = fixture
         .search
         .search(
             &principal,
             &workspace_id,
-            &SearchRequest::list()
-                .with_limit(one)
-                .with_cursor(cursor.clone()),
+            &SearchRequest::list().with_limit(one).with_offset(1),
         )
         .await
         .expect("second page");
-    assert_eq!(second.hits().len(), 1);
-    assert_eq!(
-        second
-            .hits()
-            .first()
-            .expect("second-page result")
-            .call_path()
-            .as_str(),
-        "coral.providers.weather.getForecast"
-    );
-    assert!(!second.has_more());
-    assert!(second.next_cursor().is_none());
+    assert_eq!(paths(&second), ["coral.providers.weather.getForecast"]);
+    assert_eq!(second.next_offset(), None);
 
     let filtered = fixture
         .search
@@ -2043,108 +2032,12 @@ async fn pages_complete_current_results_with_query_bound_non_authorizing_cursors
         .await
         .expect("Provider-filtered page");
     assert_eq!(
-        filtered
-            .hits()
-            .iter()
-            .map(|hit| hit.call_path().as_str())
-            .collect::<Vec<_>>(),
+        paths(&filtered),
         [
             "coral.functions.internal.formatForecast",
             "coral.providers.weather.getForecast",
         ]
     );
-
-    assert!(matches!(
-        fixture
-            .search
-            .search(
-                &principal,
-                &workspace_id,
-                &SearchRequest::query(SearchQuery::parse("weather").expect("query"))
-                    .with_limit(one)
-                    .with_cursor(cursor.clone()),
-            )
-            .await,
-        Err(Error::InvalidCursor)
-    ));
-
-    let other_principal = AuthenticatedPrincipal::user(
-        organization_user(fixture.search.database.clone(), "user:search-pages-other").await,
-    );
-    assert!(matches!(
-        fixture
-            .search
-            .search(
-                &other_principal,
-                &workspace_id,
-                &SearchRequest::list()
-                    .with_limit(one)
-                    .with_cursor(cursor.clone()),
-            )
-            .await,
-        Err(Error::InvalidCursor)
-    ));
-    assert!(matches!(
-        fixture
-            .search
-            .search(
-                &principal,
-                &workspace_id,
-                &SearchRequest::list()
-                    .with_limit(one)
-                    .with_provider(
-                        crate::ProviderCallRoot::parse("coral.providers.weather")
-                            .expect("namespace")
-                    )
-                    .with_cursor(cursor.clone()),
-            )
-            .await,
-        Err(Error::InvalidCursor)
-    ));
-
-    // A cursor of the previous ranking format, with a valid digest, pages a
-    // result universe that this ranking no longer produces.
-    let previous_format = {
-        use base64::Engine as _;
-        let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        let mut payload: serde_json::Value =
-            serde_json::from_slice(&engine.decode(cursor.as_str()).expect("cursor bytes"))
-                .expect("cursor payload");
-        assert_ne!(payload.get("version"), Some(&serde_json::json!(1)));
-        payload
-            .as_object_mut()
-            .expect("payload object")
-            .insert("version".to_string(), serde_json::json!(1));
-        SearchCursor::parse(&engine.encode(payload.to_string())).expect("cursor text")
-    };
-    assert!(matches!(
-        fixture
-            .search
-            .search(
-                &principal,
-                &workspace_id,
-                &SearchRequest::list()
-                    .with_limit(one)
-                    .with_cursor(previous_format),
-            )
-            .await,
-        Err(Error::InvalidCursor)
-    ));
-
-    let other_workspace = fixture.create_workspace(&user).await;
-    assert!(matches!(
-        fixture
-            .search
-            .search(
-                &principal,
-                &other_workspace,
-                &SearchRequest::list()
-                    .with_limit(one)
-                    .with_cursor(cursor.clone()),
-            )
-            .await,
-        Err(Error::InvalidCursor)
-    ));
 
     fixture
         .policies
@@ -2160,77 +2053,39 @@ async fn pages_complete_current_results_with_query_bound_non_authorizing_cursors
         .search(
             &principal,
             &workspace_id,
-            &SearchRequest::list().with_limit(one).with_cursor(cursor),
+            &SearchRequest::list().with_limit(one).with_offset(1),
         )
         .await
-        .expect("cursor reapplies current visibility");
+        .expect("a later page reapplies current visibility");
     assert!(after_visibility_change.hits().is_empty());
-    assert!(!after_visibility_change.has_more());
-}
-
-#[test]
-fn cursor_transport_shape_is_strict_and_bounded() {
-    for invalid in ["", "=", "YWJj=", "not+base64", "has space"] {
-        assert!(
-            matches!(SearchCursor::parse(invalid), Err(Error::InvalidCursor)),
-            "accepted malformed cursor {invalid:?}"
-        );
-    }
-    assert!(matches!(
-        SearchCursor::parse(&"a".repeat(crate::SEARCH_CURSOR_MAX_BYTES + 1)),
-        Err(Error::InvalidCursor)
-    ));
+    assert_eq!(after_visibility_change.next_offset(), None);
 }
 
 #[tokio::test]
-async fn forged_cursor_positions_are_invalid_and_a_far_cursor_is_an_empty_page() {
-    use base64::Engine as _;
+async fn any_offset_pages_and_an_offset_past_the_end_is_an_empty_final_page() {
     let fixture = TestModules::new().await;
     let scope = TracerScope::new(&fixture).await;
-    let request = SearchRequest::list().with_limit(SearchLimit::parse(1).unwrap());
     let search = |request: SearchRequest| {
         let (search, principal, workspace) =
             (&fixture.search, &scope.principal, &scope.workspace_id);
         async move { search.search(principal, workspace, &request).await }
     };
-    let cursor = search(request.clone())
-        .await
-        .unwrap()
-        .next_cursor()
-        .unwrap()
-        .clone();
+    let everything = search(SearchRequest::list()).await.unwrap();
+    assert_eq!(
+        paths(&everything),
+        [TracerScope::FUNCTION, TracerScope::TOOL]
+    );
 
-    // The digest binds the position, so moving it without the digest is rejected.
-    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    let mut payload: serde_json::Value =
-        serde_json::from_slice(&engine.decode(cursor.as_str()).unwrap()).unwrap();
-    let position = payload
-        .get("position")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap();
-    for forged_position in [0, position + 1, u64::MAX] {
-        *payload.get_mut("position").unwrap() = forged_position.into();
-        let forged =
-            SearchCursor::parse(&engine.encode(serde_json::to_vec(&payload).unwrap())).unwrap();
-        assert!(matches!(
-            search(request.clone().with_cursor(forged)).await,
-            Err(Error::InvalidCursor)
-        ));
+    let one = SearchRequest::list().with_limit(SearchLimit::parse(1).unwrap());
+    let at = search(one.clone().with_offset(1)).await.unwrap();
+    assert_eq!(paths(&at), [TracerScope::TOOL]);
+    assert_eq!(at.next_offset(), None);
+
+    for past_the_end in [2, 3, u32::MAX] {
+        let page = search(one.clone().with_offset(past_the_end)).await.unwrap();
+        assert!(page.hits().is_empty(), "offset {past_the_end}");
+        assert_eq!(page.next_offset(), None, "offset {past_the_end}");
     }
-
-    // A correctly bound cursor past every result is an empty final page.
-    let far = crate::cursor::encode_cursor(
-        usize::MAX,
-        &scope.principal,
-        &scope.workspace_id,
-        None,
-        None,
-    )
-    .unwrap();
-    let page = search(request.with_cursor(far)).await.unwrap();
-    assert!(page.hits().is_empty());
-    assert!(!page.has_more());
-    assert!(page.next_cursor().is_none());
 }
 
 #[test]
@@ -2997,7 +2852,7 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
     let first_path = "coral.providers.aWeather.getForecast";
     let second_path = "coral.providers.zWeather.getForecast";
     let request = SearchRequest::list().with_limit(SearchLimit::parse(1).unwrap());
-    let mut cursors = Vec::new();
+    let mut offsets = Vec::new();
     for actor in [&principal, &agent] {
         fixture
             .assert_discovery(actor, &workspace, &[first_path, second_path], &[])
@@ -3007,7 +2862,7 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
             .search(actor, &workspace, &request)
             .await
             .unwrap();
-        cursors.push(page.next_cursor().unwrap().clone());
+        offsets.push(page.next_offset().unwrap());
     }
     fixture
         .providers
@@ -3021,14 +2876,14 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
     fixture
         .assert_discovery(&agent, &workspace, &[first_path], &[second_path])
         .await;
-    let [user_cursor, agent_cursor] = <[_; 2]>::try_from(cursors).unwrap();
-    // A cursor does not retain the old fixed route.
+    let [user_offset, agent_offset] = <[_; 2]>::try_from(offsets).unwrap();
+    // A later page does not retain the old fixed route.
     let user_page = fixture
         .search
         .search(
             &principal,
             &workspace,
-            &request.clone().with_cursor(user_cursor),
+            &request.clone().with_offset(user_offset),
         )
         .await
         .unwrap();
@@ -3046,7 +2901,7 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
             .search(
                 &agent,
                 &workspace,
-                &request.clone().with_cursor(agent_cursor)
+                &request.clone().with_offset(agent_offset)
             )
             .await
             .unwrap()
@@ -3093,7 +2948,8 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let target = ToolPolicyTarget::new(
         workspace.clone(),
         second.id().clone(),
@@ -3303,7 +3159,8 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     // The credentialed contract hides the Tool until the Agent has an Account.
     // The User connects its own Account during Invocation instead.
     fixture
@@ -3317,7 +3174,7 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "all Principals recheck Workspace lifecycle and Membership authority on cursor pages"
+    reason = "all Principals recheck Workspace lifecycle and Membership authority on later pages"
 )]
 async fn discovery_rechecks_workspace_authority_on_every_page() {
     let fixture = TestModules::new().await;
@@ -3369,14 +3226,14 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
         )
         .await;
     let request = SearchRequest::list().with_limit(SearchLimit::parse(1).unwrap());
-    let mut cursors = Vec::new();
+    let mut offsets = Vec::new();
     for actor in [&principal, &agent, &member] {
         let page = fixture
             .search
             .search(actor, &workspace, &request)
             .await
             .unwrap();
-        cursors.push(page.next_cursor().unwrap().clone());
+        offsets.push(page.next_offset().unwrap());
     }
     fixture
         .workspaces
@@ -3384,15 +3241,11 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
         .await
         .unwrap();
     let path = CallPath::parse("coral.providers.weatherAgain.getForecast").unwrap();
-    for (actor, cursor) in [&principal, &agent, &member].into_iter().zip(&cursors) {
+    for (actor, offset) in [&principal, &agent, &member].into_iter().zip(&offsets) {
         assert!(matches!(
             fixture
                 .search
-                .search(
-                    actor,
-                    &workspace,
-                    &request.clone().with_cursor(cursor.clone())
-                )
+                .search(actor, &workspace, &request.clone().with_offset(*offset))
                 .await,
             Err(Error::Workspace(coral_workspace::Error::WorkspaceArchived))
         ));
@@ -3451,7 +3304,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
                 &workspace,
                 &request
                     .clone()
-                    .with_cursor(cursors.get(1).expect("Agent cursor").clone())
+                    .with_offset(*offsets.get(1).expect("Agent offset"))
             )
             .await,
         Err(Error::Workspace(
@@ -3485,13 +3338,13 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
         )
         .await
         .unwrap();
-    // A disabled Member is denied on a cursor page, and an Organization Owner
+    // A disabled Member is denied on a later page, and an Organization Owner
     // without a Membership on a first page, like any non-Member.
     let organization_owner = AuthenticatedPrincipal::user(administrator.actor().clone());
     for (actor, request) in [
         (
             &member,
-            request.clone().with_cursor(cursors.last().unwrap().clone()),
+            request.clone().with_offset(*offsets.last().unwrap()),
         ),
         (&organization_owner, request),
     ] {
@@ -3915,7 +3768,8 @@ impl TestModules {
                 .with_incompatible_configuration_confirmation(),
             )
             .await
-            .unwrap();
+            .unwrap()
+            .skip_search();
         assert_eq!(publication.outcome(), ProviderPublicationOutcome::Succeeded);
     }
 
@@ -4104,7 +3958,8 @@ impl TestModules {
                 ),
             )
             .await
-            .expect("publish tracer Provider");
+            .expect("publish tracer Provider")
+            .skip_search();
         let published = publication
             .published_provider()
             .expect("successful Provider publication");
@@ -4187,6 +4042,14 @@ export default function formatForecast(value: Forecast): string {{
             .await
             .expect("save tracer Saved Function")
     }
+}
+
+/// The Call Paths of a page's hits, in rank order.
+fn paths(page: &crate::SearchPage) -> Vec<&str> {
+    page.hits()
+        .iter()
+        .map(|item| item.call_path().as_str())
+        .collect()
 }
 
 async fn organization_user(

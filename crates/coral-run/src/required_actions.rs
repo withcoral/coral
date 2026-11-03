@@ -4,7 +4,7 @@
 
 use crate::lifecycle::RunRecord;
 use coral_db::Transaction;
-use coral_workspace::{Principal, PrincipalKind};
+use coral_workspace::{Principal, PrincipalKind, WorkspaceId};
 use sha2::{Digest as _, Sha256};
 
 use crate::{Error, approval};
@@ -73,6 +73,70 @@ impl RequiredActionRequest {
 impl std::fmt::Display for RequiredActionRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.kind(), self.id())
+    }
+}
+
+/// One kind of current request, which a queue read can select.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequiredActionKind {
+    /// Approval of one exact Invocation.
+    Approval,
+    /// A User-private Account connection.
+    AccountConnection,
+}
+
+/// Opaque fingerprint of one caller's current requests of one kind. Equal
+/// revisions mean the same requests, whatever their count. It covers identities
+/// the caller can already list, so it reveals nothing else and grants no authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequiredActionSetRevision([u8; 32]);
+
+impl std::fmt::Display for RequiredActionSetRevision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
+    }
+}
+
+/// Distinct current requests by kind. A connection request shared by several
+/// Runs counts once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequiredActionCounts {
+    /// Current Approval Requests.
+    pub approvals: i64,
+    /// Current Account Connection Requests.
+    pub connections: i64,
+    /// Changes whenever the set of current Approval Requests changes.
+    pub approval_revision: RequiredActionSetRevision,
+    /// Changes whenever the set of current Account Connection Requests changes.
+    pub connection_revision: RequiredActionSetRevision,
+}
+
+impl RequiredActionCounts {
+    /// Folds current requests, each once and in a stable order.
+    pub(crate) fn of(requests: &[(WorkspaceId, RequiredActionRequest)]) -> Self {
+        let tally = |kind: &str| {
+            let mut digest = Sha256::new();
+            let mut count = 0;
+            for (workspace, request) in requests.iter().filter(|(_, r)| r.kind() == kind) {
+                digest.update(format!("{workspace}/{request}\n"));
+                count += 1;
+            }
+            (count, RequiredActionSetRevision(digest.finalize().into()))
+        };
+        let (approvals, approval_revision) = tally(RequiredActionRequest::APPROVAL);
+        let (connections, connection_revision) = tally(RequiredActionRequest::CONNECTION);
+        Self {
+            approvals,
+            connections,
+            approval_revision,
+            connection_revision,
+        }
+    }
+
+    /// Current requests of every kind.
+    #[must_use]
+    pub const fn total(&self) -> i64 {
+        self.approvals + self.connections
     }
 }
 
@@ -178,7 +242,8 @@ impl std::fmt::Display for QueueCursor {
 /// Bounded human action queue: one entry per current request, most urgent first.
 #[derive(Debug)]
 pub struct RequiredActions<R = crate::RunSummary> {
-    /// Distinct current requests across the complete authorized scope, not this page.
+    /// Distinct current requests of the selected kind across the complete
+    /// authorized scope, not this page.
     pub action_count: i64,
     /// This page, ordered by deadline.
     pub actions: Vec<QueuedAction<R>>,
@@ -187,35 +252,41 @@ pub struct RequiredActions<R = crate::RunSummary> {
 }
 
 impl crate::RunModule {
-    /// Counts distinct requests without loading Runs or exact evidence.
+    /// Counts distinct requests by kind, with each kind's revision, without
+    /// loading Runs or exact evidence.
     /// # Errors
     /// Rejects Agent callers and inaccessible scopes.
-    pub async fn required_action_count(
+    pub async fn required_action_counts(
         &self,
         actor: &coral_workspace::AuthenticatedPrincipal,
         workspace: Option<&coral_workspace::WorkspaceId>,
-    ) -> Result<i64, Error> {
+    ) -> Result<RequiredActionCounts, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
         let authority = self
             .workspaces
             .action_history_authority_in_transaction(&mut tx, actor, workspace)
             .await?;
-        let count =
-            crate::required_actions_repository::count(&mut tx, &authority, self.now()?).await?;
+        let requests =
+            crate::required_actions_repository::current_requests(&mut tx, &authority, self.now()?)
+                .await?;
+        let counts = RequiredActionCounts::of(&requests);
         tx.commit().await?;
-        Ok(count)
+        Ok(counts)
     }
 
     /// Lists own actions and Agent approvals across currently authorized Workspaces,
     /// one entry per request, most urgent first. Selection and count share the
     /// caller's snapshot, where `authority` came from
-    /// `action_history_authority_in_transaction`. No arguments are loaded.
+    /// `action_history_authority_in_transaction`. A `kind` selects that kind alone,
+    /// for the list and its count, and `after` continues only a read of the same
+    /// kind. No arguments are loaded.
     /// # Errors
     /// Rejects page sizes outside 1–100.
     pub async fn required_actions_in_transaction(
         &self,
         tx: &mut Transaction<'_>,
         authority: &coral_workspace::HistoryAuthority,
+        kind: Option<RequiredActionKind>,
         after: Option<&QueueCursor>,
         limit: u16,
     ) -> Result<RequiredActions, Error> {
@@ -223,10 +294,12 @@ impl crate::RunModule {
             return Err(Error::InvalidInput("invalid action page size".into()));
         }
         let now = self.now()?;
-        let action_count = crate::required_actions_repository::count(tx, authority, now).await?;
+        let action_count =
+            crate::required_actions_repository::count(tx, authority, kind, now).await?;
         let (rows, has_more) = crate::required_actions_repository::queue(
             tx,
             authority,
+            kind,
             after.map(|cursor| (cursor.deadline_at_unix_nanos, &cursor.request)),
             now,
             limit,

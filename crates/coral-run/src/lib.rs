@@ -138,6 +138,11 @@ pub use activity::{RunEntries, RunEntry, RunEntryAnchor, RunEntryWindow};
 pub use activity_observation::{ActivityObservation, ActivityWake};
 pub use admission::{PreparedRun, StagedRun};
 pub mod approval;
+mod approval_history;
+mod approval_history_repository;
+pub use approval_history::{
+    Approver, SettledApproval, SettledApprovals, SettledCursor, SettledOutcome,
+};
 mod approval_repository;
 mod builtin;
 mod enforcement;
@@ -175,6 +180,8 @@ mod source_location_repository;
 mod summary;
 mod summary_repository;
 mod termination;
+mod tool_result_shape;
+pub use tool_result_shape::{ToolResultShape, ToolResultShapes};
 mod trace;
 mod types;
 mod worker;
@@ -200,7 +207,8 @@ use invocation::{ProductionUpstream, UpstreamSender};
 use owner::Owners;
 pub use required_actions::{
     ActionCursor, ActionPage, ActionSummary, QueueCursor, QueuedAction, RequiredAction,
-    RequiredActionRequest, RequiredActions, RequiredActor,
+    RequiredActionCounts, RequiredActionKind, RequiredActionRequest, RequiredActionSetRevision,
+    RequiredActions, RequiredActor,
 };
 pub use summary::{
     ActivitySummary, ActorContext, ApprovalDecisions, CallOutcomes, CallerCalls, MAX_SUMMARY_DAYS,

@@ -1110,7 +1110,6 @@ pub(super) fn readiness_error(failure: coral_search::Error) -> Status {
         coral_search::Error::Policy(inner) => super::policies::error(inner),
         coral_search::Error::InvalidInput(_)
         | coral_search::Error::UnknownProviderCallRoot { .. }
-        | coral_search::Error::InvalidCursor
         | coral_search::Error::TypesLimit
         | coral_search::Error::UndeclaredTypes { .. } => {
             safe_status(tonic::Code::InvalidArgument, "INVALID_ARGUMENT")
@@ -1339,11 +1338,6 @@ mod tests {
     #[test]
     fn readiness_errors_report_retryable_only_for_dependencies() {
         let cases = [
-            (
-                coral_search::Error::InvalidCursor,
-                Code::InvalidArgument,
-                "INVALID_ARGUMENT",
-            ),
             (
                 coral_search::Error::InvalidInput("private detail".into()),
                 Code::InvalidArgument,

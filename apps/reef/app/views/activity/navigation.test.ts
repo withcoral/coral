@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { activityPage, invocationRow, runRow, taskRow, toolRow } from './fixtures'
+import { activityPage, approvalRequest, invocationRow, runRow, taskRow, toolRow } from './fixtures'
 import {
+  leavesActivityReview,
   activityNavigation,
   activityStops,
   liveRun,
@@ -182,12 +183,11 @@ it('carries bounded reader identities and anchored child demand when selecting, 
   }
   expect(target(nav.backHref).has('record')).toBe(false)
 })
-it('writes the reading anchor for selection, not for explicit root navigation or pending-action pages', () => {
+it('writes the reading anchor for selection, not for explicit root navigation', () => {
   const nav = activityNavigation(page, '/activity', '?anchor=old', reading)
   expect(target(nav.recordHref(run)).get('anchor')).toBe(task)
   expect(target(nav.href({ anchor: run })).get('anchor')).toBe(run)
   expect(target(nav.href({ anchor: null })).has('anchor')).toBe(false)
-  expect(target(nav.href({ pendingAfter: 'next' })).get('anchor')).toBe('old')
 })
 it('removes collapsed branch coordinates and never accumulates a child-window history', () => {
   const nav = activityNavigation(
@@ -1497,4 +1497,27 @@ describe('live scopes', () => {
     expect(query.get(`preceding.${oldTask}`)).toBe('0')
     expect(query.getAll('liveExpanded')).toEqual([oldTask])
   })
+})
+
+/** The Activity address that selects `record` and reviews the approval. */
+const reviewAt = (record: string) =>
+  ({
+    pathname: '/activity',
+    search: `?${new URLSearchParams({ record, request: approvalRequest.name })}`,
+  }) as Parameters<ReturnType<typeof leavesActivityReview>>[0]
+
+// Catches: moving between an approval's Run and its call, either way, losing the review and
+// its unsent comment, or another record keeping it.
+it.each([
+  ['the Run to its call', false, approvalRequest.run, approvalRequest.invocation],
+  ['the call to its Run', false, approvalRequest.invocation, approvalRequest.run],
+  ['the Run to another record', true, approvalRequest.run, 'workspaces/finance/runs/other'],
+  [
+    'the call to another call',
+    true,
+    approvalRequest.invocation,
+    'workspaces/finance/invocations/two',
+  ],
+])('moving from %s leaves the review: %s', (_, leaves, from, to) => {
+  expect(leavesActivityReview(approvalRequest)(reviewAt(from), reviewAt(to))).toBe(leaves)
 })

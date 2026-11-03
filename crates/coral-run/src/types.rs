@@ -910,6 +910,8 @@ pub struct RunUpdate {
     next_cursor: RunCursor,
     has_more: bool,
     terminal_outcome: Option<RunTerminalOutcome>,
+    /// What the failed Program received, read with the final page.
+    pub(crate) tool_result_shapes: crate::ToolResultShapes,
     pub(crate) trace_id: Option<coral_telemetry::TraceId>,
     /// The Run's Run Trace, which a request about the Run links to.
     pub(crate) run_trace: Option<coral_telemetry::RunTrace>,
@@ -943,6 +945,7 @@ impl RunUpdate {
             next_cursor,
             has_more,
             terminal_outcome,
+            tool_result_shapes: crate::ToolResultShapes::default(),
             trace_id: None,
             run_trace: None,
         })
@@ -1032,6 +1035,18 @@ impl RunUpdate {
             None
         } else {
             self.terminal_outcome.as_ref()
+        }
+    }
+
+    /// Returns, with the failure on the final page, the Tool Result Shapes of
+    /// a Run whose Program threw; `None` when it received no Tool Result.
+    #[must_use]
+    pub fn tool_result_shapes(&self) -> Option<&crate::ToolResultShapes> {
+        match self.terminal_outcome() {
+            Some(RunTerminalOutcome::Failed(_)) if !self.tool_result_shapes.is_empty() => {
+                Some(&self.tool_result_shapes)
+            }
+            _ => None,
         }
     }
 }

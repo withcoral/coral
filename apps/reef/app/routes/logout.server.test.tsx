@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { csrfTokenForRequest } from '@/auth/csrf.server'
 import { publicRouteTestArgs } from '@/auth/server-context.test-helper'
@@ -7,13 +7,25 @@ import { hostedRuntimeConfig, requiredAuthConfig } from '@/auth/test-config'
 
 import { action } from './logout'
 
-const session = {
-  accessToken: 'server-only-token',
-  expiresAt: 4_102_444_800,
-  tokenType: 'Bearer',
+const config = requiredAuthConfig
+const started = {
+  endpoint: `${config.issuer}/oauth/session`,
+  expiresIn: 3600,
+  handle: 'coral_ws_handle',
 }
 
+/** Coral's answers to session requests, by URL. */
+const coral = vi.fn<typeof globalThis.fetch>()
+
 describe('logout route', () => {
+  beforeEach(() => {
+    coral.mockReset()
+    coral.mockImplementation(async () => new Response(null, { status: 200 }))
+    vi.stubGlobal('fetch', coral)
+  })
+
+  afterEach(() => vi.unstubAllGlobals())
+
   it('keeps disabled local and desktop logout inert', async () => {
     const { cookie, csrf } = await signedIn()
 
@@ -51,15 +63,18 @@ describe('logout route', () => {
     expect(thrown).toBeInstanceOf(Response)
     expect((thrown as Response).status).toBe(403)
     expect((thrown as Response).headers.getSetCookie()).toEqual([])
+    expect(coral).not.toHaveBeenCalled()
   })
 
-  it('clears hosted auth state and lands on the signed-out screen', async () => {
+  it('ends the session at Coral, clears hosted auth state, and lands on the signed-out screen', async () => {
     const { cookie, csrf } = await signedIn()
 
     const response = await action(
       publicRouteTestArgs(logoutRequest(csrf, cookie), hostedRuntimeConfig),
     )
 
+    expect(coral).toHaveBeenCalledTimes(1)
+    expect(coral.mock.calls[0]?.[0]).toBe(`${started.endpoint}/end`)
     expect(response.status).toBe(302)
     expect(response.headers.get('Location')).toBe('/login?signedOut=1')
     expect(response.headers.get('Cache-Control')).toBe('private, no-store')
@@ -67,22 +82,42 @@ describe('logout route', () => {
     const cleared = response.headers.getSetCookie()
     expect(cleared.map(cookieName).toSorted()).toEqual(
       [
-        `${requiredAuthConfig.cookieName}_csrf`,
-        oauthCookieName(requiredAuthConfig),
-        requiredAuthConfig.cookieName,
+        `${config.cookieName}_csrf`,
+        `${config.cookieName}_signout`,
+        oauthCookieName(config),
+        config.cookieName,
       ].toSorted(),
     )
     for (const setCookie of cleared) expect(setCookie).toMatch(/(?:^|; )Max-Age=0(?:;|$)/)
+  })
+
+  // The browser loses the session even when Coral does not answer; a pending
+  // sign-out cookie lets the next visit finish ending it at Coral.
+  it('signs the browser out and keeps the sign-out to finish when Coral does not answer', async () => {
+    coral.mockImplementation(async () => Response.json({ error: 'server_error' }, { status: 503 }))
+    const { cookie, csrf } = await signedIn()
+
+    const response = await action(
+      publicRouteTestArgs(logoutRequest(csrf, cookie), hostedRuntimeConfig),
+    )
+
+    expect(response.headers.get('Location')).toBe('/login?signedOut=1')
+    const set = response.headers.getSetCookie()
+    const pending = set.find((value) => cookieName(value) === `${config.cookieName}_signout`)
+    expect(pending).toBeDefined()
+    expect(pending).not.toMatch(/Max-Age=0(?:;|$)/)
+    const session = set.find((value) => cookieName(value) === config.cookieName)
+    expect(session).toMatch(/Max-Age=0(?:;|$)/)
   })
 })
 
 /** A real signed session and its CSRF token, as the browser would hold them. */
 async function signedIn(): Promise<{ cookie: string; csrf: string }> {
-  const sessionCookie = firstPair(await commitCoralWebSession(session, requiredAuthConfig))
+  const sessionCookie = firstPair(await commitCoralWebSession(started, config))
   const { setCookie, token } = await csrfTokenForRequest(
     new Request('https://coral-web.example.test/', { headers: { cookie: sessionCookie } }),
-    requiredAuthConfig,
-    session,
+    config,
+    started,
   )
   return { cookie: `${sessionCookie}; ${firstPair(setCookie!)}`, csrf: token }
 }

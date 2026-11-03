@@ -622,8 +622,13 @@ pub(crate) async fn update_contract(
     let Some(provider) = &loaded.update_provider_id else {
         return Ok(None);
     };
-    let Some(active) =
-        repository::provider_in_transaction(tx, loaded.setup.owner(), provider).await?
+    let Some(active) = repository::current_provider(
+        tx,
+        loaded.setup.owner(),
+        repository::ProviderKey::Id(provider),
+        repository::ProviderHold::None,
+    )
+    .await?
     else {
         return Ok(None);
     };

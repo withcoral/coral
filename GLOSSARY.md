@@ -33,6 +33,24 @@ Membership removal, cannot be undone by signing in again, and does not disable W
 the User created them or provisioned their Provider Accounts. _Avoid_: User deletion, automatic session-based
 reactivation, Agent disablement
 
+**Refresh Grant**: The durable right one sign-in gives one OAuth client to obtain new User access tokens without
+signing in again, until an absolute expiry fixed at the sign-in. Only a client that declares the `refresh_token` grant
+gets one. It fixes the User, client, resource, private audience, and Workspace of the sign-in; a refresh cannot change
+them. Each refresh spends one single-use refresh token and returns its successor; presenting a spent token ends the
+grant. A refresh rechecks enabled Organization Membership and, for a Workspace-scoped grant, Workspace Membership, and
+never consults the upstream identity provider. Removing either Membership ends the grants it supported, and rejoining
+revives none. Ending a grant stops refresh only; access tokens already issued keep their expiry. _Avoid_: session,
+offline access, sliding expiry
+_In Reef_: never named
+
+**Web Session**: Coral's hold on one Reef sign-in's Refresh Grant, named by an opaque handle carried in the browser's
+Reef session cookie. Reef resolves the handle into a fresh Reef access token on each request, so the session
+outlives its access tokens; resolving changes nothing, so any number of requests and Reef processes share one session.
+A Web Session ends at the earlier of its own maximum age and its grant's absolute expiry, and never extends. Signing
+out ends the session and its grant; so do revocation, replay of its spent refresh token, and Membership removal. Only a
+Reef grant can back one. _Avoid_: session token, browser session, refresh cookie
+_In Reef_: never named
+
 **User Profile**: A User's mutable name and email, neither guaranteed unique, distinct from the stable User identity and
 never a grant of authority. Conflicting emails do not merge Users or transfer access. Workspace Owners can see names
 and emails in authorized people and Agent-creator views; Members can see their own profile and the designated Owners'
@@ -403,7 +421,7 @@ global provider type
 **Discoverable Tool**: A Tool that Principal-facing discovery returns to one Principal now. Current
 Workspace authority, Principal state, Provider lifecycle, Tool Availability, and Tool Access State permit it,
 and its Credential Route can serve that Principal. Discoverability is not Account readiness: a User's Discoverable
-Tool can still require that User to connect an Account before dispatch. Search indexes and cursors confer no
+Tool can still require that User to connect an Account before dispatch. Search indexes and page offsets confer no
 discoverability. _Avoid_: Ready Tool, discovery readiness
 
 **Universal Search**: Principal-filtered relevance discovery over the Principal's Discoverable Tools and Saved
@@ -464,7 +482,7 @@ or `caller`. It resolves a required User caller Account before creating any requ
 binds the exact Account authorization. It then rechecks all
 authority and configuration, refreshes or resolves credentials, and dispatches. Approval bypasses none of these checks.
 Authority loss or Run termination settles a pending Invocation and closes its exact Approval Request without dispatch or
-replay. Detaching from a concurrent Account Connection Request does not cancel another Invocation's wait or the
+replay. A Run timeout expires that Request instead, because the Run's deadline bounds the Request's deadline. Detaching from a concurrent Account Connection Request does not cancel another Invocation's wait or the
 connection itself. Account-setting changes, explicit Account replacement, and Disconnect stop affected pending work;
 Coral never switches accounts. A Provider update alone does not stop an already-authorized Invocation that retained an
 older Generation and compatible Account, but changed authentication requirements end obsolete connection requests and
@@ -535,8 +553,8 @@ interface, and its link opens the exact Run independently of the activity list's
 User OAuth and normal Run authorization; the URL grants no authority. The view shows the Run status, Events,
 Invocations, and every Approval Request and Account Connection Request that the User can inspect. It groups all current
 human actions for the Run and receives Run, approval, and account-connection changes without a manual refresh.
-Authorized Workspace Owners find Agent approval actions through Reef's queue and notifications. _Avoid_: Per-Invocation
-action URL, bearer URL, MCP session state
+Authorized Workspace Owners find Agent approval actions on the Approvals Page. _Avoid_: Per-Invocation action URL,
+bearer URL, MCP session state
 
 **Action Prompt**: A negotiated MCP elicitation that asks the invoking User about one current Approval Request or
 Account Connection Request of their own Run, while an observation of that Run is in progress. Each observing tool call
@@ -552,13 +570,17 @@ _Avoid_: one prompt per Run, form connection prompt
 **Approval Request**: A durable host-owned request for a human decision on one pending Tool Invocation. Reef is
 the v1 human resolution interface that every Request can use, in local and remote deployments; a deployment without its
 local or hosted Reef interface is not ready. Coral creates a Request whenever an Invocation requires approval. It records the exact logical
-Tool arguments for review on the Run Status Page independently of the agent transport. Its deadline settles the
-Invocation with `approval_expired`; denial settles it with `approval_declined`. The first durable terminal decision
+Tool arguments for review on the Approvals Page and the Run Status Page independently of the agent transport. Its deadline settles the
+Invocation with `approval_expired`; declining settles it with `approval_declined`. The first durable terminal decision
 wins. A later decision returns that result without changing it. If policy becomes `disabled`, Coral settles the
 Invocation with `tool_disabled`; if it becomes `enabled`, Coral closes the Request and continues after its other
 checks. A later Invocation can create a new request. The invoking User can also decide it through an Action Prompt in
 their MCP client; Reef remains available for every Request. An active browser is not required, and existing Requests
 survive a temporary Reef outage. _Avoid_: per-Invocation approval URL, Program pause payload
+
+**Approvals Page**: The Workspace page in Reef where a person decides the Approval Requests waiting on them and reads
+those already approved, declined or expired. It shows only Requests of Runs that person can inspect, for as long as the
+Run is retained. _Avoid_: approval queue, action queue, inbox
 
 **Invocation Approval**: A human decision that satisfies an `approval_required` Tool Access State for one exact
 Tool Invocation. It is bound to the Workspace, Provider and account-setting version, Invoking Principal, private
@@ -647,6 +669,15 @@ Provider-native Result, row projection, normalized query result
 **Tool Result**: The caller-facing projection of one Declared Success: `{ status, data, metadata }` for HTTP, and
 `{ data, metadata }` for MCP. Its mandatory metadata carries safe execution-specific response facts. _Avoid_: Program
 outcome, failure union, Upstream Error
+
+**Tool Result Shape**: A sketch of where data lives in what a Program received from one Call Path: its field names and
+value types, never its values. An object keyed by data, such as identifiers, emails or names a person chose, shows the
+union of its values' shapes and not its keys. Only a Run that failed because its Program threw gets them: the final
+output page of its Run Update carries one for each distinct Call Path and shape among the latest Tool Results and
+Tool Errors the Program received, in the order it first received each. The sketch is bounded, so it may leave some
+undescribed, and it counts them. Coral derives it for that failure alone; it is not a Schema Type and makes no claim
+about other Runs.
+_Avoid_: Observed schema, inferred output schema, result sample
 
 **Tool Error (`ToolError`)**: The non-constructible JavaScript `Error` subclass, `coral.ToolError`, that
 rejects a Tool call that produced no Declared Success. When Coral rejects an Upstream Outcome, the error carries

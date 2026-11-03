@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { renderLivePage, renderRoute } from '@/test-support/route'
 import { approvalContext, approvalRequest as approval } from '../activity/fixtures'
 import { ActivityArchivedContext } from '../activity/live'
+import { leavesActivityReview } from '../activity/navigation'
 import { ActionReviewSession, ApprovalReview } from './review'
 
 type Approval = typeof approval
@@ -23,7 +24,7 @@ function renderReview() {
   }> = []
   const { container, router, update } = renderLivePage<Approval | null>(
     (request) => (
-      <ActionReviewSession request={request}>
+      <ActionReviewSession request={request} leaves={leavesActivityReview(request)}>
         {request ? (
           <ApprovalReview detail={request} context={approvalContext} />
         ) : (
@@ -153,19 +154,19 @@ describe('exact approval review', () => {
     const atLimit = 'é'.repeat(512)
     await enterComment(`${atLimit}a`)
 
-    expect(button('Approve this call')).toBeDisabled()
-    expect(button('Deny this call')).toBeDisabled()
+    expect(button('Approve')).toBeDisabled()
+    expect(button('Decline')).toBeDisabled()
     expect(comment()).toBeInvalid()
     expect(comment()).toHaveAccessibleDescription(correction)
-    await click('Approve this call')
-    await click('Deny this call')
+    await click('Approve')
+    await click('Decline')
     expect(page.submissions).toHaveLength(0)
 
     await enterComment(atLimit)
     expect(comment()).toBeValid()
-    expect(button('Approve this call')).toBeEnabled()
-    expect(button('Deny this call')).toBeEnabled()
-    await click('Approve this call')
+    expect(button('Approve')).toBeEnabled()
+    expect(button('Decline')).toBeEnabled()
+    await click('Approve')
     expect(page.submissions).toHaveLength(1)
     expect(Object.fromEntries(page.submissions[0].form)).toEqual({
       csrf: 'test-csrf',
@@ -180,20 +181,20 @@ describe('exact approval review', () => {
     const page = renderReview()
     await enterComment('Review\0note')
 
-    expect(button('Approve this call')).toBeDisabled()
-    expect(button('Deny this call')).toBeDisabled()
+    expect(button('Approve')).toBeDisabled()
+    expect(button('Decline')).toBeDisabled()
     expect(comment()).toBeInvalid()
     expect(comment()).toHaveAccessibleDescription(correction)
-    await click('Approve this call')
-    await click('Deny this call')
+    await click('Approve')
+    await click('Decline')
     expect(page.submissions).toHaveLength(0)
 
     await enterComment('Review note')
-    expect(button('Approve this call')).toBeEnabled()
-    expect(button('Deny this call')).toBeEnabled()
+    expect(button('Approve')).toBeEnabled()
+    expect(button('Decline')).toBeEnabled()
     expect(comment()).toBeValid()
     expect(page.container).not.toHaveTextContent('Remove null characters.')
-    await click('Deny this call')
+    await click('Decline')
     expect(page.submissions).toHaveLength(1)
     expect(page.submissions[0].form.get('comment')).toBe('Review note')
     expect(page.submissions[0].form.get('intent')).toBe('decline')
@@ -201,8 +202,8 @@ describe('exact approval review', () => {
   })
 
   it.each([
-    ['Approve this call', 'Deny this call', 'approve'],
-    ['Deny this call', 'Approve this call', 'decline'],
+    ['Approve', 'Decline', 'approve'],
+    ['Decline', 'Approve', 'decline'],
   ])(
     'prevents duplicate or opposite decisions while %s is pending',
     async (label, other, intent) => {
@@ -229,7 +230,7 @@ describe('exact approval review', () => {
   it('retains the comment after an action error and submits the corrected comment on retry', async () => {
     const page = renderReview()
     await enterComment('Original review note')
-    await click('Approve this call')
+    await click('Approve')
     expect(page.submissions).toHaveLength(1)
     await act(async () =>
       page.submissions[0].respond({ error: 'Could not save your decision. Try again.' }),
@@ -237,11 +238,11 @@ describe('exact approval review', () => {
 
     expect(page.container).toHaveTextContent('Could not save your decision. Try again.')
     expect(comment()).toHaveValue('Original review note')
-    expect(button('Approve this call')).toBeEnabled()
-    expect(button('Deny this call')).toBeEnabled()
+    expect(button('Approve')).toBeEnabled()
+    expect(button('Decline')).toBeEnabled()
 
     await enterComment('Corrected review note')
-    await click('Approve this call')
+    await click('Approve')
     expect(page.submissions).toHaveLength(2)
     expect(Object.fromEntries(page.submissions[1].form)).toEqual({
       csrf: 'test-csrf',
@@ -266,12 +267,12 @@ describe('exact approval review', () => {
   ])('says your decision is saving until the live read shows it %s', async (state, label) => {
     const page = renderReview()
     await enterComment('Reviewed the exact arguments.')
-    await click('Approve this call')
+    await click('Approve')
     await act(async () => page.submissions[0].respond({ recording: true }))
 
     expect(statuses()).toContain('Saving your decision…')
-    expect(button('Approve this call')).toBeDisabled()
-    expect(button('Deny this call')).toBeDisabled()
+    expect(button('Approve')).toBeDisabled()
+    expect(button('Decline')).toBeDisabled()
     // The comment went with the decision, so it is no longer an unsent draft.
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
 
@@ -282,24 +283,24 @@ describe('exact approval review', () => {
   it('shows the durable denial returned to a stale approval attempt and removes decision controls', async () => {
     const page = renderReview()
     await enterComment('I intended to approve this call.')
-    await click('Approve this call')
+    await click('Approve')
     expect(page.submissions).toHaveLength(1)
     expect(page.submissions[0].form.get('intent')).toBe('approve')
     await act(async () => page.submissions[0].respond({ state: 'declined' }))
 
     // An unchanged pending read must not overwrite the winning action response.
     await page.show({ ...approval })
-    expect(statuses()).toEqual(['Denied'])
+    expect(statuses()).toEqual(['Declined'])
     expect(page.container).not.toHaveTextContent('Approval needed')
     expect(page.container).not.toHaveTextContent('Approved')
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /this call/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^(Approve|Decline)$/ })).not.toBeInTheDocument()
   })
 
   it('does not guard a submitted comment as unsent after a durable winning denial', async () => {
     const page = renderReview()
     await enterComment('I intended to approve this call.')
-    await click('Approve this call')
+    await click('Approve')
     expect(page.submissions).toHaveLength(1)
     await act(async () => page.submissions[0].respond({ state: 'declined' }))
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
@@ -360,7 +361,6 @@ describe('approval review layout', () => {
     renderStatic({ ...approval, providerLabel: 'Mail', taskIntent: 'Chase overdue invoices' })
     const review = screen.getByRole('region', { name: `Review ${approval.callPath}` })
     expect(within(review).getByRole('heading', { name: approval.callPath })).toBeInTheDocument()
-    expect(within(review).getByText('approval request')).toBeInTheDocument()
     expect(review).toHaveTextContent('Provider: Mail')
     expect(review).toHaveTextContent('Approval required')
     // Why the call runs, in one list without a heading.
@@ -385,7 +385,7 @@ describe('approval review layout', () => {
     const positions = order.map((text) => review.textContent!.indexOf(text))
     expect(positions).toEqual(positions.toSorted((a, b) => a - b))
     expect(review.textContent!.indexOf('Add a comment')).toBeLessThan(
-      review.textContent!.indexOf('Approve this call'),
+      review.textContent!.indexOf('Approve'),
     )
   })
 
@@ -501,7 +501,7 @@ describe('approval review layout', () => {
 
   it.each([
     ['approved', true, 'Approved'],
-    ['declined', true, 'Denied'],
+    ['declined', true, 'Declined'],
     ['expired', false, 'Expired'],
     ['pending', false, 'Approval unavailable'],
   ])('settles a %s review without decision controls', (state, decided, label) => {
@@ -518,7 +518,7 @@ describe('approval review layout', () => {
     })
     expect(statuses()).toEqual([label])
     expect(screen.queryByText('Approval required')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /this call/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^(Approve|Decline)$/ })).not.toBeInTheDocument()
     expect(screen.queryByText('Add a comment')).not.toBeInTheDocument()
     expect(screen.queryByText('Program body')).not.toBeInTheDocument()
     // The decision reads in a list of its own, without a heading.
@@ -550,6 +550,6 @@ it('an archived workspace shows the arguments but tells you to restore it before
   expect(
     screen.getByText('Ask a workspace owner to restore this workspace. Then decide.'),
   ).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: /this call$/ })).toBeNull()
+  expect(screen.queryByRole('button', { name: /^(Approve|Decline)$/ })).toBeNull()
   expect(screen.queryByText('Add a comment')).toBeNull()
 })

@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { markupRoute, renderLivePage, renderRoute } from '@/test-support/route'
 import { ActivityDetail } from './detail'
 import { ActionReviewSession } from '../actions/review'
-import { approvalRequest, pendingPage, run, workspace } from './fixtures'
+import { approvalRequest, personalPage, run, workspace } from './fixtures'
 import { stored } from './discovery/fixtures'
 import { discoveryView } from './discovery/response'
 import { ActivityConnectedContext } from './live'
@@ -47,10 +47,9 @@ it('keeps exact evidence and a receipt after the selected request leaves pending
     requiresAction: false,
   }
   const html = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: run.name,
     selectedRow: selected,
-    pending: { actions: [], actionCount: '0', next: '', unavailable: false },
     detail: {
       kind: 'run',
       run: selected,
@@ -68,14 +67,15 @@ it('keeps exact evidence and a receipt after the selected request leaves pending
   })
   expect(html).toContain('exact-recipient')
   expect(html).toContain('Approved')
-  expect(html).not.toContain('Approve this call')
+  // No decision remains to make: no Approve button beside the "Approved" receipt.
+  expect(html).not.toMatch(/Approve(?!d)/)
   // The review's own decision leads; no badge repeats the Run's state under it.
   expect(html).not.toContain('Run state')
   expect(html).not.toContain('program run:')
 })
 function runDetail(actions: typeof run.actionPage, request: typeof approvalRequest) {
   return markup({
-    ...pendingPage,
+    ...personalPage,
     selected: run.name,
     selectedRow: { ...run, actionPage: actions },
     detail: {
@@ -110,13 +110,13 @@ it('offers what the Run waits on now beside a settled selection, but not beside 
     { total: '2', actions: [run.actionPage!.actions[0], next], next: '' },
     approvalRequest,
   )
-  expect(current).toContain('Approve this call')
+  expect(current).toMatch(/>Approve</)
   expect(current).not.toContain('request=workspaces%2Ffinance%2Fapprovals%2Ftwo')
 })
 it('shows purpose and caller once, with nothing but the call to decide on', () => {
   const selected = { ...run, actorLabel: 'You', agent: '' }
   const html = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: run.name,
     selectedRow: selected,
     detail: {
@@ -160,7 +160,7 @@ it.each([true, false])(
       callPath: 'coral.providers.mail.send',
     }
     const html = markup({
-      ...pendingPage,
+      ...personalPage,
       selected: call.name,
       selectedRow: { ...call, kind: 'invocation' },
       detail: {
@@ -191,10 +191,9 @@ it.each([true, false])(
     expect(html).toContain('Arguments (1)')
     expect(html).not.toContain('Retained request detail')
     expect(html.indexOf(call.callPath)).toBeLessThan(html.indexOf('review-native'))
-    expect(html.includes('Approve this call')).toBe(actionable)
-    expect(html.includes('Deny this call')).toBe(actionable)
-    if (actionable)
-      expect(html.indexOf('review-native')).toBeLessThan(html.indexOf('Approve this call'))
+    expect(html.includes('Approve')).toBe(actionable)
+    expect(html.includes('Decline')).toBe(actionable)
+    if (actionable) expect(html.indexOf('review-native')).toBeLessThan(html.indexOf('Approve'))
     else expect(html).toContain('Approval unavailable')
   },
 )
@@ -219,7 +218,7 @@ it.each([true, false])(
     }
     const container = document.createElement('div')
     container.innerHTML = markup({
-      ...pendingPage,
+      ...personalPage,
       selected: call.name,
       selectedRow: { ...call, kind: 'invocation' },
       detail: {
@@ -336,13 +335,9 @@ it.each([
 
 // Catches: a log or emission header with a badge that says nothing about it.
 it.each([
-  [
-    'log',
-    { kind: 'program.logged', level: 'info', message: 'sent 2' },
-    'console.info #4program log',
-  ],
-  ['emission', { kind: 'program.emitted', value: '{"sent":2}' }, 'coral.emit #4program output'],
-] as const)('heads a %s with its own name and kind, and no badge', (_, value, text) => {
+  ['log', { kind: 'program.logged', level: 'info', message: 'sent 2' }, 'console.info #4'],
+  ['emission', { kind: 'program.emitted', value: '{"sent":2}' }, 'coral.emit #4'],
+] as const)('heads a %s with its own name alone, and no badge', (_, value, text) => {
   const container = show(event({ ...at, ...value } as RunEvent))
   expect(container.querySelector('header')!.textContent).toBe(text)
 })
@@ -492,7 +487,7 @@ it.each([
     const feedback = 'No export tool.\nSearch returned nothing.'
     const container = document.createElement('div')
     container.innerHTML = markup({
-      ...pendingPage,
+      ...personalPage,
       selected: task.name,
       selectedRow: { ...task, kind: 'task' },
       detail: { kind: 'task', task, ...(withFeedback && { feedback }) },
@@ -501,11 +496,10 @@ it.each([
     const value = (term: string) =>
       within(list).getByText(term, { selector: 'dt' }).nextElementSibling!
     const header = container.querySelector('header')!
-    // The record kind names the Task beside its title, once; the list below has no heading.
+    // The title names the Task; the list below has no heading.
     expect(within(header).getByRole('heading', { level: 2 })).toHaveTextContent(task.intent)
-    expect(within(header).getByText('task')).toBeTruthy()
     expect(within(container).queryByRole('heading', { name: 'Task' })).toBeNull()
-    expect(within(container).getAllByText('task')).toHaveLength(1)
+    expect(within(container).queryAllByText('task')).toEqual([])
     // The outcome appears once in the header badge, not in the Task list.
     expect(header.querySelector('svg')).not.toBeNull()
     expect(within(header).getByText(task.outcome)).toBeTruthy()
@@ -589,7 +583,7 @@ it.each([
     }
     const container = document.createElement('div')
     container.innerHTML = markup({
-      ...pendingPage,
+      ...personalPage,
       selected: task.name,
       selectedRow: { ...task, kind: 'task' },
       detail: { kind: 'task', task },
@@ -611,7 +605,7 @@ it.each([
 /** A page that selects `task` and shows its detail, as the loader returns it. */
 function taskDetailPage(task: Omit<ActivityRow & { kind: 'task' }, 'kind'>): ActivityPage {
   return {
-    ...pendingPage,
+    ...personalPage,
     selected: task.name,
     selectedRow: { ...task, kind: 'task' },
     detail: { kind: 'task', task },
@@ -668,7 +662,7 @@ const interaction: InteractionRow = {
 }
 const searched = (query: string | null): InteractionEvidence => ({
   kind: 'discovery',
-  context: { kind: 'search', query, provider: null, limit: 5, cursor: null },
+  context: { kind: 'search', query, provider: null, limit: 5, offset: 0 },
   response: '{}',
   view: { kind: 'raw' },
 })
@@ -715,32 +709,27 @@ const event = (value: RunEvent): Extract<Detail, { kind: 'output' }> => ({
   event: value,
 })
 const at = { sequence: '4', occurredAt: run.startedAt }
+const KIND_LABEL =
+  /^(task|program run|tool|search|describe|exec submission|save function|delete function|tool interaction|program log|program output|run event|approval request|account connection request)$/
 
-it.each<[string, Detail, string, string]>([
+it.each<[string, Detail, string]>([
   [
     'a Run by its submission intent',
     runPanel({}, { ...interaction, tool: 'exec', intent: 'Remind overdue owners' }),
     'Remind overdue owners',
-    'program run',
   ],
-  ['a Run by its own intent', runPanel({}), run.intent!, 'program run'],
-  [
-    'a Run without an intent, by its kind alone',
-    runPanel({ intent: '' }),
-    'Program run',
-    'program run',
-  ],
-  ['a tool call by its call path', invocationPanel({}), 'coral.providers.mail.send', 'tool'],
-  ['a tool call without a call path', invocationPanel({ callPath: '' }), 'send', 'tool'],
-  ['a search by its intent', tool({}, searched('mail send')), interaction.intent, 'search'],
+  ['a Run by its own intent', runPanel({}), run.intent!],
+  ['a Run without an intent, by its kind alone', runPanel({ intent: '' }), 'Program run'],
+  ['a tool call by its call path', invocationPanel({}), 'coral.providers.mail.send'],
+  ['a tool call without a call path', invocationPanel({ callPath: '' }), 'send'],
+  ['a search by its intent', tool({}, searched('mail send')), interaction.intent],
   [
     'a search without an intent, by its query',
     tool({ intent: '' }, searched('mail send')),
     'mail send',
-    'search',
   ],
-  ['a search without a query', tool({}, searched(null)), interaction.intent, 'search'],
-  ['a search with nothing specific', tool({ intent: '' }, { kind: 'unknown' }), 'search', 'search'],
+  ['a search without a query', tool({}, searched(null)), interaction.intent],
+  ['a search with nothing specific', tool({ intent: '' }, { kind: 'unknown' }), 'search'],
   [
     'a describe call by the exact call path',
     tool(
@@ -753,13 +742,11 @@ it.each<[string, Detail, string, string]>([
       },
     ),
     'coral.providers.mail.send',
-    'describe',
   ],
   [
     'an exec submission by its intent',
     tool({ tool: 'exec', intent: 'Send reminders' }, { kind: 'run', reference: run.name }),
     'Send reminders',
-    'exec submission',
   ],
   [
     // A save states no target: its reference is an ID that no page opens.
@@ -769,7 +756,6 @@ it.each<[string, Detail, string, string]>([
       { kind: 'function', reference: `${workspace}/savedFunctions/reminders` },
     ),
     'Save function',
-    'save function',
   ],
   [
     'a deleted function without an intent by its tool, not its ID',
@@ -778,19 +764,16 @@ it.each<[string, Detail, string, string]>([
       { kind: 'function', reference: `${workspace}/savedFunctions/reminders` },
     ),
     'Delete function',
-    'delete function',
   ],
   [
     'a deleted function by its intent',
     tool({ tool: 'delete_function', intent: 'Remove the old batch' }, { kind: 'unknown' }),
     'Remove the old batch',
-    'delete function',
   ],
   [
     'another tool with nothing specific by its tool',
     tool({ tool: 'inspect', intent: '' }, { kind: 'unknown' }),
     'inspect',
-    'tool interaction',
   ],
   [
     'a log by its console level and record number, never its message',
@@ -801,38 +784,32 @@ it.each<[string, Detail, string, string]>([
       message: 'Fetched 3 invoices\nNext page',
     }),
     'console.error #4',
-    'program log',
   ],
   [
     'a log at a level this Reef does not know, as stored',
     event({ ...at, kind: 'program.logged', level: 'unknown', message: '  ' }),
     'console.unknown #4',
-    'program log',
   ],
   [
     'an emission by its call and record number, never its payload',
     event({ ...at, kind: 'program.emitted', value: '{"intent":"misleading"}' }),
     'coral.emit #4',
-    'program output',
   ],
-  ['a run start', event({ ...at, kind: 'run.started' }), 'Program run started', 'run event'],
+  ['a run start', event({ ...at, kind: 'run.started' }), 'Program run started'],
   [
     'a run end by its state',
     event({ ...at, kind: 'run.ended', state: 'timed_out' }),
     'Program run ended: timed out',
-    'run event',
   ],
   [
     'a cancellation request',
     event({ ...at, kind: 'run.cancellation_requested', actor: 'you', actorKind: 'user' }),
     'Cancellation requested',
-    'run event',
   ],
   [
     'a tool call start',
     event({ ...at, kind: 'invocation.started', invocation: `${workspace}/invocations/one` }),
     'Tool call started',
-    'run event',
   ],
   [
     'a tool call that got a response, in plain words',
@@ -843,7 +820,6 @@ it.each<[string, Detail, string, string]>([
       outcome: 'upstream_outcome',
     }),
     'Tool call ended: completed',
-    'run event',
   ],
   [
     'a tool call the Run ended, in plain words',
@@ -854,7 +830,6 @@ it.each<[string, Detail, string, string]>([
       outcome: 'run_terminated',
     }),
     'Tool call ended: run ended',
-    'run event',
   ],
   [
     'a tool call with no complete result, in plain words',
@@ -865,7 +840,6 @@ it.each<[string, Detail, string, string]>([
       outcome: 'indeterminate',
     }),
     'Tool call ended: result unknown',
-    'run event',
   ],
   [
     'a tool call end by its outcome',
@@ -876,18 +850,19 @@ it.each<[string, Detail, string, string]>([
       outcome: 'coral_failure',
     }),
     'Tool call ended: failed',
-    'run event',
   ],
-  ['an unknown event', event({ ...at, kind: 'unknown' }), 'Unknown run event', 'run event'],
-])('names %s, with its record kind under the title', (_, detail, title, kind) => {
+  ['an unknown event', event({ ...at, kind: 'unknown' }), 'Unknown run event'],
+])('names %s, with no kind label under the title', (_, detail, title) => {
   const container = document.createElement('div')
-  container.innerHTML = markup({ ...pendingPage, selected: null, selectedRow: null, detail })
+  container.innerHTML = markup({ ...personalPage, selected: null, selectedRow: null, detail })
   const header = container.querySelector('header')!
   expect(within(header).getByRole('heading', { level: 2 }).textContent).toBe(title)
-  const subtitles = within(header)
-    .getAllByText(kind)
-    .filter((line) => !line.closest('h2'))
-  expect(subtitles).toHaveLength(1)
+  // Catches: a kind label, such as "program run" or "run event", back under the title.
+  expect(
+    within(header)
+      .queryAllByText(KIND_LABEL)
+      .filter((line) => !line.closest('h2')),
+  ).toEqual([])
 })
 
 it.each<[string, RunDetail, string | null]>([
@@ -929,7 +904,7 @@ it.each<[string, RunDetail, string | null]>([
       ],
     }
     const container = document.createElement('div')
-    container.innerHTML = markup({ ...pendingPage, selected: null, selectedRow: null, detail })
+    container.innerHTML = markup({ ...personalPage, selected: null, selectedRow: null, detail })
     const timing = container.querySelector('dl')!
     // The timing list comes straight after the header.
     expect(container.querySelector('header')!.nextElementSibling).toBe(timing.closest('section'))
@@ -959,11 +934,11 @@ it.each<[string, RunDetail, string | null]>([
       expect(container.textContent).not.toContain(gone)
     if (outcome) expect(container.textContent).toContain(outcome)
     // A returned value shows directly in its own card, never behind a disclosure.
-    const returned = container.querySelector('[aria-label="Final value"]')
+    const returned = container.querySelector('[aria-label="Return value"]')
     expect(Boolean(returned)).toBe(state === 'succeeded')
     if (returned)
       expect(within(returned as HTMLElement).getByRole('group', { name: 'Structure' })).toBeTruthy()
-    expect(within(container).queryByText('Final value', { selector: 'summary' })).toBeNull()
+    expect(within(container).queryByText('Return value', { selector: 'summary' })).toBeNull()
     expect(Boolean(within(container).queryByRole('button', { name: 'Cancel run' }))).toBe(
       state === 'running',
     )
@@ -975,7 +950,7 @@ const searchContext = {
   query: 'github pulls',
   provider: null,
   limit: 5,
-  cursor: null,
+  offset: 0,
 } as const
 const discovered = (context: DiscoveryContext, response: string): InteractionEvidence => ({
   kind: 'discovery',
@@ -990,7 +965,7 @@ const searchPanel = (response: string, current: (index: number) => string | null
     evidence.view.page.hits.forEach((hit, index) => (hit.currentHref = current(index)))
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: null,
     selectedRow: null,
     detail: tool({ tool: 'search' }, evidence),
@@ -1038,14 +1013,14 @@ it('leads a search with what it asked, then its intent and timing, and only its 
 })
 
 /** A stored trimmed search page with `count` tool hits. */
-const trimmedPage = (count: number, more: boolean, statuses?: unknown[]) =>
+const trimmedPage = (count: number, nextOffset?: number, statuses?: unknown[]) =>
   JSON.stringify({
     hits: Array.from({ length: count }, (_, index) => ({
       call_path: `coral.providers.github.pulls.op${index}`,
       signature_line: `op${index}(input: {}): Promise<unknown>`,
       description_snippet: '',
     })),
-    has_more: more,
+    ...(nextOffset !== undefined && { next_offset: nextOffset }),
     ...(statuses && { retriever_statuses: statuses }),
   })
 const failedTools = {
@@ -1063,13 +1038,13 @@ const failedTools = {
 // Catches: a heading that counts the limit, invents a total, or drops a coverage warning.
 // Coral stores no total match count: only the page's hits and whether more remain.
 it.each<[string, string, typeof searchContext | undefined, string, string[]]>([
-  ['a complete page', trimmedPage(2, false), undefined, 'Results (2)', []],
+  ['a complete page', trimmedPage(2), undefined, 'Results (2)', []],
   ['a page with more after it', stored.complete, undefined, 'Results (5+)', []],
-  ['an empty page', trimmedPage(0, false), undefined, 'Results (0)', []],
+  ['an empty page', trimmedPage(0), undefined, 'Results (0)', []],
   [
     'a later page, counting only its own results',
-    trimmedPage(3, true),
-    { ...searchContext, cursor: 'next-page' } as unknown as typeof searchContext,
+    trimmedPage(3, 23),
+    { ...searchContext, offset: 20 } as unknown as typeof searchContext,
     'Results (3+)',
     [],
   ],
@@ -1089,7 +1064,7 @@ it.each<[string, string, typeof searchContext | undefined, string, string[]]>([
   ],
   [
     'an empty page whose search failed',
-    trimmedPage(0, false, [failedTools]),
+    trimmedPage(0, undefined, [failedTools]),
     undefined,
     'Results (0)',
     ['could not search', 'Results are missing.'],
@@ -1105,7 +1080,7 @@ it.each<[string, string, typeof searchContext | undefined, string, string[]]>([
   const evidence = discovered(context ?? searchContext, response)
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: null,
     selectedRow: null,
     detail: tool({ tool: 'search' }, evidence),
@@ -1271,7 +1246,7 @@ const describePanel = (evidence: InteractionEvidence, overrides: Partial<Interac
   const name = `${workspace}/tasks/one/interactions/describe`
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: name,
     selectedRow: null,
     detail: tool({ tool: 'describe', name, intent: 'Check the inputs', ...overrides }, evidence),
@@ -1314,8 +1289,7 @@ it.each([
   const { container, name } = describePanel(evidence)
   const header = container.querySelector('header')!
   expect(within(header).getByRole('heading', { level: 2 }).textContent).toBe(row.context.callPath)
-  expect(within(header).getByText('describe')).toBeTruthy()
-  // One list without a heading, as the subtitle names the call: what the agent asked, then
+  // One list without a heading, as the title names the call: what the agent asked, then
   // the call's own times, so no section gap splits them. Details holds lists of its own.
   const lists = [...container.querySelectorAll('dl')].filter((list) => !list.closest('details'))
   expect(lists).toHaveLength(1)
@@ -1423,7 +1397,7 @@ const execPanel = (overrides: Partial<InteractionRow>, evidence: InteractionEvid
   const name = `${workspace}/tasks/one/interactions/exec`
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: name,
     selectedRow: null,
     detail: tool({ tool: 'exec', name, intent: 'Send invoice reminders', ...overrides }, evidence),
@@ -1484,7 +1458,6 @@ it.each<{
   expect(within(header).getByRole('heading', { level: 2 }).textContent).toBe(
     'Send invoice reminders',
   )
-  expect(within(header).getByText('exec submission')).toBeTruthy()
   // One list, without a heading: the times together, then the intent and the outcome.
   const lists = container.querySelectorAll('dl')
   expect(lists).toHaveLength(1)
@@ -1532,7 +1505,7 @@ const functionPanel = (overrides: Partial<InteractionRow>, evidence: Interaction
   const name = `${workspace}/tasks/one/interactions/${overrides.tool}`
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: name,
     selectedRow: null,
     detail: tool({ name, ...overrides }, evidence),
@@ -1544,7 +1517,6 @@ const savedFunction = `${workspace}/savedFunctions/${savedFunctionId}`
 const functionCalls = [
   {
     tool: 'save_function',
-    subtitle: 'save function',
     intent: 'Save the reminder batch',
     // A save states no target: it retained only an ID that no page opens.
     done: null,
@@ -1555,7 +1527,6 @@ const functionCalls = [
   },
   {
     tool: 'delete_function',
-    subtitle: 'delete function',
     intent: 'Remove the old reminder batch',
     done: 'Deleted',
     noun: 'delete',
@@ -1617,7 +1588,6 @@ it.each(functionCases)('shows $case with its intent, target, then times', (row) 
   )
   const header = container.querySelector('header')!
   expect(within(header).getByRole('heading', { level: 2 }).textContent).toBe(call.intent)
-  expect(within(header).getByText(call.subtitle)).toBeTruthy()
   // One list without a heading: the intent, the function it changed, then the times at the
   // end. The badge states the outcome once.
   const lists = container.querySelectorAll('dl')
@@ -1686,7 +1656,7 @@ it.each([
   const name = `${workspace}/tasks/one/interactions/search`
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: name,
     selectedRow: null,
     detail: tool(
@@ -1696,7 +1666,6 @@ it.each([
   })
   const header = container.querySelector('header')!
   expect(within(header).getByRole('heading', { level: 2 }).textContent).toBe(interaction.intent)
-  expect(within(header).getByText('search')).toBeTruthy()
   expect(within(container).getAllByText('rejected')).toHaveLength(1)
   const lists = container.querySelectorAll('dl')
   expect(lists).toHaveLength(1)
@@ -1726,11 +1695,11 @@ it.each<[string, Detail, string | null]>([
     '12345678901234567890',
   ],
 ])(
-  'shows what %s returned in a Final value card, or nothing when it returned nothing',
+  'shows what %s returned in a Return value card, or nothing when it returned nothing',
   (_, detail, value) => {
     const container = document.createElement('div')
-    container.innerHTML = markup({ ...pendingPage, selected: null, selectedRow: null, detail })
-    const card = container.querySelector('[aria-label="Final value"]')
+    container.innerHTML = markup({ ...personalPage, selected: null, selectedRow: null, detail })
+    const card = container.querySelector('[aria-label="Return value"]')
     // No value shows no card and no sentence; JSON null is a value and has its card.
     if (value === null) expect(card).toBeNull()
     else
@@ -1738,7 +1707,7 @@ it.each<[string, Detail, string | null]>([
         within(card as HTMLElement).getByRole('group', { name: 'Structure' }).textContent,
       ).toContain(value)
     expect(container.textContent).not.toContain('returned no final value')
-    expect(within(container).queryByText('Final value', { selector: 'summary' })).toBeNull()
+    expect(within(container).queryByText('Return value', { selector: 'summary' })).toBeNull()
   },
 )
 
@@ -1768,7 +1737,7 @@ it.each<[string, Detail, ActivityRow | null]>([
   ],
 ])('offers no parent navigation from %s', (_, detail, selectedRow) => {
   const container = document.createElement('div')
-  container.innerHTML = markup({ ...pendingPage, selected: null, selectedRow, detail })
+  container.innerHTML = markup({ ...personalPage, selected: null, selectedRow, detail })
   expect(container.textContent).not.toContain('Open task')
   expect(container.textContent).not.toContain('Open parent execution')
 })
@@ -1776,7 +1745,7 @@ it.each<[string, Detail, ActivityRow | null]>([
 it('states a Run end once, in its title, not again in the body', () => {
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: null,
     selectedRow: null,
     detail: event({ ...at, kind: 'run.ended', state: 'timed_out' }),
@@ -1834,7 +1803,7 @@ it.each<[string, RunEvent, boolean, string, string[], string | null]>([
   (_, value, withRow, card, content, level) => {
     const container = document.createElement('div')
     container.innerHTML = markup({
-      ...pendingPage,
+      ...personalPage,
       selected: null,
       selectedRow: withRow ? outputOf(value) : null,
       detail: event(value),
@@ -1842,7 +1811,7 @@ it.each<[string, RunEvent, boolean, string, string[], string | null]>([
     // The title names the call, level and record; the facts list keeps only the time.
     const title = level ? `console.${level} #4` : 'coral.emit #4'
     expect(within(container).getByRole('heading', { level: 2 }).textContent).toBe(title)
-    // The title and subtitle say what it is; no status badge repeats it, the icon stays.
+    // The title says what it is; no status badge repeats it, the icon stays.
     const header = container.querySelector('header')!
     expect(header.textContent).not.toMatch(/diagnostic|retained/)
     expect(header.querySelector('svg')).not.toBeNull()
@@ -1874,7 +1843,7 @@ it.each<[string, RunEvent, boolean, string, string[], string | null]>([
 it('states another run event its time once, in its list', () => {
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: null,
     selectedRow: null,
     detail: event({ ...at, kind: 'run.started' }),
@@ -1895,7 +1864,7 @@ it('keeps the whole log message and emitted value in the body', () => {
     }),
     event({ ...at, kind: 'program.emitted', value: '{"intent":"misleading"}' }),
   ]) {
-    container.innerHTML = markup({ ...pendingPage, selected: null, selectedRow: null, detail })
+    container.innerHTML = markup({ ...personalPage, selected: null, selectedRow: null, detail })
     expect(container.textContent).toContain(
       detail.event.kind === 'program.logged' ? 'Next page' : '"misleading"',
     )
@@ -1906,7 +1875,7 @@ it('keeps no record path for another run event, but its header badge', () => {
   const name = `${run.name}/events/7`
   const container = document.createElement('div')
   container.innerHTML = markup({
-    ...pendingPage,
+    ...personalPage,
     selected: name,
     selectedRow: null,
     detail: {
@@ -1919,7 +1888,7 @@ it('keeps no record path for another run event, but its header badge', () => {
   expect(container.textContent).not.toContain(name)
   // A run event keeps its icon, but no badge: "retained" says nothing about it.
   expect(container.querySelector('header svg')).not.toBeNull()
-  expect(container.querySelector('header')!.textContent).toBe('Program run startedrun event')
+  expect(container.querySelector('header')!.textContent).toBe('Program run started')
 })
 
 const runActions = () => screen.getByRole('region', { name: 'Run actions' })
@@ -1950,7 +1919,7 @@ it('lists what the Run waits on as cards, each opening its exact review', () => 
     <ActionReviewSession>
       <ActivityDetail
         page={{
-          ...pendingPage,
+          ...personalPage,
           selected: waiting.name,
           selectedRow: waiting,
           detail: {
@@ -2020,7 +1989,7 @@ it('says how many actions loaded when a page of them failed, and offers to try a
     <ActionReviewSession>
       <ActivityDetail
         page={{
-          ...pendingPage,
+          ...personalPage,
           selected: waiting.name,
           selectedRow: waiting,
           detail: {
@@ -2066,7 +2035,7 @@ function showActions(
     <ActionReviewSession>
       <ActivityDetail
         page={{
-          ...pendingPage,
+          ...personalPage,
           selected: waiting.name,
           selectedRow: waiting,
           detail: {
@@ -2207,7 +2176,7 @@ describe('a Run that waits on more than five actions', () => {
     expect(nav).toBeNull()
     if (request.kind === 'approval')
       expect(screen.getByRole('region', { name })).toContainElement(
-        screen.getByRole('button', { name: 'Approve this call' }),
+        screen.getByRole('button', { name: 'Approve' }),
       )
     else {
       expect(screen.getByRole('heading', { name })).toBeInTheDocument()
@@ -2267,7 +2236,7 @@ describe('an account connection the Run waits on', () => {
         <ActionReviewSession>
           <ActivityDetail
             page={{
-              ...pendingPage,
+              ...personalPage,
               selected: selected.name,
               selectedRow: selected,
               detail: {
@@ -2313,8 +2282,7 @@ describe('an account connection the Run waits on', () => {
     expect(
       within(runActions()).getByRole('heading', { level: 3, name: 'Connect your Linear account' }),
     ).toBeInTheDocument()
-    expect(within(runActions()).getByText('account connection request')).toBeInTheDocument()
-    expect(within(runActions()).queryByText(/Approve|Deny/)).not.toBeInTheDocument()
+    expect(within(runActions()).queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
     const footer = screen.getByRole('button', { name: 'Decline' }).closest('footer')!
     expect(within(footer).getByRole('button', { name: 'Connect Linear' })).toBeInTheDocument()
   })
@@ -2329,11 +2297,10 @@ describe('an account connection the Run waits on', () => {
       const headers = document.querySelectorAll('header')
       expect(headers).toHaveLength(1)
       const header = headers[0]
-      // A settled request has left the pending list that names its provider.
+      // A settled request has left the Run's pending actions, which name its provider.
       expect(within(header).getByRole('heading', { level: 3 }).textContent).toBe(
         state === 'pending' ? 'Connect your Linear account' : 'Connect your account',
       )
-      expect(within(header).getByText('account connection request')).toBeInTheDocument()
       expect(within(header).getByText(state)).toBeInTheDocument()
       expect(screen.queryByRole('heading', { level: 2 })).not.toBeInTheDocument()
       expect(document.body).not.toHaveTextContent('program run')
@@ -2357,7 +2324,10 @@ describe('an account connection the Run waits on', () => {
         expect(within(footer).getByRole('button', { name: 'Connect Linear' })).toBeInTheDocument()
         expect(footer.querySelector('time')).toBeNull()
       } else expect(within(runActions()).getByRole('status')).toBeInTheDocument()
-      expect(document.body.textContent).not.toMatch(/Approve|Deny|Arguments/)
+      // Nothing of an approval review: its Decline is the connection's own.
+      expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+      expect(screen.queryAllByRole('button', { name: 'Decline' }).length).toBeLessThanOrEqual(1)
+      expect(document.body).not.toHaveTextContent('Arguments')
     },
   )
 
@@ -2366,7 +2336,7 @@ describe('an account connection the Run waits on', () => {
       <ActionReviewSession>
         <ActivityDetail
           page={{
-            ...pendingPage,
+            ...personalPage,
             selected: waiting.name,
             selectedRow: waiting,
             detail: {
@@ -2407,7 +2377,7 @@ describe('an account connection the Run waits on', () => {
     (state, ended, outcome) => {
       renderConnection({ ...connection, state: 'connected' }, { ended })
       expect(document.body).toHaveTextContent(`program run: ${state}`)
-      expect(screen.queryByRole('region', { name: 'Final value' })).toBeNull()
+      expect(screen.queryByRole('region', { name: 'Return value' })).toBeNull()
       expect(screen.queryByRole('region', { name: 'Error' })).toBeNull()
       expect(document.body.textContent).not.toMatch(outcome)
     },
@@ -2430,7 +2400,7 @@ describe('an account connection the Run waits on', () => {
       <ActionReviewSession>
         <ActivityDetail
           page={{
-            ...pendingPage,
+            ...personalPage,
             selected: call.name,
             selectedRow: { ...call, kind: 'invocation' },
             detail: {
@@ -2508,7 +2478,7 @@ describe('an account connection the Run waits on', () => {
       <ActionReviewSession>
         <ActivityDetail
           page={{
-            ...pendingPage,
+            ...personalPage,
             selected: call.name,
             selectedRow: { ...call, kind: 'invocation' },
             detail: {
@@ -2557,7 +2527,7 @@ describe('an account connection the Run waits on', () => {
 /** One record's panel, as static markup in a container. */
 const show = (detail: Detail, selected: string | null = null) => {
   const container = document.createElement('div')
-  container.innerHTML = markup({ ...pendingPage, selected, selectedRow: null, detail })
+  container.innerHTML = markup({ ...personalPage, selected, selectedRow: null, detail })
   return container
 }
 // Catches: an approval review that adds its Run's state, failure or final value under its own
@@ -2577,7 +2547,7 @@ const approvalStates = [
     'Approved',
   ],
   [
-    'denied',
+    'declined',
     {
       state: 'declined',
       actionable: false,
@@ -2586,7 +2556,7 @@ const approvalStates = [
       decidedAt: '2026-09-22T09:01:00Z',
       comment: 'Wrong recipient.',
     },
-    'Denied',
+    'Declined',
   ],
   ['expired', { state: 'expired', actionable: false }, 'Expired'],
   ['closed', { state: 'closed', actionable: false }, 'Closed'],
@@ -2635,7 +2605,7 @@ it.each(
     }
     // The Run's outcome belongs to the Run's own panel.
     expect(within(container).queryByRole('region', { name: 'Error' })).toBeNull()
-    expect(within(container).queryByRole('region', { name: 'Final value' })).toBeNull()
+    expect(within(container).queryByRole('region', { name: 'Return value' })).toBeNull()
     expect(container.textContent).not.toMatch(/exact-run-failure|exact-run-final-value/)
   },
 )
@@ -2644,7 +2614,7 @@ it.each(
 it('says the run is canceling until the live read shows it ended', async () => {
   const running = { ...run, requiresAction: false, actionPage: undefined }
   const pageOf = (current: typeof running, terminal: RunDetail['terminal']): ActivityPage => ({
-    ...pendingPage,
+    ...personalPage,
     selected: current.name,
     selectedRow: current,
     detail: {
@@ -2685,13 +2655,13 @@ it('says the run is canceling until the live read shows it ended', async () => {
 })
 
 // Catches: a pinned decision that leaves the named review, so navigating by region skips it.
-it('keeps the pinned Deny and Approve inside the one named review region', () => {
+it('keeps the pinned Decline and Approve inside the one named review region', () => {
   const pending = { ...run, state: 'running' as const, endedAt: null, requiresAction: true }
   renderRoute(
     <ActionReviewSession>
       <ActivityDetail
         page={{
-          ...pendingPage,
+          ...personalPage,
           selected: run.name,
           selectedRow: pending,
           detail: { ...runPanel(pending), request: approvalRequest },
@@ -2703,11 +2673,11 @@ it('keeps the pinned Deny and Approve inside the one named review region', () =>
   const regions = screen.getAllByRole('region', { name: `Review ${approvalRequest.callPath}` })
   expect(regions).toHaveLength(1)
   const [review] = regions
-  const approve = within(review).getByRole('button', { name: 'Approve this call' })
-  const deny = within(review).getByRole('button', { name: 'Deny this call' })
+  const approve = within(review).getByRole('button', { name: 'Approve' })
+  const decline = within(review).getByRole('button', { name: 'Decline' })
   // Still the drawer's one pinned footer, at the review's end, after the call's outcome.
   const footer = approve.closest('footer')!
-  expect(footer).toContainElement(deny)
+  expect(footer).toContainElement(decline)
   expect(footer).toBe(review.lastElementChild)
   // The buttons submit the review's own form.
   const form = approve.getAttribute('form')!
@@ -2794,7 +2764,7 @@ describe('each record states only what helps, once', () => {
     // A failure is never folded away.
     expect(container.querySelector('details')).toBeNull()
     const card = container.querySelector<HTMLElement>(
-      '[aria-label="Final value"], [aria-label="Error"]',
+      '[aria-label="Return value"], [aria-label="Error"]',
     )
     if (shown.length === 0) expect(card).toBeNull()
     for (const text of shown) expect(card!.textContent).toContain(text)
@@ -2875,7 +2845,6 @@ describe('each record states only what helps, once', () => {
       expectNoScaffolding(container)
       // The call's own header, arguments and outcome stay.
       expect(container.querySelector('header')).toHaveTextContent(detail.invocation.callPath)
-      expect(container.querySelector('header')).toHaveTextContent('tool')
       expect(container.textContent).toContain('exact-argument')
       for (const text of shown) expect(container.textContent).toContain(text)
       for (const id of [detail.invocation.name, run.name])
@@ -2893,7 +2862,7 @@ describe('each record states only what helps, once', () => {
       expect(within(container).queryByRole('button', { name: 'Cancel run' })).toBeNull()
       expect(within(container).queryByRole('link', { name: 'View in history' })).toBeNull()
       expect(within(container).queryByText('Details', { selector: 'summary' })).toBeNull()
-      expect(within(container).queryByRole('region', { name: 'Final value' })).toBeNull()
+      expect(within(container).queryByRole('region', { name: 'Return value' })).toBeNull()
       // One list, its times last.
       const lists = [...container.querySelectorAll('dl')].filter((list) => !list.closest('details'))
       expect(lists).toHaveLength(1)
@@ -2940,7 +2909,7 @@ describe('each record states only what helps, once', () => {
     for (const gone of ['Program body', 'exact-program-source', 'View in history', 'Cancel run'])
       expect(container.textContent).not.toContain(gone)
     expect(container.textContent).toContain('exact-recipient')
-    expect(container.textContent).toContain('Approve this call')
+    expect(within(container).queryByRole('button', { name: 'Approve' })).not.toBeNull()
     // The call's own start, when the call is loaded; never the Run's start or the deadline.
     const list = within(container).getByText('Requested by', { selector: 'dt' }).closest('dl')!
     if (fromCall) {
@@ -2974,7 +2943,7 @@ describe('each record states only what helps, once', () => {
           <ActionReviewSession>
             <ActivityDetail
               page={{
-                ...pendingPage,
+                ...personalPage,
                 selected: null,
                 selectedRow: null,
                 detail: runPanel({

@@ -1,13 +1,13 @@
 import { expect, test } from 'vitest'
 import { withOwnerSession } from '../../../support/actors.ts'
-import { breadcrumb } from '../../../support/providers.ts'
+import { breadcrumb, dismissOnboarding } from '../../../support/providers.ts'
 
 test('Workspace creation, MCP endpoint copy, rename, archive from the sidebar and restoration', async (context) => {
   await withOwnerSession(context, async ({ page, target, step, actor }) => {
     const name = `Lifecycle ${crypto.randomUUID()}`
     const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
     let overview = ''
-    await step('Create a Workspace', async () => {
+    await step('Create a Workspace and dismiss its onboarding', async () => {
       await page.goto('/')
       await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
       await nav.getByRole('button', { name: 'Create workspace', exact: true }).click()
@@ -16,6 +16,7 @@ test('Workspace creation, MCP endpoint copy, rename, archive from the sidebar an
         .getByRole('dialog')
         .getByRole('button', { name: 'Create workspace', exact: true })
         .click()
+      await dismissOnboarding(page)
       await breadcrumb(page, name).waitFor()
       await page.getByText(`${actor.label} (You)`, { exact: true }).waitFor()
       overview = page.url()
@@ -111,6 +112,7 @@ test('Workspace creation, MCP endpoint copy, rename, archive from the sidebar an
           .getByRole('dialog')
           .getByRole('button', { name: 'Create workspace', exact: true })
           .click()
+        await dismissOnboarding(page)
         await breadcrumb(page, `${name} second`).waitFor()
         const second = page.url()
         expect(second).not.toBe(overview)

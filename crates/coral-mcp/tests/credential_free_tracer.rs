@@ -35,6 +35,7 @@ use rmcp::{ClientLifecycleMode, ClientServiceExt as _, ServiceExt as _};
 use schemars as _;
 use serde as _;
 use serde_json::{Map, Value, json};
+use serde_path_to_error as _;
 use thiserror as _;
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, oneshot};
@@ -165,6 +166,13 @@ impl TestUpstream {
                 r#"{"record":"result-c0ral-private"}"#,
             )
         }
+        /// Records of two kinds whose titles live in different places, and a
+        /// third whose title is text: a Program that guesses one shape crashes.
+        async fn search_records() -> ([(header::HeaderName, &'static str); 1], &'static str) {
+            json_response(
+                r#"{"object":"list","results":[{"object":"page","id":"page-c0ral-1","properties":{"Name":{"title":[{"plain_text":"Plan c0ral"}]}}},{"object":"data_source","id":"source-c0ral-2","title":[{"plain_text":"Roadmap c0ral"}]},{"object":"data_source","id":"source-c0ral-3","title":"Legacy c0ral"}],"has_more":false,"next_cursor":null}"#,
+            )
+        }
         fn json_response(
             body: &'static str,
         ) -> ([(header::HeaderName, &'static str); 1], &'static str) {
@@ -178,6 +186,7 @@ impl TestUpstream {
             .route("/disconnected-second", get(disconnected_second))
             .route("/lost-worker", get(lost_worker))
             .route("/private-record", get(private_record))
+            .route("/search-records", get(search_records))
             .with_state(signals.clone());
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .await
@@ -645,7 +654,7 @@ async fn advertised_schemas_defaults_and_output_contracts_hold_on_every_version(
             .clone()
     };
     let search_properties = properties("search");
-    for property in ["query", "provider", "limit", "cursor"] {
+    for property in ["query", "provider", "limit", "offset"] {
         assert!(search_properties.contains_key(property));
     }
     let exec_properties = properties("exec");
@@ -819,6 +828,11 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
     assert!(TraceId::parse(&run_trace).is_ok(), "{run_trace}");
     let failure = &structured(&failed)["failure"];
     assert_eq!(failure["code"], "program_rejected");
+    assert_eq!(
+        failure.get("tool_result_shapes"),
+        None,
+        "a Program that called no Tool received no Tool Result"
+    );
     assert_eq!(
         failure.pointer("/error/name").unwrap_or(&Value::Null),
         "TypeError"
@@ -1146,8 +1160,7 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         );
     }
     assert!(first_search_result.get("summary").is_none());
-    assert_eq!(structured(&searched)["has_more"], false);
-    assert!(structured(&searched).get("next_cursor").is_none());
+    assert!(structured(&searched).get("next_offset").is_none());
     assert!(first_search_result.get("score").is_none());
     assert!(
         serde_json::to_vec(structured(&searched))
@@ -1301,7 +1314,6 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
             "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
             "invalid_input",
         ),
-        ("cursor", "!", "invalid_cursor"),
     ] {
         let rejected = call(
             &client_a,
@@ -1465,6 +1477,47 @@ async fn an_abandoned_exec_request_does_not_cancel_accepted_work() {
     )
     .await
     .expect("accepted Run continues to its second Tool after request loss");
+}
+
+/// A Program that crashes on a guessed result shape gets the shapes of the
+/// Tool Results it received, in call order, so its next Program can fix the
+/// guess without a turn spent exploring the data. Keys and types, never values.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_program_carries_the_shapes_of_the_tool_results_it_received() {
+    let tracer = Tracer::start().await;
+    let client = tracer.sdk().await;
+    let task = start_task(&client, "Read record titles").await;
+    let failed = call(
+        &client,
+        "exec",
+        json!({
+            "task_id": task, "intent": "List record titles", "wait_ms": 5000,
+            "program": "await coral.providers.weather.getForecast(); await coral.providers.weather.searchRecords(); const found = await coral.providers.weather.searchRecords(); return found.data.results.map((record) => record.title.map((part) => part.plain_text));"
+        }),
+    )
+    .await;
+    let failure = &structured(&failed)["failure"];
+    assert_eq!(failure["code"], "program_rejected");
+    assert_eq!(failure.pointer("/error/name"), Some(&json!("TypeError")));
+    assert_eq!(
+        failure["tool_result_shapes"],
+        json!([
+            {
+                "call_path": "coral.providers.weather.getForecast",
+                "invocations": 1,
+                "data": "{ temperatureC: number }"
+            },
+            {
+                "call_path": "coral.providers.weather.searchRecords",
+                "invocations": 2,
+                "data": "{ object: string; results: Array<{ object: string; id: string; properties?: { Name: { title: Array<{ plain_text: string }> } }; title?: Array<{ plain_text: string }> | string }>; has_more: boolean; next_cursor: null }"
+            }
+        ])
+    );
+    let shapes = failure["tool_result_shapes"].to_string();
+    for value in ["c0ral", "list", "page", "data_source", "18"] {
+        assert!(!shapes.contains(value), "{value} is a value: {shapes}");
+    }
 }
 
 /// A Program that logs through a long read does not make the agent spend a
@@ -2827,30 +2880,7 @@ async fn publish_tools(
     workspace_id: &WorkspaceId,
     upstream_url: &str,
 ) -> coral_provider::ProviderId {
-    let tool = |id: &str, property: &str| {
-        json!({
-            "operationId": id,
-            "summary": format!("Tracer Tool {id}"),
-            "responses": {
-                "200": {
-                    "description": "Tracer response",
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "type": "object",
-                                "properties": {(property): {"type": match property {
-                                    "temperatureC" => "number",
-                                    "record" => "string",
-                                    _ => "boolean",
-                                }}},
-                                "required": [property]
-                            }
-                        }
-                    }
-                }
-            }
-        })
-    };
+    let tool = tracer_operation;
     let mut private_record = tool("getPrivateRecord", "record");
     private_record.as_object_mut().expect("operation").insert(
         "parameters".to_owned(),
@@ -2866,7 +2896,8 @@ async fn publish_tools(
             "/disconnected-first": {"get": tool("disconnectedFirst", "first")},
             "/disconnected-second": {"get": tool("disconnectedSecond", "second")},
             "/lost-worker": {"get": tool("lostWorker", "released")},
-            "/private-record": {"get": private_record}
+            "/private-record": {"get": private_record},
+            "/search-records": {"get": tool("searchRecords", "")}
         }
     });
     let setup = providers
@@ -2892,6 +2923,7 @@ async fn publish_tools(
         .await
         .expect("publish tracer Provider");
     let provider_id = publication
+        .skip_search()
         .published_provider()
         .expect("successful Provider publication")
         .id()
@@ -2902,6 +2934,7 @@ async fn publish_tools(
         "disconnectedSecond",
         "lostWorker",
         "getPrivateRecord",
+        "searchRecords",
     ]
     .into_iter()
     .enumerate()
@@ -2911,7 +2944,7 @@ async fn publish_tools(
                 &change(
                     user.clone(),
                     30 + i64::try_from(index).expect("small fixture index"),
-                    char::from_digit(u32::try_from(index + 5).expect("trace digit"), 10)
+                    char::from_digit(u32::try_from(index + 5).expect("trace digit"), 16)
                         .expect("trace digit character"),
                 ),
                 ToolPolicyTarget::new(
@@ -2925,6 +2958,34 @@ async fn publish_tools(
             .expect("enable tracer Tool");
     }
     provider_id
+}
+
+/// A tracer operation whose result has one required `property`, or no
+/// declared shape when `property` is empty.
+fn tracer_operation(id: &str, property: &str) -> Value {
+    let schema = if property.is_empty() {
+        json!({"type": "object"})
+    } else {
+        json!({
+            "type": "object",
+            "properties": {(property): {"type": match property {
+                "temperatureC" => "number",
+                "record" => "string",
+                _ => "boolean",
+            }}},
+            "required": [property]
+        })
+    };
+    json!({
+        "operationId": id,
+        "summary": format!("Tracer Tool {id}"),
+        "responses": {
+            "200": {
+                "description": "Tracer response",
+                "content": {"application/json": {"schema": schema}}
+            }
+        }
+    })
 }
 
 fn change(
