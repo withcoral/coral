@@ -126,8 +126,9 @@ struct QueryInput {
 struct PathsInput {
     #[schemars(
         length(min = 1, max = 10),
-        description = "1 to 10 complete Call Paths to read exactly, such as \
-                       coral.providers.github.repos.get."
+        inner(length(max = SEARCH_PATH_MAX_BYTES)),
+        description = "1 to 10 complete Call Paths to read exactly, each at most 1024 UTF-8 \
+                       bytes, such as coral.providers.github.repos.get."
     )]
     paths: Vec<String>,
 }
@@ -142,7 +143,8 @@ struct PathsInput {
 struct TypesInput {
     #[schemars(
         schema_with = "one_path_schema",
-        description = "The one complete Call Path whose types to read."
+        description = "The one complete Call Path whose types to read, at most 1024 UTF-8 \
+                       bytes."
     )]
     paths: (String,),
     #[schemars(
@@ -157,7 +159,7 @@ struct TypesInput {
 fn one_path_schema(_generator: &mut SchemaGenerator) -> Schema {
     schemars::json_schema!({
         "type": "array",
-        "prefixItems": [{ "type": "string" }],
+        "prefixItems": [{ "type": "string", "maxLength": SEARCH_PATH_MAX_BYTES }],
         "items": false,
         "minItems": 1,
     })
@@ -661,10 +663,10 @@ pub(super) mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        DeclaredHints, Description, DescriptionAuthoring, MissingPath, PathsResult, SavedDetail,
-        SavedDiagnostic, SavedDiagnosticCategory, SearchArguments, SearchHit, SearchOutput,
-        SearchResult, SearchRetriever, SearchRetrieverCoverage, SearchRetrieverState,
-        SearchRetrieverStatus,
+        DeclaredHints, Description, DescriptionAuthoring, MissingPath, PathsResult,
+        SEARCH_PATH_MAX_BYTES, SavedDetail, SavedDiagnostic, SavedDiagnosticCategory,
+        SearchArguments, SearchHit, SearchOutput, SearchResult, SearchRetriever,
+        SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus,
     };
 
     /// Arguments that use every part of `search`'s input schema.
@@ -817,6 +819,20 @@ pub(super) mod tests {
         schema_and_parser_agree(&[
             (json!({ "paths": ["a", "b"], "types": [] }), false),
             (json!({ "paths": ["a"], "types": [] }), true),
+        ]);
+    }
+
+    // Catches: a schema that accepts a path longer than Coral reads, so a
+    // typed Program learns the limit only from a refusal.
+    #[test]
+    fn the_schema_bounds_each_path_as_coral_reads_it() {
+        let at_limit = "a".repeat(SEARCH_PATH_MAX_BYTES);
+        let past_limit = "a".repeat(SEARCH_PATH_MAX_BYTES + 1);
+        schema_and_parser_agree(&[
+            (json!({ "paths": [at_limit] }), true),
+            (json!({ "paths": ["a", past_limit] }), false),
+            (json!({ "paths": [at_limit], "types": ["T"] }), true),
+            (json!({ "paths": [past_limit], "types": ["T"] }), false),
         ]);
     }
 }
