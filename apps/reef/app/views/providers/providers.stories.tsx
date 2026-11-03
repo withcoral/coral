@@ -760,7 +760,7 @@ export const ConfigurationOAuthClientHint: Story = {
         suggestedMethods: ['oauth'],
         values: {},
         clientConfigHintMarkdown:
-          '[Create a Slack app](https://api.slack.com/apps?new_app=1&manifest_yaml=display_information%3A%0A), then copy its client ID and client secret here.',
+          '[Create a Slack app](https://api.slack.com/apps?new_app=1&manifest_yaml=display_information%3A%0A), then copy its client ID and client secret here. For help, read the [Slack setup guide](https://withcoral.com/docs/guides/providers/slack).',
       }}
       setup={{
         ...configurationSetup,
@@ -786,6 +786,9 @@ export const ConfigurationOAuthClientHint: Story = {
       'href',
       'https://api.slack.com/apps?new_app=1&manifest_yaml=display_information%3A%0A',
     )
+    await expect(
+      within(canvasElement).getByRole('link', { name: 'Slack setup guide' }),
+    ).toHaveAttribute('href', 'https://withcoral.com/docs/guides/providers/slack')
   },
 }
 export const ConfigurationOAuthFieldErrors: Story = {
