@@ -1,9 +1,11 @@
 /** @vitest-environment happy-dom */
-import { act, screen, within } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { createMemoryRouter, RouterProvider } from 'react-router'
 import { expect, it } from 'vitest'
 import { renderRoute } from '@/test-support/route'
 import { Activity } from './activity'
+import { ActivitySearch } from './search'
 import { activityPage, runRow, toolRow, workspace } from './fixtures'
 import type { ActivityPage, ActivityRow } from './types'
 
@@ -50,6 +52,68 @@ it('searches as you type, with one history entry per search and Back restoring t
   expect(field).toHaveValue('')
   await user.type(field, '  ')
   expect(address(router).has('q')).toBe(false)
+})
+
+/** The field alone, on a route whose loader takes `load` ms, as in a real read of Activity. */
+function searchRoute(load: number) {
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const router = createMemoryRouter(
+    [
+      {
+        path: '/',
+        loader: async () => {
+          await pause(load)
+          return null
+        },
+        Component: () => (
+          <ActivitySearch
+            searchHref={(typed) => (typed ? `/?q=${encodeURIComponent(typed)}` : '/?')}
+          />
+        ),
+      },
+    ],
+    { initialEntries: ['/?before=1'], hydrationData: { loaderData: { 0: null } } },
+  )
+  render(<RouterProvider router={router} />)
+  const settled = () => act(() => pause(load + 30))
+  const back = async () => {
+    await act(() => router.navigate(-1))
+    await settled()
+    return router.state.location.search
+  }
+  return { router, settled, back, field: screen.getByRole('searchbox') }
+}
+
+// Catches: text typed before the first read ends replacing the entry before the search.
+it.each([
+  ['arrives before the first read ends', 150],
+  ['arrives after the first read ends', 0],
+])('keeps the entry before a search when the next key %s', async (_, load) => {
+  const { router, settled, back, field } = searchRoute(load)
+  await userEvent.setup({ delay: 40 }).type(field, 'abc')
+  await settled()
+  expect(router.state.location.search).toBe('?q=abc')
+  expect(await back()).toBe('?before=1')
+})
+
+// Catches: text typed after Back or after clearing overwriting an entry you can return to.
+it('keeps each search you return to or clear while the field keeps focus', async () => {
+  const { router, settled, back, field } = searchRoute(0)
+  const user = userEvent.setup()
+  await user.type(field, 'foo')
+  await settled()
+  expect(await back()).toBe('?before=1')
+  await user.type(field, 'bar')
+  await settled()
+  await user.clear(field)
+  await settled()
+  await user.type(field, 'baz')
+  await settled()
+  expect(router.state.location.search).toBe('?q=baz')
+  expect(await back()).toBe('')
+  expect(await back()).toBe('?q=bar')
+  expect(field).toHaveValue('bar')
+  expect(await back()).toBe('?before=1')
 })
 
 it('marks where a Task intent matches the search', () => {

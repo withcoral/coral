@@ -1540,6 +1540,18 @@ describe('search navigation', () => {
     expect(target(nav.searchHref('')).has('q')).toBe(false)
   })
 
+  // Catches: a paste on a Run's own address closing the Run, which only the path names.
+  it('keeps the Run a Run address opens when a search starts', () => {
+    const nav = activityNavigation(
+      { ...searched, query: '', expanded: [], selected: run },
+      `/${run}`,
+      '',
+    )
+    const opened = target(nav.searchHref('billing'))
+    expect(opened.get('record')).toBe(run)
+    expect(opened.get('q')).toBe('billing')
+  })
+
   it('keeps the list where it is while the text is too short to search', () => {
     const nav = activityNavigation(
       { ...searched, query: '' },

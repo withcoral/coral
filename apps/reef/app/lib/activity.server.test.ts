@@ -3275,3 +3275,89 @@ describe('intent search', () => {
     ).rejects.toMatchObject({ status: 400 })
   })
 })
+
+describe('a search that keeps a Task for one of its Runs', () => {
+  /** Task `n`, kept for Run `match`. Coral answers its query as the repository tests pin it. */
+  function searchedWorld(waiting: 'match' | 'other') {
+    const wait = approvalWait(`${waiting}-wait`, 2n)
+    const world = liveWorld([
+      {
+        kind: 'task',
+        id: 'n',
+        partial: true,
+        runs: [
+          { id: 'match', waits: waiting === 'match' ? [wait] : [] },
+          { id: 'other', waits: waiting === 'other' ? [wait] : [] },
+        ],
+      },
+    ]) as Handlers & { activity: Record<string, (input: never) => unknown> }
+    const { browseActivityRoots: roots, inspectTask: inspect } = world.activity as Record<
+      string,
+      (input: Record<string, unknown>) => Record<string, never[]>
+    >
+    Object.assign(world.activity, {
+      browseActivityRoots: (input: { query: string }) => {
+        const value = roots(input)
+        return {
+          ...value,
+          roots: value.roots.map((root: { record: { value: object } }) => ({
+            record: {
+              ...root.record,
+              value: { ...root.record.value, intentMatches: input.query ? false : undefined },
+            },
+          })),
+        }
+      },
+      inspectTask: (input: { query: string; viewport?: { anchor: string } }) => {
+        if (!input.query) return inspect(input)
+        const value = inspect({ ...input, viewport: undefined, pageSize: 100 })
+        const kept = value.interactions.filter(
+          (item: { run?: { name: string } }) => item.run?.name === runOf('match'),
+        )
+        return {
+          ...value,
+          interactions: kept,
+          total: BigInt(kept.length),
+          offset: 0n,
+          anchorUnavailable:
+            Boolean(input.viewport?.anchor) &&
+            !kept.some((item: { name: string }) => item.name === input.viewport?.anchor),
+        }
+      },
+    })
+    return world
+  }
+
+  // Catches: Live following a Run that waits on you but that the search leaves out.
+  it.each([
+    ['a Run the search leaves out', 'other', undefined],
+    ['a Run the search lists', 'match', runOf('match')],
+  ] as const)('names an action in %s only if the search lists it', async (_, waiting, followed) => {
+    const { api } = coral(searchedWorld(waiting))
+    const page = await loadActivity(onLatest({ q: 'billing' }), api, { scope })
+    expect(page.liveLatest?.action?.action.run).toBe(followed)
+  })
+
+  // Catches: an open Run the search leaves out joining the filtered list with no label.
+  it('does not list an open Run the search leaves out among the Runs it keeps', async () => {
+    const world = searchedWorld('other')
+    Object.assign(world.activity, {
+      browseRunEntries: (input: { name: string }) => ({
+        run: { ...execution, name: input.name, task: taskName('n') },
+        submission: { name: 'left-out', intent: 'Unrelated run', position: 1n },
+        entries: [],
+        total: 0n,
+        offset: 0n,
+        nextAfter: 0n,
+        hasFinalValue: false,
+      }),
+    })
+    const { api } = coral(world)
+    const page = await loadActivity(
+      request({ q: 'billing', tree: '1', expand: runOf('other') }),
+      api,
+      { scope },
+    )
+    expect(page.branches[taskName('n')]?.rows.map((row) => row.name)).toEqual([runOf('match')])
+  })
+})

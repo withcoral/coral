@@ -260,7 +260,9 @@ export function activityNavigation(
       return href({ [activitySearchKey]: typed || null })
     const next = new URLSearchParams()
     for (const key of selectionKeys)
-      if (key !== 'liveExpanded') for (const value of query.getAll(key)) next.append(key, value)
+      if (key !== 'liveExpanded') for (const value of context.getAll(key)) next.append(key, value)
+    // Stable Run routes carry their selection in the path, not a query value.
+    if (pathname !== page.listPath && page.selected) next.set('record', page.selected)
     if (typed) next.set(activitySearchKey, typed)
     return `${page.listPath}?${next}`
   }

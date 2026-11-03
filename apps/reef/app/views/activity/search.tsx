@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react'
+import { useId, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { Inputs, Typography } from '@/wax/components'
 import {
@@ -10,8 +10,8 @@ import * as styles from './task-activity.css'
 
 /**
  * Searches Task and Run intent as you type. The address keeps the search, so a reload
- * or Back shows it again. Each search you start adds one history entry; the text you
- * type after it replaces that entry.
+ * or Back shows it again. Each search you start or clear adds one history entry; the
+ * text you type after it replaces that entry.
  */
 export function ActivitySearch({ searchHref }: { searchHref: (typed: string) => string }) {
   const navigate = useNavigate()
@@ -23,14 +23,17 @@ export function ActivitySearch({ searchHref }: { searchHref: (typed: string) => 
   // under way leaves the address as it was.
   const [sent, setSent] = useState(addressed)
   const [seen, setSeen] = useState(addressed)
+  // Whether the address shows an entry this field added, which more text may replace. An
+  // entry still loading is not there to replace, so text typed meanwhile adds it instead.
+  const [ownEntry, setOwnEntry] = useState(false)
   if (addressed !== seen) {
     setSeen(addressed)
+    setOwnEntry(addressed === sent)
     if (addressed !== sent) {
       setSent(addressed)
       setTyped(addressed)
     }
   }
-  const typing = useRef(false)
   const hintId = useId()
   const length = [...typed.trim()].length
   const short = length > 0 && length < ACTIVITY_SEARCH_MIN_CHARS
@@ -46,16 +49,14 @@ export function ActivitySearch({ searchHref }: { searchHref: (typed: string) => 
         onChange={(value) => {
           setTyped(value)
           const next = value.trim() ? value : ''
+          if (next === sent) return
           setSent(next)
           void navigate(searchHref(next), {
-            replace: typing.current,
+            replace: ownEntry && Boolean(sent) && Boolean(next),
             preventScrollReset: true,
           })
-          typing.current = true
         }}
-        onBlur={() => {
-          typing.current = false
-        }}
+        onBlur={() => setOwnEntry(false)}
       />
       {short && (
         <Typography.BodySmall id={hintId} role="status">

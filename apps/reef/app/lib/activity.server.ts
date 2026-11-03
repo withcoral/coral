@@ -86,6 +86,7 @@ import {
 import { ACTIVITY_PAGE_SIZE } from './activity-list'
 import { activityPageFetchKey } from './activity-page-fetch'
 import {
+  keptForRuns,
   ACTIVITY_SEARCH_MAX_CHARS,
   activitySearch,
   activitySearchKey,
@@ -1118,12 +1119,18 @@ async function liveLatestWork(
         WorkspaceState.ARCHIVED)
   if (actionable) {
     const waiting = tasks.length ? await pendingActions(api, scope.workspace, signal) : []
-    const eligible = new Set(tasks.map((task) => task.name))
+    // A Task the search lists only for its Runs may follow only those, which its read holds.
+    const eligible = new Set(tasks.filter((task) => !keptForRuns(task)).map((task) => task.name))
     for (const { run } of waiting)
       if (unfinishedRun(page, run) && (eligible.has(run.task) || asking.has(run.name)))
         asking.set(run.name, run.task)
-    if (waiting.some(({ action }) => action.kind === 'account_connection'))
-      for (const task of tasks) await readRuns(task.name, { waiting: true })
+    const sharesConnection = waiting.some(({ action }) => action.kind === 'account_connection')
+    for (const task of tasks)
+      if (
+        sharesConnection ||
+        (keptForRuns(task) && waiting.some(({ run }) => run.task === task.name))
+      )
+        await readRuns(task.name, { waiting: true })
     const timed = await Promise.all(
       [...asking.keys()].map((run) => runActions(run, undefined, api, scope, signal)),
     )
@@ -1841,6 +1848,21 @@ export async function loadActivity(
         const parent = value.run?.task && page.branches[value.run.task]
         if (!parent || parent.unavailable || !value.run || value.submission?.position === undefined)
           continue
+        // Only Coral says whether the search keeps a Run past this window: it anchors none it
+        // leaves out.
+        if (page.rows.some((item) => item.name === value.run?.task && keptForRuns(item))) {
+          const kept = await api.activity.inspectTask(
+            {
+              name: value.run.task,
+              pageSize: 1,
+              scope,
+              query: search,
+              viewport: { offset: 0n, anchor: value.submission.name, preceding: 0 },
+            },
+            { signal },
+          )
+          if (kept.anchorUnavailable) continue
+        }
         row = {
           ...runView(value.run),
           kind: 'run',
