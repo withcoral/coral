@@ -28,6 +28,14 @@ export async function reservePort() {
   }
 }
 
+/** Shortened credential lifetimes, for scenarios that wait for them to pass. */
+export interface SessionLifetimes {
+  /** Coral's `auth.session.access_token_ttl_seconds`; 3600 by default. */
+  accessTokenTtlSeconds?: number
+  /** Reef's `CORAL_WEB_SESSION_MAX_AGE_SECONDS`; Reef's own default otherwise. */
+  webSessionMaxAgeSeconds?: number
+}
+
 /**
  * Prepares sign-in for the Coral Instances whose state roots are `stateDirs`.
  * Each gets the same session key and configuration; only its auth listener's
@@ -37,6 +45,7 @@ export async function reservePort() {
 export async function prepareAuthenticatedTarget(
   stateDirs: string[],
   front?: { authURL: string; mcpURL: string },
+  session: SessionLifetimes = {},
 ) {
   const reservations: Awaited<ReturnType<typeof reservePort>>[] = []
   let provider: Awaited<ReturnType<typeof startIdentityProvider>> | undefined
@@ -91,7 +100,7 @@ allowed_audiences = [${q(web.url)}, ${q(idp.origin)}]
 trusted_clients = [${q(`${web.url}/.well-known/oauth-client`)}, ${q(`${idp.origin}/.well-known/oauth-client`)}]
 [auth.session]
 signing_key_file = 'session.pk8'
-access_token_ttl_seconds = 3600
+access_token_ttl_seconds = ${session.accessTokenTtlSeconds ?? 3600}
 [auth.provider]
 issuer = ${q(idp.origin)}
 client_id = ${q(idp.clientId)}
@@ -113,6 +122,9 @@ bootstrap_owner_subject = ${q(idp.owner.subject)}
         CORAL_WEB_PUBLIC_URL: web.url,
         CORAL_WEB_AUTH_ISSUER: authURL,
         CORAL_WEB_SESSION_SECRET: randomBytes(32).toString('hex'),
+        ...(session.webSessionMaxAgeSeconds
+          ? { CORAL_WEB_SESSION_MAX_AGE_SECONDS: String(session.webSessionMaxAgeSeconds) }
+          : {}),
       },
       /** Each instance's own auth listener origin, which the proxy forwards to. */
       authOrigins: auth.map((reservation) => reservation.url),

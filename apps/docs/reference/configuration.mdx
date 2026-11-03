@@ -222,6 +222,15 @@ Coral gives a refresh token with each access token to a client that lists `refre
 - **Revocation.** To revoke a refresh token, send `token` and `client_id` to `<listeners.auth.public_url>/oauth/revoke`. Revocation stops refresh only. Access tokens that Coral already issued work until they expire.
 - **Storage.** Coral stores only a SHA-256 digest of each refresh token, in its database. Refresh tokens survive restarts. If you run more than one Coral process, give them the same database so that each process can refresh any token.
 
+#### Web sessions
+
+The web interface keeps your users signed in through a web session that Coral holds. At sign-in, the web interface gives its refresh token to Coral and keeps only a random session handle in a signed cookie. On each request, Coral mints a new access token for that session. Your users stay signed in when an access token expires.
+
+- **Lifetime.** A web session lasts `CORAL_WEB_SESSION_MAX_AGE_SECONDS` (default 3600) or until `refresh_token_ttl_seconds` ends, whichever comes first. Activity does not extend it. To keep users signed in longer, increase both values.
+- **Several processes.** Every web interface process reads sessions from Coral. You do not need shared storage for the web interface itself.
+- **Sign-out.** Signing out ends the session and its refresh token at Coral. A copied session cookie stops working. If Coral does not answer, the browser still signs out, and the next visit finishes the sign-out at Coral.
+- **Outages.** If Coral does not answer, the web interface shows an error and keeps the session. Your users stay signed in when Coral recovers.
+
 ### `[auth.provider]`
 
 | Key                       | Description                                                                                                                | Required                                                                                                                  | Default                          |

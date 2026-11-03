@@ -13,6 +13,12 @@ import type { AuthSession, RequiredAuthConfig } from './types'
 const OAUTH_COOKIE_NAME = 'coral_web_oauth'
 const OAUTH_MAX_AGE_SECONDS = 10 * 60
 const CLOCK_SKEW_SECONDS = 30
+/**
+ * How long the session cookie outlives its session. Reef then still sees the
+ * cookie when Coral ends the session, and offers sign-in as an explicit step
+ * instead of starting it again by itself.
+ */
+const SESSION_COOKIE_GRACE_SECONDS = 5 * 60
 
 export interface OAuthTransaction {
   codeVerifier: string
@@ -113,7 +119,7 @@ export async function commitCoralWebSession(
   }
   const stored: StoredWebSession = { endpoint: session.endpoint, handle: session.handle }
   return sessionCookie(config).serialize(stored, {
-    maxAge: Math.min(session.expiresIn, config.sessionMaxAgeSeconds),
+    maxAge: session.expiresIn + SESSION_COOKIE_GRACE_SECONDS,
   })
 }
 

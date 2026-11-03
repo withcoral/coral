@@ -40,7 +40,8 @@ describe('Coral web auth sessions', () => {
     expect(cookie).toContain('HttpOnly')
     expect(cookie).toContain('SameSite=Lax')
     expect(cookie).toContain('Secure')
-    expect(cookie).toContain(`Max-Age=${config.sessionMaxAgeSeconds}`)
+    // The cookie outlives the session, so its end reaches the reader as a refusal.
+    expect(cookie).toContain('Max-Age=3900')
     expect(cookieValue(cookie)).toBe(JSON.stringify({ endpoint: ENDPOINT, handle: HANDLE }))
 
     const fetch = mockFetch(minted())
@@ -252,7 +253,7 @@ describe('Coral web auth sessions', () => {
         { endpoint: ENDPOINT, expiresIn: CLOCK_SKEW_SECONDS + 1, handle: HANDLE },
         config,
       ),
-    ).resolves.toContain('Max-Age=31')
+    ).resolves.toContain('Max-Age=331')
   })
 
   it('ends the session at Coral, or keeps a sign-out to finish later', async () => {

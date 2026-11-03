@@ -43,6 +43,14 @@ revives none. Ending a grant stops refresh only; access tokens already issued ke
 offline access, sliding expiry
 _In Reef_: never named
 
+**Web Session**: Coral's hold on one Reef sign-in's Refresh Grant, named by an opaque handle that only Reef's server
+keeps, in its session cookie. Reef resolves the handle into a fresh Reef access token on each request, so the session
+outlives its access tokens; resolving changes nothing, so any number of requests and Reef processes share one session.
+A Web Session ends at the earlier of its own maximum age and its grant's absolute expiry, and never extends. Signing
+out ends the session and its grant; so do revocation, replay of its spent refresh token, and Membership removal. Only a
+Reef grant can back one. _Avoid_: session token, browser session, refresh cookie
+_In Reef_: never named
+
 **User Profile**: A User's mutable name and email, neither guaranteed unique, distinct from the stable User identity and
 never a grant of authority. Conflicting emails do not merge Users or transfer access. Workspace Owners can see names
 and emails in authorized people and Agent-creator views; Members can see their own profile and the designated Owners'
