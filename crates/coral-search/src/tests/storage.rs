@@ -321,7 +321,7 @@ const NAMES: &str = r#"{
 #[tokio::test]
 async fn postgres_camel_case_step_splits_indexed_names_and_restates_lengths_and_statistics() {
     coral_test_support::database_only!(Postgres);
-    // Every step but 31 and 32, the two under test, and 53, which rebuilds
+    // Every step but 31 and 32, the two under test, and 54, which rebuilds
     // the vector that 31 rewrites. This binary publishes the Provider, and
     // its repositories need every column a later step outside Universal
     // Search adds, so the plan skips only the steps the test applies later.
@@ -329,13 +329,13 @@ async fn postgres_camel_case_step_splits_indexed_names_and_restates_lengths_and_
     let before_camel_case = coral_test_support::edited_migration_plan(|migrations| {
         migrations
             .into_iter()
-            .filter(|migration| !(31..=32).contains(&migration.version) && migration.version != 53)
+            .filter(|migration| !(31..=32).contains(&migration.version) && migration.version != 54)
             .collect()
     });
     let modules = TestModules::with_plan(&before_camel_case).await;
     let database = modules.search.database.clone();
     // This binary's statistics count also writes the watermark that step 32
-    // adds, and reads the length column that step 53 adds. The columns exist
+    // adds, and reads the length column that step 54 adds. The columns exist
     // only while it indexes, so the search tables then have the shape a
     // binary at step 30 left.
     modules
@@ -412,16 +412,16 @@ async fn postgres_camel_case_step_splits_indexed_names_and_restates_lengths_and_
 #[tokio::test]
 async fn postgres_length_step_keeps_each_vector_and_stores_the_length_an_update_counted() {
     coral_test_support::database_only!(Postgres);
-    // Every step but 53, the one under test.
+    // Every step but 54, the one under test.
     let before_lengths = coral_test_support::edited_migration_plan(|migrations| {
         migrations
             .into_iter()
-            .filter(|migration| migration.version != 53)
+            .filter(|migration| migration.version != 54)
             .collect()
     });
     let modules = TestModules::with_plan(&before_lengths).await;
     let database = modules.search.database.clone();
-    // This binary reads the length column that step 53 adds, so a plain one
+    // This binary reads the length column that step 54 adds, so a plain one
     // stands in while it indexes. An earlier release counted `doc_len` in a
     // second update of each row, which the fixture repeats.
     modules
@@ -457,7 +457,7 @@ async fn postgres_length_step_keeps_each_vector_and_stores_the_length_an_update_
     database
         .migrate(coral_db::migration_plan())
         .await
-        .expect("apply step 53");
+        .expect("apply step 54");
 
     assert_eq!(
         vectors(&database, &workspace, "tsv_length").await,
