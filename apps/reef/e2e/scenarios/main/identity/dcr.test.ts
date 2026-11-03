@@ -139,18 +139,20 @@ test('URL-only MCP client registers, obtains consent, signs in, and uses the exa
           resource,
           code_verifier: await client.provider.codeVerifier(),
         }
-        for (const mismatch of [
-          { client_id: 'dcr_00000000000000000000000000000000' },
-          { redirect_uri: 'http://127.0.0.1:1/fixture/callback' },
-          { resource: `${target.mcpURL}/${other.name}/mcp` },
-          { code_verifier: 'a'.repeat(43) },
-        ]) {
+        // An unknown client fails client authentication before the code's
+        // bindings are compared.
+        for (const [mismatch, error] of [
+          [{ client_id: 'dcr_00000000000000000000000000000000' }, 'invalid_client'],
+          [{ redirect_uri: 'http://127.0.0.1:1/fixture/callback' }, 'invalid_grant'],
+          [{ resource: `${target.mcpURL}/${other.name}/mcp` }, 'invalid_grant'],
+          [{ code_verifier: 'a'.repeat(43) }, 'invalid_grant'],
+        ] as const) {
           const rejected = await page.request.post(
             `${target.authentication.issuerURL}/oauth/token`,
             { form: { ...correct, ...mismatch } },
           )
           expect(rejected.status()).toBe(400)
-          expect(await rejected.json()).toMatchObject({ error: 'invalid_grant' })
+          expect(await rejected.json()).toMatchObject({ error })
         }
         // Rejected bindings do not consume the code; the one correct exchange does.
         expect(await auth(client.provider, { serverUrl: resource, authorizationCode: code! })).toBe(

@@ -126,8 +126,8 @@ enum StoredAuthentication {
     },
 }
 
-/// An OAuth Client's secret. It proves the same software is calling back; it
-/// is never a Coral credential and grants no authority.
+/// An OAuth Client's secret. It proves only that the caller holds it; it is
+/// never a Coral credential and grants no authority.
 pub struct ClientSecret(Zeroizing<String>);
 
 impl Serialize for ClientSecret {
@@ -140,9 +140,10 @@ impl ClientSecret {
     fn generate() -> Option<Self> {
         let mut bytes = Zeroizing::new([0_u8; 32]);
         SystemRandom::new().fill(bytes.as_mut()).ok()?;
+        let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(bytes.as_ref()));
         Some(Self(Zeroizing::new(format!(
             "{CLIENT_SECRET_PREFIX}{}",
-            URL_SAFE_NO_PAD.encode(bytes.as_ref())
+            encoded.as_str()
         ))))
     }
 

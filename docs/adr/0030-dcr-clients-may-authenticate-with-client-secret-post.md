@@ -25,8 +25,8 @@ clients stay public. [#2823](https://github.com/withcoral/coral/issues/2823) hol
   a session without the secret. Reef is public, so nothing changes for it.
 - **No secret lifecycle.** A secret does not expire or rotate, and there is no RFC 7592 management endpoint. A client
   that loses its secret registers again, against the shared registration capacity.
-- **No new trust.** A secret proves the same software is calling back, not who it is. Consent, the self-asserted client
-  label and trusted clients are unchanged, and the secret is never a Coral credential.
+- **No new trust.** A secret proves only that the caller holds it, not who the client is. Consent, the self-asserted
+  client label and trusted clients are unchanged, and the secret is never a Coral credential.
 
 ## The seam
 

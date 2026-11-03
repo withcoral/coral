@@ -116,8 +116,8 @@ refresh-token support. A request with no usable supported flow fails.
   client logos, homepages, or other optional URLs. Requested scopes grant nothing;
   the accepted response explicitly returns an empty `scope`.
 - A `client_secret_post` registration returns a `dcrs_` `client_secret` and
-  `client_secret_expires_at: 0`. This response is the only place the secret appears:
-  Coral stores only its SHA-256 verifier and cannot show it again. The secret never
+  `client_secret_expires_at: 0`. Coral returns the secret only in this response:
+  it stores only the secret's SHA-256 verifier and cannot show it again. The secret never
   expires or rotates, and there is no RFC 7592 management endpoint. A client that
   loses its secret registers again, which counts against the registration capacity.
 - A confidential client sends `client_secret` in the form body at `/oauth/token`, for
@@ -126,8 +126,9 @@ refresh-token support. A request with no usable supported flow fails.
   a confidential client that sends none, the wrong one, or an HTTP Basic header all
   get `invalid_client`. So does an unknown client. A refusal spends no code and ends
   no grant. CIMD clients stay public: a document that declares a secret method fails.
-- A secret proves only that the same software is calling back. It changes no consent,
-  client label, or trust, and it is never a Coral credential.
+- A secret proves only that the caller holds it, so whoever holds it authenticates as
+  that client. It changes no consent, client label, or trust, and it is never a Coral
+  credential.
 - No registration access token, access token, or refresh token is issued by
   registration. Malformed/unsupported requests return
   `invalid_client_metadata`; invalid redirect lists return `invalid_redirect_uri`.
