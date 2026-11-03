@@ -636,6 +636,9 @@ async fn handshakes_carry_instructions_and_no_readable_resources_on_every_versio
             "`run_status_url`",
             "complete literal Call Path",
             "`fetch`",
+            "`setTimeout`",
+            "`coral.ToolError`",
+            "`coral.workspace.search`",
             "`required_actor`",
         ] {
             assert!(
