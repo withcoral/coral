@@ -12,7 +12,8 @@ export async function loader({ context }: Route.LoaderArgs): Promise<Response> {
   const body = JSON.stringify({
     client_id: authClientId(config),
     client_name: 'Coral',
-    grant_types: ['authorization_code'],
+    // Coral holds the refresh grant in Reef's web session; see session.server.
+    grant_types: ['authorization_code', 'refresh_token'],
     // Both callbacks Coral's OAuth clients use: login, and Provider setup consent.
     // An upstream authorization server that reads this document accepts only
     // the redirect URIs listed here.

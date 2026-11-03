@@ -61,7 +61,8 @@ async fn publish_target(
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     (
         workspace.id().clone(),
         publication.published_provider().unwrap().id().clone(),
@@ -175,7 +176,8 @@ async fn target_deleted_during_acquisition_leaves_no_setup_or_creation_evidence(
     )
     .await
     .unwrap()
-    .unwrap();
+    .unwrap()
+    .skip_search();
     release.notify_one();
     assert!(matches!(
         preparing.await.unwrap(),

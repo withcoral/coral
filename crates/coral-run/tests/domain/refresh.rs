@@ -218,7 +218,8 @@ async fn reconnect_disconnect_and_setting_changes_block_invocations_waiting_on_a
                     .with_incompatible_configuration_confirmation(),
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .skip_search();
         } else {
             accounts
                 .disconnect(&context, &tool.workspace_id, &tool.provider_id, account.id)
@@ -517,7 +518,8 @@ async fn concurrent_invocations_wait_for_one_refresh_across_catalog_update_and_e
             ),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     assert_eq!(endpoint.exchanges.load(Ordering::SeqCst), 1);
     assert!(server.received_requests().await.unwrap().is_empty());
     endpoint.release.notify_one();

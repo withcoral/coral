@@ -185,7 +185,7 @@ pub(super) fn administration_error(error: coral_administration::Error) -> Status
     use coral_administration::Error as E;
     match error {
         E::Workspace(error) => self::error(error),
-        E::Database(_) | E::Provider(_) | E::Functions(_) => {
+        E::Database(_) | E::Provider(_) | E::Functions(_) | E::Auth(_) => {
             safe_status(tonic::Code::Unavailable, "UNAVAILABLE")
         }
     }

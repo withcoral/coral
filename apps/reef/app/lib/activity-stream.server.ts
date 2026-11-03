@@ -5,6 +5,8 @@ import type {
   ActivityPageValue,
   ActivityStreamEvent,
 } from './activity-live-types'
+import type { RequestAuth } from '@/auth/types'
+
 import { privateHeaders, type ManagementApi } from './management.server'
 
 /** Compare authorized evidence, not clock samples. Otherwise unrelated private
@@ -28,6 +30,23 @@ function evidence(value: ActivityPageValue | ActivityCountValue) {
  */
 export const STREAM_LIFETIME_MS = 2 * 60_000
 
+/** When a stream's credentials stop serving it, in Unix seconds. */
+export interface StreamDeadlines {
+  /** The access token expires: the browser reconnects and the session mints another. */
+  renewAt: number
+  /** The session ends: the reader must sign in again. */
+  endsAt: number
+}
+
+const UNBOUNDED: StreamDeadlines = { endsAt: Infinity, renewAt: Infinity }
+
+/** The deadlines a request's credentials set; none without sign-in. */
+export function streamDeadlines(auth: RequestAuth): StreamDeadlines {
+  return auth.mode === 'required'
+    ? { endsAt: auth.session.sessionExpiresAt, renewAt: auth.session.expiresAt }
+    : UNBOUNDED
+}
+
 /** Feature-specific SSE adapter. Coral subscribes before its first `changed` message, so
  * changes during reads stay queued. Coral heartbeats become browser heartbeats without an
  * activity read. No idle reload timer, raw invalidation hints or hidden payloads reach the
@@ -37,19 +56,24 @@ export function activityStream<Value extends ActivityPageValue | ActivityCountVa
   request: Request,
   api: Pick<ManagementApi, 'activity'>,
   read: (signal: AbortSignal) => Promise<Value>,
-  expiresAt = Infinity,
+  deadlines: StreamDeadlines = UNBOUNDED,
 ): Response {
   const closed = new AbortController()
   const expired = new AbortController()
   const ended = new AbortController()
   const signal = AbortSignal.any([request.signal, closed.signal, expired.signal, ended.signal])
   async function* events(): AsyncGenerator<ActivityStreamEvent<Value>> {
-    const remaining = expiresAt * 1000 - Date.now()
+    const remaining = deadlines.endsAt * 1000 - Date.now()
     // An early timer only ends the stream sooner; the browser then reconnects.
     const expiry = Number.isFinite(remaining)
       ? setTimeout(() => expired.abort(), Math.min(Math.max(0, remaining), 2_147_483_647))
       : undefined
-    const lifetime = setTimeout(() => ended.abort(), STREAM_LIFETIME_MS)
+    // A stream also ends healthy when its access token does, so the browser's
+    // reconnect resolves the session into a fresh one.
+    const lifetime = setTimeout(
+      () => ended.abort(),
+      Math.min(STREAM_LIFETIME_MS, Math.max(0, deadlines.renewAt * 1000 - Date.now())),
+    )
     let previous: string | undefined
     let rejected = false
     try {

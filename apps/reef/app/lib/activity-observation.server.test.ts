@@ -337,7 +337,7 @@ it('accepts encoded Agent navigation and rejects encoded path separators', async
       path: `/${workspace}/agents/agent%3A00000000-0000-4000-8000-000000000003`,
     }),
     f.api,
-    0,
+    { endsAt: 0, renewAt: 0 },
   )
   expect(await response.text()).toContain('sessionExpired')
   await expect(

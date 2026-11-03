@@ -134,7 +134,8 @@ async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() 
                     coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .skip_search();
         } else {
             world
                 .modules
@@ -1067,7 +1068,8 @@ async fn a_pass_reindexes_a_renamed_provider_under_its_new_name() {
             coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
         )
         .await
-        .expect("rename the Provider");
+        .expect("rename the Provider")
+        .skip_search();
     world.index.reconcile().await;
 
     let generation = world
@@ -1913,7 +1915,8 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
                     coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
                 )
                 .await
-                .expect("rename the Provider");
+                .expect("rename the Provider")
+                .skip_search();
         }
         world.reject_complete_states().await;
 
@@ -2087,7 +2090,8 @@ async fn a_renamed_provider_rewrites_its_generation_under_the_new_name() {
             coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
         )
         .await
-        .expect("rename the Provider");
+        .expect("rename the Provider")
+        .skip_search();
     world
         .index
         .index_active_generation(world.workspace.clone(), world.tracer.clone());
