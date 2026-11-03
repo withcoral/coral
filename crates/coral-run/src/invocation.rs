@@ -190,6 +190,8 @@ pub(crate) struct ToolInvoker {
     providers: coral_provider::ProviderModule,
     policies: coral_policy::ToolPolicyModule,
     provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
+    /// What `coral.workspace.search` discovers through.
+    search: coral_search::UniversalSearchModule,
     human_interface: Option<crate::HumanInterfaceUrl>,
     database: Arc<coral_db::Database>,
     workspaces: WorkspaceModule,
@@ -240,6 +242,7 @@ impl ToolInvoker {
             providers,
             policies,
             provider_renamer,
+            search: coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
             human_interface,
             database,
             workspaces,
@@ -471,7 +474,10 @@ impl ToolInvoker {
         .await?
         else {
             transaction.rollback().await?;
-            return Err(Error::InvocationRejected(CoralFailure::ToolNotFound.into()));
+            return Err(Error::InvocationRejected(Rejection::tool_not_found(
+                call_path,
+                self.suggestions(call_path).await,
+            )));
         };
         let builtin = match crate::builtin::BuiltinCall::parse(&target, arguments) {
             Some(Ok(call)) => Some(call),
@@ -492,6 +498,39 @@ impl ToolInvoker {
         .access_state();
         transaction.commit().await?;
         Ok((target, policy, builtin))
+    }
+
+    /// The Discoverable Call Paths near `call_path` in its Call Root,
+    /// nearest first. Discovery is advice: when it fails, the Program is
+    /// told the path names nothing, with nothing to call instead.
+    async fn suggestions(&self, call_path: &str) -> Vec<String> {
+        let Ok(paths) = coral_search::ExactPaths::new(vec![call_path.to_owned()], Vec::new())
+        else {
+            return Vec::new();
+        };
+        match self
+            .search
+            .discover(
+                &self.actor,
+                &self.workspace_id,
+                &coral_search::DiscoveryRequest::Paths(paths),
+            )
+            .await
+        {
+            Ok(coral_search::Discovery::Exact(lookup)) => lookup
+                .missing()
+                .first()
+                .map(|missing| missing.suggestions().to_vec())
+                .unwrap_or_default(),
+            Ok(coral_search::Discovery::Page(_)) => Vec::new(),
+            Err(_error) => {
+                tracing::warn!(
+                    error.type = coral_telemetry::safe::kind("suggestions_unavailable"),
+                    "Call Path suggestions are unavailable; the Program reads none"
+                );
+                Vec::new()
+            }
+        }
     }
 
     #[cfg(test)]
@@ -687,6 +726,7 @@ impl ToolInvoker {
             policies: &self.policies,
             accounts: self.accounts.as_ref(),
             renamer: self.provider_renamer.as_deref(),
+            search: &self.search,
             actor: &self.actor,
             context: context.as_ref(),
             principal: &self.principal,

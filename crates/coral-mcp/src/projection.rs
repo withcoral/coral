@@ -1,6 +1,6 @@
 //! MCP-owned structured results. Serialization and advertisements use the same types.
 mod diagnostics;
-mod discovery;
+mod function;
 mod run;
 
 use coral_task::TaskOutcome;
@@ -14,11 +14,8 @@ use schemars::{
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-pub(crate) use discovery::{
-    Description, SavedDetail, SavedFunctionResult, SearchResult, exact_description, saved_function,
-    search,
-};
-pub(crate) use run::{RunUpdateResult, run_update};
+pub(crate) use function::{SavedFunctionResult, saved_function};
+pub(crate) use run::{ExecResult, ObservedRun, Reporter, run_update};
 
 /// Every Coral-owned result keeps the SDK's compact JSON text of
 /// `structuredContent` as `content[0]`, as both served MCP versions advise.
@@ -81,6 +78,18 @@ impl ToolFailure {
     pub(crate) fn internal() -> Self {
         Self::stable("internal_error", "Coral could not complete the tool call")
     }
+
+    /// Adds the Task this failed call had already started, so the caller
+    /// continues that Task rather than starting another. The code stays.
+    pub(crate) fn naming_started_task(self, task: &coral_task::TaskId) -> Self {
+        Self {
+            code: self.code,
+            message: format!(
+                "{}. This call started Task {task}: pass it as `task_id` to later calls instead of `goal`.",
+                self.message.trim_end_matches('.')
+            ),
+        }
+    }
 }
 
 fn bounded_message(message: &str) -> String {
@@ -89,16 +98,6 @@ fn bounded_message(message: &str) -> String {
         .get(..message.floor_char_boundary(MAXIMUM_BYTES.min(message.len())))
         .expect("floor_char_boundary returns a valid UTF-8 boundary")
         .to_string()
-}
-
-#[derive(Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct StartedTask {
-    #[schemars(schema_with = "crate::arguments::identifier_schema")]
-    pub(crate) task_id: String,
-    /// The namespaces of the Providers you can search, and coral.workspace for
-    /// the Built-in Provider's tools: the values `search` accepts as `provider`.
-    pub(crate) providers: Vec<String>,
 }
 
 #[derive(Serialize, JsonSchema)]

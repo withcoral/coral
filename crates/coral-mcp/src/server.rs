@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coral_run::{RUN_EVENT_PAGE_MAX, RunCursor, RunId, RunObservation};
-use coral_search::SearchInput;
 use coral_task::{TaskId, TaskIntent, TaskOutcome};
 use coral_workspace::{TraceId, WorkspaceId};
 use rmcp::model::{
@@ -16,11 +15,10 @@ use rmcp::{ErrorData, ServerHandler};
 
 use crate::McpRuntime;
 use crate::arguments::{
-    self, CancelArguments, DeleteFunctionArguments, DescribeArguments, EndTaskArguments,
-    ExecArguments, SaveFunctionArguments, SearchArguments, StartTaskArguments, TaskOutcomeArgument,
-    ToolArguments, WaitArguments,
+    self, CancelArguments, DeleteFunctionArguments, EndTaskArguments, ExecArguments,
+    SaveFunctionArguments, TaskOutcomeArgument, ToolArguments, WaitArguments,
 };
-use crate::projection::{self, ToolFailure};
+use crate::projection::{self, Reporter, ToolFailure};
 
 #[cfg(test)]
 mod tests;
@@ -89,18 +87,6 @@ impl McpServer {
         }
         let name = request.name.as_ref();
         let complete = match name {
-            StartTaskArguments::NAME => {
-                let arguments = arguments::parse::<StartTaskArguments>(request.arguments)?;
-                self.start_task(arguments).await
-            }
-            SearchArguments::NAME => {
-                let arguments = arguments::parse::<SearchArguments>(request.arguments)?;
-                self.search(arguments).await
-            }
-            DescribeArguments::NAME => {
-                let arguments = arguments::parse::<DescribeArguments>(request.arguments)?;
-                self.describe(arguments).await
-            }
             SaveFunctionArguments::NAME => {
                 let arguments = arguments::parse::<SaveFunctionArguments>(request.arguments)?;
                 self.save_function(arguments).await
@@ -131,83 +117,6 @@ impl McpServer {
             ))),
         };
         complete.map(Into::into)
-    }
-
-    async fn start_task(
-        &self,
-        arguments: StartTaskArguments,
-    ) -> Result<CallToolResult, DispatchError> {
-        let intent = TaskIntent::parse(&arguments.intent).map_err(invalid_input)?;
-        // Read before the Task starts, so a failed read leaves no Task behind.
-        let providers = self
-            .runtime
-            .modules
-            .commands
-            .searchable_providers(&self.runtime.principal, &self.workspace_id)
-            .await
-            .map_err(task_failure)?;
-        let task = self
-            .runtime
-            .modules
-            .tasks
-            .start(
-                &self.runtime.principal,
-                &self.workspace_id,
-                intent,
-                now_unix_nanos()?,
-            )
-            .await
-            .map_err(task_failure)?;
-        tool_call::record_task(task.telemetry_id());
-        projection::success(projection::StartedTask {
-            task_id: task.id().to_string(),
-            providers: providers
-                .iter()
-                .map(|call_root| coral_search::provider_filter_value(call_root).to_string())
-                .collect(),
-        })
-        .map_err(DispatchError::Tool)
-    }
-
-    async fn search(&self, arguments: SearchArguments) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
-        let request = SearchInput {
-            query: arguments.query,
-            provider: arguments.provider,
-            limit: arguments.limit,
-            offset: arguments.offset,
-        };
-        let results = self
-            .runtime
-            .modules
-            .commands
-            .search(&call, request)
-            .await
-            .map_err(task_failure)?;
-        projection::search(&results)
-            .and_then(projection::success)
-            .map_err(DispatchError::Tool)
-    }
-
-    async fn describe(
-        &self,
-        arguments: DescribeArguments,
-    ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
-        let result = self
-            .runtime
-            .modules
-            .commands
-            .describe(
-                &call,
-                &arguments.path,
-                arguments.types.as_deref().unwrap_or_default(),
-            )
-            .await
-            .map_err(task_failure)?;
-        projection::exact_description(&result)
-            .and_then(projection::success)
-            .map_err(DispatchError::Tool)
     }
 
     async fn save_function(
@@ -250,21 +159,57 @@ impl McpServer {
     }
 
     async fn exec(&self, arguments: ExecArguments) -> Result<CallToolResponse, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
+        let target = match (&arguments.task_id, &arguments.goal) {
+            (Some(task_id), None) => {
+                ExecTarget::Task(self.attributed_command(task_id, &arguments.intent)?)
+            }
+            (None, Some(goal)) => ExecTarget::Goal(coral_task::NewTaskCommand::new(
+                self.runtime.principal.clone(),
+                self.workspace_id.clone(),
+                // The call's own `intent` fails with the same text, so name
+                // which of the two this is.
+                TaskIntent::parse(goal)
+                    .map_err(|error| invalid_input(format!("`goal`: {error}")))?,
+                TaskIntent::parse(&arguments.intent).map_err(invalid_input)?,
+                TraceId::current_or_new(),
+            )),
+            _ => {
+                return Err(invalid_input_message(
+                    "exec takes exactly one of `task_id` or `goal`: pass `task_id` to continue a Task, or `goal` to start a new one".to_owned(),
+                ));
+            }
+        };
         let timeout = arguments
             .run_timeout_ms
             .unwrap_or(arguments::DEFAULT_RUN_TIMEOUT_MS);
         let wait_ms = validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_EXEC_WAIT_MS))?;
-        let accepted = self
-            .runtime
-            .modules
-            .commands
-            .submit(&call, &arguments.program, timeout)
-            .await
-            .map_err(task_failure)?;
+        let (started, accepted) = match target {
+            ExecTarget::Task(call) => {
+                let accepted = self
+                    .runtime
+                    .modules
+                    .commands
+                    .submit(&call, &arguments.program, timeout)
+                    .await
+                    .map_err(task_failure)?;
+                (None, accepted)
+            }
+            ExecTarget::Goal(call) => {
+                let (task, launched) = self
+                    .runtime
+                    .modules
+                    .commands
+                    .submit_new_task(&call, &arguments.program, timeout)
+                    .await
+                    .map_err(task_failure)?;
+                let accepted = launched
+                    .map_err(|error| started_task_failure(task_failure(error), task.id()))?;
+                (Some(task.id().clone()), accepted)
+            }
+        };
         if wait_ms == 0 {
             return self
-                .run_update(&accepted)
+                .run_update(&accepted, Reporter::Exec(started.as_ref()))
                 .map(Into::into)
                 .map_err(DispatchError::Tool);
         }
@@ -273,7 +218,12 @@ impl McpServer {
         let observation = RunObservation::initial(Duration::from_millis(wait_ms))
             .map_err(invalid_input)?
             .by_acceptor();
-        self.observe_update(accepted.run_id(), &observation).await
+        self.observe_update(
+            accepted.run_id(),
+            &observation,
+            Reporter::Exec(started.as_ref()),
+        )
+        .await
     }
 
     async fn wait(&self, arguments: WaitArguments) -> Result<CallToolResponse, DispatchError> {
@@ -290,7 +240,8 @@ impl McpServer {
             .batching_output()
             .with_wait(Duration::from_millis(wait_ms))
             .map_err(invalid_input)?;
-        self.observe_update(&run_id, &observation).await
+        self.observe_update(&run_id, &observation, Reporter::Observer)
+            .await
     }
 
     /// Observes a Run and projects what it found. A Run that waits on a
@@ -300,9 +251,10 @@ impl McpServer {
         &self,
         run_id: &RunId,
         observation: &RunObservation,
+        reporter: Reporter<'_>,
     ) -> Result<CallToolResponse, DispatchError> {
         let update = self.observe(run_id, observation).await?;
-        self.run_update(&update)
+        self.run_update(&update, reporter)
             .map(Into::into)
             .map_err(DispatchError::Tool)
     }
@@ -347,7 +299,8 @@ impl McpServer {
             )
             .await
             .map_err(run_failure)?;
-        self.run_update(&update).map_err(DispatchError::Tool)
+        self.run_update(&update, Reporter::Observer)
+            .map_err(DispatchError::Tool)
     }
 
     async fn end_task(&self, arguments: EndTaskArguments) -> Result<CallToolResult, DispatchError> {
@@ -381,10 +334,15 @@ impl McpServer {
         .map_err(DispatchError::Tool)
     }
 
-    fn run_update(&self, update: &coral_run::RunUpdate) -> Result<CallToolResult, ToolFailure> {
+    fn run_update(
+        &self,
+        update: &coral_run::RunUpdate,
+        reporter: Reporter<'_>,
+    ) -> Result<CallToolResult, ToolFailure> {
         let modules = &self.runtime.modules;
         projection::run_update(
             update,
+            reporter,
             &modules.human_interface,
             modules.run_update_page_bytes.get(),
         )
@@ -545,9 +503,12 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
         coral_task::Error::Search(error) => return search_failure(error),
         coral_task::Error::Functions(error) => return functions_failure(error),
         coral_task::Error::Run(error) => return run_failure(error),
-        coral_task::Error::TaskClosed => {
-            ToolFailure::stable("task_closed", "Task is closed to new attempts")
-        }
+        // With no start_task, the refusal is the agent's only hint that new
+        // work starts a new Task.
+        coral_task::Error::TaskClosed => ToolFailure::stable(
+            "task_closed",
+            "Task is closed to new attempts. For new work, call `exec` with `goal` instead of `task_id` to start a new Task.",
+        ),
         coral_task::Error::InteractionNotFound => {
             ToolFailure::stable("interaction_not_found", "Task Interaction was not found")
         }
@@ -561,6 +522,16 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
         | coral_task::Error::Database(_) => ToolFailure::internal(),
     };
     DispatchError::Tool(failure)
+}
+
+/// A failure after an `exec` with `goal` started its Task. It names the Task,
+/// so the agent continues it with `task_id` instead of starting another with
+/// `goal`.
+fn started_task_failure(error: DispatchError, task: &TaskId) -> DispatchError {
+    match error {
+        DispatchError::Tool(failure) => DispatchError::Tool(failure.naming_started_task(task)),
+        protocol @ DispatchError::Protocol(_) => protocol,
+    }
 }
 
 fn search_failure(error: coral_search::Error) -> DispatchError {
@@ -659,6 +630,12 @@ fn workspace_tool_failure(error: coral_workspace::Error) -> ToolFailure {
         | coral_workspace::Error::EventFields(_)
         | coral_workspace::Error::AmbiguousEmail => ToolFailure::internal(),
     }
+}
+
+/// The Task an `exec` continues, or the goal of the Task it starts.
+enum ExecTarget {
+    Task(coral_task::AttributedCommand),
+    Goal(coral_task::NewTaskCommand),
 }
 
 enum DispatchError {

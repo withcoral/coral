@@ -13,14 +13,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_policy::ExactToolRules;
-use coral_provider::ActiveProvider;
+use coral_provider::{ActiveProvider, ProviderId};
 use coral_telemetry::safe;
 
 use super::plan::QueryPlan;
 use super::repository;
 use super::{
     Answer, EntityRef, EntityRetriever, Hydrated, Listing, QueryError, QueryRequest,
-    RequestContext, RetrievalError, ToolRef, count,
+    RequestContext, RetrievalError, ToolRef, WindowEntry, count,
 };
 use crate::eligibility::tool_approval;
 use crate::evidence::{EvidenceBuilder, EvidenceTerms};
@@ -151,6 +151,7 @@ impl EntityRetriever for ToolRetriever {
                 .map(|key| (provider.provider().id().clone(), key)),
             );
         }
+        let named = named_providers(&plan, &searched);
         let ranked = if searched.is_empty() {
             repository::Ranking {
                 entities: Vec::new(),
@@ -165,9 +166,12 @@ impl EntityRetriever for ToolRetriever {
             repository::rank_tools(
                 transaction,
                 context.workspace_id,
-                &provider_ids,
-                &generation_ids,
-                &excluded,
+                &repository::ToolScope {
+                    providers: &provider_ids,
+                    generations: &generation_ids,
+                    excluded: &excluded,
+                    named: &named,
+                },
                 &plan,
                 request.window + 1,
             )
@@ -183,13 +187,16 @@ impl EntityRetriever for ToolRetriever {
                 .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
                     "a ranked Tool's Provider was not searched",
                 )))?;
-            window.push(EntityRef::Tool(ToolRef {
-                provider: Arc::clone(provider),
-                tool_key: tool.tool_key,
-                rules: Arc::clone(&rules),
-                call_path: tool.call_path,
-                near_spellings: Arc::clone(&near_spellings),
-            }));
+            window.push(WindowEntry {
+                strong: strong_tool(&plan, &tool.matched, named.contains(&tool.provider_id)),
+                entity: EntityRef::Tool(ToolRef {
+                    provider: Arc::clone(provider),
+                    tool_key: tool.tool_key,
+                    rules: Arc::clone(&rules),
+                    call_path: tool.call_path,
+                    near_spellings: Arc::clone(&near_spellings),
+                }),
+            });
         }
         Ok(Answer {
             coverage: RetrieverCoverage::new(
@@ -296,6 +303,46 @@ impl EntityRetriever for ToolRetriever {
                 .map(ExactAuthoringDescription::tool),
         )
     }
+}
+
+/// Whether a ranked Tool is a strong match, by the Tool retriever's own
+/// rule: a field holds the query's words in order, the query names its
+/// Provider, or its name and title start words with at least half of the
+/// query's content words, as the statement's name score counts prefixes. So
+/// a Tool of an unnamed Provider whose name and title start fewer than half
+/// of those words, and that holds them in order in no field, is weak however
+/// often its description, schema text or a near-spelling meets the query.
+fn strong_tool(plan: &QueryPlan, matched: &repository::RowMatch, named: bool) -> bool {
+    let words = plan.content_word_count();
+    matched.phrase_points > 0
+        || named
+        || (words > 0
+            && 2 * plan.content_words_starting([matched.name.as_str(), matched.title.as_str()])
+                >= words)
+}
+
+/// The searched Providers the query names. Their Tools rank first within
+/// their phrase points and are strong matches, and no Tool is filtered out.
+/// With a Provider filter only that Provider is searched, so naming it
+/// changes no Tool's order, only which Tools are strong.
+fn named_providers(
+    plan: &QueryPlan,
+    searched: &HashMap<ProviderId, Arc<ActiveProvider>>,
+) -> Vec<ProviderId> {
+    searched
+        .iter()
+        .filter(|(_id, provider)| {
+            let provider = provider.provider();
+            plan.names_provider(
+                provider
+                    .call_root()
+                    .namespace()
+                    .map(coral_provider::ProviderNamespace::as_str),
+                provider.display_name(),
+            )
+        })
+        .map(|(id, _provider)| id.clone())
+        .collect()
 }
 
 /// The complete description of each Tool in `call_paths` that the

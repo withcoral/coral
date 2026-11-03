@@ -813,15 +813,16 @@ async fn management_reads_show_each_principal_the_builtin_tools_it_reaches() {
                 "getPolicy",
                 "getProvider",
                 "listProviders",
+                "search",
                 "updatePolicy",
                 "updateProvider",
             ][..],
         ),
         (
             AuthenticatedPrincipal::user(member),
-            &["getPolicy", "listProviders"][..],
+            &["getPolicy", "listProviders", "search"][..],
         ),
-        (agent, &["getPolicy", "listProviders"][..]),
+        (agent, &["getPolicy", "listProviders", "search"][..]),
     ] {
         let providers = &arranged.providers;
         let published = crate::tests::published_providers(providers, &principal, workspace)
@@ -905,6 +906,7 @@ async fn management_reads_show_each_principal_the_builtin_tools_it_reaches() {
             "listProviders",
             "getProvider",
             "getPolicy",
+            "search",
             "updatePolicy",
             "updateProvider",
         ] {

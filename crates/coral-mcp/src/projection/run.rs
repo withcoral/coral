@@ -19,7 +19,9 @@ use super::{ToolFailure, success};
     {"if":{"properties":{"state":{"const":"failed"},"has_more":{"const":false}},"required":["state","has_more"]},"then":{"properties":{"failure":true},"required":["failure"]}},
     {"if":{"properties":{"state":{"not":{"const":"running"}}},"required":["state"]},"then":{"properties":{"required_actions":{"type":"array","maxItems":0}}}}
 ]))]
-pub(crate) struct RunUpdateResult<'a> {
+pub(crate) struct RunUpdateResult<'a, Task> {
+    #[serde(flatten)]
+    task: Task,
     #[schemars(schema_with = "crate::arguments::identifier_schema")]
     run_id: String,
     state: State,
@@ -39,6 +41,35 @@ pub(crate) struct RunUpdateResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     trace_id: Option<String>,
+}
+
+/// What `exec` reports: the Run, and the Task when this call started it.
+pub(crate) type ExecResult<'a> = RunUpdateResult<'a, StartedTask<'a>>;
+
+/// What `wait` and `cancel` report. They take a `run_id`, so they never name
+/// the Task.
+pub(crate) type ObservedRun<'a> = RunUpdateResult<'a, NoTask>;
+
+// Flattened into the result, so only the field carries a description.
+#[derive(Clone, Copy, Serialize, JsonSchema)]
+pub(crate) struct StartedTask<'a> {
+    /// The Task this call started from `goal`, only on that call's result.
+    /// Pass it as `task_id` to every later call for the same unit of work.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "crate::arguments::identifier_schema")]
+    task_id: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, Serialize, JsonSchema)]
+pub(crate) struct NoTask {}
+
+/// The tool that reports a Run Update. Only `exec` can name a Task.
+#[derive(Clone, Copy)]
+pub(crate) enum Reporter<'a> {
+    /// `exec`, with the Task it started from `goal`, if it started one.
+    Exec(Option<&'a coral_task::TaskId>),
+    /// `wait` or `cancel`.
+    Observer,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -134,6 +165,30 @@ struct Failure<'a> {
     code: FailureCode,
     message: &'a str,
     error: Option<ProgramError<'a>>,
+    /// The shapes of the Tool Results the Program received before it threw,
+    /// in call order: keys and value types, never values.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_result_shapes: Vec<ToolResultShape<'a>>,
+    /// Tool Results the Program received that no entry in
+    /// `tool_result_shapes` describes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("minimum" = 1))]
+    unsketched_tool_results: Option<SafeInteger>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ToolResultShape<'a> {
+    call_path: &'a str,
+    /// Tool Invocations of this Call Path whose results had this shape.
+    #[schemars(extend("minimum" = 1))]
+    invocations: SafeInteger,
+    /// TypeScript-like shape of the `data` the Program received, as a Tool
+    /// Result or a Tool Error. A key some array elements lack is optional.
+    data: &'a str,
+    /// Shape of the JSON that the result's MCP text content parses to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parsed_text: Option<&'a str>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -147,23 +202,44 @@ enum FailureCode {
     RunAuthorityLost,
 }
 
-/// Projects the largest prefix of `update` that fits `page_bytes`, or one item.
+/// Projects the largest prefix of `update` that fits `page_bytes`, or one
+/// item, in the result shape of the tool that reports it.
 pub(crate) fn run_update(
     update: &RunUpdate,
+    reporter: Reporter<'_>,
+    human_interface: &crate::HumanInterfaceUrl,
+    page_bytes: usize,
+) -> Result<CallToolResult, ToolFailure> {
+    match reporter {
+        Reporter::Exec(started) => {
+            let started = started.map(ToString::to_string);
+            let task = StartedTask {
+                task_id: started.as_deref(),
+            };
+            paged(update, task, human_interface, page_bytes)
+        }
+        Reporter::Observer => paged(update, NoTask {}, human_interface, page_bytes),
+    }
+}
+
+fn paged<Task: Serialize + Copy>(
+    update: &RunUpdate,
+    task: Task,
     human_interface: &crate::HumanInterfaceUrl,
     page_bytes: usize,
 ) -> Result<CallToolResult, ToolFailure> {
     let mut count = update.events().len();
     loop {
         let page = update.event_prefix(count);
-        let result = project_run_update(&page, human_interface)?;
+        let result = project_run_update(&page, task, human_interface)?;
         if fits(&result, page_bytes) {
             return Ok(result);
         }
         // Preserve the complete outcome for the final page. If only the
         // combination is too large, deliver these Events and advance first.
         if !page.events().is_empty() && page.terminal_outcome().is_some() {
-            let deferred = project_run_update(&page.defer_terminal_outcome(), human_interface)?;
+            let deferred =
+                project_run_update(&page.defer_terminal_outcome(), task, human_interface)?;
             if count <= 1 || fits(&deferred, page_bytes) {
                 return Ok(deferred);
             }
@@ -182,8 +258,9 @@ fn fits(result: &CallToolResult, page_bytes: usize) -> bool {
     serde_json::to_vec(result).is_ok_and(|bytes| bytes.len() <= page_bytes)
 }
 
-fn project_run_update(
+fn project_run_update<Task: Serialize>(
     update: &RunUpdate,
+    task: Task,
     human_interface: &crate::HumanInterfaceUrl,
 ) -> Result<CallToolResult, ToolFailure> {
     let mut rich = Vec::new();
@@ -216,11 +293,36 @@ fn project_run_update(
                 },
                 message: failure.message(),
                 error: failure.error().map(ProgramError::try_from).transpose()?,
+                tool_result_shapes: update
+                    .tool_result_shapes()
+                    .map(|shapes| {
+                        shapes
+                            .shapes()
+                            .iter()
+                            .map(|shape| {
+                                Ok(ToolResultShape {
+                                    call_path: shape.call_path(),
+                                    invocations: SafeInteger::new(shape.invocations())?,
+                                    data: shape.data(),
+                                    parsed_text: shape.parsed_text(),
+                                })
+                            })
+                            .collect::<Result<Vec<_>, ToolFailure>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default(),
+                unsketched_tool_results: update
+                    .tool_result_shapes()
+                    .map(coral_run::ToolResultShapes::unsketched)
+                    .filter(|count| *count > 0)
+                    .map(SafeInteger::new)
+                    .transpose()?,
             }),
         ),
         _ => (None, None),
     };
     let mut result = success(RunUpdateResult {
+        task,
         run_id: update.run_id().to_string(),
         state: match update.state() {
             RunState::Running => State::Running,

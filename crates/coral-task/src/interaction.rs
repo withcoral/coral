@@ -58,6 +58,37 @@ impl AttributedCommand {
     }
 }
 
+/// A call that states a new goal instead of naming a Task. Its first attempt
+/// starts the Task, with the goal as the Task's declared intent and the call's
+/// own intent kept separate.
+#[derive(Clone)]
+pub struct NewTaskCommand {
+    pub(crate) actor: AuthenticatedPrincipal,
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) goal: TaskIntent,
+    pub(crate) intent: TaskIntent,
+    pub(crate) trace_id: TraceId,
+}
+impl NewTaskCommand {
+    /// Supplies exact authenticated scope, the goal, and per-call intent.
+    #[must_use]
+    pub const fn new(
+        actor: AuthenticatedPrincipal,
+        workspace_id: WorkspaceId,
+        goal: TaskIntent,
+        intent: TaskIntent,
+        trace_id: TraceId,
+    ) -> Self {
+        Self {
+            actor,
+            workspace_id,
+            goal,
+            intent,
+            trace_id,
+        }
+    }
+}
+
 /// Action attempted toward the goal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttemptKind {

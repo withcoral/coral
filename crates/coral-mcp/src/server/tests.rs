@@ -180,3 +180,32 @@ fn owner_lost_and_not_yet_recorded_project_stable_retryable_codes() {
         );
     }
 }
+
+/// A launch that fails after an `exec` with `goal` started its Task keeps the
+/// failure's code and names the Task, so the agent continues it with
+/// `task_id` instead of starting a second Task with `goal`.
+#[test]
+fn a_failure_after_goal_started_its_task_names_the_task() {
+    let task = TaskId::parse("alpha-bravo-charlie-delta").unwrap();
+    let super::DispatchError::Tool(failure) = super::started_task_failure(
+        super::task_failure(coral_task::Error::Run(coral_run::Error::CorruptData(
+            "unreadable Run".into(),
+        ))),
+        &task,
+    ) else {
+        panic!("a tool failure, not a protocol error");
+    };
+    let projected = crate::projection::failure(&failure, &TraceId::current_or_new())
+        .structured_content
+        .expect("structured failure");
+    assert_eq!(
+        projected.get("code").and_then(Value::as_str),
+        Some("internal_error")
+    );
+    assert_eq!(
+        projected.get("message").and_then(Value::as_str),
+        Some(
+            "Coral could not complete the tool call. This call started Task alpha-bravo-charlie-delta: pass it as `task_id` to later calls instead of `goal`."
+        )
+    );
+}

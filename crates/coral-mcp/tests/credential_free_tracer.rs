@@ -86,10 +86,7 @@ const RUN_UPDATE_PAGE_BYTES: usize = 4096;
 /// The Program runtime's own bound on one encoded Program error.
 const PROGRAM_ERROR_MAX_BYTES: usize = 8 * 1024;
 
-const TOOL_NAMES: [&str; 9] = [
-    "start_task",
-    "search",
-    "describe",
+const TOOL_NAMES: [&str; 6] = [
     "save_function",
     "delete_function",
     "exec",
@@ -165,6 +162,13 @@ impl TestUpstream {
                 r#"{"record":"result-c0ral-private"}"#,
             )
         }
+        /// Records of two kinds whose titles live in different places, and a
+        /// third whose title is text: a Program that guesses one shape crashes.
+        async fn search_records() -> ([(header::HeaderName, &'static str); 1], &'static str) {
+            json_response(
+                r#"{"object":"list","results":[{"object":"page","id":"page-c0ral-1","properties":{"Name":{"title":[{"plain_text":"Plan c0ral"}]}}},{"object":"data_source","id":"source-c0ral-2","title":[{"plain_text":"Roadmap c0ral"}]},{"object":"data_source","id":"source-c0ral-3","title":"Legacy c0ral"}],"has_more":false,"next_cursor":null}"#,
+            )
+        }
         fn json_response(
             body: &'static str,
         ) -> ([(header::HeaderName, &'static str); 1], &'static str) {
@@ -178,6 +182,7 @@ impl TestUpstream {
             .route("/disconnected-second", get(disconnected_second))
             .route("/lost-worker", get(lost_worker))
             .route("/private-record", get(private_record))
+            .route("/search-records", get(search_records))
             .with_state(signals.clone());
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .await
@@ -279,12 +284,37 @@ impl Tracer {
             coral_run::CoralInstanceId::generate(),
             coral_run::RunInbox::table(db.clone()),
         )
-        .expect("start real Program runtime");
+        .expect("start real Program runtime")
+        // Built-in Tools such as coral.workspace.search run only where Reef's
+        // origin is named, as every Coral that runs Programs names it.
+        .with_human_interface(
+            coral_run::HumanInterfaceUrl::parse("https://reef.example.test")
+                .expect("human interface URL"),
+        );
         let search = UniversalSearchModule::new(db.clone(), workspaces.clone());
         // Reef decides through the Run Module that owns the Runs.
         let approvals = runs.approvals();
         let workspace_a = create_workspace(&workspaces, &local_user, "Tracer A", 10, '1').await;
         let workspace_b = create_workspace(&workspaces, &local_user, "Tracer B", 11, '2').await;
+        // Agents discover through the Built-in Provider's search, which
+        // creating a Workspace in production installs.
+        for (workspace, at) in [(&workspace_a, 13), (&workspace_b, 14)] {
+            let mut transaction = db.begin().await.expect("begin the Built-in install");
+            providers
+                .install_builtin_in_transaction(
+                    &mut transaction,
+                    &change(local_user.clone(), at, '2'),
+                    workspace,
+                )
+                .await
+                .expect("install the Built-in Provider")
+                // The reconcile below indexes it.
+                .skip_search();
+            transaction
+                .commit()
+                .await
+                .expect("commit the Built-in install");
+        }
         let provider_id = publish_tools(
             &providers,
             &policies,
@@ -410,12 +440,50 @@ impl Tracer {
     }
 }
 
-async fn start_task(client: &SdkClient, intent: &str) -> String {
-    let task = call(client, "start_task", json!({"intent": intent})).await;
-    structured(&task)["task_id"]
+/// Starts a Task for `goal` the way an agent does: with its first `exec`.
+async fn start_task(client: &SdkClient, goal: &str) -> String {
+    let started = call(
+        client,
+        "exec",
+        json!({"goal": goal, "intent": "Start the Task", "program": "return null;"}),
+    )
+    .await;
+    structured(&started)["task_id"]
         .as_str()
-        .expect("generated Task id")
+        .unwrap_or_else(|| panic!("the first exec names its Task: {started:?}"))
         .to_string()
+}
+
+/// Runs `program` in `task` and returns its Final Value, as an agent reads
+/// what a Program found with `coral.workspace.search`.
+async fn program_value(client: &SdkClient, task: &str, program: &str) -> Value {
+    let mut update = structured(
+        &call(
+            client,
+            "exec",
+            json!({"task_id": task, "intent": "Discover in a Program", "program": program, "wait_ms": 30_000}),
+        )
+        .await,
+    )
+    .clone();
+    while update.get("state") == Some(&json!("running"))
+        || update.get("has_more") == Some(&json!(true))
+    {
+        update = structured(
+            &call(
+                client,
+                "wait",
+                json!({"run_id": update.get("run_id"), "cursor": update.get("next_cursor"), "wait_ms": 30_000}),
+            )
+            .await,
+        )
+        .clone();
+    }
+    assert_eq!(update.get("state"), Some(&json!("succeeded")), "{update}");
+    update
+        .pointer("/final_value/value")
+        .cloned()
+        .unwrap_or_else(|| panic!("a Final Value: {update}"))
 }
 
 /// Local mode has no sign-in to pick a Workspace with, so `/mcp` needs an
@@ -548,10 +616,11 @@ async fn requests_are_bound_to_host_credential_workspace_and_protocol_window() {
     );
     let concealed = call(
         &client_b,
-        "search",
+        "exec",
         json!({
             "task_id": task_id,
-            "intent": "Try to cross the Workspace scope"
+            "intent": "Try to cross the Workspace scope",
+            "program": "return 1;"
         }),
     )
     .await;
@@ -578,6 +647,9 @@ async fn handshakes_carry_instructions_and_no_readable_resources_on_every_versio
             "`run_status_url`",
             "complete literal Call Path",
             "`fetch`",
+            "`setTimeout`",
+            "`coral.ToolError`",
+            "`coral.workspace.search`",
             "`required_actor`",
         ] {
             assert!(
@@ -644,10 +716,6 @@ async fn advertised_schemas_defaults_and_output_contracts_hold_on_every_version(
             .expect("tool properties")
             .clone()
     };
-    let search_properties = properties("search");
-    for property in ["query", "provider", "limit", "offset"] {
-        assert!(search_properties.contains_key(property));
-    }
     let exec_properties = properties("exec");
     assert!(exec_properties.contains_key("program"));
     assert!(!exec_properties.contains_key("input"));
@@ -817,6 +885,11 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
     let failure = &structured(&failed)["failure"];
     assert_eq!(failure["code"], "program_rejected");
     assert_eq!(
+        failure.get("tool_result_shapes"),
+        None,
+        "a Program that called no Tool received no Tool Result"
+    );
+    assert_eq!(
         failure.pointer("/error/name").unwrap_or(&Value::Null),
         "TypeError"
     );
@@ -865,10 +938,30 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
         structured(&observed)["failure"]
     );
 
+    // A literal path that names no Tool is refused before a Run exists.
+    let refused = call(
+        &client_a,
+        "exec",
+        json!({
+            "task_id": task_id, "intent": "Call a Tool that does not exist", "wait_ms": 0,
+            "program": "await coral.providers.missing.tool();"
+        }),
+    )
+    .await;
+    assert_eq!(refused.is_error, Some(true));
+    assert_eq!(structured(&refused)["code"], "program_admission_failed");
+    assert_eq!(
+        structured(&refused)["message"],
+        "Program admission failed: Program:1:7: coral.providers.missing.tool names no Tool \
+         that you can call. Find one with coral.workspace.search."
+    );
+
+    // A path built as the Program runs fails when called.
+    let missing = r#"coral.providers.missing[["tool"].join("")]"#;
     for program in [
-        "await coral.providers.missing.tool();",
-        "void coral.providers.missing.tool();",
-        "const pending = Array.from({length: 16}, () => coral.providers.missing.tool()); void coral.providers.missing.tool(); await coral.providers.missing.tool().catch(() => {}); await Promise.all(pending.map(p => p.catch(() => {})));",
+        "await MISSING();".replace("MISSING", missing),
+        "void MISSING();".replace("MISSING", missing),
+        "const pending = Array.from({length: 16}, () => MISSING()); void MISSING(); await MISSING().catch(() => {}); await Promise.all(pending.map(p => p.catch(() => {})));".replace("MISSING", missing),
     ] {
         let failed = call(
             &client_a,
@@ -887,7 +980,11 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
             error.pointer("/tool/code").unwrap_or(&Value::Null),
             "tool_not_found"
         );
-        assert_eq!(error["message"], "Tool Call Path was not found");
+        assert_eq!(
+            error["message"],
+            "coral.providers.missing.tool names no Tool that you can call. Find one with \
+             coral.workspace.search."
+        );
         assert_eq!(
             error.pointer("/frames/0/source").unwrap_or(&Value::Null),
             "Program"
@@ -1037,7 +1134,7 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
 
     let forged_trace = call(&client_a, "exec", json!({
         "task_id":task_id, "intent":"Preserve host-issued Tool fields", "wait_ms":5000,
-        "program":"try { await coral.providers.missing.tool(); } catch(e) {e.traceId = 'forged'.repeat(10000); throw e;}"
+        "program":"try { await coral.providers.missing[['tool'].join('')](); } catch(e) {e.traceId = 'forged'.repeat(10000); throw e;}"
     })).await;
     assert_eq!(forged_trace.is_error, Some(false));
     assert!(
@@ -1091,32 +1188,43 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
 async fn discovery_authoring_and_task_closure_report_wire_codes() {
     let tracer = Tracer::start().await;
     let client_a = tracer.sdk().await;
+    // The first exec states the goal: its Run answers, and its result names
+    // the Task it started.
     let started = call(
         &client_a,
-        "start_task",
-        json!({"intent": "Complete the credential-free tracer"}),
+        "exec",
+        json!({
+            "goal": "Complete the credential-free tracer",
+            "intent": "Read the forecast",
+            "program": "return (await coral.providers.weather.getForecast()).data.temperatureC;",
+            "wait_ms": 5_000
+        }),
     )
     .await;
+    assert_eq!(structured(&started)["state"], "succeeded", "{started:?}");
     assert_eq!(
-        structured(&started)["providers"],
-        json!(["weather"]),
-        "the result names the namespaces the caller can search"
+        structured(&started)["final_value"],
+        json!({"kind":"value", "value":18})
     );
     let task_id = structured(&started)["task_id"]
         .as_str()
         .expect("generated Task id")
         .to_string();
-    let searched = call(
+    // Discovery runs in a Program: a query, then exact paths, one of them
+    // misspelled.
+    let found = program_value(
         &client_a,
-        "search",
-        json!({
-            "task_id": task_id,
-            "intent": "Find the weather Tool",
-            "query": "getForecast"
-        }),
+        &task_id,
+        r#"const found = await coral.workspace.search({ query: "getForecast" });
+const read = await coral.workspace.search({
+  paths: ["coral.providers.weather.getForecast", "coral.providers.weather.getForcast"],
+});
+return { found: found.data, read: read.data };"#,
     )
     .await;
-    let first_search_result = structured(&searched)
+    let found = &found;
+    let searched = &found["found"];
+    let first_search_result = searched
         .get("hits")
         .and_then(Value::as_array)
         .and_then(|items| items.first())
@@ -1126,6 +1234,7 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         Some(&json!("coral.providers.weather.getForecast"))
     );
     assert!(first_search_result["signature_line"].is_string());
+    assert!(first_search_result["complete"].is_boolean());
     assert!(first_search_result["description_snippet"].is_string());
     for gone in [
         "description",
@@ -1136,55 +1245,47 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         "title",
         "provider_display_name",
         "evidence",
+        "summary",
+        "score",
     ] {
         assert!(
             first_search_result.get(gone).is_none(),
             "a hit carries no {gone}"
         );
     }
-    assert!(first_search_result.get("summary").is_none());
-    assert!(structured(&searched).get("next_offset").is_none());
-    assert!(first_search_result.get("score").is_none());
+    assert!(searched.get("next_offset").is_none());
     assert!(
-        serde_json::to_vec(structured(&searched))
+        serde_json::to_vec(searched)
             .expect("serialize structured search page")
             .len()
             <= coral_search::SEARCH_PAGE_MAX_BYTES
     );
-    let described = call(
-        &client_a,
-        "describe",
-        json!({
-            "task_id": task_id,
-            "intent": "Inspect the exact weather signature",
-            "path": "coral.providers.weather.getForecast"
-        }),
-    )
-    .await;
+    let described = found
+        .pointer("/read/descriptions/0")
+        .expect("the description of the path");
     assert_eq!(
-        structured(&described)["call_path"],
+        described["call_path"],
         "coral.providers.weather.getForecast"
     );
-    assert_eq!(structured(&described)["provider_access"], "weather");
+    assert_eq!(described["provider_access"], "weather");
     assert!(
-        structured(&described)["typescript_declaration"]
+        described["typescript_declaration"]
             .as_str()
             .expect("TypeScript declaration")
             .contains("temperatureC")
     );
-    let undeclared = call(
-        &client_a,
-        "describe",
-        json!({
-            "task_id": task_id,
-            "intent": "Inspect a type the weather declaration lacks",
-            "path": "coral.providers.weather.getForecast",
-            "types": ["Missing"]
-        }),
-    )
-    .await;
-    assert_eq!(undeclared.is_error, Some(true));
-    assert_eq!(structured(&undeclared)["code"], "undeclared_types");
+    // The misspelled path is missing, and the Tool it meant comes first.
+    let missing = found.pointer("/read/missing").expect("missing paths");
+    assert_eq!(
+        missing.pointer("/0/call_path"),
+        Some(&json!("coral.providers.weather.getForcast"))
+    );
+    assert_eq!(missing.as_array().map(Vec::len), Some(1), "{missing}");
+    assert_eq!(
+        missing.pointer("/0/suggestions/0"),
+        Some(&json!("coral.providers.weather.getForecast")),
+        "{missing}"
+    );
 
     let saved = call(
         &client_a,
@@ -1208,18 +1309,14 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     assert!(structured(&saved)["declaration"].is_string());
     // The save notifies search; wait for its write, with no reconcile pass.
     tracer.index.settled().await;
-    let searched_function = call(
+    let searched_function = program_value(
         &client_a,
-        "search",
-        json!({
-            "task_id": task_id,
-            "intent": "Find the saved weather helper",
-            "query": "currentTemperature",
-            "limit": 1
-        }),
+        &task_id,
+        r#"return (await coral.workspace.search({ query: "currentTemperature", limit: 1 })).data;"#,
     )
     .await;
-    let function_result = structured(&searched_function)["hits"]
+    let searched_function = &searched_function;
+    let function_result = searched_function["hits"]
         .as_array()
         .and_then(|items| items.first())
         .expect("Saved Function search result");
@@ -1251,6 +1348,11 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     let executed_update = structured(&executed);
     assert_eq!(executed_update["state"], "succeeded");
     assert_eq!(
+        executed_update.get("task_id"),
+        None,
+        "a call that names its Task does not name it back"
+    );
+    assert_eq!(
         executed_update["final_value"],
         json!({"kind":"value", "value":18})
     );
@@ -1265,6 +1367,7 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     )
     .await;
     assert_eq!(structured(&waited)["state"], "succeeded");
+    assert_eq!(structured(&waited).get("task_id"), None);
     assert_eq!(
         structured(&waited)["final_value"],
         json!({"kind":"value", "value":18})
@@ -1290,37 +1393,6 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         "task_id": task_id, "intent": "Record a source-limit rejection", "program": "x".repeat(65 * 1024), "wait_ms": 0
     })).await;
     assert_eq!(structured(&oversized)["code"], "invalid_input");
-    for (field, value, code) in [
-        ("query", " ", "invalid_input"),
-        (
-            "provider",
-            "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-            "invalid_input",
-        ),
-    ] {
-        let rejected = call(
-            &client_a,
-            "search",
-            json!({"task_id": task_id, "intent": "Record search validation", field: value}),
-        )
-        .await;
-        assert_eq!(rejected.is_error, Some(true));
-        assert_eq!(structured(&rejected)["code"], code);
-    }
-    let unknown_namespace = call(
-        &client_a,
-        "search",
-        json!({"task_id": task_id, "intent": "Guess a Provider namespace", "provider": "absent"}),
-    )
-    .await;
-    assert_eq!(unknown_namespace.is_error, Some(true));
-    assert_eq!(
-        untraced(structured(&unknown_namespace)),
-        json!({
-            "code": "invalid_input",
-            "message": "No Provider you can search has this namespace. Use one of: weather."
-        })
-    );
     let invalid_function = call(&client_a, "save_function", json!({
         "task_id": task_id, "intent": "Record rejected function authoring", "path": "invalidHelper",
         "description": "Must not save", "source": "export default function ("
@@ -1352,13 +1424,20 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     )
     .await;
     assert_eq!(structured(&retry)["outcome"], "success");
-    let closed = call(
+    // With no start_task, the refusal must say how to start new work.
+    let closed_exec = call(
         &client_a,
-        "search",
-        json!({"task_id": task_id, "intent": "No new attempts"}),
+        "exec",
+        json!({"task_id": task_id, "intent": "No new attempts", "program": "return 1;"}),
     )
     .await;
-    assert_eq!(structured(&closed)["code"], "task_closed");
+    assert_eq!(
+        untraced(structured(&closed_exec)),
+        json!({
+            "code": "task_closed",
+            "message": "Task is closed to new attempts. For new work, call `exec` with `goal` instead of `task_id` to start a new Task."
+        })
+    );
     let observed_after_closure = call(
         &client_a,
         "wait",
@@ -1366,6 +1445,102 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     )
     .await;
     assert_ne!(observed_after_closure.is_error, Some(true));
+}
+
+/// `exec`'s description teaches discovery with one example. Its first
+/// Program type-checks against the declaration Coral publishes for
+/// `coral.workspace.search`, and runs against a real search, so the fields
+/// it names are the fields a Program reads.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_exec_example_type_checks_and_reads_a_real_search() {
+    let tracer = Tracer::start().await;
+    let client = tracer.sdk().await;
+    let tools = client.list_all_tools().await.expect("list MCP tools");
+    let description = tools
+        .iter()
+        .find(|tool| tool.name == "exec")
+        .and_then(|tool| tool.description.as_deref())
+        .expect("exec description")
+        .to_owned();
+    let programs = description
+        .split("```ts\n")
+        .skip(1)
+        .map(|block| block.split("\n```").next().expect("a closed block"))
+        .collect::<Vec<_>>();
+    let [find, call_found] = programs[..] else {
+        panic!("one Program finds and one calls: {description}");
+    };
+    for field in [
+        "call_path",
+        "signature_line",
+        "complete",
+        "description_snippet",
+        "descriptions",
+        "missing",
+        "suggestions",
+    ] {
+        assert!(find.contains(field), "the example reads {field}");
+    }
+    assert!(
+        call_found.starts_with("return (await coral.providers."),
+        "the later Program calls a literal Call Path: {call_found}"
+    );
+
+    let task_id = start_task(&client, "Check the exec example").await;
+    let saved = call(
+        &client,
+        "save_function",
+        json!({
+            "task_id": task_id,
+            "intent": "Type-check the exec example",
+            "path": "example.find",
+            "description": "The exec description's discovery example",
+            "source": format!("export default async function find() {{\n{find}\n}}"),
+        }),
+    )
+    .await;
+    assert_eq!(saved.is_error, Some(false), "{saved:?}");
+    assert_eq!(
+        structured(&saved)["diagnostics"],
+        json!([]),
+        "the example type-checks"
+    );
+
+    let found = &program_value(&client, &task_id, find).await;
+    let hits = found["hits"].as_array().expect("hits");
+    assert!(!hits.is_empty(), "{found}");
+    for hit in hits {
+        let [call_path, signature_line, description_snippet] =
+            hit.as_array().map(Vec::as_slice).unwrap_or_default()
+        else {
+            panic!("three fields of a hit: {hit}");
+        };
+        assert!(
+            call_path
+                .as_str()
+                .is_some_and(|path| path.starts_with("coral.")),
+            "{hit}"
+        );
+        assert!(
+            signature_line
+                .as_str()
+                .is_some_and(|line| line.contains('('))
+        );
+        assert!(description_snippet.is_string(), "{hit}");
+    }
+    // The tracer's search for pull requests finds `coral.workspace.search`,
+    // whose line is never complete: it has one overload per mode. So the
+    // example reads that declaration by its path, and every path it read
+    // exists.
+    let declarations = found["declarations"].as_array().expect("declarations");
+    assert!(
+        declarations
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|declaration| declaration.contains("PathsResult")),
+        "{found}"
+    );
+    assert_eq!(found["missing"], json!([]), "{found}");
 }
 
 /// A worker runtime disappeared after durable authored output. The
@@ -1459,6 +1634,47 @@ async fn an_abandoned_exec_request_does_not_cancel_accepted_work() {
     )
     .await
     .expect("accepted Run continues to its second Tool after request loss");
+}
+
+/// A Program that crashes on a guessed result shape gets the shapes of the
+/// Tool Results it received, in call order, so its next Program can fix the
+/// guess without a turn spent exploring the data. Keys and types, never values.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_program_carries_the_shapes_of_the_tool_results_it_received() {
+    let tracer = Tracer::start().await;
+    let client = tracer.sdk().await;
+    let task = start_task(&client, "Read record titles").await;
+    let failed = call(
+        &client,
+        "exec",
+        json!({
+            "task_id": task, "intent": "List record titles", "wait_ms": 5000,
+            "program": "await coral.providers.weather.getForecast(); await coral.providers.weather.searchRecords(); const found = await coral.providers.weather.searchRecords(); return found.data.results.map((record) => record.title.map((part) => part.plain_text));"
+        }),
+    )
+    .await;
+    let failure = &structured(&failed)["failure"];
+    assert_eq!(failure["code"], "program_rejected");
+    assert_eq!(failure.pointer("/error/name"), Some(&json!("TypeError")));
+    assert_eq!(
+        failure["tool_result_shapes"],
+        json!([
+            {
+                "call_path": "coral.providers.weather.getForecast",
+                "invocations": 1,
+                "data": "{ temperatureC: number }"
+            },
+            {
+                "call_path": "coral.providers.weather.searchRecords",
+                "invocations": 2,
+                "data": "{ object: string; results: Array<{ object: string; id: string; properties?: { Name: { title: Array<{ plain_text: string }> } }; title?: Array<{ plain_text: string }> | string }>; has_more: boolean; next_cursor: null }"
+            }
+        ])
+    );
+    let shapes = failure["tool_result_shapes"].to_string();
+    for value in ["c0ral", "list", "page", "data_source", "18"] {
+        assert!(!shapes.contains(value), "{value} is a value: {shapes}");
+    }
 }
 
 /// A Program that logs through a long read does not make the agent spend a
@@ -1932,7 +2148,6 @@ async fn check_raw_numeric_inputs(session: &RawSession, task: &str, tools: &[Val
         .pointer("/structuredContent/run_id")
         .expect("finished Run id");
     for (name, field, minimum, maximum) in [
-        ("search", "limit", 1, 50),
         ("exec", "run_timeout_ms", 1, 900_000),
         ("exec", "wait_ms", 0, 30_000),
         ("wait", "wait_ms", 0, 30_000),
@@ -1963,7 +2178,6 @@ async fn check_raw_numeric_inputs(session: &RawSession, task: &str, tools: &[Val
         }
         for (value, valid) in cases {
             let mut arguments = match name {
-                "search" => json!({"task_id": task, "intent": "Check numeric search input"}),
                 "exec" => json!({"task_id": task, "intent": "Check numeric Run input",
                     "program": "return 7;", "wait_ms": 0}),
                 "wait" => json!({"run_id": run_id}),
@@ -2075,15 +2289,18 @@ async fn check_protocol_window(endpoint: &str) {
     }
 
     let session = RawSession::open(endpoint, newest).await;
-    let arguments = json!({"intent": "Rejected before dispatch"});
+    let arguments = json!({
+        "goal": "Rejected before dispatch", "intent": "Rejected before dispatch",
+        "program": "return null;"
+    });
     let mismatched = session
-        .tampered_tool("start_task", arguments.clone(), |headers| {
+        .tampered_tool("exec", arguments.clone(), |headers| {
             headers.insert("mcp-method", HeaderValue::from_static("tools/list"));
         })
         .await;
     assert_header_mismatch(mismatched, "mismatched Mcp-Method").await;
     let missing = session
-        .tampered_tool("start_task", arguments, |headers| {
+        .tampered_tool("exec", arguments, |headers| {
             headers.remove("mcp-method");
         })
         .await;
@@ -2401,6 +2618,52 @@ impl RawSession {
 
     async fn tool(&self, tool: &str, arguments: Value) -> Value {
         self.tool_with_headers(tool, arguments, &[]).await
+    }
+
+    /// Starts a Task for `goal` the way an agent does: with its first `exec`.
+    async fn start_task(&self, goal: &str) -> String {
+        let started = self
+            .tool(
+                "exec",
+                json!({"goal":goal, "intent":"Start the Task", "program":"return null;"}),
+            )
+            .await;
+        started
+            .pointer("/structuredContent/task_id")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("the first exec names its Task: {started}"))
+            .to_owned()
+    }
+
+    /// Runs `program` in `task` and returns its Final Value, as an agent
+    /// reads what a Program found with `coral.workspace.search`.
+    async fn program_value(&self, task: &str, program: &str) -> Value {
+        let mut update = self
+            .tool(
+                "exec",
+                json!({"task_id":task, "intent":"Discover in a Program", "program":program, "wait_ms":30_000}),
+            )
+            .await;
+        while update.pointer("/structuredContent/state") == Some(&json!("running"))
+            || update.pointer("/structuredContent/has_more") == Some(&json!(true))
+        {
+            let page = update.get("structuredContent").expect("Run Update");
+            update = self
+                .tool(
+                    "wait",
+                    json!({"run_id":page["run_id"], "cursor":page["next_cursor"], "wait_ms":30_000}),
+                )
+                .await;
+        }
+        assert_eq!(
+            update.pointer("/structuredContent/state"),
+            Some(&json!("succeeded")),
+            "{update}"
+        );
+        update
+            .pointer("/structuredContent/final_value/value")
+            .cloned()
+            .unwrap_or_else(|| panic!("a Final Value: {update}"))
     }
 
     /// Like [`Self::tool`], with extra request headers such as W3C trace context.
@@ -2819,10 +3082,6 @@ async fn create_workspace(
         .clone()
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one fixture publishes the tracer Provider and sets each Tool's policy"
-)]
 async fn publish_tools(
     providers: &ProviderModule,
     policies: &ToolPolicyModule,
@@ -2830,30 +3089,7 @@ async fn publish_tools(
     workspace_id: &WorkspaceId,
     upstream_url: &str,
 ) -> coral_provider::ProviderId {
-    let tool = |id: &str, property: &str| {
-        json!({
-            "operationId": id,
-            "summary": format!("Tracer Tool {id}"),
-            "responses": {
-                "200": {
-                    "description": "Tracer response",
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "type": "object",
-                                "properties": {(property): {"type": match property {
-                                    "temperatureC" => "number",
-                                    "record" => "string",
-                                    _ => "boolean",
-                                }}},
-                                "required": [property]
-                            }
-                        }
-                    }
-                }
-            }
-        })
-    };
+    let tool = tracer_operation;
     let mut private_record = tool("getPrivateRecord", "record");
     private_record.as_object_mut().expect("operation").insert(
         "parameters".to_owned(),
@@ -2869,7 +3105,8 @@ async fn publish_tools(
             "/disconnected-first": {"get": tool("disconnectedFirst", "first")},
             "/disconnected-second": {"get": tool("disconnectedSecond", "second")},
             "/lost-worker": {"get": tool("lostWorker", "released")},
-            "/private-record": {"get": private_record}
+            "/private-record": {"get": private_record},
+            "/search-records": {"get": tool("searchRecords", "")}
         }
     });
     let setup = providers
@@ -2906,6 +3143,7 @@ async fn publish_tools(
         "disconnectedSecond",
         "lostWorker",
         "getPrivateRecord",
+        "searchRecords",
     ]
     .into_iter()
     .enumerate()
@@ -2915,7 +3153,7 @@ async fn publish_tools(
                 &change(
                     user.clone(),
                     30 + i64::try_from(index).expect("small fixture index"),
-                    char::from_digit(u32::try_from(index + 5).expect("trace digit"), 10)
+                    char::from_digit(u32::try_from(index + 5).expect("trace digit"), 16)
                         .expect("trace digit character"),
                 ),
                 ToolPolicyTarget::new(
@@ -2929,6 +3167,34 @@ async fn publish_tools(
             .expect("enable tracer Tool");
     }
     provider_id
+}
+
+/// A tracer operation whose result has one required `property`, or no
+/// declared shape when `property` is empty.
+fn tracer_operation(id: &str, property: &str) -> Value {
+    let schema = if property.is_empty() {
+        json!({"type": "object"})
+    } else {
+        json!({
+            "type": "object",
+            "properties": {(property): {"type": match property {
+                "temperatureC" => "number",
+                "record" => "string",
+                _ => "boolean",
+            }}},
+            "required": [property]
+        })
+    };
+    json!({
+        "operationId": id,
+        "summary": format!("Tracer Tool {id}"),
+        "responses": {
+            "200": {
+                "description": "Tracer response",
+                "content": {"application/json": {"schema": schema}}
+            }
+        }
+    })
 }
 
 fn change(

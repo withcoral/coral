@@ -9,6 +9,8 @@
 //! # Interface
 //!
 //! - [`TaskModule::start`] generates and durably starts one attributed Task.
+//! - [`TaskCommands::submit_new_task`] starts a Task with its first Run, so a
+//!   refused Program starts none.
 //! - [`TaskModule::end`] records the first terminal outcome and returns the
 //!   durable winner of a concurrent terminal race.
 //! - [`TaskModule::get`] and [`TaskModule::list`] apply Principal-specific
@@ -67,7 +69,7 @@ mod types;
 pub use commands::TaskCommands;
 pub use interaction::{
     AttemptEvidence, AttemptFailure, AttemptKind, AttemptOutcome, AttributedCommand,
-    DiscoveryContext, InteractionDetail, InteractionId, InteractionSummary,
+    DiscoveryContext, InteractionDetail, InteractionId, InteractionSummary, NewTaskCommand,
 };
 pub use retention::HISTORY_RETENTION_NANOS;
 
@@ -118,9 +120,32 @@ impl TaskModule {
         started_at_unix_nanos: i64,
     ) -> Result<Task, Error> {
         let mut transaction = self.database.begin().await?;
+        let task = self
+            .start_in_transaction(
+                &mut transaction,
+                actor,
+                workspace_id,
+                intent,
+                started_at_unix_nanos,
+            )
+            .await?;
+        transaction.commit().await?;
+        Ok(task)
+    }
+
+    /// Starts one Task in the caller's transaction, so its first attempt can
+    /// commit with it.
+    pub(crate) async fn start_in_transaction(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        intent: TaskIntent,
+        started_at_unix_nanos: i64,
+    ) -> Result<Task, Error> {
         self.workspaces
             .check_principal_inspection_in_transaction(
-                &mut transaction,
+                transaction,
                 actor,
                 workspace_id,
                 started_at_unix_nanos,
@@ -130,7 +155,7 @@ impl TaskModule {
         // The primary key proves the identifier unused: a conflict writes
         // nothing, and the next attempt draws fresh words.
         let mut attempts = 0;
-        let task = loop {
+        loop {
             let task = Task::new(
                 TaskId::generate()?,
                 workspace_id.clone(),
@@ -141,8 +166,8 @@ impl TaskModule {
                 started_at_unix_nanos,
                 None,
             );
-            if repository::insert(&mut transaction, &task).await? {
-                break task;
+            if repository::insert(transaction, &task).await? {
+                return Ok(task);
             }
             attempts += 1;
             if attempts == coral_identifier::ISSUE_ATTEMPTS {
@@ -150,9 +175,7 @@ impl TaskModule {
                     "{attempts} identifiers in a row were already in use"
                 )));
             }
-        };
-        transaction.commit().await?;
-        Ok(task)
+        }
     }
 
     /// Returns one Task when it is visible to the current Principal.

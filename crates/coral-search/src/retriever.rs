@@ -3,7 +3,8 @@
 //!
 //! A retriever applies its owners' visibility rules once per request, puts
 //! the answer into its ranked statement over the search-owned table, and
-//! hands the engine positions only. It hydrates and describes the Entities
+//! hands the engine its window in rank order, each Entity marked strong or
+//! weak by the retriever's own rule. It hydrates and describes the Entities
 //! of its kind. Every method joins the caller's read snapshot and opens no
 //! connection of its own.
 
@@ -111,8 +112,18 @@ pub(crate) struct QueryRequest<'a> {
 /// One retriever's answer to a query: the window in rank order and its
 /// coverage. The state follows from the coverage.
 pub(crate) struct Answer {
-    pub(crate) window: Vec<EntityRef>,
+    pub(crate) window: Vec<WindowEntry>,
     pub(crate) coverage: RetrieverCoverage,
+}
+
+/// One Entity of a ranked window and its retriever's mark. A retriever
+/// marks an Entity strong when, by its own rule and over its own signals, the
+/// Entity plainly answers the query; the engine puts every strong Entity of
+/// every window before the weak ones, each group by position. Scores stay in
+/// the retriever, since they do not compare across kinds.
+pub(crate) struct WindowEntry {
+    pub(crate) entity: EntityRef,
+    pub(crate) strong: bool,
 }
 
 /// Why a retriever could not answer.

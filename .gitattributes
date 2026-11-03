@@ -21,8 +21,9 @@ apps/reef/recipes/gmail/openapi.json linguist-generated
 # modelcontextprotocol/modelcontextprotocol schema/<version>/schema.json.
 crates/coral-mcp/tests/mcp-schema/*.json linguist-generated
 
-# Output schemas that the `search` and `describe` tools advertise, rewritten by
-# the coral-mcp test `search_and_describe_output_schemas_match_their_snapshots`.
+# Output schemas of the `search` and `describe` responses Task history retains,
+# rewritten by the coral-mcp test
+# `retained_search_and_describe_schemas_match_their_snapshots`.
 crates/coral-mcp/tests/output-schema/*.json linguist-generated
 
 # The dmg background, rendered from background.svg by

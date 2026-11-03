@@ -35,9 +35,50 @@ impl OutputContracts {
                 .expect("Run tool")["outputSchema"]
                 .clone()
         };
-        assert_eq!(schema("exec"), schema("wait"));
+        // Only the exec that starts a Task from `goal` names it. wait and
+        // cancel take a run_id, so their results never carry task_id.
+        let mut exec = schema("exec");
+        assert_eq!(
+            Self::remove_property(&mut exec, "task_id"),
+            1,
+            "exec advertises task_id once"
+        );
+        assert_eq!(exec, schema("wait"), "exec adds only task_id to wait");
         assert_eq!(schema("wait"), schema("cancel"));
         Self(contracts)
+    }
+
+    /// Removes `key` from every object schema that declares it and returns how
+    /// many did. Each must leave it optional.
+    fn remove_property(schema: &mut Value, key: &str) -> usize {
+        let mut removed = 0;
+        match schema {
+            Value::Object(object) => {
+                if let Some(properties) =
+                    object.get_mut("properties").and_then(Value::as_object_mut)
+                    && properties.remove(key).is_some()
+                {
+                    removed += 1;
+                    assert!(
+                        !object
+                            .get("required")
+                            .and_then(Value::as_array)
+                            .is_some_and(|required| required.contains(&json!(key))),
+                        "{key} is optional"
+                    );
+                }
+                for value in object.values_mut() {
+                    removed += Self::remove_property(value, key);
+                }
+            }
+            Value::Array(items) => {
+                for value in items {
+                    removed += Self::remove_property(value, key);
+                }
+            }
+            _ => {}
+        }
+        removed
     }
 
     pub(super) fn check(&self, name: &str, result: &Value) {
@@ -68,6 +109,14 @@ impl OutputContracts {
                 "every valid Run state is a tool success"
             );
             Self::check_run(validator, structured);
+            if name != "exec" {
+                let mut repeated = structured.clone();
+                repeated
+                    .as_object_mut()
+                    .expect("Run Update")
+                    .insert("task_id".into(), json!("alpha-bravo-charlie-delta"));
+                assert!(!validator.is_valid(&repeated), "{name} never names a Task");
+            }
         }
     }
 
@@ -129,11 +178,6 @@ impl OutputContracts {
             &["code", "message", "trace_id"]
         } else {
             match name {
-                "start_task" => &["task_id", "providers"],
-                "search" => &["hits"],
-                // A Saved Function's source and diagnostics are absent from a
-                // description cut to `types`.
-                "describe" => &["kind", "call_path", "description", "typescript_declaration"],
                 "save_function" => &[
                     "call_path",
                     "description",

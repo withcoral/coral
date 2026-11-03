@@ -708,6 +708,8 @@ export async function confirmConfiguration(
 }
 
 export interface RunUpdate {
+  /** Only on the result of the exec that started the Task. */
+  task_id?: string
   run_id: string
   state: string
   next_cursor: string
@@ -728,6 +730,12 @@ export interface RunUpdate {
   }[]
   final_value?: unknown
   failure?: { code: string }
+}
+
+/** What `coral.workspace.search` returns for exact Call Paths. */
+interface DescribedPath {
+  descriptions: { call_path: string; typescript_declaration: string }[]
+  missing: { call_path: string; suggestions: string[] }[]
 }
 
 interface ToolResult<T = unknown> {
@@ -794,6 +802,7 @@ export function programRunner(
   let id = 0
   const calls: Record<string, number> = {}
   let taskId = ''
+  let initialized = false
   let accessToken = options.accessToken
   const waitMs = options.waitMs ?? 8000
   const version = options.protocolVersion ?? '2025-11-25'
@@ -854,55 +863,104 @@ export function programRunner(
   }
   const initialize = async () => {
     if (!accessToken && target.authentication) accessToken = await mcpToken(page, workspace)
-    if (!taskId) {
-      // Coral issues no session id; a legacy client's handshake is still answered.
-      if (!selfDescribing) {
-        await rpc('initialize', {
-          protocolVersion: version,
-          capabilities: {},
-          clientInfo: { name: 'Reel', version: '1' },
-        })
-        await page.request.post(`${target.mcpURL}/workspaces/${workspace}/mcp`, {
-          headers: headers('notifications/initialized', {}),
-          data: { jsonrpc: '2.0', method: 'notifications/initialized' },
-        })
-      }
-      const task = await rpc('tools/call', {
-        name: 'start_task',
-        arguments: {
-          intent: options.taskIntent ?? 'Recorded Provider scenario',
-        },
+    // Coral issues no session id; a legacy client's handshake is still answered.
+    if (!initialized && !selfDescribing) {
+      initialized = true
+      await rpc('initialize', {
+        protocolVersion: version,
+        capabilities: {},
+        clientInfo: { name: 'Reel', version: '1' },
       })
-      expect(task.isError).not.toBe(true)
-      taskId = task.structuredContent.task_id
+      await page.request.post(`${target.mcpURL}/workspaces/${workspace}/mcp`, {
+        headers: headers('notifications/initialized', {}),
+        data: { jsonrpc: '2.0', method: 'notifications/initialized' },
+      })
     }
   }
+  const goal = options.taskIntent ?? 'Recorded Provider scenario'
+  /** The first exec states the goal and starts the Task; later ones name it. */
   const execArguments = (program: string) => ({
-    task_id: taskId,
+    ...(taskId ? { task_id: taskId } : { goal }),
     intent: 'Call one Tool',
     program,
     wait_ms: waitMs,
   })
+  /** Keeps the Task an exec started, from its first result that names it. */
+  const started = (result: ToolResult<RunUpdate>) => {
+    // An input_required result has no structuredContent yet.
+    const named = result.structuredContent?.task_id
+    if (!taskId && named) taskId = named
+    return result
+  }
+  /** Starts the Task for a call that needs one before the scenario's first exec. */
+  const ensureTask = async () => {
+    await initialize()
+    if (taskId) return
+    // The helper's own call: scenarios count only the execs they make.
+    const counted = calls.exec
+    const result = await rpc('tools/call', {
+      name: 'exec',
+      arguments: { goal, intent: 'Start the Task', program: 'return null;', wait_ms: waitMs },
+    })
+    if (counted === undefined) delete calls.exec
+    else calls.exec = counted
+    expect(result.isError).not.toBe(true)
+    started(result)
+    expect(taskId).not.toBe('')
+  }
+  /**
+   * Runs `program` in the Task until its Run ends and returns its Final Value, or nothing
+   * when the call or the Run fails. Scenarios count only the calls they make, so these are
+   * left out of `calls`.
+   */
+  const discover = async <T>(program: string): Promise<ToolResult<T> | undefined> => {
+    await ensureTask()
+    const counted = { ...calls }
+    try {
+      let result: ToolResult<RunUpdate> = await rpc('tools/call', {
+        name: 'exec',
+        arguments: { task_id: taskId, intent: 'Find tools', program, wait_ms: waitMs },
+      })
+      for (
+        let pages = 0;
+        pages < 10 &&
+        !result.isError &&
+        (result.structuredContent.state === 'running' || result.structuredContent.has_more);
+        pages++
+      ) {
+        const update: RunUpdate = result.structuredContent
+        result = await rpc('tools/call', {
+          name: 'wait',
+          arguments: { run_id: update.run_id, cursor: update.next_cursor, wait_ms: waitMs },
+        })
+      }
+      const update = result.structuredContent
+      const final = update.final_value as { kind: string; value?: T } | undefined
+      if (result.isError || update.state !== 'succeeded' || final?.kind !== 'value')
+        return undefined
+      return { structuredContent: final.value as T }
+    } finally {
+      for (const name of Object.keys(calls)) delete calls[name]
+      Object.assign(calls, counted)
+    }
+  }
   const exec = async (program: string): Promise<ToolResult<RunUpdate>> => {
     await initialize()
-    return rpc('tools/call', {
-      name: 'exec',
-      arguments: execArguments(program),
-    })
+    return started(await rpc('tools/call', { name: 'exec', arguments: execArguments(program) }))
   }
   return Object.assign(async (program: string) => JSON.stringify(await exec(program)), {
     exec,
     calls,
     taskId: () => taskId,
     async endTask(outcome: 'success' | 'failure', feedback?: string): Promise<ToolResult> {
-      await initialize()
+      await ensureTask()
       return rpc('tools/call', {
         name: 'end_task',
         arguments: { task_id: taskId, outcome, feedback },
       })
     },
     async saveFunction(path: string, description: string, source: string): Promise<ToolResult> {
-      await initialize()
+      await ensureTask()
       return rpc('tools/call', {
         name: 'save_function',
         arguments: {
@@ -925,19 +983,28 @@ export function programRunner(
         },
       })
     },
+    /**
+     * Searches the way an agent does, with `coral.workspace.search` inside a Program. The
+     * Program is one more uncounted exec of the Task; a failed Run is an error result.
+     */
     async search(query?: string): Promise<ToolResult<{ hits: { call_path: string }[] }>> {
-      await initialize()
-      return rpc('tools/call', {
-        name: 'search',
-        arguments: { task_id: taskId, intent: 'Find Tools', query },
-      })
+      const input = JSON.stringify(query === undefined ? {} : { query })
+      const found = await discover<{ hits: { call_path: string }[] }>(
+        `return (await coral.workspace.search(${input})).data;`,
+      )
+      return found ?? { isError: true, structuredContent: { hits: [] } }
     },
-    async describe(path: string): Promise<ToolResult> {
-      await initialize()
-      return rpc('tools/call', {
-        name: 'describe',
-        arguments: { task_id: taskId, intent: 'Inspect one Tool', path },
-      })
+    /**
+     * Reads one Call Path's description with `coral.workspace.search` in a Program. An error
+     * result when the path names nothing this caller can call, as `missing` reports it.
+     */
+    async describe(path: string): Promise<ToolResult<DescribedPath>> {
+      const input = JSON.stringify({ paths: [path] })
+      const found = await discover<DescribedPath>(
+        `return (await coral.workspace.search(${input})).data;`,
+      )
+      if (!found) return { isError: true, structuredContent: { descriptions: [], missing: [] } }
+      return { ...found, isError: found.structuredContent.missing.length > 0 }
     },
     /** The tools this MCP client is offered, in order. */
     async listTools(): Promise<{ name: string }[]> {

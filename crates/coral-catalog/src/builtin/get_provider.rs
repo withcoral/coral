@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    ArgumentProblem, BuiltinCredentialRoute, BuiltinTool, Definition, ListedProviderState,
-    NAMESPACE_REASON, derived_schema, tool_result,
+    ArgumentProblem, BuiltinCredentialRoute, BuiltinTool, Declared, Definition,
+    ListedProviderState, NAMESPACE_REASON, derived_schema, tool_result,
 };
 use crate::{
     AuthenticationConfiguration, CredentialField, ServerSelection, ToolHints, ToolPresentation,
@@ -59,6 +59,7 @@ pub(super) fn definition() -> Definition {
         hints: ToolHints::new(Some(true), None, Some(true), None),
         input: derived_schema::<Arguments>(Contract::Deserialize),
         output: derived_schema::<GetProviderResult>(Contract::Serialize),
+        declared: Declared::Once,
     }
 }
 

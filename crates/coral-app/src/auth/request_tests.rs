@@ -689,7 +689,7 @@ impl Fixture {
             .await
             .unwrap();
         assert_eq!(response.status(), 202);
-        let response = request().json(&serde_json::json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"start_task", "arguments":{"intent":"HTTP Principal attribution"}}})).send().await.unwrap();
+        let response = request().json(&serde_json::json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"exec", "arguments":{"goal":"HTTP Principal attribution", "intent":"Start the Task", "program":"return null;"}}})).send().await.unwrap();
         assert_eq!(response.status(), 200);
         let message = response_message(response).await;
         let id = coral_task::TaskId::parse(

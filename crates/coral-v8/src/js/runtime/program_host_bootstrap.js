@@ -13,6 +13,7 @@
   const NativeTypeError = TypeError;
   const defineProperties = Object.defineProperties;
   const setPrototypeOf = Object.setPrototypeOf;
+  const freeze = Object.freeze;
 
   class ToolError extends NativeError {
     // oxlint-disable-next-line constructor-super -- Programs must not construct a ToolError.
@@ -131,8 +132,10 @@
   });
 
   // Returned only to the host; Programs cannot mint a ToolError. An
-  // upstream rejection carries the complete outcome the Program did not receive.
-  return (code, message, traceId, stack, outcome) => {
+  // upstream rejection carries the complete outcome the Program did not
+  // receive, and a rejected Call Path that names no Tool carries the nearest
+  // ones that do.
+  return (code, message, traceId, stack, outcome, suggestions) => {
     const error = new NativeError(message);
     setPrototypeOf(error, ToolError.prototype);
     defineProperties(error, {
@@ -141,6 +144,11 @@
     });
     if (traceId !== undefined) {
       defineProperties(error, { traceId: { __proto__: null, value: traceId } });
+    }
+    if (suggestions !== undefined) {
+      defineProperties(error, {
+        suggestions: { __proto__: null, value: freeze(suggestions) },
+      });
     }
     if (outcome !== undefined) {
       if (outcome.status !== undefined) {

@@ -1,85 +1,98 @@
-//! Safe discovery responses, shared by current callers and historical snapshots.
+//! Safe discovery responses: what discovery found, as the result types
+//! coral-catalog declares for `coral.workspace.search`. The `search` and
+//! `describe` records Task history retains hold the same types as JSON, so
+//! no surface can show a field another does not.
 use crate::{
-    ApprovalRequirement, AuthoringDescription, ExactAuthoringDescription, RetrieverState,
-    RetrieverStatus, SearchHit, SearchPage,
+    ApprovalRequirement, AuthoringDescription, Discovery, ExactAuthoringDescription, ExactLookup,
+    RetrieverState, RetrieverStatus, SearchHit, SearchPage,
 };
-use coral_catalog::ToolHints;
-use serde_json::{Map, Value, json};
+use coral_catalog::{
+    DeclaredHints, Description, DescriptionAuthoring, MissingPath, PathsResult, SavedDetail,
+    SavedDiagnostic, SavedDiagnosticCategory, SearchOutput, SearchResult, SearchRetriever,
+    SearchRetrieverCoverage, SearchRetrieverState, SearchRetrieverStatus, ToolHints,
+};
+use coral_functions::{SavedFunctionDiagnostic, SavedFunctionDiagnosticCategory};
+use serde_json::{Value, json};
 
 #[cfg(test)]
 mod tests;
 
-/// Projects every ordered hit, and only what the agent acts on besides: the
+/// What one discovery request found.
+#[must_use]
+pub fn discovery(found: &Discovery) -> SearchOutput {
+    match found {
+        Discovery::Page(page) => SearchOutput::Page(search_result(page)),
+        Discovery::Exact(lookup) => SearchOutput::Paths(paths_result(lookup)),
+    }
+}
+
+/// Projects every ordered hit, and only what the caller acts on besides: the
 /// next offset while more remain, and the status of each retriever whose
 /// results may be missing.
 #[must_use]
-pub fn search(page: &SearchPage) -> Value {
-    let mut fields = Map::from_iter([(
-        "hits".to_string(),
-        json!(page.hits().iter().map(hit).collect::<Vec<_>>()),
-    )]);
-    if let Some(offset) = page.next_offset() {
-        fields.insert("next_offset".to_string(), json!(offset));
+pub fn search_result(page: &SearchPage) -> SearchResult {
+    SearchResult {
+        hits: page.hits().iter().map(hit).collect(),
+        next_offset: page.next_offset(),
+        retriever_statuses: page
+            .retriever_statuses()
+            .iter()
+            .filter_map(retriever_status)
+            .collect(),
     }
-    let incomplete = page
-        .retriever_statuses()
-        .iter()
-        .filter(|status| {
-            matches!(
-                status.state(),
-                RetrieverState::Partial | RetrieverState::Error
-            )
-        })
-        .map(retriever_status)
-        .collect::<Vec<_>>();
-    if !incomplete.is_empty() {
-        fields.insert("retriever_statuses".to_string(), json!(incomplete));
-    }
-    Value::Object(fields)
 }
 
-/// One Search Hit, cut to what the agent needs to choose and call it. The Call
-/// Path already names the kind and the Provider, the rank already reflects the
-/// evidence, and `describe` gives the rest. A flag appears only when set, a
-/// hint only when declared, and a match only where a query term matched.
-fn hit(hit: &SearchHit) -> Value {
-    let mut fields = Map::from_iter([
-        ("call_path".to_string(), json!(hit.call_path().as_str())),
-        ("signature_line".to_string(), json!(hit.signature_line())),
-        (
-            "description_snippet".to_string(),
-            json!(hit.description_snippet()),
-        ),
-    ]);
-    if let Some(guidance) = hit.guidance_snippet() {
-        fields.insert("guidance_snippet".to_string(), json!(guidance));
+/// [`search_result`] as the JSON Task history retains.
+#[must_use]
+pub fn search(page: &SearchPage) -> Value {
+    json!(search_result(page))
+}
+
+fn paths_result(lookup: &ExactLookup) -> PathsResult {
+    PathsResult {
+        descriptions: lookup.descriptions().iter().map(description).collect(),
+        missing: lookup
+            .missing()
+            .iter()
+            .map(|missing| MissingPath {
+                call_path: missing.call_path().to_owned(),
+                suggestions: missing.suggestions().to_vec(),
+            })
+            .collect(),
     }
-    if !hit.matched_tags().is_empty() {
-        fields.insert("matched_tags".to_string(), json!(hit.matched_tags()));
+}
+
+/// One Search Hit, cut to what the caller needs to choose and call it. The
+/// Call Path already names the kind and the Provider, the rank already
+/// reflects the evidence, and an exact lookup gives the rest. A flag appears
+/// only when set, a hint only when declared, and a match only where a query
+/// term matched.
+fn hit(hit: &SearchHit) -> coral_catalog::SearchHit {
+    let tool = hit.tool();
+    coral_catalog::SearchHit {
+        call_path: hit.call_path().as_str().to_owned(),
+        signature_line: hit.signature_line().to_owned(),
+        complete: hit.complete(),
+        description_snippet: hit.description_snippet().to_owned(),
+        guidance_snippet: hit.guidance_snippet().map(str::to_owned),
+        matched_tags: hit.matched_tags().to_vec(),
+        matched_inputs: matched_inputs(hit).into_iter().map(str::to_owned).collect(),
+        hints: tool
+            .map(crate::ToolHit::hints)
+            .filter(|hints| *hints != ToolHints::default())
+            .map(DeclaredHints::from),
+        approval_required: tool
+            .is_some_and(|tool| tool.approval_requirement() == ApprovalRequirement::Required),
+        deprecated: tool.is_some_and(crate::ToolHit::deprecated),
     }
-    let hidden = matched_inputs(hit);
-    if !hidden.is_empty() {
-        fields.insert("matched_inputs".to_string(), json!(hidden));
-    }
-    if let Some(tool) = hit.tool() {
-        if tool.hints() != ToolHints::default() {
-            fields.insert("hints".to_string(), hints(tool.hints()));
-        }
-        if tool.approval_requirement() == ApprovalRequirement::Required {
-            fields.insert("approval_required".to_string(), json!(true));
-        }
-        if tool.deprecated() {
-            fields.insert("deprecated".to_string(), json!(true));
-        }
-    }
-    Value::Object(fields)
 }
 
 /// The top-level arguments a query term matched that the cut signature line
 /// does not show, in name order: a long argument can push the one the agent
-/// needs past the cut.
+/// needs past the cut. Only the input counts, since the result can show a
+/// member of the same name.
 fn matched_inputs(hit: &SearchHit) -> Vec<&str> {
-    let line = hit.signature_line();
+    let line = hit.signature_input();
     let mut names = hit
         .evidence()
         .paths()
@@ -98,98 +111,86 @@ fn matched_inputs(hit: &SearchHit) -> Vec<&str> {
     names
 }
 
-fn retriever_status(status: &RetrieverStatus) -> Value {
+/// The status of a retriever whose results may be missing; `None` for one
+/// that searched everything.
+fn retriever_status(status: &RetrieverStatus) -> Option<SearchRetrieverStatus> {
+    let state = match status.state() {
+        RetrieverState::Partial => SearchRetrieverState::Partial,
+        RetrieverState::Error => SearchRetrieverState::Error,
+        RetrieverState::ResultsFound | RetrieverState::Empty | RetrieverState::Skipped => {
+            return None;
+        }
+    };
     let coverage = status.coverage();
-    json!({
-        "retriever": status.retriever().as_str(),
-        "state": match status.state() {
-            RetrieverState::ResultsFound => "results_found",
-            RetrieverState::Empty => "empty",
-            RetrieverState::Skipped => "skipped",
-            RetrieverState::Partial => "partial",
-            RetrieverState::Error => "error",
+    Some(SearchRetrieverStatus {
+        retriever: match status.retriever() {
+            crate::EntityKind::ProviderTool => SearchRetriever::ProviderTool,
+            crate::EntityKind::SavedFunction => SearchRetriever::SavedFunction,
         },
-        "coverage": {
-            "eligible_units": coverage.eligible_units(),
-            "searched_units": coverage.searched_units(),
-            "failed_units": coverage.failed_units(),
-            "returned_count": coverage.returned_count(),
-            "has_more": coverage.has_more(),
+        state,
+        coverage: SearchRetrieverCoverage {
+            eligible_units: coverage.eligible_units(),
+            searched_units: coverage.searched_units(),
+            failed_units: coverage.failed_units(),
+            returned_count: coverage.returned_count(),
+            has_more: coverage.has_more(),
         },
     })
 }
 
-/// Projects the complete exact response, including owned source and saved diagnostics.
+/// Projects the complete exact response, including owned source and saved
+/// diagnostics.
 #[must_use]
-pub fn exact_description(description: &ExactAuthoringDescription) -> Value {
-    let mut result = authoring(description.authoring());
-    let Value::Object(fields) = &mut result else {
-        return result;
-    };
-    if let Some(detail) = description.saved_function_detail() {
-        fields.insert("source".to_string(), json!(detail.source().as_str()));
-        fields.insert("diagnostics".to_string(), json!(detail.diagnostics()));
-        fields.insert(
-            "diagnostics_truncated".to_string(),
-            json!(detail.diagnostics_truncated()),
-        );
+pub fn description(exact: &ExactAuthoringDescription) -> Description {
+    match exact.authoring() {
+        AuthoringDescription::Tool(tool) => Description::ProviderTool {
+            authoring: authoring(exact.authoring()),
+            provider_access: crate::provider_filter_value(tool.provider_call_root()).to_owned(),
+            provider_id: tool.provider_id().to_string(),
+            provider_display_name: tool.provider_display_name().to_owned(),
+            title: tool.title().map(str::to_owned),
+            deprecated: tool.deprecated(),
+            tags: tool.tags().to_vec(),
+            guidance: tool.guidance().map(str::to_owned),
+            hints: DeclaredHints::from(tool.hints()),
+            approval_required: tool.approval_requirement() == ApprovalRequirement::Required,
+        },
+        AuthoringDescription::SavedFunction(_function) => Description::SavedFunction {
+            authoring: authoring(exact.authoring()),
+            detail: exact.saved_function_detail().map(|detail| SavedDetail {
+                source: detail.source().as_str().to_owned(),
+                diagnostics: detail.diagnostics().iter().map(diagnostic).collect(),
+                diagnostics_truncated: detail.diagnostics_truncated(),
+            }),
+        },
     }
-    result
 }
 
-fn authoring(description: &AuthoringDescription) -> Value {
-    let mut fields = Map::from_iter([
-        ("kind".to_string(), json!(description.kind().as_str())),
-        (
-            "call_path".to_string(),
-            json!(description.call_path().as_str()),
-        ),
-        ("description".to_string(), json!(description.description())),
-        (
-            "typescript_declaration".to_string(),
-            json!(description.typescript_declaration()),
-        ),
-    ]);
-    if let AuthoringDescription::Tool(tool) = description {
-        fields.extend([
-            (
-                "provider_access".to_string(),
-                json!(crate::provider_filter_value(tool.provider_call_root())),
-            ),
-            (
-                "provider_id".to_string(),
-                json!(tool.provider_id().to_string()),
-            ),
-            (
-                "provider_display_name".to_string(),
-                json!(tool.provider_display_name()),
-            ),
-            ("title".to_string(), json!(tool.title())),
-            ("deprecated".to_string(), json!(tool.deprecated())),
-            ("tags".to_string(), json!(tool.tags())),
-            ("guidance".to_string(), json!(tool.guidance())),
-            ("hints".to_string(), hints(tool.hints())),
-            (
-                "approval_required".to_string(),
-                json!(tool.approval_requirement() == ApprovalRequirement::Required),
-            ),
-        ]);
-    }
-    Value::Object(fields)
+/// [`description`] as the JSON Task history retains.
+#[must_use]
+pub fn exact_description(exact: &ExactAuthoringDescription) -> Value {
+    json!(description(exact))
 }
 
-/// Only the hints the Provider declared. An absent key is undeclared, not a
-/// protocol default.
-fn hints(hints: ToolHints) -> Value {
-    Value::Object(
-        [
-            ("read_only", hints.read_only()),
-            ("destructive", hints.destructive()),
-            ("idempotent", hints.idempotent()),
-            ("open_world", hints.open_world()),
-        ]
-        .into_iter()
-        .filter_map(|(name, hint)| hint.map(|hint| (name.to_string(), json!(hint))))
-        .collect(),
-    )
+fn authoring(description: &AuthoringDescription) -> DescriptionAuthoring {
+    DescriptionAuthoring {
+        call_path: description.call_path().as_str().to_owned(),
+        description: description.description().to_owned(),
+        typescript_declaration: description.typescript_declaration().to_owned(),
+    }
+}
+
+fn diagnostic(diagnostic: &SavedFunctionDiagnostic) -> SavedDiagnostic {
+    SavedDiagnostic {
+        category: match diagnostic.category() {
+            SavedFunctionDiagnosticCategory::Message => SavedDiagnosticCategory::Message,
+            SavedFunctionDiagnosticCategory::Warning => SavedDiagnosticCategory::Warning,
+            SavedFunctionDiagnosticCategory::Error => SavedDiagnosticCategory::Error,
+            SavedFunctionDiagnosticCategory::Suggestion => SavedDiagnosticCategory::Suggestion,
+        },
+        code: diagnostic.code(),
+        message: diagnostic.message().to_owned(),
+        line: diagnostic.line(),
+        column: diagnostic.column(),
+    }
 }

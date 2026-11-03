@@ -109,9 +109,16 @@ impl Session {
         result["structuredContent"].clone()
     }
 
+    /// Starts a Task the way an agent does: with its first `exec`.
     async fn start_task(&self) -> String {
-        self.call("start_task", json!({"intent":"Answer required actions"}))
-            .await["task_id"]
+        self.call(
+            "exec",
+            json!({
+                "goal":"Answer required actions", "intent":"Start the Task",
+                "program":"return null;"
+            }),
+        )
+        .await["task_id"]
             .as_str()
             .expect("Task id")
             .to_owned()
@@ -298,11 +305,9 @@ async fn a_retry_with_request_state_is_refused() {
     {
         let mut session = super::RawSession::open(&endpoint, version).await;
         session.client_capabilities = json!({"elicitation": {"form": {}}});
-        let started = session
-            .tool("start_task", json!({"intent":"Retry on the wire"}))
-            .await;
+        let task = session.start_task("Retry on the wire").await;
         let arguments = json!({
-            "task_id":started["structuredContent"]["task_id"], "intent":"Invoke an approval-gated Tool",
+            "task_id":task, "intent":"Invoke an approval-gated Tool",
             "wait_ms":5000, "program":PROGRAM
         });
         let update = session.tool("exec", arguments.clone()).await;

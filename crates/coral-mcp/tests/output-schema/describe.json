@@ -16,6 +16,10 @@
         {
           "type": "object",
           "properties": {
+            "kind": {
+              "type": "string",
+              "const": "provider_tool"
+            },
             "call_path": {
               "type": "string"
             },
@@ -63,10 +67,6 @@
             },
             "approval_required": {
               "type": "boolean"
-            },
-            "kind": {
-              "type": "string",
-              "const": "provider_tool"
             }
           },
           "required": [
@@ -88,6 +88,10 @@
         {
           "type": "object",
           "properties": {
+            "kind": {
+              "type": "string",
+              "const": "saved_function"
+            },
             "call_path": {
               "type": "string"
             },
@@ -108,10 +112,6 @@
             },
             "diagnostics_truncated": {
               "type": "boolean"
-            },
-            "kind": {
-              "type": "string",
-              "const": "saved_function"
             }
           },
           "required": [
@@ -140,7 +140,7 @@
           "type": "boolean"
         }
       },
-      "description": "Effect hints the Provider declared. An absent field is undeclared, not a\nprotocol default."
+      "description": "Effect hints the Provider declared. An absent field is undeclared, not a protocol default."
     },
     "Diagnostic": {
       "type": "object",
@@ -150,30 +150,28 @@
           "$ref": "#/$defs/DiagnosticCategory"
         },
         "code": {
-          "$ref": "#/$defs/SafeInteger"
+          "type": "integer",
+          "maximum": 9007199254740991,
+          "minimum": 0
         },
         "message": {
           "type": "string"
         },
         "line": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SafeInteger"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "type": [
+            "integer",
+            "null"
+          ],
+          "maximum": 9007199254740991,
+          "minimum": 0
         },
         "column": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SafeInteger"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "type": [
+            "integer",
+            "null"
+          ],
+          "maximum": 9007199254740991,
+          "minimum": 0
         }
       },
       "required": [
@@ -192,11 +190,6 @@
         "error",
         "suggestion"
       ]
-    },
-    "SafeInteger": {
-      "type": "integer",
-      "maximum": 9007199254740991,
-      "minimum": 0
     },
     "ToolFailure": {
       "type": "object",
