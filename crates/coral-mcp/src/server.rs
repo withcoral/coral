@@ -182,7 +182,7 @@ impl McpServer {
             query: arguments.query,
             provider: arguments.provider,
             limit: arguments.limit,
-            cursor: arguments.cursor,
+            offset: arguments.offset,
         };
         let results = self
             .runtime

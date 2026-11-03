@@ -1303,7 +1303,7 @@ const searched: DiscoveryContext = {
   query: 'github pulls',
   provider: null,
   limit: 5,
-  cursor: null,
+  offset: 0,
 }
 /** A retained `search` or `describe` attempt, selected in the list. */
 function discovery(context: DiscoveryContext, response: string): Story['args'] {

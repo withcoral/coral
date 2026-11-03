@@ -1475,13 +1475,6 @@ async fn search_request_validation_happens_after_durable_begin() {
         ),
         (
             coral_search::SearchInput {
-                cursor: Some("malformed".into()),
-                ..Default::default()
-            },
-            "invalid_cursor",
-        ),
-        (
-            coral_search::SearchInput {
                 limit: Some(0),
                 ..Default::default()
             },
@@ -1850,7 +1843,6 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
         )
         .await
         .unwrap();
-    let cursor = first.next_cursor().unwrap().to_string();
     let second = fixture
         .commands
         .search(
@@ -1858,7 +1850,7 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
             coral_search::SearchInput {
                 query: Some("answer".into()),
                 limit: Some(1),
-                cursor: Some(cursor.clone()),
+                offset: first.next_offset(),
                 ..Default::default()
             },
         )
@@ -1897,11 +1889,10 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
         .filter(|entry| entry.kind == AttemptKind::Search)
         .collect::<Vec<_>>();
     assert_eq!(pages.len(), 2, "the unrequested third page is not captured");
-    for ((entry, expected_path), requested_cursor) in pages
-        .into_iter()
-        .zip(["coral.functions.alpha", "coral.functions.bravo"])
-        .zip([None, Some(cursor)])
-    {
+    for (entry, (expected_path, offset, next_offset)) in pages.into_iter().zip([
+        ("coral.functions.alpha", 0, 1),
+        ("coral.functions.bravo", 1, 2),
+    ]) {
         let detail = fixture
             .tasks
             .interaction(&fixture.actor, &fixture.workspace, goal.id(), &entry.id)
@@ -1927,8 +1918,8 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
             Some("Find an answer")
         );
         assert_eq!(
-            response.get("has_more"),
-            Some(&serde_json::Value::Bool(true))
+            response.get("next_offset"),
+            Some(&serde_json::json!(next_offset))
         );
         assert_eq!(
             context,
@@ -1936,7 +1927,7 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
                 query: Some("answer".into()),
                 provider: None,
                 limit: 1,
-                cursor: requested_cursor,
+                offset,
             }
         );
     }
@@ -1966,7 +1957,7 @@ async fn empty_filtered_search_retains_exact_accepted_query_provider_and_limit()
                 query: Some("  Missing café  ".into()),
                 provider: Some(provider.into()),
                 limit: Some(7),
-                cursor: None,
+                offset: None,
             },
         )
         .await
@@ -1996,7 +1987,7 @@ async fn empty_filtered_search_retains_exact_accepted_query_provider_and_limit()
             query: Some("  Missing café  ".into()),
             provider: Some(provider.into()),
             limit: 7,
-            cursor: None
+            offset: 0
         }
     );
     assert_eq!(response.get("hits"), Some(&serde_json::json!([])));
@@ -2052,13 +2043,10 @@ async fn repeated_empty_searches_are_distinct_complete_attempts_and_closure_reje
             query: None,
             provider: None,
             limit: 10,
-            cursor: None,
+            offset: 0,
         }
     );
-    assert_eq!(
-        response,
-        serde_json::json!({ "hits": [], "has_more": false })
-    );
+    assert_eq!(response, serde_json::json!({ "hits": [] }));
     fixture
         .tasks
         .end(
@@ -2087,6 +2075,73 @@ async fn repeated_empty_searches_are_distinct_complete_attempts_and_closure_reje
             .len(),
         2
     );
+}
+
+// Catches: a search page retained before pages had an offset failing to load.
+// Its cursor is not read: the page shows as a first page, and its response as
+// it was retained.
+#[tokio::test]
+async fn a_search_retained_with_a_cursor_loads_as_a_first_page() {
+    let fixture = Fixture::new().await;
+    let goal = fixture.goal().await;
+    fixture
+        .commands
+        .search(
+            &fixture.call(&goal, "Find a callable"),
+            coral_search::SearchInput::default(),
+        )
+        .await
+        .unwrap();
+    let [entry] = <[_; 1]>::try_from(
+        fixture
+            .tasks
+            .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let retained = serde_json::json!({
+        "hits": [],
+        "has_more": true,
+        "next_cursor": "eyJ2ZXJzaW9uIjoyLCJwb3NpdGlvbiI6Mn0",
+    });
+    fixture
+        .test_database
+        .execute_fixture_sql(&format!(
+            "UPDATE task_interactions SET evidence_json = '{}' WHERE id = '{}'",
+            serde_json::json!({
+                "kind": "discovery",
+                "context": {
+                    "kind": "search",
+                    "query": "answer",
+                    "provider": null,
+                    "limit": 1,
+                    "cursor": "eyJ2ZXJzaW9uIjoyLCJwb3NpdGlvbiI6MX0",
+                },
+                "response": retained,
+            }),
+            entry.id
+        ))
+        .await
+        .expect("retain a search page as Coral wrote it before offsets");
+    let detail = fixture
+        .tasks
+        .interaction(&fixture.actor, &fixture.workspace, goal.id(), &entry.id)
+        .await
+        .unwrap();
+    let Some(AttemptEvidence::Discovery { context, response }) = detail.evidence else {
+        panic!("a retained search: {:?}", detail.evidence);
+    };
+    assert_eq!(
+        context,
+        DiscoveryContext::Search {
+            query: Some("answer".into()),
+            provider: None,
+            limit: 1,
+            offset: 0,
+        }
+    );
+    assert_eq!(response, retained);
 }
 
 impl Fixture {
