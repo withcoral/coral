@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useFetcher } from 'react-router'
+import { useFetcher, type FetcherWithComponents } from 'react-router'
 
 import { Button, Inputs } from '@/wax/components'
 import { Card } from '@/wax/components/card/card'
@@ -27,7 +27,10 @@ export function IconCard({
   provider: ProviderSettingsView
   form: FormContext
 }) {
+  // Both changes send the same etag, so only one runs at a time.
+  const upload = useFetcher<ActionResult>()
   const removal = useFetcher<ActionResult>()
+  const uploading = upload.state !== 'idle'
   const removing = removal.state !== 'idle'
   return (
     <section aria-label="Icon">
@@ -35,18 +38,31 @@ export function IconCard({
         <div className={styles.iconRow}>
           <Logo name={provider.displayName} icons={provider.icons} size="40" />
           {/* A new etag follows each change, which remounts the form and clears the file. */}
-          <UploadForm key={provider.etag} provider={provider} form={form} disabled={removing} />
+          <UploadForm
+            key={provider.etag}
+            provider={provider}
+            form={form}
+            upload={upload}
+            disabled={removing}
+          />
           {provider.uploadedIcon && (
             <removal.Form method="post">
               <Fields form={form} intent="deleteProviderIcon" etag={provider.etag} />
               <input type="hidden" name="provider" value={provider.id} />
-              <Button.TextButton type="submit" variant="secondary" size="32" disabled={removing}>
+              <Button.TextButton
+                type="submit"
+                variant="secondary"
+                size="32"
+                busy={removing}
+                disabled={uploading}
+              >
                 Remove icon
               </Button.TextButton>
             </removal.Form>
           )}
         </div>
         <ActionNotice result={removing ? undefined : removal.data} />
+        <ActionNotice result={uploading ? undefined : upload.data} />
       </Card>
     </section>
   )
@@ -55,13 +71,14 @@ export function IconCard({
 function UploadForm({
   provider,
   form,
+  upload,
   disabled,
 }: {
   provider: ProviderSettingsView
   form: FormContext
+  upload: FetcherWithComponents<ActionResult>
   disabled: boolean
 }) {
-  const upload = useFetcher<ActionResult>()
   const uploading = upload.state !== 'idle'
   const [file, setFile] = useState<File | null>(null)
   const tooLarge = file !== null && file.size > PROVIDER_ICON_MAX_BYTES
@@ -83,13 +100,13 @@ function UploadForm({
           type="submit"
           variant="secondary"
           size="32"
-          disabled={disabled || uploading || file === null || tooLarge}
+          busy={uploading}
+          disabled={disabled || file === null || tooLarge}
         >
           Upload icon
         </Button.TextButton>
       </div>
       {tooLarge && <ErrorMessage message={`This file is too large. ${PROVIDER_ICON_RULE}`} />}
-      <ActionNotice result={uploading ? undefined : upload.data} />
     </upload.Form>
   )
 }

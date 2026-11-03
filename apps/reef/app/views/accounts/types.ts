@@ -1,4 +1,4 @@
-import type { ProviderLogo } from '@/lib/provider-recipes/choice'
+import type { ProviderLogo } from '@/views/providers/types'
 import type { Crumb, FormContext, ActionResult, WorkspaceView } from '@/views/management/types'
 import type { CredentialFieldView } from '@/views/providers/types'
 export type { FormContext, ActionResult }

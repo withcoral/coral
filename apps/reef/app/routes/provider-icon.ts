@@ -16,8 +16,9 @@ const imageHeaders = {
 
 /**
  * The icon an owner uploaded for a provider, for anyone who can see the provider. The
- * page names the icon's digest in `v`, so the browser keeps that URL's image until the
- * icon changes; any other URL is read fresh each time.
+ * protected layout marks every response `no-store`, so the browser reads the icon again
+ * on each page load. Pages name the icon's digest in `v`: a new icon gets a new URL, so
+ * no image the page already holds stands in for it.
  */
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
@@ -25,13 +26,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       { name: providerName(workspaceName(params.workspace), params.provider) },
       { signal: request.signal },
     )
-    const current = new URL(request.url).searchParams.get('v') === icon.digest
     // A copy, so the body owns a plain ArrayBuffer as `Response` requires.
     return new Response(new Uint8Array(icon.content), {
       headers: {
         ...imageHeaders,
         'Content-Type': icon.mediaType,
-        ...(current ? { 'Cache-Control': 'private, max-age=31536000, immutable' } : privateHeaders),
+        ...privateHeaders,
       },
     })
   } catch (error) {

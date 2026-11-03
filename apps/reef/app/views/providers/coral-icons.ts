@@ -1,4 +1,4 @@
-import type { ProviderLogo } from '@/lib/provider-recipes/choice'
+import type { ProviderLogo } from './types'
 import coralMarkDark from './coral-mark-dark.svg'
 import coralMarkLight from './coral-mark-light.svg'
 

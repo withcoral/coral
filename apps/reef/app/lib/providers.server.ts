@@ -2,7 +2,7 @@ import { CORAL_ICONS } from '@/views/providers/coral-icons'
 import type { ProviderMark } from '@/views/activity/call-tool'
 import { activityPageFetchKey } from './activity-page-fetch'
 import { recipeChoiceById } from './provider-recipes/library.server'
-import type { ProviderLogo } from './provider-recipes/choice'
+import type { ProviderLogo } from '@/views/providers/types'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { data } from 'react-router'
 import {
@@ -69,14 +69,6 @@ export async function listAllProviders(
   return providers
 }
 /**
- * Where the browser loads the icon an owner uploaded for `provider`, by its resource name.
- * The digest changes with the icon, so a new icon gets a new URL and the browser can keep
- * each one for good.
- */
-export function uploadedIconPath(provider: string, digest: string) {
-  return `/${provider}/icon?${new URLSearchParams({ v: digest })}`
-}
-/**
  * The logo that stands for a provider: Coral's mark for the Built-in Provider, the icon an
  * owner uploaded, else the logo of the recipe whose id its namespace keeps. Without one, a
  * lettermark shows.
@@ -85,7 +77,9 @@ export function providerIcons(
   provider: Pick<Provider, 'name' | 'builtin' | 'namespace' | 'iconDigest'>,
 ): ProviderLogo | undefined {
   if (provider.builtin) return CORAL_ICONS
-  if (provider.iconDigest) return { light: uploadedIconPath(provider.name, provider.iconDigest) }
+  // The resource name is the icon's Reef path. Its digest gives each icon its own URL.
+  if (provider.iconDigest)
+    return { light: `/${provider.name}/icon?${new URLSearchParams({ v: provider.iconDigest })}` }
   return recipeChoiceById(provider.namespace)?.icons
 }
 /**

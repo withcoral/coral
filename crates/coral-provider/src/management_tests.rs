@@ -938,4 +938,32 @@ async fn an_owner_sets_and_removes_a_providers_icon_that_members_read() {
         .unwrap();
     assert_eq!(again, removed, "removing no icon writes nothing");
     assert_eq!(events().await.len(), before + 2);
+    // The schema refuses an icon row that is only partly set, whatever writes it.
+    for (case, columns) in [
+        ("no media type", "icon_content = X'00', icon_digest = 'd'"),
+        ("no content", "icon_media_type = 'image/png', icon_digest = 'd'"),
+        ("no digest", "icon_media_type = 'image/png', icon_content = X'00'"),
+        (
+            "an unknown media type",
+            "icon_media_type = 'image/gif', icon_content = X'00', icon_digest = 'd'",
+        ),
+    ] {
+        assert!(
+            db.execute_fixture_sql(&format!(
+                "UPDATE provider_records SET {columns} WHERE id = '{}'",
+                provider.id()
+            ))
+            .await
+            .is_err(),
+            "{case}"
+        );
+    }
+    assert_eq!(
+        providers
+            .inspect_provider_icon(&owner, workspace.id(), provider.id())
+            .await
+            .unwrap(),
+        None,
+        "a refused row changes nothing"
+    );
 }

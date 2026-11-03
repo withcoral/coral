@@ -5,10 +5,16 @@ import type {
   CreationAttempt,
   UpdateAttempt,
 } from '@/lib/provider-publication-attempt/model'
-import type { ProviderLogo, SourceChoice } from '@/lib/provider-recipes/choice'
+import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import type { PersonalAccountState } from '@/views/accounts/types'
 import type { AccountLabel } from './account-labels'
 import type { SelectedTool } from './selection'
+
+/**
+ * The URLs of the logo that stands for a provider: a recipe's, an uploaded icon or Coral's
+ * mark. `light` serves both themes when `dark` is absent.
+ */
+export type ProviderLogo = { light: string; dark?: string }
 export type { AccountChoice } from '@/lib/provider-publication-attempt/model'
 
 export type { ActionResult, FormContext, WorkspaceView }

@@ -13,7 +13,8 @@ ALTER TABLE provider_records
     ADD CONSTRAINT provider_records_icon_complete CHECK (
         (icon_media_type IS NULL AND icon_content IS NULL AND icon_digest IS NULL)
         OR (
-            icon_media_type IN ('image/png', 'image/jpeg', 'image/webp', 'image/svg+xml')
+            icon_media_type IS NOT NULL
+            AND icon_media_type IN ('image/png', 'image/jpeg', 'image/webp', 'image/svg+xml')
             AND icon_content IS NOT NULL
             AND icon_digest IS NOT NULL
         )

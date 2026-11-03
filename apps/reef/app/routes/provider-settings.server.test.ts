@@ -368,13 +368,23 @@ describe('icon changes', () => {
   // Catches: Coral refusing the image shown as a generic form error.
   it('explains an image Coral refuses', async () => {
     responses['providers.setProviderIcon'] = () => {
-      throw new ConnectError('PROVIDER_ICON_INVALID', Code.InvalidArgument)
+      throw new ConnectError('INVALID_PROVIDER_INPUT', Code.InvalidArgument)
     }
     expect(await post('setProviderIcon', png(10))).toMatchObject({
       status: 400,
       error:
         'Coral cannot use this file as an icon. Use a PNG, JPEG, WebP or SVG file of 100 KiB or less.',
     })
+  })
+
+  // Catches: another invalid argument, such as a malformed etag, blamed on the file.
+  it('does not blame the file for another invalid argument', async () => {
+    responses['providers.setProviderIcon'] = () => {
+      throw new ConnectError('INVALID_ARGUMENT', Code.InvalidArgument)
+    }
+    const result = await post('setProviderIcon', png(10))
+    expect(result).toMatchObject({ status: 400 })
+    expect(result.error).not.toContain('Coral cannot use this file as an icon.')
   })
 
   it('removes the icon with the etag', async () => {

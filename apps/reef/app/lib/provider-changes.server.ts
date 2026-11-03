@@ -157,7 +157,8 @@ export async function applyProviderChange(
     if (
       intent === 'setProviderIcon' &&
       error instanceof ConnectError &&
-      error.code === Code.InvalidArgument
+      error.code === Code.InvalidArgument &&
+      error.rawMessage === 'INVALID_PROVIDER_INPUT'
     )
       return data(
         { error: `Coral cannot use this file as an icon. ${PROVIDER_ICON_RULE}`, credential: null },

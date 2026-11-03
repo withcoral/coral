@@ -206,10 +206,11 @@ async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() 
 #[tokio::test]
 async fn upgrading_preserves_visibility_even_when_an_older_writer_later_records_failure() {
     let upstream = MockServer::start().await;
-    // Hold back only the search steps 0048 to 0054, the upgrade under test.
-    // Every other step applies first, because today's code publishes the
-    // tracer Provider and may read any of them. A later step needs no change
-    // to this range unless it depends on one of the held-back steps.
+    // Hold back every step numbered 0048 to 0054: the search upgrade under
+    // test starts at 0048, and the steps after it there wait too. Every later
+    // step applies first, because today's code publishes the tracer Provider
+    // and may read any of them. A later step needs no change to this range
+    // unless it depends on one of the held-back steps.
     let modules = TestModules::with_plan(&coral_test_support::edited_migration_plan(|steps| {
         steps
             .into_iter()

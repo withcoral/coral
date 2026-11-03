@@ -53,15 +53,7 @@ it('serves the image with its type in a sandbox', async () => {
     "default-src 'none'; style-src 'unsafe-inline'; sandbox",
   )
   expect(new Uint8Array(await response.arrayBuffer())).toEqual(svg)
-})
-
-// Catches: a browser keeping an old icon after an owner replaces it.
-it.each([
-  ['the current digest', '?v=digest-1', 'private, max-age=31536000, immutable'],
-  ['an earlier digest', '?v=digest-0', 'private, no-store'],
-  ['no digest', '', 'private, no-store'],
-])('caches for good only under %s', async (_, query, cacheControl) => {
-  expect((await load(query)).headers.get('Cache-Control')).toBe(cacheControl)
+  expect(response.headers.get('Cache-Control')).toBe('private, no-store')
 })
 
 it('answers 404 when the provider has no uploaded icon', async () => {

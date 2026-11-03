@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react'
 import { toolOwner } from '@/lib/call-root'
-import type { ProviderLogo } from '@/lib/provider-recipes/choice'
+import type { ProviderLogo } from '@/views/providers/types'
 import { Logo, type LogoIcons } from '@/wax/components/logo'
 import { ToolName } from '@/wax/components/tool-name'
 import * as styles from './call-tool.css'

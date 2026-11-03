@@ -1,4 +1,4 @@
-import type { RecipeInputView } from '@/views/providers/types'
+import type { ProviderLogo, RecipeInputView } from '@/views/providers/types'
 import { inputReference } from './input-reference'
 
 // What Add provider offers before a source is read: a recipe from the library, or
@@ -19,12 +19,6 @@ export type SourceLocation =
       /** File name of the OpenAPI document bundled beside the recipe, read in place of a URL. */
       document: string
     }
-
-/**
- * The URLs of the logo that stands for a provider: a recipe's, an uploaded icon or Coral's
- * mark. `light` serves both themes when `dark` is absent.
- */
-export type ProviderLogo = { light: string; dark?: string }
 
 export type SourceChoice = SourceLocation & {
   /** The recipe's id; empty for a typed URL. */

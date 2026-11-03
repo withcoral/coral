@@ -5,13 +5,13 @@ import {
   byService,
   sourceButtonLabel,
   sourcesInOrder,
-  type ProviderLogo,
   type ServiceChoices,
   type SourceChoice,
 } from '@/lib/provider-recipes/choice'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import { filterQuery, type FilterQuery } from '@/utils/filter-query'
 import * as styles from './providers.css'
+import type { ProviderLogo } from './types'
 
 /**
  * One service to add. The card names it and holds a button for each of its
