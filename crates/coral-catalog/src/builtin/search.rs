@@ -287,6 +287,32 @@ impl SearchOutput {
     pub fn into_tool_result(self) -> Value {
         tool_result(&self)
     }
+
+    /// Whether a JSON reader holds every integer in it exactly. One past
+    /// 2^53 − 1 comes only from corrupt stored data, and a reader such as V8
+    /// would round it, so a surface fails rather than return it.
+    #[must_use]
+    pub fn is_exact_in_json(&self) -> bool {
+        match self {
+            Self::Page(page) => page.retriever_statuses.iter().all(|status| {
+                let coverage = &status.coverage;
+                [
+                    coverage.eligible_units,
+                    coverage.searched_units,
+                    coverage.failed_units,
+                    coverage.returned_count,
+                ]
+                .into_iter()
+                .all(exact_in_json)
+            }),
+            Self::Paths(paths) => paths.descriptions.iter().all(Description::is_exact_in_json),
+        }
+    }
+}
+
+/// Whether a JSON reader holds `value` exactly.
+const fn exact_in_json(value: u64) -> bool {
+    value <= JSON_SAFE_INTEGER_MAX
 }
 
 /// One page of Search Hits, and only what the caller acts on besides: the
@@ -581,6 +607,27 @@ pub enum Description {
     },
 }
 
+impl Description {
+    /// Whether a JSON reader holds every integer in it exactly: a saved
+    /// diagnostic's code, line and column. See
+    /// [`SearchOutput::is_exact_in_json`].
+    #[must_use]
+    pub fn is_exact_in_json(&self) -> bool {
+        match self {
+            Self::ProviderTool { .. } | Self::SavedFunction { detail: None, .. } => true,
+            Self::SavedFunction {
+                detail: Some(detail),
+                ..
+            } => detail.diagnostics.iter().all(|diagnostic| {
+                [Some(diagnostic.code), diagnostic.line, diagnostic.column]
+                    .into_iter()
+                    .flatten()
+                    .all(exact_in_json)
+            }),
+        }
+    }
+}
+
 /// What every exact description has.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(rename = "Authoring", description = "")]
@@ -858,6 +905,60 @@ pub(super) mod tests {
             "a final `…` cut text",
         ] {
             assert!(line.contains(meaning), "{line} lacks {meaning}");
+        }
+    }
+
+    // Catches: an integer past 2^53 − 1, in a page's coverage or a saved
+    // diagnostic, that a surface would hand a JSON reader to round.
+    #[test]
+    fn an_output_is_exact_in_json_only_within_the_safe_range() {
+        const SAFE: u64 = 9_007_199_254_740_991;
+        let page = |units| {
+            SearchOutput::Page(SearchResult {
+                hits: Vec::new(),
+                has_more: false,
+                next_cursor: None,
+                retriever_statuses: vec![SearchRetrieverStatus {
+                    retriever: SearchRetriever::SavedFunction,
+                    state: SearchRetrieverState::Partial,
+                    coverage: SearchRetrieverCoverage {
+                        eligible_units: units,
+                        searched_units: 0,
+                        failed_units: 0,
+                        returned_count: 0,
+                        has_more: false,
+                    },
+                }],
+            })
+        };
+        let paths = |code, line, column| {
+            SearchOutput::Paths(PathsResult {
+                descriptions: vec![Description::SavedFunction {
+                    authoring: authoring("coral.functions.weekly"),
+                    detail: Some(SavedDetail {
+                        source: "export default async function weekly() {}".to_owned(),
+                        diagnostics: vec![SavedDiagnostic {
+                            category: SavedDiagnosticCategory::Warning,
+                            code,
+                            message: "unused".to_owned(),
+                            line,
+                            column,
+                        }],
+                        diagnostics_truncated: false,
+                    }),
+                }],
+                missing: Vec::new(),
+            })
+        };
+        for (output, exact) in [
+            (page(SAFE), true),
+            (page(SAFE + 1), false),
+            (paths(SAFE, Some(SAFE), Some(SAFE)), true),
+            (paths(SAFE + 1, None, None), false),
+            (paths(6133, Some(SAFE + 1), None), false),
+            (paths(6133, Some(1), Some(SAFE + 1)), false),
+        ] {
+            assert_eq!(output.is_exact_in_json(), exact, "{output:?}");
         }
     }
 }

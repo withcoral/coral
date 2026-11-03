@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::ToolFailure;
-use super::diagnostics::{Diagnostic, SafeInteger, saved_diagnostics};
+use super::diagnostics::{Diagnostic, saved_diagnostics};
 
 #[derive(Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -34,23 +34,14 @@ pub(crate) fn exact_description(
 }
 
 /// The description, or an internal failure when a saved diagnostic carries
-/// an integer that a JSON reader cannot hold exactly. The shared type
-/// serializes a plain `u64`, so this adapter keeps the check that its own
-/// [`SafeInteger`] makes for `save_function`.
+/// an integer that a JSON reader cannot hold exactly, as the Built-in Tool
+/// fails for the same description.
 fn exact_in_json(description: Description) -> Result<Description, ToolFailure> {
-    if let Description::SavedFunction {
-        detail: Some(detail),
-        ..
-    } = &description
-    {
-        for diagnostic in &detail.diagnostics {
-            SafeInteger::new(diagnostic.code)?;
-            for value in [diagnostic.line, diagnostic.column].into_iter().flatten() {
-                SafeInteger::new(value)?;
-            }
-        }
+    if description.is_exact_in_json() {
+        Ok(description)
+    } else {
+        Err(ToolFailure::internal())
     }
-    Ok(description)
 }
 
 pub(crate) fn saved_function(
