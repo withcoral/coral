@@ -443,6 +443,163 @@ async fn summary_marks_the_total_partial_while_a_run_is_unmeasured() {
     assert_eq!(added(after.calls, measured.calls).failed, 1);
 }
 
+/// A call counts only once it ended: pending and dispatching calls add nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn summary_counts_a_call_only_once_it_ended() {
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    fixture.require_approval(&tool).await;
+    let waiting = waiting_run(&fixture, actor, workspace).await;
+    let pending = summary(&fixture, actor, workspace).await;
+    assert_eq!(pending.calls, CallOutcomes::default());
+    assert!(pending.tools.is_empty() && pending.callers.is_empty());
+
+    let run = &waiting.0;
+    let rewritten = fixture
+        .inject_fault(&format!(
+            "UPDATE tool_invocations SET state = 'dispatching', \
+             dispatch_started_at_unix_nanos = admitted_at_unix_nanos WHERE run_id = '{run}'"
+        ))
+        .await;
+    assert_eq!(rewritten, 1);
+    let dispatching = summary(&fixture, actor, workspace).await;
+    assert_eq!(dispatching.calls, CallOutcomes::default());
+    assert!(dispatching.tools.is_empty() && dispatching.callers.is_empty());
+
+    fixture
+        .inject_fault(&format!(
+            "UPDATE tool_invocations SET state = 'pending', \
+             dispatch_started_at_unix_nanos = NULL WHERE run_id = '{run}'"
+        ))
+        .await;
+    decide(
+        &fixture,
+        actor,
+        workspace,
+        &waiting,
+        ApprovalDecision::Decline,
+    )
+    .await;
+    let ended = summary(&fixture, actor, workspace).await;
+    assert_eq!(
+        ended.calls,
+        CallOutcomes {
+            not_allowed: 1,
+            ..CallOutcomes::default()
+        }
+    );
+}
+
+/// The summary reads an ended time as an ended call, without reading the state.
+/// The lifecycle constraint is what makes that true on both databases.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_an_ended_call_can_hold_an_ended_time() {
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    finish(&fixture, actor, workspace, CALL).await;
+    fixture.require_approval(&tool).await;
+    let waiting = waiting_run(&fixture, actor, workspace).await;
+    let before = summary(&fixture, actor, workspace).await;
+
+    let pending = format!("state = 'pending' AND run_id = '{}'", waiting.0);
+    for (case, set, row) in [
+        (
+            "pending",
+            "ended_at_unix_nanos = admitted_at_unix_nanos",
+            pending.as_str(),
+        ),
+        (
+            "dispatching",
+            "state = 'dispatching', dispatch_started_at_unix_nanos = admitted_at_unix_nanos, \
+             ended_at_unix_nanos = admitted_at_unix_nanos",
+            pending.as_str(),
+        ),
+        ("reopened", "state = 'pending'", "state = 'ended'"),
+        (
+            "redispatched",
+            "state = 'dispatching', result_kind = NULL, result_json = NULL",
+            "state = 'ended'",
+        ),
+    ] {
+        let error = fixture
+            .test_database
+            .execute_fixture_sql(&format!("UPDATE tool_invocations SET {set} WHERE {row}"))
+            .await
+            .expect_err(case)
+            .to_string();
+        assert!(
+            error.contains("tool_invocations_lifecycle_consistent"),
+            "{case}: {error}"
+        );
+    }
+
+    let after = summary(&fixture, actor, workspace).await;
+    assert_eq!(
+        after.calls, before.calls,
+        "a rejected write changes nothing"
+    );
+    assert_eq!(after.tools, before.tools);
+}
+
+/// The window starts exactly at `since`, whichever way the call began.
+#[tokio::test(flavor = "multi_thread")]
+async fn summary_window_includes_a_call_that_ended_at_its_start() {
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    let run = fixture
+        .runs
+        .start(actor, workspace, submission(CALL))
+        .await
+        .unwrap();
+    wait_for_terminal(&fixture.runs, actor, workspace, run.run_id()).await;
+    let ended_at = 1_000;
+    let rewritten = fixture
+        .inject_fault(&format!(
+            "UPDATE tool_invocations SET admitted_at_unix_nanos = 0, \
+             dispatch_started_at_unix_nanos = 0, ended_at_unix_nanos = {ended_at} \
+             WHERE run_id = '{}'",
+            run.run_id()
+        ))
+        .await;
+    assert_eq!(rewritten, 1);
+
+    for (since, answered) in [(ended_at, 1), (ended_at + 1, 0)] {
+        let mut tx = fixture.database.begin_read_snapshot().await.unwrap();
+        let authority = fixture
+            .workspaces
+            .action_history_authority_in_transaction(&mut tx, actor, Some(workspace))
+            .await
+            .unwrap();
+        let seen = fixture
+            .runs
+            .activity_summary_in_transaction(&mut tx, &authority, since, Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(seen.calls.answered, answered, "since {since}");
+    }
+}
+
+/// The caller's own work in another Workspace stays out of this one's totals.
+#[tokio::test(flavor = "multi_thread")]
+async fn summary_counts_one_workspace() {
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    finish(&fixture, actor, workspace, CALL).await;
+    let other = fixture
+        .workspaces
+        .create(
+            &change(tool.user.clone(), 41, '4'),
+            coral_workspace::WorkspaceDisplayName::parse("Other").unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let seen = summary(&fixture, actor, other.id()).await;
+    assert_eq!(seen.calls, CallOutcomes::default());
+    assert!(seen.tools.is_empty() && seen.callers.is_empty());
+    assert_eq!(summary(&fixture, actor, workspace).await.calls.answered, 1);
+}
+
 #[tokio::test]
 async fn summary_rejects_a_window_outside_one_to_thirty_days() {
     let (fixture, _) = forecast_fixture().await;

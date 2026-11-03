@@ -6,7 +6,9 @@ use crate::summary::{
 use crate::{CoralFailure, Error, InvocationResultKind};
 use coral_db::{Transaction, col, column};
 use coral_workspace::HistoryAuthority;
-use sea_query::{Alias, Expr, ExprTrait as _, Func, JoinType, Order, Query, SelectStatement};
+use sea_query::{
+    Alias, Asterisk, Expr, ExprTrait as _, Func, JoinType, Order, Query, SelectStatement,
+};
 
 /// Authorized Runs as `r`, each joined to its rows of `table` as `alias`.
 fn authorized_runs_with(authority: &HistoryAuthority, table: &str, alias: &str) -> SelectStatement {
@@ -23,12 +25,6 @@ fn authorized_runs_with(authority: &HistoryAuthority, table: &str, alias: &str) 
         .to_owned();
     crate::history_repository::restrict(&mut select, authority);
     select
-}
-
-fn ended_since(since: i64) -> sea_query::SimpleExpr {
-    col("i", "state")
-        .eq("ended")
-        .and(col("i", "ended_at_unix_nanos").gte(since))
 }
 
 fn big_sum(expr: sea_query::SimpleExpr) -> sea_query::SimpleExpr {
@@ -65,6 +61,9 @@ fn principal(id: &str, kind: &str) -> Result<coral_workspace::Principal, Error> 
 }
 
 /// Ended Invocations grouped by invoking Principal, Tool, Call Path and native outcome.
+/// Only an ended Invocation holds an ended time, by the lifecycle constraint. So
+/// the read names neither `state` nor `id`, and migration 0055 covers it without
+/// loading a row's arguments or result.
 pub(crate) async fn call_outcomes(
     tx: &mut Transaction<'_>,
     authority: &HistoryAuthority,
@@ -82,15 +81,12 @@ pub(crate) async fn call_outcomes(
     grouped
         .columns(runs.map(|name| (Alias::new("r"), Alias::new(name))))
         .columns(invocations.map(|name| (Alias::new("i"), Alias::new(name))))
-        .expr_as(
-            Expr::col((Alias::new("i"), Alias::new("id"))).count(),
-            Alias::new("calls"),
-        )
+        .expr_as(Expr::col(Asterisk).count(), Alias::new("calls"))
         .expr_as(
             Expr::col((Alias::new("i"), Alias::new("ended_at_unix_nanos"))).max(),
             Alias::new("last_ended_at_unix_nanos"),
         )
-        .and_where(ended_since(since))
+        .and_where(col("i", "ended_at_unix_nanos").gte(since))
         .group_by_columns(runs.map(|name| (Alias::new("r"), Alias::new(name))))
         .group_by_columns(invocations.map(|name| (Alias::new("i"), Alias::new(name))));
     // The label reads one Agent row per group, not per Invocation.
