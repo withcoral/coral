@@ -655,13 +655,14 @@ export function Activity({
       : undefined
   // The rail's own navigation carries a fresh token in its state; Back and Forward do not.
   const pendingToken = railToken(transition.location?.state)
-  // The record whose rail is closing. It plays its exit while the address catches
-  // up, and a load that lands meanwhile cannot reopen it. A new selection ends it.
-  const [closing, setClosing] = useState<string | null>(null)
-  if (closing !== null && closing !== selected) setClosing(null)
   // The record the rail shows, exactly: a Run's final value has its own name,
   // although its Run's detail shows it.
   const shownRecord = shownRecordOf(selected, new URLSearchParams(search).get('record'))
+  // The records whose rail is closing: the one it shows, and the one a step is about
+  // to show. It plays its exit while the address catches up, and a load that lands
+  // meanwhile, the step's own included, cannot reopen it. A new selection ends it.
+  const [closing, setClosing] = useState<readonly string[] | null>(null)
+  if (closing !== null && !(shownRecord !== null && closing.includes(shownRecord))) setClosing(null)
   // A closing rail keeps showing its record until its exit ends.
   const [shown, setShown] = useState({ page, record: shownRecord })
   if (selected && (shown.page !== page || shown.record !== shownRecord))
@@ -684,14 +685,6 @@ export function Activity({
   // The token of the rail's latest pick or close. A pending navigation with this
   // token is the rail's own and has no history entry yet.
   const [tokens] = useState(() => railTokens())
-  const close = () => {
-    // With an unsent comment, the rail stays while the review asks whether to discard it.
-    if (!unsent) setClosing(selected)
-    void navigate(nav.backHref, {
-      preventScrollReset: true,
-      state: tokens.next(),
-    })
-  }
   const listRef = useRef<HTMLDivElement>(null)
   const tableRef = useRef<HTMLDivElement>(null)
   const popupRef = useRef<HTMLDivElement>(null)
@@ -753,6 +746,17 @@ export function Activity({
     : (stepping ?? (pendingStop?.kind === 'record' ? stopPosition(pendingStop) : shownPosition))
   const positionStop = position ? stops[resolveStop(stops, position)] : undefined
   const activeStop = positionStop?.kind === 'record' ? positionStop : null
+  const close = () => {
+    // With an unsent comment, the rail stays while the review asks whether to discard it.
+    // A step or pick whose page has not rendered yet closes with it, so it cannot
+    // reopen the rail when it renders.
+    if (!unsent)
+      setClosing([...new Set([shownRecord, position?.name].filter((name) => name != null))])
+    void navigate(nav.backHref, {
+      preventScrollReset: true,
+      state: tokens.next(),
+    })
+  }
   const [tableFocused, setTableFocused] = useState(false)
   // The table reveals the record a key moved to, until its route names another.
   const [reveal, setReveal] = useState({
@@ -811,7 +815,7 @@ export function Activity({
             ? current.pending
             : current.shownRecord
       if (row.name === target) return
-      if (row.name === current.closing) setClosing(null)
+      if (current.closing?.includes(row.name)) setClosing(null)
       setKeyStep(null)
       openedByKey.current = keyboard
       // Going back to the shown record cancels the rail's own pending navigation,
