@@ -453,6 +453,8 @@ function runDetail(
           run: {
             ...execution,
             agent: agentOf(options),
+            // The parts below net to this total: 4 + 2 − 150.
+            contextImpactBytes: options.unmeasured ? undefined : -144n,
             actionPage: {
               actions: options.resolved || input.actionAfter ? [] : execution.actionPage.actions,
               total: options.resolved ? 0n : 1n,
@@ -892,13 +894,18 @@ describe('hierarchical activity through the private server interface', () => {
       expect(markup.match(/aria-selected="true"/g)).toHaveLength(1)
     },
   )
-  it('keeps a terminal Event anchor after closing detail', async () => {
+  it('keeps a terminal Event anchor after closing detail and paging away', async () => {
     const name = `${run}/events/4`
     const { api } = coral(list(), taskDetail(), runEntries({ endedEvent: true }))
     const query = { expand: [task, run], [`anchor.${run}`]: name }
     const anchored = await loadActivity(request(query), api, { scope })
     expect(anchored.selected).toBeNull()
     expect(anchored.branches[run].rows).toMatchObject([
+      { name, label: 'execution ended', contextImpactBytes: '4' },
+    ])
+    // A later page shows the terminal Event as Coral sent it, never as a return value row.
+    const paged = await loadActivity(request({ ...query, [`cursor.${run}`]: '3' }), api, { scope })
+    expect(paged.branches[run].rows).toMatchObject([
       { name, label: 'execution ended', contextImpactBytes: '4' },
     ])
   })
@@ -1613,6 +1620,10 @@ describe('hierarchical activity through the private server interface', () => {
       )
       expect(page.detail).toMatchObject({ kind: 'run' })
       expect(page.detail?.kind === 'run' && page.detail.contextImpact).toEqual(parts ?? undefined)
+      // The net the panel shows is the Run's own total.
+      expect(page.detail?.kind === 'run' && page.detail.run.contextImpactBytes).toBe(
+        parts ? '-144' : undefined,
+      )
     },
   )
   // Catches: a link from before the return value left the Run's rows no longer opening.

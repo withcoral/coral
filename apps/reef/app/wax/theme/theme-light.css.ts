@@ -84,14 +84,15 @@ export const lightThemeValues = {
       inlineBackground: paletteLight.GrayAlpha['02'],
       inlineColor: paletteLight.Amber['11'],
       // Wax's own hues: the accent marks the language, amber the values, as in inline
-      // code, and grays the rest, so code reads as part of the page.
+      // code, and grays the rest, so code reads as part of the page. Each passes 4.5:1 on
+      // framed code; Amber 11 does not, so strings and constants share Amber 12 here.
       syntax: {
-        comment: paletteLight.GrayAlpha['09'],
+        comment: paletteLight.GrayAlpha['11'],
         constant: paletteLight.Amber['12'],
         function: paletteLight.CoralGreen['12'],
         keyword: paletteLight.CoralGreen['11'],
-        string: paletteLight.Amber['11'],
-        type: paletteLight.GrayAlpha['11'],
+        string: paletteLight.Amber['12'],
+        type: paletteLight.GrayAlpha['12'],
       },
     },
     disabled: paletteLight.GrayAlpha['07'],

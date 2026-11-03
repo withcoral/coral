@@ -33,13 +33,18 @@ function formatSize(magnitude: bigint) {
   return `${size.toLocaleString('en-US', { maximumSignificantDigits: 3 })} ${units[unit]}`
 }
 
+/** An exact byte count, as a title states it. */
+function exactBytes(magnitude: bigint) {
+  return `${magnitude.toLocaleString('en-US')} ${magnitude === 1n ? 'byte' : 'bytes'}`
+}
+
 /** One part of a total, in neutral text: only the total says whether it helped. */
 export function Bytes({ bytes }: { bytes: bigint }) {
   return (
     <Typography.CodeSmallInline
       // Monospaced like every context size, in primary text: only the net takes a tone.
       variant="primary"
-      title={`${bytes.toLocaleString('en-US')} ${bytes === 1n ? 'byte' : 'bytes'}`}
+      title={exactBytes(bytes)}
     >
       {formatSize(bytes)}
     </Typography.CodeSmallInline>
@@ -51,7 +56,7 @@ export function describeContextImpact(value: bigint, partial: boolean) {
   const magnitude = value < 0n ? -value : value
   const formatted = formatSize(magnitude)
   const direction = value < 0n ? 'saved' : 'added'
-  const exact = `${magnitude.toLocaleString('en-US')} ${magnitude === 1n ? 'byte' : 'bytes'}${value === 0n ? '' : ` ${direction}`}`
+  const exact = `${exactBytes(magnitude)}${value === 0n ? '' : ` ${direction}`}`
   return {
     label: `${value < 0n ? '−' : value > 0n ? '+' : ''}${formatted}`,
     change: value < 0n ? 'Saved' : value > 0n ? 'Added' : 'No change',

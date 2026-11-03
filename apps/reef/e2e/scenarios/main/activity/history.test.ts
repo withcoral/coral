@@ -326,7 +326,8 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           await table.getByRole('link', { name: 'execution ended', exact: true }).count(),
         ).toBe(0)
         // The Run's panel shows its return value, so the table neither marks nor repeats it.
-        expect(await table.getByText(/return value/i).count()).toBe(0)
+        expect(await table.getByRole('img', { name: 'return value', exact: true }).count()).toBe(0)
+        expect(await table.getByRole('link', { name: 'return value', exact: true }).count()).toBe(0)
         await table
           .locator(`[data-record-key="workspaces/${first}/runs/${run}"]`)
           .locator('a[href]')

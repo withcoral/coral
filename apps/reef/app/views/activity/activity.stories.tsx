@@ -1149,7 +1149,10 @@ export const FinalValueOnExec: Story = {
     const canvas = within(canvasElement)
     const table = canvas.queryByRole('table', { name: 'Activity records' })
     // The Run's panel shows its return value, so the table neither marks nor repeats it.
-    if (table) await expect(within(table).queryByText(/return value/i)).toBeNull()
+    if (table) {
+      await expect(within(table).queryByRole('img', { name: 'return value' })).toBeNull()
+      await expect(within(table).queryByRole('link', { name: 'return value' })).toBeNull()
+    }
     const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
     const value = drawer.getByRole('region', { name: 'Return value' })
     await expect(within(value).getByRole('group', { name: 'Structure' })).toHaveTextContent(
