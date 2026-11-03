@@ -372,8 +372,18 @@ _Avoid_: granted scopes, scope check, parsed scopes
 _In Reef_: "granted permissions"
 
 **Credential Field**: One named value in a Provider Account's credentials, such as Jira's account email or Datadog's
-application key. It belongs to that one account and is never a Provider-wide setting.
+application key. It belongs to that one account and is never a Provider-wide setting. Its value is either entered in
+Coral or named by a Secret Reference.
 _Avoid_: credential input, secret (a field need not be sensitive), credential parameter
+
+**Secret Store**: An operator-defined connection to a secrets system outside Coral, such as HashiCorp Vault, limited to
+one path prefix. An Organization Owner grants it to Workspaces; Coral holds no credential for it.
+_Avoid_: vault, credential vault, external credential store
+
+**Secret Reference**: The address of one Credential Field's value in a Secret Store granted to the Account's Workspace:
+the store, a path under its prefix, and a key where the store has keys. Only a Workspace Owner sets one, on a shared
+Account or an Agent's Account; the value stays in the store and Coral never keeps a copy.
+_Avoid_: vault path, secret pointer, linked secret
 
 **Credential Route**: The Provider setting that determines whether Invocations use no credentials (`none`), its single
 shared Provider Account (`fixed`), or the invoking Principal's exact Provider Account (`caller`). A Program cannot
