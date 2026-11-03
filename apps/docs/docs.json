@@ -78,7 +78,7 @@
         "pages": [
           "guides/concepts",
           "guides/providers",
-          "guides/query-databases"
+          "guides/database-providers"
         ]
       },
       {
@@ -103,6 +103,11 @@
     {
       "source": "/guides/deploy-on-kubernetes",
       "destination": "/getting-started/self-host",
+      "permanent": true
+    },
+    {
+      "source": "/guides/query-databases",
+      "destination": "/guides/database-providers",
       "permanent": true
     }
   ],
