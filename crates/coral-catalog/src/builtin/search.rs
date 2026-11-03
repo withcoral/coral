@@ -323,7 +323,7 @@ pub struct SearchResult {
 #[schemars(
     deny_unknown_fields,
     description = "One Search Hit. Call a read from it when its signature line is complete: \
-                   no cut marker (`…`) and no type named in its input that the line does not \
+                   no `…` anywhere in it and no type named in its input that the line does not \
                    show. Read its exact description first otherwise, and before a write."
 )]
 pub struct SearchHit {
@@ -335,8 +335,9 @@ pub struct SearchHit {
     /// The callable's signature, cut to its byte limit.
     #[schemars(
         description = "The callable's input members one level deep; a provider tool's result \
-                       data types by name, an unnamed object as `{…}`; a Saved Function's result \
-                       members one level deep. At most 512 UTF-8 bytes."
+                       data types by name; a Saved Function's result members one level deep. \
+                       `{…}` marks an object the line does not show, a bare `…` what it cannot \
+                       read, and a final `…` cut text. At most 512 UTF-8 bytes."
     )]
     pub signature_line: String,
     /// The description around the first matched term.
@@ -834,5 +835,24 @@ pub(super) mod tests {
             (json!({ "paths": [at_limit], "types": ["T"] }), true),
             (json!({ "paths": [past_limit], "types": ["T"] }), false),
         ]);
+    }
+
+    // Catches: a hit that calls every `…` a cut, so a caller cannot tell an
+    // object the line leaves out, or a result it cannot read, from cut text.
+    #[test]
+    fn a_hit_says_what_each_signature_marker_means() {
+        let schema = serde_json::to_value(schemars::schema_for!(SearchHit)).expect("schema");
+        let hit = schema["description"].as_str().expect("hit description");
+        assert!(!hit.contains("cut marker"), "{hit}");
+        let line = schema["properties"]["signature_line"]["description"]
+            .as_str()
+            .expect("signature line description");
+        for meaning in [
+            "`{…}` marks an object the line does not show",
+            "a bare `…` what it cannot read",
+            "a final `…` cut text",
+        ] {
+            assert!(line.contains(meaning), "{line} lacks {meaning}");
+        }
     }
 }
