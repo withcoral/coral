@@ -19,13 +19,13 @@ const baseCards: StoryCard[] = [
   },
   {
     description: 'Sync issues, pull requests, and code from your repositories.',
-    icon: <Icon name="GitBranch" size="20" />,
+    icon: <Icon name="GitHub" size="20" />,
     id: 'github',
     title: 'GitHub',
   },
   {
     description: 'Query your application and analytics data.',
-    icon: <Icon name="Database" size="20" />,
+    icon: <Icon name="Layers" size="20" />,
     id: 'postgres',
     title: 'Postgres',
   },

@@ -138,6 +138,11 @@ pub use activity::{RunEntries, RunEntry, RunEntryAnchor, RunEntryWindow};
 pub use activity_observation::{ActivityObservation, ActivityWake};
 pub use admission::{PreparedRun, StagedRun};
 pub mod approval;
+mod approval_history;
+mod approval_history_repository;
+pub use approval_history::{
+    Approver, SettledApproval, SettledApprovals, SettledCursor, SettledOutcome,
+};
 mod approval_repository;
 mod builtin;
 mod enforcement;
@@ -200,7 +205,8 @@ use invocation::{ProductionUpstream, UpstreamSender};
 use owner::Owners;
 pub use required_actions::{
     ActionCursor, ActionPage, ActionSummary, QueueCursor, QueuedAction, RequiredAction,
-    RequiredActionRequest, RequiredActions, RequiredActor,
+    RequiredActionCounts, RequiredActionKind, RequiredActionRequest, RequiredActionSetRevision,
+    RequiredActions, RequiredActor,
 };
 pub use summary::{
     ActivitySummary, ActorContext, ApprovalDecisions, CallOutcomes, CallerCalls, MAX_SUMMARY_DAYS,
@@ -238,7 +244,7 @@ pub struct RunModule {
     accounts: Option<coral_provider::account::AccountModule>,
     providers: coral_provider::ProviderModule,
     policies: coral_policy::ToolPolicyModule,
-    provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
+    provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
     human_interface: Option<HumanInterfaceUrl>,
     database: Arc<Database>,
     workspaces: WorkspaceModule,
@@ -285,7 +291,7 @@ impl RunModule {
         Ok(Self {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
-            provider_publisher: None,
+            provider_renamer: None,
             human_interface: None,
             database,
             workspaces,
@@ -324,7 +330,7 @@ impl RunModule {
         Self {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
-            provider_publisher: None,
+            provider_renamer: None,
             human_interface: None,
             database,
             workspaces,
@@ -355,15 +361,15 @@ impl RunModule {
         self
     }
 
-    /// Lets `coral.workspace.addProvider` publish a Provider that needs nobody to
-    /// sign in, through the workflow Reef publishes with. Without it, such a
-    /// call fails with `tool_unavailable`.
+    /// Lets `coral.workspace.updateProvider` rename a Provider, through the
+    /// workflow Reef renames with. Without it, such a call fails with
+    /// `tool_unavailable`.
     #[must_use]
-    pub fn with_provider_publisher(
+    pub fn with_provider_renamer(
         mut self,
-        publisher: Arc<dyn coral_provider::WorkspaceProviderPublisher>,
+        renamer: Arc<dyn coral_provider::ProviderRenamer>,
     ) -> Self {
-        self.provider_publisher = Some(publisher);
+        self.provider_renamer = Some(renamer);
         self
     }
 

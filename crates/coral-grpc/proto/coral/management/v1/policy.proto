@@ -1,10 +1,12 @@
 syntax = "proto3";
 package coral.management.v1;
 
+import "coral/management/v1/provider.proto";
+
 // Reef-only exact Tool policy. No Principal, pattern, glob, or route dimension.
 service ToolPolicyService {
-  // Reads 1–100 exact Tool decisions through one Provider.
-  rpc GetToolPolicies(GetToolPoliciesRequest) returns (GetToolPoliciesResponse);
+  // Lists a Provider's Tools with their decisions, from one read per page.
+  rpc ListToolAccess(ListToolAccessRequest) returns (ListToolAccessResponse);
   // Applies 1–100 distinct exact decisions atomically, including lifecycle evidence.
   rpc UpdateToolPolicies(UpdateToolPoliciesRequest) returns (UpdateToolPoliciesResponse);
 }
@@ -31,18 +33,43 @@ message ToolPolicy {
   bool explicit = 3;
 }
 
-// Reads a bounded selection, including structurally unavailable Tools.
-message GetToolPoliciesRequest {
-  // Exact Provider resource name.
+// Reads one page of a Provider's current administrative catalog.
+message ListToolAccessRequest {
+  // Exact Provider resource.
   string parent = 1;
-  // 1–100 distinct canonical Tool names for its Provider.
-  repeated string tools = 2;
+  // Maximum results, bounded to 1000; zero selects the default.
+  int32 page_size = 2;
+  // Opaque continuation from the preceding page for this Provider.
+  string page_token = 3;
 }
 
-// Effective decisions in request order.
-message GetToolPoliciesResponse {
-  // Exact decisions.
-  repeated ToolPolicy policies = 1;
+// One Tool as a policy table lists it, including structurally unavailable Tools.
+// `GetTool` reads its prose.
+message ToolAccess {
+  // {provider}/tools/{encoded Tool Key}; not a separate entity identity.
+  string tool = 1;
+  // Tool path relative to the immutable Provider namespace.
+  string relative_path = 2;
+  // Structural invocability, independent of credentials and approval.
+  bool available = 3;
+  // Safe structural diagnostics for unavailable Tools.
+  repeated ProviderDiagnostic diagnostics = 4;
+  // Safe upstream-authored grouping metadata.
+  repeated string tags = 5;
+  // Declared effect hints.
+  ToolHints hints = 6;
+  // Exact decision for the Tool.
+  ToolAccessState access_state = 7;
+  // True when an exact stored rule, false when effect-based default.
+  bool explicit = 8;
+}
+
+// One page of Tools and their decisions.
+message ListToolAccessResponse {
+  // Current Tools in canonical order.
+  repeated ToolAccess tools = 1;
+  // Empty when no further page remains.
+  string next_page_token = 2;
 }
 
 // Atomic bounded update; any rejected target leaves all decisions unchanged.

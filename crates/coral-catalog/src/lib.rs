@@ -113,7 +113,7 @@ use coral_catalog as _;
 pub use binding::ExecutionBinding;
 pub use declaration_path::{DECLARATION_PATH_MAX_BYTES, DeclarationPath};
 pub use error::Error;
-pub use inspection::ToolSummary;
+pub use inspection::{ToolListing, ToolSummary};
 pub use mcp::{
     MCP_DISCOVERY_SNAPSHOT_MAX_BYTES, McpDiscoverySnapshot, McpExecutionBinding,
     McpInvocationMethod, McpTaskSupport, McpToolAnnotations, McpTransport,
@@ -471,6 +471,43 @@ pub async fn tool_summaries_in_transaction(
         return Err(Error::InvalidInput("invalid catalog page size".into()));
     }
     repository::load_tool_summaries(transaction, generation_id, after, page_size).await
+}
+
+/// The most Tool listings one page can hold.
+pub const MAX_TOOL_LISTING_PAGE: u32 = 1000;
+
+/// Reads one listing page in Tool Key order, plus at most one lookahead row.
+///
+/// The caller owns authority and continuation encoding. `after` is exclusive;
+/// `page_size` must be 1..=[`MAX_TOOL_LISTING_PAGE`]. Prose, definitions and
+/// schemas stay lazy, which is what lets a page be this large.
+///
+/// # Errors
+/// Returns an invalid size, persistence, or listing corruption failure.
+pub async fn tool_listings_in_transaction(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    after: Option<&ToolKey>,
+    page_size: u32,
+) -> Result<Vec<ToolListing>, Error> {
+    if !(1..=MAX_TOOL_LISTING_PAGE).contains(&page_size) {
+        return Err(Error::InvalidInput("invalid catalog page size".into()));
+    }
+    repository::load_tool_listings(transaction, generation_id, after, page_size).await
+}
+
+/// Reads one Tool's summary by its exact Generation-relative Call Path
+/// projection. The caller owns authority.
+///
+/// # Errors
+/// Returns a persistence or summary corruption failure. `Ok(None)` means the
+/// Generation has no such Tool.
+pub async fn tool_summary_by_relative_path_in_transaction(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+    relative_path: &str,
+) -> Result<Option<ToolSummary>, Error> {
+    repository::load_tool_summary_by_relative_path(transaction, generation_id, relative_path).await
 }
 
 /// Loads the bounded current catalog for authorized administrative inspection.

@@ -3,6 +3,7 @@ import { ArchiveRestoreIcon } from '@/wax/components/icon/custom-icons/archive-r
 import { ArrowDownIcon } from '@/wax/components/icon/custom-icons/arrow-down'
 import { ArrowRightIcon } from '@/wax/components/icon/custom-icons/arrow-right'
 import { ArrowUpIcon } from '@/wax/components/icon/custom-icons/arrow-up'
+import { ArrowUpRightIcon } from '@/wax/components/icon/custom-icons/arrow-up-right'
 import { AtSignIcon } from '@/wax/components/icon/custom-icons/at-sign'
 import { BanIcon } from '@/wax/components/icon/custom-icons/ban'
 import { BellIcon } from '@/wax/components/icon/custom-icons/bell'
@@ -36,6 +37,7 @@ import { ClockSearchIcon } from '@/wax/components/icon/custom-icons/clock-search
 import { CopyIcon } from '@/wax/components/icon/custom-icons/copy'
 import { CoralIcon } from '@/wax/components/icon/custom-icons/coral'
 import { CornerDownLeftIcon } from '@/wax/components/icon/custom-icons/corner-down-left'
+import { CpuIcon } from '@/wax/components/icon/custom-icons/cpu'
 import { DocIcon } from '@/wax/components/icon/custom-icons/doc'
 import { DownloadIcon } from '@/wax/components/icon/custom-icons/download'
 import { EllipsisIcon } from '@/wax/components/icon/custom-icons/ellipsis'
@@ -57,6 +59,8 @@ import { LinkIcon } from '@/wax/components/icon/custom-icons/link'
 import { ListFilterIcon } from '@/wax/components/icon/custom-icons/list-filter'
 import { LockIcon } from '@/wax/components/icon/custom-icons/lock'
 import { LogOutIcon } from '@/wax/components/icon/custom-icons/log-out'
+import { Maximize2Icon } from '@/wax/components/icon/custom-icons/maximize-2'
+import { MemoryStickIcon } from '@/wax/components/icon/custom-icons/memory-stick'
 import { MessageCircleIcon } from '@/wax/components/icon/custom-icons/message-circle'
 import { MinusIcon } from '@/wax/components/icon/custom-icons/minus'
 import { NotepadTextIcon } from '@/wax/components/icon/custom-icons/notepad-text'
@@ -69,6 +73,7 @@ import { PlusIcon } from '@/wax/components/icon/custom-icons/plus'
 import { RefreshCcwIcon } from '@/wax/components/icon/custom-icons/refresh-ccw'
 import { RefreshCwIcon } from '@/wax/components/icon/custom-icons/refresh-cw'
 import { SaveIcon } from '@/wax/components/icon/custom-icons/save'
+import { ScalingIcon } from '@/wax/components/icon/custom-icons/scaling'
 import { SearchIcon } from '@/wax/components/icon/custom-icons/search'
 import { SettingsIcon } from '@/wax/components/icon/custom-icons/settings'
 import { Settings2Icon } from '@/wax/components/icon/custom-icons/settings-2'
@@ -112,6 +117,7 @@ export const customIcons = {
   ArrowDown: ArrowDownIcon,
   ArrowRight: ArrowRightIcon,
   ArrowUp: ArrowUpIcon,
+  ArrowUpRight: ArrowUpRightIcon,
   AtSign: AtSignIcon,
   Ban: BanIcon,
   Bell: BellIcon,
@@ -145,6 +151,7 @@ export const customIcons = {
   Copy: CopyIcon,
   Coral: CoralIcon,
   CornerDownLeft: CornerDownLeftIcon,
+  Cpu: CpuIcon,
   Doc: DocIcon,
   Download: DownloadIcon,
   Ellipsis: EllipsisIcon,
@@ -166,6 +173,8 @@ export const customIcons = {
   ListFilter: ListFilterIcon,
   Lock: LockIcon,
   LogOut: LogOutIcon,
+  Maximize2: Maximize2Icon,
+  MemoryStick: MemoryStickIcon,
   MessageCircle: MessageCircleIcon,
   Minus: MinusIcon,
   NotepadText: NotepadTextIcon,
@@ -178,6 +187,7 @@ export const customIcons = {
   RefreshCcw: RefreshCcwIcon,
   RefreshCw: RefreshCwIcon,
   Save: SaveIcon,
+  Scaling: ScalingIcon,
   Search: SearchIcon,
   Settings: SettingsIcon,
   Settings2: Settings2Icon,

@@ -438,6 +438,7 @@ scenarios/
     accounts/
     activity/
     agents/
+    approvals/
     identity/
     organization/
     providers/
@@ -461,6 +462,7 @@ Group `scenarios/main/` by the product behavior being proved:
   `policy/`, and `updates/` for focused scenarios.
 - `accounts/`: scoped Account lifecycle, authority, renewal, and connection requests.
 - `activity/`: execution history and its navigation.
+- `approvals/`: the Approvals page and its live updates.
 - `topology/`: what a composed deployment does not expose.
 
 Keep authority tests beside their feature. Place OAuth and MCP scenarios by the

@@ -782,6 +782,10 @@ async fn published_providers_lists_every_provider_in_creation_order() {
 // Principal reaches: in the list, by its ID, or through its Tools; or
 // listProviders refusing an Agent.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table walks each management read for each Principal"
+)]
 async fn management_reads_show_each_principal_the_builtin_tools_it_reaches() {
     let arranged = BuiltinWorkspace::new().await;
     let workspace = arranged.workspace.id();
@@ -886,6 +890,35 @@ async fn management_reads_show_each_principal_the_builtin_tools_it_reaches() {
             let lookahead = usize::try_from(page_size).unwrap() + 1;
             let expected = reached.iter().copied().take(lookahead).collect::<Vec<_>>();
             assert_eq!(keys, expected, "{actor:?}, page of {page_size}");
+
+            let mut tx = database.begin_read_snapshot().await.unwrap();
+            let listed =
+                crate::tool_listings_in_transaction(&mut tx, &evidence, builtin, None, page_size)
+                    .await
+                    .unwrap();
+            tx.rollback().await.unwrap();
+            let keys = listed
+                .iter()
+                .map(|tool| tool.key.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(keys, expected, "listing for {actor:?}, page of {page_size}");
+        }
+        for key in [
+            "addProvider",
+            "listProviders",
+            "getProvider",
+            "getPolicy",
+            "updatePolicy",
+            "updateProvider",
+        ] {
+            let summary = providers
+                .inspect_tool_summary(actor, workspace, builtin, key)
+                .await;
+            if reached.contains(&key) {
+                assert_eq!(summary.unwrap().key.as_str(), key, "{actor:?}");
+            } else {
+                assert!(matches!(summary, Err(Error::ToolNotFound)), "{actor:?}");
+            }
         }
     }
 }

@@ -58,20 +58,20 @@ flate2 = "1"
 futures-util = "0.3"
 http = "1"
 http-body = "1"
-jsonschema = { version = "0.58.6", default-features = false }
+jsonschema = { version = "0.60.2", default-features = false }
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 mime = "0.3"
-oxc_allocator = "0.153"
-oxc_ast = "0.153"
-oxc_parser = "0.153"
-oxc_span = "0.153"
+oxc_allocator = "0.156"
+oxc_ast = "0.156"
+oxc_parser = "0.156"
+oxc_span = "0.156"
 opentelemetry = "0.33.1"
 opentelemetry-appender-tracing = "0.33.1"
 opentelemetry-otlp = "0.33.1"
 opentelemetry_sdk = "0.33.1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "charset", "form", "http2", "json", "query", "rustls", "system-proxy"] }
 ring = "0.17.14"
-rmcp = { version = "3.5.1", features = ["client", "reqwest", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
+rmcp = { version = "3.8.0", features = ["client", "reqwest", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 rustix = { version = "1.1", features = ["time"] }
 semver = "1"
@@ -79,7 +79,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_path_to_error = "0.1"
 serde_yaml = "0.9"
-schemars = "1.2.2"
+schemars = "1.2.3"
 sea-query = { version = "1", default-features = false, features = ["backend-postgres", "backend-sqlite", "derive", "thread-safe"] }
 sea-query-sqlx = { version = "0.9", default-features = false, features = [
   "postgres-array",
@@ -98,10 +98,10 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 toml = "1.1"
-tonic = "0.14.6"
-tonic-health = "0.14.6"
-tonic-prost = "0.14.6"
-tonic-prost-build = "0.14.6"
+tonic = "0.14.9"
+tonic-health = "0.14.9"
+tonic-prost = "0.14.9"
+tonic-prost-build = "0.14.9"
 prost = "0.14"
 prost-types = "0.14"
 tower = "0.5"

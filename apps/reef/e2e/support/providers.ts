@@ -473,6 +473,16 @@ export async function acceptTools(page: Page) {
   expect(new URL(page.url()).searchParams.get('toolsAccepted')).toBe('1')
 }
 
+/** Opens the link a Program got, previews the tools, and adds the provider. */
+export async function addAtLink(page: Page, link: string) {
+  await page.goto(link)
+  await acceptTools(page)
+  const add = page.getByRole('button', { name: 'Add provider', exact: true })
+  await add.waitFor()
+  await add.click()
+  await waitForPublication(page)
+}
+
 /**
  * Reads a protected server's tools with a token. The tools step asks
  * for it in a dialog, in the panel the rows will fill.
@@ -955,7 +965,7 @@ export async function openReview(page: Page, paused: RunUpdate, tool: string) {
   const name = `Review coral.workspace.${tool}`
   await page.getByRole('link', { name, exact: true }).click()
   const review = page.getByRole('region', { name, exact: true })
-  await review.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()
+  await review.getByRole('button', { name: 'Approve', exact: true }).waitFor()
   return review
 }
 

@@ -121,6 +121,7 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
     let beyond_members = "// emitted by the compiler\nexport default function beyond(input: { keys: { [K in \"a\" | \"b\"]: number }; pick: Pick<Input, \"a\">; kind: string extends infer T ? T : never; label: `v${number}` }): number;";
     let shadowed_global = "type Array = Array[] | string;\nexport default function shadow(input: { list: Array }): number;";
     let escaped_literal = "function quoted(): Promise<{ data: \"x\\\"|y\" | \"z\"; metadata: { readonly status: 200 } }>;";
+    let lone_surrogate = "export default function surrogate(input: { \"\\uD800\": number; mode: \"\\uD800\" | \"a\" }): number;";
     let markers = "export default function markers(input: { pair: [number, number?]; cb?: ((value?: number) => number) | null; sum: (...values: number[]) => number }): number;";
 
     for (declaration, callable, expected) in [
@@ -309,6 +310,11 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
             escaped_literal,
             Callable::Tool { leaf: "quoted" },
             r#"quoted(): Promise<{ data: "x\"|y" | "z" }>"#,
+        ),
+        (
+            lone_surrogate,
+            Callable::SavedFunction { leaf: "surrogate" },
+            "surrogate(input: { …; mode: … | \"a\" }): number",
         ),
         (
             markers,

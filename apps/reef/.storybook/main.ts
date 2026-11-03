@@ -2,7 +2,7 @@
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import type { PluginOption } from 'vite'
+import { mergeConfig, type PluginOption } from 'vite'
 import type { StorybookConfig } from '@storybook/react-vite'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -65,7 +65,10 @@ const config: StorybookConfig = {
       ]),
     ]
 
-    return config
+    // `build-storybook` writes storybook-static inside the watched folder, so
+    // each build would reload the open Storybook tab. Set it here: Storybook
+    // replaces the `server` options from vite.config.ts.
+    return mergeConfig(config, { server: { watch: { ignored: ['**/storybook-static/**'] } } })
   },
 }
 export default config

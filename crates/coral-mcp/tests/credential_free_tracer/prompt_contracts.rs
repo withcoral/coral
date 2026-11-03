@@ -230,6 +230,68 @@ async fn required_actions_end_the_initial_wait_and_replay_on_every_version() {
     .await;
 }
 
+/// A Program parked on a person cannot finish by waiting, so neither the
+/// default `exec` wait nor a full `wait` runs out: each returns the action as
+/// soon as it appears.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_required_action_ends_the_default_exec_wait_and_a_wait_early() {
+    let tracer = approval_tracer().await;
+    let client = tracer.sdk().await;
+    let task = super::start_task(&client, "Hand off to a person early").await;
+    let tools = client.list_all_tools().await.expect("list MCP tools");
+    let default_wait_ms = tools
+        .iter()
+        .find(|tool| tool.name == "exec")
+        .and_then(|tool| tool.input_schema.get("properties"))
+        .and_then(|properties| properties.pointer("/wait_ms/default"))
+        .and_then(Value::as_u64)
+        .expect("advertised default wait");
+    assert_eq!(default_wait_ms, 30_000);
+    let early = Duration::from_millis(default_wait_ms / 2);
+
+    let parked = tokio::time::timeout(
+        early,
+        super::call(
+            &client,
+            "exec",
+            json!({"task_id":task, "intent":"Park on an approval", "program":PROGRAM}),
+        ),
+    )
+    .await
+    .expect("a required action ends the exec wait before its default runs out");
+    let update = super::structured(&parked);
+    assert_eq!(update["state"], "running");
+    assert_eq!(update["required_actions"][0]["kind"], "invocation_approval");
+
+    let accepted = super::call(
+        &client,
+        "exec",
+        json!({
+            "task_id":task, "intent":"Log, then park on an approval", "wait_ms":0,
+            "program":format!("console.log('before approval'); {PROGRAM}")
+        }),
+    )
+    .await;
+    let accepted = super::structured(&accepted);
+    let parked = tokio::time::timeout(
+        early,
+        super::call(
+            &client,
+            "wait",
+            json!({
+                "run_id":accepted["run_id"], "cursor":accepted["next_cursor"],
+                "wait_ms":default_wait_ms
+            }),
+        ),
+    )
+    .await
+    .expect("a required action ends the wait before it runs out");
+    let update = super::structured(&parked);
+    assert_eq!(update["state"], "running");
+    assert_eq!(update["required_actions"][0]["kind"], "invocation_approval");
+    assert_eq!(update["events"].as_array().expect("output").len(), 1);
+}
+
 /// One call prompts each current action once. Accepting approves the
 /// Invocation, declining rejects it, and cancelling leaves the action pending
 /// for a later prompt.

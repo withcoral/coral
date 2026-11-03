@@ -76,8 +76,9 @@ pub struct SetupConfigurationReview {
     /// The prepared catalog's contract; absent when the preview has a structural diagnostic.
     #[serde(skip)]
     pub(crate) preview_contract: Option<Contract>,
-    /// The confirmed configuration's contract, including a protected MCP
-    /// source's before its sign-in; absent until confirmed.
+    /// The saved configuration's contract, including a protected MCP source's
+    /// before its sign-in. Read it through [`Self::confirmed_contract`], which
+    /// holds it back until the configuration is confirmed.
     #[serde(skip)]
     confirmed_contract: Option<Contract>,
 }
@@ -86,7 +87,9 @@ impl SetupConfigurationReview {
     /// The confirmed configuration's contract; `None` until it is confirmed
     /// with a catalog or a protected MCP source's discovered authority.
     pub(crate) fn confirmed_contract(&self) -> Option<&Contract> {
-        self.confirmed_contract.as_ref()
+        self.confirmed_contract
+            .as_ref()
+            .filter(|_| self.configuration_confirmed)
     }
 
     /// The Credential Routes that suit the confirmed configuration, in
@@ -95,7 +98,6 @@ impl SetupConfigurationReview {
     #[must_use]
     pub fn allowed_routes(&self) -> Vec<crate::CredentialRoute> {
         self.confirmed_contract()
-            .filter(|_| self.configuration_confirmed)
             .map(crate::CredentialRoute::fitting)
             .unwrap_or_default()
     }

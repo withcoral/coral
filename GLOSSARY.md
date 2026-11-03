@@ -259,12 +259,11 @@ its Call Root (`getPolicy`), and set the exact Tool Access State of 1–100 of i
 none (`updatePolicy`). `updatePolicy` names a Provider under `coral.providers`, so it never reaches a Built-in
 Tool, and a Program cannot loosen the approval on the Tools that change the Workspace. When Coral boots, it
 updates every Workspace's Built-in Provider to the catalog it serves; a Workspace whose update fails keeps its catalog
-until the next boot. Coral itself publishes a new Provider only from a ready Setup on the `none` route. A
-credential-requiring Setup, on the `fixed` or the `caller` route, always needs a person to sign in. Coral itself
-publishes an update only from a ready Setup that keeps the Provider's Credential Route, its credential contract, and
-every Tool Key of its active Generation; any other update needs a person to confirm it. If a person must finish the
-Setup and the Run is still current, the Tool returns the Reef page, which names the Setup and, for an update, the
-Provider, and does not wait; `listProviders` reports the open Setups that the invoking User's `addProvider` calls
+until the next boot. Coral itself never publishes a Setup that a Program prepares, for a new Provider or an update,
+on any Credential Route: a person previews it and publishes it. A credential-requiring Setup, on the `fixed` or the
+`caller` route, also needs that person to sign in. If the Run is still current, the Tool returns the Reef page, which
+names the Setup and, for an update, the Provider, and does not wait; a change to a Provider's display name alone needs
+no Setup and keeps its Generation. `listProviders` reports the open Setups that the invoking User's `addProvider` calls
 prepared, until each is published, expires or is canceled. Coral ends a Setup it prepared that nobody will finish. Its
 Tools never return a secret, a fixed credential value, or the OAuth sign-in link Coral prepares for one person to
 the Program, and never take a secret from it: a person enters a confidential OAuth application's secret in Reef. A
@@ -458,7 +457,7 @@ or `caller`. It resolves a required User caller Account before creating any requ
 binds the exact Account authorization. It then rechecks all
 authority and configuration, refreshes or resolves credentials, and dispatches. Approval bypasses none of these checks.
 Authority loss or Run termination settles a pending Invocation and closes its exact Approval Request without dispatch or
-replay. Detaching from a concurrent Account Connection Request does not cancel another Invocation's wait or the
+replay. A Run timeout expires that Request instead, because the Run's deadline bounds the Request's deadline. Detaching from a concurrent Account Connection Request does not cancel another Invocation's wait or the
 connection itself. Account-setting changes, explicit Account replacement, and Disconnect stop affected pending work;
 Coral never switches accounts. A Provider update alone does not stop an already-authorized Invocation that retained an
 older Generation and compatible Account, but changed authentication requirements end obsolete connection requests and
@@ -529,8 +528,8 @@ interface, and its link opens the exact Run independently of the activity list's
 User OAuth and normal Run authorization; the URL grants no authority. The view shows the Run status, Events,
 Invocations, and every Approval Request and Account Connection Request that the User can inspect. It groups all current
 human actions for the Run and receives Run, approval, and account-connection changes without a manual refresh.
-Authorized Workspace Owners find Agent approval actions through Reef's queue and notifications. _Avoid_: Per-Invocation
-action URL, bearer URL, MCP session state
+Authorized Workspace Owners find Agent approval actions on the Approvals Page. _Avoid_: Per-Invocation action URL,
+bearer URL, MCP session state
 
 **Action Prompt**: A negotiated MCP elicitation that asks the invoking User about one current Approval Request or
 Account Connection Request of their own Run, returned as an `input_required` result that the client answers by
@@ -548,13 +547,17 @@ prompt
 **Approval Request**: A durable host-owned request for a human decision on one pending Tool Invocation. Reef is
 the v1 human resolution interface that every Request can use, in local and remote deployments; a deployment without its
 local or hosted Reef interface is not ready. Coral creates a Request whenever an Invocation requires approval. It records the exact logical
-Tool arguments for review on the Run Status Page independently of the agent transport. Its deadline settles the
-Invocation with `approval_expired`; denial settles it with `approval_declined`. The first durable terminal decision
+Tool arguments for review on the Approvals Page and the Run Status Page independently of the agent transport. Its deadline settles the
+Invocation with `approval_expired`; declining settles it with `approval_declined`. The first durable terminal decision
 wins. A later decision returns that result without changing it. If policy becomes `disabled`, Coral settles the
 Invocation with `tool_disabled`; if it becomes `enabled`, Coral closes the Request and continues after its other
 checks. A later Invocation can create a new request. The invoking User can also decide it through an Action Prompt in
 their MCP client; Reef remains available for every Request. An active browser is not required, and existing Requests
 survive a temporary Reef outage. _Avoid_: per-Invocation approval URL, Program pause payload
+
+**Approvals Page**: The Workspace page in Reef where a person decides the Approval Requests waiting on them and reads
+those already approved, declined or expired. It shows only Requests of Runs that person can inspect, for as long as the
+Run is retained. _Avoid_: approval queue, action queue, inbox
 
 **Invocation Approval**: A human decision that satisfies an `approval_required` Tool Access State for one exact
 Tool Invocation. It is bound to the Workspace, Provider and account-setting version, Invoking Principal, private
@@ -631,8 +634,8 @@ state
 **Coral Failure**: A safe, coded inability to produce a complete Upstream Outcome for one Tool Invocation. It
 excludes Run-level termination and unexpected host defects and makes no public claim about dispatch, external effects,
 or retry safety in v1. When Coral can identify an invalid argument, an `invalid_input` failure names it and gives a
-Coral-written reason; otherwise it may give only a general message. It never repeats a submitted value. _Avoid_:
-Upstream failure, transport failure, Program failure
+Coral-written reason, which can list the argument names the Tool declares; otherwise it may give only a general
+message. It never repeats a submitted value. _Avoid_: Upstream failure, transport failure, Program failure
 
 **Upstream Result**: The Upstream Service-owned value and safe upstream metadata carried by an Upstream Outcome. Coral
 does not reshape the value into normalized rows or make upstream schema conformance a condition of success. _Avoid_:

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use coral_catalog::ProviderGenerationId;
 use coral_db::{Database, Transaction};
-use coral_functions::SavedFunctionEntry;
+use coral_functions::{SavedFunctionEntry, SavedFunctionId};
 use coral_provider::{GenerationEntries, ProviderId};
 use coral_telemetry::{metric, safe};
 use coral_workspace::WorkspaceId;
@@ -18,7 +18,7 @@ use tracing::Instrument as _;
 use tracing::field::Empty;
 use tracing::instrument::WithSubscriber as _;
 
-use crate::indexer::functions::{self, SavedFunctionIndexer};
+use crate::indexer::functions::{self, FunctionSync, SavedFunctionIndexer};
 use crate::indexer::tools::{self, AttemptedGeneration, ToolIndexer, ToolRemoval};
 use crate::indexer::{self, EntityIndexer, IndexError};
 
@@ -42,11 +42,12 @@ const WRITER_WAIT_LIMIT: Duration = Duration::from_mins(1);
 /// attempt leaves a `failed` state row, and the reconcile task converges what a notification
 /// missed. Each notified write is the root of a trace of its own, linked to
 /// the span that notified it, such as the request that saved a Saved
-/// Function, and a failed write marks its span. Notified writes run in the order of the notifications, one
-/// in-process mutex serializes every write and reconcile pass, and a write
-/// that runs past its limit is rolled back and counts as failed. Cloning is
-/// cheap; every clone shares the database handle, the order, the mutex, and
-/// the reconcile interval.
+/// Function, and a failed write marks its span. Notified writes run in the
+/// order of the notifications. One in-process mutex serializes every write,
+/// and a reconcile pass takes it for one item at a time. A write that runs
+/// past its limit is rolled back and counts as failed. Cloning is cheap; every
+/// clone shares the database handle, the order, the mutex, and the reconcile
+/// interval.
 #[derive(Clone)]
 pub struct SearchIndex {
     database: Arc<Database>,
@@ -153,12 +154,12 @@ impl SearchIndex {
     /// entries from what the catalog stores, then writes the Generation's rows
     /// and its `complete` state row in one transaction. The committing
     /// workflow sends ids alone and never waits for the preparation (ADR
-    /// 0017). Writing an indexed Generation again rewrites its rows. A failed
-    /// preparation or write leaves a `failed` state row, and the reconcile
-    /// task retries the Generation when its retry rule is due.
+    /// 0017). A failed preparation or write leaves a `failed` state row, and
+    /// the reconcile task retries the Generation when its retry rule is due.
     ///
     /// A Generation that another publication replaced before the write runs
     /// is skipped: the replacing publication's notification indexes its own.
+    /// A Generation that a reconcile pass has already indexed is skipped too.
     pub fn index_generation(
         &self,
         workspace_id: WorkspaceId,
@@ -189,6 +190,13 @@ impl SearchIndex {
         let index = self.clone();
         self.spawn(span, async move {
             let _write = index.writes.lock().await;
+            if index
+                .holds_active_generation(&workspace_id, &provider_id, expected.as_ref())
+                .await
+            {
+                skipped("already_indexed");
+                return Ok(());
+            }
             match index
                 .prepare_stored_generation(&workspace_id, &provider_id)
                 .await
@@ -219,6 +227,38 @@ impl SearchIndex {
                 }
             }
         });
+    }
+
+    /// Whether the index already holds the Provider's active Generation, when
+    /// it is still `expected`, if one is named. Under load a pass reaches a
+    /// Generation before its notification does, and rewriting it would spend
+    /// the preparation and a turn at the writer on nothing. A failed read
+    /// answers `false`, so the write goes ahead.
+    async fn holds_active_generation(
+        &self,
+        workspace_id: &WorkspaceId,
+        provider_id: &ProviderId,
+        expected: Option<&ProviderGenerationId>,
+    ) -> bool {
+        let held = self
+            .read_snapshot(async |transaction| {
+                let active = coral_provider::workspace_active_generations_in_transaction(
+                    transaction,
+                    workspace_id,
+                    Some(provider_id),
+                )
+                .await?;
+                let Some(active) = active.first() else {
+                    return Ok(false);
+                };
+                if expected.is_some_and(|expected| expected != active.generation_id()) {
+                    return Ok(false);
+                }
+                let held = ToolIndexer.holds_current(transaction, active).await?;
+                Ok(held)
+            })
+            .await;
+        matches!(held, Ok(true))
     }
 
     /// Logs a failed preparation and records a `failed` state row for the
@@ -258,15 +298,13 @@ impl SearchIndex {
         workspace_id: &WorkspaceId,
         provider_id: &ProviderId,
     ) -> Result<Option<coral_provider::ActiveGeneration>, IndexError> {
-        self.within_limit(async {
-            let mut transaction = self.database.begin_read_snapshot().await?;
+        self.read_snapshot(async |transaction| {
             let active = coral_provider::workspace_active_generations_in_transaction(
-                &mut transaction,
+                transaction,
                 workspace_id,
                 Some(provider_id),
             )
             .await?;
-            transaction.rollback().await?;
             Ok(active.into_iter().next())
         })
         .await
@@ -331,17 +369,72 @@ impl SearchIndex {
         });
     }
 
-    /// A Saved Function was saved or saved over: upserts its row and removes
-    /// the `failed` state row an earlier attempt left. A failed attempt rolls
-    /// back, removes the function's row, and leaves a `failed` state row.
-    /// Removal needs no notification: the row cascades with the function.
-    pub fn index_function(&self, entry: SavedFunctionEntry) {
-        let span = function_span(&entry);
+    /// A Saved Function was saved, saved over or deleted: brings the index in
+    /// line with the function as it stands when the write runs. The committing
+    /// workflow sends ids alone, so a notification may run late, twice or out
+    /// of order, and may be lost: a reconcile pass finds the same difference.
+    ///
+    /// The write upserts the function's row and removes the `failed` state
+    /// row an earlier attempt left, or removes both when the function is gone.
+    /// A failed attempt rolls back, removes the function's row, and leaves a
+    /// `failed` state row.
+    pub fn sync_function(&self, workspace_id: WorkspaceId, function_id: SavedFunctionId) {
+        let span = function_span(&workspace_id, &function_id);
         let index = self.clone();
         self.spawn(span, async move {
             let _write = index.writes.lock().await;
-            index.write_function(&entry).await
+            index
+                .sync_function_held(&workspace_id, &function_id)
+                .await
+                .map(drop)
         });
+    }
+
+    /// Brings the index in line with one Saved Function. The caller holds the
+    /// mutex. Answers whether it indexed the function.
+    async fn sync_function_held(
+        &self,
+        workspace_id: &WorkspaceId,
+        function_id: &SavedFunctionId,
+    ) -> Result<bool, IndexError> {
+        let now = crate::unix_now_nanos().ok_or(IndexError::Clock)?;
+        let sync = self
+            .read_snapshot(async |transaction| {
+                SavedFunctionIndexer
+                    .sync(transaction, workspace_id, function_id, now)
+                    .await
+            })
+            .await;
+        let sync = sync.inspect_err(|error| {
+            // TODO: an error monitor for failed index writes is still to be set up.
+            tracing::error!(
+                coral.workspace.id = safe::id(&workspace_id),
+                coral.saved_function.id = safe::id(&function_id),
+                error.type = safe::kind(error.code()),
+                "failed to read a Saved Function before syncing it"
+            );
+        })?;
+        match sync {
+            FunctionSync::Index(entry) => self.write_function(&entry).await.map(|()| true),
+            FunctionSync::Remove(removal) => {
+                self.erase(&SavedFunctionIndexer, &removal)
+                    .await
+                    .inspect_err(|error| {
+                        // TODO: an error monitor for failed index writes is still to be set up.
+                        tracing::error!(
+                            coral.workspace.id = safe::id(&workspace_id),
+                            coral.saved_function.id = safe::id(&function_id),
+                            error.type = safe::kind(error.code()),
+                            "failed to remove a Saved Function from the search index"
+                        );
+                    })?;
+                Ok(false)
+            }
+            FunctionSync::Nothing => {
+                skipped("nothing_to_sync");
+                Ok(false)
+            }
+        }
     }
 
     /// Waits until notified writes and committed visibility observations finish.
@@ -514,6 +607,22 @@ impl SearchIndex {
         tokio::time::timeout(self.write_limit, write)
             .await
             .map_err(|_elapsed| IndexError::TimedOut(self.write_limit))?
+    }
+
+    /// Runs `read` in one read snapshot, within the write limit, and rolls
+    /// the snapshot back. A read takes no write lock, so it never queues for
+    /// the writer.
+    async fn read_snapshot<T>(
+        &self,
+        read: impl AsyncFnOnce(&mut Transaction<'_>) -> Result<T, IndexError>,
+    ) -> Result<T, IndexError> {
+        self.within_limit(async {
+            let mut transaction = self.database.begin_read_snapshot().await?;
+            let value = read(&mut transaction).await?;
+            transaction.rollback().await?;
+            Ok(value)
+        })
+        .await
     }
 
     /// Writes one entry under its Workspace's lock. It builds the entry's
@@ -756,15 +865,16 @@ fn generation_span(
     )
 }
 
-/// The span of one Saved Function's index write, notified or made by a
-/// reconcile pass. The write records how long it waited for the writer and
-/// wrote.
-fn function_span(entry: &SavedFunctionEntry) -> tracing::Span {
+/// The span of one Saved Function's sync, notified or made by a reconcile
+/// pass. The sync records how long it waited for the writer and wrote, or why
+/// it wrote nothing.
+fn function_span(workspace_id: &WorkspaceId, function_id: &SavedFunctionId) -> tracing::Span {
     tracing::info_span!(
         parent: None,
-        "coral.search.index_function",
-        coral.workspace.id = safe::id(&entry.workspace_id()),
-        coral.saved_function.id = safe::id(&entry.id()),
+        "coral.search.sync_function",
+        coral.workspace.id = safe::id(&workspace_id),
+        coral.saved_function.id = safe::id(&function_id),
+        coral.search.skipped = Empty,
         coral.search.writer_wait_ms = Empty,
         coral.search.write_ms = Empty,
         coral.search.write.trigger = Empty,

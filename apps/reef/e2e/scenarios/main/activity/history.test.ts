@@ -63,9 +63,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         expect(
           await page
             .getByRole('navigation', { name: 'Coral', exact: true })
-            .getByRole('link', {
-              name: /^Activity(\. \d+ pending actions?)?$/,
-            })
+            .getByRole('link', { name: 'Activity', exact: true })
             .getAttribute('aria-current'),
         ).toBe('page')
         const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
@@ -333,13 +331,13 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         expect(
           await table.getByRole('link', { name: 'execution ended', exact: true }).count(),
         ).toBe(0)
-        await table.getByRole('img', { name: 'final value', exact: true }).waitFor()
-        await table.getByRole('link', { name: 'final value', exact: true }).waitFor()
+        await table.getByRole('img', { name: 'return value', exact: true }).waitFor()
+        await table.getByRole('link', { name: 'return value', exact: true }).waitFor()
         const finalRow = table
           .getByRole('row')
-          .filter({ has: page.getByRole('link', { name: 'final value', exact: true }) })
+          .filter({ has: page.getByRole('link', { name: 'return value', exact: true }) })
         await finalRow.getByLabel('23 B added', { exact: true }).waitFor()
-        await finalRow.getByRole('link', { name: 'final value', exact: true }).click()
+        await finalRow.getByRole('link', { name: 'return value', exact: true }).click()
         // The Run returns the snapshot's own value.
         await shownPayload(page, 'historical-source-249').waitFor()
         await page.getByRole('button', { name: 'Close details', exact: true }).click()
@@ -397,7 +395,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             expect(await row.getByLabel('23 B added', { exact: true }).count()).toBe(1)
             expect(
               await table
-                .getByRole('link', { name: 'final value', exact: true, includeHidden: true })
+                .getByRole('link', { name: 'return value', exact: true, includeHidden: true })
                 .count(),
             ).toBe(0)
             expect(
@@ -460,7 +458,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         const toolLink = page
           .getByRole('table', { name: 'Activity records', exact: true })
           .getByRole('link', {
-            name: 'coral.providers.historyFixture.lookup',
+            name: 'History fixture lookup',
             exact: true,
           })
         const table = page.getByRole('table', { name: 'Activity records', exact: true })

@@ -283,7 +283,9 @@ fn each_sent_field_replaces_its_saved_value_and_omitted_fields_stay() {
         (json!({ "refresh": true }), saved()),
     ] {
         assert_eq!(
-            arguments(changes.clone()).configuration(saved(), None),
+            arguments(changes.clone())
+                .choices
+                .configuration(saved(), None),
             expected,
             "{changes}"
         );
@@ -349,7 +351,9 @@ fn an_mcp_server_sets_the_omitted_server_and_oauth_endpoints() {
         ),
     ] {
         assert_eq!(
-            arguments(changes.clone()).configuration(saved.clone(), Some(&discovered)),
+            arguments(changes.clone())
+                .choices
+                .configuration(saved.clone(), Some(&discovered)),
             expected,
             "{changes}"
         );
@@ -361,6 +365,7 @@ fn an_mcp_server_sets_the_omitted_server_and_oauth_endpoints() {
     };
     assert_eq!(
         arguments(json!({ "displayName": "Weather" }))
+            .choices
             .configuration(bearer.clone(), Some(&discovered))
             .authentication,
         bearer.authentication

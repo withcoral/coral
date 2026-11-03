@@ -159,6 +159,59 @@ impl ToolPolicyModule {
         Ok(decisions)
     }
 
+    /// Reads one catalog page of a Provider with each listed Tool's current
+    /// decision, in Tool Key order. It leaves out each Tool `actor` does not
+    /// reach. Authority, the catalog and explicit rules share one read
+    /// snapshot, and a full page carries one lookahead row.
+    ///
+    /// # Errors
+    /// Rejects lost authority, a Provider `actor` may not inspect, an invalid
+    /// page size, and persistence failures.
+    pub async fn listed_decisions(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+        provider: &coral_provider::ProviderId,
+        after: Option<&ToolKey>,
+        page_size: u32,
+    ) -> Result<Vec<(coral_catalog::ToolListing, ToolPolicyDecision)>, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let evidence = self
+            .workspaces
+            .check_in_transaction(&mut transaction, actor, workspace, WorkspaceAction::Inspect)
+            .await?;
+        let listings = coral_provider::tool_listings_in_transaction(
+            &mut transaction,
+            &evidence,
+            provider,
+            after,
+            page_size,
+        )
+        .await?;
+        let keys: Vec<_> = listings.iter().map(|tool| tool.key.clone()).collect();
+        let explicit = if keys.is_empty() {
+            BTreeMap::new()
+        } else {
+            repository::access_states_in_transaction(&mut transaction, workspace, provider, &keys)
+                .await?
+        };
+        transaction.rollback().await?;
+        Ok(listings
+            .into_iter()
+            .map(|tool| {
+                let target =
+                    ToolPolicyTarget::new(workspace.clone(), provider.clone(), tool.key.clone());
+                let decision = resolved_decision(
+                    &target,
+                    tool.hints,
+                    tool.http_method,
+                    explicit.get(&tool.key).copied(),
+                );
+                (tool, decision)
+            })
+            .collect())
+    }
+
     /// Returns the exact rules a Workspace Owner set for the Provider under
     /// `coral.providers.<namespace>`, in any state, keyed by each Tool's
     /// Call Path relative to that Call Root. A Tool without a rule takes

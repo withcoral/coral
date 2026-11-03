@@ -5,6 +5,7 @@ import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { resizeViewport } from '../../../.storybook/browser'
 import { Activity } from './activity'
+import { ProviderMarksContext } from './call-tool'
 import { ActionReviewSession } from '../actions/review'
 import { stored } from './discovery/fixtures'
 import { discoveryView, functionTarget } from './discovery/response'
@@ -351,6 +352,19 @@ export const MixedHistory: Story = {
     await expectAlignedHeaders(await openDrawer(canvasElement))
   },
 }
+/** The live toggle sits right after the list heading, and Tab moves from it to the table. */
+export const LiveToggleOrder: Story = {
+  args: { page: { ...page, selected: null, selectedRow: null, detail: null } },
+  parameters: { initialEntry: '/workspaces/finance/activity' },
+  play: async ({ canvas, userEvent }) => {
+    const heading = await canvas.findByRole('heading', { name: 'Your recent activity' })
+    const live = canvas.getByRole('button', { name: 'Live' })
+    await expect(heading.nextElementSibling).toContainElement(live)
+    live.focus()
+    await userEvent.tab()
+    await expect(canvas.getByRole('table', { name: 'Activity records' })).toHaveFocus()
+  },
+}
 export const CompletionFeedback: Story = {
   args: {
     page: {
@@ -451,7 +465,7 @@ export const ContextImpact: Story = {
               eventKind: 'run.ended',
               // A Run's end is no call of the program's.
               sourceLocation: undefined,
-              label: 'final value',
+              label: 'return value',
               contextImpactBytes: '14500',
             },
           ],
@@ -555,6 +569,52 @@ export const StatusMarkers: Story = {
       selected: null,
       selectedRow: null,
     },
+  },
+}
+/** While the workspace has a call's provider, the call names its tool under that provider's
+ * logo. A call whose provider is gone keeps its kind and full Call Path. */
+export const ProviderTools: Story = {
+  args: {
+    page: {
+      ...StatusMarkers.args!.page!,
+      branches: {
+        ...StatusMarkers.args!.page!.branches,
+        [run]: {
+          ...StatusMarkers.args!.page!.branches[run]!,
+          rows: [
+            ...StatusMarkers.args!.page!.branches[run]!.rows,
+            {
+              ...call,
+              name: `${invocation}-retired`,
+              state: 'ended',
+              outcome: 'upstream_outcome',
+              requiresAction: false,
+              // No provider of the workspace owns it now.
+              callPath: 'coral.providers.retired.lookup',
+              sourceLocation: undefined,
+            },
+          ],
+        },
+      },
+    },
+  },
+  decorators: [
+    (Story) => (
+      <ProviderMarksContext value={[{ callRoot: 'coral.providers.linear', displayName: 'Linear' }]}>
+        <Story />
+      </ProviderMarksContext>
+    ),
+  ],
+  play: async ({ canvas }) => {
+    const table = canvas.getByRole('table', { name: 'Activity records' })
+    // A call of a provider the workspace has: its logo and tool, its full Call Path on hover.
+    await expect(within(table).getByRole('link', { name: 'Linear listIssues' })).toBeVisible()
+    await expect(within(table).getByTitle('coral.providers.linear.listIssues')).toBeVisible()
+    // A call whose provider is gone: its kind and its full Call Path.
+    await expect(
+      within(table).getByRole('link', { name: 'coral.providers.retired.lookup' }),
+    ).toBeVisible()
+    await expect(within(table).getAllByRole('img', { name: 'tool' })).toHaveLength(1)
   },
 }
 export const Collapsed: Story = {
@@ -794,7 +854,6 @@ export const LargeHistory: Story = {
           selected: selectedRow ? selected : null,
           selectedRow,
           detail: selectedRow?.kind === 'task' ? { kind: 'task', task: selectedRow } : null,
-          pending: undefined,
         }}
       />
     )
@@ -1076,7 +1135,7 @@ export const FinalValueOnExec: Story = {
               eventKind: 'run.ended',
               // A Run's end is no call of the program's.
               sourceLocation: undefined,
-              label: 'final value',
+              label: 'return value',
               contextImpactBytes: '15',
             },
           ],
@@ -1098,11 +1157,11 @@ export const FinalValueOnExec: Story = {
     const canvas = within(canvasElement)
     const table = canvas.queryByRole('table', { name: 'Activity records' })
     if (table) {
-      await expect(within(table).getByRole('img', { name: 'final value' })).toBeVisible()
-      await expect(within(table).getByRole('link', { name: 'final value' })).toBeVisible()
+      await expect(within(table).getByRole('img', { name: 'return value' })).toBeVisible()
+      await expect(within(table).getByRole('link', { name: 'return value' })).toBeVisible()
     }
     const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
-    const value = drawer.getByRole('region', { name: 'Final value' })
+    const value = drawer.getByRole('region', { name: 'Return value' })
     await expect(within(value).getByRole('group', { name: 'Structure' })).toHaveTextContent(
       '"invoices": 24',
     )
@@ -1583,7 +1642,7 @@ export const PendingApproval: Story = {
     await expect(within(dialog).getByLabelText('Comment (optional)')).toBeVisible()
     // The Run's source shares the drawer, so the decision pins to the selected record's pane.
     const selected = within(dialog).getByRole('region', { name: 'Selected record' })
-    await expectPinnedFooter(selected, ['Deny this call', 'Approve this call'])
+    await expectPinnedFooter(selected, ['Decline', 'Approve'])
     // Above the decision, a fade marks the evidence still below, until the reader reaches it.
     const scroller = scrollerIn(selected)
     scroller.scrollTop = 0
@@ -1611,7 +1670,7 @@ export const ShortPendingApproval: Story = {
     const scroller = scrollerIn(selected)
     await waitFor(() => expect(scroller.scrollHeight).toBeLessThanOrEqual(scroller.clientHeight))
     await waitFor(() => expect(fadeBelow(scroller)).toBe(0))
-    await expectDecisionBelowEvidence(selected, ['Deny this call', 'Approve this call'])
+    await expectDecisionBelowEvidence(selected, ['Decline', 'Approve'])
   },
 }
 export const ResolvedApproval: Story = {

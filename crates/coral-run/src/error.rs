@@ -116,7 +116,7 @@ impl CoralFailure {
             Self::ProviderUnavailable => "Provider is unavailable",
             Self::ProviderNamespaceConflict => "Provider namespace is already in use",
             Self::ProviderNotFound => "Provider was not found",
-            Self::ProviderPublicationFailed => "Coral could not publish the Provider",
+            Self::ProviderPublicationFailed => "Coral could not change the Provider",
             Self::CredentialRouteChanged => "Tool credential route changed",
             Self::AccountRequired => "Tool requires a Provider Account",
             Self::CredentialRefreshFailed => "Tool credential refresh failed",
@@ -194,7 +194,8 @@ pub struct Rejection {
 
 /// One argument to correct. Coral writes each reason; it never holds a
 /// submitted value, upstream content or a host diagnostic. A field or key name
-/// the Program wrote can appear, since it says what to correct.
+/// the Program wrote can appear, since it says what to correct, and so can the
+/// argument names the Tool declares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InputProblem {
     field: String,

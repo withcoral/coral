@@ -585,6 +585,24 @@ pub(crate) async fn list_every_entry_in_transaction(
         .collect()
 }
 
+pub(crate) async fn entry_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    id: &SavedFunctionId,
+) -> Result<Option<SavedFunctionEntry>, Error> {
+    let row: Option<SavedFunctionEntryRow> = transaction
+        .fetch_optional(
+            entries_statement()
+                .and_where(
+                    Expr::col(SavedFunctionRecords::WorkspaceId).eq(workspace_id.to_string()),
+                )
+                .and_where(Expr::col(SavedFunctionRecords::Id).eq(id.to_string()))
+                .to_owned(),
+        )
+        .await?;
+    row.map(SavedFunctionEntryRow::decode).transpose()
+}
+
 pub(crate) async fn index_revisions(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<crate::SavedFunctionIndexRevision>, Error> {

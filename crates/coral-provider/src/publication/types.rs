@@ -331,15 +331,6 @@ impl ProviderPublication {
         self.diagnostic.as_ref()
     }
 
-    /// Whether the Publication failed because another Provider already uses
-    /// the requested namespace.
-    #[must_use]
-    pub fn failed_on_namespace_conflict(&self) -> bool {
-        self.diagnostic
-            .as_ref()
-            .is_some_and(|diagnostic| diagnostic.code() == NAMESPACE_CONFLICT)
-    }
-
     /// Returns the atomic creation resources for a successful outcome.
     #[must_use]
     pub const fn published_provider(&self) -> Option<&Provider> {

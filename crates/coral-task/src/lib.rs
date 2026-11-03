@@ -54,7 +54,8 @@ pub use activity::{
 };
 mod execution_history;
 pub use execution_history::{
-    ActionRun, ActivityRunEntries, ExecutionHistory, RequiredActions, TaskSubmission,
+    ActionRun, ActivityRunEntries, ExecutionHistory, RequiredActions, SettledApproval,
+    SettledApprovals, TaskSubmission,
 };
 mod commands;
 mod error;

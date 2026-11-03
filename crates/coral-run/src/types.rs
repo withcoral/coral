@@ -835,9 +835,9 @@ impl RunObservation {
     /// # Errors
     /// Rejects waits longer than 30 seconds.
     pub fn initial(wait: Duration) -> Result<Self, Error> {
-        let mut observation = Self::immediate(None, RUN_EVENT_PAGE_MAX)?.with_wait(wait)?;
-        observation.batch_output = true;
-        Ok(observation)
+        Self::immediate(None, RUN_EVENT_PAGE_MAX)?
+            .batching_output()
+            .with_wait(wait)
     }
 
     /// The last Event a wait has seen before it starts: its cursor's, or without
@@ -862,7 +862,16 @@ impl RunObservation {
                     .map_or([0; 32], RunCursor::required_action_revision)
     }
 
+    /// Waits for changed actions or the Run's end, not for each Emission or Log,
+    /// and returns the output that arrived by then, as `exec` does.
+    #[must_use]
+    pub const fn batching_output(mut self) -> Self {
+        self.batch_output = true;
+        self
+    }
+
     /// Waits until new authored Emissions/Logs, changed actions, or terminal data are available.
+    /// New output does not end a [`Self::batching_output`] wait, which still returns it.
     /// Without a cursor, output that exists when the wait begins is replayed, not new.
     /// A zero duration keeps the observation immediate.
     /// # Errors

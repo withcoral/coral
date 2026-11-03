@@ -317,6 +317,7 @@ impl McpServer {
             }
             Some(_) => immediate,
             None => immediate
+                .batching_output()
                 .with_wait(Duration::from_millis(wait_ms))
                 .map_err(invalid_input)?,
         };

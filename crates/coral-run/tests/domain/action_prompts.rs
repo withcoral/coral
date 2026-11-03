@@ -123,6 +123,7 @@ async fn the_invoking_user_decides_each_current_approval_from_its_prompt() {
             "prompts change no Run state or cursor"
         );
 
+        let before = approval_revision(&fixture.runs, user, workspace).await;
         fixture
             .runs
             .answer_action_prompt(user, workspace, run, &action.request, answer, &trace())
@@ -131,6 +132,8 @@ async fn the_invoking_user_decides_each_current_approval_from_its_prompt() {
         let request = approvals.get(user, workspace, id).await.unwrap();
         assert_eq!(request.state, expected);
         assert_eq!(request.approver.as_ref(), Some(user.principal()));
+        let after = approval_revision(&fixture.runs, user, workspace).await;
+        assert_ne!(after, before, "an open Approvals page refreshes");
         assert!(
             fixture
                 .runs

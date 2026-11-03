@@ -1476,14 +1476,14 @@ const returned = '{"reminded":24,"owners":9,"totalOverdue":18450.70,"skipped":["
  */
 export const FinalValue: Story = {
   ...panel(
-    'Final value',
+    'Return value',
     runPage(
       runDetail(endedRun('succeeded'), { terminal: { kind: 'succeeded', finalValue: returned } }),
     ),
     { evidence: '"totalOverdue"' },
   ),
   // Literal, so Storybook's static index shows this name too.
-  name: 'Final value',
+  name: 'Return value',
   play: async (context) => {
     await meta.play(context)
     const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
@@ -1491,13 +1491,13 @@ export const FinalValue: Story = {
     await expect(
       within(header).getByRole('heading', { level: 2, name: 'Send invoice reminders' }),
     ).toBeVisible()
-    await expect(header).toHaveTextContent('program run')
+    await expect(header).not.toHaveTextContent('program run')
     await expect(within(header).getByText('succeeded', { exact: true })).toBeVisible()
     // The returned value shows directly in its own card, not behind a disclosure.
-    const value = within(dialog).getByRole('region', { name: 'Final value' })
+    const value = within(dialog).getByRole('region', { name: 'Return value' })
     await expect(value).toBeVisible()
     await expect(within(value).getByRole('group', { name: 'Structure' })).toBeVisible()
-    await expect(within(dialog).queryByText('Final value', { selector: 'summary' })).toBeNull()
+    await expect(within(dialog).queryByText('Return value', { selector: 'summary' })).toBeNull()
     for (const token of ['"reminded"', '24', '"owners"', '9', '18450.70', '"INV-4180"'])
       await expect(value).toHaveTextContent(token)
     // A returned value is not an emission: no emitted-output card or title. The Run's
@@ -1519,7 +1519,7 @@ export const RunSucceededWithoutFinalValue = lean({
   play: async (context) => {
     await meta.play(context)
     const dialog = await within(context.canvasElement.ownerDocument.body).findByRole('dialog')
-    await expect(within(dialog).queryByRole('region', { name: 'Final value' })).toBeNull()
+    await expect(within(dialog).queryByRole('region', { name: 'Return value' })).toBeNull()
   },
 })
 /** Text no record panel shows: boilerplate about absent evidence, outcome prose the badge
@@ -1995,7 +1995,7 @@ export const ApprovalInlineOpenApiDocument: Story = {
     await expect(within(review).queryByRole('button', { name: /^Show / })).toBeNull()
     // Nothing crosses the drawer's edge, and the decision stays in reach.
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
-    await expect(within(review).getByRole('button', { name: 'Approve this call' })).toBeVisible()
+    await expect(within(review).getByRole('button', { name: 'Approve' })).toBeVisible()
   },
 }
 /** A typical addProvider call: plain JSON that round-trips exactly. */
@@ -2068,7 +2068,7 @@ export const ApprovalAddProviderOpenApi: Story = {
     await expect(review).not.toHaveTextContent('shown below')
     await expect(within(review).queryByRole('button', { name: /^Show / })).toBeNull()
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
-    for (const name of ['Deny this call', 'Approve this call'])
+    for (const name of ['Decline', 'Approve'])
       await expect(within(review).getByRole('button', { name })).toBeVisible()
   },
 }
@@ -2107,10 +2107,10 @@ const approvals = {
     'Checked the exact invoice recipient.',
   ),
   declined: approvalStory(
-    panel('Approval · denied, with comment', approvalPage(approval(settle('declined'))), {
+    panel('Approval · declined, with comment', approvalPage(approval(settle('declined'))), {
       evidence: 'This owner left the company.',
     }),
-    'Denied',
+    'Declined',
     'This owner left the company.',
   ),
   expired: approvalStory(
@@ -2127,7 +2127,7 @@ const approvals = {
   ),
 } satisfies Record<ApprovalState, Story>
 export const ApprovalApproved = approvals.approved
-export const ApprovalDenied = approvals.declined
+export const ApprovalDeclined = approvals.declined
 export const ApprovalExpired = approvals.expired
 export const ApprovalClosed = approvals.closed
 export const ApprovalPendingReconnecting = panel(
@@ -2173,7 +2173,7 @@ export const ApprovalWithoutNames: Story = {
     const requested = within(dialog).getByText('Requested by', { selector: 'dt' })
     await expect(requested.nextElementSibling!.textContent).toBe('Unknown agent')
     await expect(dialog).not.toHaveTextContent(/unavailable|Provider:|agents\//)
-    for (const name of ['Deny this call', 'Approve this call'])
+    for (const name of ['Decline', 'Approve'])
       await expect(within(dialog).getByRole('button', { name })).toBeVisible()
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
   },
@@ -2288,7 +2288,6 @@ function connectionStory(
       await expect(header.getByRole('heading', { level: 3 }).textContent).toBe(
         state === 'pending' ? 'Connect your Linear account' : 'Connect your account',
       )
-      await expect(header.getByText('account connection request')).toBeVisible()
       await expect(header.getByText(state.replaceAll('_', ' '))).toBeVisible()
       await expect(
         opened.queryAllByRole('button', { name: 'Close details' }).length,

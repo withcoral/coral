@@ -43,7 +43,10 @@ describe('Coral web CSRF tokens', () => {
     expect(created.setCookie).toContain('SameSite=Lax')
 
     const reused = await csrfTokenForRequest(requestWithCookie(created.setCookie!), config, session)
-    expect(reused).toEqual({ setCookie: null, token: created.token })
+    expect(reused.setCookie).toBeNull()
+    await expect(
+      validateCsrfToken(postRequest(created.setCookie!, reused.token), config, session),
+    ).resolves.toBe(true)
   })
 
   it('rotates a CSRF cookie inherited from a different authenticated session', async () => {
@@ -59,8 +62,13 @@ describe('Coral web CSRF tokens', () => {
       otherSession,
     )
 
-    expect(rotated.token).not.toBe(created.token)
     expect(rotated.setCookie).toContain(`${config.cookieName}_csrf=`)
+    await expect(
+      validateCsrfToken(postRequest(rotated.setCookie!, rotated.token), config, otherSession),
+    ).resolves.toBe(true)
+    await expect(
+      validateCsrfToken(postRequest(rotated.setCookie!, created.token), config, otherSession),
+    ).resolves.toBe(false)
   })
 
   it('accepts only a fresh form token bound to the current authenticated session', async () => {
@@ -70,27 +78,52 @@ describe('Coral web CSRF tokens', () => {
       session,
     )
 
+    const another = await csrfTokenForRequest(
+      new Request('https://coral-web.example.test/'),
+      config,
+      session,
+    )
+    const masked = created.token
     await expect(
-      validateCsrfToken(postRequest(created.setCookie!, created.token), config, session),
+      validateCsrfToken(postRequest(created.setCookie!, masked), config, session),
     ).resolves.toBe(true)
     await expect(
-      validateCsrfToken(postRequest(created.setCookie!, created.token), config, otherSession),
+      validateCsrfToken(postRequest(created.setCookie!, masked), config, otherSession),
     ).resolves.toBe(false)
     await expect(
-      validateCsrfToken(postRequest(created.setCookie!, 'wrong-token'), config, session),
+      validateCsrfToken(postRequest(created.setCookie!, another.token), config, session),
     ).resolves.toBe(false)
     await expect(
-      validateCsrfToken(
-        postRequest(`${config.cookieName}_csrf=tampered`, created.token),
-        config,
-        session,
-      ),
+      validateCsrfToken(postRequest(`${config.cookieName}_csrf=tampered`, masked), config, session),
     ).resolves.toBe(false)
 
     vi.advanceTimersByTime((config.sessionMaxAgeSeconds + 1) * 1000)
     await expect(
-      validateCsrfToken(postRequest(created.setCookie!, created.token), config, session),
+      validateCsrfToken(postRequest(created.setCookie!, masked), config, session),
     ).resolves.toBe(false)
+  })
+
+  // Catches: a token that repeats in compressed pages, whose sizes can reveal
+  // it beside reflected input (BREACH), or a mask that stops it validating.
+  it('masks the token differently in each response', async () => {
+    const created = await csrfTokenForRequest(
+      new Request('https://coral-web.example.test/'),
+      config,
+      session,
+    )
+    const repeat = () => csrfTokenForRequest(requestWithCookie(created.setCookie!), config, session)
+    const [first, second] = [(await repeat()).token, (await repeat()).token]
+    expect(first).not.toBe(second)
+    for (const masked of [first, second]) {
+      await expect(
+        validateCsrfToken(postRequest(created.setCookie!, masked), config, session),
+      ).resolves.toBe(true)
+    }
+    for (const invalid of ['unmasked-token', 'a.b.c', `${first}x`, '.', '']) {
+      await expect(
+        validateCsrfToken(postRequest(created.setCookie!, invalid), config, session),
+      ).resolves.toBe(false)
+    }
   })
 
   it('derives the cookie name and Secure attribute from the auth configuration', async () => {

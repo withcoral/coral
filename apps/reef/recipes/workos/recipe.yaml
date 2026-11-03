@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: workos
+display_name: WorkOS
+description: Organizations, users, SSO connections, directories, roles and audit logs from WorkOS.
+
+# WorkOS publishes this document in its own repository.
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/workos/openapi-spec/main/spec/open-api-spec.yaml
+
+authentication:
+  options:
+    api_key:
+      # The WorkOS API takes only an API key. GET /sso/profile instead takes a
+      # user's SSO access token, which a Recipe cannot set for one Operation.
+      method: bearer
+      label: Paste an API key
+      description: Copy the secret key of your WorkOS environment from the WorkOS dashboard.
+      documentation_url: https://workos.com/docs/reference/api-authentication
+
+servers:
+  '#/servers':
+    # The document also declares api.workos-test.com as Staging. The API
+    # reference names only api.workos.com, which serves the keys of every
+    # WorkOS environment, sandbox and production alike.
+    declared_url: https://api.workos.com

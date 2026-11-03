@@ -118,8 +118,8 @@ impl EntityRetriever for SavedFunctionRetriever {
         let near_spellings: Arc<[String]> = ranked.near_spellings.into();
         let mut window = Vec::new();
         for function in ranked.entities.into_iter().take(request.window) {
-            // A row of a function deleted after the owner read cannot rank:
-            // the cascade removes it in the same snapshot.
+            // A function's delete leaves its row for a later write, so only
+            // what the owner holds now may answer.
             let Some(material) = functions.get(&function.saved_function_id) else {
                 continue;
             };

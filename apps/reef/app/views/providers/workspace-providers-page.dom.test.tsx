@@ -2,23 +2,23 @@
 
 import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import { renderRoute } from '@/test-support/route'
 
 import { builtinProvider, provider, workspaceView } from './fixtures'
-import type { ToolView, ProviderView, WorkspaceView } from './types'
+import type { ToolDetailView, ToolView, ProviderView, WorkspaceView } from './types'
 import { WorkspaceProvidersPage } from './workspace-providers-page'
 
 // happy-dom lays nothing out, so the virtualizer would mount no tool
 // rows. Give the scroll port a viewport; row heights come from estimates.
 const isTable = (element: HTMLElement) => element.getAttribute('aria-label') === 'Tools'
-Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
   get() {
     return isTable(this) ? 2000 : 0
   },
 })
-Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
   get() {
     return isTable(this) ? 1000 : 0
   },
@@ -40,6 +40,7 @@ function renderPage({
   providers = [github, weather],
   recipes = [],
   selectedTool = null,
+  selectedToolDetail = null,
   workspace = workspaceView,
 }: {
   action?: Action
@@ -47,15 +48,17 @@ function renderPage({
   providers?: ProviderView[]
   recipes?: SourceChoice[]
   selectedTool?: ToolView | null
+  selectedToolDetail?: ToolDetailView | null
   workspace?: WorkspaceView
 } = {}) {
-  const page = (selected: ToolView | null, owner = providerOf(selected)) => (
+  const page = (selected: ToolView | null, owner = providerOf(selected, providers)) => (
     <WorkspaceProvidersPage
       workspace={workspace}
       providers={providers}
       recipes={recipes}
       selectedProvider={owner}
       selectedTool={selected?.relativePath ?? null}
+      selectedToolDetail={selectedToolDetail}
       form={{ csrf: 'test-csrf', requestId: 'test-request' }}
     />
   )
@@ -67,21 +70,78 @@ function renderPage({
     action: action ? ({ request }) => action(request) : undefined,
   })
   // The route re-renders the page with what the URL now selects.
-  const show = async (selected: ToolView | null, owner = providerOf(selected)) => {
+  const show = async (selected: ToolView | null, owner = providerOf(selected, providers)) => {
     element = page(selected, owner)
     await act(async () =>
       router.navigate(
-        selected?.path ??
+        (selected && pathOf(selected, providers)) ??
           (owner ? `/workspaces/demo/providers/${owner}` : '/workspaces/demo/providers'),
       ),
     )
   }
-  return { show, router }
+  // The route re-renders the page with what a reload returned.
+  const rerenderProviders = async (next: ProviderView[]) => {
+    providers = next
+    element = page(null)
+    await act(async () => router.navigate('/workspaces/demo/providers#reloaded'))
+  }
+  return { show, router, rerenderProviders }
 }
 
-function providerOf(selected: ToolView | null) {
-  return selected ? [github, weather].find((item) => item.tools.includes(selected))!.id : null
+const pathOf = (tool: ToolView, providers = [github, weather]) =>
+  `${providers.find((item) => item.tools.includes(tool))!.path}/tools/${encodeURIComponent(tool.relativePath)}`
+
+function providerOf(selected: ToolView | null, providers = [github, weather]) {
+  return selected ? providers.find((item) => item.tools.includes(selected))!.id : null
 }
+
+// Catches: the drawer losing the prose the table no longer loads, or showing
+// another tool's prose while the next tool loads.
+test('the drawer shows the prose of the tool the route names', () => {
+  renderPage({
+    entry: `${github.path}/tools/issues.list`,
+    selectedTool: github.tools[0]!,
+    selectedToolDetail: {
+      relativePath: 'issues.list',
+      summary: 'List issues',
+      description: 'Lists **every** issue.',
+    },
+  })
+  const drawer = screen.getByRole('dialog')
+  expect(within(drawer).getByText('every').tagName).toBe('STRONG')
+  expect(within(drawer).getByText('coral.providers.github.issues.list')).toBeInTheDocument()
+})
+
+// Catches: the drawer staying scrolled between two providers' tools, as a
+// Tool Key is unique only within its provider.
+test('the drawer starts at the top for a tool with the same key in another provider', async () => {
+  const [first, second] = [github, weather].map((item) => ({
+    ...item,
+    tools: [{ ...item.tools[0]!, key: 'shared' }],
+  }))
+  const providers = [first!, second!]
+  const selectedTool = first!.tools[0]!
+  const { show } = renderPage({
+    entry: pathOf(selectedTool, providers),
+    providers,
+    selectedTool,
+  })
+  const scrollTo = vi.fn()
+  screen.getByRole('dialog').scrollTo = scrollTo
+  await show(second!.tools[0]!)
+  expect(scrollTo).toHaveBeenCalledWith({ top: 0 })
+})
+
+test('the drawer ignores prose that belongs to another tool', () => {
+  renderPage({
+    entry: `${github.path}/tools/issues.list`,
+    selectedTool: github.tools[0]!,
+    selectedToolDetail: { relativePath: 'repos.get', summary: 'Stale', description: 'Stale prose' },
+  })
+  const drawer = screen.getByRole('dialog')
+  expect(within(drawer).queryByText('Stale prose')).not.toBeInTheDocument()
+  expect(within(drawer).getByText('No description.')).toBeInTheDocument()
+})
 
 const user = userEvent.setup()
 // The drawer is a modal dialog: while it is open, the page behind it leaves the
@@ -803,14 +863,14 @@ test('clicking a row opens its tool, but its controls do not', async () => {
   }) as typeof port.scrollTo
 
   await user.click(within(rowOf('repos.get')).getByRole('link', { name: 'repos.get' }))
-  expect(router.state.location.pathname).toBe(github.tools[1]!.path)
+  expect(router.state.location.pathname).toBe(pathOf(github.tools[1]!))
   await act(async () => router.navigate(-1))
   expect(router.state.location.pathname).toBe('/workspaces/demo/providers')
   await user.click(checkbox('Select issues.list'))
   await choosePolicy('issues.list', 'Disabled')
   expect(router.state.location.pathname).not.toMatch(/issues/)
   await user.click(within(rowOf('issues.list')).getAllByRole('cell')[1]!)
-  expect(router.state.location.pathname).toBe(github.tools[0]!.path)
+  expect(router.state.location.pathname).toBe(pathOf(github.tools[0]!))
   expect(scrolls).toEqual([])
 })
 
@@ -892,7 +952,7 @@ test('keys act on the cursor tool', async () => {
   await user.keyboard('{ArrowLeft}')
   await settle()
   expect(sent).toEqual([
-    `${JSON.stringify({ provider: github.id, tool: github.tools[1]!.name })} enabled`,
+    `${JSON.stringify({ provider: github.id, tool: github.tools[1]!.key })} enabled`,
   ])
 
   await user.click(screen.getByLabelText('Filter tools'))
@@ -953,10 +1013,10 @@ test('Enter opens the cursor tool and arrows move the open drawer', async () => 
   const { router } = renderPage()
   await user.keyboard('{ArrowDown>3/}{Enter}')
   await settle()
-  expect(router.state.location.pathname).toBe(github.tools[0]!.path)
+  expect(router.state.location.pathname).toBe(pathOf(github.tools[0]!))
   await user.keyboard('{ArrowDown}')
   await settle()
-  expect(router.state.location.pathname).toBe(github.tools[1]!.path)
+  expect(router.state.location.pathname).toBe(pathOf(github.tools[1]!))
 })
 
 // Catches: a heading the keys cannot collapse or expand, or a key on a
@@ -990,7 +1050,7 @@ test('the cursor row takes focus, so Enter and Space reach it', async () => {
   expect(checkbox('Select issues.list')).toBeChecked()
   await user.keyboard('{Enter}')
   await settle()
-  expect(router.state.location.pathname).toBe(github.tools[0]!.path)
+  expect(router.state.location.pathname).toBe(pathOf(github.tools[0]!))
 })
 
 // Catches: Enter on a focused button opening the cursor's drawer instead of
@@ -1021,4 +1081,98 @@ test('keys act on the cursor tool while the table has focus', async () => {
   await user.keyboard('{ArrowLeft}')
   await settle()
   expect(sent).toEqual(['enabled'])
+})
+
+const disabledRadio = () => within(rowOf('only')).getByRole('radio', { name: 'Disabled' })
+
+// Catches: a saved policy that a catalog no longer reloading would snap back
+// on, or a provider whose last tool went disabled keeping its old status.
+test('a saved policy stays, and its blockers apply, without a catalog reload', async () => {
+  const solo = provider('00000000-0000-4000-8000-000000000003', 'Solo', 'solo', ['only'])
+  const { rerenderProviders } = renderPage({
+    providers: [solo],
+    action: async (request) => {
+      const data = await request.formData()
+      const target = JSON.parse(data.get('selectedTool') as string) as {
+        provider: string
+        tool: string
+      }
+      return {
+        error: null,
+        message: 'Tool policy saved for 1 tool.',
+        credential: null,
+        tools: [{ ...target, status: 'updated' }],
+        blockers: { [solo.id]: ['No tools ready'] },
+      }
+    },
+  })
+  await choosePolicy('only', 'Disabled')
+  await settle()
+  expect(disabledRadio()).toBeChecked()
+  expect(screen.getByRole('img', { name: 'No tools ready' })).toBeInTheDocument()
+
+  // A reload is Coral's own word, which takes over from the saved change.
+  await rerenderProviders([{ ...solo, tools: [...solo.tools] }])
+  expect(disabledRadio()).not.toBeChecked()
+  expect(screen.queryByRole('img', { name: 'No tools ready' })).not.toBeInTheDocument()
+})
+
+// Catches: a rejected change undoing the saved one, which no reload would restore.
+test('a rejected policy change falls back to the saved policy, not the loaded one', async () => {
+  const solo = provider('00000000-0000-4000-8000-000000000004', 'Solo', 'solo', ['only'])
+  renderPage({
+    providers: [solo],
+    action: async (request) => {
+      const data = await request.formData()
+      const target = JSON.parse(data.get('selectedTool') as string) as object
+      return data.get('access') === 'disabled'
+        ? {
+            error: null,
+            message: 'Saved.',
+            credential: null,
+            tools: [{ ...target, status: 'updated' }],
+            blockers: {},
+          }
+        : { error: 'Coral refused.', credential: null }
+    },
+  })
+  await choosePolicy('only', 'Disabled')
+  await settle()
+  await choosePolicy('only', 'Always allow')
+  await settle()
+  expect(disabledRadio()).toBeChecked()
+  expect(rowOf('only')).toHaveTextContent('Not saved')
+})
+
+// Catches: an older response overwriting the blockers of a later change, which
+// no reload would correct.
+test('blockers from an older policy change do not replace a later one', async () => {
+  const pair = provider('00000000-0000-4000-8000-000000000005', 'Pair', 'pair', ['one', 'two'])
+  const answers = new Map<string, (blockers: string[]) => void>()
+  renderPage({
+    providers: [pair],
+    action: async (request) => {
+      const data = await request.formData()
+      const target = JSON.parse(data.get('selectedTool') as string) as { tool: string }
+      const blockers = await new Promise<string[]>((resolve) => {
+        answers.set(target.tool.split('/').at(-1)!, resolve)
+      })
+      return {
+        error: null,
+        message: 'Saved.',
+        credential: null,
+        tools: [{ ...target, status: 'updated' }],
+        blockers: { [pair.id]: blockers },
+      }
+    },
+  })
+  await choosePolicy('one', 'Disabled')
+  await settle()
+  await choosePolicy('two', 'Disabled')
+  await settle()
+  answers.get('two')!(['No tools ready'])
+  await settle()
+  answers.get('one')!([])
+  await settle()
+  expect(screen.getByRole('img', { name: 'No tools ready' })).toBeInTheDocument()
 })

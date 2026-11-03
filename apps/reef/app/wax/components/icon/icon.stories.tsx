@@ -30,6 +30,7 @@ const productIconNames = [
   'Activity',
   'ArrowDown',
   'ArrowUp',
+  'ArrowUpRight',
   'Ban',
   'Bot',
   'Calendar',
@@ -44,21 +45,25 @@ const productIconNames = [
   'CircleCheckFull',
   'Copy',
   'Coral',
+  'Cpu',
   'ExternalLink',
-  'FileCode',
-  'FileOutput',
   'Eye',
   'EyeOff',
+  'FileCode',
+  'FileOutput',
   'GitHub',
   'Hand',
   'Info',
   'Link',
   'Loader',
+  'Maximize2',
+  'MemoryStick',
   'PanelLeft',
   'PanelsTopLeft',
   'Plug',
   'RefreshCw',
   'Save',
+  'Scaling',
   'Search',
   'Settings',
   'ShieldBan',
@@ -161,7 +166,7 @@ export const Variants: Story = {
   ),
 }
 
-/** A plate per review state: required, approved, denied, other. */
+/** A plate per review state: required, approved, declined, other. */
 export const Plates: Story = {
   args: { name: 'Shield' },
   render: () => (

@@ -202,17 +202,13 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
             'weather',
           )
           expect(recreated).not.toBe(providerPath)
-          const catalog = await api.providers.listTools({
+          const { tools } = await api.policies.listToolAccess({
             parent: recreated.slice(1),
             pageSize: 100,
           })
-          const policies = await api.policies.getToolPolicies({
-            parent: recreated.slice(1),
-            tools: catalog.tools.map((tool) => tool.name),
-          })
-          expect(policies.policies).toHaveLength(1)
-          expect(policies.policies[0].accessState).toBe(ToolAccessState.APPROVAL_REQUIRED)
-          expect(policies.policies[0].explicit).toBe(false)
+          expect(tools).toHaveLength(1)
+          expect(tools[0].accessState).toBe(ToolAccessState.APPROVAL_REQUIRED)
+          expect(tools[0].explicit).toBe(false)
           expect(calls).toBe(4)
           expect(
             (await api.providers.listProviders({ parent: `workspaces/${workspace}` })).providers,

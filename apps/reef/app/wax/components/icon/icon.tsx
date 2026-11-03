@@ -1,11 +1,12 @@
 import classnames from 'classnames'
-import { icons } from 'lucide-react'
 
 import { customIcons, isCustomIcon } from '@/wax/components/icon/custom-icons/custom-icons'
 import type { CustomIconName } from '@/wax/components/icon/custom-icons/custom-icons'
 
 import { iconContainer, plate } from './icon.css'
 import type { IconContainerVariants } from './icon.css'
+import { lucideIcons } from './lucide-icons'
+import type { LucideIconName } from './lucide-icons'
 
 export type IconColor = NonNullable<IconContainerVariants>['color']
 export type IconName = CustomIconName | LucideIconName
@@ -16,10 +17,9 @@ export interface IconProps {
   size?: '14' | '16' | '18' | '20' | '24' | '30'
 }
 export type IconSize = NonNullable<IconContainerVariants>['size']
-export type LucideIconName = keyof typeof icons
 
 export function Icon({ className, color = 'primary', name, size = '20' }: IconProps) {
-  const IconComponent = isCustomIcon(name) ? customIcons[name] : icons[name]
+  const IconComponent = isCustomIcon(name) ? customIcons[name] : lucideIcons[name]
 
   return (
     <span className={classnames(iconContainer({ color, size }), className)}>

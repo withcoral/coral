@@ -71,7 +71,10 @@ export function recipeConfiguration(
     suggestedMethods: suggestedMethods(recipe, review),
     ...mapped,
     ...(generator && {
-      clientConfigHintMarkdown: CLIENT_CONFIG_HINT_GENERATORS[generator](hintContext),
+      clientConfigHintMarkdown: CLIENT_CONFIG_HINT_GENERATORS[generator]({
+        ...hintContext,
+        signInUrl: review.values?.authorizationUrl,
+      }),
     }),
   }
 }
