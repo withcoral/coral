@@ -9,8 +9,9 @@ use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 use crate::lifecycle::RunRecord;
 use crate::{
-    Error, RequiredAction, RunCursor, RunEvent, RunId, RunModule, RunObservation, RunUpdate,
-    required_actions, run_repository,
+    Error, RequiredAction, RunCursor, RunEvent, RunFailureCode, RunId, RunModule, RunObservation,
+    RunTerminalOutcome, RunUpdate, invocation_repository, required_actions, run_repository,
+    tool_result_shape,
 };
 
 /// Minimum spacing between one waiter's rereads.
@@ -184,6 +185,23 @@ async fn read_update(
     };
     let trace_id = run.diagnostic_trace_id();
     let run_trace = run.trace.clone();
+    // Only the page that carries the failure reads what the Program received.
+    let tool_result_shapes = match &run.terminal_outcome {
+        Some(RunTerminalOutcome::Failed(failure))
+            if !has_more && failure.code() == RunFailureCode::ProgramRejected =>
+        {
+            let (received, unread) = invocation_repository::received_results(
+                transaction,
+                &run.workspace_id,
+                &run.id,
+                tool_result_shape::RESULTS_READ,
+                tool_result_shape::RESULTS_READ_MAX_BYTES,
+            )
+            .await?;
+            tool_result_shape::sketch(received, unread)
+        }
+        _ => crate::ToolResultShapes::default(),
+    };
     let mut update = RunUpdate::new(
         run.id.clone(),
         run.state,
@@ -194,6 +212,7 @@ async fn read_update(
         run.value_limits,
     )?;
     update.required_actions = actions;
+    update.tool_result_shapes = tool_result_shapes;
     update.trace_id = trace_id;
     update.run_trace = run_trace;
     Ok(update)
