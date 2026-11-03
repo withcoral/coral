@@ -86,9 +86,7 @@ const RUN_UPDATE_PAGE_BYTES: usize = 4096;
 /// The Program runtime's own bound on one encoded Program error.
 const PROGRAM_ERROR_MAX_BYTES: usize = 8 * 1024;
 
-const TOOL_NAMES: [&str; 8] = [
-    "search",
-    "describe",
+const TOOL_NAMES: [&str; 6] = [
     "save_function",
     "delete_function",
     "exec",
@@ -278,12 +276,35 @@ impl Tracer {
             coral_run::CoralInstanceId::generate(),
             coral_run::RunInbox::table(db.clone()),
         )
-        .expect("start real Program runtime");
+        .expect("start real Program runtime")
+        // Built-in Tools such as coral.workspace.search run only where Reef's
+        // origin is named, as every Coral that runs Programs names it.
+        .with_human_interface(
+            coral_run::HumanInterfaceUrl::parse("https://reef.example.test")
+                .expect("human interface URL"),
+        );
         let search = UniversalSearchModule::new(db.clone(), workspaces.clone());
         // Reef decides through the Run Module that owns the Runs.
         let approvals = runs.approvals();
         let workspace_a = create_workspace(&workspaces, &local_user, "Tracer A", 10, '1').await;
         let workspace_b = create_workspace(&workspaces, &local_user, "Tracer B", 11, '2').await;
+        // Agents discover through the Built-in Provider's search, which
+        // creating a Workspace in production installs.
+        for (workspace, at) in [(&workspace_a, 13), (&workspace_b, 14)] {
+            let mut transaction = db.begin().await.expect("begin the Built-in install");
+            providers
+                .install_builtin_in_transaction(
+                    &mut transaction,
+                    &change(local_user.clone(), at, '2'),
+                    workspace,
+                )
+                .await
+                .expect("install the Built-in Provider");
+            transaction
+                .commit()
+                .await
+                .expect("commit the Built-in install");
+        }
         let provider_id = publish_tools(
             &providers,
             &policies,
@@ -423,6 +444,38 @@ async fn start_task(client: &SdkClient, goal: &str) -> String {
         .to_string()
 }
 
+/// Runs `program` in `task` and returns its Final Value, as an agent reads
+/// what a Program found with `coral.workspace.search`.
+async fn program_value(client: &SdkClient, task: &str, program: &str) -> Value {
+    let mut update = structured(
+        &call(
+            client,
+            "exec",
+            json!({"task_id": task, "intent": "Discover in a Program", "program": program, "wait_ms": 30_000}),
+        )
+        .await,
+    )
+    .clone();
+    while update.get("state") == Some(&json!("running"))
+        || update.get("has_more") == Some(&json!(true))
+    {
+        update = structured(
+            &call(
+                client,
+                "wait",
+                json!({"run_id": update.get("run_id"), "cursor": update.get("next_cursor"), "wait_ms": 30_000}),
+            )
+            .await,
+        )
+        .clone();
+    }
+    assert_eq!(update.get("state"), Some(&json!("succeeded")), "{update}");
+    update
+        .pointer("/final_value/value")
+        .cloned()
+        .unwrap_or_else(|| panic!("a Final Value: {update}"))
+}
+
 /// Local mode has no sign-in to pick a Workspace with, so `/mcp` needs an
 /// Agent credential, whose Registration fixes the Workspace.
 #[tokio::test(flavor = "multi_thread")]
@@ -552,10 +605,11 @@ async fn sessions_are_bound_to_host_credential_workspace_and_protocol_window() {
     );
     let concealed = call(
         &client_b,
-        "search",
+        "exec",
         json!({
             "task_id": task_id,
-            "intent": "Try to cross the Workspace scope"
+            "intent": "Try to cross the Workspace scope",
+            "program": "return 1;"
         }),
     )
     .await;
@@ -649,10 +703,6 @@ async fn advertised_schemas_defaults_and_output_contracts_hold_on_every_version(
             .expect("tool properties")
             .clone()
     };
-    let search_properties = properties("search");
-    for property in ["query", "provider", "limit", "cursor"] {
-        assert!(search_properties.contains_key(property));
-    }
     let exec_properties = properties("exec");
     assert!(exec_properties.contains_key("program"));
     assert!(!exec_properties.contains_key("input"));
@@ -1145,17 +1195,21 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         .as_str()
         .expect("generated Task id")
         .to_string();
-    let searched = call(
+    // Discovery runs in a Program: a query, then exact paths, one of them
+    // misspelled.
+    let found = program_value(
         &client_a,
-        "search",
-        json!({
-            "task_id": task_id,
-            "intent": "Find the weather Tool",
-            "query": "getForecast"
-        }),
+        &task_id,
+        r#"const found = await coral.workspace.search({ query: "getForecast" });
+const read = await coral.workspace.search({
+  paths: ["coral.providers.weather.getForecast", "coral.providers.weather.getForcast"],
+});
+return { found: found.data, read: read.data };"#,
     )
     .await;
-    let first_search_result = structured(&searched)
+    let found = &found;
+    let searched = &found["found"];
+    let first_search_result = searched
         .get("hits")
         .and_then(Value::as_array)
         .and_then(|items| items.first())
@@ -1165,6 +1219,7 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         Some(&json!("coral.providers.weather.getForecast"))
     );
     assert!(first_search_result["signature_line"].is_string());
+    assert!(first_search_result["complete"].is_boolean());
     assert!(first_search_result["description_snippet"].is_string());
     for gone in [
         "description",
@@ -1175,56 +1230,48 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         "title",
         "provider_display_name",
         "evidence",
+        "summary",
+        "score",
     ] {
         assert!(
             first_search_result.get(gone).is_none(),
             "a hit carries no {gone}"
         );
     }
-    assert!(first_search_result.get("summary").is_none());
-    assert_eq!(structured(&searched)["has_more"], false);
-    assert!(structured(&searched).get("next_cursor").is_none());
-    assert!(first_search_result.get("score").is_none());
+    assert_eq!(searched["has_more"], false);
+    assert!(searched.get("next_cursor").is_none());
     assert!(
-        serde_json::to_vec(structured(&searched))
+        serde_json::to_vec(searched)
             .expect("serialize structured search page")
             .len()
             <= coral_search::SEARCH_PAGE_MAX_BYTES
     );
-    let described = call(
-        &client_a,
-        "describe",
-        json!({
-            "task_id": task_id,
-            "intent": "Inspect the exact weather signature",
-            "path": "coral.providers.weather.getForecast"
-        }),
-    )
-    .await;
+    let described = found
+        .pointer("/read/descriptions/0")
+        .expect("the description of the path");
     assert_eq!(
-        structured(&described)["call_path"],
+        described["call_path"],
         "coral.providers.weather.getForecast"
     );
-    assert_eq!(structured(&described)["provider_access"], "weather");
+    assert_eq!(described["provider_access"], "weather");
     assert!(
-        structured(&described)["typescript_declaration"]
+        described["typescript_declaration"]
             .as_str()
             .expect("TypeScript declaration")
             .contains("temperatureC")
     );
-    let undeclared = call(
-        &client_a,
-        "describe",
-        json!({
-            "task_id": task_id,
-            "intent": "Inspect a type the weather declaration lacks",
-            "path": "coral.providers.weather.getForecast",
-            "types": ["Missing"]
-        }),
-    )
-    .await;
-    assert_eq!(undeclared.is_error, Some(true));
-    assert_eq!(structured(&undeclared)["code"], "undeclared_types");
+    // The misspelled path is missing, and the Tool it meant comes first.
+    let missing = found.pointer("/read/missing").expect("missing paths");
+    assert_eq!(
+        missing.pointer("/0/call_path"),
+        Some(&json!("coral.providers.weather.getForcast"))
+    );
+    assert_eq!(missing.as_array().map(Vec::len), Some(1), "{missing}");
+    assert_eq!(
+        missing.pointer("/0/suggestions/0"),
+        Some(&json!("coral.providers.weather.getForecast")),
+        "{missing}"
+    );
 
     let saved = call(
         &client_a,
@@ -1248,18 +1295,14 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     assert!(structured(&saved)["declaration"].is_string());
     // The save notifies search; wait for its write, with no reconcile pass.
     tracer.index.settled().await;
-    let searched_function = call(
+    let searched_function = program_value(
         &client_a,
-        "search",
-        json!({
-            "task_id": task_id,
-            "intent": "Find the saved weather helper",
-            "query": "currentTemperature",
-            "limit": 1
-        }),
+        &task_id,
+        r#"return (await coral.workspace.search({ query: "currentTemperature", limit: 1 })).data;"#,
     )
     .await;
-    let function_result = structured(&searched_function)["hits"]
+    let searched_function = &searched_function;
+    let function_result = searched_function["hits"]
         .as_array()
         .and_then(|items| items.first())
         .expect("Saved Function search result");
@@ -1336,38 +1379,6 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         "task_id": task_id, "intent": "Record a source-limit rejection", "program": "x".repeat(65 * 1024), "wait_ms": 0
     })).await;
     assert_eq!(structured(&oversized)["code"], "invalid_input");
-    for (field, value, code) in [
-        ("query", " ", "invalid_input"),
-        (
-            "provider",
-            "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-            "invalid_input",
-        ),
-        ("cursor", "!", "invalid_cursor"),
-    ] {
-        let rejected = call(
-            &client_a,
-            "search",
-            json!({"task_id": task_id, "intent": "Record search validation", field: value}),
-        )
-        .await;
-        assert_eq!(rejected.is_error, Some(true));
-        assert_eq!(structured(&rejected)["code"], code);
-    }
-    let unknown_namespace = call(
-        &client_a,
-        "search",
-        json!({"task_id": task_id, "intent": "Guess a Provider namespace", "provider": "absent"}),
-    )
-    .await;
-    assert_eq!(unknown_namespace.is_error, Some(true));
-    assert_eq!(
-        untraced(structured(&unknown_namespace)),
-        json!({
-            "code": "invalid_input",
-            "message": "No Provider you can search has this namespace. Use one of: weather."
-        })
-    );
     let invalid_function = call(&client_a, "save_function", json!({
         "task_id": task_id, "intent": "Record rejected function authoring", "path": "invalidHelper",
         "description": "Must not save", "source": "export default function ("
@@ -1399,13 +1410,6 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     )
     .await;
     assert_eq!(structured(&retry)["outcome"], "success");
-    let closed = call(
-        &client_a,
-        "search",
-        json!({"task_id": task_id, "intent": "No new attempts"}),
-    )
-    .await;
-    assert_eq!(structured(&closed)["code"], "task_closed");
     // With no start_task, the refusal must say how to start new work.
     let closed_exec = call(
         &client_a,
@@ -1427,6 +1431,102 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     )
     .await;
     assert_ne!(observed_after_closure.is_error, Some(true));
+}
+
+/// `exec`'s description teaches discovery with one example. Its first
+/// Program type-checks against the declaration Coral publishes for
+/// `coral.workspace.search`, and runs against a real search, so the fields
+/// it names are the fields a Program reads.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_exec_example_type_checks_and_reads_a_real_search() {
+    let tracer = Tracer::start().await;
+    let client = tracer.sdk().await;
+    let tools = client.list_all_tools().await.expect("list MCP tools");
+    let description = tools
+        .iter()
+        .find(|tool| tool.name == "exec")
+        .and_then(|tool| tool.description.as_deref())
+        .expect("exec description")
+        .to_owned();
+    let programs = description
+        .split("```ts\n")
+        .skip(1)
+        .map(|block| block.split("\n```").next().expect("a closed block"))
+        .collect::<Vec<_>>();
+    let [find, call_found] = programs[..] else {
+        panic!("one Program finds and one calls: {description}");
+    };
+    for field in [
+        "call_path",
+        "signature_line",
+        "complete",
+        "description_snippet",
+        "descriptions",
+        "missing",
+        "suggestions",
+    ] {
+        assert!(find.contains(field), "the example reads {field}");
+    }
+    assert!(
+        call_found.starts_with("return (await coral.providers."),
+        "the later Program calls a literal Call Path: {call_found}"
+    );
+
+    let task_id = start_task(&client, "Check the exec example").await;
+    let saved = call(
+        &client,
+        "save_function",
+        json!({
+            "task_id": task_id,
+            "intent": "Type-check the exec example",
+            "path": "example.find",
+            "description": "The exec description's discovery example",
+            "source": format!("export default async function find() {{\n{find}\n}}"),
+        }),
+    )
+    .await;
+    assert_eq!(saved.is_error, Some(false), "{saved:?}");
+    assert_eq!(
+        structured(&saved)["diagnostics"],
+        json!([]),
+        "the example type-checks"
+    );
+
+    let found = &program_value(&client, &task_id, find).await;
+    let hits = found["hits"].as_array().expect("hits");
+    assert!(!hits.is_empty(), "{found}");
+    for hit in hits {
+        let [call_path, signature_line, description_snippet] =
+            hit.as_array().map(Vec::as_slice).unwrap_or_default()
+        else {
+            panic!("three fields of a hit: {hit}");
+        };
+        assert!(
+            call_path
+                .as_str()
+                .is_some_and(|path| path.starts_with("coral.")),
+            "{hit}"
+        );
+        assert!(
+            signature_line
+                .as_str()
+                .is_some_and(|line| line.contains('('))
+        );
+        assert!(description_snippet.is_string(), "{hit}");
+    }
+    // The tracer's search for pull requests finds `coral.workspace.search`,
+    // whose line is never complete: it has one overload per mode. So the
+    // example reads that declaration by its path, and every path it read
+    // exists.
+    let declarations = found["declarations"].as_array().expect("declarations");
+    assert!(
+        declarations
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|declaration| declaration.contains("PathsResult")),
+        "{found}"
+    );
+    assert_eq!(found["missing"], json!([]), "{found}");
 }
 
 /// A worker runtime disappeared after durable authored output. The
@@ -1996,7 +2096,6 @@ async fn check_raw_numeric_inputs(session: &RawSession, task: &str, tools: &[Val
         .pointer("/structuredContent/run_id")
         .expect("finished Run id");
     for (name, field, minimum, maximum) in [
-        ("search", "limit", 1, 50),
         ("exec", "run_timeout_ms", 1, 900_000),
         ("exec", "wait_ms", 0, 30_000),
         ("wait", "wait_ms", 0, 30_000),
@@ -2027,7 +2126,6 @@ async fn check_raw_numeric_inputs(session: &RawSession, task: &str, tools: &[Val
         }
         for (value, valid) in cases {
             let mut arguments = match name {
-                "search" => json!({"task_id": task, "intent": "Check numeric search input"}),
                 "exec" => json!({"task_id": task, "intent": "Check numeric Run input",
                     "program": "return 7;", "wait_ms": 0}),
                 "wait" => json!({"run_id": run_id}),
@@ -2462,6 +2560,37 @@ impl RawSession {
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("the first exec names its Task: {started}"))
             .to_owned()
+    }
+
+    /// Runs `program` in `task` and returns its Final Value, as an agent
+    /// reads what a Program found with `coral.workspace.search`.
+    async fn program_value(&self, task: &str, program: &str) -> Value {
+        let mut update = self
+            .tool(
+                "exec",
+                json!({"task_id":task, "intent":"Discover in a Program", "program":program, "wait_ms":30_000}),
+            )
+            .await;
+        while update.pointer("/structuredContent/state") == Some(&json!("running"))
+            || update.pointer("/structuredContent/has_more") == Some(&json!(true))
+        {
+            let page = update.get("structuredContent").expect("Run Update");
+            update = self
+                .tool(
+                    "wait",
+                    json!({"run_id":page["run_id"], "cursor":page["next_cursor"], "wait_ms":30_000}),
+                )
+                .await;
+        }
+        assert_eq!(
+            update.pointer("/structuredContent/state"),
+            Some(&json!("succeeded")),
+            "{update}"
+        );
+        update
+            .pointer("/structuredContent/final_value/value")
+            .cloned()
+            .unwrap_or_else(|| panic!("a Final Value: {update}"))
     }
 
     /// Like [`Self::tool`], with extra request headers such as W3C trace context.

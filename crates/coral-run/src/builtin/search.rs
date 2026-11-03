@@ -1,7 +1,7 @@
 //! Performs `coral.workspace.search`: Universal Search's one discovery
-//! operation as the invoking Principal, which returns what MCP `search` and
-//! `describe` return. The search is this Invocation of this Run, recorded
-//! like any other, and nothing else.
+//! operation as the invoking Principal, and the only way an agent discovers.
+//! The search is this Invocation of this Run, recorded like any other, and
+//! nothing else.
 
 use coral_catalog::SearchArguments;
 use coral_search::{DiscoveryRequest, ExactPaths, SearchInput, SearchRequest};

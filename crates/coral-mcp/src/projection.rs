@@ -1,6 +1,6 @@
 //! MCP-owned structured results. Serialization and advertisements use the same types.
 mod diagnostics;
-mod discovery;
+mod function;
 mod run;
 
 use coral_task::TaskOutcome;
@@ -14,7 +14,7 @@ use schemars::{
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-pub(crate) use discovery::{SavedFunctionResult, exact_description, saved_function, search};
+pub(crate) use function::{SavedFunctionResult, saved_function};
 pub(crate) use run::{RunUpdateResult, run_update};
 
 /// Every Coral-owned result keeps the SDK's compact JSON text of
