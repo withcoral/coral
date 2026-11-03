@@ -41,9 +41,10 @@ runtime.
   Instances there are, and Coral keeps no list of them. Every stream the Run Executor opens rides its current
   connection, and every call carries its credential as bearer metadata.
 - **Coral listens for Run Executors on a listener of its own**, with the rules of its other listeners. It closes each
-  connection after a maximum age with a go-away: open Run streams finish where they are, and the next streams open on a
-  new connection, which may land on another Coral Instance. A clean end of Coral's side of a stream is the go-away, and
-  the Run Executor reopens the stream at once. Any other end means a redial with back-off.
+  connection after a maximum age: its HTTP/2 GOAWAY stops new streams on it, open Run streams finish where they are, and
+  the next streams open on a new connection, which may land on another Coral Instance. Coral moves one stream by ending
+  its side of it cleanly, with an OK status and no message; the Run Executor reopens that stream at once on its current
+  connection. Any other end means a redial with back-off.
 - **Keepalive on both sides.** A peer that stops answering its keepalive closes the connection.
 - **The protocol level is checked on every stream open.** A side that sees a level more than one apart closes that
   stream and logs both levels; Coral keeps nothing per connection. A message that breaks the protocol ends the stream
@@ -72,7 +73,8 @@ runtime.
 
 ## The queue and the take
 
-- **Acceptance writes the Run, its package, its time limit and `run.started`.** It writes no claim, no deadline and no
+- **Acceptance writes the Run, its package, its time limit and the `run.started` Event**, which records the acceptance,
+  not the start; Reef already shows it as execution accepted. It writes no claim, no deadline, no start mark and no
   holder, and no Coral Instance holds a waiting Run in memory. A waiting Run reads `running`; Reef shows it waiting to
   start. One queue, oldest first, across Coral Instances and Workspaces.
 - **The room report is the ask, and Coral holds it.** Each Coral Instance runs one take loop for all its pull streams.
@@ -151,7 +153,7 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   resent requests applied on top. The reconnect's write records the new holder.
 - **The Shutdown Drain finishes dispatches, not Runs.** At its start the Coral Instance reports not ready, answers no
   ask and accepts no new stream. It keeps each open Run stream until that Run has no dispatch in flight on it, then
-  closes the stream with a go-away; the Run Executor redials at once and the Run goes on elsewhere. At the drain's
+  ends its side of the stream cleanly; the Run Executor reopens it at once and the Run goes on elsewhere. At the drain's
   length it closes the rest. Nothing in the drain records Interrupted, and a rolling deploy loses nothing.
 - **The word is reconnect.** A Run Executor reconnects a Run, and the Run's stream moves. Coral never resumes a Run: no
   Program is recreated and no isolate is snapshotted.

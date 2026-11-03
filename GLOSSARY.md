@@ -836,14 +836,14 @@ wake-up for the Run reaches it. _Avoid_: replica, node, worker, pod, process
 V8 isolate, and compiles Programs with the Program Compiler. It dials Coral at one address and presents a credential:
 one the operator gave it, or, for a local child, one Coral wrote to its stdin at start. Coral admits it by that
 credential, never by the network it dials from. On one pull stream it reports its room, a count of the Runs and compiles
-it is willing to hold, and Coral sends it Runs and compiles within that count; it opens one stream per Run it holds. A
+it is willing to hold, and Coral sends it Runs and compiles against that count; it opens one stream per Run it holds. A
 Run starts when Coral records that the Run Executor loaded it, and its deadline runs from its start. The Run Executor
 numbers its Program's requests, keeps the ones Coral has not yet committed, and reconnects a Run to any Coral Instance
-after a lost link; it ends a Program only at the Run's deadline, when Coral terminates it, or when Coral answers that
-the Run ended. It is identified by a random id it generates each time it starts. It holds no other secret and no
-database connection. Its only connections are the ones it opens to Coral, and any connection to a remote runtime that
-it drives. Its isolates run in its own process, or on a remote runtime that it drives. _Avoid_: worker, runner, sandbox
-host, Execution Host
+after a lost link. A lost link or a lapsed lease never ends a Program: it runs until it finishes, exceeds a limit of its
+own, reaches the Run's deadline, or Coral terminates it or answers that the Run ended. It is identified by a random id
+it generates each time it starts. It holds no other secret and no database connection. Its only connections are the ones
+it opens to Coral, and any connection to a remote runtime that it drives. Its isolates run in its own process, or on a
+remote runtime that it drives. _Avoid_: worker, runner, sandbox host, Execution Host
 
 **Run Ledger**: The durable record of one Coral Program Run, appended to in chunks: the Program Run Events, the
 Run-scoped records they describe, and the Run's head. Every chunk advances the head by one and commits only if it extends
