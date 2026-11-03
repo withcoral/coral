@@ -26,15 +26,16 @@ impl Search {
                 query,
                 provider,
                 limit,
-                cursor,
+                offset,
             } => {
                 let input = SearchInput {
                     query,
                     provider,
                     limit,
-                    cursor,
+                    offset,
                 };
                 // Each value alone, so a refusal names the one to correct.
+                // Any offset reads: one past the end is an empty last page.
                 let alone = [
                     (
                         "query",
@@ -54,13 +55,6 @@ impl Search {
                         "limit",
                         SearchInput {
                             limit: input.limit,
-                            ..SearchInput::default()
-                        },
-                    ),
-                    (
-                        "cursor",
-                        SearchInput {
-                            cursor: input.cursor.clone(),
                             ..SearchInput::default()
                         },
                     ),
@@ -97,7 +91,15 @@ impl Search {
             .discover(host.actor, host.workspace_id, &self.request)
             .await
             .map_err(failure)?;
-        Ok(coral_search::projection::discovery(&found).into_tool_result())
+        let output = coral_search::projection::discovery(&found);
+        // As MCP `describe` does: fail rather than hand the Program a number
+        // V8 rounds. Only corrupt stored data holds one.
+        if !output.is_exact_in_json() {
+            return Err(Error::CorruptData(
+                "a discovery result holds an integer past the exact JSON range".to_owned(),
+            ));
+        }
+        Ok(output.into_tool_result())
     }
 }
 
@@ -112,10 +114,7 @@ fn value_reason(field: &str) -> String {
         "provider" => {
             "pass a namespace from coral.providers.<namespace>, or coral.workspace".to_owned()
         }
-        "limit" => format!("pass 1 to {}", coral_search::SEARCH_RESULT_LIMIT_MAX),
-        _ => {
-            "pass the next_cursor of the previous page, with the same query and provider".to_owned()
-        }
+        _ => format!("pass 1 to {}", coral_search::SEARCH_RESULT_LIMIT_MAX),
     }
 }
 
@@ -143,9 +142,6 @@ fn failure(error: coral_search::Error) -> Error {
         }
         coral_search::Error::UnknownProviderCallRoot { .. } => {
             Error::InvocationRejected(rejection("provider", search_reason(&error)))
-        }
-        coral_search::Error::InvalidCursor => {
-            Error::InvocationRejected(rejection("cursor", value_reason("cursor")))
         }
         coral_search::Error::UndeclaredTypes { .. } | coral_search::Error::TypesLimit => {
             Error::InvocationRejected(rejection("types", search_reason(&error)))

@@ -396,11 +396,8 @@ export const SearchFailedCoverage = panel(
 /** A later page counts only its own results; nothing matched and nothing remains. */
 export const SearchLaterPageEmpty = panel(
   'Search · a later page with no results',
-  toolPage(
-    searchCall,
-    discovery({ ...searched, cursor: 'next-page' }, JSON.stringify({ hits: [], has_more: false })),
-  ),
-  { evidence: ['a later page, up to 5 results', 'Results (0)', 'This page has no results.'] },
+  toolPage(searchCall, discovery({ ...searched, offset: 20 }, JSON.stringify({ hits: [] }))),
+  { evidence: ['from result 21, up to 5 results', 'Results (0)', 'This page has no results.'] },
 )
 export const SearchMixedResults = panel(
   'Search · tools and saved functions',

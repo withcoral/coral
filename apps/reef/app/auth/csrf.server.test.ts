@@ -8,11 +8,13 @@ const config = requiredAuthConfig
 const session: AuthSession = {
   accessToken: 'first-coral-access-token',
   expiresAt: 4_102_444_800,
-  tokenType: 'Bearer',
+  handle: 'coral_ws_first-session',
+  sessionExpiresAt: 4_102_444_800,
 }
+// Another sign-in: another session handle.
 const otherSession: AuthSession = {
   ...session,
-  accessToken: 'second-coral-access-token',
+  handle: 'coral_ws_second-session',
 }
 
 describe('Coral web CSRF tokens', () => {
@@ -35,6 +37,7 @@ describe('Coral web CSRF tokens', () => {
     // The CSRF cookie inherits the session cookie's `__Host-` binding by name.
     expect(created.setCookie).toContain('__Host-coral_web_session_csrf=')
     expect(created.setCookie).not.toContain(session.accessToken)
+    expect(created.setCookie).not.toContain(session.handle)
     expect(created.setCookie).toContain('Secure')
     // The two attributes the name of this test promises and its body did not
     // check. `SameSite` comes along because it is the attribute a CSRF cookie
@@ -69,6 +72,23 @@ describe('Coral web CSRF tokens', () => {
     await expect(
       validateCsrfToken(postRequest(rotated.setCookie!, created.token), config, otherSession),
     ).resolves.toBe(false)
+  })
+
+  // Coral mints a new access token for every request; a form opened before
+  // that still submits, because the evidence binds to the session's handle.
+  it('keeps an open form valid while the session renews its access token', async () => {
+    const created = await csrfTokenForRequest(
+      new Request('https://coral-web.example.test/'),
+      config,
+      session,
+    )
+    const renewed = { ...session, accessToken: 'renewed-coral-access-token' }
+
+    const reused = await csrfTokenForRequest(requestWithCookie(created.setCookie!), config, renewed)
+    expect(reused.setCookie).toBeNull()
+    await expect(
+      validateCsrfToken(postRequest(created.setCookie!, created.token), config, renewed),
+    ).resolves.toBe(true)
   })
 
   it('accepts only a fresh form token bound to the current authenticated session', async () => {

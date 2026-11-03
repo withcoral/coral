@@ -85,6 +85,7 @@ pub(super) async fn oauth_authorize_get(
             client_state: query.state,
             code_challenge,
             resource,
+            refresh_eligible: registration.refresh_eligible,
         },
         client_name,
     };
@@ -428,6 +429,7 @@ mod tests {
         OAuthClientRegistration {
             redirect_uris: redirect_uris.iter().map(ToString::to_string).collect(),
             client_name: "Test Client".into(),
+            refresh_eligible: false,
         }
     }
 

@@ -14,10 +14,10 @@ use coral_provider::ProviderId;
 use coral_workspace::{Principal, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 
+use super::RetrievalError;
 use super::plan::{
     QueryPlan, ScoringPlan, Statistics, WordStatistics, contains_pattern, prefix_pattern,
 };
-use super::{MatchStrength, RetrievalError};
 use crate::CallPath;
 
 /// The `search_entities` columns the coverage reads name, for sea-query.
@@ -44,16 +44,6 @@ enum SearchIndexStates {
 const TOOL: &str = "provider_tool";
 const SAVED_FUNCTION: &str = "saved_function";
 const COMPLETE: &str = "complete";
-
-/// The fields the phrase points and the word points read, with their
-/// weights. Schema text adds none: it holds each word once, at its first
-/// occurrence, so two words in order there are chance.
-const MATCH_FIELDS: [(&str, u32); 4] = [
-    ("qualified_name", 8),
-    ("title", 6),
-    ("description", 2),
-    ("provider_name", 2),
-];
 
 /// The rows one kind's statement may rank, as its visibility step decided.
 enum Scope<'a> {
@@ -160,57 +150,44 @@ impl Scope<'_> {
 }
 
 /// One ranked row as the statement returns it: the Call Path, the owner
-/// keys its kind sets, its phrase points and the fields its word points
-/// read. Decoded here into a typed ranked Entity.
+/// keys its kind sets, its phrase points, and its name and title. Decoded
+/// here into a typed ranked Entity.
 #[derive(sqlx::FromRow)]
 struct RankedRow {
     call_path: String,
     provider_id: Option<String>,
     tool_key: Option<String>,
     saved_function_id: Option<String>,
-    phrase_points: i64,
-    qualified_name: String,
-    title: String,
-    description: String,
-    provider_name: String,
+    #[sqlx(flatten)]
+    matched: RowMatch,
 }
 
-impl RankedRow {
-    /// How strongly the row matches; `named` holds the Providers the query
-    /// names, empty for a kind without Providers.
-    fn strength(&self, plan: &QueryPlan, named: &[String]) -> MatchStrength {
-        let [name, title, description, provider_name] =
-            MATCH_FIELDS.map(|(_column, weight)| weight);
-        plan.strength(
-            self.phrase_points,
-            self.provider_id
-                .as_ref()
-                .is_some_and(|provider_id| named.contains(provider_id)),
-            [
-                (self.qualified_name.as_str(), name),
-                (self.title.as_str(), title),
-                (self.description.as_str(), description),
-                (self.provider_name.as_str(), provider_name),
-            ],
-        )
-    }
+/// What a ranked row's statement saw that its retriever's strong-match rule
+/// reads: the phrase points the statement ordered by first, and the row's
+/// name and title. No score leaves the retriever.
+#[derive(sqlx::FromRow)]
+pub(super) struct RowMatch {
+    pub(super) phrase_points: i64,
+    #[sqlx(rename = "qualified_name")]
+    pub(super) name: String,
+    pub(super) title: String,
 }
 
-/// One ranked Tool: its Provider, its key, its Call Path, and how strongly
-/// it matches.
+/// One ranked Tool: its Provider, its key, its Call Path, and what its
+/// statement saw.
 pub(super) struct RankedTool {
     pub(super) provider_id: ProviderId,
     pub(super) tool_key: ToolKey,
     pub(super) call_path: CallPath,
-    pub(super) strength: MatchStrength,
+    pub(super) matched: RowMatch,
 }
 
-/// One ranked Saved Function: its identity, its Call Path, and how strongly
-/// it matches.
+/// One ranked Saved Function: its identity, its Call Path, and what its
+/// statement saw.
 pub(super) struct RankedFunction {
     pub(super) saved_function_id: SavedFunctionId,
     pub(super) call_path: CallPath,
-    pub(super) strength: MatchStrength,
+    pub(super) matched: RowMatch,
 }
 
 /// What one ranked statement found: its Entities, best first, and the
@@ -270,7 +247,6 @@ pub(super) async fn rank_tools(
     let entities = rows
         .into_iter()
         .map(|row| {
-            let strength = row.strength(plan, &named);
             let (Some(provider_id), Some(tool_key)) = (row.provider_id, row.tool_key) else {
                 return Err(RetrievalError::Corrupt("a Tool row has no owner keys"));
             };
@@ -280,7 +256,7 @@ pub(super) async fn rank_tools(
                 tool_key: ToolKey::parse(&tool_key)
                     .map_err(|_invalid| RetrievalError::Corrupt("invalid Tool Key"))?,
                 call_path: call_path(&row.call_path)?,
-                strength,
+                matched: row.matched,
             })
         })
         .collect::<Result<_, RetrievalError>>()?;
@@ -307,7 +283,6 @@ pub(super) async fn rank_functions(
     let entities = rows
         .into_iter()
         .map(|row| {
-            let strength = row.strength(plan, &[]);
             let saved_function_id = row.saved_function_id.ok_or(RetrievalError::Corrupt(
                 "a Saved Function row has no function id",
             ))?;
@@ -315,7 +290,7 @@ pub(super) async fn rank_functions(
                 saved_function_id: SavedFunctionId::parse(&saved_function_id)
                     .map_err(|_invalid| RetrievalError::Corrupt("invalid Saved Function id"))?,
                 call_path: call_path(&row.call_path)?,
-                strength,
+                matched: row.matched,
             })
         })
         .collect::<Result<_, RetrievalError>>()?;
@@ -378,13 +353,12 @@ async fn rank_postgres(
     let sql = format!(
         "WITH candidates AS MATERIALIZED ( \
              SELECT d.doc_id, d.call_path, d.provider_id, d.tool_key, d.saved_function_id, \
-                    d.qualified_name, d.title, d.description, d.provider_name, d.tsv, d.doc_len \
+                    d.qualified_name, d.title, d.description, d.provider_name, d.tsv, d.tsv_length \
              FROM search_entities AS d \
              WHERE {conditions} AND ({matches}) \
          ) \
          SELECT c.call_path, c.provider_id, c.tool_key, c.saved_function_id, \
-                c.qualified_name, c.title, c.description, c.provider_name, \
-                CAST({phrase} AS BIGINT) AS phrase_points \
+                c.qualified_name, c.title, CAST({phrase} AS BIGINT) AS phrase_points \
          FROM candidates AS c \
          CROSS JOIN LATERAL ({score_sql}) AS s \
          ORDER BY \
@@ -466,7 +440,7 @@ fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan) -> String {
     let saturation = |f: &str| {
         format!(
             "q.idf * ({f} * (1.2 + 1)) \
-             / ({f} + 1.2 * (1 - 0.4 + 0.4 * coalesce(c.doc_len::float8, {avgdl}) / {avgdl}))"
+             / ({f} + 1.2 * (1 - 0.4 + 0.4 * c.tsv_length::float8 / {avgdl}))"
         )
     };
     format!(
@@ -495,9 +469,9 @@ fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan) -> String {
 /// title 6), and once in the body (description and Provider name 2, schema
 /// text 1). A call adds up its columns' weighted hits before it saturates,
 /// and a column weighted 0 adds nothing. So a long body needs many mentions
-/// to come near the value of one name match. Two numbers differ from Postgres: FTS5 fixes `b` at 0.75,
-/// not 0.4, and schema text weighs 1, not 0.25, because 0.25 ranked lower on
-/// one of three SQLite benchmark corpora.
+/// to come near the value of one name match. Two numbers differ from
+/// Postgres: FTS5 fixes `b` at 0.75, not 0.4, and schema text weighs 1, not
+/// 0.25, because 0.25 ranked lower on one of three SQLite benchmark corpora.
 async fn rank_sqlite(
     transaction: &mut Transaction<'_>,
     scope: &Scope<'_>,
@@ -518,8 +492,7 @@ async fn rank_sqlite(
     let limit = binds.push(limit_value(limit));
     let sql = format!(
         "SELECT d.call_path, d.provider_id, d.tool_key, d.saved_function_id, \
-                d.qualified_name, d.title, d.description, d.provider_name, \
-                CAST({phrase} AS BIGINT) AS phrase_points \
+                d.qualified_name, d.title, CAST({phrase} AS BIGINT) AS phrase_points \
          FROM search_entities_fts AS f \
          JOIN search_entities AS d ON d.workspace_id = f.workspace_id AND d.doc_id = f.doc_id \
          WHERE f.workspace_id = d.workspace_id AND search_entities_fts MATCH {match_query} \
@@ -535,10 +508,12 @@ async fn rank_sqlite(
     transaction.fetch_all_sql(&sql, binds.values).await
 }
 
-/// The phrase points over the alias's [`MATCH_FIELDS`], the first order key
-/// on both backends. Each field adds its weight once when it holds the
-/// phrase's words in order, and twice when it is the whole phrase. One
-/// pattern pair serves Postgres's `~` and `SQLite`'s `REGEXP` alike.
+/// The phrase points over the alias's name, title, description and Provider
+/// name, the first order key on both backends. Each field adds its weight
+/// once when it holds the phrase's words in order, and twice when it is the
+/// whole phrase. Schema text adds none: it holds each word once, at its first
+/// occurrence, so two words in order there are chance. One pattern pair
+/// serves Postgres's `~` and `SQLite`'s `REGEXP` alike.
 fn phrase_points(binds: &mut Binds, alias: &str, plan: &QueryPlan) -> String {
     let phrase = &plan.phrase;
     let operator = match binds.system {
@@ -547,17 +522,22 @@ fn phrase_points(binds: &mut Binds, alias: &str, plan: &QueryPlan) -> String {
     };
     let whole = binds.push(phrase.whole.clone());
     let contained = binds.push(phrase.contained.clone());
-    MATCH_FIELDS
-        .iter()
-        .map(|(column, weight)| {
-            format!(
-                "(CASE WHEN {alias}.{column} {operator} {whole} THEN {} \
-                 WHEN {alias}.{column} {operator} {contained} THEN {weight} ELSE 0 END)",
-                weight * 2
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" + ")
+    [
+        ("qualified_name", 8),
+        ("title", 6),
+        ("description", 2),
+        ("provider_name", 2),
+    ]
+    .iter()
+    .map(|(column, weight)| {
+        format!(
+            "(CASE WHEN {alias}.{column} {operator} {whole} THEN {} \
+             WHEN {alias}.{column} {operator} {contained} THEN {weight} ELSE 0 END)",
+            weight * 2
+        )
+    })
+    .collect::<Vec<_>>()
+    .join(" + ")
 }
 
 /// The Workspace's Postgres statistics for each of the plan's words, and the

@@ -39,6 +39,10 @@ pub struct AuthorizationGrant {
     pub resource: String,
     /// The Workspace the User picked, for the Organization MCP Endpoint only.
     pub workspace_id: Option<coral_workspace::WorkspaceId>,
+    /// Whether the client declared the `refresh_token` grant, allowing
+    /// redemption to start a Refresh Grant when the User holds the authority
+    /// a refresh would need.
+    pub refresh_eligible: bool,
 }
 
 /// The request bindings a redemption presents.

@@ -113,9 +113,9 @@ async fn every_principal_searches_without_approval_and_sees_only_what_it_reaches
     }
 }
 
-// Catches: a page a Program cannot continue from its own cursor.
+// Catches: a page a Program cannot continue from its own next offset.
 #[tokio::test]
-async fn a_program_pages_a_listing_with_the_cursor_it_returned() {
+async fn a_program_pages_a_listing_with_the_offset_it_returned() {
     let scope = AdminScope::new("user:search-pages").await;
     let run = scope
         .start(
@@ -126,7 +126,7 @@ async fn a_program_pages_a_listing_with_the_cursor_it_returned() {
                 const next = await coral.workspace.search({
                     provider: "coral.workspace",
                     limit: 2,
-                    cursor: first.data.next_cursor,
+                    offset: first.data.next_offset,
                 });
                 const all = await coral.workspace.search({ provider: "coral.workspace", limit: 4 });
                 return { first, next, all };
@@ -136,7 +136,7 @@ async fn a_program_pages_a_listing_with_the_cursor_it_returned() {
         .await;
     let results = final_value(&scope.terminal(&scope.owner, &run).await);
     let page = |name: &str| results.get(name).cloned().expect("a page");
-    assert_eq!(page("first").pointer("/data/has_more"), Some(&json!(true)));
+    assert_eq!(page("first").pointer("/data/next_offset"), Some(&json!(2)));
     assert_eq!(
         page("first").get("metadata"),
         Some(&json!({ "kind": "builtin" }))
@@ -178,11 +178,7 @@ async fn an_invalid_argument_names_what_to_correct() {
             " at `provider`: No Provider you can search has this namespace. Use one of: \
              coral.workspace.",
         ),
-        (
-            json!({ "cursor": "bm90LWEtY3Vyc29y" }),
-            " at `cursor`: pass the next_cursor of the previous page, with the same query and \
-             provider",
-        ),
+        (json!({ "offset": -1 }), " at `offset`: expected u32"),
         (
             json!({ "paths": ["coral.workspace.getPolicy"], "types": ["Missing"] }),
             " at `types`: Type \"Missing\" is not declared by this path. Coral cannot list the \
@@ -204,4 +200,59 @@ async fn an_invalid_argument_names_what_to_correct() {
             "{arguments}"
         );
     }
+}
+
+// Catches: a saved diagnostic integer past 2^53 − 1 reaching a Program as a
+// number V8 rounds, where MCP `describe` fails instead.
+#[tokio::test]
+async fn a_lookup_fails_rather_than_round_a_saved_diagnostic_integer() {
+    let scope = AdminScope::new("user:search-diagnostics").await;
+    SavedFunctionModule::new(
+        scope.fixture.database.clone(),
+        scope.fixture.workspaces.clone(),
+        crate::IsolateLimits::default(),
+    )
+    .expect("start Saved Function compiler")
+    .save(
+        &saved_function_change(scope.owner.clone(), 30, 'a'),
+        &scope.workspace_id,
+        SavedFunctionSave::new(
+            SavedFunctionPath::parse("reports.weekly").expect("path"),
+            SavedFunctionDescription::parse("The weekly report").expect("description"),
+            SavedFunctionSource::parse("export default async function weekly() { return 1; }")
+                .expect("source"),
+        ),
+    )
+    .await
+    .expect("save Saved Function");
+    // 2^53 + 1, which a JSON reader rounds to 2^53.
+    scope
+        .fixture
+        .test_database
+        .execute_fixture_sql(
+            "UPDATE saved_function_records SET diagnostics_json = \
+             '[{\"category\":\"warning\",\"code\":9007199254740993,\"message\":\"unused\",\
+             \"line\":1,\"column\":1}]'",
+        )
+        .await
+        .expect("store an oversized diagnostic code");
+    let run = scope
+        .start(
+            &scope.owner,
+            workspace_call(
+                "search",
+                r#"{ "paths": ["coral.functions.reports.weekly"] }"#,
+            ),
+        )
+        .await;
+    // Corrupt stored data ends the Run as any other host error in this
+    // lookup does, such as diagnostics past their stored bounds.
+    let terminal = scope.terminal(&scope.owner, &run).await;
+    assert!(
+        matches!(
+            terminal.terminal_outcome(),
+            Some(RunTerminalOutcome::Interrupted)
+        ),
+        "{terminal:?}"
+    );
 }

@@ -212,8 +212,9 @@ fn unknown_tool_diagnostic_names_the_call_path_only() {
 }
 
 // Catches: Program Admission applying a rule other than the unknown-Tool
-// diagnostic's, refusing a computed or aliased call it cannot judge, or
-// naming the wrong place in the authored body.
+// diagnostic's, admitting a call to a namespace of a callable Tool, which
+// fails with `tool_not_found` when it runs, refusing a computed or aliased
+// call it cannot judge, or naming the wrong place in the authored body.
 #[test]
 fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
     let compiler =
@@ -227,6 +228,7 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
         await repos.gett({});\n\
         await coral.workspace.deleteEverything();\n\
         await coral.providers.notion.retrievePage({ page_id: \"q\" });\n\
+        await coral.providers.github.repos({});\n\
         return [page, repo];";
     let named = compiler
         .program_call_paths(deadline(), source)
@@ -254,9 +256,11 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
             ("coral.providers.notion.retrievePage", 1, 20),
             ("coral.workspace.deleteEverything", 8, 7),
             ("coral.providers.notion.retrievePage", 9, 7),
+            ("coral.providers.github.repos", 10, 7),
         ]
     );
-    assert!(
+    // Only the namespace call is left once every Tool it names is callable.
+    assert_eq!(
         compiler
             .unknown_tool_calls(
                 deadline(),
@@ -268,7 +272,10 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
                 ],
             )
             .expect("check the called chains")
-            .is_empty()
+            .iter()
+            .map(coral_v8::UnknownToolCall::call_path)
+            .collect::<Vec<_>>(),
+        ["coral.providers.github.repos"]
     );
 }
 

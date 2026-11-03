@@ -74,13 +74,13 @@ export class LocalPostgres {
           this.container,
           '-e',
           'POSTGRES_PASSWORD=postgres',
-          // Every test keeps its schema in this one database, and Postgres
-          // holds their statistics and parallel-query segments in /dev/shm.
-          // The engines' 64 MB default runs out late in the full Rust suite.
-          '--shm-size',
-          '1g',
           '-p',
           `127.0.0.1:${port}:5432`,
+          // Parallel queries and index builds take Postgres' dynamic shared
+          // memory from /dev/shm. Docker's 64 MB default fills partway
+          // through the Rust suite.
+          '--shm-size',
+          '1g',
           this.image,
         ])
     } catch {

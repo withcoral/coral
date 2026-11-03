@@ -383,8 +383,9 @@ impl TaskModule {
     }
 
     /// Returns the Task a Run was submitted in when the caller is that Task's
-    /// own Principal. A call that started a Task with its first Run reads it
-    /// here when it could not return the Task's id the first time.
+    /// own Principal. An `exec` with `goal` that is retried after answering
+    /// `input_required` reads here the Task its first call started, because
+    /// that first answer carried no Task id.
     /// A Run without a Task, or in another Principal's Task, has none.
     /// # Errors
     /// Returns authority and persistence failures.
@@ -398,8 +399,7 @@ impl TaskModule {
             .check_principal_inspection(actor, workspace, commands::now()?)
             .await?;
         let mut transaction = self.database.begin_read_snapshot().await?;
-        let Some((task, _intent)) =
-            interaction_repository::run_intent(&mut transaction, workspace, run).await?
+        let Some(task) = interaction_repository::run_task(&mut transaction, workspace, run).await?
         else {
             return Ok(None);
         };

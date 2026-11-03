@@ -112,7 +112,8 @@ async fn rejects_changed_contract(before: Value, after: Value, destination_chang
             .with_incompatible_configuration_confirmation(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     let before_callback = accounts
         .get_authorization(&context, scope, authorization.id)
         .await

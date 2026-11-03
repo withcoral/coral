@@ -180,6 +180,8 @@ mod source_location_repository;
 mod summary;
 mod summary_repository;
 mod termination;
+mod tool_result_shape;
+pub use tool_result_shape::{ToolResultShape, ToolResultShapes};
 mod trace;
 mod types;
 mod worker;

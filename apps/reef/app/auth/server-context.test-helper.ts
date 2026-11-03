@@ -13,6 +13,7 @@ export const localRuntimeConfig: CoralWebRuntimeConfig = {
   auth: { mode: 'disabled' },
   endpoint: { authenticatedCleartextOrigin: null, baseUrl: DEFAULT_DEV_CORAL_ENDPOINT },
   upstreamOAuthCallbackUrl: '',
+  clientsWithAvailablePlugins: [],
 }
 
 /** The context the root middleware gives every route: only the bootstrap configuration. */
@@ -57,7 +58,8 @@ export function authTestContext(
     session: {
       accessToken,
       expiresAt: 4_102_444_800,
-      tokenType: 'Bearer',
+      handle: 'coral_ws_test-session',
+      sessionExpiresAt: 4_102_444_800,
     },
   })
   return context

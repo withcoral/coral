@@ -15,12 +15,12 @@ const active = 'workspaces/00000000-0000-4000-8000-000000000002'
 
 it.each([
   [
-    'opens the first active Workspace, skipping archived ones',
+    'opens the Overview of the first active Workspace, skipping archived ones',
     [
       { name: archived, state: WorkspaceState.ARCHIVED },
       { name: active, state: WorkspaceState.ACTIVE },
     ],
-    `/${active}/activity`,
+    `/${active}`,
   ],
   ['stays home without a Workspace', [], null],
   [

@@ -33,6 +33,10 @@ impl fmt::Display for ProgramErrorFrame {
 
 /// Trusted fields of a host-created `ToolError`, read from host-only
 /// private state rather than from properties a Program can redefine.
+///
+/// A failed Run retains them, and an older Coral that reads that Run during
+/// a rolling update rejects a field it does not know. Add a field only after
+/// a release whose readers accept it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProgramToolError {
@@ -50,10 +54,6 @@ pub struct ProgramToolError {
     /// `body` omits the rest of the encoded `data`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub body_truncated: bool,
-    /// For `tool_not_found`, the Call Paths near the one the Program named
-    /// that its caller can call, nearest first.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub suggestions: Vec<String>,
 }
 
 /// The status and bounded encoded `data` of one Tool Result.

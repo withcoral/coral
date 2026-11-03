@@ -7,7 +7,6 @@
 
 use std::collections::BTreeSet;
 
-use super::MatchStrength;
 use crate::indexer::compact_identifier_variant;
 
 /// Terms shorter than this cannot meet a trigram index; both backends drop them.
@@ -53,10 +52,11 @@ pub(crate) struct QueryPlan {
     pub(super) variant_words: Vec<String>,
     /// Terms that yield no word, kept as substring patterns.
     pub(super) wordless: Vec<String>,
-    /// The content words of the whole query that word points count, each
-    /// once: runs of ASCII letters and digits of at least three characters,
-    /// as the phrase test splits them, less the filler words.
-    strength_words: Vec<String>,
+    /// The content words of the whole query, each once: its words by the
+    /// rule that finds a field's words, so each run of ASCII letters and
+    /// digits and each camelCase part of it, of at least three characters,
+    /// less the filler words. A retriever's strong-match rule reads them.
+    content_words: Vec<String>,
     /// Every typed term, so a term can equal a Provider Namespace.
     typed_terms: BTreeSet<String>,
     /// Every word of every typed term, of any length, so a Provider's
@@ -88,7 +88,7 @@ impl QueryPlan {
             .max_by_key(|term| term.text.chars().count())?
             .text;
         let phrase = PhrasePatterns::build(longest)?;
-        let strength_words = field_words(longest)
+        let content_words = field_words(longest)
             .into_iter()
             .filter(|word| {
                 word.chars().count() >= MIN_TERM_CHARS && !FILLER_WORDS.contains(&word.as_str())
@@ -133,44 +133,33 @@ impl QueryPlan {
             words,
             variant_words: variant_words.difference(&given_words).cloned().collect(),
             wordless: wordless.into_iter().collect(),
-            strength_words,
+            content_words,
             typed_terms,
             typed_words,
         })
     }
 
-    /// How strongly a ranked row matches, by one rule for every kind, so
-    /// the engine can compare the windows of different retrievers. The
-    /// phrase points and the named Provider are the keys the row's statement
-    /// ordered by first. Word points add, for each content word of the
-    /// query, the weight of every field that holds it as a whole word, by
-    /// the phrase test's word rule: separators and camelCase edges end words,
-    /// and case does not count.
-    pub(super) fn strength<'a>(
+    /// How many content words the whole query has.
+    pub(super) fn content_word_count(&self) -> usize {
+        self.content_words.len()
+    }
+
+    /// How many of the query's content words start a word of one of
+    /// `fields`, by the phrase test's word rule: separators and camelCase
+    /// edges end words, and case does not count. A word starts with itself,
+    /// so `issues` counts in `openIssues`, and `deploy` in `deployments`.
+    pub(super) fn content_words_starting<'a>(
         &self,
-        phrase_points: i64,
-        named_provider: bool,
-        fields: impl IntoIterator<Item = (&'a str, u32)>,
-    ) -> MatchStrength {
-        let fields = fields
+        fields: impl IntoIterator<Item = &'a str>,
+    ) -> usize {
+        let words = fields
             .into_iter()
-            .map(|(text, weight)| (field_words(text), weight))
-            .collect::<Vec<_>>();
-        let word_points = self
-            .strength_words
+            .flat_map(field_words)
+            .collect::<BTreeSet<_>>();
+        self.content_words
             .iter()
-            .flat_map(|word| {
-                fields
-                    .iter()
-                    .filter(move |(words, _weight)| words.contains(word))
-                    .map(|(_words, weight)| weight)
-            })
-            .sum();
-        MatchStrength {
-            phrase_points,
-            named_provider,
-            word_points,
-        }
+            .filter(|content| words.iter().any(|word| word.starts_with(content.as_str())))
+            .count()
     }
 
     /// Whether the query names a Provider: a typed term is its namespace,

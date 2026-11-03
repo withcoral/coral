@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 pub(crate) use function::{SavedFunctionResult, saved_function};
-pub(crate) use run::{RunUpdateResult, run_update};
+pub(crate) use run::{ExecResult, ObservedRun, Reporter, run_update};
 
 /// Every Coral-owned result keeps the SDK's compact JSON text of
 /// `structuredContent` as `content[0]`, as both served MCP versions advise.
@@ -77,6 +77,18 @@ impl ToolFailure {
 
     pub(crate) fn internal() -> Self {
         Self::stable("internal_error", "Coral could not complete the tool call")
+    }
+
+    /// Adds the Task this failed call had already started, so the caller
+    /// continues that Task rather than starting another. The code stays.
+    pub(crate) fn naming_started_task(self, task: &coral_task::TaskId) -> Self {
+        Self {
+            code: self.code,
+            message: format!(
+                "{}. This call started Task {task}: pass it as `task_id` to later calls instead of `goal`.",
+                self.message.trim_end_matches('.')
+            ),
+        }
     }
 }
 

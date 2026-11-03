@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 
 import { redirect } from 'react-router'
 
-import { authClientId, authRedirectUri, authResource } from './config.server'
+import { authClientId, authRedirectUri, authResource, isIssuerEndpoint } from './config.server'
 import { safeInternalPath } from './safe-path.server'
 import {
   clearOAuthTransaction,
@@ -10,19 +10,24 @@ import {
   commitCoralWebSession,
   randomToken,
   readOAuthTransaction,
+  type StartedWebSession,
 } from './session.server'
-import type { AuthSession, RequiredAuthConfig } from './types'
+import type { RequiredAuthConfig } from './types'
 
 interface AuthorizationServerMetadata {
   authorization_endpoint: string
+  coral_web_session_endpoint: string
   issuer: string
   token_endpoint: string
 }
 
 interface TokenResponse {
-  access_token?: unknown
+  refresh_token?: unknown
+}
+
+interface WebSessionResponse {
   expires_in?: unknown
-  token_type?: unknown
+  session?: unknown
 }
 
 interface OAuthErrorResponse {
@@ -102,7 +107,7 @@ export async function completeCoralOAuthLogin(
     }
     throw error
   }
-  const session = sessionFromToken(token, config)
+  const session = await startWebSession(metadata, token, config)
   const headers = new Headers()
   headers.append('Set-Cookie', await clearOAuthTransaction(config))
   headers.append('Set-Cookie', await commitCoralWebSession(session, config))
@@ -133,7 +138,8 @@ function validateAuthorizationServerMetadata(
   if (
     typeof metadata.authorization_endpoint !== 'string' ||
     typeof metadata.issuer !== 'string' ||
-    typeof metadata.token_endpoint !== 'string'
+    typeof metadata.token_endpoint !== 'string' ||
+    typeof metadata.coral_web_session_endpoint !== 'string'
   ) {
     throw new Error('Coral auth metadata is missing required OAuth endpoints')
   }
@@ -141,25 +147,12 @@ function validateAuthorizationServerMetadata(
     throw new Error('Coral auth metadata issuer does not match CORAL_WEB_AUTH_ISSUER')
   }
 
-  const issuerOrigin = new URL(issuer).origin
-  validateMetadataEndpoint(metadata.authorization_endpoint, 'authorization_endpoint', issuerOrigin)
-  validateMetadataEndpoint(metadata.token_endpoint, 'token_endpoint', issuerOrigin)
-}
-
-function validateMetadataEndpoint(endpoint: string, name: string, issuerOrigin: string): void {
-  let url: URL
-  try {
-    url = new URL(endpoint)
-  } catch {
-    throw invalidMetadataEndpoint(name)
-  }
-  if (
-    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
-    url.origin !== issuerOrigin ||
-    url.username ||
-    url.password
-  ) {
-    throw invalidMetadataEndpoint(name)
+  for (const name of [
+    'authorization_endpoint',
+    'token_endpoint',
+    'coral_web_session_endpoint',
+  ] as const) {
+    if (!isIssuerEndpoint(metadata[name], issuer)) throw invalidMetadataEndpoint(name)
   }
 }
 
@@ -217,24 +210,44 @@ async function tokenExchangeError(response: Response): Promise<Response> {
   return callbackError(message)
 }
 
-function sessionFromToken(token: TokenResponse, config: RequiredAuthConfig): AuthSession {
-  if (typeof token.access_token !== 'string' || !token.access_token) {
-    throw new Error('Coral OAuth token response did not include access_token')
+/**
+ * Hands the refresh token the sign-in returned to Coral, which holds it in a
+ * new web session. Reef keeps only the session's handle; the refresh token
+ * is spent and never stored.
+ */
+async function startWebSession(
+  metadata: AuthorizationServerMetadata,
+  token: TokenResponse,
+  config: RequiredAuthConfig,
+): Promise<StartedWebSession> {
+  if (typeof token.refresh_token !== 'string' || !token.refresh_token) {
+    throw callbackError('Sign-in failed: no refresh token. Ask your administrator to update Coral.')
   }
+  const response = await fetch(metadata.coral_web_session_endpoint, {
+    body: new URLSearchParams({
+      client_id: authClientId(config),
+      max_age: String(config.sessionMaxAgeSeconds),
+      refresh_token: token.refresh_token,
+    }),
+    headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+    method: 'POST',
+    redirect: 'manual',
+  })
+  if (response.status !== 201) throw await tokenExchangeError(response)
+  const body = (await response.json().catch(() => null)) as WebSessionResponse | null
   if (
-    typeof token.expires_in !== 'number' ||
-    !Number.isFinite(token.expires_in) ||
-    !Number.isInteger(token.expires_in) ||
-    token.expires_in <= 0
+    typeof body?.session !== 'string' ||
+    !body.session ||
+    typeof body.expires_in !== 'number' ||
+    !Number.isInteger(body.expires_in) ||
+    body.expires_in <= 0
   ) {
-    throw new Error('Coral OAuth token response did not include a positive expires_in')
+    throw callbackError('Try signing in again.')
   }
-
   return {
-    accessToken: token.access_token,
-    expiresAt: unixTimestamp() + Math.min(token.expires_in, config.sessionMaxAgeSeconds),
-    tokenType:
-      typeof token.token_type === 'string' && token.token_type ? token.token_type : 'Bearer',
+    endpoint: metadata.coral_web_session_endpoint,
+    expiresIn: body.expires_in,
+    handle: body.session,
   }
 }
 
@@ -256,8 +269,4 @@ function callbackError(message: string, clearTransaction?: string): Response {
     headers,
     status: 400,
   })
-}
-
-function unixTimestamp(): number {
-  return Math.floor(Date.now() / 1000)
 }

@@ -46,7 +46,9 @@ export const searchPageSchema = z.object({
       deprecated: z.boolean().optional(),
     }),
   ),
-  has_more: z.boolean(),
+  // A trimmed page retained before pages had an offset has `has_more` and
+  // `next_cursor` instead; it reads as a page with no more results.
+  next_offset: count.optional(),
   retriever_statuses: z
     .array(
       z.object({
@@ -205,7 +207,7 @@ function searchPage(value: z.infer<typeof searchPageSchema>): SearchPage {
         currentHref: null,
       }
     }),
-    hasMore: value.has_more,
+    hasMore: value.next_offset !== undefined,
     coverage: (value.retriever_statuses ?? []).map(searchCoverage),
   }
 }

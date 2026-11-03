@@ -104,9 +104,10 @@ async fn refused(scope: &AdminScope, principal: &AuthenticatedPrincipal, source:
     message
 }
 
-// Catches: a guessed literal path that runs the Program's earlier calls and
-// only then fails; a refusal that does not name the path, where it is, or
-// what to call instead; or one that suggests a Tool the caller cannot call.
+// Catches: a guessed literal path, or a call to a namespace of a Tool, that
+// runs the Program's earlier calls and only then fails; a refusal that does
+// not name the path, where it is, or what to call instead; or one that
+// suggests a Tool the caller cannot call.
 #[tokio::test]
 async fn a_literal_path_that_names_no_tool_is_refused_with_the_nearest_paths() {
     let scope = scope("user:call-paths-literal").await;
@@ -133,6 +134,21 @@ async fn a_literal_path_that_names_no_tool_is_refused_with_the_nearest_paths() {
     assert!(
         message.starts_with(
             "Program:1:14: coral.providers.github.getRepo names no Tool that you can call. \
+             Nearest: coral.providers.github.repos.get"
+        ),
+        "{message}"
+    );
+    // A namespace of a Tool is not a Tool, even beside a call to the Tool.
+    let message = refused(
+        &scope,
+        &scope.owner,
+        "await coral.providers.github.repos.get({ owner: \"a\", repo: \"b\" });\n\
+         return await coral.providers.github.repos({ owner: \"a\", repo: \"b\" });",
+    )
+    .await;
+    assert!(
+        message.starts_with(
+            "Program:2:14: coral.providers.github.repos names no Tool that you can call. \
              Nearest: coral.providers.github.repos.get"
         ),
         "{message}"
@@ -235,14 +251,18 @@ async fn a_computed_path_runs_and_its_tool_error_names_the_nearest_paths() {
     let Some(RunTerminalOutcome::Failed(failure)) = terminal.terminal_outcome() else {
         panic!("an uncaught ToolError fails the Run: {terminal:?}");
     };
-    let tool = failure
-        .error()
-        .and_then(|error| error.tool.as_ref())
-        .expect("the Tool fields of the uncaught error");
-    assert_eq!(tool.code, "tool_not_found");
+    let error = failure.error().expect("the uncaught error");
     assert_eq!(
-        tool.suggestions.first().map(String::as_str),
-        Some("coral.providers.github.repos.get")
+        error.tool.as_ref().map(|tool| tool.code.as_str()),
+        Some("tool_not_found")
+    );
+    assert!(
+        error.message.starts_with(
+            "coral.providers.github.getRepo names no Tool that you can call. Nearest: \
+             coral.providers.github.repos.get"
+        ),
+        "{}",
+        error.message
     );
 }
 

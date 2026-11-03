@@ -49,17 +49,17 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
       const intent = `Shared activity goal ${crypto.randomUUID()}`
       const original = 'export default function snapshot() { return "historical-source-249"; }'
       const replacement = 'export default function snapshot() { return "replacement-source-249"; }'
-      await step('Land on Activity and keep workspace administration reachable', async () => {
+      await step('Land on Overview and keep workspace administration reachable', async () => {
         first = await createWorkspace(actor.accessToken, firstName)
         await page.goto('/')
-        await breadcrumb(page, 'Activity').waitFor()
-        // This Owner is shared, so home may open any of its Workspaces' Activity.
+        await breadcrumb(page, 'Overview').waitFor()
+        // This Owner is shared, so home may open any of its Workspaces' Overview.
         const landing = new URL(page.url()).pathname
-        expect(landing).toMatch(/^\/workspaces\/[^/]+\/activity$/)
+        expect(landing).toMatch(/^\/workspaces\/[^/]+$/)
         expect(
           await page
             .getByRole('navigation', { name: 'Coral', exact: true })
-            .getByRole('link', { name: 'Activity', exact: true })
+            .getByRole('link', { name: 'Overview', exact: true })
             .getAttribute('aria-current'),
         ).toBe('page')
         const nav = page.getByRole('navigation', { name: 'Coral', exact: true })

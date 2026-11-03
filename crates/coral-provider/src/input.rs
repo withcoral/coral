@@ -121,9 +121,14 @@ impl ProviderModule {
         }
         let (current_input, current_url) = if source == ProviderSetupSource::Current {
             let target = update_target.ok_or(Error::ProviderSetupNotApplicable)?;
-            let current = repository::provider_in_transaction(&mut tx, owner, target)
-                .await?
-                .ok_or(Error::ProviderNotFound)?;
+            let current = repository::current_provider(
+                &mut tx,
+                owner,
+                repository::ProviderKey::Id(target),
+                repository::ProviderHold::None,
+            )
+            .await?
+            .ok_or(Error::ProviderNotFound)?;
             (
                 Some(
                     coral_catalog::setup_input_in_transaction(&mut tx, &current.generation_id)

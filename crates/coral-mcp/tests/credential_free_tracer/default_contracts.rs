@@ -9,6 +9,7 @@ pub(super) async fn check(
     let task = session.start_task("Check optional search defaults").await;
     let task = task.as_str();
     search_defaults_return_ten_visible_descriptions(session, task, index).await;
+    remove_default_limit_fixtures(session, task).await;
     session
         .tool("end_task", json!({"task_id":task, "outcome":"success"}))
         .await;
@@ -74,10 +75,13 @@ return { exact: exact.data.descriptions[0], pages };"#,
         }
         assert_eq!(page["hits"].as_array().expect("hits").len(), count);
         assert_eq!(
-            page.get("next_cursor").is_some_and(Value::is_string),
-            count < 12
+            page.get("next_offset").and_then(Value::as_u64),
+            (count < 12).then_some(count as u64)
         );
     }
+}
+
+async fn remove_default_limit_fixtures(session: &super::RawSession, task: &str) {
     for index in 0..12 {
         let deleted = session
             .tool(

@@ -599,7 +599,10 @@ enum StoredDiscoveryContext {
         query: Option<String>,
         provider: Option<String>,
         limit: u16,
-        cursor: Option<String>,
+        /// Absent from a page retained before pages had an offset: it read
+        /// as the first page.
+        #[serde(default)]
+        offset: u32,
     },
     Describe {
         call_path: String,
@@ -614,12 +617,12 @@ impl From<&crate::DiscoveryContext> for StoredDiscoveryContext {
                 query,
                 provider,
                 limit,
-                cursor,
+                offset,
             } => Self::Search {
                 query: query.clone(),
                 provider: provider.clone(),
                 limit: *limit,
-                cursor: cursor.clone(),
+                offset: *offset,
             },
             crate::DiscoveryContext::Describe { call_path, types } => Self::Describe {
                 call_path: call_path.clone(),
@@ -635,12 +638,12 @@ impl From<StoredDiscoveryContext> for crate::DiscoveryContext {
                 query,
                 provider,
                 limit,
-                cursor,
+                offset,
             } => Self::Search {
                 query,
                 provider,
                 limit,
-                cursor,
+                offset,
             },
             StoredDiscoveryContext::Describe { call_path, types } => {
                 Self::Describe { call_path, types }

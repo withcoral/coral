@@ -416,6 +416,7 @@ mod tests {
                 client_state: Some(CLIENT_STATE.into()),
                 code_challenge: "client-code-challenge".into(),
                 resource: RESOURCE.into(),
+                refresh_eligible: false,
             },
             client_name: None,
         }
@@ -998,6 +999,7 @@ mod tests {
         SignInSession {
             request: ClientRequest {
                 resource: ORGANIZATION_RESOURCE.into(),
+                refresh_eligible: false,
                 ..session().request
             },
             client_name: Some("Claude <b>".into()),

@@ -3,8 +3,9 @@
 //! can. The visibility and abridging rules are tested at `describe` and
 //! `signature::abridge`.
 
+use super::index::CapturedLogs;
 use super::{TestModules, TracerScope};
-use crate::{Discovery, DiscoveryRequest, Error, ExactLookup, ExactPaths};
+use crate::{Discovery, DiscoveryRequest, EntityKind, Error, ExactLookup, ExactPaths};
 use coral_catalog::{SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, ToolKey};
 use coral_policy::{ToolAccessState, ToolPolicyTarget};
 use coral_test_support::change;
@@ -254,71 +255,62 @@ async fn a_missing_path_names_the_nearest_paths_the_caller_can_call_in_its_call_
         .await;
     fixture.converge().await;
 
-    let lookup = look_up(
-        &fixture,
-        &scope,
-        &[
+    // Each path and the first path it suggests. One that does not parse,
+    // `retrieve-page`, still names its words.
+    let nearest = [
+        (
             "coral.providers.notion.retrievePage",
-            "coral.providers.github.getRepo",
+            Some("notion.retrieveAPage"),
+        ),
+        ("coral.providers.github.getRepo", Some("github.repos.get")),
+        (
             "coral.providers.github.repos.listForOrganization",
-            "coral.providers.absent.retrievePage",
-            "coral.functions.retrievePage",
+            Some("github.repos.listForOrg"),
+        ),
+        ("coral.providers.absent.retrievePage", None),
+        ("coral.functions.retrievePage", None),
+        (
             "coral.providers.notion.retrieve-page",
-        ],
-    )
-    .await;
+            Some("notion.retrieveAPage"),
+        ),
+    ];
+    let written = nearest.map(|(path, _)| path);
+    let lookup = look_up(&fixture, &scope, &written).await;
     let found = suggestions(&lookup);
     assert_eq!(
-        found.first(),
-        Some(&(
-            "coral.providers.notion.retrievePage",
-            vec![
+        found
+            .iter()
+            .map(|(missing, _)| *missing)
+            .collect::<Vec<_>>(),
+        written,
+        "every path is missing, in the order named"
+    );
+    assert_eq!(
+        found.first().map(|(_, suggested)| suggested.as_slice()),
+        Some(
+            &[
                 "coral.providers.notion.retrieveAPage",
                 "coral.providers.notion.retrieveAPageProperty",
                 "coral.providers.notion.updatePage",
-            ]
-        )),
+            ][..]
+        ),
         "the Tool with the same words comes first, then ranked ones"
     );
-    let first = |path: &str| {
-        found
-            .iter()
-            .find(|(missing, _)| *missing == path)
-            .and_then(|(_, suggested)| suggested.first().copied())
-    };
-    assert_eq!(
-        first("coral.providers.github.getRepo"),
-        Some("coral.providers.github.repos.get")
-    );
-    assert_eq!(
-        first("coral.providers.github.repos.listForOrganization"),
-        Some("coral.providers.github.repos.listForOrg")
-    );
-    for (missing, suggested) in &found {
-        let root = missing
-            .rsplit_once('.')
-            .map(|(root, _leaf)| root)
-            .unwrap_or_default();
-        assert!(suggested.len() <= crate::SUGGESTIONS_MAX, "{missing}");
-        assert!(
-            suggested.iter().all(|path| {
-                path.starts_with("coral.providers.notion.")
-                    && missing.starts_with("coral.providers.notion.")
-                    || path.starts_with("coral.providers.github.")
-                        && missing.starts_with("coral.providers.github.")
-            }),
-            "{missing} under {root}: {suggested:?}"
+    for ((missing, suggested), (_, first)) in found.iter().zip(nearest) {
+        assert_eq!(
+            suggested.first().copied(),
+            first
+                .map(|path| format!("coral.providers.{path}"))
+                .as_deref(),
+            "{missing}"
         );
-    }
-    for nothing_to_suggest in [
-        "coral.providers.absent.retrievePage",
-        "coral.functions.retrievePage",
-    ] {
+        assert!(suggested.len() <= crate::SUGGESTIONS_MAX, "{missing}");
+        let call_root = missing.split('.').take(3).collect::<Vec<_>>().join(".");
         assert!(
-            found
+            suggested
                 .iter()
-                .any(|(missing, suggested)| *missing == nothing_to_suggest && suggested.is_empty()),
-            "{nothing_to_suggest}: {found:?}"
+                .all(|path| path.starts_with(&format!("{call_root}."))),
+            "{missing} under {call_root}: {suggested:?}"
         );
     }
 
@@ -367,7 +359,8 @@ async fn a_tool_named_with_a_word_of_the_path_is_suggested_before_one_whose_name
             &scope.workspace_id,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .skip_search();
     transaction.commit().await.unwrap();
     fixture.converge().await;
 
@@ -382,5 +375,60 @@ async fn a_tool_named_with_a_word_of_the_path_is_suggested_before_one_whose_name
         named,
         ["coral.workspace.getPolicy", "coral.workspace.updatePolicy"],
         "the Tools named for policies come first: {suggested:?}"
+    );
+}
+
+// Catches: a ranked statement that fails while it suggests paths and leaves
+// no trace, or a lookup that fails with it instead of suggesting the Tools
+// whose names have the path's words.
+#[tokio::test]
+async fn a_ranking_failure_leaves_the_exact_suggestions_and_is_logged() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let fixture = TestModules::new().await;
+    let scope = TracerScope::new(&fixture).await;
+    fixture
+        .publish_openapi(&scope.user, &scope.workspace_id, NOTION, "notion", 45)
+        .await;
+    fixture.converge().await;
+    let logs = CapturedLogs::default();
+    let _logged = tracing::subscriber::set_default(
+        tracing_subscriber::Registry::default().with(logs.clone()),
+    );
+    let paths = ExactPaths::new(
+        vec!["coral.providers.notion.retrievePage".to_owned()],
+        Vec::new(),
+    )
+    .expect("a bounded lookup");
+    let found = fixture
+        .failing_search(&[EntityKind::ProviderTool])
+        .discover(
+            &scope.principal,
+            &scope.workspace_id,
+            &DiscoveryRequest::Paths(paths),
+        )
+        .await
+        .expect("an exact lookup");
+    let Discovery::Exact(lookup) = found else {
+        panic!("paths return an exact lookup: {found:?}");
+    };
+    assert_eq!(
+        suggestions(&lookup),
+        [(
+            "coral.providers.notion.retrievePage",
+            vec!["coral.providers.notion.retrieveAPage"]
+        )]
+    );
+    let events = logs.events();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.level == tracing::Level::ERROR
+                && event
+                    .fields
+                    .get("coral.search.retriever")
+                    .map(String::as_str)
+                    == Some("\"provider_tool\"")),
+        "{events:?}"
     );
 }

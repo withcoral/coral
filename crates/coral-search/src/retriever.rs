@@ -3,9 +3,9 @@
 //!
 //! A retriever applies its owners' visibility rules once per request, puts
 //! the answer into its ranked statement over the search-owned table, and
-//! hands the engine its window in rank order, each Entity with the
-//! [`MatchStrength`] that one rule gives every kind. It hydrates and
-//! describes the Entities of its kind. Every method joins the caller's read snapshot and opens no
+//! hands the engine its window in rank order, each Entity marked strong or
+//! weak by the retriever's own rule. It hydrates and describes the Entities
+//! of its kind. Every method joins the caller's read snapshot and opens no
 //! connection of its own.
 
 pub(crate) mod functions;
@@ -112,32 +112,18 @@ pub(crate) struct QueryRequest<'a> {
 /// One retriever's answer to a query: the window in rank order and its
 /// coverage. The state follows from the coverage.
 pub(crate) struct Answer {
-    pub(crate) window: Vec<Scored>,
+    pub(crate) window: Vec<WindowEntry>,
     pub(crate) coverage: RetrieverCoverage,
 }
 
-/// One Entity of a ranked window and how strongly it matches.
-pub(crate) struct Scored {
+/// One Entity of a ranked window and its retriever's mark. A retriever
+/// marks an Entity strong when, by its own rule and over its own signals, the
+/// Entity plainly answers the query; the engine puts every strong Entity of
+/// every window before the weak ones, each group by position. Scores stay in
+/// the retriever, since they do not compare across kinds.
+pub(crate) struct WindowEntry {
     pub(crate) entity: EntityRef,
-    pub(crate) strength: MatchStrength,
-}
-
-/// How strongly one ranked Entity matches the query, by one rule over the
-/// fields every kind's row holds: the name, the title, the description and
-/// the Provider name, weighted 8, 6, 2 and 2. Each kind ranks by its own
-/// statement, and those scores do not compare, but this does, so the engine
-/// can tell which retriever's next Entity is the better match.
-///
-/// Phrase points come first: what the row's statement ordered by first.
-/// Whether the query names the Entity's Provider comes next, as the Tool
-/// statement orders by it next; an Entity with no Provider has none. Word
-/// points follow: for each content word of the query, the weight of every
-/// field that holds it as a whole word.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct MatchStrength {
-    phrase_points: i64,
-    named_provider: bool,
-    word_points: u32,
+    pub(crate) strong: bool,
 }
 
 /// Why a retriever could not answer.

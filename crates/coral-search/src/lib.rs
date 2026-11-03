@@ -14,14 +14,14 @@
 //!
 //! - [`UniversalSearchModule::discover`] is the one discovery operation, which
 //!   the Built-in Tool `coral.workspace.search` reaches, each request in one
-//!   read snapshot. A query runs one ranked
-//!   statement per Search Entity kind, one retriever each, and fuses their
-//!   windows by match strength into bounded pages of Search Hits with one
-//!   status per retriever. An omitted query lists current items in Call
-//!   Path order and reads no index. Exact Call Paths resolve to their
-//!   Authoring Descriptions and read no index; `signature::abridge` shortens
-//!   the declaration each returns, while search reads the complete one. A
-//!   path that names nothing the caller can discover comes back missing, with
+//!   read snapshot. A query runs one ranked statement per Search Entity kind,
+//!   one retriever each, and fuses their windows by position, strong matches
+//!   first, into bounded pages of Search Hits with one status per retriever.
+//!   An omitted query lists current items in Call Path order and reads no
+//!   index. Exact Call Paths resolve to their Authoring
+//!   Descriptions and read no index; `signature::abridge` shortens the
+//!   declaration each returns, while search reads the complete one. A path
+//!   that names nothing the caller can discover comes back missing, with
 //!   the nearest Discoverable Call Paths of its Call Root.
 //!   [`UniversalSearchModule::search`] and [`UniversalSearchModule::describe`]
 //!   are its query mode and its one-path mode.
@@ -44,12 +44,11 @@
 //!   index on what the owners hold.
 //!
 //! The engine inside [`UniversalSearchModule`] normalizes the query, hands the
-//! same terms to every retriever, fuses by match strength, pages, and encodes
-//! non-authorizing cursors. It never names a Search Entity kind. Every search
+//! same terms to every retriever, fuses by position, and pages by a plain
+//! offset that authorizes nothing. It never names a Search Entity kind. Every search
 //! page and exact description applies the owners' current visibility rules.
 //! Discovery never starts an interactive authorization or refreshes credentials.
 
-mod cursor;
 mod discovery;
 mod eligibility;
 mod error;
@@ -69,8 +68,6 @@ mod suggestion;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
 mod types;
-use std::cmp::Reverse;
-use std::collections::VecDeque;
 use std::sync::Arc;
 
 use coral_db::{Database, Transaction};
@@ -79,12 +76,11 @@ use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 
-use cursor::decode_cursor_position;
 use page::{Ranked, hydrate_page_in_transaction};
 use retriever::functions::SavedFunctionRetriever;
 use retriever::tools::ToolRetriever;
 use retriever::{
-    Answer, EntityRetriever, QueryError, QueryRequest, RequestContext, Scored, abandon_query,
+    Answer, EntityRetriever, QueryError, QueryRequest, RequestContext, WindowEntry, abandon_query,
     begin_query, count, end_query,
 };
 
@@ -96,16 +92,16 @@ pub use suggestion::SUGGESTIONS_MAX;
 pub use types::{
     ApprovalRequirement, AuthoringDescription, CallPath, EntityKind, ExactAuthoringDescription,
     ExactSavedFunctionDetail, ProviderCallRoot, ProviderId, RetrieverCoverage, RetrieverState,
-    RetrieverStatus, SEARCH_CURSOR_MAX_BYTES, SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX,
+    RetrieverStatus, SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX,
     SEARCH_EVIDENCE_PATH_MAX_BYTES, SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES,
     SEARCH_QUERY_MAX_BYTES, SEARCH_RESULT_LIMIT_MAX, SavedFunctionAuthoringDescription,
-    SearchCursor, SearchEvidence, SearchHit, SearchIndexFailure, SearchIndexState, SearchInput,
-    SearchLimit, SearchPage, SearchQuery, SearchRequest, ToolAuthoringDescription, ToolHit,
+    SearchEvidence, SearchHit, SearchIndexFailure, SearchIndexState, SearchInput, SearchLimit,
+    SearchPage, SearchQuery, SearchRequest, ToolAuthoringDescription, ToolHit,
     provider_filter_value,
 };
 
 /// How many ranked Search Entities each retriever hands the engine. The
-/// fused union of the windows is the result universe a cursor pages through.
+/// fused union of the windows is the result universe an offset pages through.
 const RETRIEVAL_WINDOW: usize = 100;
 
 /// Transport-neutral Universal Search Module.
@@ -113,9 +109,10 @@ const RETRIEVAL_WINDOW: usize = 100;
 pub struct UniversalSearchModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
-    /// One retriever per Search Entity kind. At equal match strength and
-    /// position, an earlier retriever's Entity comes first: Saved Functions,
-    /// then Tools.
+    /// One retriever per Search Entity kind. At equal mark and position, an
+    /// earlier retriever's Entity comes first: Tools, then Saved Functions.
+    /// A strong Saved Function therefore leads every Tool below its
+    /// position, but not the strong Tool at its own.
     retrievers: Arc<[Arc<dyn EntityRetriever>]>,
 }
 
@@ -166,8 +163,8 @@ impl UniversalSearchModule {
             database,
             workspaces,
             retrievers: Arc::new([
-                Arc::new(functions) as Arc<dyn EntityRetriever>,
-                Arc::new(tools),
+                Arc::new(tools) as Arc<dyn EntityRetriever>,
+                Arc::new(functions),
             ]),
         }
     }
@@ -205,14 +202,15 @@ impl UniversalSearchModule {
     /// the query mode of [`Self::discover`].
     ///
     /// Each retriever applies current visibility and ranks its own kind; the
-    /// engine fuses the windows by match strength. Only the page's items are
-    /// hydrated, each into a hit with a signature line, snippets, and
-    /// evidence of why it matched. Every page carries one status per retriever. An omitted query
+    /// engine fuses the windows by position, strong matches first. Only the
+    /// page's items are hydrated, each into a hit with a signature line,
+    /// snippets, and evidence of why it matched. Every page carries one
+    /// status per retriever. An omitted query
     /// lists every visible Entity in Call Path order and reads no index.
     ///
     /// # Errors
     ///
-    /// Returns invalid cursor, authority, or shared persistence failures, and
+    /// Returns authority or shared persistence failures, and
     /// [`Error::ServiceUnavailable`] when every applied retriever fails to rank.
     pub async fn search(
         &self,
@@ -229,16 +227,9 @@ impl UniversalSearchModule {
         workspace_id: &WorkspaceId,
         request: &SearchRequest,
     ) -> Result<SearchPage, Error> {
-        let normalized = request
+        let terms = request
             .search_query()
-            .map(|query| normalize_query(query.as_str()));
-        let cursor_position = decode_cursor_position(
-            request.cursor(),
-            actor,
-            workspace_id,
-            normalized.as_ref().map(|query| query.text.as_str()),
-            request.provider(),
-        )?;
+            .map(|query| query_terms(query.as_str()));
 
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
@@ -249,20 +240,20 @@ impl UniversalSearchModule {
             actor,
             authority: &authority,
             workspace_id,
-            terms: normalized.as_ref().map(|query| query.terms.as_slice()),
+            terms: terms.as_deref(),
             loaded: &loaded,
         };
-        let (ranked, statuses) = match &normalized {
+        let (ranked, statuses) = match &terms {
             None => {
                 self.list_in_transaction(&mut transaction, context, request.provider())
                     .await?
             }
-            Some(query) => {
+            Some(terms) => {
                 self.rank_in_transaction(
                     &mut transaction,
                     context,
                     &QueryRequest {
-                        terms: &query.terms,
+                        terms,
                         provider_filter: request.provider(),
                         window: RETRIEVAL_WINDOW,
                     },
@@ -275,10 +266,9 @@ impl UniversalSearchModule {
             context,
             &self.retrievers,
             &ranked,
-            cursor_position.min(ranked.len()),
+            usize::try_from(request.offset())
+                .map_or(ranked.len(), |offset| offset.min(ranked.len())),
             request.limit(),
-            normalized.as_ref().map(|query| query.text.as_str()),
-            request.provider(),
             statuses,
         )
         .await?;
@@ -612,17 +602,11 @@ impl UniversalSearchModule {
     }
 }
 
-/// The normalized query: its text binds the cursor, its terms go to every
-/// retriever.
-struct NormalizedQuery {
-    text: String,
-    terms: Vec<String>,
-}
-
-/// Trims, collapses whitespace, and lowercases the query, then splits it into
-/// terms on every character that is not alphanumeric or one of `_ - . # / @`.
-/// The whole query is one more term. Terms are sorted and deduplicated.
-fn normalize_query(query: &str) -> NormalizedQuery {
+/// The terms every retriever gets. Trims, collapses whitespace, and lowercases
+/// the query, then splits it into terms on every character that is not
+/// alphanumeric or one of `_ - . # / @`. The whole query is one more term.
+/// Terms are sorted and deduplicated.
+fn query_terms(query: &str) -> Vec<String> {
     let text = query
         .split_whitespace()
         .map(str::to_lowercase)
@@ -638,47 +622,36 @@ fn normalize_query(query: &str) -> NormalizedQuery {
         .collect::<Vec<_>>();
     terms.sort();
     terms.dedup();
-    NormalizedQuery { text, terms }
+    terms
 }
 
-/// Merges the retrievers' windows, each `(retriever index, window)` in
-/// retriever order, head to head: of the Entities each window offers next,
-/// the stronger match comes first, then the earlier position in its window,
-/// then the earlier retriever. Each window keeps its own order, and a kind's
-/// Entity outranks another kind's next Entity only when its match is at least
-/// as strong. The strength leads with every key a ranked statement orders by
-/// before its score; a key it lacked would let a weak Entity pass the strong
-/// ones queued behind the other window's head.
-fn fuse(windows: Vec<(usize, Vec<Scored>)>) -> Vec<Ranked> {
-    let mut heads = windows
+/// Fuses the retrievers' windows, each `(retriever index, window)` in
+/// retriever order: the strong entries of every window by position, then the
+/// weak ones by position. At equal position the earlier retriever comes
+/// first. Each retriever marks its own entries by its own rule and signals,
+/// so only a position and that mark cross into the engine, and no score is
+/// compared across kinds. A weak entry is demoted below every strong one,
+/// never dropped.
+fn fuse(windows: Vec<(usize, Vec<WindowEntry>)>) -> Vec<Ranked> {
+    let mut entries = windows
         .into_iter()
-        .map(|(retriever_index, window)| (retriever_index, VecDeque::from(window), 0usize))
+        .flat_map(|(retriever_index, window)| {
+            window
+                .into_iter()
+                .enumerate()
+                .map(move |(position, entry)| (!entry.strong, position, retriever_index, entry))
+        })
         .collect::<Vec<_>>();
-    let mut fused = Vec::new();
-    loop {
-        let best = heads
-            .iter_mut()
-            .filter_map(|(retriever_index, window, position)| {
-                let strength = window.front()?.strength;
-                Some((
-                    (Reverse(strength), *position, *retriever_index),
-                    window,
-                    position,
-                ))
-            })
-            .min_by_key(|(key, _window, _position)| *key);
-        let Some(((_strength, _position, retriever_index), window, position)) = best else {
-            return fused;
-        };
-        let Some(scored) = window.pop_front() else {
-            return fused;
-        };
-        *position += 1;
-        fused.push(Ranked {
+    entries.sort_by_key(|(weak, position, retriever_index, _entry)| {
+        (*weak, *position, *retriever_index)
+    });
+    entries
+        .into_iter()
+        .map(|(_weak, _position, retriever_index, entry)| Ranked {
             retriever_index,
-            entity: scored.entity,
-        });
-    }
+            entity: entry.entity,
+        })
+        .collect()
 }
 
 /// A ranked retriever's state follows from its coverage.
