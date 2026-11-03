@@ -516,6 +516,91 @@ pub(super) async fn completed_failure(
     .transpose()
 }
 
+/// The latest Tool Results the Run's Program received, in call order, and how
+/// many it received that were not read. Of the latest `limit`, newest first,
+/// it reads each whose retained bytes fit what `max_bytes` has left, so a
+/// large result never costs more than the budget to parse.
+pub(super) async fn received_results(
+    transaction: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    run: &RunId,
+    limit: u64,
+    max_bytes: u64,
+) -> Result<(Vec<crate::tool_result_shape::ReceivedResult>, u64), Error> {
+    let received = Query::select()
+        .from(ToolInvocations::Table)
+        .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace.to_string()))
+        .and_where(Expr::col(ToolInvocations::RunId).eq(run.to_string()))
+        .and_where(
+            Expr::col(ToolInvocations::ResultKind)
+                .eq(InvocationResultKind::UpstreamOutcome.as_storage_str()),
+        )
+        .to_owned();
+    let (total,): (i64,) = transaction
+        .fetch_optional(
+            received
+                .clone()
+                .expr(Expr::col(ToolInvocations::Id).count())
+                .to_owned(),
+        )
+        .await?
+        .ok_or_else(|| Error::CorruptData("missing Tool Result count".into()))?;
+    let total = u64::try_from(total)
+        .map_err(|_negative| Error::CorruptData("invalid Tool Result count".into()))?;
+    let latest: Vec<(String, i64)> = transaction
+        .fetch_all(
+            received
+                .clone()
+                .columns([ToolInvocations::Id, ToolInvocations::ResultBytes])
+                .order_by(ToolInvocations::AdmittedAtUnixNanos, Order::Desc)
+                .order_by(ToolInvocations::Id, Order::Desc)
+                .limit(limit)
+                .to_owned(),
+        )
+        .await?;
+    let mut left = max_bytes;
+    let mut chosen = Vec::new();
+    for (id, bytes) in latest {
+        let bytes = u64::try_from(bytes)
+            .map_err(|_negative| Error::CorruptData("invalid Tool Result size".into()))?;
+        if let Some(rest) = left.checked_sub(bytes) {
+            left = rest;
+            chosen.push(id);
+        }
+    }
+    let unread = total.saturating_sub(chosen.len() as u64);
+    if chosen.is_empty() {
+        return Ok((Vec::new(), unread));
+    }
+    let rows: Vec<(String, Option<String>)> = transaction
+        .fetch_all(
+            received
+                .clone()
+                .columns([ToolInvocations::CallPath, ToolInvocations::ResultJson])
+                .and_where(Expr::col(ToolInvocations::Id).is_in(chosen.iter().map(String::as_str)))
+                .order_by(ToolInvocations::AdmittedAtUnixNanos, Order::Asc)
+                .order_by(ToolInvocations::Id, Order::Asc)
+                .to_owned(),
+        )
+        .await?;
+    let received = rows
+        .into_iter()
+        .map(|(call_path, result_json)| {
+            let tool_result = serde_json::from_str(
+                result_json
+                    .as_deref()
+                    .ok_or_else(|| Error::CorruptData("missing upstream result".into()))?,
+            )
+            .map_err(|_invalid| Error::CorruptData("invalid retained Tool Result".into()))?;
+            Ok(crate::tool_result_shape::ReceivedResult {
+                call_path,
+                tool_result,
+            })
+        })
+        .collect::<Result<_, Error>>()?;
+    Ok((received, unread))
+}
+
 /// The arguments the Invocation was admitted with.
 pub(super) async fn arguments(
     transaction: &mut Transaction<'_>,
