@@ -69,7 +69,10 @@ Why not the others:
   `transform` plus `EmbeddingOutput::into_raw` does expose the raw tensors, and
   `try_new_from_user_defined` takes model bytes from any source. It saves the
   tokenizer and input-tensor glue, nothing else. Using `ort` directly keeps the
-  ONNX Runtime version in Coral's hands.
+  ONNX Runtime version in Coral's hands. It also sidesteps a verified pin
+  conflict: LightOn's `next-plaid-onnx` 1.8.5, the one Rust crate with a
+  ColBERT encoder, pins `ort =2.0.0-rc.11`, and Cargo refuses to resolve it
+  beside `fastembed-rs` (section "Crate pins" below).
 - `candle` 0.11.1 is pure Rust and so compiles for every target, but its
   `candle-transformers` has no quantized BERT-class model (it has f32 `bert`,
   `modernbert`, `jina_bert`, `nomic_bert`, `distilbert`, `xlm_roberta`), it
@@ -248,6 +251,55 @@ id, so the table is larger than the payload; the overhead is unmeasured.
 Using bge-small's own 384-dimensional hidden states for MaxSim, without a
 projection, triples the per-token figures.
 
+## Crate pins: `fastembed-rs` and `next-plaid-onnx` cannot share one binary
+
+Facts from #2859, verified here against the crates.io manifests on 2026-11-04:
+
+| Crate | `ort` requirement | Other pins | Source |
+|---|---|---|---|
+| `fastembed` 7.5.0 | `=2.0.0-rc.15`, features `ndarray`, `std`, `api-24`, optional | `tokenizers ^0.23.2` | crates.io `/api/v1/crates/fastembed/7.5.0/dependencies`; `Cargo.toml` on `main` |
+| `next-plaid-onnx` 1.8.5 (LightOn, Apache-2.0, published 2026-10-10, "Fast ColBERT multi-vector encoding using ONNX Runtime") | `=2.0.0-rc.11`, default features on, plus `ndarray`, `load-dynamic` | `tokenizers ^0.21.1`, `ndarray ^0.16` | crates.io `/api/v1/crates/next-plaid-onnx/1.8.5/dependencies`; repo `lightonai/next-plaid` |
+
+Measured: a scratch crate that depends on `fastembed = "=7.5.0"` and
+`next-plaid-onnx = "=1.8.5"` fails at `cargo generate-lockfile` with "failed
+to select a version for `ort`" (previously selected `ort v2.0.0-rc.15` for
+`fastembed`, `=2.0.0-rc.11` required by `next-plaid-onnx`). Cargo treats both
+as one `2.x` slot, and `ort-sys` carries `links = "onnxruntime"`, so two copies
+could not link even if Cargo allowed them. `fastembed-rs` has no
+late-interaction model type (the `bgem3_embedding` module is the one ColBERT
+output it knows). `next-plaid-onnx` also uses `load-dynamic`, so it expects
+a shared ONNX Runtime library at run time, not the static link this file
+recommends.
+
+**A Rust MaxSim scorer over `ort` directly avoids the conflict.** Coral then
+depends on one `ort` version of its own choice, runs the single-vector model
+and the late-interaction model through the same `Session::run`, and writes
+MaxSim over the `[batch, sequence, 128]` output itself. Neither `fastembed-rs`
+nor `next-plaid-onnx` is in the dependency graph, so neither pin applies.
+The two helper crates save only the tokenizer and input-tensor glue, which
+`tokenizers` 0.23 and `ort` provide. If Coral did take `fastembed-rs` for the
+single-vector model, `next-plaid-onnx` would still have to stay out; the
+ColBERT encode is the same `session.run` call and gains nothing from it.
+
+## Which runtime loads which passing model
+
+The passing list is in #2859 (comment of 2026-11-04). Per runtime:
+
+| Model | `ort` (ONNX file exists per #2859) | `candle` | `model2vec-rs` |
+|---|---|---|---|
+| potion-base-8M | No ONNX | No | Yes, its own format |
+| all-MiniLM-L6-v2, bge-small-en-v1.5, bge-base-en-v1.5, arctic-embed-xs, arctic-embed-s | Yes | `bert.rs`, f32 only | No |
+| nomic-embed-text-v1.5 | Yes | `nomic_bert.rs`, f32 only | No |
+| jina-embeddings-v2-base-code | Yes | `jina_bert.rs`, f32 only | No |
+| Qwen3-Embedding-0.6B | Yes (onnx-community export) | `qwen3.rs` f32, `quantized_qwen3.rs` GGUF | No |
+| colbertv2.0, answerai-colbert-small-v1 | Yes | BERT backbone in `bert.rs`; the ColBERT linear head is not in candle and would be written in Rust. Unverified | No |
+| LateOn, GTE-ModernColBERT-v1, LateOn-Code-edge | Yes (LateOn's int8 graph verified above) | `modernbert.rs` backbone, f32; the projection head is not in candle. Backbone of LateOn-Code-edge unverified | No |
+| mxbai-edge-colbert-v0-17m, -32m | Yes | Backbone not checked. Unverified | No |
+
+`candle` rows name the architecture file in `candle-transformers/src/models/`
+and say nothing about weight-name mapping, which is unverified for every
+model. Only `ort` runs the int8 files.
+
 ## Open questions
 
 1. Whether the Windows executable with the pyke static build starts on a
@@ -299,6 +351,10 @@ Scratch projects outside the repo, Rust 1.98, `cargo build --release` with
   `lightonai/LateOn` `tokenizer.json`.
 - LateOn ONNX graph: `onnx` 1.19.1 `onnx.load(..., load_external_data=False)`
   on `model_int8.onnx` from `huggingface.co/lightonai/LateOn`.
+- Pin conflict: a scratch crate with `fastembed = { version = "=7.5.0",
+  default-features = false, features = ["onnx"] }` and
+  `next-plaid-onnx = "=1.8.5"`; `cargo +1.98 generate-lockfile` fails as
+  quoted in the "Crate pins" section.
 - `candle` and `model2vec-rs` probes: `candle-core`, `candle-nn`,
   `candle-transformers` `=0.11.1` default features with a `BertModel` forward,
   and `model2vec-rs =0.4.0` with features `onig`, `local-only` and
@@ -342,6 +398,11 @@ Read on 2026-11-04 unless a date is given.
   `Xenova/bge-small-en-v1.5`, `snowflake/snowflake-arctic-embed-xs`,
   `Xenova/all-MiniLM-L6-v2`, `nomic-ai/nomic-embed-text-v1.5`,
   `intextus/lateon-onnx`.
+- crates.io API: `/api/v1/crates/next-plaid-onnx` and
+  `/api/v1/crates/next-plaid-onnx/1.8.5/dependencies`;
+  `/api/v1/crates/fastembed/7.5.0/dependencies`. `ort-sys` 2.0.0-rc.15
+  `Cargo.toml` (`links = "onnxruntime"`) from the local registry copy.
+- withcoral/coral #2859, resolution comment of 2026-11-04 (passing model list).
 - learn.microsoft.com: `windows/ai/directml/dml` (page dated 2025-02-10).
 - Coral: `apps/desktop/electron-builder.config.ts`,
   `apps/desktop/resources/entitlements.mac.plist`, `docker/Dockerfile`,
