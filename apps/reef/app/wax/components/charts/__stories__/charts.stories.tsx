@@ -89,6 +89,16 @@ export const LineWithLabels: StoryObj<typeof LineChart> = {
   render: (args) => <LineChart {...args} />,
 }
 
+/** No values yet: the grid runs to `emptyMax`, with no line. */
+export const LineEmpty: StoryObj<typeof LineChart> = {
+  args: {
+    emptyMax: 4,
+    labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+    series: [{ color: 'blue', data: [], label: 'CPU' }],
+  },
+  render: (args) => <LineChart {...args} />,
+}
+
 /** A dense series with missing samples: the line breaks at each null. */
 export const LineWithGaps: StoryObj<typeof LineChart> = {
   args: {

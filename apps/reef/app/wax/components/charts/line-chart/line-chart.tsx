@@ -6,6 +6,11 @@ export interface LineChartProps {
   ariaLabel?: string
   /** Marks each point with a dot. Turn it off for dense series. */
   dots?: boolean
+  /**
+   * With no values, the empty grid runs from 0 to this value (at least 0), so the chart
+   * keeps its size while data loads or when there is none.
+   */
+  emptyMax?: number
   /** The text of a y-axis tick. */
   formatTick?: (value: number) => string
   height?: number
@@ -50,6 +55,7 @@ function segments(data: (number | null)[]) {
 export function LineChart({
   ariaLabel,
   dots = true,
+  emptyMax = 1,
   formatTick = String,
   height = 200,
   labels,
@@ -59,17 +65,17 @@ export function LineChart({
   if (series.length === 0) return null
 
   const allValues = series.flatMap((s) => s.data).filter((v) => v !== null)
-  if (allValues.length === 0) return null
-
-  const minValue = Math.min(...allValues)
-  const maxValue = Math.max(...allValues)
+  // An empty chart draws its grid and axes, and no line.
+  const minValue = allValues.length ? Math.min(...allValues) : 0
+  const maxValue = allValues.length ? Math.max(...allValues) : Math.max(emptyMax, 0)
   const ticks = computeNiceTicks(Math.min(0, minValue), maxValue, 4)
   const tickMin = ticks[0]
   const tickMax = ticks[ticks.length - 1]
 
   const tickLabels = ticks.map(formatTick)
   const left = gutter(tickLabels)
-  const maxPoints = Math.max(...series.map((s) => s.data.length))
+  // Labels count too, so they keep their places while the data loads.
+  const maxPoints = Math.max(labels?.length ?? 0, ...series.map((s) => s.data.length))
 
   // Both scales map straight to SVG coordinates.
   const yScale = scaleLinear([tickMin, tickMax], [height - PADDING.bottom, PADDING.top])

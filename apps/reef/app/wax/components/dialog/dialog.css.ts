@@ -52,6 +52,8 @@ export const popup = style({
   transform: 'translate(-50%, -50%) scale(calc(1 - 0.1 * var(--nested-dialogs)))',
   transition: 'all 150ms',
   translate: '0 calc(0px + 16px * var(--nested-dialogs))',
+  // With reduced motion the dialog only fades: it does not grow into place.
+  '@media': { '(prefers-reduced-motion: reduce)': { transition: 'opacity 150ms' } },
   vars: { [padding]: '24px' },
   zIndex: zIndex.modal,
 })
