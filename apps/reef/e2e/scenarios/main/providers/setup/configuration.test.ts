@@ -15,7 +15,7 @@ import {
   committedPublication,
 } from '../../../../support/providers.ts'
 
-test('Update clears only an invalid tool-specific server selection', async (context) => {
+test('Update asks again for a tool-specific server whose saved choice is no longer offered', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
     const document = JSON.parse(
       openApiDocument(
@@ -85,41 +85,27 @@ test('Update clears only an invalid tool-specific server selection', async (cont
       page.off('request', countPost)
       expect(posts).toBe(0)
     })
-    await step('Clear only the local choice without falling back to the main server', async () => {
+    await step('Ask for the local server without falling back to the main server', async () => {
+      // A tool's own server that lists URLs needs an answer, so clearing it
+      // leaves Next waiting and the main server as it was.
       await destinationField(page, 'Server for /logs').fill('')
       expect(await destinationField(page, 'Main server').inputValue()).toBe(
         'https://api.example.test/v1',
       )
+      await page.getByText('Choose a server for these tools.', { exact: true }).waitFor()
+      expect(await page.getByRole('button', { name: 'Next', exact: true }).isDisabled()).toBe(true)
+      await destinationField(page, 'Server for /logs').fill('https://new.logs.test/v2')
+      await page.keyboard.press('Escape')
       await confirmConfiguration(page)
-      // The read tools show that only logs cannot run.
-      await page
-        .getByText(
-          '1 tool cannot run with this configuration. Open the Cannot run group to see why.',
-          {
-            exact: true,
-          },
-        )
-        .waitFor()
-      // Groups open closed; the toggle names the group.
-      await page.getByRole('button', { name: 'Expand Cannot run', exact: true }).click()
-      const cannotRun = page
-        .getByRole('treeitem')
-        .filter({ has: page.getByRole('button', { name: 'Collapse Cannot run', exact: true }) })
-      await cannotRun.getByText('logs', { exact: true }).waitFor()
-      expect(await cannotRun.getByText('metrics', { exact: true }).count()).toBe(0)
       await page.getByRole('button', { name: 'Save', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
       await page.goto(providerPath)
-      let drawer = await openTool(page, 'logs')
-      await drawer.getByText('Unavailable', { exact: true }).waitFor()
-      await page.keyboard.press('Escape')
-      await drawer.waitFor({ state: 'hidden' })
-      drawer = await openTool(page, 'metrics')
+      const drawer = await openTool(page, 'logs')
       expect(await drawer.getByText('Unavailable', { exact: true }).count()).toBe(0)
       await page.keyboard.press('Escape')
       await drawer.waitFor({ state: 'hidden' })
       await waitForProviderStatus(page, { path: providerPath }, 'Ready', {
-        available: 1,
+        available: 2,
         total: 2,
       })
     })

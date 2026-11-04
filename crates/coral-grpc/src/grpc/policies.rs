@@ -52,11 +52,7 @@ fn tool_access(
         tool: super::providers::tool_name(parent, &tool.key),
         relative_path: tool.relative_path.clone(),
         available: tool.availability == coral_catalog::ToolAvailability::Available,
-        diagnostics: tool
-            .diagnostics
-            .iter()
-            .map(super::providers::diagnostic)
-            .collect(),
+        diagnostics: super::providers::blocking_diagnostics(&tool.diagnostics),
         tags: tool.tags.clone(),
         hints: Some(super::providers::tool_hints(tool.hints)),
         access_state: access_state(decision.access_state()).into(),

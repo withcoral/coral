@@ -341,6 +341,7 @@ pub(super) fn review(
             .map(|group| wire::ProviderServerGroup {
                 declaration: group.declaration,
                 tools: group.tools,
+                required: group.required,
                 options: group
                     .options
                     .into_iter()

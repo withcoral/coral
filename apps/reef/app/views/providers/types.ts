@@ -272,6 +272,8 @@ export interface ConfigurationReviewView {
   servers: {
     declaration: string
     tools: string[]
+    /** Whether the step needs an answer for this server before it confirms. */
+    required: boolean
     options: {
       url: string
       variables: { name: string; defaultValue: string; enumerated: boolean; values: string[] }[]

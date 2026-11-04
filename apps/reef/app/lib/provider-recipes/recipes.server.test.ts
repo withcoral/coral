@@ -1105,6 +1105,7 @@ describe('recipeConfiguration', () => {
         {
           declaration: '#/servers',
           tools: [],
+          required: false,
           options: [
             {
               url: 'https://{site}.example.com',
@@ -1122,6 +1123,7 @@ describe('recipeConfiguration', () => {
         {
           declaration: '#/paths/~1logs/servers',
           tools: [],
+          required: false,
           options: [{ url: 'https://logs.example.com', variables: [] }],
         },
       ],

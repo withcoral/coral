@@ -100,20 +100,12 @@ export function serverChoices(
 }
 
 /**
- * A document without a root server has nowhere to send the tools it
- * declares there. Tools with their own server may go unanswered.
- */
-export function serverRequired(group: ServerGroup) {
-  return group.declaration === '#/servers' && group.tools.length > 0
-}
-
-/**
  * Why this server cannot send requests yet, in the words of the choice the
  * person makes. Coral checks the same conditions again and owns the final
  * answer; this one names the field before the step is posted.
  */
 export function serverProblem(group: ServerGroup, selection: ServerSelection | undefined) {
-  if (!selection) return serverRequired(group) ? 'Choose where Coral sends these tools.' : undefined
+  if (!selection) return group.required ? 'Choose a server for these tools.' : undefined
   if (selection.custom) return destinationProblem(selection.url)
   const option = group.options.find((choice) => choice.url === selection.url)
   if (!option) return 'This document no longer declares this server. Choose another URL.'

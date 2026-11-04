@@ -607,6 +607,9 @@ pub struct ProviderServerGroup {
     /// Available declared alternatives.
     #[prost(message, repeated, tag = "3")]
     pub options: ::prost::alloc::vec::Vec<ProviderServerOption>,
+    /// Whether configuration confirmation needs an answer for this declaration.
+    #[prost(bool, tag = "4")]
+    pub required: bool,
 }
 /// Safe comparison of a saved field with replacement input declarations.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

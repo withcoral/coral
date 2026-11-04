@@ -3,9 +3,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use coral_catalog::{
-    CatalogDiagnostic, CatalogDiagnosticSeverity, MaterializationOutcome,
-    ProviderConfigurationReview, ProviderCredentialContract, ProviderSetupInput,
-    ProviderSetupInputDigest, ToolAvailability,
+    CatalogDiagnostic, MaterializationOutcome, ProviderConfigurationReview,
+    ProviderCredentialContract, ProviderSetupInput, ProviderSetupInputDigest, ToolAvailability,
 };
 use coral_outbound::DestinationPolicy;
 use serde::{Deserialize, Serialize};
@@ -15,7 +14,7 @@ use crate::{Error, repository::LoadedSetup};
 
 // Advance when source analysis, validation, or preview semantics change. Never reuse
 // a preparation produced by a different algorithm, even for identical source bytes.
-const VERSION: u32 = 6;
+const VERSION: u32 = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SourceAnalysis {
@@ -201,9 +200,7 @@ impl Preparation {
                             tool.key().as_str().into(),
                             tool.diagnostics()
                                 .iter()
-                                .filter(|diagnostic| {
-                                    diagnostic.severity() == CatalogDiagnosticSeverity::Error
-                                })
+                                .filter(|diagnostic| diagnostic.is_blocking())
                                 .cloned()
                                 .collect(),
                         );

@@ -673,6 +673,8 @@ message ProviderServerGroup {
   repeated string tools = 2;
   // Available declared alternatives.
   repeated ProviderServerOption options = 3;
+  // Whether configuration confirmation needs an answer for this declaration.
+  bool required = 4;
 }
 
 // Safe comparison of a saved field with replacement input declarations.

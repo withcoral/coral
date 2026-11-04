@@ -1290,8 +1290,8 @@ async fn an_invalid_argument_names_what_to_correct() {
                     },
                 },
             })),
-            " at `servers.#/servers`: Select a server and complete its declared variables, or \
-             supply a valid base URL.",
+            " at `servers.#/servers`: Choose a server and complete its variables, or enter a \
+             valid base URL.",
         ),
         (
             valid_with(serde_json::json!({ "credentialRoute": "fixed" })),

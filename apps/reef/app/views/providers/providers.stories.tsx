@@ -710,7 +710,7 @@ export const ConfigurationFieldError: Story = {
       {...stepperWorkspace}
       setup={configurationSetup}
       result={{
-        error: 'Select a server and complete its declared variables.',
+        error: 'Choose a server and complete its variables.',
         credential: null,
       }}
     />
@@ -935,7 +935,10 @@ export const ConfigurationResolvedDestinations: Story = {
             logs: 'https://logs.us.logs.test/',
           },
           unavailableTools: [
-            { key: 'events', reasons: ['review the selected server and its declared variables'] },
+            {
+              key: 'events',
+              reasons: ['Choose a server for this tool and complete its variables.'],
+            },
             {
               key: 'stream',
               reasons: ['an OpenAPI callback cannot be invoked by the v1 HTTP binding'],
@@ -1160,6 +1163,7 @@ const configurationSetup: SetupView = {
       {
         declaration: '#/servers',
         tools: ['users', 'events'],
+        required: true,
         options: [
           {
             url: 'https://api.{site}/v1',
@@ -1177,6 +1181,7 @@ const configurationSetup: SetupView = {
       {
         declaration: '#/paths/~1logs/servers',
         tools: ['logs'],
+        required: true,
         options: [
           {
             url: 'https://logs.{site}',
@@ -1219,6 +1224,7 @@ const largeCatalogReview: SetupView = {
       {
         declaration: '#/servers',
         tools: largeToolKeys,
+        required: true,
         options: [{ url: 'https://api.example.test/v1', variables: [] }],
       },
     ],
@@ -1471,14 +1477,17 @@ const discovered: SetupView = {
       'logs/submit': 'https://logs.example.test/',
     },
     unavailableTools: [
-      { key: 'events/stream', reasons: ['review the selected server and its declared variables'] },
+      {
+        key: 'events/stream',
+        reasons: ['Choose a server for this tool and complete its variables.'],
+      },
     ],
     tools: [
       previewedTool('users/list', 'users', 'List the people in the account.'),
       previewedTool('users/create', 'users', 'Invite one person to the account.'),
       previewedTool('logs/submit', 'logs', 'Send one log line.'),
       previewedTool('events/stream', 'events', 'Read the event stream.', [
-        'review the selected server and its declared variables',
+        'Choose a server for this tool and complete its variables.',
       ]),
     ],
   },
@@ -1989,7 +1998,7 @@ const mcpReview: SetupView = {
         },
       ],
     },
-    servers: [{ declaration: '#/servers', tools: [], options: [] }],
+    servers: [{ declaration: '#/servers', tools: [], required: false, options: [] }],
   },
 }
 export const ConfigurationMcpOAuthBeforeSignIn: Story = {

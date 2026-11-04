@@ -1627,6 +1627,54 @@ async fn tool_reads_project_the_catalog_and_bound_their_pages() {
     );
 }
 
+/// Catches: a widening warning listed beside the reason a Tool cannot run,
+/// which ran them together into one unreadable sentence in Reef.
+#[tokio::test]
+async fn tool_access_lists_only_the_reasons_a_tool_cannot_run() {
+    let f = Fixture::new().await;
+    let token = f.token(&f.owner, "reef");
+    let mut document: Value = serde_json::from_str(&openapi_document(false)).unwrap();
+    let operation = &mut document["paths"]["/forecast"]["get"];
+    // No servers to choose from makes the Tool unavailable; the bound makes
+    // its TypeScript type wider than the schema, a warning.
+    operation["servers"] = json!([]);
+    operation["parameters"] = json!([{"name": "days", "in": "query",
+        "schema": {"type": "integer", "minimum": 1}}]);
+    let publication = publish_workspace_document(
+        &f,
+        &token,
+        document.to_string(),
+        &format!("workspaces/{}", f.workspace.id()),
+        "b0000000-0000-4000-8000-000000000012",
+    )
+    .await;
+    let listed = f
+        .policies()
+        .list_tool_access(request(
+            management::ListToolAccessRequest {
+                parent: publication.provider.clone(),
+                page_size: 0,
+                page_token: String::new(),
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let [tool] = listed.tools.as_slice() else {
+        panic!("the fixture has one Tool");
+    };
+    assert!(!tool.available);
+    assert_eq!(
+        tool.diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>(),
+        ["unresolved_server_configuration"]
+    );
+}
+
 /// coral-policy owns defaults and explicit decisions
 /// (`openapi_forecast_defaults_to_approval_and_owner_can_enable_it`). This checks
 /// the Tool name encoding, the state projection, and one denial.

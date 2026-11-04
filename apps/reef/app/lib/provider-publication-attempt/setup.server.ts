@@ -405,6 +405,7 @@ function configurationView(
     servers: review.servers.map((group) => ({
       declaration: group.declaration,
       tools: group.tools,
+      required: group.required,
       options: group.options.map((option) => ({
         url: option.url,
         variables: option.variables.map(({ name, defaultValue, enumerated, values }) => ({

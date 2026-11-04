@@ -152,9 +152,21 @@ fn tool_view(parent: &str, tool: &coral_catalog::ToolSummary) -> wire::ProviderT
         description: tool.description.clone(),
         hints: Some(tool_hints(tool.hints)),
         available: tool.availability == coral_catalog::ToolAvailability::Available,
-        diagnostics: tool.diagnostics.iter().map(diagnostic).collect(),
+        diagnostics: blocking_diagnostics(&tool.diagnostics),
         tags: tool.tags.clone(),
     }
+}
+
+/// The reasons a Tool cannot run. Warnings about how its TypeScript types widen
+/// leave it runnable, so they are not among them.
+pub(super) fn blocking_diagnostics(
+    diagnostics: &[domain::PublicationDiagnostic],
+) -> Vec<wire::ProviderDiagnostic> {
+    diagnostics
+        .iter()
+        .filter(|value| value.is_blocking())
+        .map(diagnostic)
+        .collect()
 }
 
 pub(super) fn consent_navigation(

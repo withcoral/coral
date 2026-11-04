@@ -756,7 +756,7 @@ fn project(
     if projector
         .into_diagnostics()
         .iter()
-        .any(|diagnostic| diagnostic.severity() == crate::CatalogDiagnosticSeverity::Error)
+        .any(crate::CatalogDiagnostic::is_blocking)
     {
         return Err(invalid("a built-in schema cannot be projected faithfully"));
     }

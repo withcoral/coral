@@ -307,6 +307,7 @@ it('resolves equally named variables per server declaration', () => {
       {
         declaration: '#/servers',
         tools: ['metrics'],
+        required: true,
         options: [
           {
             url: 'https://api.{site}/v1',
@@ -324,6 +325,7 @@ it('resolves equally named variables per server declaration', () => {
       {
         declaration: '#/paths/~1logs/servers',
         tools: ['logs'],
+        required: true,
         options: [
           {
             url: 'https://{prefix}.{site}/v2',
