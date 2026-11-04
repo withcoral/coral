@@ -494,6 +494,7 @@ async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_c
         f.db.database(),
         f.workspaces.clone(),
         coral_functions::IsolateLimits::default(),
+        coral_test_support::COMPILATION_TIMEOUT,
     )
     .unwrap();
     let principal = AuthenticatedPrincipal::user(f.member.clone());

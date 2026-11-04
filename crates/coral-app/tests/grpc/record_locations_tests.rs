@@ -39,6 +39,7 @@ async fn record_run(
         database.clone(),
         workspaces.clone(),
         coral_run::IsolateLimits::default(),
+        coral_test_support::COMPILATION_TIMEOUT,
     )
     .unwrap()
     .save(
@@ -67,7 +68,8 @@ async fn record_run(
         database.clone(),
         workspaces,
         providers,
-        coral_run::RuntimeLimits::default(),
+        coral_run::RuntimeLimits::default()
+            .with_compilation_timeout(coral_test_support::COMPILATION_TIMEOUT),
         coral_run::CoralInstanceId::generate(),
         coral_run::RunInbox::table(database.clone()),
     )

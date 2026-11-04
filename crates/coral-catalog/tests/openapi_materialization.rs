@@ -397,7 +397,7 @@ fn strict_program_errors(declaration: &str, body: &str) -> Vec<u32> {
     let compilation = ProgramCompiler::new(coral_v8::IsolateLimits::default(), CompilerRole::Run)
         .expect("pinned TypeScript compiler")
         .prepare_saved_function(
-            std::time::Instant::now() + coral_v8::COMPILATION_TIMEOUT,
+            std::time::Instant::now() + coral_test_support::COMPILATION_TIMEOUT,
             &source,
         )
         .expect("valid TypeScript");
@@ -3030,7 +3030,7 @@ fn assert_strict_compiling_declaration(declaration: &str) {
         .expect("pinned TypeScript compiler");
     let compilation = compiler
         .prepare_saved_function(
-            std::time::Instant::now() + coral_v8::COMPILATION_TIMEOUT,
+            std::time::Instant::now() + coral_test_support::COMPILATION_TIMEOUT,
             &source,
         )
         .expect("materialized declaration must be valid TypeScript");

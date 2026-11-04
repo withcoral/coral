@@ -49,7 +49,8 @@ const LIST_PROVIDERS: &str = "export default function (input?: { \"limit\"?: num
 const FORECAST: &str = "interface Forecast {\n    temperatureC: number;\n}\nexport default function forecast(city: string): Forecast;\n";
 
 fn deadline() -> std::time::Instant {
-    std::time::Instant::now() + coral_v8::COMPILATION_TIMEOUT
+    // Generous: these tests are not about the compilation deadline.
+    std::time::Instant::now() + std::time::Duration::from_secs(30)
 }
 
 fn tool(path: &str, declaration: &str) -> CallableDeclaration {

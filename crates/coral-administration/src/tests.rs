@@ -131,6 +131,7 @@ async fn organization_owner_leaving_loses_current_functions_once_another_owner_e
         database.clone(),
         workspaces.clone(),
         coral_functions::IsolateLimits::default(),
+        coral_test_support::COMPILATION_TIMEOUT,
     )
     .unwrap();
     let path = SavedFunctionPath::parse("answer").unwrap();
@@ -267,6 +268,7 @@ impl MemberRemoval {
             database.clone(),
             workspaces.clone(),
             coral_functions::IsolateLimits::default(),
+            coral_test_support::COMPILATION_TIMEOUT,
         )
         .unwrap();
         let author = AuthenticatedPrincipal::user(member.clone());
@@ -611,6 +613,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
         database.clone(),
         workspaces.clone(),
         coral_functions::IsolateLimits::default(),
+        coral_test_support::COMPILATION_TIMEOUT,
     )
     .unwrap();
     let mut scopes = Vec::new();
@@ -978,6 +981,7 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
         database.clone(),
         workspaces.clone(),
         coral_functions::IsolateLimits::default(),
+        coral_test_support::COMPILATION_TIMEOUT,
     )
     .unwrap();
     save_answer(&functions, &agent, workspace.id()).await;

@@ -21,8 +21,8 @@ pub const COMBINED_TYPESCRIPT_MAX_BYTES: usize = 512 * 1024;
 pub const EMITTED_JAVASCRIPT_MAX_BYTES: usize = 1024 * 1024;
 /// Maximum UTF-8 byte length of one accepted source map.
 pub const SOURCE_MAP_MAX_BYTES: usize = 2 * 1024 * 1024;
-/// Maximum wall-clock duration of one Program compilation.
-pub const COMPILATION_TIMEOUT: Duration = coral_v8::COMPILATION_TIMEOUT;
+/// Maximum wall-clock duration of one Program compilation in production.
+pub const COMPILATION_TIMEOUT: Duration = coral_functions::COMPILATION_TIMEOUT;
 /// Fixed v1 maximum Run timeout, bounding how long one Program can occupy a worker.
 pub const RUN_TIMEOUT_MAX_MS: u64 = 900_000;
 /// Maximum number of authored Emissions/Logs returned by one observation.
@@ -1217,13 +1217,26 @@ impl Default for ShutdownDrain {
 /// The limits one deployment sets for Program execution: the V8 isolate
 /// heaps, the Run Owner's Applied cap and its Fan-out Limit, and the
 /// Shutdown Drain. Resolved once at process bootstrap and handed to the Run
-/// module whole.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// module whole. It also carries the compilation deadline, which no
+/// deployment sets: it is [`COMPILATION_TIMEOUT`] unless a test relaxes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeLimits {
     isolate: crate::IsolateLimits,
     applied_output_cap: AppliedOutputCap,
     fan_out_limit: FanOutLimit,
     shutdown_drain: ShutdownDrain,
+    compilation_timeout: Duration,
+}
+
+impl Default for RuntimeLimits {
+    fn default() -> Self {
+        Self::new(
+            crate::IsolateLimits::default(),
+            AppliedOutputCap::default(),
+            FanOutLimit::default(),
+            ShutdownDrain::default(),
+        )
+    }
 }
 
 impl RuntimeLimits {
@@ -1240,7 +1253,22 @@ impl RuntimeLimits {
             applied_output_cap,
             fan_out_limit,
             shutdown_drain,
+            compilation_timeout: COMPILATION_TIMEOUT,
         }
+    }
+
+    /// Replaces the compilation deadline, for a test that is not about it or
+    /// that needs a short one. Production keeps [`COMPILATION_TIMEOUT`].
+    #[must_use]
+    pub const fn with_compilation_timeout(mut self, compilation_timeout: Duration) -> Self {
+        self.compilation_timeout = compilation_timeout;
+        self
+    }
+
+    /// The deadline for one Program compilation or Saved Function save.
+    #[must_use]
+    pub const fn compilation_timeout(&self) -> Duration {
+        self.compilation_timeout
     }
 
     /// How long a shutting-down process lets its live Runs end on their own.

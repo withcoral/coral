@@ -15,7 +15,8 @@ use tracing as _;
 use v8 as _;
 
 fn deadline() -> std::time::Instant {
-    std::time::Instant::now() + coral_v8::COMPILATION_TIMEOUT
+    // Generous: these tests are not about the compilation deadline.
+    std::time::Instant::now() + std::time::Duration::from_secs(30)
 }
 
 #[test]
@@ -59,7 +60,7 @@ fn compiler_memory_failure_allows_the_next_request_to_succeed() {
     // statements make the parser allocate from the first token, so V8 trips
     // the limit during parsing, before any type checking runs. A source that
     // outgrew the budget through type checking (30,000 object literals) spent
-    // up to COMPILATION_TIMEOUT in TypeScript on a loaded CI runner and
+    // up to the two-second production deadline in TypeScript on a loaded CI runner and
     // reported CompilationTimedOut instead.
     let source = format!(
         "export default function values() {{ return 1; }}\n{}",

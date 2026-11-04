@@ -1163,7 +1163,7 @@ async fn a_stalled_declaration_read_saves_untyped_in_time() {
             .await
             .unwrap_or_else(|error| panic!("{name}: typing never fails a save: {error:?}"));
         assert!(
-            started.elapsed() < coral_v8::COMPILATION_TIMEOUT,
+            started.elapsed() < crate::COMPILATION_TIMEOUT,
             "{name}: {:?}",
             started.elapsed()
         );
@@ -1353,6 +1353,7 @@ impl SavedFunctionTestModules {
             database.clone(),
             workspaces.clone(),
             crate::IsolateLimits::default(),
+            coral_test_support::COMPILATION_TIMEOUT,
         )
         .expect("start Saved Function compiler");
         Self {

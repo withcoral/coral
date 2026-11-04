@@ -67,6 +67,7 @@ impl Fixture {
             database.clone(),
             workspaces.clone(),
             coral_functions::IsolateLimits::default(),
+            coral_test_support::COMPILATION_TIMEOUT,
         )
         .unwrap();
         let loopback = coral_outbound::DestinationPolicy::default()
@@ -80,7 +81,8 @@ impl Fixture {
                 database.clone(),
                 workspaces.clone(),
             ),
-            coral_run::RuntimeLimits::default(),
+            coral_run::RuntimeLimits::default()
+                .with_compilation_timeout(coral_test_support::COMPILATION_TIMEOUT),
             coral_run::CoralInstanceId::generate(),
             coral_run::RunInbox::table(database.clone()),
         )

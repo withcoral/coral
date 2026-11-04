@@ -26,10 +26,10 @@ mod attribute;
 
 pub use attribute::{
     AcquisitionOperation, AcquisitionOutcome, ClaimKind, ClaimOutcome, CompileOutcome,
-    CompilerOperation, CompilerOutcome, CompilerRole, DbSystem, DropReason, GateKind, Interface,
-    InvocationEnd, OutputKind, PrincipalKind, ProviderProtocol, RecoveryOutcome, RequestOutcome,
-    RunPhase, RunStatus, SignalKind, TerminationReason, ToolEffect, TransactionOutcome,
-    UpstreamOutcome, VisibilityPath,
+    CompilerBuildOutcome, CompilerBuildReason, CompilerOperation, CompilerOutcome, CompilerRole,
+    DbSystem, DropReason, GateKind, Interface, InvocationEnd, OutputKind, PrincipalKind,
+    ProviderProtocol, RecoveryOutcome, RequestOutcome, RunPhase, RunStatus, SignalKind,
+    TerminationReason, ToolEffect, TransactionOutcome, UpstreamOutcome, VisibilityPath,
 };
 
 /// Histogram bounds for a duration in seconds, from 5 ms to an hour.
@@ -71,6 +71,7 @@ struct Catalog {
     compiler_work_duration: Histogram<f64>,
     compiler_queue_depth: LabeledLevel<CompilerRole>,
     compiler_active: LabeledLevel<CompilerRole>,
+    compiler_isolate_build_duration: Histogram<f64>,
     program_execution_cpu_duration: Histogram<f64>,
     program_execution_heap_peak: Histogram<u64>,
     program_termination: Counter<u64>,
@@ -354,7 +355,11 @@ impl Metrics {
             ),
             compiler_work_duration: seconds(
                 "coral.compiler.work.duration",
-                "Time the compiler worker spends handling one dequeued request, including isolate recovery.",
+                "Time the compiler worker spends handling one dequeued request. It includes building an isolate only when an earlier rebuild failed.",
+            ),
+            compiler_isolate_build_duration: seconds(
+                "coral.compiler.isolate.build.duration",
+                "Time the compiler worker spends building an isolate to replace a discarded one.",
             ),
             compiler_queue_depth: LabeledLevel::new(
                 &meter,
@@ -649,6 +654,27 @@ pub fn compiler_requested(
             &[
                 KeyValue::new("compiler.role", role.as_str()),
                 KeyValue::new("operation", operation.as_str()),
+                KeyValue::new("outcome", outcome.as_str()),
+            ],
+        );
+    });
+}
+
+/// Records one build of a compiler isolate that replaces a discarded one.
+/// The worker builds after the job that discarded it has answered, or, for
+/// [`CompilerBuildReason::Retry`], inside the next request.
+pub fn compiler_isolate_built(
+    role: CompilerRole,
+    reason: CompilerBuildReason,
+    outcome: CompilerBuildOutcome,
+    elapsed: Duration,
+) {
+    with(|catalog| {
+        catalog.compiler_isolate_build_duration.record(
+            elapsed.as_secs_f64(),
+            &[
+                KeyValue::new("compiler.role", role.as_str()),
+                KeyValue::new("build.reason", reason.as_str()),
                 KeyValue::new("outcome", outcome.as_str()),
             ],
         );

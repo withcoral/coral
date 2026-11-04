@@ -280,6 +280,26 @@ attribute! {
 }
 
 attribute! {
+    /// Why the compiler worker built a replacement isolate, for `build.reason`.
+    CompilerBuildReason {
+        /// The previous isolate's JavaScript ended abnormally.
+        Fault => "fault",
+        /// The previous isolate outgrew its recycle threshold.
+        Recycle => "recycle",
+        /// An earlier replacement failed, so a request built it.
+        Retry => "retry",
+    }
+}
+
+attribute! {
+    /// Whether a compiler isolate build succeeded, for `outcome`.
+    CompilerBuildOutcome {
+        Ok => "ok",
+        Failed => "failed",
+    }
+}
+
+attribute! {
     /// The path to a catalog's first successful search projection.
     VisibilityPath {
         Initial => "initial",
