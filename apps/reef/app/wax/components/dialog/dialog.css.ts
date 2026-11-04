@@ -21,6 +21,9 @@ export const backdrop = style({
 // The sticky header offsets this padding so it stays flush with the popup edge.
 const padding = createVar()
 
+// At rest, each nested dialog behind the top one shrinks one step.
+const restingTransform = 'translate(-50%, -50%) scale(calc(1 - 0.1 * var(--nested-dialogs)))'
+
 export const popup = style({
   backgroundColor: theme.surface.floating,
   border: `1px solid ${theme.stroke.floating}`,
@@ -49,11 +52,18 @@ export const popup = style({
       transform: 'translate(-50%, -50%) scale(0.9)',
     },
   },
-  transform: 'translate(-50%, -50%) scale(calc(1 - 0.1 * var(--nested-dialogs)))',
+  transform: restingTransform,
   transition: 'all 150ms',
   translate: '0 calc(0px + 16px * var(--nested-dialogs))',
-  // With reduced motion the dialog only fades: it does not grow into place.
-  '@media': { '(prefers-reduced-motion: reduce)': { transition: 'opacity 150ms' } },
+  // With reduced motion the dialog only fades: it keeps its scale as it opens and closes.
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      selectors: {
+        '&[data-starting-style], &[data-ending-style]': { transform: restingTransform },
+      },
+      transition: 'opacity 150ms',
+    },
+  },
   vars: { [padding]: '24px' },
   zIndex: zIndex.modal,
 })

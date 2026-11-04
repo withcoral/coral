@@ -62,8 +62,6 @@ export function LineChart({
   series,
   width = 400,
 }: LineChartProps) {
-  if (series.length === 0) return null
-
   const allValues = series.flatMap((s) => s.data).filter((v) => v !== null)
   // An empty chart draws its grid and axes, and no line.
   const minValue = allValues.length ? Math.min(...allValues) : 0
