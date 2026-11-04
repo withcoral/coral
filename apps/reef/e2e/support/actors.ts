@@ -60,13 +60,14 @@ export async function newUser(
 
 // Each sign-in redirect crosses Reef, Coral and the identity provider. On a
 // starved runner that chain takes longer than the session's 10 s navigation
-// default, so these waits get their own budget.
+// default, so these navigations get their own budget. `goto` needs it too: it
+// follows Reef's HTTP redirects to the identity provider before it returns.
 const SIGN_IN_REDIRECT = { timeout: 30_000 }
 
 // No cookie signing, token minting, or auth-module imports: drive the normal
 // browser redirects. Reuse only genuine storage state after this flow succeeds.
 export async function signIn(page: Page, user: SyntheticUser, target = authenticatedTarget()) {
-  await page.goto(`${target.baseURL}/`)
+  await page.goto(`${target.baseURL}/`, SIGN_IN_REDIRECT)
   await page.waitForURL(
     (url) =>
       url.origin === target.authentication.oidcURL && url.pathname.startsWith('/interaction/'),

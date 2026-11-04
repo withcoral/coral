@@ -1095,13 +1095,20 @@ impl Control {
     }
     /// Waits until `request` pauses at the armed checkpoint. A request that
     /// ends first, such as a Program whose compilation timed out, fails the
-    /// test with its result instead of leaving the wait to hang.
+    /// test with its result instead of leaving the wait to hang. A request
+    /// that stalls before the checkpoint fails it after a minute, well past
+    /// what a starved runner needs and well before nextest kills the test.
     async fn reached_by<T: std::fmt::Debug>(&self, request: &mut tokio::task::JoinHandle<T>) {
-        tokio::select! {
-            biased;
-            () = self.reached.notified() => {}
-            ended = request => panic!("the request ended before its checkpoint: {ended:?}"),
-        }
+        let reached = async {
+            tokio::select! {
+                biased;
+                () = self.reached.notified() => {}
+                ended = request => panic!("the request ended before its checkpoint: {ended:?}"),
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(60), reached)
+            .await
+            .expect("the request stalled before its checkpoint");
     }
 }
 
