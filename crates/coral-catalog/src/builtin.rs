@@ -33,15 +33,18 @@ use crate::{
 };
 
 mod add_provider;
+mod delete_function;
 mod get_policy;
 mod get_provider;
 mod list_providers;
 mod provider_input;
+mod save_function;
 mod search;
 mod update_policy;
 mod update_provider;
 
 pub use add_provider::{AddProviderArguments, AddProviderResult};
+pub use delete_function::{DeleteFunctionArguments, DeleteFunctionResult};
 pub use get_policy::{GetPolicyArguments, GetPolicyResult};
 pub use get_provider::{
     ConfigurationOutput, GetProviderArguments, GetProviderResult, ProviderSourceOutput,
@@ -50,6 +53,7 @@ pub use list_providers::{
     ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
 };
 pub use provider_input::{ConfigurationChoices, ProviderSourceArgument};
+pub use save_function::{SaveFunctionArguments, SaveFunctionResult};
 pub use search::{
     DeclaredHints, Description, DescriptionAuthoring, MissingPath, PathsResult,
     SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX, SavedDetail, SavedDiagnostic, SavedDiagnosticCategory,
@@ -127,10 +131,14 @@ pub enum BuiltinTool {
     /// Finds the Tools and Saved Functions the caller can call, ranked by a
     /// query, or reads the exact descriptions of named Call Paths.
     Search,
+    /// Creates or replaces one of the caller's own Saved Functions.
+    SaveFunction,
+    /// Deletes one of the caller's own Saved Functions.
+    DeleteFunction,
 }
 
 impl BuiltinTool {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 9] = [
         Self::AddProvider,
         Self::ListProviders,
         Self::GetProvider,
@@ -138,6 +146,8 @@ impl BuiltinTool {
         Self::UpdatePolicy,
         Self::UpdateProvider,
         Self::Search,
+        Self::SaveFunction,
+        Self::DeleteFunction,
     ];
 
     /// Returns the Tool Key, which is also its relative path.
@@ -151,6 +161,8 @@ impl BuiltinTool {
             Self::UpdatePolicy => "updatePolicy",
             Self::UpdateProvider => "updateProvider",
             Self::Search => "search",
+            Self::SaveFunction => "saveFunction",
+            Self::DeleteFunction => "deleteFunction",
         }
     }
 
@@ -173,6 +185,8 @@ impl BuiltinTool {
             Self::UpdatePolicy => update_policy::NEEDS,
             Self::UpdateProvider => update_provider::NEEDS,
             Self::Search => search::NEEDS,
+            Self::SaveFunction => save_function::NEEDS,
+            Self::DeleteFunction => delete_function::NEEDS,
         }
     }
 }
@@ -322,6 +336,10 @@ pub enum BuiltinArguments {
     UpdateProvider(Box<UpdateProviderArguments>),
     /// `search`'s arguments.
     Search(SearchArguments),
+    /// `saveFunction`'s arguments.
+    SaveFunction(SaveFunctionArguments),
+    /// `deleteFunction`'s arguments.
+    DeleteFunction(DeleteFunctionArguments),
 }
 
 impl BuiltinArguments {
@@ -348,6 +366,12 @@ impl BuiltinArguments {
             BuiltinTool::UpdateProvider => UpdateProviderArguments::parse(arguments)
                 .map(|arguments| Self::UpdateProvider(Box::new(arguments))),
             BuiltinTool::Search => SearchArguments::parse(arguments).map(Self::Search),
+            BuiltinTool::SaveFunction => {
+                SaveFunctionArguments::parse(arguments).map(Self::SaveFunction)
+            }
+            BuiltinTool::DeleteFunction => {
+                DeleteFunctionArguments::parse(arguments).map(Self::DeleteFunction)
+            }
         }
     }
 }
@@ -635,6 +659,8 @@ fn definition(tool: BuiltinTool) -> Definition {
         BuiltinTool::UpdatePolicy => update_policy::definition(),
         BuiltinTool::UpdateProvider => update_provider::definition(),
         BuiltinTool::Search => search::definition(),
+        BuiltinTool::SaveFunction => save_function::definition(),
+        BuiltinTool::DeleteFunction => delete_function::definition(),
     }
 }
 

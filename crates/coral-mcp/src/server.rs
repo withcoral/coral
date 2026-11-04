@@ -15,8 +15,8 @@ use rmcp::{ErrorData, ServerHandler};
 
 use crate::McpRuntime;
 use crate::arguments::{
-    self, CancelArguments, DeleteFunctionArguments, EndTaskArguments, ExecArguments,
-    SaveFunctionArguments, TaskOutcomeArgument, ToolArguments, WaitArguments,
+    self, CancelArguments, EndTaskArguments, ExecArguments, TaskOutcomeArgument, ToolArguments,
+    WaitArguments,
 };
 use crate::projection::{self, Reporter, ToolFailure};
 use crate::prompts::{Asked, Channel, Prompting};
@@ -94,14 +94,6 @@ impl McpServer {
             ));
         }
         let complete = match name {
-            SaveFunctionArguments::NAME => {
-                let arguments = arguments::parse::<SaveFunctionArguments>(request.arguments)?;
-                self.save_function(arguments).await
-            }
-            DeleteFunctionArguments::NAME => {
-                let arguments = arguments::parse::<DeleteFunctionArguments>(request.arguments)?;
-                self.delete_function(arguments).await
-            }
             ExecArguments::NAME => {
                 let arguments = arguments::parse::<ExecArguments>(request.arguments)?;
                 return self.exec(arguments, prompting).await;
@@ -124,45 +116,6 @@ impl McpServer {
             ))),
         };
         complete.map(Into::into)
-    }
-
-    async fn save_function(
-        &self,
-        arguments: SaveFunctionArguments,
-    ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
-        let function = self
-            .runtime
-            .modules
-            .commands
-            .save_function(
-                &call,
-                &arguments.path,
-                &arguments.description,
-                &arguments.source,
-            )
-            .await
-            .map_err(task_failure)?;
-        projection::saved_function(&function)
-            .and_then(projection::success)
-            .map_err(DispatchError::Tool)
-    }
-
-    async fn delete_function(
-        &self,
-        arguments: DeleteFunctionArguments,
-    ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
-        self.runtime
-            .modules
-            .commands
-            .delete_function(&call, &arguments.path)
-            .await
-            .map_err(task_failure)?;
-        projection::success(projection::DeletedFunction {
-            call_path: format!("coral.functions.{}", arguments.path),
-        })
-        .map_err(DispatchError::Tool)
     }
 
     async fn exec(

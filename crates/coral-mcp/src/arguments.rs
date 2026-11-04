@@ -16,8 +16,6 @@ const EXEC_TASK_ID_DESCRIPTION: &str =
     "The task_id of the Task this call continues. Pass exactly one of task_id or goal.";
 const RUN_ID_DESCRIPTION: &str = "The run_id from exec.";
 const CALL_INTENT_DESCRIPTION: &str = "Why this call is needed, in one short phrase.";
-const FUNCTION_PATH_DESCRIPTION: &str =
-    "Dotted path under coral.functions, without that prefix, such as reports.summarize.";
 const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
 /// `exec`'s description, with the one example of discovery an agent reads.
 /// A test runs its first Program against a real `coral.workspace.search` and
@@ -55,60 +53,6 @@ const ALWAYS_LOAD_META_KEY: &str = "anthropic/alwaysLoad";
 
 pub(crate) trait ToolArguments: DeserializeOwned + JsonSchema + Any {
     const NAME: &'static str;
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(deny_unknown_fields)]
-pub(crate) struct SaveFunctionArguments {
-    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
-    pub(crate) task_id: String,
-    #[schemars(
-        length(min = 1, max = TASK_INTENT_MAX_CHARS),
-        description = CALL_INTENT_DESCRIPTION
-    )]
-    pub(crate) intent: String,
-    #[schemars(
-        length(min = 1),
-        description = FUNCTION_PATH_DESCRIPTION
-    )]
-    pub(crate) path: String,
-    #[schemars(
-        length(min = 1),
-        description = "One line, one or two sentences: what the function does and when to use it. Do not restate input or return types; the declaration is shown beside it."
-    )]
-    pub(crate) description: String,
-    #[schemars(
-        length(min = 1),
-        description = "TypeScript module with one default callable export and no imports. At most 64 KiB."
-    )]
-    pub(crate) source: String,
-}
-
-impl ToolArguments for SaveFunctionArguments {
-    const NAME: &'static str = "save_function";
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(deny_unknown_fields)]
-pub(crate) struct DeleteFunctionArguments {
-    #[schemars(schema_with = "identifier_schema", description = TASK_ID_DESCRIPTION)]
-    pub(crate) task_id: String,
-    #[schemars(
-        length(min = 1, max = TASK_INTENT_MAX_CHARS),
-        description = CALL_INTENT_DESCRIPTION
-    )]
-    pub(crate) intent: String,
-    #[schemars(
-        length(min = 1),
-        description = FUNCTION_PATH_DESCRIPTION
-    )]
-    pub(crate) path: String,
-}
-
-impl ToolArguments for DeleteFunctionArguments {
-    const NAME: &'static str = "delete_function";
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -301,14 +245,6 @@ pub(crate) fn served_name(name: &str) -> Option<&'static str> {
 
 static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
     vec![
-        tool::<SaveFunctionArguments, crate::projection::SavedFunctionResult<'_>>(
-            "Atomically create or replace one Saved Function. Programs call it as `coral.functions.<path>(...)`.",
-            mutation_annotations("Save Function", true, false),
-        ),
-        tool::<DeleteFunctionArguments, crate::projection::DeletedFunction>(
-            "Delete one Saved Function.",
-            mutation_annotations("Delete Function", true, false),
-        ),
         always_loaded(tool::<ExecArguments, crate::projection::ExecResult<'_>>(
             EXEC_TOOL_DESCRIPTION,
             mutation_annotations("Execute Program", true, true),
@@ -467,8 +403,6 @@ mod tests {
             ("exec", Some(json!(true))),
             ("wait", Some(json!(true))),
             ("end_task", Some(json!(true))),
-            ("save_function", None),
-            ("delete_function", None),
             ("cancel", None),
         ]
         .map(|(name, always_load)| (name.to_owned(), always_load));
@@ -543,7 +477,7 @@ mod tests {
 
     #[test]
     fn generated_nested_inputs_remove_only_nonstandard_formats() {
-        let advertised = tool::<NumericArguments, crate::projection::DeletedFunction>(
+        let advertised = tool::<NumericArguments, crate::projection::EndedTask>(
             "Numeric fixture",
             read_annotations("Fixture"),
         );

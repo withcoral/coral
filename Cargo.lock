@@ -1031,7 +1031,6 @@ dependencies = [
 name = "coral-task"
 version = "1.4.0"
 dependencies = [
- "async-trait",
  "coral-administration",
  "coral-catalog",
  "coral-db",

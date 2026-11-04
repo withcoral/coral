@@ -157,14 +157,14 @@ async fn a_literal_path_that_names_no_tool_is_refused_with_the_nearest_paths() {
     let message = refused(
         &scope,
         &scope.owner,
-        "await coral.workspace.deleteEverything();\n\
+        "await coral.workspace.launchRockets();\n\
          await coral.providers.absent.get();\n\
-         await coral.workspace.deleteEverything();",
+         await coral.workspace.launchRockets();",
     )
     .await;
     assert_eq!(
         message,
-        "Program:1:7: coral.workspace.deleteEverything names no Tool that you can call. \
+        "Program:1:7: coral.workspace.launchRockets names no Tool that you can call. \
          Find one with coral.workspace.search.\n\
          Program:2:7: coral.providers.absent.get names no Tool that you can call. \
          Find one with coral.workspace.search."

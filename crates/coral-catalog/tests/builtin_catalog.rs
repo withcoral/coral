@@ -145,6 +145,27 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
+        (
+            BuiltinTool::SaveFunction,
+            // Not read-only, so its hints alone default it to approval_required.
+            ToolHints::new(Some(false), Some(true), Some(true), Some(false)),
+            &[
+                r#"export default function (input: { "description": string; "path": string; "source": string })"#,
+                r#""call_path": string"#,
+                r#""declaration": string"#,
+                r#""diagnostics": Array<Diagnostic>"#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
+        (
+            BuiltinTool::DeleteFunction,
+            ToolHints::new(Some(false), Some(true), Some(false), Some(false)),
+            &[
+                r#"export default function (input: { "path": string })"#,
+                r#""call_path": string"#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
     ] {
         let key = tool_key.key();
         let tool = tools
@@ -179,9 +200,11 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         target_keys,
         [
             "addProvider",
+            "deleteFunction",
             "getPolicy",
             "getProvider",
             "listProviders",
+            "saveFunction",
             "search",
             "updatePolicy",
             "updateProvider"

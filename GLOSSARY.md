@@ -273,8 +273,8 @@ _In Reef_: "provider"; revoke and restore are "Disable" and "Enable"; hard delet
 Tools Coral itself performs, with no upstream dispatch. Its Call Root is `coral.workspace`. It shares Universal
 Search, Tool Access State, Approval Requests, and Tool Invocation records with every other Provider. Each of
 its Tools declares the Workspace action it needs, and a Principal discovers, invokes, and inspects only the
-Tools whose action its authority permits: every Principal reaches `listProviders`, `getPolicy` and `search`, and
-only a User with effective Workspace Owner authority reaches `addProvider`, `getProvider`, `updateProvider` and
+Tools whose action its authority permits: every Principal reaches `listProviders`, `getPolicy` and `search`, every
+Principal that authors in the Workspace reaches `saveFunction` and `deleteFunction`, and only a User with effective Workspace Owner authority reaches `addProvider`, `getProvider`, `updateProvider` and
 `updatePolicy`. An
 Owner can disable and enable it and set its Tool policy, but nobody can rename, reconfigure, or remove it, and it
 has no Provider Accounts. Its Tools add a Provider (`addProvider`), list the Workspace's Providers
@@ -282,7 +282,8 @@ has no Provider Accounts. Its Tools add a Provider (`addProvider`), list the Wor
 (`getProvider`), change one Owner-created Provider's configuration or source (`updateProvider`), read the exact
 Tool rules a Workspace Owner set for one Owner-created Provider, keyed by each Tool's Call Path relative to
 its Call Root (`getPolicy`), and set the exact Tool Access State of 1–100 of its Tools by those paths, all or
-none (`updatePolicy`). `updatePolicy` names a Provider under `coral.providers`, so it never reaches a Built-in
+none (`updatePolicy`), and save and delete the caller's own Saved Functions (`saveFunction`, `deleteFunction`).
+`updatePolicy` names a Provider under `coral.providers`, so it never reaches a Built-in
 Tool, and a Program cannot loosen the approval on the Tools that change the Workspace. When Coral boots, it
 updates every Workspace's Built-in Provider to the catalog it serves; a Workspace whose update fails keeps its catalog
 until the next boot. Coral itself never publishes a Setup that a Program prepares, for a new Provider or an update,
@@ -540,7 +541,9 @@ one Tool policy for one Provider regardless of its Invoking Principal. A Princip
 discoverability and readiness because Credential Route, Provider Accounts, and Agent state are not policy (see
 Discoverable Tool); a stale Invocation fails safely. If no exact rule matches, a default applies: a Tool that
 declares itself read-only, or an OpenAPI/HTTP-sourced Tool with a safe HTTP method (GET, HEAD, OPTIONS, or TRACE),
-defaults to `enabled`; every other Tool defaults to `approval_required`. The default applies to every Tool
+defaults to `enabled`; so does a Built-in Tool whose catalog declares `enabled` as its default, as `saveFunction` and
+`deleteFunction` do, because they change only the caller's own Saved Functions; every other Tool defaults to
+`approval_required`. The default applies to every Tool
 without an exact rule, including those of existing Providers, and a Workspace Owner overrides it with an exact rule, for
 example for an upstream that changes state on GET. Provider signature and execution-binding changes do not
 stale an exact rule in v1. A changed Tool Key does. Policy for one Provider does not affect another Provider.
@@ -711,12 +714,13 @@ path identifies one current definition for that Principal in one Workspace. _Avo
 name, Saved Function version
 
 **Saved Function Save**: The atomic creation or replacement of one current Saved Function at an exact Saved Function
-Path. `save_function` supplies the path, explicit description, and source; it creates an absent path and replaces an
-existing path. Only the owning Principal can save or replace it. The latest accepted save wins. It replaces the source,
-description, declaration, and diagnostics together, while failure leaves the current function unchanged. MCP exposes
-non-executing `save_function` and `delete_function` authoring tools with required Task and intent attribution. Reef uses
-a private first-party service for the same behavior. These surfaces do not execute code, and MCP `exec` remains the sole
-public execution entry point. A Workspace Owner can list, inspect, and delete an Agent-owned Saved Function but cannot
+Path. A Program's `coral.workspace.saveFunction` call supplies the path, explicit description, and source; it creates
+an absent path and replaces an existing path. Only the owning Principal can save or replace it. The latest accepted save wins. It replaces the source,
+description, declaration, and diagnostics together, while failure leaves the current function unchanged. A Program
+saves and deletes only its Invoking Principal's functions, through the Built-in Tools `saveFunction` and
+`deleteFunction`; each call is a Tool Invocation of its Run, and the Program that saves a function cannot call it,
+because its Run linked its Saved Functions at admission. Reef uses a private first-party service for the same behavior.
+Saving never executes the saved source. A Workspace Owner can list, inspect, and delete an Agent-owned Saved Function but cannot
 save or replace one as the Agent. V1 exposes no public versions, edit token, or rename operation, and updating or
 deleting a function cannot change an already accepted Run. _Avoid_: Draft save, partial publication, Saved Function
 generation

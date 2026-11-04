@@ -491,8 +491,14 @@ fn mcp_modules(
     let search = UniversalSearchModule::new(Arc::clone(&database), workspaces.clone());
     let saved_functions =
         SavedFunctionModule::new(database, workspaces.clone(), runtime_limits.isolate())?;
-    // MCP-started Runs link people to Reef; this clone shares the server's Run Owners.
-    let runs = runs.with_human_interface(human_interface.clone());
+    // MCP-started Runs link people to Reef and author Saved Functions; this
+    // clone shares the server's Run Owners.
+    let runs = runs
+        .with_human_interface(human_interface.clone())
+        .with_saved_functions(coral_run::SavedFunctions::new(
+            saved_functions.clone(),
+            search_index.clone(),
+        ));
     let commands = TaskCommands::new(
         tasks.clone(),
         saved_functions,

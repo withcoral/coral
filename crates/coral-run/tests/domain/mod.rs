@@ -10,6 +10,7 @@ mod credentials;
 mod emissions;
 mod enforcement;
 mod fan_out;
+mod functions;
 mod history;
 mod invocations;
 mod ledger;

@@ -9,47 +9,12 @@ use coral_functions::SavedFunctionModule;
 use coral_run::RunModule;
 use coral_search::{SearchIndex, SearchPage, SearchRequest, UniversalSearchModule as SearchModule};
 use coral_telemetry::safe;
-use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The longest Call Path `describe` accepts. It lives here, not in `CallPath::parse`,
 /// until the catalog marks a Tool with a longer Call Path unavailable: search
 /// builds Tool Call Paths through the same type.
 const DESCRIBE_CALL_PATH_MAX_BYTES: usize = 1024;
-
-/// Reads Tool declarations as `describe` would for one caller, so typing
-/// adds nothing the caller cannot already discover.
-struct CallerToolDeclarations<'a> {
-    search: &'a SearchModule,
-    actor: &'a AuthenticatedPrincipal,
-    workspace_id: &'a WorkspaceId,
-}
-
-#[async_trait::async_trait]
-impl coral_functions::ToolDeclarationReader for CallerToolDeclarations<'_> {
-    async fn read(
-        &self,
-        call_paths: &[String],
-    ) -> Result<Vec<coral_functions::ToolDeclaration>, Box<dyn std::error::Error + Send + Sync>>
-    {
-        let call_paths = call_paths
-            .iter()
-            .filter_map(|call_path| coral_search::CallPath::parse(call_path).ok())
-            .collect::<Vec<_>>();
-        Ok(self
-            .search
-            .describe_tools(self.actor, self.workspace_id, &call_paths)
-            .await?
-            .into_iter()
-            .map(|description| {
-                coral_functions::ToolDeclaration::new(
-                    description.call_path().as_str().to_owned(),
-                    description.typescript_declaration().to_owned(),
-                )
-            })
-            .collect())
-    }
-}
 
 /// Task-aware commands above independently usable operation domains.
 #[derive(Clone)]
@@ -152,11 +117,11 @@ impl TaskCommands {
                     &context,
                     &call.workspace_id,
                     save,
-                    Some(&CallerToolDeclarations {
-                        search: &self.search,
-                        actor: &call.actor,
-                        workspace_id: &call.workspace_id,
-                    }),
+                    Some(&coral_search::CallerToolDeclarations::new(
+                        &self.search,
+                        &call.actor,
+                        &call.workspace_id,
+                    )),
                 )
                 .await?;
             let mut transaction = self.tasks.database.begin().await?;

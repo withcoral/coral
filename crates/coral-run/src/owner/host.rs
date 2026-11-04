@@ -471,6 +471,7 @@ fn start_program(
         module.providers.clone(),
         module.policies.clone(),
         module.provider_renamer.clone(),
+        module.saved_functions.clone(),
         module.human_interface.clone(),
         module.database.clone(),
         module.workspaces.clone(),

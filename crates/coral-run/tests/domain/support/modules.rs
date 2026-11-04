@@ -1526,6 +1526,7 @@ pub(crate) fn test_invoker(
         fixture.providers.clone(),
         fixture.policies.clone(),
         None,
+        None,
         Some(test_reef()),
         fixture.database.clone(),
         fixture.workspaces.clone(),

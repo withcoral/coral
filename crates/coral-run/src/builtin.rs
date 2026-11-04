@@ -30,6 +30,7 @@ mod add_provider;
 mod get_policy;
 mod get_provider;
 mod list_providers;
+mod save_function;
 mod search;
 mod setup_tool;
 mod update_policy;
@@ -45,6 +46,8 @@ pub(crate) enum BuiltinCall {
     UpdatePolicy(update_policy::UpdatePolicy),
     UpdateProvider(Box<update_provider::UpdateProvider>),
     Search(Box<search::Search>),
+    SaveFunction(Box<save_function::SaveFunction>),
+    DeleteFunction(save_function::DeleteFunction),
 }
 
 impl BuiltinCall {
@@ -86,6 +89,13 @@ impl BuiltinCall {
                     BuiltinArguments::Search(arguments) => {
                         search::Search::new(arguments).map(|call| Self::Search(Box::new(call)))
                     }
+                    BuiltinArguments::SaveFunction(arguments) => {
+                        save_function::SaveFunction::new(&arguments)
+                            .map(|call| Self::SaveFunction(Box::new(call)))
+                    }
+                    BuiltinArguments::DeleteFunction(arguments) => {
+                        save_function::DeleteFunction::new(&arguments).map(Self::DeleteFunction)
+                    }
                 }),
         )
     }
@@ -100,6 +110,8 @@ impl BuiltinCall {
             Self::UpdatePolicy(call) => call.perform(host).await,
             Self::UpdateProvider(call) => call.perform(host).await,
             Self::Search(call) => call.perform(host).await,
+            Self::SaveFunction(call) => call.perform(host).await,
+            Self::DeleteFunction(call) => call.perform(host).await,
         }
     }
 }
@@ -130,14 +142,17 @@ pub(crate) async fn recover(
         Some(BuiltinTool::UpdateProvider) => update_provider::recover(transaction, run, invocation)
             .await
             .map(Some),
-        // A read leaves nothing behind, a policy change records no call to
-        // read, and this version cannot read a Tool it does not perform.
+        // A read leaves nothing behind, a policy change and a Saved Function
+        // change record no call to read, and this version cannot read a Tool
+        // it does not perform.
         Some(
             BuiltinTool::ListProviders
             | BuiltinTool::GetProvider
             | BuiltinTool::GetPolicy
             | BuiltinTool::UpdatePolicy
-            | BuiltinTool::Search,
+            | BuiltinTool::Search
+            | BuiltinTool::SaveFunction
+            | BuiltinTool::DeleteFunction,
         )
         | None => Ok(None),
     }
@@ -172,6 +187,9 @@ pub(crate) struct BuiltinHost<'a> {
     pub(crate) renamer: Option<&'a dyn ProviderRenamer>,
     /// Where `search` discovers, as the invoking Principal.
     pub(crate) search: &'a coral_search::UniversalSearchModule,
+    /// Where `saveFunction` and `deleteFunction` author; without it, they
+    /// fail as `tool_unavailable`.
+    pub(crate) functions: Option<&'a SavedFunctions>,
     pub(crate) actor: &'a AuthenticatedPrincipal,
     /// The invoking User's change context; `None` for an Agent, which
     /// reaches no Tool that changes the Workspace.
@@ -180,6 +198,26 @@ pub(crate) struct BuiltinHost<'a> {
     pub(crate) workspace_id: &'a WorkspaceId,
     pub(crate) human_interface: &'a HumanInterfaceUrl,
     pub(crate) run: &'a dyn InvokingRun,
+}
+
+/// What Saved Function authoring from a Program acts through: the module
+/// that compiles and stores functions, and the index it notifies after each
+/// commit.
+#[derive(Clone)]
+pub struct SavedFunctions {
+    pub(crate) module: coral_functions::SavedFunctionModule,
+    pub(crate) index: coral_search::SearchIndex,
+}
+
+impl SavedFunctions {
+    /// Authoring through `module`, notifying `index` after each commit.
+    #[must_use]
+    pub const fn new(
+        module: coral_functions::SavedFunctionModule,
+        index: coral_search::SearchIndex,
+    ) -> Self {
+        Self { module, index }
+    }
 }
 
 /// `invalid_input` naming every argument the contract found to correct.
