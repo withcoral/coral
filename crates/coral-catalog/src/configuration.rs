@@ -116,6 +116,8 @@ pub struct ServerGroup {
     pub tools: Vec<String>,
     /// Declared alternatives; an empty list needs owner review.
     pub options: Vec<ServerOption>,
+    /// Whether confirmation needs an answer for this declaration.
+    pub required: bool,
 }
 
 /// Source suggestions are never an owner's configuration confirmation.

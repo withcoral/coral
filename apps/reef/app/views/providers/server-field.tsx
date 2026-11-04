@@ -7,7 +7,6 @@ import {
   selectedUrl,
   serverChoices,
   serverProblem,
-  serverRequired,
   type ServerGroup,
   type ServerSelection,
 } from './server-choices'
@@ -76,7 +75,7 @@ export function ServerField({
       <div className={styles.field}>
         <Typography.BodySmallStrong as="label" htmlFor={id}>
           {serverLabel(group.declaration)}
-          {serverRequired(group) && <RequiredMark />}
+          {group.required && <RequiredMark />}
         </Typography.BodySmallStrong>
         <Combobox.Root
           items={items}
@@ -88,7 +87,7 @@ export function ServerField({
           <Combobox.Input
             id={id}
             invalid={Boolean(problem)}
-            required={serverRequired(group)}
+            required={group.required}
             ariaDescribedBy={problem ? `${id}-error` : undefined}
             maxLength={2048}
             placeholder="https://api.example.com"

@@ -49,6 +49,7 @@ const review: ConfigurationReviewView = {
     {
       declaration: '#/servers',
       tools: ['listSites'],
+      required: true,
       options: [{ url: '/integration', variables: [] }],
     },
   ],
@@ -237,6 +238,23 @@ it('moves focus to the missing answer when Next is pressed, and submits nothing'
   expect(next().getAttribute('aria-disabled')).toBeNull()
 })
 
+// Catches: Reef deciding for itself which servers need an answer. Coral sends
+// that with each server; an unanswered required one blocks Next.
+it.each([true, false])(
+  'blocks Next for an unanswered server only when Coral marks it required (%s)',
+  async (required) => {
+    const step = await renderStep(null, {
+      ...review,
+      servers: [{ ...review.servers[0], required }],
+    })
+
+    expect(field('Main server').getAttribute('aria-required') === 'true').toBe(required)
+    expect(next().getAttribute('aria-disabled') === 'true').toBe(required)
+    await act(async () => next().click())
+    expect(step.submitted()).toBe(!required)
+  },
+)
+
 // Catches: the blocker naming a later field while an earlier one is also empty,
 // and a choice menu whose id never reaches the button that takes focus.
 it.each<[string, RecipeConfigurationView, ConfigurationReviewView, () => Element]>([
@@ -267,6 +285,7 @@ const stale: ConfigurationReviewView = {
     {
       declaration: '#/servers',
       tools: ['listSites'],
+      required: true,
       options: [{ url: 'https://api.example.test', variables: [] }],
     },
   ],

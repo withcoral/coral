@@ -147,7 +147,13 @@ impl OpenApiDocument {
                 Some(contract) => (Some(contract), "supported"),
             }
         };
-        let mut servers = groups.into_values().collect::<Vec<_>>();
+        let mut servers = groups
+            .into_values()
+            .map(|mut group| {
+                group.required = server_required(&group);
+                group
+            })
+            .collect::<Vec<_>>();
         servers.sort_by(|left, right| {
             (left.declaration != "#/servers", &left.declaration)
                 .cmp(&(right.declaration != "#/servers", &right.declaration))
@@ -293,12 +299,7 @@ pub fn validate_openapi_configuration(
     }
     for group in review.iter().flat_map(|review| &review.servers) {
         let selected = configuration.servers.get(&group.declaration);
-        // A local declaration left unanswered publishes its Tools as unavailable;
-        // it never falls back to the root. So each one that serves Tools and
-        // offers servers needs an answer. One that offers none stays unavailable.
-        let required = !group.tools.is_empty()
-            && (group.declaration == "#/servers" || !group.options.is_empty());
-        if (selected.is_some() || required) && resolve_selection(group, selected).is_err() {
+        if (selected.is_some() || group.required) && resolve_selection(group, selected).is_err() {
             errors.push(field_error(
                 &group.declaration,
                 "Choose a server and complete its variables, or enter a valid base URL.",
@@ -664,7 +665,17 @@ fn server_group(declaration: &str, object: &Map<String, Value>) -> ServerGroup {
         declaration: declaration.into(),
         tools: Vec::new(),
         options,
+        // Tools are not known yet; `configuration_review` sets this once they are.
+        required: false,
     }
+}
+
+/// A local declaration left unanswered publishes its Tools as unavailable; it
+/// never falls back to the root. So the root and each local declaration that
+/// offers servers need an answer once Tools use them. A local one that offers
+/// none has nothing to choose, so its Tools stay unavailable.
+fn server_required(group: &ServerGroup) -> bool {
+    !group.tools.is_empty() && (group.declaration == "#/servers" || !group.options.is_empty())
 }
 
 pub(super) fn configured_server(

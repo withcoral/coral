@@ -1163,6 +1163,7 @@ const configurationSetup: SetupView = {
       {
         declaration: '#/servers',
         tools: ['users', 'events'],
+        required: true,
         options: [
           {
             url: 'https://api.{site}/v1',
@@ -1180,6 +1181,7 @@ const configurationSetup: SetupView = {
       {
         declaration: '#/paths/~1logs/servers',
         tools: ['logs'],
+        required: true,
         options: [
           {
             url: 'https://logs.{site}',
@@ -1222,6 +1224,7 @@ const largeCatalogReview: SetupView = {
       {
         declaration: '#/servers',
         tools: largeToolKeys,
+        required: true,
         options: [{ url: 'https://api.example.test/v1', variables: [] }],
       },
     ],
@@ -1995,7 +1998,7 @@ const mcpReview: SetupView = {
         },
       ],
     },
-    servers: [{ declaration: '#/servers', tools: [], options: [] }],
+    servers: [{ declaration: '#/servers', tools: [], required: false, options: [] }],
   },
 }
 export const ConfigurationMcpOAuthBeforeSignIn: Story = {
