@@ -592,10 +592,6 @@ async fn a_launch_failure_after_commit_still_returns_the_started_task() {
     assert!(first.run.is_some(), "the Run stays accepted");
 }
 
-/// Only the Principal a Task is attributed to reads it from a Run. An Agent
-/// cannot inspect Task history but reads the Task it started; the Workspace
-/// Owner, who can inspect that Task, and another Member get none, as does a
-/// Run without a Task.
 #[tokio::test]
 async fn real_run_acceptance_is_not_goal_success_and_admission_failures_have_no_run() {
     let fixture = Fixture::new().await;
