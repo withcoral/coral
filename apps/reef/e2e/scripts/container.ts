@@ -77,6 +77,10 @@ try {
     dockerfile,
     '--build-arg',
     `CORAL_GIT_SHA=${sha}`,
+    // Tag the image with the run's name so cleanup removes this run's image
+    // only. Untagged images stay in the store, about 6 GB for each run.
+    '--tag',
+    name,
     '--iidfile',
     join(scratch, 'image'),
     '.',
@@ -130,6 +134,8 @@ try {
 } finally {
   for (const commandArgs of [
     ['rm', '-f', name],
+    // The build cache keeps the layers, so the next build stays fast.
+    ['image', 'rm', name],
     ['network', 'rm', name],
   ]) {
     try {
