@@ -19,9 +19,9 @@ test('Reef approves through one Coral Instance a call on a Run that the other ow
       await step('Approve the call in Reef through the other Coral Instance', async () => {
         const sent = await instances.during(() =>
           instances.on(instances.other(owner), async () => {
-            await openReview(page, waiting.paused, 'addProvider')
-            await page.getByRole('button', { name: 'Approve', exact: true }).click()
-            await page.getByText('Approved', { exact: true }).waitFor()
+            const review = await openReview(page, waiting.paused, 'addProvider')
+            await review.getByRole('button', { name: 'Approve', exact: true }).click()
+            await review.getByText('Approved', { exact: true }).waitFor()
           }),
         )
         expect(

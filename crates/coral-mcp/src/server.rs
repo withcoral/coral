@@ -678,8 +678,8 @@ impl Progress {
             .peer
             .notify_progress(ProgressNotificationParam::new(self.token, 1.0).with_message(message))
             .await;
-        if let Err(error) = sent {
-            tracing::debug!(error = %error, "progress notification not delivered");
+        if sent.is_err() {
+            tracing::debug!("progress notification not delivered");
         }
     }
 }

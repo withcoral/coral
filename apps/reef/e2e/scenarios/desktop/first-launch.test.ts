@@ -86,11 +86,12 @@ test('A fresh Desktop runs its first Program over the workspace MCP endpoint', a
       const [action] = waiting!.required_actions
       expect(new URL(action.url).origin).toBe(reef)
       await page.goto(action.url)
-      await page
-        .getByRole('region', { name: 'Review coral.providers.ledger.listEntries', exact: true })
-        .getByRole('button', { name: 'Approve', exact: true })
-        .click()
-      await page.getByText('Approved', { exact: true }).waitFor()
+      const review = page.getByRole('region', {
+        name: 'Review coral.providers.ledger.listEntries',
+        exact: true,
+      })
+      await review.getByRole('button', { name: 'Approve', exact: true }).click()
+      await review.getByText('Approved', { exact: true }).waitFor()
       const done = await observeRun(runner, await runner.wait(waiting!))
       expect(done.update.final_value).toEqual({ kind: 'value', value: { entries: ['first'] } })
       expect(calls).toBe(1)

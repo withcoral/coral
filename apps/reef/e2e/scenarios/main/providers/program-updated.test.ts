@@ -587,7 +587,7 @@ test("A workspace owner declines their Program's rename, then approves it, and t
       const paused = await pausedForApproval(program, rename)
       const review = await openReview(page, paused, 'updateProvider')
       await review.getByRole('button', { name: 'Decline', exact: true }).click()
-      await page.getByText('Declined', { exact: true }).waitFor()
+      await review.getByText('Declined', { exact: true }).waitFor()
       const { update } = await observeRun(program, await program.wait(paused))
       expect(update.final_value).toEqual({ kind: 'value', value: 'approval_declined' })
       expect(await api.providers.getProvider({ name: provider.name })).toEqual(provider)
@@ -596,7 +596,7 @@ test("A workspace owner declines their Program's rename, then approves it, and t
       const paused = await pausedForApproval(program, rename)
       const review = await openReview(page, paused, 'updateProvider')
       await review.getByRole('button', { name: 'Approve', exact: true }).click()
-      await page.getByText('Approved', { exact: true }).waitFor()
+      await review.getByText('Approved', { exact: true }).waitFor()
       const { update } = await observeRun(program, await program.wait(paused))
       expect(update.final_value).toMatchObject({
         kind: 'value',
