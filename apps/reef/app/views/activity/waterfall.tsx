@@ -1,6 +1,8 @@
-import { useContext, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useContext, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { Banner } from '@/wax/components/banner'
+import * as Card from '@/wax/components/card'
+import * as Tabs from '@/wax/components/tabs'
 import * as Menu from '@/wax/components/menu'
 import { SegmentedControl } from '@/wax/components/segmented-control'
 import { ToolName } from '@/wax/components/tool-name'
@@ -35,13 +37,13 @@ import {
 } from '@/wax/components/timeline'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import { ProviderMarksContext, useToolOwner } from './call-tool'
-import { contextFlow, type ContextFlow, type RecordFlow } from './context-flow'
+import { contextFlow, type RecordFlow } from './context-flow'
 import { formatBytes } from './context-impact'
 import { offset, preciseDuration } from './duration'
 import { UtcTime } from './instant'
 import { RecordLabel, recordIcon, rowLabel, rowStatus } from './record'
-import { SavedFunctions } from './saved-functions'
-import { timeline, timeShare, type TimelineSpan, type TimeShare } from './timeline'
+import { ContextBySteps, SavedFunctionsTable } from './run-lenses'
+import { timeline, timeShare, type TimelineSpan } from './timeline'
 import {
   callsByProvider,
   reportedIssues,
@@ -57,7 +59,7 @@ const NAME_WIDTH = 360
 /** With the detail open beside it, names give way and wrap, so the axis keeps its room. */
 const NAME_WIDTH_BESIDE_DETAIL = 280
 /** The duration and context columns' widths. */
-const DURATION_WIDTH = 84
+const DURATION_WIDTH = 116
 const CONTEXT_WIDTH = 128
 /** A program with more calls than this starts folded. */
 const FOLDED_CALLS = 8
@@ -115,64 +117,6 @@ function markShape(record: Extract<ActivityRow, { kind: 'output' }>) {
   return 'square'
 }
 
-/**
- * The root's facts as one strip: how long it took and the agent's share of that, its records,
- * outputs and failed calls, what reached the agent's context, and how far programs cut the
- * provider data they read. A wait on a person names itself, and approvals link to Approvals.
- */
-function statParts({
-  duration,
-  share,
-  total,
-  counts,
-  flow,
-  approvals,
-}: {
-  duration: string
-  share: TimeShare
-  total: number
-  counts: string[]
-  flow: ContextFlow['total'] & { measured: boolean }
-  approvals: string
-}): { text: string; link?: string; title?: string }[] {
-  const agent = Math.round((share.agent / total) * 100)
-  const missing = [
-    flow.running > 0 && counted(flow.running, 'program still running', 'programs still running'),
-    flow.unmeasured > 0 && counted(flow.unmeasured, 'record not measured', 'records not measured'),
-  ].filter((part): part is string => Boolean(part))
-  const cut = flow.providerData > 0 ? Math.round((1 - flow.output / flow.providerData) * 100) : 0
-  return [
-    { text: `${duration} (${agent === 0 && share.agent > 0 ? '<1' : agent}% agent)` },
-    ...counts.map((text) => ({ text })),
-    flow.measured
-      ? {
-          text: `${formatBytes(flow.into)} into agent context${missing.length ? ` (${missing.join(', ')})` : ''}`,
-          title:
-            'Bytes of search and describe responses and of program output. Coral measures a program when it ends.',
-        }
-      : { text: 'Context not measured' },
-    ...(flow.providerData > 0
-      ? [
-          {
-            text: `${formatBytes(flow.providerData)} → ${formatBytes(flow.output)} provider data (−${cut}%)`,
-            title: 'Tool results that programs read, and what they returned to the agent.',
-          },
-        ]
-      : []),
-    ...(share.waiting.approval > 0
-      ? [
-          {
-            text: `${preciseDuration(share.waiting.approval)} waiting for approval`,
-            link: approvals,
-          },
-        ]
-      : []),
-    ...(share.waiting['account connection'] > 0
-      ? [{ text: `${preciseDuration(share.waiting['account connection'])} waiting for an account` }]
-      : []),
-  ]
-}
-
 /** What a record did to the agent's context, as lines of its hover card. */
 function flowFacts(flow?: RecordFlow): BarFact[] {
   if (!flow) return []
@@ -197,7 +141,7 @@ function rootActor(trace: ActivityTrace) {
 function durationText(span: TimelineSpan, now: number) {
   if (span.end.kind === 'unknown') return '—'
   const total = preciseDuration(endInstant(span.start, span.end, now) - span.start)
-  return span.end.kind === 'ongoing' ? `${total}…` : total
+  return span.end.kind === 'ongoing' ? `${total} so far` : total
 }
 
 /** One line of a bar's breakdown. */
@@ -270,13 +214,10 @@ export function ActivityWaterfall({
   selected,
   href,
   loadedAt,
-  picker,
 }: {
   trace: ActivityTrace
   selected: string | null
   href: (record: string) => string
-  /** A control that opens another root, at the end of the title row. */
-  picker?: ReactNode
   /** When the page read the trace, in epoch milliseconds. */
   loadedAt: number
 }) {
@@ -329,6 +270,7 @@ export function ActivityWaterfall({
   )
   const [showMarks, setShowMarks] = useState(true)
   const [issuesOnly, setIssuesOnly] = useState(false)
+  const [lens, setLens] = useState<RunLens>('time')
   const [groupBy, setGroupBy] = useState<'step' | 'provider'>('step')
   const area = useRef<HTMLDivElement>(null)
   const track = useRef<HTMLDivElement>(null)
@@ -408,7 +350,6 @@ export function ActivityWaterfall({
     taken.push({ left, right })
     gapLabels.set(gap, text)
   }
-  const approvals = `/${trace.root.workspace}/approvals`
   // A later save of a function revises it: "rev 2" on the second, and so on.
   const revisions = new Map(
     savedFunctionsOf(trace).flatMap(({ saves }) =>
@@ -477,7 +418,7 @@ export function ActivityWaterfall({
             ))}
           </div>
         </Table.Cell>
-        <Table.Cell mono>{preciseDuration(share.agent)}</Table.Cell>
+        <Table.Cell>{preciseDuration(share.agent)}</Table.Cell>
         <Table.Cell />
       </Table.Row>
     )
@@ -552,7 +493,7 @@ export function ActivityWaterfall({
             </div>
           </Tooltip>
         </Table.Cell>
-        <Table.Cell mono>{durationText(span, now)}</Table.Cell>
+        <Table.Cell>{durationText(span, now)}</Table.Cell>
         <Table.Cell>
           <BytesCell
             bytes={into}
@@ -603,7 +544,7 @@ export function ActivityWaterfall({
           </div>
         </Table.Cell>
         {/* The time its calls ran, overlaps counted once: not the stretch from first to last. */}
-        <Table.Cell mono>{preciseDuration(row.busy)}</Table.Cell>
+        <Table.Cell>{preciseDuration(row.busy)}</Table.Cell>
         <Table.Cell />
       </Table.Row>
     )
@@ -651,6 +592,69 @@ export function ActivityWaterfall({
           }),
         ]
 
+  const functions = savedFunctionsOf(trace)
+  const keptOut = flow.total.providerData - flow.total.output
+  const missing = [
+    flow.total.running > 0 &&
+      counted(flow.total.running, 'program still running', 'programs still running'),
+    flow.total.unmeasured > 0 &&
+      counted(flow.total.unmeasured, 'step not measured', 'steps not measured'),
+  ].filter((part): part is string => Boolean(part))
+  const metrics: (Tabs.MetricTabProps & { value: RunLens })[] = [
+    {
+      value: 'time',
+      icon: 'Clock',
+      label: 'Time',
+      metric: `${preciseDuration(layout.to - layout.from)}${root.end.kind === 'ongoing' ? ' so far' : ''}`,
+      details: ['Start to end'],
+      // The agent's model and Coral, apart: the run's time is mostly the model's.
+      parts: [
+        { metric: preciseDuration(share.agent), details: ['Agent model'] },
+        { metric: preciseDuration(share.running), details: ['Coral'] },
+        // A wait names what it waited for, as the failure and the bars do.
+        ...(
+          [
+            [share.waiting.approval, 'Waiting for approval'],
+            [share.waiting['account connection'], 'Waiting for an account'],
+            [share.waiting.start, 'Waiting to start'],
+          ] as const
+        )
+          .filter(([value]) => value > 0)
+          .map(([value, reason]) => ({ metric: preciseDuration(value), details: [reason] })),
+      ],
+    },
+    {
+      value: 'context',
+      icon: 'Layers',
+      label: 'Context kept out',
+      metric: flow.records.size ? formatBytes(Math.max(0, keptOut)) : '—',
+      variant: keptOut > 0 ? 'success' : undefined,
+      details: flow.records.size
+        ? [
+            ...(flow.total.providerData > 0
+              ? [
+                  `${formatBytes(flow.total.providerData)} read · ${formatBytes(flow.total.output)} sent`,
+                ]
+              : []),
+            `${formatBytes(flow.total.into)} into agent context`,
+            ...missing,
+          ]
+        : ['Not measured'],
+    },
+    ...(functions.length
+      ? [
+          {
+            value: 'functions' as const,
+            icon: 'Save' as const,
+            label: 'Saved functions',
+            metric: String(functions.length),
+            details: [
+              `${functions.reduce((sum, item) => sum + item.saves.length - 1, 0)} revised · ${functions.filter((item) => item.tested).length} tested`,
+            ],
+          },
+        ]
+      : []),
+  ]
   return (
     <section className={styles.waterfall} aria-label="Timeline">
       <header className={styles.header}>
@@ -663,7 +667,6 @@ export function ActivityWaterfall({
               {rootStatus.label}
             </Pill>
           )}
-          {picker && <span className={styles.picker}>{picker}</span>}
         </div>
         {/* What the agent said it did: the record's answer, so it leads. */}
         {trace.feedback && (
@@ -674,22 +677,7 @@ export function ActivityWaterfall({
           </section>
         )}
         <Typography.BodySmall>
-          <UtcTime value={trace.root.startedAt} /> UTC · {rootActor(trace)}
-        </Typography.BodySmall>
-        <Typography.BodySmall color="primary" className={styles.stats}>
-          {statParts({
-            duration: `${preciseDuration(endInstant(root.start, root.end, now) - root.start)}${root.end.kind === 'ongoing' ? ' so far' : ''}`,
-            share,
-            total: layout.to - layout.from,
-            counts: counts as string[],
-            flow: { ...flow.total, measured: flow.records.size > 0 },
-            approvals,
-          }).map((part, index) => (
-            <span key={part.text} title={part.title}>
-              {index > 0 && ' · '}
-              {part.link ? <Link to={part.link}>{part.text}</Link> : part.text}
-            </span>
-          ))}
+          <UtcTime value={trace.root.startedAt} /> UTC · {rootActor(trace)} · {counts.join(' · ')}
         </Typography.BodySmall>
         {!trace.complete && (
           <Typography.BodySmall color="warning" role="status">
@@ -704,13 +692,6 @@ export function ActivityWaterfall({
             onHighlight={() => setIssuesOnly(!issuesOnly)}
           />
         ))}
-        <SavedFunctions
-          functions={savedFunctionsOf(trace)}
-          workspace={trace.root.workspace}
-          origin={bounds.from}
-          href={href}
-          selected={selected}
-        />
         {trace.failure && (
           <Banner
             variant="error"
@@ -761,157 +742,189 @@ export function ActivityWaterfall({
           </Banner>
         )}
       </header>
-      <div className={styles.minimap}>
-        <TimelineMinimap
-          bounds={axis}
-          range={range}
-          onRange={setRange}
-          lanes={layout.spans.map((span) => ({
-            start: at(span.start),
-            end: at(endInstant(span.start, span.end, now)),
-            tone: toneOf(span.record),
-          }))}
-          ticks={foldedTicks(fold, axis, bounds.from, trackWidth)}
-          tickLabel={label}
-          label={`${label(range.from)} to ${label(range.to)}`}
-        />
-      </div>
-      <div className={styles.toolbar}>
-        <Button.Container variant="secondary" size="22" onClick={() => setZoomed(null)}>
-          <Button.Text>Fit</Button.Text>
-        </Button.Container>
-        <span role="group" aria-label="Zoom" className={styles.zoom}>
-          <Button.IconButton
-            name="Minus"
-            size="22"
-            variant="secondary"
-            ariaLabel="Zoom out"
-            disabled={!zoomed}
-            onClick={() => setRange(zoomAt(range, axis, 0.5, 2))}
-          />
-          <Typography.BodySmall className={styles.zoomValue}>
-            {`${((axis.to - axis.from) / (range.to - range.from)).toFixed(2)}×`}
-          </Typography.BodySmall>
-          <Button.IconButton
-            name="Plus"
-            size="22"
-            variant="secondary"
-            ariaLabel="Zoom in"
-            onClick={() => setRange(zoomAt(range, axis, 0.5, 0.5))}
-          />
-        </span>
-        {selectedSpan && (
-          <Button.Container variant="secondary" size="22" onClick={() => fitTo(selectedSpan)}>
-            <Button.Text>Zoom to selection</Button.Text>
-          </Button.Container>
-        )}
-        <SegmentedControl
-          label="Time scale"
-          size="small"
-          value={wallTime ? 'wall' : 'call'}
-          options={[
-            { value: 'call', label: 'Call time' },
-            { value: 'wall', label: 'Wall time' },
-          ]}
-          onChange={(value) => {
-            setWallTime(value === 'wall')
-            setZoomed(null)
-          }}
-        />
-        <Button.Container
-          variant="secondary"
-          size="22"
-          aria-pressed={showMarks}
-          onClick={() => setShowMarks(!showMarks)}
+      {/* The run's measures, as Overview heads its summary: each tab opens its breakdown. */}
+      <Card.Container flush className={styles.lensCard}>
+        <Tabs.Root
+          value={lens}
+          onValueChange={(value) => setLens(value as RunLens)}
+          className={styles.lensRoot}
         >
-          <Button.Icon name={showMarks ? 'Eye' : 'EyeOff'} />
-          <Button.Text>Logs and output</Button.Text>
-        </Button.Container>
-        <Menu.Container>
-          <Menu.Trigger render={<Button.Container variant="secondary" size="22" />}>
-            <Button.Text>Group by: {groupBy === 'step' ? 'Program step' : 'Provider'}</Button.Text>
-            <Button.Icon name="ChevronDown" />
-          </Menu.Trigger>
-          <Menu.Content align="start">
-            <Menu.RadioGroup
-              value={groupBy}
-              onValueChange={(value) => setGroupBy(value as 'step' | 'provider')}
-            >
-              <Menu.RadioItem value="step">Program step</Menu.RadioItem>
-              <Menu.RadioItem value="provider">Provider</Menu.RadioItem>
-            </Menu.RadioGroup>
-          </Menu.Content>
-        </Menu.Container>
-        <Button.Container
-          variant="secondary"
-          size="22"
-          aria-pressed={issuesOnly}
-          disabled={!issueSpans.length}
-          onClick={() => setIssuesOnly(!issuesOnly)}
-        >
-          <Button.Text>Issues {issueSpans.length}</Button.Text>
-        </Button.Container>
-        <Typography.BodySmall role="status">
-          Showing {label(range.from)} to {label(range.to)}
-        </Typography.BodySmall>
-        <InfoTip ariaLabel="How to zoom">
-          Call time shows long agent gaps as short breaks. Select Wall time to show them to scale.
-          Hold Cmd or Ctrl and scroll to zoom. Hold Shift and scroll to move. Double-click a bar to
-          fit it.
-        </InfoTip>
-      </div>
-      <div className={styles.rows} ref={area}>
-        <Table.Container
-          ariaLabel="Timeline records"
-          layout="fixed"
-          bounded
-          density="compact"
-          columns={[
-            { label: 'Record', width: selected ? NAME_WIDTH_BESIDE_DETAIL : NAME_WIDTH },
-            { ariaLabel: 'Time', width: 'fill' },
-            { label: 'Duration', width: DURATION_WIDTH },
-            { label: 'Agent context', width: CONTEXT_WIDTH },
-          ]}
-        >
-          <Table.Head>
-            <Table.Row>
-              <Table.Heading>Record</Table.Heading>
-              <Table.Heading ariaLabel="Time">
-                <div className={styles.axisHeading} ref={track}>
-                  <TimelineAxis range={range} ticks={ticks} label={label} breaks={breaks} />
-                </div>
-              </Table.Heading>
-              <Table.Heading>Duration</Table.Heading>
-              <Table.Heading>Agent context</Table.Heading>
-            </Table.Row>
-          </Table.Head>
-          <Table.Body>
-            {rows.flatMap((row) =>
-              row.kind === 'group' ? [groupRow(row)] : spanRows(row.span, row.depth),
-            )}
-          </Table.Body>
-        </Table.Container>
-      </div>
-      {/* What each shape means, once, under the rows it explains. */}
-      <Typography.BodySmall className={styles.legend}>
-        <span className={styles.legendItem}>
-          <span aria-hidden className={styles.legendBracket} /> program, from its start to its end
-        </span>
-        {showMarks && (
-          <>
-            <span className={styles.legendItem}>
-              <TimelineMarkKey shape="circle" /> output
-            </span>
-            <span className={styles.legendItem}>
-              <TimelineMarkKey shape="diamond" /> log
-            </span>
-          </>
-        )}
-        <span className={styles.legendItem}>
-          <span aria-hidden className={styles.legendDots} /> agent working between calls
-        </span>
-        <span>Agent context: bytes that reached the agent</span>
-      </Typography.BodySmall>
+          <Tabs.MetricList aria-label="This run">
+            {metrics.map((metric) => (
+              <Tabs.MetricTab key={metric.value} {...metric} />
+            ))}
+          </Tabs.MetricList>
+          <Tabs.Panel value="time" className={styles.lensPanel}>
+            <div className={styles.minimap}>
+              <TimelineMinimap
+                bounds={axis}
+                range={range}
+                onRange={setRange}
+                lanes={layout.spans.map((span) => ({
+                  start: at(span.start),
+                  end: at(endInstant(span.start, span.end, now)),
+                  tone: toneOf(span.record),
+                }))}
+                ticks={foldedTicks(fold, axis, bounds.from, trackWidth)}
+                tickLabel={label}
+                label={`${label(range.from)} to ${label(range.to)}`}
+              />
+            </div>
+            <div className={styles.toolbar}>
+              <Button.Container variant="secondary" size="22" onClick={() => setZoomed(null)}>
+                <Button.Text>Fit</Button.Text>
+              </Button.Container>
+              <span role="group" aria-label="Zoom" className={styles.zoom}>
+                <Button.IconButton
+                  name="Minus"
+                  size="22"
+                  variant="secondary"
+                  ariaLabel="Zoom out"
+                  disabled={!zoomed}
+                  onClick={() => setRange(zoomAt(range, axis, 0.5, 2))}
+                />
+                <Typography.BodySmall className={styles.zoomValue}>
+                  {`${((axis.to - axis.from) / (range.to - range.from)).toFixed(2)}×`}
+                </Typography.BodySmall>
+                <Button.IconButton
+                  name="Plus"
+                  size="22"
+                  variant="secondary"
+                  ariaLabel="Zoom in"
+                  onClick={() => setRange(zoomAt(range, axis, 0.5, 0.5))}
+                />
+              </span>
+              {selectedSpan && (
+                <Button.Container variant="secondary" size="22" onClick={() => fitTo(selectedSpan)}>
+                  <Button.Text>Zoom to selection</Button.Text>
+                </Button.Container>
+              )}
+              <SegmentedControl
+                label="Time scale"
+                size="small"
+                value={wallTime ? 'wall' : 'call'}
+                options={[
+                  { value: 'call', label: 'Call time' },
+                  { value: 'wall', label: 'Wall time' },
+                ]}
+                onChange={(value) => {
+                  setWallTime(value === 'wall')
+                  setZoomed(null)
+                }}
+              />
+              <Button.Container
+                variant="secondary"
+                size="22"
+                aria-pressed={showMarks}
+                onClick={() => setShowMarks(!showMarks)}
+              >
+                <Button.Icon name={showMarks ? 'Eye' : 'EyeOff'} />
+                <Button.Text>Logs and output</Button.Text>
+              </Button.Container>
+              <Menu.Container>
+                <Menu.Trigger render={<Button.Container variant="secondary" size="22" />}>
+                  <Button.Text>
+                    Group by: {groupBy === 'step' ? 'Program step' : 'Provider'}
+                  </Button.Text>
+                  <Button.Icon name="ChevronDown" />
+                </Menu.Trigger>
+                <Menu.Content align="start">
+                  <Menu.RadioGroup
+                    value={groupBy}
+                    onValueChange={(value) => setGroupBy(value as 'step' | 'provider')}
+                  >
+                    <Menu.RadioItem value="step">Program step</Menu.RadioItem>
+                    <Menu.RadioItem value="provider">Provider</Menu.RadioItem>
+                  </Menu.RadioGroup>
+                </Menu.Content>
+              </Menu.Container>
+              <Button.Container
+                variant="secondary"
+                size="22"
+                aria-pressed={issuesOnly}
+                disabled={!issueSpans.length}
+                onClick={() => setIssuesOnly(!issuesOnly)}
+              >
+                <Button.Text>Issues {issueSpans.length}</Button.Text>
+              </Button.Container>
+              <Typography.BodySmall role="status">
+                Showing {label(range.from)} to {label(range.to)}
+              </Typography.BodySmall>
+              <InfoTip ariaLabel="How to zoom">
+                Call time shows long agent gaps as short breaks. Select Wall time to show them to
+                scale. Hold Cmd or Ctrl and scroll to zoom. Hold Shift and scroll to move.
+                Double-click a bar to fit it.
+              </InfoTip>
+            </div>
+            <div className={styles.rows} ref={area}>
+              <Table.Container
+                ariaLabel="Timeline records"
+                layout="fixed"
+                bounded
+                density="compact"
+                columns={[
+                  { label: 'Record', width: selected ? NAME_WIDTH_BESIDE_DETAIL : NAME_WIDTH },
+                  { ariaLabel: 'Time', width: 'fill' },
+                  { label: 'Duration', width: DURATION_WIDTH },
+                  { label: 'Agent context', width: CONTEXT_WIDTH },
+                ]}
+              >
+                <Table.Head>
+                  <Table.Row>
+                    <Table.Heading>Record</Table.Heading>
+                    <Table.Heading ariaLabel="Time">
+                      <div className={styles.axisHeading} ref={track}>
+                        <TimelineAxis range={range} ticks={ticks} label={label} breaks={breaks} />
+                      </div>
+                    </Table.Heading>
+                    <Table.Heading>Duration</Table.Heading>
+                    <Table.Heading>Agent context</Table.Heading>
+                  </Table.Row>
+                </Table.Head>
+                <Table.Body>
+                  {rows.flatMap((row) =>
+                    row.kind === 'group' ? [groupRow(row)] : spanRows(row.span, row.depth),
+                  )}
+                </Table.Body>
+              </Table.Container>
+            </div>
+            {/* What each shape means, once, under the rows it explains. */}
+            <Typography.BodySmall className={styles.legend}>
+              <span className={styles.legendItem}>
+                <span aria-hidden className={styles.legendBracket} /> program, from its start to its
+                end
+              </span>
+              {showMarks && (
+                <>
+                  <span className={styles.legendItem}>
+                    <TimelineMarkKey shape="circle" /> output
+                  </span>
+                  <span className={styles.legendItem}>
+                    <TimelineMarkKey shape="diamond" /> log
+                  </span>
+                </>
+              )}
+              <span className={styles.legendItem}>
+                <span aria-hidden className={styles.legendDots} /> agent working between calls
+              </span>
+              <span>Agent context: bytes that reached the agent</span>
+            </Typography.BodySmall>
+          </Tabs.Panel>
+          <Tabs.Panel value="context" className={styles.lensPanel}>
+            <ContextBySteps spans={layout.spans} flow={flow} href={href} />
+          </Tabs.Panel>
+          {functions.length > 0 && (
+            <Tabs.Panel value="functions" className={styles.lensPanel}>
+              <SavedFunctionsTable
+                functions={functions}
+                workspace={trace.root.workspace}
+                origin={bounds.from}
+                href={href}
+              />
+            </Tabs.Panel>
+          )}
+        </Tabs.Root>
+      </Card.Container>
     </section>
   )
 }
@@ -1045,3 +1058,6 @@ function IssueBanner({
     </Banner>
   )
 }
+
+/** The run's measures, each a tab that opens its breakdown. */
+type RunLens = 'time' | 'context' | 'functions'

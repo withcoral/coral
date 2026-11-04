@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useRef, useState, type KeyboardEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
 import { CopyMcpEndpoint } from '@/components/copy-mcp-endpoint'
 import { EmptyPage } from '@/components/empty-page'
@@ -9,7 +9,6 @@ import * as Table from '@/wax/components/table'
 import { Typography } from '@/wax/components/typography'
 import { activityDays } from '@/lib/activity-list'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
-import { describeContextImpact } from './context-impact'
 import { ActivityDetail, runContextOf } from './detail'
 import { duration, ElapsedDuration } from './duration'
 import { ExecutionSourceSplit } from './execution-source-split'
@@ -88,32 +87,18 @@ function RootRow({ row, href, open }: { row: ActivityRow; href: string; open: bo
   )
 }
 
-/** A root's start, then its duration and its context impact as chips. */
+/** A root's start, then its duration as a chip. */
 function RootFacts({ row }: { row: ActivityRow }) {
-  const bytes = row.kind === 'task' || row.kind === 'run' ? row.contextImpactBytes : undefined
-  const impact =
-    bytes === undefined
-      ? undefined
-      : describeContextImpact(BigInt(bytes), row.kind === 'task' && !!row.contextImpactPartial)
   // A root with no measured duration and no end has none to show.
   const timed = 'durationNanos' in row || recordEnd(row) !== null
+  // Coral sends each root's net context only, which nets what reached the agent against what
+  // programs kept out; the timeline splits the two, so the list shows neither.
   return (
     <span className={styles.rootFacts}>
       <UtcTime value={row.startedAt} />
       {timed && (
         <Pill size="small" color="graySubtle">
           {rowDuration(row)}
-        </Pill>
-      )}
-      {impact && (
-        // Saved context is good news; added context is the cost of the work, not a failure.
-        <Pill
-          size="small"
-          color={BigInt(bytes!) < 0n ? 'green' : 'graySubtle'}
-          title={impact.title}
-        >
-          <span aria-hidden>{impact.label}</span>
-          <span className={visuallyHidden}>{impact.meaning}</span>
         </Pill>
       )}
     </span>
@@ -204,57 +189,6 @@ function Glimpse({
           <Button.InternalLink to={more.to} variant="bare" size="x-small">
             {more.label}
           </Button.InternalLink>
-        </div>
-      )}
-    </div>
-  )
-}
-
-/**
- * The list of Tasks and standalone Runs behind one button, so the open timeline keeps the
- * page's width. The button counts the runs and the failed ones. Opening another run, Escape or
- * a click outside closes it. Key it by the open run, so it closes when that changes.
- */
-function RecentRuns({ rows, children }: { rows: ActivityRow[]; children: ReactNode }) {
-  const [open, setOpen] = useState(false)
-  const box = useRef<HTMLDivElement>(null)
-  const id = useId()
-  useEffect(() => {
-    if (!open) return
-    const outside = (event: PointerEvent) => {
-      if (!box.current?.contains(event.target as Node)) setOpen(false)
-    }
-    document.addEventListener('pointerdown', outside)
-    return () => document.removeEventListener('pointerdown', outside)
-  }, [open])
-  const failed = rows.filter((row) => rowStatus(row)?.tone === 'error').length
-  return (
-    <div
-      ref={box}
-      className={styles.recentRuns}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape' && open) {
-          event.stopPropagation()
-          setOpen(false)
-        }
-      }}
-    >
-      <Button.Container
-        variant="secondary"
-        size="32"
-        aria-expanded={open}
-        aria-controls={id}
-        onClick={() => setOpen(!open)}
-      >
-        <Button.Text>
-          Recent runs {rows.length}
-          {failed > 0 && ` · ${failed} failed`}
-        </Button.Text>
-        <Button.Icon name={open ? 'ChevronUp' : 'ChevronDown'} />
-      </Button.Container>
-      {open && (
-        <div id={id} role="region" aria-label="Recent runs" className={styles.recentPanel}>
-          {children}
         </div>
       )}
     </div>
@@ -402,9 +336,8 @@ export function Activity({
     <ActivityConnectedContext value={live?.connected ?? true}>
       {/* ↑ and ↓ move through the list's rows and then the timeline's, as one list. */}
       <div className={styles.root} ref={cursor}>
-        {/* With no timeline open, the list stands on its own; with one, it opens from the
-            timeline's title, so the timeline keeps the width. */}
-        {!page.trace && <div className={styles.rootList}>{listBlock}</div>}
+        {/* Every run stays in view beside the one open, so you can compare them at a glance. */}
+        <div className={styles.rootList}>{listBlock}</div>
         <div className={styles.timeline}>
           {page.trace ? (
             <ActivityWaterfall
@@ -413,11 +346,6 @@ export function Activity({
               selected={record}
               href={nav.recordHref}
               loadedAt={loadedAt}
-              picker={
-                <RecentRuns key={open} rows={page.rows}>
-                  {listBlock}
-                </RecentRuns>
-              }
             />
           ) : page.traceUnavailable ? (
             <Typography.Body>This timeline is unavailable.</Typography.Body>

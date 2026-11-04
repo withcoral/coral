@@ -103,26 +103,6 @@ export const rootFacts = style({ display: 'inline-flex', alignItems: 'center', g
 /** The agent's own summary of a Task, leading its panel. */
 export const agentSummary = style({ display: 'flex', flexDirection: 'column', gap: 4 })
 
-/** The open timeline's run picker: a button, and the list under it when open. */
-export const recentRuns = style({ position: 'relative', flex: 'none' })
-export const recentPanel = style({
-  position: 'absolute',
-  insetInlineEnd: 0,
-  top: 'calc(100% + 6px)',
-  zIndex: 20,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-  width: 360,
-  maxWidth: '80vw',
-  maxHeight: '70vh',
-  padding: 8,
-  borderRadius: 8,
-  border: `1px solid ${theme.stroke.primary}`,
-  background: theme.surface.floating,
-  boxShadow: theme.elevation.e2,
-})
-
 /** A call's total, running and waiting time, side by side. */
 export const callFigures = style({ display: 'flex', gap: 24 })
 export const callFigure = style({ display: 'flex', flexDirection: 'column' })

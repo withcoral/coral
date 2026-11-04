@@ -422,7 +422,6 @@ export const TwoLineRows: Story = {
         {
           ...goal,
           intent: 'Find overdue invoices and notify their owners. '.repeat(12),
-          contextImpactBytes: '-26100',
         },
         ...page.rows.slice(1),
       ],
@@ -433,10 +432,8 @@ export const TwoLineRows: Story = {
   },
   // Catches: a long name that grows its row, or a row that hides what its root cost: its
   // duration and the context it saved or added go under the name, as chips.
-  play: async ({ canvasElement, userEvent }) => {
+  play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    // With a timeline open, the list opens from its title.
-    await userEvent.click(canvas.getByRole('button', { name: /^Recent runs 3 · 1 failed/ }))
     const table = canvas.getByRole('table', { name: 'Activity records' })
     for (const row of within(table).getAllByRole('row')) {
       await expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(60)
@@ -452,7 +449,6 @@ export const TwoLineRows: Story = {
     await expect(time.getBoundingClientRect().top).toBeGreaterThanOrEqual(
       label.getBoundingClientRect().bottom,
     )
-    await expect(row.getByText('26.1 kB saved')).toBeInTheDocument()
     const standaloneRow = within(
       within(table).getByText('you').closest('[role="row"]') as HTMLElement,
     )
@@ -529,7 +525,6 @@ export const LoadMoreRecords: Story = {
   },
   play: async ({ canvasElement, userEvent }) => {
     const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByRole('button', { name: /^Recent runs/ }))
     await expect(canvas.getByText('The list shows 500 records.')).toBeInTheDocument()
     // The error only states what failed; the button next to it says what to do.
     await expect(canvas.getByRole('alert')).toHaveTextContent(/^The records did not load\.$/)
@@ -579,12 +574,11 @@ export const DrawerNavigation: Story = {
     list.scrollTop = list.scrollHeight
     await waitFor(() => expect(list.scrollTop).toBeGreaterThan(0))
     await expect(heading.getBoundingClientRect().top).toBe(top)
-    // A row in the list opens its timeline, which takes the page; the list then opens from
-    // the timeline's title. The root's own row there opens its detail.
+    // A row in the list opens its timeline beside it; the root's own row there opens its detail.
     await userEvent.click(within(list).getByRole('link', { name: 'Task 40' }))
     const timeline = await canvas.findByRole('table', { name: 'Timeline records' })
-    await expect(canvas.queryByRole('table', { name: 'Activity records' })).toBeNull()
-    await expect(canvas.getByRole('button', { name: /^Recent runs 40/ })).toBeVisible()
+    // The list stays in view beside the open timeline.
+    await expect(canvas.getByRole('table', { name: 'Activity records' })).toBeVisible()
     for (const close of ['escape', 'button']) {
       await userEvent.click(within(timeline).getByRole('link', { name: 'Task 40' }))
       const dialog = await screen.findByRole('dialog', { name: 'Activity details' })

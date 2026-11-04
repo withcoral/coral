@@ -128,9 +128,6 @@ export const agentSummary = style({
 })
 export const agentText = style({ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' })
 
-/** The run picker, pushed to the end of the title row. */
-export const picker = style({ marginInlineStart: 'auto' })
-
 /** The root's name: up to two lines, then cut. */
 export const heading = style({
   minWidth: 0,
@@ -173,4 +170,24 @@ export const legendDots = style({
   width: 18,
   height: 3,
   background: `radial-gradient(circle, ${theme.content.tertiary} 1px, transparent 1.5px) 0 50% / 5px 5px repeat-x`,
+})
+
+/** The card of the run's measures: it fills the room the header leaves, and its time lens
+ * scrolls its rows inside. */
+export const lensCard = style({
+  display: 'flex',
+  flexDirection: 'column',
+  flex: '1 1 auto',
+  minHeight: 0,
+  minWidth: 0,
+  width: 'auto',
+  margin: '0 16px 16px',
+})
+export const lensRoot = style({ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 })
+export const lensPanel = style({
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
+  selectors: { '&[hidden]': { display: 'none' } },
 })

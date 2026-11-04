@@ -1,5 +1,5 @@
 /** @vitest-environment happy-dom */
-import { act, fireEvent, screen, within } from '@testing-library/react'
+import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { markupRoute, renderLivePage, renderRoute } from '@/test-support/route'
@@ -344,8 +344,6 @@ it('labels a day by its UTC date, even today, and the open root shows its full i
   )
   const header = within(screen.getByRole('region', { name: 'Timeline' }))
   expect(header.getByText('00:04:00')).toHaveAttribute('title', '2026-09-30 00:04:00 UTC')
-  // With a timeline open, the list opens from its title.
-  fireEvent.click(screen.getByRole('button', { name: /^Recent runs/ }))
   expect(dayRecords('Wed 30 Sep 2026')).toEqual([goal.intent])
 })
 

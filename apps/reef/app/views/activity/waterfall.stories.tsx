@@ -72,7 +72,7 @@ export const LongTask: Story = {
   // Catches: logs and output, dots on a bar, counted as records the rows do not show.
   play: async ({ canvasElement }) => {
     await expect(canvasElement.querySelector('header')).toHaveTextContent(
-      /6m 02s so far \(\d+% agent\) · 20 records · 2 logs · 1 program output · 2 failed calls/,
+      / · 20 records · 2 logs · 1 program output · 2 failed calls$/,
     )
   },
 }
@@ -83,7 +83,7 @@ export const ShortTask: Story = {
   // Catches: a count of logs or output a root without them does not need.
   play: async ({ canvasElement }) => {
     await expect(canvasElement.querySelector('header')).toHaveTextContent(
-      /\) · 8 records · 0 failed calls · /,
+      / · 8 records · 0 failed calls$/,
     )
   },
 }
@@ -114,7 +114,7 @@ export const RunningRun: Story = {
   // Event missing from its Run.
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await expect(canvasElement.querySelector('header')).toHaveTextContent(/ so far \(/)
+    await expect(canvas.getByRole('tab', { name: /^Time/ })).toHaveTextContent(/ so far/)
     // A call still waiting says so, and what it waits for, with its row.
     await expect(canvas.getByText(/Waited .* so far\./)).toBeInTheDocument()
     await expect(canvas.getByRole('button', { name: /^execution accepted at / })).toBeVisible()
@@ -197,9 +197,9 @@ export const FailedTask: Story = {
     )
     // The status reads as a pill, and the waits name what they waited for.
     await expect(canvas.getByText('failed')).toBeVisible()
-    await expect(canvas.getByRole('link', { name: /waiting for approval$/ })).toHaveAttribute(
-      'href',
-      expect.stringMatching(/\/approvals$/),
+    // The Time tab names what the run waited for.
+    await expect(canvas.getByRole('tab', { name: /^Time/ })).toHaveTextContent(
+      /9\.19s\s*Waiting for approval/,
     )
     // A call's wait and its reason are in its breakdown, which a screen reader reads with it.
     await expect(canvas.getByText(/Waited 6\.62s for approval\. Ran 31ms\./)).toBeInTheDocument()
@@ -226,10 +226,18 @@ export const AgentAtWork: Story = {
     if (!(await resizeViewport(1300, 900))) return
     const canvas = within(canvasElement)
     const timeline = canvas.getByRole('table', { name: 'Timeline records' })
-    const header = canvasElement.querySelector('header')!
-    await expect(header).toHaveTextContent(/\(97% agent\)/)
+    const tab = (name: RegExp) => canvas.getByRole('tab', { name })
+    // The run heads with its measures: its time, mostly the agent model's, then what Coral kept
+    // out of the agent's context and the functions it saved.
+    await expect(tab(/^Time/)).toHaveTextContent(/1m 29s.*1m 26s.*Agent model.*2\.\d+s.*Coral/)
+    await expect(tab(/^Context kept out/)).toHaveTextContent(
+      /84\.3 kB.*106 kB read · 21\.4 kB sent/,
+    )
+    await expect(tab(/^Saved functions/)).toHaveTextContent(/3.*1 revised · 3 tested/)
+    // The time lens is the timeline.
     await expect(within(timeline).getByText('5.00s · final answer')).toBeVisible()
     await expect(within(timeline).getByText('38.9s')).toBeVisible()
+    await expect(within(timeline).getByLabelText("25.7 kB into the agent's context")).toBeVisible()
     // Call time folds the agent's gaps, each marked on the axis; wall time draws them to scale.
     const zigzags = () =>
       within(timeline).getByRole('columnheader', { name: 'Time' }).querySelectorAll('svg').length
@@ -249,21 +257,18 @@ export const AgentAtWork: Story = {
     await expect(within(timeline).getAllByTitle(/clickstackTraceWaterfall$/)).toHaveLength(2)
     await expect(within(timeline).queryByText('Find ClickStack tools')).toBeNull()
     await userEvent.click(canvas.getByRole('button', { name: 'Issues 2' }))
-    // One card per function, named by its path; a resave revises its card.
-    const saved = canvas.getByRole('region', { name: 'Saved functions' })
-    await expect(within(saved).getAllByRole('listitem')).toHaveLength(3)
-    await expect(within(saved).getByRole('link', { name: 'serviceHealth' })).toHaveAttribute(
-      'href',
-      expect.stringContaining('/functions/clickstack.serviceHealth'),
-    )
-    await expect(within(saved).getByRole('link', { name: 'revised 1:21' })).toHaveAttribute(
-      'href',
-      expect.stringContaining('resave-slow'),
-    )
-    // Context splits into what reached the agent and what programs kept from it, never a net.
-    await expect(header).toHaveTextContent(
-      '50 kB into agent context · 106 kB → 21.4 kB provider data (−80%)',
-    )
-    await expect(within(timeline).getByLabelText("25.7 kB into the agent's context")).toBeVisible()
+    // The context lens: what each step read and sent, never a net.
+    await userEvent.click(tab(/^Context kept out/))
+    const steps = canvas.getByRole('table', { name: 'Context by step' })
+    await expect(
+      within(steps).getByRole('row', { name: /^Smoke-test the three saved functions/ }),
+    ).toHaveTextContent(/55 kB.*1\.9 kB.*53\.1 kB/)
+    // The functions lens: each function once, by its path, with its revisions and its test.
+    await userEvent.click(tab(/^Saved functions/))
+    const functions = canvas.getByRole('table', { name: 'Saved functions' })
+    await expect(
+      within(functions).getByRole('link', { name: 'clickstack.serviceHealth' }),
+    ).toHaveAttribute('href', expect.stringContaining('/functions/clickstack.serviceHealth'))
+    await expect(within(functions).getAllByText('Smoke-tested')).toHaveLength(3)
   },
 }
