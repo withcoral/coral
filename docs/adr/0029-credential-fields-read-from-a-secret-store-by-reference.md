@@ -13,6 +13,16 @@ Rejected: Coral writing secrets to the customer's store (the customer still woul
 need write access), and the customer holding Coral's encryption key in their KMS (Coral would still store every secret).
 The second remains the planned answer for OAuth (below).
 
+Write access fails hardest on Users' own credentials. A customer who wants every credential at rest under their control
+would need Coral to write each User's OAuth tokens to the store too, and the store's sharing rules decide who else can
+read them. Coral cannot see those rules: a Vault token reports only its own capabilities, and a shared 1Password vault
+would expose one person's Slack token to every colleague with access. Only the operator's word would keep it private,
+and a mistake there leaks personal credentials silently. Writing also adds failure modes that one database transaction
+avoids today: a rotated refresh token lost when the store write fails, and a departed Member's tokens left behind when
+the store is down at cleanup. A customer-held key meets the same need, every credential under a key the customer can
+revoke, without Coral deciding where anyone's token lives. If a customer's rule demands the secret itself sit in their
+store, revisit this decision, starting with Users' credentials.
+
 ## One reference per field
 
 A reference names one field's value, not one entry for the whole Account. Vault KV entries and 1Password items hold
