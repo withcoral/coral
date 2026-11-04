@@ -23,12 +23,14 @@ load harness, kept the Run Owner's burst performance before the owner was remove
 
 | Deployment | Run Executor | Memory | CPU |
 | --- | --- | --- | --- |
-| Desktop (macOS, Linux, Windows), one container | Child processes of `coral`, started on demand | V8 heap limits only | A lower OS priority than Coral |
+| Desktop (macOS, Linux, Windows), one container | Child processes of `coral`, started on demand up to a limit | V8 heap limits only | A lower OS priority than Coral |
 | Docker Compose, Kubernetes | Its own container, dialing Coral at one address | The orchestrator's limit, sized above the heap limits it holds | A lower CPU weight than Coral, never a quota |
 | A remote runtime | Behind a bridge: a Run Executor in its own container that drives the runtime | The lower of Coral's limit and the runtime's | The lower of the Run CPU Budget and the runtime's |
 
-Every Run Executor dials Coral. A Coral Instance starts local children unless the operator turns them off, and admits
-Run Executors it did not start on every deployment. A local child runs as Coral's OS user with an empty environment, so
+Every Run Executor dials Coral. A Coral Instance starts local children only where the operator turns them on: Desktop
+turns them on in the config it writes at launch, and the server guides leave them off. It starts at most a small number
+of them, a count the operator can change, and past it work waits. It admits Run Executors it did not start on every
+deployment. A local child runs as Coral's OS user with an empty environment, so
 it isolates resource use and failures, not access. A Run Executor in its own container also isolates access: it has no
 ingress, no volume, no secret but its credential, and no egress except to Coral and DNS. A bridge also reaches its
 runtime.
@@ -88,7 +90,7 @@ runtime.
   late load from the first Run Executor fails the start's claim predicate and is answered that the Run is not held. No
   Program code has run. Coral logs each put-back with the Run Executor's id and tracks nothing else.
 - **Coral never refuses a Run for capacity.** With no room anywhere and work waiting, a Coral Instance that runs local
-  children starts another; an orchestrator scales Run Executors in their own container. A Coral Instance's readiness
+  children starts another, up to their limit; an orchestrator scales Run Executors in their own container. A Coral Instance's readiness
   checks only its database.
 
 ## The Run stream
@@ -220,7 +222,7 @@ relay row that any Coral Instance with room, itself included, picks up, serves a
 Instances keep talking only through the database. A compile that no Run Executor can serve yet waits for one: no Run
 Executor linked is a state every rollout passes through. The compile's own time limit runs once a Run Executor serves
 it; a compile that waits past a bound fails as a missing compiler fails today, and Runs already accepted wait. With
-local children on, a compile with no child running starts one and waits for it. A compile carries no authority, and a Run Executor cannot call Coral back
+local children on and below their limit, a compile with no child running starts one and waits for it. A compile carries no authority, and a Run Executor cannot call Coral back
 during one. The compiler has its Run Executor's release, so a global takes three release steps.
 
 ## Resources
@@ -336,8 +338,10 @@ Coral exports and amends this ADR.
   exceed their budgets while every Run transaction is short.
 - **Migrations are expand-only across one release**, because a new process migrates at boot while the old one still
   serves.
-- **A local child shares Coral's OS user and, in one container, its memory limit.** The guides run Run Executors in
-  their own container on Docker Compose and Kubernetes, with a stop timeout as long as the longest Run.
+- **A local child shares Coral's OS user and, in one container, its memory limit.** Children are off unless turned on
+  and bounded by a count, so a full fleet on a server means waiting, never a child in Coral's own container. The guides
+  run Run Executors in their own container on Docker Compose and Kubernetes, with a stop timeout as long as the longest
+  Run.
 - **The same Program can pass on one Run Executor and fail on another** whose limits are lower.
 - **On Windows, an operator cannot lower the Run CPU Budget.**
 
@@ -368,6 +372,8 @@ Coral exports and amends this ADR.
   credential per Run Executor waits for a hosted fleet.
 - **The same build on both sides of a link.** A rolling update would split capacity by build.
 - **Measuring memory to place Runs.** A count is simpler, and the guides size memory for it.
+- **Local children without a limit, or on by default on a server.** A child shares Coral's container limit, and an
+  orchestrator's out-of-memory kill takes Coral with it.
 - **Not ready without a Run Executor.** An outage would also take down Reef, sign-in and MCP.
 - **The compiler in the Coral process, or in its own container beside each Coral Instance.** The Coral process starts
   no V8 isolate, and a compiler container would add a service to every guide.
