@@ -17,7 +17,7 @@ const EXEC_TASK_ID_DESCRIPTION: &str =
 const RUN_ID_DESCRIPTION: &str = "The run_id from exec.";
 const CALL_INTENT_DESCRIPTION: &str = "Why this call is needed, in one short phrase.";
 const FUNCTION_PATH_DESCRIPTION: &str =
-    "Dotted path under coral.functions, without that prefix, such as reports.summarize.";
+    "Dotted path under coral.functions, without that prefix, such as github.pulls.listStale.";
 const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
 /// `exec`'s description, with the one example of discovery an agent reads.
 /// A test runs its first Program against a real `coral.workspace.search` and
@@ -75,12 +75,12 @@ pub(crate) struct SaveFunctionArguments {
     pub(crate) path: String,
     #[schemars(
         length(min = 1),
-        description = "One line, one or two sentences: what the function does and when to use it. Do not restate input or return types; the declaration is shown beside it."
+        description = "One line, one or two sentences: what the function does and when to use it. Use words a search would match. Do not restate input or return types; the declaration is shown beside it."
     )]
     pub(crate) description: String,
     #[schemars(
         length(min = 1),
-        description = "TypeScript module with one default callable export and no imports. At most 64 KiB."
+        description = "TypeScript module with one default callable export and no imports. Take the values that vary between requests as inputs. At most 64 KiB."
     )]
     pub(crate) source: String,
 }
