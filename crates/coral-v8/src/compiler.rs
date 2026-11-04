@@ -371,6 +371,12 @@ impl ProgramCompiler {
                         // Only an earlier rebuild that failed leaves no isolate.
                         *compiler =
                             Some(build_replacement(limits, role, CompilerBuildReason::Retry)?);
+                        // The build can outlast the deadline. Keep the isolate
+                        // for the next request rather than start work that a
+                        // pending termination would stop.
+                        if Instant::now() >= deadline || worker_control.is_requested() {
+                            return Err(Error::CompilationTimedOut);
+                        }
                     }
                     let active = compiler.as_mut().expect("compiler initialized");
                     worker_control.install(&active.isolate.thread_safe_handle());
@@ -982,6 +988,47 @@ mod tests {
         compiler
             .compile(deadline(), "return 42;")
             .expect("fresh compiler after termination");
+    }
+
+    /// A request that builds the isolate after a failed rebuild, and finds its
+    /// deadline passed once the build ends, keeps the isolate it built.
+    #[test]
+    fn an_overrun_retry_build_keeps_its_isolate() {
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let _measured = tracing::subscriber::set_default(metrics.subscriber());
+        let compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
+        // Leave the worker as a failed rebuild does: with no isolate.
+        let (emptied, receiver) = mpsc::sync_channel(1);
+        compiler
+            .sender
+            .send(Some(Box::new(
+                move |isolate: &mut Option<CompilerIsolate>| {
+                    *isolate = None;
+                    let _sent = emptied.send(());
+                    None
+                },
+            )))
+            .expect("send job");
+        receiver.recv().expect("isolate emptied");
+        // Building the compiler takes far longer than this deadline.
+        let result = compiler.compile(Instant::now() + Duration::from_millis(50), "return 42;");
+        assert!(
+            matches!(result, Err(Error::CompilationTimedOut)),
+            "{result:?}"
+        );
+        assert_eq!(next_isolate(&compiler), NextIsolate::Fresh);
+        let builds = |reason: &str| {
+            metrics
+                .named("coral.compiler.isolate.build.duration")
+                .iter()
+                .filter(|point| {
+                    point.attributes.get("build.reason").map(String::as_str) == Some(reason)
+                })
+                .map(|point| point.count)
+                .sum::<u64>()
+        };
+        assert_eq!(builds("fault"), 0, "the built isolate is never discarded");
     }
 
     #[test]

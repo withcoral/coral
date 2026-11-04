@@ -1821,7 +1821,8 @@ async fn start_lost_worker(
                 database.clone(),
                 workspaces,
                 providers,
-                coral_run::RuntimeLimits::default().with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
+                coral_run::RuntimeLimits::default()
+                    .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
                 coral_run::CoralInstanceId::generate(),
                 coral_run::RunInbox::table(database),
             )
