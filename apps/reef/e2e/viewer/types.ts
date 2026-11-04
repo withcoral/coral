@@ -15,6 +15,8 @@ export interface Result {
   failure?: string
   steps: { label: string; screenshot: string; elapsedMs: number }[]
   recording?: string
+  /** The run set `E2E_VIDEO=0`, so the session has no recording. */
+  videoOff?: boolean
   trace?: string
   warnings: string[]
   browserClosed: boolean

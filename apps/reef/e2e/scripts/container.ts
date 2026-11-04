@@ -114,6 +114,8 @@ try {
     '-e',
     `E2E_FILM=${process.env.E2E_FILM === '1' ? '1' : '0'}`,
     '-e',
+    `E2E_VIDEO=${process.env.E2E_VIDEO === '0' ? '0' : '1'}`,
+    '-e',
     `REEL_SELF_CHECK=${process.env.REEL_SELF_CHECK === '1' ? '1' : '0'}`,
     '-e',
     `REEL_DATABASE=${options.database}`,

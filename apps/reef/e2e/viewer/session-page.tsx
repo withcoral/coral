@@ -104,7 +104,9 @@ export function SessionPage({ result: r, source, hasFailureScreenshot }: Session
           </>
         ) : (
           <Empty>
-            No recording available for this session. Check the failure and artifact warnings.
+            {r.videoOff
+              ? 'Video recording was off for this run (E2E_VIDEO=0).'
+              : 'No recording available for this session. Check the failure and artifact warnings.'}
           </Empty>
         )}
       </Section>

@@ -75,12 +75,12 @@ export async function withDesktopApp(
     },
     {
       label: options.label ?? 'Desktop window',
-      async open({ videoDir, size }) {
+      async open({ videoDir, size, video }) {
         const launched = await _electron.launch({
           executablePath: desktop.executable,
           env: { ...desktop.env, ...profile.env },
           colorScheme: 'dark',
-          recordVideo: { dir: videoDir, size },
+          ...(video ? { recordVideo: { dir: videoDir, size } } : {}),
           timeout: 30_000,
         })
         app = launched
@@ -91,16 +91,16 @@ export async function withDesktopApp(
         const exited = () => child.exitCode !== null || child.signalCode !== null
         try {
           const page = await launched.firstWindow()
-          const video = page.video()
+          const recording = page.video()
           return {
             context: launched.context(),
             page,
             closeContext: () => launched.close(),
             async saveVideo(path) {
-              if (!video) throw new Error('The window recorded no video')
+              if (!recording) throw new Error('The window recorded no video')
               // The app and Playwright's connection to it are gone by now,
               // but the finalized file remains.
-              await copyFile(await video.path(), path)
+              await copyFile(await recording.path(), path)
             },
             async closeOwner() {
               if (!exited()) await forceStop(launched)

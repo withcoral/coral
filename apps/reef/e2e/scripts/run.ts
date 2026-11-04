@@ -94,6 +94,7 @@ try {
     'E2E_BASE_URL',
     'E2E_ALLOW_ATTACHED',
     'E2E_FILM',
+    'E2E_VIDEO',
     'E2E_FFMPEG_BINARY',
     'E2E_HARNESS_PROBES',
     'E2E_CORAL_BINARY',

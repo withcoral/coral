@@ -79,6 +79,7 @@ export default async function setup(project: TestProject) {
       target,
       runDir: config.runDir,
       film: config.film,
+      video: config.video,
       ffmpegBinary: config.ffmpegBinary,
       fixtures,
       tlsDirectory: config.tlsDirectory,

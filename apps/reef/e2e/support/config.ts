@@ -79,6 +79,8 @@ export function checkSuiteDatabase(suite: string, database: string, probes = fal
 export interface RunConfig {
   runDir: string
   film: boolean
+  /** Whether sessions record video. `E2E_VIDEO=0` turns it off. */
+  video: boolean
   ffmpegBinary: string | null
   target: Target
   fixtures?: FixtureAddress
@@ -252,6 +254,7 @@ export function bootstrapConfig(env: NodeJS.ProcessEnv) {
           }
         : undefined,
     film: env.E2E_FILM === '1',
+    video: env.E2E_VIDEO !== '0',
     ffmpegBinary: env.E2E_FFMPEG_BINARY || 'ffmpeg',
     probes,
     runDir: resolve(runsRoot, runId),

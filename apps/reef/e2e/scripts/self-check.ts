@@ -32,32 +32,46 @@ const support = spawnSync(
 if (support.error) throw support.error
 assert.equal(support.status, 0, 'Harness safety tests must pass')
 
+async function runProbes(env: NodeJS.ProcessEnv, args: string[] = []) {
+  const child = spawn(process.execPath, ['e2e/scripts/run.ts', ...args], {
+    cwd: reefRoot,
+    env: {
+      ...process.env,
+      E2E_HARNESS_PROBES: '1',
+      E2E_FILM: '0',
+      E2E_VIDEO: '1',
+      E2E_BASE_URL: '',
+      E2E_ALLOW_ATTACHED: '',
+      E2E_FFMPEG_BINARY: join(reefRoot, 'e2e/probes/intentionally-missing-ffmpeg'),
+      ...env,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let output = ''
+  for (const stream of [child.stdout, child.stderr]) {
+    stream.setEncoding('utf8').on('data', (text: string) => {
+      output += text
+      process.stdout.write(text)
+    })
+  }
+  const status = await new Promise<number | null>((resolve, reject) => {
+    child.on('error', reject)
+    child.on('close', resolve)
+  })
+  return { status, output }
+}
+const reportedRun = (output: string) => {
+  const reported = [...output.matchAll(/Reel artifacts: (.+)\/index.html/g)]
+  assert.equal(reported.length, 1, 'A test command must publish one viewer run')
+  assert.ok(reported[0][1], 'Run bootstrap must report its collision-safe artifact directory')
+  return reported[0][1]
+}
+
 // Run intentionally failing tests in a separate Vitest process, then assert on
 // its real output/evidence. No expected-failure tests pollute the product suite.
-const child = spawn(process.execPath, ['e2e/scripts/run.ts'], {
-  cwd: reefRoot,
-  env: {
-    ...process.env,
-    E2E_HARNESS_PROBES: '1',
-    // Container self-check evidence has its own final host-visible directory.
-    E2E_RUN_ID: process.env.E2E_SELF_CHECK_RUN_ID,
-    E2E_FILM: '0',
-    E2E_BASE_URL: '',
-    E2E_ALLOW_ATTACHED: '',
-    E2E_FFMPEG_BINARY: join(reefRoot, 'e2e/probes/intentionally-missing-ffmpeg'),
-  },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let output = ''
-for (const stream of [child.stdout, child.stderr]) {
-  stream.setEncoding('utf8').on('data', (text: string) => {
-    output += text
-    process.stdout.write(text)
-  })
-}
-const status = await new Promise<number | null>((resolve, reject) => {
-  child.on('error', reject)
-  child.on('close', resolve)
+const { status, output } = await runProbes({
+  // Container self-check evidence has its own final host-visible directory.
+  E2E_RUN_ID: process.env.E2E_SELF_CHECK_RUN_ID,
 })
 assert.equal(status, 1, 'The deliberate failures must fail the child test command')
 assert.match(output, /REEL_ORIGINAL_ASSERTION/)
@@ -67,10 +81,7 @@ assert.equal(
   'Missing ffmpeg should produce one run-level notice',
 )
 assert.doesNotMatch(output, /Optional MP4 conversion \(WebM retained\): Error: spawn/)
-const reportedRuns = [...output.matchAll(/Reel artifacts: (.+)\/index.html/g)]
-assert.equal(reportedRuns.length, 1, 'A test command must publish one viewer run')
-const runDir = reportedRuns[0][1]
-assert.ok(runDir, 'Run bootstrap must report its collision-safe artifact directory')
+const runDir = reportedRun(output)
 const results = await collectResults(runDir)
 assert.equal(results.length, 8)
 const scenarios = await collectScenarios(runDir)
@@ -202,8 +213,23 @@ try {
       )
     }
   }
+  // With video off, a passing session records no video, still passes and
+  // keeps its trace. A fresh run identity keeps this evidence apart.
+  const videoOff = await runProbes({ E2E_VIDEO: '0', E2E_RUN_ID: undefined }, [
+    '-t',
+    'Harness probe: pass',
+  ])
+  assert.equal(videoOff.status, 0, 'A session without video must pass')
+  const videoOffResults = await collectResults(reportedRun(videoOff.output))
+  assert.equal(videoOffResults.length, 1)
+  const [{ result: unrecorded }] = videoOffResults
+  assert.equal(unrecorded.status, 'passed')
+  assert.equal(unrecorded.videoOff, true)
+  assert.equal(unrecorded.recording, undefined)
+  assert.equal(unrecorded.trace, 'trace.zip')
+  assert.deepEqual(unrecorded.warnings, [])
   console.log(
-    `Harness self-check passed: scenario outcomes, nested recordings, retries, skips, late failures, autoplay and process cleanup.\n${runDir}/index.html`,
+    `Harness self-check passed: scenario outcomes, nested recordings, retries, skips, late failures, autoplay, video off and process cleanup.\n${runDir}/index.html`,
   )
 } finally {
   await browser?.close()

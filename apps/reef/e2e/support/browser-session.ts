@@ -35,6 +35,7 @@ export type OpenSurface = (recording: {
   videoDir: string
   size: { width: number; height: number }
   film: boolean
+  video: boolean
 }) => Promise<SessionSurface>
 
 const sessionSequences = new WeakMap<TestContext['task'], number>()
@@ -144,12 +145,16 @@ export async function withBrowserSession(
           result.trace = 'trace.zip'
         })
         await attempt('Context close', () => surface!.closeContext())
-        await attempt('Video', async () => {
-          await surface!.saveVideo(join(dir, 'session.webm'))
-          result.recording = 'session.webm'
-          // Remove Playwright scratch files only after a durable WebM exists.
-          await rm(join(dir, '.video'), { recursive: true, force: true })
-        })
+        if (!config.video) {
+          result.videoOff = true
+        } else {
+          await attempt('Video', async () => {
+            await surface!.saveVideo(join(dir, 'session.webm'))
+            result.recording = 'session.webm'
+            // Remove Playwright scratch files only after a durable WebM exists.
+            await rm(join(dir, '.video'), { recursive: true, force: true })
+          })
+        }
         await attempt('Browser close', () => surface!.closeOwner())
       }
       result.browserClosed = surface?.ownerClosed() ?? true
@@ -187,7 +192,8 @@ export async function withBrowserSession(
           22_000,
         )
       const originalFailed = result.status === 'failed'
-      const missingEvidence = !result.recording || !result.trace || !result.browserClosed
+      const missingEvidence =
+        (config.video && !result.recording) || !result.trace || !result.browserClosed
       if (result.status === 'passed' && missingEvidence) {
         result.status = 'failed'
         result.failure = 'Recording, trace, or browser cleanup failed; see artifact warnings'
@@ -233,6 +239,7 @@ export async function withBrowserSession(
       videoDir: join(dir, '.video'),
       size: { width: 1280, height: 800 },
       film: config.film,
+      video: config.video,
     })
     const { context } = surface
     page = surface.page
@@ -278,7 +285,7 @@ export async function withBrowserSession(
 }
 
 function openChromium(storageState: BrowserContextOptions['storageState']): OpenSurface {
-  return async ({ baseURL, videoDir, size, film }) => {
+  return async ({ baseURL, videoDir, size, film, video }) => {
     const browser = await chromium.launch({
       headless: true,
       slowMo: film ? 400 : 0,
@@ -290,10 +297,10 @@ function openChromium(storageState: BrowserContextOptions['storageState']): Open
         viewport: size,
         colorScheme: 'dark',
         storageState,
-        recordVideo: { dir: videoDir, size },
+        ...(video ? { recordVideo: { dir: videoDir, size } } : {}),
       })
       const page = await context.newPage()
-      const video = page.video()
+      const recording = page.video()
       return {
         context,
         page,
@@ -301,8 +308,8 @@ function openChromium(storageState: BrowserContextOptions['storageState']): Open
         // saveAs still needs Playwright's connection, even after context.close
         // finalized the recording. Save before disconnecting the browser.
         async saveVideo(path) {
-          if (!video) throw new Error('The context recorded no video')
-          await video.saveAs(path)
+          if (!recording) throw new Error('The context recorded no video')
+          await recording.saveAs(path)
         },
         closeOwner: () => browser.close(),
         ownerClosed: () => !browser.isConnected(),

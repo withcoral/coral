@@ -26,6 +26,8 @@ npm run test:e2e --prefix apps/reef -- --suite multi-instance
 # Remaining arguments reach Vitest unchanged; select a file or test name.
 npm run test:e2e --prefix apps/reef -- providers/catalog/
 E2E_FILM=1 npm run test:e2e --prefix apps/reef -- shell/navigation
+# Skip video recording. Traces, screenshots and logs remain.
+E2E_VIDEO=0 npm run test:e2e --prefix apps/reef
 npm run test:e2e --prefix apps/reef -- --help
 
 # Also verify assertion/timeout cleanup, playable WebM fallback, and viewer safety.
@@ -263,7 +265,7 @@ Never prune unrelated work. Podman disables SELinux labeling for this test conta
 rather than relabeling host artifact directories; no host CA or interface changes occur.
 
 Supported host options are `REEL_CONTAINER_ENGINE` (`docker` or `podman`),
-`REEL_SELF_CHECK=1`, and `E2E_FILM=1`. Other developer credentials, database URLs,
+`REEL_SELF_CHECK=1`, `E2E_FILM=1`, and `E2E_VIDEO=0`. Other developer credentials, database URLs,
 fixture settings and TLS-disable variables do not cross into the container.
 Viewer settings remain `E2E_RESULTS_PORT` and `E2E_RESULTS_ORIGIN` as described above.
 
