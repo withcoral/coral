@@ -820,7 +820,7 @@ async fn the_queue_counts_each_shared_request_once_across_waiters_runs_and_pages
     );
 }
 
-/// Each action names its exact request, the invoking User and the Run page,
+/// Each action names its exact request, the invoking User and its own page,
 /// and is the same on every Event page. Waiting adds no Run Events.
 #[tokio::test(flavor = "multi_thread")]
 async fn required_actions_name_their_request_and_ignore_event_paging() {
@@ -859,12 +859,12 @@ async fn required_actions_name_their_request_and_ignore_event_paging() {
                 format!("/workspaces/{scope}/approvals/{id}")
             }
             crate::RequiredActionRequest::AccountConnection(_) => {
-                format!("/workspaces/{scope}/runs/{}", mixed.run)
+                format!("/workspaces/{scope}/accounts/{}", mixed.request.provider_id)
             }
         };
         assert_eq!(
             action.action_path, expected,
-            "each entry links its own review"
+            "an approval links its review, a connection the account page"
         );
         assert!(
             action

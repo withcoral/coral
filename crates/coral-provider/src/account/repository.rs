@@ -10,7 +10,7 @@ pub(super) use encoding::{
     encode_token, encode_values,
 };
 
-use super::connection::LoadedConnection;
+use super::connection::{LoadedConnection, PendingConnection};
 use super::management::AccountInspection;
 use super::{
     AuthorizationId, AuthorizationState, ConnectionRequestId, ConnectionState, CredentialEvidence,
@@ -1274,20 +1274,30 @@ pub(super) async fn connection_history_exists(
     Ok(row.is_some())
 }
 
-pub(super) async fn pending_connection_deadline(
+pub(super) async fn pending_connection_by_id(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     user: &UserId,
     request: ConnectionRequestId,
-) -> Result<Option<i64>, Error> {
-    let row: Option<(i64,)> = tx
-        .fetch_optional(pending_connection_statement(
-            Expr::val(workspace.to_string()),
-            Expr::val(user.as_str()),
-            Expr::val(request.to_string()),
-        ))
+) -> Result<Option<PendingConnection>, Error> {
+    let row: Option<(i64, String)> = tx
+        .fetch_optional(
+            pending_connection_statement(
+                Expr::val(workspace.to_string()),
+                Expr::val(user.as_str()),
+                Expr::val(request.to_string()),
+            )
+            .column(AccountConnectionRequests::ProviderId)
+            .to_owned(),
+        )
         .await?;
-    Ok(row.map(|(deadline,)| deadline))
+    row.map(|(expires_at_unix_nanos, provider)| {
+        Ok(PendingConnection {
+            provider_id: ProviderId::parse(&provider)?,
+            expires_at_unix_nanos,
+        })
+    })
+    .transpose()
 }
 
 /// One request's deadline while it is recorded `pending`: a request past

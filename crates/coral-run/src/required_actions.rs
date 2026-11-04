@@ -411,21 +411,23 @@ pub(crate) async fn snapshot(
     }
     if observer.kind() == PrincipalKind::User && observer == &run.principal {
         for id in crate::invocation_repository::connection_requests_for_run(tx, run).await? {
-            if let Some(deadline) =
-                coral_provider::account::pending_connection_deadline_in_transaction(
-                    tx,
-                    &run.workspace_id,
-                    observer,
-                    id,
-                )
-                .await?
+            if let Some(pending) = coral_provider::account::pending_connection_in_transaction(
+                tx,
+                &run.workspace_id,
+                observer,
+                id,
+            )
+            .await?
             {
-                // The Run's page opens its first waiting connection request itself.
-                let action_path = format!("/workspaces/{}/runs/{}", run.workspace_id, run.id);
+                // The User connects on their own account page for the Provider.
+                let action_path = format!(
+                    "/workspaces/{}/accounts/{}",
+                    run.workspace_id, pending.provider_id
+                );
                 actions.push(RequiredAction {
                     request: RequiredActionRequest::AccountConnection(id),
                     required_actor: RequiredActor::InvokingUser,
-                    deadline_at_unix_nanos: deadline,
+                    deadline_at_unix_nanos: pending.expires_at_unix_nanos,
                     action_path,
                     call_path: None,
                     provider_label: None,

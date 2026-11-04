@@ -106,7 +106,7 @@ struct Action {
     /// When acting stops helping this Run: the Run ends `timed_out` at its deadline.
     #[schemars(schema_with = "timestamp_schema")]
     deadline_at: String,
-    /// Absolute URL of the page where the person decides this entry, signed in to Coral: the approval request in review, or the Run's page for a connection. Pass it on exactly as given. It grants no approval or access authority.
+    /// Absolute URL of the page where the person decides this entry, signed in to Coral: the approval request in review, or the person's account page for the Provider for a connection. Pass it on exactly as given. It grants no approval or access authority.
     #[schemars(extend("format" = "uri"))]
     url: String,
 }
