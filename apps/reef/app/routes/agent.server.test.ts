@@ -76,6 +76,11 @@ function api(contextError?: Code, selectionError?: Code) {
         // parent must not conceal the selected personal invocation's own evidence.
         throw new ConnectError('parent run unavailable', Code.NotFound)
       },
+      // The page opens the selected call's Run as its timeline: it has no records yet.
+      browseRunEntries: ({ name }) => ({
+        run: { name, workspace: personalWorkspace },
+        entries: [],
+      }),
       inspectInvocation: ({ name }) => {
         if (selectionError) throw new ConnectError('selection unavailable', selectionError)
         return {

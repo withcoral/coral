@@ -636,8 +636,7 @@ export function panelPage(
 ): ActivityPage {
   return {
     rows: [selectedRow],
-    branches: {},
-    expanded: [],
+    trace: null,
     hasBefore: false,
     hasAfter: false,
     anchorUnavailable: false,

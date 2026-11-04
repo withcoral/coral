@@ -25,6 +25,7 @@ import type {
   ActivityRunEvent,
   ActivitySourceLocation,
   InspectRunResponse,
+  BrowseRunEntriesResponse,
 } from '@/generated/coral/management/v1/activity_pb'
 import type {
   TaskRow,
@@ -34,9 +35,9 @@ import type {
   DiscoveryView,
   ActivityPage,
   ActivityRow,
+  ActivityTrace,
   SettledApproval,
   SettledPage,
-  ActivityBranch,
   ExecutionRow,
   InvocationRow,
   ProgramError,
@@ -54,8 +55,6 @@ import type {
   ActionPage,
   RunDetail,
   RecordSourceLocation,
-  LiveAction,
-  LiveLatest,
   PendingAction,
 } from '@/views/activity/types'
 import {
@@ -68,21 +67,10 @@ import { savedFunctionHref } from './management-views.server'
 import { listAllTools, listAllProviders, providerPath } from './providers.server'
 import { toolOwner } from './call-root'
 import { connectionState } from './accounts.server'
-import { liveScopeOf, MAX_EXPANDED_RECORDS, type RunRow } from '@/views/activity/types'
-import {
-  childWindow,
-  liveHold,
-  recentTask,
-  unfinishedRun,
-  type TaskRecord,
-} from '@/views/activity/navigation'
-import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
+import type { RunRow } from '@/views/activity/types'
+import { rootOf } from './activity-root'
 import { discoveryView, functionTarget } from '@/views/activity/discovery/response'
-import {
-  ACTIVITY_CHILD_WINDOW,
-  retainRows,
-  type ActivityReadingWindow,
-} from './activity-live-types'
+import { retainRows, type ActivityReadingWindow } from './activity-live-types'
 import { ACTIVITY_PAGE_SIZE } from './activity-list'
 import { activityPageFetchKey } from './activity-page-fetch'
 
@@ -972,316 +960,6 @@ async function runSourceContext(
   return context.detail?.kind === 'run' ? context.detail : undefined
 }
 
-/** Children one scan read takes, Coral's largest page. */
-const ACTION_SCAN_PAGE = 100
-/** Top-level records one read of page live mode takes, Coral's largest page. */
-const ROOT_SCAN_PAGE = 100
-
-/**
- * The oldest action you can take in the selected record's Run, while live mode follows
- * it, or in the read after an approval review's decision. It reads every page of the
- * Run's current requests from the first, and times each by the tool that waits on
- * it: the earliest start, then the lowest tool identity, decides across every
- * page. An approval counts only when you can decide it, and an account connection only
- * while it is pending. A request Reef cannot read is skipped.
- */
-async function oldestRunAction(
-  page: ActivityPage,
-  query: URLSearchParams,
-  api: ActivityApi,
-  scope: ActivityScope,
-  signal: AbortSignal,
-  snapshot: boolean,
-): Promise<LiveAction | undefined> {
-  const detail = page.detail
-  const context =
-    detail?.kind === 'run'
-      ? detail
-      : detail?.kind === 'invocation' || detail?.kind === 'output'
-        ? detail.context
-        : undefined
-  // After an approval decision, the read that follows it advances the review to the next
-  // action. A live snapshot of the review never does, so it reads nothing for it.
-  const settled =
-    !snapshot &&
-    detail?.kind === 'invocation' &&
-    detail.request?.kind === 'approval' &&
-    detail.request.state !== 'pending'
-  const actions = context?.run.actionPage
-  if (!context || !actions || actions.total === '0') return undefined
-  if (!liveScopeOf(query.get('live')) && !settled) return undefined
-  // The first action page, whichever page the review shows.
-  const first = query.get('actionsAfter') ? undefined : actions
-  const timed = await runActions(context.run.name, first, api, scope, signal)
-  return timed.toSorted(older)[0]?.action
-}
-
-/**
- * What one load read of Coral that page live mode reuses, with Coral's own times: when
- * each top-level record started, and by Task, a read whose window holds its newest child.
- */
-interface LoadEvidence {
-  /** By top-level record, when it started: a Task, or a standalone Run when accepted. */
-  roots: Map<string, bigint>
-  ends: Map<string, TaskRead>
-}
-type TaskRead = Awaited<ReturnType<ActivityApi['activity']['inspectTask']>>
-type RootRead = Awaited<ReturnType<ActivityApi['activity']['browseActivityRoots']>>['roots'][number]
-/** Notes when `root`, a top-level record Coral listed, started. */
-function noteRoot(seen: LoadEvidence, { record }: RootRead) {
-  if (record.value) seen.roots.set(record.value.name, record.value.startedAtUnixNanos)
-}
-/** Notes `value`, a read of the Task `task`, when its window holds the newest child. */
-function noteEnd(seen: LoadEvidence, task: string, value: TaskRead) {
-  if (Number(value.offset) + value.interactions.length >= Number(value.total))
-    seen.ends.set(task, value)
-}
-
-/**
- * What page live mode needs past the list and its loaded windows, while it follows the
- * newest activity with no Run that runs open. It reads every top-level record in the
- * list's scope, past the loaded list too, and only the Runs it may follow: a standalone
- * Run at any age, or one of a Task that started `TAKS_MAX_AGE` ago or less.
- * - `action`: the oldest action you can take in any of those Runs. Each is timed as
- *   `oldestRunAction` times it, by the tool that waits on it, so the tool
- *   that started waiting first wins, not the request made first: Coral states no
- *   request time. The candidates are the Runs that run and wait on you that the list,
- *   a loaded window or your pending requests show. Those list a shared connection
- *   once, under one Run, so while they hold a connection, every Task whose
- *   row says a Run of it runs is read in full for the other Runs that wait. That read
- *   also finds its newest Run that runs, so no window is read twice. An archived
- *   workspace takes no action, so it reads none.
- * - `running`: every standalone Run that runs, and by Task, its newest Run that runs,
- *   read back from its end one window at a time.
- * - `newest`: the newest top-level record, when the page does not hold it, such as a
- *   snapshot of only the records you watch.
- * - `latest`: with no action and no Run that runs, the newest record it may follow, once
- *   it read every record. A Task's top-level record says when the Task started, not when
- *   its newest child did, so it reads the newest child of each such Task: from a window
- *   of this load that holds the end, else with one read of one child.
- * - `complete`: it read every top-level record and every Task it looked in, so
- *   `running` names every Run that runs that it may follow.
- * It reads the Runs of a Task only while its row in the list says a child Run runs
- * (`contextImpactPartial`). In a top-level record of this list, Coral sets it from the
- * state of each child Run you may see, apart from its byte measurement (coral-task
- * `context_totals`, coral-run `history_repository::running`). A Task read elsewhere
- * can carry no impact at all. The flag can lag a Run's end, so only the Run's own
- * record counts as running.
- */
-async function liveLatestWork(
-  page: ActivityPage,
-  newestPage: ActivityRow[] | undefined,
-  seen: LoadEvidence,
-  query: URLSearchParams,
-  api: ActivityApi,
-  scope: ActivityScope,
-  signal: AbortSignal,
-): Promise<LiveLatest | undefined> {
-  // A Run that runs holds live mode, whatever waits elsewhere. A page that newer
-  // records come before reads the newest first. A snapshot of only the records you
-  // watch says newer ones exist too, which this reads from the top.
-  if (liveScopeOf(query.get('live')) !== 'latest' || liveHold(page)) return undefined
-  if (newestPage && page.hasBefore) return undefined
-  const now = Date.now()
-  const { roots, complete } = await everyRoot()
-  const tasks = roots.filter(
-    (row): row is TaskRecord =>
-      row.kind === 'task' && recentTask(row, now) && Boolean(row.contextImpactPartial),
-  )
-  // The Runs that wait on you, with their Task.
-  const asking = new Map<string, string>()
-  // By Task, its newest Run that runs, as `readRuns` read it.
-  const newestRunning = new Map<string, RunRow | undefined>()
-  // Whether `readRuns` read every Task it looked in.
-  let tasksRead = true
-  for (const row of roots)
-    if (unfinishedRun(page, row) && row.requiresAction) asking.set(row.name, '')
-  for (const task of tasks)
-    for (const row of page.branches[task.name]?.rows ?? [])
-      if (unfinishedRun(page, row) && row.requiresAction) asking.set(row.name, task.name)
-  const found: LiveLatest = {}
-  const actionable =
-    (asking.size > 0 || tasks.length > 0) &&
-    (!api.workspaces ||
-      (await api.workspaces.getWorkspace({ name: scope.workspace }, { signal })).state !==
-        WorkspaceState.ARCHIVED)
-  if (actionable) {
-    const waiting = tasks.length ? await pendingActions(api, scope.workspace, signal) : []
-    const eligible = new Set(tasks.map((task) => task.name))
-    for (const { run } of waiting)
-      if (unfinishedRun(page, run) && (eligible.has(run.task) || asking.has(run.name)))
-        asking.set(run.name, run.task)
-    if (waiting.some(({ action }) => action.kind === 'account_connection'))
-      for (const task of tasks) await readRuns(task.name, { waiting: true })
-    const timed = await Promise.all(
-      [...asking.keys()].map((run) => runActions(run, undefined, api, scope, signal)),
-    )
-    const oldest = timed.flat().toSorted(older)[0]
-    if (oldest) found.action = { task: asking.get(oldest.action.run) ?? '', action: oldest.action }
-  }
-  const listed = new Set(page.rows.map((row) => row.name))
-  for (const row of roots)
-    if (row.kind === 'run' && unfinishedRun(page, row)) (found.running ??= {})[row.name] = row
-  for (const task of tasks) {
-    if (!newestRunning.has(task.name)) await readRuns(task.name, { waiting: false })
-    const run = newestRunning.get(task.name)
-    if (run) (found.running ??= {})[task.name] = run
-  }
-  if (roots[0] && !listed.has(roots[0].name)) found.newest = roots[0].name
-  if (!found.action && !found.running && complete && tasksRead)
-    found.latest = await newestRecordOf()
-  if (complete && tasksRead && roots.length) found.complete = true
-  // Even empty, it says the loader looked past the list.
-  return found
-
-  /**
-   * The newest record page live mode may follow, as `LiveLatest.latest` names it. A
-   * Task's top-level record says when the Task started, not when its newest child did,
-   * so it reads the newest child of each such Task. Roots come newest first, so at an
-   * equal time the newer one wins. Undefined when Reef cannot read one of them, which
-   * could hold the newest.
-   */
-  async function newestRecordOf(): Promise<LiveLatest['latest']> {
-    let best: { root: string; record: string; run: boolean; at: bigint } | undefined
-    for (const root of roots) {
-      if (root.kind === 'task' && !recentTask(root, now)) continue
-      const started = seen.roots.get(root.name)
-      const child = root.kind === 'task' ? await newestChild(root.name) : undefined
-      if (child === null || started === undefined) return undefined
-      const record = child ?? { name: root.name, at: started, run: root.kind === 'run' }
-      if (!best || record.at > best.at)
-        best = { root: root.name, record: record.name, run: record.run, at: record.at }
-    }
-    return best && { root: best.root, record: best.record, run: best.run }
-  }
-
-  /**
-   * The newest child of `task` as Coral orders them, and when its tool call started: a
-   * Run by the call that submitted it. Undefined while it has none, and null when Reef
-   * cannot read it.
-   */
-  async function newestChild(
-    task: string,
-  ): Promise<{ name: string; at: bigint; run: boolean } | undefined | null> {
-    // A read of this load that reached the end holds it already. An offset past the end
-    // reads the last window.
-    const value = seen.ends.get(task) ?? (await taskRead(task, Number.MAX_SAFE_INTEGER, 1))
-    if (!value) return null
-    const item = value.interactions.at(-1)
-    if (!item) return undefined
-    return {
-      name: item.run ? item.run.name : item.name,
-      at: item.startedAtUnixNanos,
-      run: Boolean(item.run),
-    }
-  }
-
-  /**
-   * Reads the Runs of `task` from its newest back, once per snapshot, for its newest
-   * Run that runs. With `waiting`, it reads every Run, for the Runs that wait on you too.
-   */
-  async function readRuns(task: string, { waiting }: { waiting: boolean }) {
-    let run: RunRow | undefined
-    const read = await newestRunsOf(task, (row) => {
-      if (!unfinishedRun(page, row)) return false
-      run ??= row
-      if (waiting && row.requiresAction) asking.set(row.name, task)
-      return !waiting
-    })
-    newestRunning.set(task, run)
-    // A read cut short may miss a Run that runs or waits.
-    if (!read) tasksRead = false
-  }
-
-  /**
-   * Every top-level record in the list's scope, newest first: the newest page the list
-   * loaded, then every older page. A standalone Run counts at any age.
-   */
-  async function everyRoot(): Promise<{ roots: ActivityRow[]; complete: boolean }> {
-    const rows = [...(newestPage ?? [])]
-    let more = newestPage ? page.hasAfter : true
-    while (more) {
-      let value
-      try {
-        value = await api.activity.browseActivityRoots(
-          { scope, after: rows.at(-1)?.name ?? '', pageSize: ROOT_SCAN_PAGE },
-          { signal },
-        )
-      } catch (error) {
-        // An older page Reef cannot read hides what is past it, until the next snapshot.
-        if (!unavailable(error)) throw error
-        return { roots: rows, complete: false }
-      }
-      for (const root of value.roots) {
-        const { record } = root
-        if (record.case === 'task') rows.push({ ...taskView(record.value), kind: 'task' })
-        if (record.case === 'run') rows.push({ ...runView(record.value), kind: 'run' })
-        noteRoot(seen, root)
-      }
-      more = value.hasAfter && value.roots.length > 0
-    }
-    return { roots: rows, complete: true }
-  }
-
-  /**
-   * Visits the Runs of `task` from its newest back until `visit` says stop: those its
-   * loaded window holds through its end, then the rest read from Coral. False when Reef
-   * could not read a window before it stopped.
-   */
-  async function newestRunsOf(task: string, visit: (row: RunRow) => boolean) {
-    const branch = page.expanded.includes(task) ? page.branches[task] : undefined
-    let offset: number | undefined
-    if (branch && !branch.unavailable) {
-      const { items, total } = childWindow(branch)
-      const end = Math.max(branch.offset ?? 0, ...items.map(({ index }) => index + 1))
-      if (end >= total) {
-        for (const { row } of items.toSorted((a, b) => b.index - a.index))
-          if (row.kind === 'run' && visit(row)) return true
-        offset = branch.offset ?? 0
-      }
-    }
-    if (offset === undefined) {
-      const head = await taskRead(task)
-      if (!head) return false
-      offset = Number(head.total)
-    }
-    while (offset > 0) {
-      const from = Math.max(0, offset - ACTIVITY_CHILD_WINDOW)
-      const value = await taskRead(task, from)
-      if (!value) return false
-      for (const item of value.interactions.slice(0, offset - from).toReversed())
-        if (item.run && visit({ ...runView(item.run), kind: 'run' })) return true
-      offset = from
-    }
-    return true
-  }
-
-  /**
-   * The Task `name`, with `size` children from `offset`, or undefined when Reef cannot
-   * read it. Without `offset`, its first child.
-   */
-  async function taskRead(name: string, offset?: number, size = ACTIVITY_CHILD_WINDOW) {
-    let value
-    try {
-      value = await api.activity.inspectTask(
-        {
-          name,
-          pageSize: offset === undefined ? 1 : size,
-          scope,
-          viewport:
-            offset === undefined ? undefined : { offset: BigInt(offset), anchor: '', preceding: 0 },
-        },
-        { signal },
-      )
-    } catch (error) {
-      if (!unavailable(error)) throw error
-      return undefined
-    }
-    noteEnd(seen, name, value)
-    return value
-  }
-}
-
 /** Every pending request in `workspace` that waits on the caller, most urgent first, each
  * with a Run that waits on it. A `kind` keeps only that kind. */
 export async function pendingActions(
@@ -1371,163 +1049,6 @@ export async function approvalReading(
 }
 
 /**
- * Every action you can take in `run`, each timed by the tool that waits on it. It
- * reads every page of the Run's current requests from `first`, or from the start. An
- * approval counts only when you can decide it, and an account connection only while it
- * is pending. A request Reef cannot read is skipped.
- */
-async function runActions(
-  run: string,
-  first: ActionPage | undefined,
-  api: ActivityApi,
-  scope: ActivityScope,
-  signal: AbortSignal,
-): Promise<TimedAction[]> {
-  try {
-    const requests: ActionSummary[] = []
-    let shown = first
-    let after = ''
-    do {
-      if (!shown) {
-        const value = await api.activity.inspectRun(
-          { name: run, pageSize: 1, actionAfter: after },
-          { signal },
-        )
-        shown = value.run ? runView(value.run).actionPage : undefined
-      }
-      requests.push(...(shown?.actions ?? []))
-      after = shown?.next ?? ''
-      shown = undefined
-    } while (after)
-    const approvals = await Promise.all(
-      requests.flatMap((action) =>
-        action.kind === 'approval' ? [approvalAction(action.name, run, api, signal)] : [],
-      ),
-    )
-    const timed = approvals.filter((action) => action !== undefined)
-    const connections = requests.flatMap((action) =>
-      action.kind === 'account_connection' ? [action.name] : [],
-    )
-    if (connections.length)
-      timed.push(...(await connectionActions(connections, run, api, scope, signal)))
-    return timed
-  } catch (error) {
-    if (!unavailable(error)) throw error
-    return []
-  }
-}
-
-/** An action, with when its tool started and that tool's identity. */
-interface TimedAction {
-  startedAt: bigint
-  tool: string
-  action: LiveAction
-}
-/** Earlier start first, then the lower tool identity, then the lower request. */
-const older = (a: TimedAction, b: TimedAction) =>
-  Number(a.startedAt > b.startedAt) - Number(a.startedAt < b.startedAt) ||
-  Number(a.tool > b.tool) - Number(a.tool < b.tool) ||
-  Number(a.action.request > b.action.request) - Number(a.action.request < b.action.request)
-
-/**
- * The approval `name`, when you can decide it and its tool in `run` still waits on
- * it. The approval names its tool, which says when it started.
- */
-async function approvalAction(
-  name: string,
-  run: string,
-  api: ActivityApi,
-  signal: AbortSignal,
-): Promise<TimedAction | undefined> {
-  try {
-    const approval = await api.activity.inspectApproval({ name }, { signal })
-    if (!approval.actionable || approval.run !== run) return undefined
-    const { invocation } = await api.activity.inspectInvocation(
-      { name: approval.invocation },
-      { signal },
-    )
-    if (!invocation || invocation.run !== run || !invocation.requiresAction) return undefined
-    return {
-      startedAt: invocation.startedAtUnixNanos,
-      tool: invocation.name,
-      action: { run, record: invocation.name, request: name },
-    }
-  } catch (error) {
-    if (!unavailable(error)) throw error
-    return undefined
-  }
-}
-
-/**
- * The pending connections among `names`, each timed by its oldest waiting tool.
- * Coral exposes neither a request time nor a tool link on a connection. Read
- * every child page: admission order cannot break equal-time ties across pages, and
- * several tools can share one connection. This scan runs only for pending,
- * readable connections; approvals use exact reads instead of scanning history.
- */
-async function connectionActions(
-  names: string[],
-  run: string,
-  api: ActivityApi,
-  scope: ActivityScope,
-  signal: AbortSignal,
-): Promise<TimedAction[]> {
-  const states = await Promise.all(
-    names.map(async (name) => {
-      try {
-        const value = await api.accounts.getAccountConnectionRequest({ name }, { signal })
-        return connectionState(value.state) === 'pending' ? [name] : []
-      } catch (error) {
-        if (!unavailable(error)) throw error
-        return []
-      }
-    }),
-  )
-  const pending = new Set(states.flat())
-  const found = new Map<string, TimedAction>()
-  for (let after = 0n; pending.size;) {
-    const value = await api.activity.browseRunEntries(
-      { name: run, after, pageSize: ACTION_SCAN_PAGE, scope },
-      { signal },
-    )
-    const waiting = value.entries.flatMap(({ record }) =>
-      record.case === 'invocation' && record.value.requiresAction ? [record.value] : [],
-    )
-    const read = await Promise.all(
-      waiting.map((tool) =>
-        api.activity.inspectInvocation({ name: tool.name }, { signal }).catch((error) => {
-          if (!unavailable(error)) throw error
-          return undefined
-        }),
-      ),
-    )
-    const candidates = waiting.flatMap((tool, index) =>
-      (read[index]?.requests.map(requestReferenceView) ?? []).flatMap((reference) =>
-        reference.kind === 'account_connection' && pending.has(reference.name)
-          ? [
-              {
-                startedAt: tool.startedAtUnixNanos,
-                tool: tool.name,
-                action: { run, record: run, request: reference.name },
-              },
-            ]
-          : [],
-      ),
-    )
-    for (const candidate of candidates) {
-      const previous = found.get(candidate.action.request)
-      if (!previous || older(candidate, previous) < 0)
-        found.set(candidate.action.request, candidate)
-    }
-    if (!value.hasMore || value.nextAfter <= after) break
-    after = value.nextAfter
-  }
-  return [...found.values()]
-}
-
-const missingBranch = (): ActivityBranch => ({ rows: [], next: '', unavailable: true })
-
-/**
  * Before continuous loading, a page link named the record next to it. The reader now
  * opens at an anchor, so the link redirects to the first record of the page it named.
  */
@@ -1554,6 +1075,312 @@ async function redirectToAnchor(request: Request, api: ActivityApi, scope: Activ
   throw redirect(`${url.pathname}${url.search}`, { headers: privateHeaders })
 }
 
+/** The most records a Coral page holds. */
+const TRACE_PAGE = 100
+/** The most records one trace reads, so a very long Task cannot hold a page load. */
+export const TRACE_LIMIT = 2000
+
+/**
+ * One top-level record, a Task or a standalone Run, and the records under it: a Task's tool
+ * calls and the Runs they started, and each Run's tool calls and Events, in Coral's order.
+ * It reads at most `limit` records; when more remain, the trace is not `complete`.
+ */
+export async function loadActivityTrace(
+  api: ActivityApi,
+  root: string,
+  {
+    scope,
+    signal,
+    limit = TRACE_LIMIT,
+  }: { scope: ActivityScope; signal?: AbortSignal; limit?: number },
+): Promise<ActivityTrace> {
+  const children: ActivityTrace['children'] = {}
+  let left = limit
+  // Coral reads a page size of 0 as its default, so a read never asks for fewer than one.
+  const pageSize = () => Math.min(TRACE_PAGE, left)
+  let complete = true
+  const missing: string[] = []
+  // A Run's pages. Its own row comes from the first page when the caller has none.
+  const readRun = async (name: string, row?: RunRow) => {
+    children[name] = []
+    let cursor = 0n
+    let more = true
+    while (more && left) {
+      const entries = await api.activity.browseRunEntries(
+        { name, after: cursor, pageSize: pageSize(), scope },
+        { signal },
+      )
+      row ??= {
+        ...runView(entries.run!),
+        kind: 'run',
+        submission: entries.submission ? interactionView(entries.submission) : undefined,
+      }
+      children[name].push(...runChildren(row, entries.entries))
+      left -= entries.entries.length
+      cursor = entries.nextAfter
+      more = entries.hasMore && entries.entries.length > 0
+    }
+    if (more) complete = false
+    return row
+  }
+  if (recordKind(root) === 'run') {
+    const run = await readRun(root)
+    return { root: run!, children, complete, unavailable: [] }
+  }
+  let after = ''
+  let task: Extract<ActivityRow, { kind: 'task' }> | undefined
+  let feedback: string | undefined
+  children[root] = []
+  do {
+    const value = await api.activity.inspectTask(
+      { name: root, after, pageSize: pageSize(), scope },
+      { signal },
+    )
+    task ??= { ...taskView(value.task!), kind: 'task' }
+    feedback ??= value.feedback
+    for (const interaction of value.interactions)
+      children[root].push(
+        interaction.run
+          ? { ...runView(interaction.run), kind: 'run', submission: interactionView(interaction) }
+          : toolRow(interaction),
+      )
+    left -= value.interactions.length
+    // A page with no records ends the read, so a cursor that never moves cannot hold it.
+    after = value.interactions.length ? value.nextAfter : ''
+    if (after && !left) complete = false
+  } while (after && left)
+  for (const row of children[root]) {
+    if (row.kind !== 'run') continue
+    if (!left) {
+      complete = false
+      break
+    }
+    try {
+      await readRun(row.name, row)
+    } catch (error) {
+      if (!unavailable(error)) throw error
+      delete children[row.name]
+      missing.push(row.name)
+    }
+  }
+  return {
+    root: task!,
+    children,
+    complete,
+    unavailable: missing,
+    ...(feedback && { feedback }),
+  }
+}
+
+/** A Run's tool calls and Events as rows, in Coral's order. */
+function runChildren(
+  row: Extract<ActivityRow, { kind: 'run' }>,
+  entries: BrowseRunEntriesResponse['entries'],
+) {
+  return entries.flatMap(({ record }): ActivityRow[] => {
+    if (record.case === 'invocation')
+      return [
+        { ...invocationView(record.value), task: row.task, actor: row.actor, kind: 'invocation' },
+      ]
+    if (record.case !== 'event') return []
+    const event = outputRow(
+      row.name,
+      {
+        sequence: record.value.sequence.toString(),
+        kind: record.value.kind,
+        contextImpactBytes: record.value.contextImpactBytes,
+        occurredAt: timestamp(record.value.occurredAtUnixNanos),
+        sourceLocation: record.value.sourceLocation,
+      },
+      row.task,
+      row.agent,
+    )
+    // A Run end that returned bytes is the Run's return value, which its detail reads.
+    if (record.value.kind === 'run.ended' && (record.value.contextImpactBytes ?? 0n) > 0n)
+      return [{ ...event, name: `${row.name}/final`, label: 'return value' }]
+    return [event]
+  })
+}
+
+/** The most calls one page reads on their own, to say why they waited or how they failed. */
+const CALL_READS = 20
+/** A wait this long is worth a reason; shorter ones are the call's admission. */
+const LONG_WAIT_MS = 1000
+
+type CallRow = Extract<ActivityRow, { kind: 'invocation' }>
+type CallFacts = {
+  waitedFor?: 'approval' | 'account connection'
+  error?: { code: string; message: string }
+}
+
+/** A read the page can do without: a refusal or a passing fault leaves its fact out. */
+async function optional<T>(read: () => Promise<T>) {
+  try {
+    return await read()
+  } catch (error) {
+    if (unavailable(error) || transient(error)) return undefined
+    throw error
+  }
+}
+const byStart = (a: ActivityRow, b: ActivityRow) =>
+  Date.parse(a.startedAt) - Date.parse(b.startedAt)
+
+/** A call still waiting on a person, or one that waited long before it ran. */
+const waitedLong = (row: CallRow) => {
+  const until = row.dispatchedAt ?? row.endedAt
+  if (until === null) return row.requiresAction
+  return Date.parse(until) - Date.parse(row.startedAt) >= LONG_WAIT_MS
+}
+
+/**
+ * The function each of the last `CALL_READS` saves in `rows` saved, its path where one of the
+ * next `CALL_READS` Runs after the first save called it, and whether such a Run succeeded after
+ * the save. A Run records the path of each function it called; a save records only the function.
+ */
+async function savedFunctions(api: ActivityApi, rows: ActivityRow[], signal: AbortSignal) {
+  const saves = rows
+    .filter(
+      (row) => row.kind === 'tool' && row.tool === 'save_function' && row.outcome === 'succeeded',
+    )
+    .slice(-CALL_READS)
+  const saved = new Map<string, string>()
+  await Promise.all(
+    saves.map(async (row) => {
+      const value = await optional(() =>
+        api.activity.inspectTaskInteraction({ name: row.name }, { signal }),
+      )
+      if (value?.evidence.case === 'savedFunction') saved.set(row.name, value.evidence.value)
+    }),
+  )
+  if (!saved.size) return undefined
+  const first = Math.min(
+    ...saves.filter((row) => saved.has(row.name)).map((row) => Date.parse(row.startedAt)),
+  )
+  const paths = new Map<string, string>()
+  // When each function was last called by a Run that succeeded.
+  const tested = new Map<string, number>()
+  await Promise.all(
+    rows
+      .filter((row) => row.kind === 'run' && Date.parse(row.startedAt) >= first)
+      .slice(0, CALL_READS)
+      .map(async (row) => {
+        const value = await optional(() =>
+          api.activity.inspectRun({ name: row.name, pageSize: 1 }, { signal }),
+        )
+        for (const linked of value?.linkedFunctions ?? []) {
+          paths.set(linked.savedFunction, linked.path)
+          if (row.kind === 'run' && row.state === 'succeeded')
+            tested.set(
+              linked.savedFunction,
+              Math.max(tested.get(linked.savedFunction) ?? 0, Date.parse(row.startedAt)),
+            )
+        }
+      }),
+  )
+  const startOf = new Map(saves.map((row) => [row.name, Date.parse(row.startedAt)]))
+  return Object.fromEntries(
+    [...saved].map(([name, savedFunction]) => [
+      name,
+      {
+        savedFunction,
+        ...(paths.has(savedFunction) && { path: paths.get(savedFunction)! }),
+        // A Run that succeeded after this save called the function it saved.
+        ...((tested.get(savedFunction) ?? 0) >= startOf.get(name)! && { tested: true }),
+      },
+    ]),
+  )
+}
+
+/**
+ * Reads the calls of `trace` that waited long or failed in Coral, newest first and at most
+ * `CALL_READS` of them: the request each waited on, and each failure's error. Then names the
+ * last call or Run that failed, with its error and how often that tool failed the same way
+ * before it. Last, names the function each save saved: by its path, where a later Run of the
+ * trace called it. A read Coral cannot give now leaves its fact out; the timeline still shows
+ * the record.
+ */
+async function traceFacts(
+  api: ActivityApi,
+  trace: ActivityTrace,
+  signal: AbortSignal,
+): Promise<Pick<ActivityTrace, 'failure' | 'waitedFor' | 'saves'>> {
+  const rows = Object.values(trace.children).flat().toSorted(byStart)
+  const calls = rows.filter((row): row is CallRow => row.kind === 'invocation')
+  const facts = new Map<string, CallFacts>()
+  await Promise.all(
+    calls
+      .filter((row) => row.outcome === 'coral_failure' || waitedLong(row))
+      .toReversed()
+      .slice(0, CALL_READS)
+      .map(async (row) => {
+        const value = await optional(() =>
+          api.activity.inspectInvocation({ name: row.name }, { signal }),
+        )
+        if (!value) return
+        const kinds = value.requests.map((request) => requestReferenceView(request).kind)
+        const result = invocationResultView(value)
+        facts.set(row.name, {
+          ...(kinds.includes('approval')
+            ? { waitedFor: 'approval' as const }
+            : kinds.includes('account_connection') && { waitedFor: 'account connection' as const }),
+          ...(result.kind === 'coral_failure' && {
+            error: { code: result.code, message: result.message },
+          }),
+        })
+      }),
+  )
+  const waitedFor = Object.fromEntries(
+    [...facts].flatMap(([name, fact]) => (fact.waitedFor ? [[name, fact.waitedFor]] : [])),
+  )
+  const result: Pick<ActivityTrace, 'failure' | 'waitedFor' | 'saves'> = Object.keys(waitedFor)
+    .length
+    ? { waitedFor }
+    : {}
+  const saves = await savedFunctions(api, rows, signal)
+  if (saves) result.saves = saves
+  const last = rows
+    .filter(
+      (row) =>
+        (row.kind === 'invocation' && row.outcome === 'coral_failure') ||
+        (row.kind === 'run' && row.state === 'failed'),
+    )
+    .at(-1)
+  if (last?.kind === 'invocation') {
+    const fact = facts.get(last.name)
+    if (!fact?.error) return result
+    const same = calls.filter((row) => {
+      const earlier = facts.get(row.name)?.error
+      return (
+        row !== last &&
+        Date.parse(row.startedAt) <= Date.parse(last.startedAt) &&
+        row.callPath === last.callPath &&
+        earlier?.code === fact.error!.code &&
+        earlier.message === fact.error!.message
+      )
+    }).length
+    result.failure = {
+      record: last.name,
+      label: last.callPath || last.tool,
+      ...fact.error,
+      ...(fact.waitedFor && { waitedFor: fact.waitedFor }),
+      ...(same > 0 && { sameBefore: same }),
+    }
+  } else if (last?.kind === 'run') {
+    const value = await optional(() =>
+      api.activity.inspectRun({ name: last.name, pageSize: 1 }, { signal }),
+    )
+    const terminal = value && runTerminalView(value)
+    if (terminal?.kind === 'failed')
+      result.failure = {
+        record: last.name,
+        label: last.submission?.intent || last.intent || last.name,
+        code: terminal.code,
+        message: terminal.message,
+      }
+  }
+  return result
+}
+
 export async function loadActivity(
   request: Request,
   api: ActivityApi,
@@ -1563,11 +1390,12 @@ export async function loadActivity(
     reading?: ActivityReadingWindow
     /** Where the reader navigates when it is embedded outside the Activity page. */
     listPath?: string
+    /** False skips the open root's records, for a list that shows no timeline. */
+    trace?: boolean
   },
 ): Promise<ActivityPage> {
   const query = new URL(request.url).searchParams
   const { signal } = request
-  const seen: LoadEvidence = { roots: new Map(), ends: new Map() }
   // Observation names its reading window directly; navigation names only an anchor.
   const reading = options.reading
   if (
@@ -1576,10 +1404,9 @@ export async function loadActivity(
     query.get(activityPageFetchKey) !== 'page'
   )
     await redirectToAnchor(request, api, options.scope)
-  const expanded = [...new Set(query.getAll('expand'))]
-  if (expanded.length > MAX_EXPANDED_RECORDS) invalid('Expand at most 20 records at a time')
-  for (const name of expanded)
-    if (!['task', 'run'].includes(recordKind(name))) invalid('Invalid expanded record')
+  const namedRoot = query.get('root')
+  if (namedRoot && !['task', 'run'].includes(recordKind(namedRoot)))
+    invalid('Invalid activity root')
   const rootAnchor = query.get('anchor')
   if (rootAnchor && !['task', 'run'].includes(recordKind(rootAnchor)))
     invalid('Invalid activity anchor')
@@ -1592,8 +1419,6 @@ export async function loadActivity(
   const { scope } = options
   const page: ActivityPage = {
     rows: [],
-    branches: {},
-    expanded,
     hasBefore: false,
     hasAfter: false,
     anchorUnavailable: false,
@@ -1605,53 +1430,9 @@ export async function loadActivity(
     selectedRow: null,
     listPath:
       options.listPath ?? (scope.agent ? `/${scope.agent}` : `/${scope.workspace}/activity`),
+    trace: null,
+    readAt: Date.now(),
   }
-  const automaticAnchors = new Map<string, string>()
-  const anchor = (name: string) =>
-    query.getAll(`cursor.${name}`).length
-      ? ''
-      : (query.get(`anchor.${name}`) ?? automaticAnchors.get(name) ?? '')
-  const viewport = (name: string) => {
-    const value = reading?.branches[name]
-    if (value) return { ...value, offset: BigInt(value.offset) }
-    const offset = query.get(`offset.${name}`)
-    if (offset === null || (anchor(name) && !query.has(`preceding.${name}`))) return undefined
-    const index = Number(offset)
-    const preceding = Number(query.get(`preceding.${name}`) ?? 0)
-    if (
-      !Number.isSafeInteger(index) ||
-      index < 0 ||
-      !Number.isInteger(preceding) ||
-      preceding < 0 ||
-      preceding >= ACTIVITY_CHILD_WINDOW
-    )
-      invalid('Invalid activity viewport')
-    return { offset: BigInt(index), anchor: anchor(name), preceding }
-  }
-  const taskPage = (name: string) =>
-    api.activity.inspectTask(
-      {
-        name,
-        after: viewport(name) ? '' : (query.getAll(`cursor.${name}`).at(-1) ?? ''),
-        pageSize: ACTIVITY_CHILD_WINDOW,
-        scope,
-        anchor: viewport(name) ? '' : anchor(name),
-        viewport: viewport(name),
-      },
-      { signal },
-    )
-  const runPage = (name: string) =>
-    api.activity.browseRunEntries(
-      {
-        name,
-        after: viewport(name) ? 0n : eventCursor(query.getAll(`cursor.${name}`).at(-1) ?? null),
-        pageSize: ACTIVITY_CHILD_WINDOW,
-        scope,
-        anchor: viewport(name) ? '' : anchor(name),
-        viewport: viewport(name),
-      },
-      { signal },
-    )
   // Exact selection does not borrow authority from the surrounding list.
   await selectedDetail(page, query, api, signal, !options.reading)
   if (
@@ -1664,26 +1445,6 @@ export async function loadActivity(
     page.unavailable = true
     page.initialRecord = undefined
     page.initialRequest = undefined
-  }
-  if (page.initialRecord && page.detail?.kind === 'invocation') {
-    const run = page.detail.invocation.run
-    automaticAnchors.set(run, page.initialRecord)
-    query.set(`anchor.${run}`, page.initialRecord)
-    for (const prefix of ['cursor', 'offset', 'preceding']) query.delete(`${prefix}.${run}`)
-    if (!page.expanded.includes(run) && page.expanded.length < MAX_EXPANDED_RECORDS)
-      page.expanded.push(run)
-  }
-  const liveAction = await oldestRunAction(page, query, api, scope, signal, Boolean(reading))
-  if (liveAction) page.liveAction = liveAction
-  // Initial direct links reveal only their bounded ancestor windows. Explicit tree/page state wins.
-  if (!query.has('tree') && !query.has('expand') && page.selectedRow) {
-    const row = page.selectedRow
-    const task = 'task' in row ? (row.task ?? '') : ''
-    const run = row.kind === 'invocation' || row.kind === 'output' ? row.run : ''
-    if (task) automaticAnchors.set(task, run || row.name)
-    if (run) automaticAnchors.set(run, row.name)
-    for (const name of [task, run])
-      if (name && !page.expanded.includes(name)) page.expanded.push(name)
   }
   try {
     const value = await api.activity.browseActivityRoots(
@@ -1698,7 +1459,6 @@ export async function loadActivity(
       },
       { signal },
     )
-    for (const root of value.roots) noteRoot(seen, root)
     page.rows = value.roots.flatMap(({ record }): ActivityRow[] => {
       if (record.case === 'task') return [{ ...taskView(record.value), kind: 'task' }]
       if (record.case === 'run') return [{ ...runView(record.value), kind: 'run' }]
@@ -1713,126 +1473,21 @@ export async function loadActivity(
     page.rows = []
     page.listUnavailable = true
   }
-  function executionBranch(
-    value: Awaited<ReturnType<typeof runPage>>,
-    row: Extract<ActivityRow, { kind: 'run' }>,
-  ): ActivityBranch {
-    return {
-      total: value.total.toString(),
-      offset: Number(value.offset),
-      anchorUnavailable: value.anchorUnavailable,
-      next: value.hasMore ? value.nextAfter.toString() : '',
-      unavailable: false,
-      rows: value.entries.flatMap(({ record }, index): ActivityRow[] => {
-        const position = Number(value.offset) + index
-        if (record.case === 'invocation')
-          return [
-            {
-              ...invocationView(record.value),
-              task: row.task,
-              actor: row.actor,
-              kind: 'invocation',
-              position,
-            },
-          ]
-        if (record.case !== 'event') return []
-        return [
-          {
-            ...outputRow(
-              row.name,
-              {
-                sequence: record.value.sequence.toString(),
-                kind: record.value.kind,
-                contextImpactBytes: record.value.contextImpactBytes,
-                occurredAt: timestamp(record.value.occurredAtUnixNanos),
-                sourceLocation: record.value.sourceLocation,
-              },
-              row.task,
-              row.agent,
-            ),
-            position,
-          },
-        ]
-      }),
-    }
-  }
-  for (const row of page.rows) {
-    if (row.kind !== 'task' || !page.expanded.includes(row.name)) continue
+  // The root the address names, else the selected record's, else the newest in the list.
+  const root = namedRoot || (page.selectedRow && rootOf(page.selectedRow)) || page.rows[0]?.name
+  // A further page of the list joins the list the reader shows; its timeline is already open.
+  const listPage = query.get(activityPageFetchKey) === 'page'
+  if (root && options.trace !== false && !listPage) {
     try {
-      const value = await taskPage(row.name)
-      noteEnd(seen, row.name, value)
-      page.branches[row.name] = {
-        total: value.total.toString(),
-        offset: Number(value.offset),
-        anchorUnavailable: value.anchorUnavailable,
-        rows: value.interactions.map((interaction, index): ActivityRow => ({
-          ...(interaction.run
-            ? {
-                ...runView(interaction.run),
-                kind: 'run' as const,
-                submission: interactionView(interaction),
-              }
-            : toolRow(interaction)),
-          position: Number(value.offset) + index,
-        })),
-        next: value.nextAfter,
-        unavailable: false,
-      }
+      const trace = await loadActivityTrace(api, root, { scope, signal })
+      page.trace = { ...trace, ...(await traceFacts(api, trace, signal)) }
     } catch (error) {
-      if (!unavailable(error)) throw error
-      page.branches[row.name] = missingBranch()
+      // The timeline is optional context: a refusal or a passing fault hides it and keeps the page.
+      if (unavailable(error)) page.traceUnavailable = 'refused'
+      else if (transient(error)) page.traceUnavailable = 'failed'
+      else throw error
     }
   }
-  // A snapshot of the records you watch holds only those, not the newest page.
-  const newestPage = reading && !reading.followRoot ? undefined : page.rows
-  const liveLatest = await liveLatestWork(page, newestPage, seen, query, api, scope, signal)
-  if (liveLatest) page.liveLatest = liveLatest
-  // Expanded executions stay represented even outside their Task's active child viewport.
-  // Their owning read supplies the authorized association and ordinal; references never pin content.
-  for (const name of page.expanded.filter((value) => recordKind(value) === 'run')) {
-    let row = [...page.rows, ...Object.values(page.branches).flatMap((branch) => branch.rows)].find(
-      (item): item is Extract<ActivityRow, { kind: 'run' }> =>
-        item.kind === 'run' && item.name === name,
-    )
-    if (
-      !row &&
-      !page.rows.some(
-        (parent) =>
-          parent.kind === 'task' &&
-          page.branches[parent.name] &&
-          !page.branches[parent.name].unavailable,
-      )
-    )
-      continue
-    try {
-      const value = await runPage(name)
-      if (!row) {
-        const parent = value.run?.task && page.branches[value.run.task]
-        if (!parent || parent.unavailable || !value.run || value.submission?.position === undefined)
-          continue
-        row = {
-          ...runView(value.run),
-          kind: 'run',
-          submission: interactionView(value.submission),
-          position: Number(value.submission.position),
-        }
-        parent.rows.push(row)
-        parent.rows.sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-      }
-      page.branches[name] = executionBranch(value, row)
-    } catch (error) {
-      if (!unavailable(error)) throw error
-      if (row) page.branches[name] = missingBranch()
-    }
-  }
-  // Emissions normalize the server request's tree state, not the browser URL. Preserve
-  // effective anchors so a later close/expand still carries an implicit direct-link window.
-  page.anchors = Object.fromEntries(
-    page.expanded.flatMap((parent) => {
-      const value = query.get(`anchor.${parent}`) ?? automaticAnchors.get(parent)
-      return value ? [[parent, value]] : []
-    }),
-  )
   return page
 }
 

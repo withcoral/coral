@@ -21,10 +21,14 @@ export function ContextImpact({ bytes, partial = false }: { bytes?: string; part
   )
 }
 
-/** A byte count rounded to three significant digits in the unit that reads best. */
-function formatSize(magnitude: bigint) {
+/**
+ * A byte count rounded to three significant digits in the unit that reads best, such as
+ * "26.1 kB". It has no sign.
+ */
+export function formatBytes(bytes: number | bigint) {
+  const magnitude = Math.abs(Number(bytes))
   // Round before selecting the unit so 999.5 kB becomes 1 MB, not 1,000 kB.
-  let size = Number(Number(magnitude).toPrecision(3))
+  let size = Number(magnitude.toPrecision(3))
   let unit = 0
   while (size >= 1000 && unit < units.length - 1) {
     size /= 1000
@@ -46,7 +50,7 @@ export function Bytes({ bytes }: { bytes: bigint }) {
       variant="primary"
       title={exactBytes(bytes)}
     >
-      {formatSize(bytes)}
+      {formatBytes(bytes)}
     </Typography.CodeSmallInline>
   )
 }
@@ -54,7 +58,7 @@ export function Bytes({ bytes }: { bytes: bigint }) {
 /** Rounded label, spoken meaning, one-word change, exact title and tone for net context bytes. */
 export function describeContextImpact(value: bigint, partial: boolean) {
   const magnitude = value < 0n ? -value : value
-  const formatted = formatSize(magnitude)
+  const formatted = formatBytes(magnitude)
   const direction = value < 0n ? 'saved' : 'added'
   const exact = `${exactBytes(magnitude)}${value === 0n ? '' : ` ${direction}`}`
   return {

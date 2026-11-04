@@ -1,4 +1,4 @@
-import type { ActivityBranch, ActivityPage, ActivityRow } from '@/views/activity/types'
+import type { ActivityPage, ActivityRow } from '@/views/activity/types'
 
 /** Records in each page that Reef asks Coral for. */
 export const ACTIVITY_PAGE_SIZE = 25
@@ -13,13 +13,12 @@ export type ActivityListDirection = 'older' | 'newer'
 
 /**
  * The top-level records (Tasks and standalone Runs) the reader has loaded, newest
- * first, with the branches of the expanded ones. This module owns how pages and
+ * first. This module owns how pages and
  * live snapshots join the list. The table renders `rows` without knowing how they
  * arrived, so a later backend can replace only this data source.
  */
 export interface ActivityList {
   rows: ActivityRow[]
-  branches: Record<string, ActivityBranch>
   /** Coral has newer records above the first loaded one. */
   hasNewer: boolean
   /** Coral has older records below the last loaded one. */
@@ -34,7 +33,6 @@ export interface ActivityList {
 export function openActivityList(page: ActivityPage): ActivityList {
   return {
     rows: page.rows,
-    branches: page.branches,
     hasNewer: page.hasBefore,
     hasOlder: page.hasAfter,
     anchorUnavailable: page.anchorUnavailable,
@@ -97,7 +95,6 @@ export function receivePage(
   return {
     ...list,
     rows: direction === 'older' ? [...kept, ...added] : [...added, ...kept],
-    branches: { ...list.branches, ...page.branches },
     hasOlder: direction === 'older' ? page.hasAfter : list.hasOlder,
     hasNewer: direction === 'newer' ? page.hasBefore : list.hasNewer,
     loading: null,
@@ -152,11 +149,7 @@ export function mergeActivityPage(
     if (rows[0]?.name === page.rows[0]!.name) hasNewer = page.hasBefore
     if (rows.at(-1)?.name === page.rows.at(-1)!.name) hasOlder = page.hasAfter
   }
-  const expanded = new Set(page.expanded)
-  const branches = Object.fromEntries(
-    Object.entries({ ...list.branches, ...page.branches }).filter(([name]) => expanded.has(name)),
-  )
-  return { ...list, rows, branches, hasNewer, hasOlder }
+  return { ...list, rows, hasNewer, hasOlder }
 }
 
 /** Whether reaching an end of the list loads the next page without a click. */
@@ -220,23 +213,23 @@ function running(row: ActivityRow) {
 
 /**
  * The loaded records near the viewport that Coral must keep current: those still
- * running, and expanded ones whose child windows follow the scroll. Ended records
- * keep their last loaded state. Nearest to the viewport first wins the bounded window.
+ * running, and the root whose timeline is open. Ended records keep their last loaded
+ * state. Nearest to the viewport first wins the bounded window.
  *
  * This window applies only away from the newest records. While the reader follows
  * them, Coral reads the newest page instead, so arrivals appear at the top.
  */
-export function liveRoots(list: ActivityList, visible: string[], expanded: string[]): string[] {
+export function liveRoots(list: ActivityList, visible: string[], open: string[]): string[] {
   const index = new Map(list.rows.map((row, at) => [row.name, at]))
   const shown = visible.flatMap((name) => (index.has(name) ? [index.get(name)!] : []))
   if (!shown.length) return []
   const first = Math.min(...shown)
   const last = Math.max(...shown)
-  const open = new Set(expanded)
+  const opened = new Set(open)
   const distance = (at: number) => (at < first ? first - at : at > last ? at - last : 0)
   return list.rows
     .flatMap((row, at) =>
-      distance(at) <= NEAR_VIEWPORT && (running(row) || open.has(row.name)) ? [at] : [],
+      distance(at) <= NEAR_VIEWPORT && (running(row) || opened.has(row.name)) ? [at] : [],
     )
     .toSorted((a, b) => distance(a) - distance(b) || a - b)
     .slice(0, MAX_LIVE_RECORDS)

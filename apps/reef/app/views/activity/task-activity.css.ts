@@ -1,4 +1,5 @@
 import { style } from '@vanilla-extract/css'
+import { theme } from '@/wax/theme/theme.css'
 
 /** The list, and the detail rail docked beside it on a wide screen, which keeps its own gap. */
 export const root = style({
@@ -7,6 +8,24 @@ export const root = style({
   minHeight: 0,
   minWidth: 0,
   flex: 1,
+})
+/** The list of Tasks and standalone Runs, beside the open one's timeline. */
+export const rootList = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  width: 300,
+  flex: 'none',
+  minHeight: 0,
+  paddingRight: 12,
+  borderRight: `1px solid ${theme.stroke.secondary}`,
+})
+/** The open root's timeline: it takes the width the list and the docked rail leave. */
+export const timeline = style({
+  display: 'flex',
+  flex: '1 1 0',
+  minHeight: 0,
+  minWidth: 0,
 })
 /** Everything but the docked rail: it shrinks when the rail docks. */
 export const main = style({
@@ -77,3 +96,35 @@ export const endActions = style({
 
 /** A card that is a link: it reads as the card, not as underlined link text. */
 export const cardLink = style({ color: 'inherit', textDecoration: 'none' })
+
+/** A root's start and its chips, on the line under its name. */
+export const rootFacts = style({ display: 'inline-flex', alignItems: 'center', gap: 6 })
+
+/** The agent's own summary of a Task, leading its panel. */
+export const agentSummary = style({ display: 'flex', flexDirection: 'column', gap: 4 })
+
+/** The open timeline's run picker: a button, and the list under it when open. */
+export const recentRuns = style({ position: 'relative', flex: 'none' })
+export const recentPanel = style({
+  position: 'absolute',
+  insetInlineEnd: 0,
+  top: 'calc(100% + 6px)',
+  zIndex: 20,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  width: 360,
+  maxWidth: '80vw',
+  maxHeight: '70vh',
+  padding: 8,
+  borderRadius: 8,
+  border: `1px solid ${theme.stroke.primary}`,
+  background: theme.surface.floating,
+  boxShadow: theme.elevation.e2,
+})
+
+/** A call's total, running and waiting time, side by side. */
+export const callFigures = style({ display: 'flex', gap: 24 })
+export const callFigure = style({ display: 'flex', flexDirection: 'column' })
+/** What a call returned, under its heading. */
+export const callResponse = style({ display: 'flex', flexDirection: 'column', gap: 8 })

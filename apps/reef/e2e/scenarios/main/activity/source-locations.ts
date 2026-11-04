@@ -140,10 +140,7 @@ export async function sourceLocations(context: TestContext) {
     /** Opens `record` and waits until its own stored line shows highlighted in its document. */
     const highlights = (kind: string, record: Shown) =>
       step(`Highlight the ${kind} at its stored line`, async () => {
-        const query = new URLSearchParams()
-        query.append('expand', task)
-        query.append('expand', run)
-        query.set('record', record.name)
+        const query = new URLSearchParams({ root: task, record: record.name })
         await page.goto(`/workspaces/${workspace}/activity?${query}`)
         await expect
           .poll(async () => {

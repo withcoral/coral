@@ -272,8 +272,8 @@ function taskPage(row: ReturnType<typeof task>, feedback?: string) {
   return panelPage(row, { kind: 'task', task: row, ...(feedback !== undefined && { feedback }) })
 }
 /**
- * The Task's Context row leads its list and matches its table cell exactly: the same
- * text, meaning and colour. Savings read green and costs red, each with a sign.
+ * The Task's Context row leads its list with its exact text and meaning. Savings read green
+ * and costs red, each with a sign.
  */
 function contextStory(
   story: Story,
@@ -291,11 +291,8 @@ function contextStory(
       await expect(terms.slice(0, 2)).toEqual(['Context', 'Started'])
       const shown = within(opened).getByLabelText(expected.meaning)
       await expect(shown).toHaveTextContent(expected.label)
-      const cell = within(body.getByRole('table')).getByLabelText(expected.meaning)
-      const color = (element: Element) => getComputedStyle(element).color
-      await expect(color(shown)).toBe(color(cell))
-      const [red, green] = color(shown)
-        .match(/\d+(\.\d+)?/g)!
+      const [red, green] = getComputedStyle(shown)
+        .color.match(/\d+(\.\d+)?/g)!
         .map(Number)
       if (expected.tone === 'saved') await expect(green).toBeGreaterThan(red)
       if (expected.tone === 'added') await expect(red).toBeGreaterThan(green)

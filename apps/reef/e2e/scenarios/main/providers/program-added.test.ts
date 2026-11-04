@@ -209,9 +209,10 @@ test("A workspace owner's Program prepares a confidential OAuth application, and
       const entries = await api.activity.browseRunEntries({ name: run, pageSize: 25 })
       const invocation = entries.entries.find((entry) => entry.record.case === 'invocation')!.record
       if (invocation.case !== 'invocation') throw new Error('Expected the addProvider call')
-      const query = new URLSearchParams({ tree: '1', record: invocation.value.name })
-      query.append('expand', `${workspace.name}/tasks/${runner.taskId()}`)
-      query.append('expand', run)
+      const query = new URLSearchParams({
+        root: `${workspace.name}/tasks/${runner.taskId()}`,
+        record: invocation.value.name,
+      })
       await page.goto(`/${workspace.name}/activity?${query}`)
       // The exact call shows, field by field, and none of it is the secret.
       expect(await shownArguments(page.getByRole('dialog'))).toMatchObject({

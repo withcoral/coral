@@ -1,9 +1,9 @@
 /** @vitest-environment happy-dom */
-import { act, screen, within } from '@testing-library/react'
+import { act, fireEvent, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { markupRoute, renderLivePage, renderRoute } from '@/test-support/route'
-import { Activity, duration } from './activity'
+import { Activity } from './activity'
 import { ActivityArchivedContext } from './live'
 import { ProviderMarksContext } from './call-tool'
 import { ActionReviewSession } from '../actions/review'
@@ -124,8 +124,8 @@ it.each(['program.logged', 'program.emitted', 'run.started'])(
   },
 )
 
-// Catches: a call that names its tool by the full Call Path while the workspace still has its
-// provider, or a call whose provider is gone that loses its kind and its path.
+// Catches: a call in the timeline that names its tool by the full Call Path while the workspace
+// still has its provider, or a call whose provider is gone that loses its kind and its path.
 it.each([
   [
     'its provider',
@@ -142,20 +142,24 @@ it.each([
 ])('names a call by the logo and tool of %s', (_, providers, name, kindShown) => {
   renderRoute(
     <ProviderMarksContext value={providers}>
-      <Activity page={activityPage({ rows: [invocation] })} />
+      <Activity
+        page={activityPage({
+          rows: [run],
+          trace: {
+            root: run,
+            children: { [run.name]: [invocation] },
+            complete: true,
+            unavailable: [],
+          },
+        })}
+      />
     </ProviderMarksContext>,
     { entry: '/activity' },
   )
-  expect(screen.getByRole('link', { name })).toBeInTheDocument()
-  expect(screen.getByTitle(invocation.callPath)).toBeInTheDocument()
-  expect(screen.queryAllByRole('img', { name: 'tool' })).toHaveLength(kindShown ? 1 : 0)
-})
-
-it('marks only the tool call as needing action, never its containing Run', () => {
-  expect(render({ ...run, state: 'running', requiresAction: true })).not.toContain('needs action')
-  expect(render({ ...invocation, state: 'pending', requiresAction: true })).toContain(
-    'needs action',
-  )
+  const timeline = within(screen.getByRole('table', { name: 'Timeline records' }))
+  expect(timeline.getByRole('link', { name })).toBeInTheDocument()
+  expect(timeline.getByTitle(invocation.callPath)).toBeInTheDocument()
+  expect(timeline.queryAllByRole('img', { name: 'tool' })).toHaveLength(kindShown ? 1 : 0)
 })
 
 it('retains the selected review and draft across a live refresh, but conceals access loss', async () => {
@@ -266,29 +270,6 @@ it.each<[string, ActivityViewProps['more'], boolean, string[]]>([
   ).toEqual(links)
 })
 
-// Catches: a glimpse growing past its few roots when one of them is expanded.
-it.each<[string, ActivityViewProps['more'], string[]]>([
-  ['a glimpse', { to: '/w/activity', label: 'View all activity', roots: 5 }, ['Find invoices']],
-  ['the full list', undefined, ['Find invoices', 'Find tools']],
-])('%s lists child records only when it pages', (_, more, records) => {
-  renderRoute(
-    <Activity
-      page={activityPage({
-        rows: [goal],
-        expanded: [goal.name],
-        branches: {
-          [goal.name]: { rows: [tool], next: '', unavailable: false },
-        },
-      })}
-      more={more}
-    />,
-    { entry: '/activity' },
-  )
-  const shown = screen.getAllByRole('link').map((link) => link.textContent)
-  expect(shown.filter((text) => text !== 'View all activity')).toEqual(records)
-  expect(screen.queryAllByRole('button', { name: /record$/ })).toHaveLength(more ? 0 : 1)
-})
-
 // Catches: a glimpse loading older records, or keeping newer ones a live update merged in.
 it('a glimpse lists only its latest roots and never loads more', () => {
   const control = {
@@ -322,7 +303,7 @@ it.each<[string, ActivityViewProps['more'], string]>([
     `/${workspace}/activity`,
   ],
   ['the full list', undefined, `/${workspace}`],
-])('%s opens a clicked record where it lists in full', async (_, more, pathname) => {
+])('%s opens a clicked root where it lists in full', async (_, more, pathname) => {
   const user = userEvent.setup()
   // The Overview lists its glimpse at the Workspace's own path.
   const { router } = renderRoute(
@@ -333,57 +314,7 @@ it.each<[string, ActivityViewProps['more'], string]>([
   expect(new URL(link.getAttribute('href')!, 'http://reef').pathname).toBe(pathname)
   await user.click(link)
   expect(router.state.location.pathname).toBe(pathname)
-  expect(new URLSearchParams(router.state.location.search).get('record')).toBe(goal.name)
-})
-
-// An expanded record with no children says why, in terms of its own lifecycle.
-// A Run in a state Reef does not know may still be running, so its copy claims neither.
-it.each<[string, ActivityRow, string]>([
-  ['ended Run', run, 'This execution called no tools.'],
-  [
-    'running Run',
-    { ...run, state: 'running', endedAt: null },
-    'This execution has not called a tool yet.',
-  ],
-  [
-    'Run in an unknown state',
-    { ...run, state: 'unknown', endedAt: null },
-    'This execution has no recorded tools.',
-  ],
-  ['ended Task', goal, 'This task made no calls.'],
-  ['open Task', { ...goal, outcome: 'open', endedAt: null }, 'This task has not made a call yet.'],
-])('an expanded %s with no children explains why', (_name, row, copy) => {
-  renderRoute(
-    <Activity
-      page={activityPage({
-        rows: [row],
-        expanded: [row.name],
-        branches: { [row.name]: { rows: [], next: '', unavailable: false } },
-      })}
-    />,
-    { entry: '/activity' },
-  )
-  expect(screen.getByRole('cell', { name: copy })).toBeInTheDocument()
-})
-
-it('an unavailable expanded record heads a group whose only child is the status row', () => {
-  renderRoute(
-    <Activity
-      page={activityPage({
-        rows: [goal],
-        expanded: [goal.name],
-        branches: { [goal.name]: { rows: [], next: '', unavailable: true } },
-      })}
-    />,
-    { entry: '/activity' },
-  )
-  // The day heading, then the record heading, then its one child.
-  const rows = within(screen.getByRole('rowgroup', { name: 'Fri 18 Sep 2026' })).getAllByRole('row')
-  expect(rows).toHaveLength(3)
-  expect(rows[1]).toHaveAttribute('aria-level', '2')
-  expect(within(rows[1]!).getByRole('link', { name: goal.intent })).toBeInTheDocument()
-  expect(within(rows[1]!).getByRole('button', { name: 'Collapse record' })).toBeInTheDocument()
-  expect(rows[2]).toHaveTextContent('This history is unavailable.')
+  expect(new URLSearchParams(router.state.location.search).get('root')).toBe(goal.name)
 })
 
 const dayRecords = (label: string) =>
@@ -393,32 +324,29 @@ const dayRecords = (label: string) =>
 
 // The clock never decides a heading: a record started "today" still shows its date.
 // The midnight split itself is checked in the browser (DayBoundary story).
-it('labels a day by its UTC date, even today, and shows the full instant on hover', () => {
+// Catches: a day labelled "Today" or in local time, or a root's start shown without the
+// exact instant, now that the list leaves the start to the open root's timeline header.
+it('labels a day by its UTC date, even today, and the open root shows its full instant on hover', () => {
   vi.useFakeTimers({ toFake: ['Date'] })
   onTestFinished(() => {
     vi.useRealTimers()
   })
   vi.setSystemTime('2026-09-30T00:30:00.000Z')
+  const root = { ...goal, startedAt: '2026-09-30T00:04:00.000Z' }
   renderRoute(
     <Activity
       page={activityPage({
-        rows: [{ ...goal, startedAt: '2026-09-30T00:04:00.000Z' }],
+        rows: [root],
+        trace: { root, children: {}, complete: true, unavailable: [] },
       })}
     />,
     { entry: '/activity' },
   )
+  const header = within(screen.getByRole('region', { name: 'Timeline' }))
+  expect(header.getByText('00:04:00')).toHaveAttribute('title', '2026-09-30 00:04:00 UTC')
+  // With a timeline open, the list opens from its title.
+  fireEvent.click(screen.getByRole('button', { name: /^Recent runs/ }))
   expect(dayRecords('Wed 30 Sep 2026')).toEqual([goal.intent])
-  expect(screen.getByText('00:04:00')).toHaveAttribute('title', '2026-09-30 00:04:00 UTC')
-})
-
-it('names the day of a selected record that sits outside every day group', () => {
-  renderRoute(<Activity page={activityPage({ rows: [], selectedRow: goal })} />, {
-    entry: '/activity',
-  })
-  const row = within(screen.getByRole('table', { name: 'Activity records' }))
-    .getAllByRole('row')
-    .find((candidate) => within(candidate).queryByText('Outside this workspace or page:'))!
-  expect(within(row).getByText('Fri 18 Sep 2026')).toBeInTheDocument()
 })
 
 // Catches: a "Reveal record" link below the detail of a record the list does not show. Its
@@ -438,76 +366,6 @@ it('ends the detail of a record outside the list without a link back to it', () 
   const drawer = screen.getByRole('dialog', { name: 'Activity details' })
   expect(within(drawer).getByRole('heading', { level: 2, name: goal.intent })).toBeInTheDocument()
   expect(within(drawer).queryByRole('link', { name: 'Reveal record' })).toBeNull()
-})
-
-const headingLevel = (name: string) =>
-  screen
-    .getAllByRole('row')
-    .find((row) => within(row).queryByRole('link', { name }))!
-    .getAttribute('aria-level')
-
-// Wax pins each heading under its parent's; Activity nests a Run's group in its Task's.
-it('nests an expanded Run under its expanded Task, under the day', () => {
-  renderRoute(
-    <Activity
-      page={activityPage({
-        rows: [goal],
-        expanded: [goal.name, run.name],
-        branches: {
-          [goal.name]: { rows: [run], next: '', unavailable: false },
-          [run.name]: { rows: [invocation], next: '', unavailable: false },
-        },
-      })}
-    />,
-    { entry: '/activity' },
-  )
-  expect(headingLevel(goal.intent)).toBe('2')
-  expect(headingLevel('you')).toBe('3')
-  expect(screen.getByRole('rowgroup', { name: 'Fri 18 Sep 2026' })).toContainElement(
-    screen.getByRole('link', { name: invocation.callPath }),
-  )
-})
-
-// Only top-level records are grouped by day: a child stays with its parent.
-it('keeps a child that started after midnight under its parent and its day', () => {
-  const parent = { ...goal, startedAt: '2026-09-28T23:58:00.000Z' }
-  const child = { ...run, startedAt: '2026-09-29T00:04:00.000Z' }
-  renderRoute(
-    <Activity
-      page={activityPage({
-        rows: [parent],
-        expanded: [parent.name],
-        branches: {
-          [parent.name]: { rows: [child], next: '', unavailable: false },
-        },
-      })}
-    />,
-    { entry: '/activity' },
-  )
-  expect(screen.queryByRole('rowgroup', { name: 'Tue 29 Sep 2026' })).toBeNull()
-  expect(dayRecords('Mon 28 Sep 2026')).toEqual([goal.intent, 'you'])
-  expect(headingLevel(goal.intent)).toBe('2')
-  expect(screen.getByText('00:04:00')).toHaveAttribute('title', '2026-09-29 00:04:00 UTC')
-})
-
-// Catches: a short call that reads "0s", a unit that shows time that has not passed yet, or
-// a counting duration whose last digit sits still between its one-second ticks.
-it.each([
-  [0, '0ms', '0s'],
-  [400_000, '<1ms', '0s'],
-  [263_900_000, '263ms', '0s'],
-  [999_999_999, '999ms', '0s'],
-  [1_000_000_000, '1.0s', '1s'],
-  [2_490_000_000, '2.4s', '2s'],
-  [9_999_999_999, '9.9s', '9s'],
-  [10_000_000_000, '10s', '10s'],
-  [59_999_999_999, '59s', '59s'],
-  [263_001_000_000, '4m 23s', '4m 23s'],
-  [3_600_000_000_000, '1h 0m', '1h 0m'],
-])('shows %d ns as %s, or %s while it counts', (nanos, ended, counting) => {
-  expect(duration(nanos)).toBe(ended)
-  expect(duration(String(nanos))).toBe(ended)
-  expect(duration(nanos, { counting: true })).toBe(counting)
 })
 
 const line = (number: number) => document.querySelector(`[data-line="${number}"]`)
@@ -550,13 +408,11 @@ it('keeps one accepted-source split while the selection moves within its Run', a
         <Activity
           page={activityPage({
             rows: [run],
-            expanded: [run.name],
-            branches: {
-              [run.name]: {
-                rows: [first, second],
-                next: '',
-                unavailable: false,
-              },
+            trace: {
+              root: run,
+              children: { [run.name]: [first, second] },
+              complete: true,
+              unavailable: [],
             },
             selected: row?.name ?? null,
             selectedRow: row,

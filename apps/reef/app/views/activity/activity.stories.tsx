@@ -5,7 +5,6 @@ import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { resizeViewport } from '../../../.storybook/browser'
 import { Activity } from './activity'
-import { ProviderMarksContext } from './call-tool'
 import { ActionReviewSession } from '../actions/review'
 import { stored } from './discovery/fixtures'
 import { discoveryView, functionTarget } from './discovery/response'
@@ -15,6 +14,7 @@ import { freezeStoryClock, minutesAfterStoryNow } from './story-clock'
 import type {
   ActivityPage,
   ActivityRow,
+  ActivityTrace,
   DiscoveryContext,
   InvocationDetail,
   RunDetail,
@@ -246,6 +246,18 @@ const detail: InvocationDetail = {
   requestUnavailable: false,
   context: approvalContext,
 }
+/** A timeline from each parent's records. Its root is the Task, unless the records are one Run's. */
+function traceOf(
+  children: Record<string, { rows: ActivityRow[]; [key: string]: unknown }>,
+  root: ActivityTrace['root'] = goal,
+): ActivityTrace {
+  return {
+    root,
+    children: Object.fromEntries(Object.entries(children).map(([name, { rows }]) => [name, rows])),
+    complete: true,
+    unavailable: [],
+  }
+}
 const page: ActivityPage = {
   rows: [
     goal,
@@ -256,45 +268,47 @@ const page: ActivityPage = {
     },
     standalone,
   ],
-  branches: {
-    [task]: {
-      rows: [
-        tool('search', 'search', 'succeeded', 'Find billing tools'),
-        tool('describe', 'describe', 'succeeded', 'Inspect invoice inputs and response'),
-        tool('rejected', 'exec', 'rejected', 'Prepare the reminder program'),
-        execution,
-      ],
-      next: '',
-      unavailable: false,
-    },
-    [run]: {
-      rows: [
-        {
-          ...call,
-          name: `${workspace}/invocations/list`,
-          callPath: 'billing.listInvoices',
-          sourceLocation: programAt('coral.providers.billing.listInvoices', program),
-          state: 'ended',
-          outcome: 'upstream_outcome',
-          requiresAction: false,
-        },
-        call,
-        {
-          ...call,
-          name: `${workspace}/invocations/uncertain`,
-          callPath: 'crm.getOwner',
-          sourceLocation: programAt('coral.providers.crm.getOwner', program),
-          state: 'ended',
-          outcome: 'indeterminate',
-          requiresAction: false,
-        },
-        emission,
-      ],
-      next: '',
-      unavailable: false,
-    },
+  trace: {
+    ...traceOf({
+      [task]: {
+        rows: [
+          tool('search', 'search', 'succeeded', 'Find billing tools'),
+          tool('describe', 'describe', 'succeeded', 'Inspect invoice inputs and response'),
+          tool('rejected', 'exec', 'rejected', 'Prepare the reminder program'),
+          execution,
+        ],
+        next: '',
+        unavailable: false,
+      },
+      [run]: {
+        rows: [
+          {
+            ...call,
+            name: `${workspace}/invocations/list`,
+            callPath: 'billing.listInvoices',
+            sourceLocation: programAt('coral.providers.billing.listInvoices', program),
+            state: 'ended',
+            outcome: 'upstream_outcome',
+            requiresAction: false,
+          },
+          call,
+          {
+            ...call,
+            name: `${workspace}/invocations/uncertain`,
+            callPath: 'crm.getOwner',
+            sourceLocation: programAt('coral.providers.crm.getOwner', program),
+            state: 'ended',
+            outcome: 'indeterminate',
+            requiresAction: false,
+          },
+          emission,
+        ],
+        next: '',
+        unavailable: false,
+      },
+    }),
+    waitedFor: { [call.name]: 'approval' },
   },
-  expanded: [task, run],
   hasBefore: false,
   hasAfter: false,
   anchorUnavailable: false,
@@ -307,9 +321,11 @@ const page: ActivityPage = {
   listPath: '/workspaces/finance/activity',
 }
 const meta = {
-  title: 'Activity/Hierarchy',
+  title: 'Activity/Page',
   component: Activity,
   args: { page },
+  // Running work runs the timeline to now, so every story reads the same now.
+  beforeEach: freezeStoryClock,
   parameters: { layout: 'fullscreen', chromatic: { viewports: [390, 1440] } },
   decorators: [
     (Story, context) => {
@@ -353,18 +369,6 @@ export const MixedHistory: Story = {
   },
 }
 /** The live toggle sits right after the list heading, and Tab moves from it to the table. */
-export const LiveToggleOrder: Story = {
-  args: { page: { ...page, selected: null, selectedRow: null, detail: null } },
-  parameters: { initialEntry: '/workspaces/finance/activity' },
-  play: async ({ canvas, userEvent }) => {
-    const heading = await canvas.findByRole('heading', { name: 'Your recent activity' })
-    const live = canvas.getByRole('button', { name: 'Live' })
-    await expect(heading.nextElementSibling).toContainElement(live)
-    live.focus()
-    await userEvent.tab()
-    await expect(canvas.getByRole('table', { name: 'Activity records' })).toHaveFocus()
-  },
-}
 export const CompletionFeedback: Story = {
   args: {
     page: {
@@ -390,15 +394,9 @@ export const CompletionFeedback: Story = {
     for (const footer of dialog.querySelectorAll('footer')) await expect(footer).not.toBeVisible()
   },
 }
-export const StreamingHistory: Story = {
-  args: {
-    page: { ...page, selected: null, selectedRow: null, detail: null },
-    live: { connected: true, followRoot: true, atStart() {}, viewport() {} },
-  },
-}
 export const Empty: Story = {
   args: {
-    page: { ...page, rows: [], branches: {}, selected: null, selectedRow: null, detail: null },
+    page: { ...page, rows: [], trace: null, selected: null, selectedRow: null, detail: null },
     connect: { endpoint: 'https://coral.example/mcp/finance' },
   },
 }
@@ -407,72 +405,25 @@ export const ObservationUnavailable: Story = {
     page: {
       ...page,
       rows: [],
-      branches: {},
+      trace: null,
       selectedRow: null,
       detail: null,
       unavailable: true,
       listUnavailable: true,
     },
-    live: { connected: false, followRoot: false, atStart() {}, viewport() {} },
+    live: { connected: false, followRoot: false, atStart() {} },
   },
 }
-export const ContextImpact: Story = {
+export const TwoLineRows: Story = {
   args: {
     page: {
       ...page,
       rows: [
-        { ...goal, contextImpactBytes: '-1970000' },
-        { ...standalone, contextImpactBytes: '0' },
         {
           ...goal,
-          name: `${task}-running`,
-          contextImpactBytes: '55500',
-          contextImpactPartial: true,
+          intent: 'Find overdue invoices and notify their owners. '.repeat(12),
+          contextImpactBytes: '-26100',
         },
-        { ...goal, name: `${task}-unavailable` },
-      ],
-      selected: null,
-      selectedRow: null,
-      detail: null,
-      branches: {
-        [task]: {
-          rows: [
-            { ...tool('search', 'search', 'succeeded'), contextImpactBytes: '50200' },
-            { ...tool('describe', 'describe', 'succeeded'), contextImpactBytes: '5300' },
-            {
-              ...execution,
-              state: 'succeeded',
-              requiresAction: false,
-              contextImpactBytes: '-2025500',
-            },
-          ],
-          next: '',
-          unavailable: false,
-        },
-        [run]: {
-          rows: [
-            {
-              ...call,
-              state: 'ended',
-              outcome: 'upstream_outcome',
-              requiresAction: false,
-              contextImpactBytes: '-2040000',
-            },
-          ],
-          next: '',
-          unavailable: false,
-        },
-      },
-    },
-  },
-}
-
-export const SingleLineRows: Story = {
-  args: {
-    page: {
-      ...page,
-      rows: [
-        { ...goal, intent: 'Find overdue invoices and notify their owners. '.repeat(12) },
         ...page.rows.slice(1),
       ],
       detail: null,
@@ -480,379 +431,43 @@ export const SingleLineRows: Story = {
       selectedRow: null,
     },
   },
-  play: async ({ canvasElement }) => {
+  // Catches: a long name that grows its row, or a row that hides what its root cost: its
+  // duration and the context it saved or added go under the name, as chips.
+  play: async ({ canvasElement, userEvent }) => {
     const canvas = within(canvasElement)
+    // With a timeline open, the list opens from its title.
+    await userEvent.click(canvas.getByRole('button', { name: /^Recent runs 3 · 1 failed/ }))
     const table = canvas.getByRole('table', { name: 'Activity records' })
     for (const row of within(table).getAllByRole('row')) {
-      await expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(44)
+      await expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(60)
     }
-    const label = within(table).getByRole('link', {
+    const link = within(table).getByRole('link', {
       name: 'Find overdue invoices and notify their owners. '.repeat(12).trim(),
-    }).parentElement!
+    })
+    const label = link.parentElement!
     await expect(label.scrollWidth).toBeGreaterThan(label.clientWidth)
     await expect(getComputedStyle(label).textOverflow).toBe('ellipsis')
+    const row = within(link.closest('[role="row"]') as HTMLElement)
+    const time = row.getByText('14:02:00')
+    await expect(time.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      label.getBoundingClientRect().bottom,
+    )
+    await expect(row.getByText('26.1 kB saved')).toBeInTheDocument()
+    const standaloneRow = within(
+      within(table).getByText('you').closest('[role="row"]') as HTMLElement,
+    )
+    await expect(standaloneRow.getByText('4m 2s')).toBeVisible()
     await expect(within(table).queryByRole('img', { name: /^workspace:/ })).not.toBeInTheDocument()
     await expect(within(table).queryByText('Finance')).not.toBeInTheDocument()
-    await expect(within(table).getByRole('img', { name: 'search' })).toBeVisible()
-    await expect(within(table).getByRole('link', { name: 'Find billing tools' })).toBeVisible()
-    await expect(within(table).getByRole('link', { name: 'Send invoice reminders' })).toBeVisible()
-  },
-}
-export const StatusMarkers: Story = {
-  args: {
-    page: {
-      ...page,
-      rows: [
-        { ...goal, outcome: 'success', endedAt: at },
-        {
-          ...goal,
-          name: `${task}-failed`,
-          intent: 'Locate the missing account',
-          outcome: 'failure',
-          endedAt: at,
-        },
-        { ...standalone, state: 'succeeded' },
-      ],
-      branches: {
-        [task]: {
-          rows: [{ ...execution, state: 'succeeded', requiresAction: false }],
-          next: '',
-          unavailable: false,
-        },
-        [run]: {
-          rows: [
-            {
-              ...call,
-              state: 'ended',
-              outcome: 'upstream_outcome',
-              requiresAction: false,
-              callPath: 'coral.providers.linear.listIssues',
-              // A list layout only; nothing opens it beside a program.
-              sourceLocation: undefined,
-            },
-            {
-              ...call,
-              name: `${invocation}-failed`,
-              state: 'ended',
-              outcome: 'coral_failure',
-              requiresAction: false,
-              callPath: 'coral.providers.linear.updateIssue',
-              // A list layout only; nothing opens it beside a program.
-              sourceLocation: undefined,
-            },
-            {
-              ...call,
-              name: `${invocation}-uncertain`,
-              state: 'ended',
-              outcome: 'indeterminate',
-              requiresAction: false,
-              callPath: 'coral.providers.linear.createIssue',
-              // A list layout only; nothing opens it beside a program.
-              sourceLocation: undefined,
-            },
-          ],
-          next: '',
-          unavailable: false,
-        },
-      },
-      detail: null,
-      selected: null,
-      selectedRow: null,
-    },
-  },
-}
-/** While the workspace has a call's provider, the call names its tool under that provider's
- * logo. A call whose provider is gone keeps its kind and full Call Path. */
-export const ProviderTools: Story = {
-  args: {
-    page: {
-      ...StatusMarkers.args!.page!,
-      branches: {
-        ...StatusMarkers.args!.page!.branches,
-        [run]: {
-          ...StatusMarkers.args!.page!.branches[run]!,
-          rows: [
-            ...StatusMarkers.args!.page!.branches[run]!.rows,
-            {
-              ...call,
-              name: `${invocation}-retired`,
-              state: 'ended',
-              outcome: 'upstream_outcome',
-              requiresAction: false,
-              // No provider of the workspace owns it now.
-              callPath: 'coral.providers.retired.lookup',
-              sourceLocation: undefined,
-            },
-          ],
-        },
-      },
-    },
-  },
-  decorators: [
-    (Story) => (
-      <ProviderMarksContext value={[{ callRoot: 'coral.providers.linear', displayName: 'Linear' }]}>
-        <Story />
-      </ProviderMarksContext>
-    ),
-  ],
-  play: async ({ canvas }) => {
-    const table = canvas.getByRole('table', { name: 'Activity records' })
-    // A call of a provider the workspace has: its logo and tool, its full Call Path on hover.
-    await expect(within(table).getByRole('link', { name: 'Linear listIssues' })).toBeVisible()
-    await expect(within(table).getByTitle('coral.providers.linear.listIssues')).toBeVisible()
-    // A call whose provider is gone: its kind and its full Call Path.
+    // A Task's calls show in its timeline, not under its row.
+    const timeline = canvas.getByRole('table', { name: 'Timeline records' })
+    await expect(within(timeline).getByRole('img', { name: 'search' })).toBeVisible()
+    await expect(within(timeline).getByRole('link', { name: 'Find billing tools' })).toBeVisible()
     await expect(
-      within(table).getByRole('link', { name: 'coral.providers.retired.lookup' }),
+      within(timeline).getByRole('link', { name: 'Send invoice reminders' }),
     ).toBeVisible()
-    await expect(within(table).getAllByRole('img', { name: 'tool' })).toHaveLength(1)
   },
 }
-export const Collapsed: Story = {
-  args: {
-    page: {
-      ...page,
-      branches: {},
-      expanded: [],
-      detail: null,
-      selected: null,
-      selectedRow: null,
-    },
-  },
-}
-export const ScrollablePage: Story = {
-  args: {
-    page: {
-      ...page,
-      rows: Array.from({ length: 25 }, (_, i) => ({
-        ...goal,
-        name: `${task}-${i}`,
-        intent: `Task ${i + 1}`,
-      })),
-      branches: {},
-      expanded: [],
-      detail: null,
-      selected: null,
-      selectedRow: null,
-      hasAfter: true,
-    },
-  },
-  play: async ({ canvasElement }) => {
-    const list = within(canvasElement).getByRole('table', { name: 'Activity records' })
-    list.scrollTop = 400
-    await expect(list.scrollTop).toBeGreaterThan(0)
-  },
-}
-const busyTask = {
-  ...page,
-  rows: [goal, { ...goal, name: `${task}-next`, intent: 'Reconcile the ledger' }],
-  branches: {
-    [task]: {
-      rows: [
-        ...Array.from({ length: 30 }, (_, i) =>
-          tool(`search-${i}`, 'search', 'succeeded', `Search ${i + 1}`),
-        ),
-        { ...execution, state: 'succeeded' as const, requiresAction: false },
-        ...Array.from({ length: 30 }, (_, i) =>
-          tool(`describe-${i}`, 'describe', 'succeeded', `Describe ${i + 1}`),
-        ),
-      ],
-      next: '',
-      unavailable: false,
-    },
-    [run]: {
-      rows: Array.from({ length: 40 }, (_, i) => ({
-        ...call,
-        name: `${workspace}/invocations/${i}`,
-        callPath: `billing.listInvoices.${i}`,
-        // A list layout only; nothing opens it beside a program.
-        sourceLocation: undefined,
-        state: 'ended' as const,
-        outcome: 'upstream_outcome',
-        requiresAction: false,
-      })),
-      next: '',
-      unavailable: false,
-    },
-  },
-  expanded: [task, run],
-  detail: null,
-  selected: null,
-  selectedRow: null,
-} satisfies ActivityPage
-const recordRow = (table: HTMLElement, name: RegExp | string) =>
-  within(table)
-    .getAllByRole('row')
-    .find((row) => within(row).queryByRole('link', { name }))!
-/**
- * Scroll to see an expanded Task pin under its day heading and an expanded Run pin
- * under its Task. Wax tests the pinning; Vitest tests that Activity nests the groups.
- */
-export const PinnedHeadings: Story = {
-  args: { page: busyTask },
-}
-const collapsedRun: ActivityRow & { kind: 'run' } = {
-  ...execution,
-  name: `${run}-collapsed`,
-  submission: { ...execution.submission!, intent: 'Archive the paid invoices' },
-}
-/**
- * Expanding a record turns its row into a group heading without moving its toggle
- * or label, at the root and inside a Task. Wax owns the heading's cell layout.
- */
-export const HeadingAlignment: Story = {
-  args: {
-    page: {
-      ...page,
-      rows: [goal, { ...goal, name: `${task}-collapsed`, intent: 'Reconcile the ledger' }],
-      branches: {
-        [task]: { rows: [execution, collapsedRun], next: '', unavailable: false },
-        [run]: { rows: [], next: '', unavailable: false },
-      },
-      expanded: [task, run],
-      detail: null,
-      selected: null,
-      selectedRow: null,
-    },
-  },
-  play: async ({ canvasElement }) => {
-    const row = (name: string) => recordRow(canvasElement, name)
-    const left = (element: Element) => element.getBoundingClientRect().left
-    for (const [expanded, collapsed] of [
-      [goal.intent, 'Reconcile the ledger'],
-      ['Send invoice reminders', 'Archive the paid invoices'],
-    ] as const) {
-      const heading = within(row(expanded))
-      const plain = within(row(collapsed))
-      await expect(left(heading.getByRole('button', { name: 'Collapse record' }))).toBe(
-        left(plain.getByRole('button', { name: 'Expand record' })),
-      )
-      await expect(left(heading.getByRole('link'))).toBe(left(plain.getByRole('link')))
-    }
-  },
-}
-// Enough history to scroll well past 5000px collapsed. Tasks hold 0, 1 or 3
-// executions, and executions hold 0, 1 or 30 tools, in rotation.
-const largeCounts = { executions: [0, 1, 3], tools: [0, 1, 30] } as const
-// One Task every 45 minutes back from now, across several UTC days.
-const largeStart = (i: number, minutes = 0) =>
-  new Date(Math.floor(Date.now() / 60_000) * 60_000 - (i * 45 + minutes) * 60_000).toISOString()
-const largeTasks = Array.from({ length: 120 }, (_, i): ActivityRow & { kind: 'task' } => ({
-  ...goal,
-  startedAt: largeStart(i),
-  name: `${workspace}/tasks/t${i}`,
-  intent: `Task ${i + 1}: reconcile invoices for account ${1000 + i}`,
-  outcome: i % 7 === 0 ? 'open' : i % 5 === 0 ? 'failure' : 'success',
-  endedAt: i % 7 === 0 ? null : at,
-}))
-const largeRun = (
-  name: string,
-  taskName: string,
-  i: number,
-  tools: number,
-  startedAt: string,
-): ActivityRow & { kind: 'run' } => ({
-  ...execution,
-  name,
-  task: taskName,
-  startedAt,
-  state: i % 4 === 0 ? 'running' : i % 6 === 0 ? 'failed' : 'succeeded',
-  requiresAction: false,
-  submission: taskName
-    ? {
-        ...execution.submission!,
-        intent: `Send reminder batch ${i + 1} (${tools} tool${tools === 1 ? '' : 's'})`,
-        acceptedRun: name,
-      }
-    : undefined,
-})
-const largeBranchOf = (rows: ActivityRow[]) => ({ rows, next: '', unavailable: false })
-// The whole fixture, built once: every record and every branch it can expand.
-const largeRows = new Map<string, ActivityRow>()
-const largeBranches: ActivityPage['branches'] = {}
-function addLargeRun(row: ActivityRow & { kind: 'run' }, tools: number) {
-  largeRows.set(row.name, row)
-  largeBranches[row.name] = largeBranchOf(
-    Array.from({ length: tools }, (_, k) => ({
-      ...call,
-      name: `${row.name}/invocations/${k}`,
-      run: row.name,
-      startedAt: row.startedAt,
-      callPath: `billing.listInvoices.page${k + 1}`,
-      // A list layout only; nothing opens it beside a program.
-      sourceLocation: undefined,
-      state: 'ended' as const,
-      outcome: k % 9 === 8 ? 'coral_failure' : 'upstream_outcome',
-      requiresAction: false,
-    })),
-  )
-  return row
-}
-const largeRoots: ActivityRow[] = largeTasks.flatMap((parent, i) => {
-  largeRows.set(parent.name, parent)
-  const id = `t${i}`
-  const lookup = (k: number, intent = `Look up step ${k + 1}`): ActivityRow => ({
-    ...(tool(`${id}-${k}`, k % 2 ? 'describe' : 'search', 'succeeded', intent) as ActivityRow & {
-      kind: 'tool'
-    }),
-    task: parent.name,
-    startedAt: parent.startedAt,
-  })
-  // Two lookups before each execution, and two after the last.
-  const children: ActivityRow[] = [
-    ...Array.from({ length: largeCounts.executions[i % 3]! }, (_, j) => {
-      const tools = largeCounts.tools[(i + j) % 3]!
-      return [
-        lookup(j * 2),
-        lookup(j * 2 + 1),
-        addLargeRun(
-          largeRun(`${workspace}/runs/${id}-r${j}`, parent.name, j, tools, parent.startedAt),
-          tools,
-        ),
-      ]
-    }).flat(),
-    lookup(98, 'Find the reconciled invoices'),
-    lookup(99, 'Check the reconciled totals'),
-  ]
-  for (const child of children) largeRows.set(child.name, child)
-  largeBranches[parent.name] = largeBranchOf(children)
-  if (i % 3) return [parent]
-  const tools = largeCounts.tools[(i / 3) % 3]!
-  const solo = largeRun(`${workspace}/runs/s${i}`, '', i, tools, largeStart(i, 20))
-  return [parent, addLargeRun(solo, tools)]
-})
-/** A long history. Expand and collapse records, and scroll to watch their headings pin. */
-export const LargeHistory: Story = {
-  parameters: {
-    initialEntry: `/workspaces/finance/activity?tree=1&expand=${largeTasks[2]!.name}&expand=${workspace}/runs/t2-r0`,
-    chromatic: { disableSnapshot: true },
-  },
-  render: function LargeHistory() {
-    const [query] = useSearchParams()
-    const expanded = query.getAll('expand')
-    const branches = Object.fromEntries(
-      expanded.filter((name) => largeBranches[name]).map((name) => [name, largeBranches[name]!]),
-    )
-    const selected = query.get('record')
-    const selectedRow = (selected && largeRows.get(selected)) || null
-    return (
-      <Activity
-        page={{
-          ...page,
-          rows: largeRoots,
-          branches,
-          expanded,
-          selected: selectedRow ? selected : null,
-          selectedRow,
-          detail: selectedRow?.kind === 'task' ? { kind: 'task', task: selectedRow } : null,
-        }}
-      />
-    )
-  },
-}
-/**
- * Records on both sides of midnight UTC sit under their own day headings. This is
- * the one home for the midnight split, so it runs in a real browser.
- */
 export const DayBoundary: Story = {
   args: {
     page: {
@@ -872,8 +487,7 @@ export const DayBoundary: Story = {
           startedAt: '2026-09-28T21:30:00.000Z',
         },
       ],
-      branches: {},
-      expanded: [],
+      trace: null,
       detail: null,
       selected: null,
       selectedRow: null,
@@ -881,10 +495,13 @@ export const DayBoundary: Story = {
   },
   play: async ({ canvasElement }) => {
     const day = (name: string) => within(within(canvasElement).getByRole('rowgroup', { name }))
-    await expect(day('Tue 29 Sep 2026').getByText('00:04:00')).toBeVisible()
-    await expect(day('Mon 28 Sep 2026').getByText('23:58:00')).toBeVisible()
-    await expect(day('Mon 28 Sep 2026').getByText('21:30:00')).toBeVisible()
-    await expect(day('Tue 29 Sep 2026').queryByText('23:58:00')).toBeNull()
+    // A root sits under the UTC day it started, however close to midnight.
+    const morning = { name: 'Send the morning digest' }
+    const evening = { name: 'Close the day ledger' }
+    await expect(day('Tue 29 Sep 2026').getByRole('link', morning)).toBeVisible()
+    await expect(day('Mon 28 Sep 2026').getByRole('link', evening)).toBeVisible()
+    await expect(day('Mon 28 Sep 2026').getAllByRole('row')).toHaveLength(3)
+    await expect(day('Tue 29 Sep 2026').queryByRole('link', evening)).toBeNull()
   },
 }
 
@@ -912,6 +529,7 @@ export const LoadMoreRecords: Story = {
   },
   play: async ({ canvasElement, userEvent }) => {
     const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: /^Recent runs/ }))
     await expect(canvas.getByText('The list shows 500 records.')).toBeInTheDocument()
     // The error only states what failed; the button next to it says what to do.
     await expect(canvas.getByRole('alert')).toHaveTextContent(/^The records did not load\.$/)
@@ -938,13 +556,13 @@ export const DrawerNavigation: Story = {
     }))
     const selected = query.get('record')
     const selectedRow = rows.find((row) => row.name === selected) ?? null
+    const root = rows.find((row) => row.name === query.get('root')) ?? null
     return (
       <Activity
         page={{
           ...page,
           rows,
-          branches: {},
-          expanded: [],
+          trace: root && { root, children: {}, complete: true, unavailable: [] },
           selected,
           selectedRow,
           detail: selectedRow ? { kind: 'task', task: selectedRow } : null,
@@ -956,60 +574,36 @@ export const DrawerNavigation: Story = {
     const canvas = within(canvasElement)
     const screen = within(canvasElement.ownerDocument.body)
     const list = canvas.getByRole('table', { name: 'Activity records' })
-    const heading = within(list).getByRole('columnheader', { name: 'RECORD' })
+    const heading = within(list).getByRole('columnheader', { name: 'Record' })
     const top = heading.getBoundingClientRect().top
     list.scrollTop = list.scrollHeight
     await waitFor(() => expect(list.scrollTop).toBeGreaterThan(0))
     await expect(heading.getBoundingClientRect().top).toBe(top)
-    const before = list.scrollTop
+    // A row in the list opens its timeline, which takes the page; the list then opens from
+    // the timeline's title. The root's own row there opens its detail.
+    await userEvent.click(within(list).getByRole('link', { name: 'Task 40' }))
+    const timeline = await canvas.findByRole('table', { name: 'Timeline records' })
+    await expect(canvas.queryByRole('table', { name: 'Activity records' })).toBeNull()
+    await expect(canvas.getByRole('button', { name: /^Recent runs 40/ })).toBeVisible()
     for (const close of ['escape', 'button']) {
-      await userEvent.click(within(list).getByRole('link', { name: 'Task 40' }))
+      await userEvent.click(within(timeline).getByRole('link', { name: 'Task 40' }))
       const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
       await expect(within(dialog).getByRole('heading', { name: 'Task 40' })).toBeVisible()
       await waitFor(() =>
         expect(dialog.contains(canvasElement.ownerDocument.activeElement)).toBe(true),
       )
-      // Once it has slid in, the drawer rests at the list's right, inside the window:
-      // against its edge when it floats, at the page's edge when it docks.
+      // Once it has slid in, the drawer rests at the timeline's right, inside the window.
       await waitFor(() => {
         expect(dialog.getAnimations()).toHaveLength(0)
         expect(dialog.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth)
-        expect(dialog.getBoundingClientRect().right).toBeGreaterThan(
-          list.getBoundingClientRect().right,
+        expect(dialog.getBoundingClientRect().left).toBeGreaterThan(
+          timeline.getBoundingClientRect().left,
         )
       })
       if (close === 'escape') await userEvent.keyboard('{Escape}')
       else await userEvent.click(within(dialog).getByRole('button', { name: 'Close details' }))
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-      await expect(list.scrollTop).toBe(before)
-      await expect(canvas.getByRole('heading', { name: 'Your recent activity' })).toBeVisible()
     }
-  },
-}
-export const ExpansionLimit: Story = {
-  args: {
-    page: {
-      ...page,
-      rows: Array.from({ length: 25 }, (_, i) => ({
-        ...goal,
-        name: `${task}-${i}`,
-        intent: `Task ${i + 1}`,
-      })),
-      expanded: Array.from({ length: 20 }, (_, i) => `${task}-${i}`),
-      branches: {},
-      detail: null,
-      selected: null,
-      selectedRow: null,
-    },
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    for (const control of canvas.getAllByRole('button', { name: 'Expand record' }))
-      await expect(control).toBeDisabled()
-    for (const control of canvas.getAllByRole('button', { name: 'Collapse record' }))
-      await expect(control).toBeEnabled()
-    await expect(canvas.queryByRole('navigation', { name: 'Activity scope' })).toBeNull()
-    await expect(canvas.queryByRole('link', { name: /Scope to / })).toBeNull()
   },
 }
 export const StandaloneExecution: Story = {
@@ -1110,34 +704,32 @@ export const FinalValueOnExec: Story = {
       ...page,
       selected: run,
       selectedRow: execution,
-      branches: {
+      trace: traceOf({
         [task]: {
+          rows: [{ ...execution, state: 'succeeded', requiresAction: false }],
+          next: '',
+          unavailable: false,
+        },
+        [run]: {
           rows: [
+            emission,
             {
-              ...execution,
-              state: 'succeeded',
-              requiresAction: false,
-              contextImpactBytes: '-1981',
+              ...emission,
+              name: `${run}/final`,
+              eventKind: 'run.ended',
+              // A Run's end is no call of the program's.
+              sourceLocation: undefined,
+              label: 'return value',
+              contextImpactBytes: '15',
             },
           ],
           next: '',
           unavailable: false,
         },
-        [run]: {
-          rows: [{ ...emission, contextImpactBytes: '4' }],
-          next: '',
-          unavailable: false,
-        },
-      },
+      }),
       detail: {
         kind: 'run',
-        run: {
-          ...execution,
-          state: 'succeeded',
-          requiresAction: false,
-          contextImpactBytes: '-1981',
-        },
-        contextImpact: { finalValueBytes: '15', outputBytes: '4', toolResultBytes: '2000' },
+        run: { ...execution, state: 'succeeded', requiresAction: false },
         // The program that made the emission listed above and returned this value.
         source: program,
         linkedFunctions: [],
@@ -1147,28 +739,17 @@ export const FinalValueOnExec: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    const table = canvas.queryByRole('table', { name: 'Activity records' })
-    // The Run's panel shows its return value, so the table neither marks nor repeats it.
-    if (table) {
-      await expect(within(table).queryByRole('img', { name: 'return value' })).toBeNull()
-      await expect(within(table).queryByRole('link', { name: 'return value' })).toBeNull()
-    }
+    // A Run's return value is a mark on its row of the timeline.
+    const timeline = canvas.queryByRole('table', { name: 'Timeline records' })
+    if (timeline)
+      await expect(
+        within(timeline).getByRole('button', { name: /^return value at / }),
+      ).toBeVisible()
     const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
     const value = drawer.getByRole('region', { name: 'Return value' })
     await expect(within(value).getByRole('group', { name: 'Structure' })).toHaveTextContent(
       '"invoices": 24',
     )
-    // The return value is the Run's own share; with the rows under it, the parts make the net.
-    const context = within(drawer.getByRole('region', { name: 'Agent context' }))
-    for (const [part, size] of [
-      ['Tool results kept out', '2 kB'],
-      ['Return value sent', '15 B'],
-      ['Emissions and logs sent', '4 B'],
-    ])
-      await expect(context.getByText(part).nextElementSibling).toHaveTextContent(size)
-    // Only the net says whether the Run helped, and by what share of the tool results.
-    await expect(context.getByLabelText('1.98 kB saved')).toBeVisible()
-    await expect(context.getByText('Net').nextElementSibling).toHaveTextContent('(99% saved)')
   },
 }
 export const NoFinalValue: Story = {
@@ -1231,7 +812,7 @@ export const ExactNativeInteger: Story = {
     const value = within(response).getByRole('group', { name: 'Structure' })
     await expect(value).toBeVisible()
     // The integer past 2^53 keeps every digit, under its key.
-    await expect(value).toHaveTextContent('"data": { 1 property"id": 9007199254740993')
+    await expect(value).toHaveTextContent('"data": { 1 property · 23 B"id": 9007199254740993')
   },
 }
 export const CoralFailure: Story = {
@@ -1588,8 +1169,7 @@ export const OutsideWorkspace: Story = {
     page: {
       ...page,
       rows: [standalone],
-      branches: {},
-      expanded: [],
+      trace: null,
     },
   },
 }

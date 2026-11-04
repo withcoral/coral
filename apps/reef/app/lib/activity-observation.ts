@@ -1,14 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { atom, useAtomValue, useStore } from 'jotai'
 import { useFetcher, useLocation, useNavigate, useNavigation, useRevalidator } from 'react-router'
-import {
-  activityNavigation,
-  activitySelection,
-  branchCoordinate,
-  selectionKeys,
-} from '@/views/activity/navigation'
+import { activityNavigation, activitySelection, selectionKeys } from '@/views/activity/navigation'
 import type { ActivityPage } from '@/views/activity/types'
-import { readingWindow, type ActivityViewport } from './activity-live-types'
+import { readingWindow } from './activity-live-types'
 import {
   failPage,
   liveRoots,
@@ -25,20 +20,17 @@ import { activityPageFetchKey, fetchedActivityPage } from './activity-page-fetch
 import { subscribeActivityStream } from './activity-stream'
 
 const idle = () => {}
-// Selection, expansion and reading position never change which list is loaded.
+// Selection, the open root and reading position never change which list is loaded.
 const windowIndependentKeys = new Set<string>([
   ...selectionKeys,
-  'expand',
-  'tree',
+  'root',
   'anchor',
   'before',
   'after',
-  'root',
-  'rootMode',
 ])
 
 export interface LiveActivityState {
-  /** The last authorized page. Its rows and branches give way to `list`. */
+  /** The last authorized page. Its rows give way to `list`. */
   page: ActivityPage
   list: ActivityList
   /** Counts the lists this reader opened. A navigation that joins the list keeps it. */
@@ -49,7 +41,6 @@ export interface LiveActivityState {
   sessionExpired: boolean
   canFollowRoot: boolean
   followRoot: boolean
-  viewports: Record<string, ActivityViewport>
   /** The records the live window watches. */
   roots: string[]
   /** The top-level records on screen, first to last. */
@@ -57,7 +48,6 @@ export interface LiveActivityState {
 }
 export type ActivityReadingChange =
   | { kind: 'root'; atStart: boolean }
-  | { kind: 'viewport'; parent: string; viewport: ActivityViewport }
   | { kind: 'visible'; records: string[] }
   | { kind: 'load'; direction: ActivityListDirection }
   /** A null page is a load that failed. */
@@ -66,7 +56,7 @@ function conceal(page: ActivityPage): ActivityPage {
   return {
     ...page,
     rows: [],
-    branches: {},
+    trace: null,
     hasBefore: false,
     hasAfter: false,
     detail: null,
@@ -82,7 +72,6 @@ export function activityView({ page, list }: LiveActivityState): ActivityPage {
   return {
     ...page,
     rows: list.rows,
-    branches: list.branches,
     hasBefore: list.hasNewer,
     hasAfter: list.hasOlder,
     anchorUnavailable: list.anchorUnavailable,
@@ -114,12 +103,10 @@ export function activityObservation(
   const canFollowRoot = canFollow(list, initial)
   window.followRoot = canFollowRoot && (joined ? previous.followRoot : true)
   const visible = joined ? previous.visible : list.rows.slice(0, 10).map((row) => row.name)
-  window.roots = liveRoots(list, visible, initial.expanded)
-  for (const [parent, viewport] of Object.entries(window.branches)) {
-    if (!query.has(`offset.${parent}`)) continue
-    viewport.anchor = query.get(`anchor.${parent}`) ?? ''
-    viewport.preceding = Number(query.get(`preceding.${parent}`) ?? 0)
-  }
+  // The open root's row stays current near the viewport. Its timeline is read from the
+  // page's own `root`, so it stays live wherever the list scrolls.
+  const open = initial.trace ? [initial.trace.root.name] : []
+  window.roots = liveRoots(list, visible, open)
   const state = atom<LiveActivityState>({
     page: initial,
     list,
@@ -129,12 +116,9 @@ export function activityObservation(
     sessionExpired: false,
     canFollowRoot,
     followRoot: window.followRoot,
-    viewports: { ...window.branches },
     roots: [...window.roots],
     visible,
   })
-  for (const [parent, anchor] of Object.entries(initial.anchors ?? {}))
-    if (!query.has(`anchor.${parent}`)) query.set(`anchor.${parent}`, anchor)
   // The live connection reads the window when it connects. Its snapshot is the newest
   // page while it follows the newest records, and only the watched records otherwise.
   let snapshotFollows = window.followRoot
@@ -142,20 +126,16 @@ export function activityObservation(
   // its first snapshot renews nothing, so a window change waits for that snapshot.
   let answered = false
   let deferred = false
-  // Child windows the reader moved after the open connection read its window. That
-  // connection's snapshots still report the offsets it was opened with.
-  const moved = new Set<string>()
   const input = () => {
     snapshotFollows = window.followRoot
     answered = false
-    moved.clear()
     return { path, search: query.toString(), window }
   }
   let wake = idle
   /** Recomputes the watched records after the list or the viewport changes. */
   const watch = (current: LiveActivityState): LiveActivityState => {
     const followable = canFollow(current.list, initial)
-    const roots = liveRoots(current.list, current.visible, initial.expanded)
+    const roots = liveRoots(current.list, current.visible, open)
     let changed = false
     if (!sameNames(roots, window.roots)) {
       window.roots = roots
@@ -184,20 +164,6 @@ export function activityObservation(
         window.followRoot = follow
         set(state, { ...current, followRoot: follow })
         wake()
-      } else if (change.kind === 'viewport') {
-        if (!initial.expanded.includes(change.parent)) return
-        const old = window.branches[change.parent]
-        const next = change.viewport
-        if (
-          old?.offset === next.offset &&
-          old.anchor === next.anchor &&
-          old.preceding === next.preceding
-        )
-          return
-        window.branches[change.parent] = next
-        moved.add(change.parent)
-        set(state, { ...current, viewports: { ...window.branches } })
-        wake()
       } else if (change.kind === 'visible') {
         if (sameNames(change.records, current.visible)) return
         set(state, watch({ ...current, visible: change.records }))
@@ -220,24 +186,19 @@ export function activityObservation(
           deferred = false
           wake()
         }
-        for (const [parent, branch] of Object.entries(page.branches)) {
-          if (moved.has(parent)) continue
-          const previousViewport = window.branches[parent] ?? {
-            anchor: '',
-            preceding: 0,
-            offset: 0,
-          }
-          window.branches[parent] = { ...previousViewport, offset: branch.offset ?? 0 }
-        }
         set((current) =>
           watch({
             ...current,
-            page,
+            // A read that failed in passing keeps the timeline on screen, with its zoom and
+            // collapsed rows. One reader watches one root, so the timeline is still its own.
+            page:
+              !page.trace && page.traceUnavailable === 'failed'
+                ? { ...page, trace: current.page.trace }
+                : page,
             // A snapshot never drops or reorders loaded records.
             list:
               mergeActivityPage(current.list, page, { retained: !snapshotFollows }) ?? current.list,
             connected: true,
-            viewports: { ...window.branches },
           }),
         )
       },
@@ -265,16 +226,8 @@ export function activityObservation(
 }
 
 /** The Activity loader's address for the next page of the list `page` belongs to. */
-function pageHref(page: ActivityPage, search: string, query: Record<string, string>) {
-  const current = new URLSearchParams(search)
-  const next = new URLSearchParams({ tree: '1', ...query, [activityPageFetchKey]: 'page' })
-  const expanded = new Set(current.getAll('expand'))
-  for (const name of expanded) next.append('expand', name)
-  // Records that the page brings in open their child windows where the URL keeps them.
-  for (const [key, value] of current) {
-    const parent = branchCoordinate(key)
-    if (parent && expanded.has(parent)) next.append(key, value)
-  }
+function pageHref(page: ActivityPage, query: Record<string, string>) {
+  const next = new URLSearchParams({ ...query, [activityPageFetchKey]: 'page' })
   // Every Workspace list reads through the Activity route; an Agent's through its own.
   const path = page.agent ? page.listPath : `${page.listPath.replace(/\/activity$/, '')}/activity`
   return `${path}?${next}`
@@ -295,7 +248,8 @@ export function useActivityReader(initial: ActivityPage) {
     const query = new URLSearchParams(location.search)
     if (
       ((!initial.initialRequest || query.has('request')) &&
-        (!initial.initialRecord || query.get('record') === initial.initialRecord)) ||
+        (!initial.initialRecord || query.get('record') === initial.initialRecord) &&
+        (!initial.trace || query.has('root'))) ||
       transition.state !== 'idle' ||
       revalidator.state !== 'idle'
     )
@@ -322,7 +276,7 @@ export function useActivityReader(initial: ActivityPage) {
   const rootQuery = new URLSearchParams(query)
   const keys = [...rootQuery.keys()]
   for (const key of keys) {
-    if (windowIndependentKeys.has(key) || branchCoordinate(key)) rootQuery.delete(key)
+    if (windowIndependentKeys.has(key)) rootQuery.delete(key)
   }
   rootQuery.sort()
   const listKey = `${initial.listPath}?${rootQuery}`
@@ -348,7 +302,6 @@ export function useActivityReader(initial: ActivityPage) {
   )
   const navigation = activityNavigation(page, location.pathname, location.search, {
     anchor: state.followRoot ? null : (firstVisible ?? null),
-    branches: state.viewports,
   })
   // Every list is one Workspace's, so losing the list means losing that Workspace.
   const lostContext = state.connected && state.page.listUnavailable && !initial.listUnavailable
@@ -379,7 +332,7 @@ export function useActivityReader(initial: ActivityPage) {
     if (!next || requested.current?.atom === current.atom) return
     requested.current = { direction, atom: current.atom }
     store.set(current.atom, { kind: 'load', direction })
-    void fetcher.load(pageHref(latest.page, location.search, next))
+    void fetcher.load(pageHref(latest.page, next))
   }
   const control = (direction: ActivityListDirection, available: boolean) =>
     available
@@ -391,34 +344,12 @@ export function useActivityReader(initial: ActivityPage) {
         }
       : null
 
-  const initialAnchor = Object.entries(initial.anchors ?? {})
-    .toSorted(([a], [b]) => Number(b.includes('/runs/')) - Number(a.includes('/runs/')))
-    .map(
-      ([parent, anchor]) =>
-        initial.branches[parent]?.rows.find(
-          (row) => row.name === anchor || (row.kind === 'run' && row.submission?.name === anchor),
-        )?.name,
-    )
-    .find(Boolean)
-  const initialOffset = Object.entries(initial.branches).find(
-    ([parent, branch]) =>
-      query.has(`offset.${parent}`) &&
-      Number(query.get(`offset.${parent}`)) > 0 &&
-      branch.rows.length,
-  )?.[1]
-  // A new list reveals what its URL names. Inside a list, a new selection is revealed
-  // only when it is off screen: the table does not move a record that is in view.
-  const named = Object.keys(initial.anchors ?? {}).length > 0 || query.has('anchor')
-  const revealRecord =
-    state.joined || (initial.selected && named)
-      ? (initial.selected ?? undefined)
-      : (initialAnchor ??
-        initialOffset?.rows.find((row) => row.position === initialOffset.offset)?.name)
   return {
     navigation,
     page,
     windowKey: `${listKey}#${state.generation}`,
-    revealRecord,
+    // A new list shows the root it opened; inside a list, an open root stays where it is.
+    revealRecord: state.joined ? undefined : initial.trace?.root.name,
     list: {
       count: state.list.rows.length,
       newer: control('newer', state.list.hasNewer),
@@ -428,8 +359,6 @@ export function useActivityReader(initial: ActivityPage) {
       connected: state.connected,
       followRoot: state.followRoot,
       atStart: (atStart: boolean) => store.set(current.atom, { kind: 'root', atStart }),
-      viewport: (parent: string, viewport: ActivityViewport) =>
-        store.set(current.atom, { kind: 'viewport', parent, viewport }),
       visible: (records: string[]) => store.set(current.atom, { kind: 'visible', records }),
     },
   }

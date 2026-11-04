@@ -11,70 +11,46 @@ import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
-import { activityPage, approvalContext, approvalRequest, run, workspace } from './fixtures'
+import { activityPage, approvalContext, approvalRequest, run, runRow, taskRow } from './fixtures'
 import { leavesActivityReview } from './navigation'
-import type { ActivityPage, ActivityRow } from './types'
-import { emulateReducedMotion, resizeViewport } from '../../../.storybook/browser'
+import type { ActivityPage, ActivityRow, RunDetail } from './types'
+import { resizeViewport } from '../../../.storybook/browser'
 
 const at = '2026-09-18T14:02:00.000Z'
-const tasks = [1, 2, 3].map((index): ActivityRow & { kind: 'task' } => ({
-  kind: 'task',
-  name: `${workspace}/tasks/t${index}`,
-  workspace,
-  actor: 'Collections agent',
-  intent: `Task ${index}`,
-  outcome: 'open',
-  startedAt: at,
-  endedAt: null,
-  agent: '',
-}))
+const goal = taskRow('collect', 'Collect overdue invoices')
+const runs = [1, 2, 3].map((index) =>
+  runRow(`r${index}`, goal.name, { intent: `Run ${index}`, startedAt: at, state: 'succeeded' }),
+)
 const waiting: ActivityRow & { kind: 'run' } = {
   ...run,
-  actor: 'Reminder run',
+  task: goal.name,
+  intent: 'Reminder run',
   agent: '',
   startedAt: at,
 }
-const rows: ActivityRow[] = [...tasks, waiting]
+const records = [...runs, waiting]
 
-/** The page the loader returns for the record the URL selects. */
+/** The page the loader returns for the record the URL selects, with the Task's timeline open. */
 function pageFor(record: string | null): ActivityPage {
-  const selectedRow = rows.find((row) => row.name === record) ?? null
+  const selectedRow = records.find((row) => row.name === record) ?? null
+  const detail: RunDetail | null =
+    selectedRow === waiting
+      ? { ...approvalContext, run: waiting, request: approvalRequest }
+      : selectedRow && {
+          kind: 'run',
+          run: selectedRow,
+          request: null,
+          source: 'return 1',
+          linkedFunctions: [],
+          terminal: { kind: 'unavailable' },
+        }
   return activityPage({
-    rows,
+    rows: [goal],
+    trace: { root: goal, children: { [goal.name]: records }, complete: true, unavailable: [] },
     selected: selectedRow?.name ?? null,
     selectedRow,
-    detail:
-      selectedRow?.kind === 'task'
-        ? { kind: 'task', task: selectedRow }
-        : selectedRow?.kind === 'run'
-          ? {
-              kind: 'run',
-              run: selectedRow,
-              request: approvalRequest,
-              // The program that makes the call this review decides.
-              source: approvalContext.source,
-              linkedFunctions: [],
-              terminal: { kind: 'unavailable' },
-            }
-          : null,
+    detail,
   })
-}
-
-/** Holds every record load until released, so a play can act while one is pending. */
-const loads = {
-  /** How many record loads have started. */
-  count: 0,
-  /** How many record loads have not finished yet. */
-  inFlight: 0,
-  held: null as Promise<void> | null,
-  release: () => {},
-  hold() {
-    this.held = new Promise((resolve) => (this.release = resolve))
-  },
-  open() {
-    this.release()
-    this.held = null
-  },
 }
 
 function RailRoute() {
@@ -100,7 +76,10 @@ function RailRoute() {
 
 const meta = {
   title: 'Activity/Rail',
-  parameters: { layout: 'fullscreen', initialEntry: '/workspaces/finance/activity?tree=1' },
+  parameters: {
+    layout: 'fullscreen',
+    initialEntry: `/workspaces/finance/activity?root=${encodeURIComponent(goal.name)}`,
+  },
   decorators: [
     (_, context) => {
       const Stub = createRoutesStub([
@@ -108,16 +87,7 @@ const meta = {
           path: '*',
           Component: RailRoute,
           HydrateFallback: () => null,
-          loader: async ({ request }) => {
-            loads.count++
-            loads.inFlight++
-            try {
-              if (loads.held) await loads.held
-              return pageFor(new URL(request.url).searchParams.get('record'))
-            } finally {
-              loads.inFlight--
-            }
-          },
+          loader: ({ request }) => pageFor(new URL(request.url).searchParams.get('record')),
         },
       ])
       return (
@@ -149,380 +119,67 @@ async function openCommentBox(rail: HTMLElement, userEvent: PlayUserEvent) {
 async function surface(canvasElement: HTMLElement) {
   const canvas = within(canvasElement)
   const screen = within(canvasElement.ownerDocument.body)
-  // A modal rail hides the table from the accessibility tree, so find it either way.
-  const table = await canvas.findByRole('table', { name: 'Activity records', hidden: true })
-  const link = (label: string) => within(table).getByRole('link', { name: label })
-  const row = (label: string) => link(label).closest<HTMLElement>('[role="row"]')!
+  // A modal rail hides the timeline from the accessibility tree, so find it either way.
+  const timeline = await canvas.findByRole('table', { name: 'Timeline records', hidden: true })
+  const link = (label: string) => within(timeline).getByRole('link', { name: label })
   return {
-    /** Where focus rests, and the record the table's cursor row shows: "table on Task 1". */
-    focus: () => {
-      const focused = document.activeElement
-      const where =
-        focused === table
-          ? 'table'
-          : (focused?.getAttribute('aria-label') ?? focused?.textContent ?? 'nothing')
-      const cursor = table.querySelector('[data-active] a[href]')?.textContent ?? 'no row'
-      return `${where} on ${cursor}`
-    },
     canvas,
     screen,
-    table,
+    timeline,
     link,
-    row,
     address: () => canvas.getByLabelText('Address').textContent,
-    rail: () => screen.queryByRole('dialog', { name: 'Activity details' }),
-    // A record heads the rail with its name; an approval review heads it with its call.
-    heading: (rail: HTMLElement, name: string) =>
-      waitFor(() => expect(within(rail).getByRole('heading', { name })).toBeVisible()),
-    /** Waits until the rail shows `name`. A rail that closed and reopened is a new element. */
+    rail: () => screen.queryByRole('dialog', { name: /^(Activity details|Review action)$/ }),
+    /** Waits until the open rail heads its detail with `name`. */
     shows: (name: string) =>
       waitFor(() =>
         expect(
-          within(screen.getByRole('dialog', { name: 'Activity details' })).getByRole('heading', {
-            name,
-          }),
+          within(
+            screen.getByRole('dialog', { name: /^(Activity details|Review action)$/ }),
+          ).getByRole('heading', { name }),
         ).toBeVisible(),
       ),
   }
 }
 
-/**
- * Waits until every record load has finished and the router is idle, then one more
- * frame, so a rail that a late load would reopen has rendered by the next assertion.
- */
-async function quiet(canvasElement: HTMLElement) {
-  await waitFor(() => {
-    expect(loads.inFlight).toBe(0)
-    expect(within(canvasElement).getByLabelText('Navigation')).toHaveTextContent('idle')
-  })
-  await new Promise((resolve) => requestAnimationFrame(resolve))
-}
-
+/** A row of the timeline opens its record's detail; another row replaces it in place. */
 export const PointerAndHistory: Story = {
   play: async ({ canvasElement, userEvent }) => {
-    loads.open()
-    const { canvas, screen, table, link, row, address, rail, heading, focus } =
-      await surface(canvasElement)
-    // A rail opened by pointer takes focus a frame after it shows. Let that land
-    // before the next click, or it pulls focus from the table after that click.
-    const focused = (dialog: HTMLElement) =>
-      waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement))
-    await userEvent.click(link('Task 1'))
-    const opened = await screen.findByRole('dialog', { name: 'Activity details' })
-    await heading(opened, 'Task 1')
-    await focused(opened)
+    const { canvas, link, address, rail, shows } = await surface(canvasElement)
+    await userEvent.click(link('Run 1'))
+    await shows('Run 1')
+    const opened = rail()!
+    await waitFor(() => expect(opened).toContainElement(document.activeElement as HTMLElement))
 
-    // Another record replaces the detail in the same rail; focus rests on the table,
-    // whose cursor row shows it.
-    await userEvent.click(link('Task 2'))
-    await heading(opened, 'Task 2')
-    await expect(rail()).toBe(opened)
-    await waitFor(() => expect(focus()).toBe('table on Task 2'))
-    // A click on the row outside its link does the same.
-    await userEvent.click(within(row('Task 3')).getAllByRole('cell')[0])
-    await heading(opened, 'Task 3')
-    await expect(rail()).toBe(opened)
-    await waitFor(() => expect(focus()).toBe('table on Task 3'))
-
-    // The open record does nothing: no load, and no history entry.
-    const selected = address()
-    const count = loads.count
-    await userEvent.click(link('Task 3'))
-    await userEvent.click(within(row('Task 3')).getAllByRole('cell')[0])
-    // Empty space beside the table leaves the rail open.
-    await userEvent.click(canvas.getByRole('heading', { name: 'Your recent activity' }))
-    await quiet(canvasElement)
-    await expect(address()).toBe(selected)
-    await expect(loads.count).toBe(count)
+    await userEvent.click(link('Run 2'))
+    await shows('Run 2')
     await expect(rail()).toBe(opened)
 
-    // Each new record was one history entry.
+    // Each record was one history entry; Back past the first closes the rail.
     const history = (direction: 'back' | 'forward') =>
       userEvent.click(canvas.getByRole('button', { name: `History ${direction}` }))
     await history('back')
-    await heading(opened, 'Task 2')
-    await history('back')
-    await heading(opened, 'Task 1')
-    await expect(rail()).toBe(opened)
+    await shows('Run 1')
     await history('back')
     await waitFor(() => expect(rail()).toBeNull())
     await history('forward')
-    const reopened = await screen.findByRole('dialog', { name: 'Activity details' })
-    await heading(reopened, 'Task 1')
-    await focused(reopened)
+    await shows('Run 1')
 
-    // Tab follows the document: from the table into the rail and back.
-    await userEvent.click(link('Task 1'))
-    await waitFor(() => expect(focus()).toBe('table on Task 1'))
-    const close = within(reopened).getByRole('button', { name: 'Close details' })
-    // The rail's first control is its live toggle.
-    const follow = within(reopened).getByRole('button', { name: 'Follow this task' })
-    for (let step = 0; step < 20 && table.contains(document.activeElement); step++)
-      await userEvent.tab()
-    await waitFor(() => expect(follow).toHaveFocus())
-    await userEvent.tab({ shift: true })
-    await waitFor(() => expect(table.contains(document.activeElement)).toBe(true))
-    await userEvent.tab()
-    await waitFor(() => expect(follow).toHaveFocus())
-
-    // Escape in the rail closes it.
-    close.focus()
+    // Escape closes the rail and leaves the timeline's root open.
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(rail()).toBeNull())
-    // Closing returns focus to the table, the one Tab stop of its records.
-    await waitFor(() => expect(table).toHaveFocus())
     await expect(address()).not.toContain('record=')
+    await expect(address()).toContain('root=')
   },
 }
 
-export const LoadingAndClosing: Story = {
-  play: async ({ canvasElement, userEvent }) => {
-    const { link, address, rail, shows } = await surface(canvasElement)
-    const close = () =>
-      userEvent.click(within(rail()!).getByRole('button', { name: 'Close details' }))
-    const open = async (label: string) => {
-      loads.open()
-      await userEvent.click(link(label))
-      await shows(label)
-    }
-    for (const reduced of [false, true]) {
-      // Storybook's own UI cannot emulate reduced motion, so it plays normal motion only.
-      if (!(await emulateReducedMotion(reduced)) && reduced) break
-      try {
-        // A close while another record loads does not reopen when that load lands.
-        await open('Task 1')
-        loads.hold()
-        await userEvent.click(link('Task 2'))
-        await close()
-        // The rail closes at once; it does not wait for the address.
-        await waitFor(() => expect(rail()).toBeNull())
-        loads.open()
-        await quiet(canvasElement)
-        await expect(rail()).toBeNull()
-        await expect(address()).not.toContain('record=')
-
-        // A record picked while the rail closes opens, and the close does not take it away.
-        await open('Task 1')
-        loads.hold()
-        await close()
-        await userEvent.click(link('Task 3'))
-        loads.open()
-        await shows('Task 3')
-        await quiet(canvasElement)
-        await shows('Task 3')
-        await expect(address()).toContain('t3')
-
-        // Returning to the open record while another loads stays on it, without a history entry.
-        loads.hold()
-        await userEvent.click(link('Task 2'))
-        await userEvent.click(link('Task 3'))
-        loads.open()
-        await quiet(canvasElement)
-        await shows('Task 3')
-        await userEvent.click(within(canvasElement).getByRole('button', { name: 'History back' }))
-        await shows('Task 1')
-        await open('Task 3')
-
-        // Picking the closing record again keeps it open.
-        loads.hold()
-        await close()
-        await userEvent.click(link('Task 3'))
-        loads.open()
-        await quiet(canvasElement)
-        await shows('Task 3')
-        await expect(address()).toContain('t3')
-
-        // A record picked once the close has already reached the address opens too.
-        await close()
-        await waitFor(() => expect(address()).not.toContain('record='))
-        await userEvent.click(link('Task 2'))
-        await shows('Task 2')
-        await quiet(canvasElement)
-        await shows('Task 2')
-        await close()
-        await waitFor(() => expect(rail()).toBeNull())
-      } finally {
-        loads.open()
-        await emulateReducedMotion(false)
-      }
-    }
-  },
-}
-
-/**
- * Safari does not focus a link on a mouse click. A DOM `click()` does not move focus
- * either, so it stands in for that click here. WebKit itself does not run in this suite.
- */
-export const LinkClickFocus: Story = {
-  play: async ({ canvasElement }) => {
-    loads.open()
-    const { screen, link, shows, focus } = await surface(canvasElement)
-    link('Task 1').click()
-    await shows('Task 1')
-    const opened = screen.getByRole('dialog', { name: 'Activity details' })
-    // The rail takes focus as it opens; let that land before moving it.
-    await waitFor(() => expect(opened.contains(document.activeElement)).toBe(true))
-    within(opened).getByRole('button', { name: 'Close details' }).focus()
-    // Picking another record leaves focus on the table, on its row, whatever the browser does.
-    link('Task 2').click()
-    await shows('Task 2')
-    await waitFor(() => expect(focus()).toBe('table on Task 2'))
-  },
-}
-
-export const HistoryWhileLoading: Story = {
-  play: async ({ canvasElement, userEvent }) => {
-    loads.open()
-    const { canvas, link, address, rail, shows } = await surface(canvasElement)
-    const history = (direction: 'back' | 'forward') =>
-      userEvent.click(canvas.getByRole('button', { name: `History ${direction}` }))
-    await userEvent.click(link('Task 1'))
-    await shows('Task 1')
-    await userEvent.click(link('Task 2'))
-    await shows('Task 2')
-
-    // Back is under way when you pick the record still shown. The pick is a new
-    // entry after Task 1, so the entries before it stay.
-    loads.hold()
-    await history('back')
-    await userEvent.click(link('Task 2'))
-    loads.open()
-    // The address and rail already show the record; wait for the navigation to land.
-    await quiet(canvasElement)
-    await waitFor(() => expect(address()).toContain('t2'))
-    await shows('Task 2')
-    await history('back')
-    await shows('Task 1')
-
-    // The same with Forward: the pick follows the entry Forward reached.
-    loads.hold()
-    await history('forward')
-    await userEvent.click(link('Task 1'))
-    loads.open()
-    await quiet(canvasElement)
-    await waitFor(() => expect(address()).toContain('t1'))
-    await shows('Task 1')
-    await history('back')
-    await shows('Task 2')
-    await history('back')
-    await shows('Task 1')
-    await history('back')
-    await waitFor(() => expect(rail()).toBeNull())
-
-    // Back interrupts a pick of the record Back reaches; a later pick is still a new entry.
-    await userEvent.click(link('Task 1'))
-    await shows('Task 1')
-    await userEvent.click(link('Task 2'))
-    await shows('Task 2')
-    loads.hold()
-    await userEvent.click(link('Task 1'))
-    await history('back')
-    await userEvent.click(link('Task 2'))
-    loads.open()
-    await quiet(canvasElement)
-    await waitFor(() => expect(address()).toContain('t2'))
-    await shows('Task 2')
-    await history('back')
-    await shows('Task 1')
-
-    // A pick that interrupts Back, then a pick of the record still shown: Back already
-    // moved through history, so the second pick is a new entry too.
-    await userEvent.click(link('Task 2'))
-    await shows('Task 2')
-    loads.hold()
-    await history('back')
-    await userEvent.click(link('Task 3'))
-    await userEvent.click(link('Task 2'))
-    loads.open()
-    await quiet(canvasElement)
-    await waitFor(() => expect(address()).toContain('t2'))
-    await shows('Task 2')
-    await history('back')
-    await shows('Task 1')
-  },
-}
-
-/**
- * A record picked while its own close loads cancels the close. The close never
- * reached history, so Back from the record returns to the list.
- */
-export const PickWhileClosing: Story = {
-  play: async ({ canvasElement, userEvent }) => {
-    loads.open()
-    const { canvas, screen, link, address, rail, shows } = await surface(canvasElement)
-    const back = async () => {
-      await userEvent.click(canvas.getByRole('button', { name: 'History back' }))
-      await quiet(canvasElement)
-    }
-    const loading = () =>
-      waitFor(() =>
-        expect(within(canvasElement).getByLabelText('Navigation')).toHaveTextContent('loading'),
-      )
-    const closeButton = () => within(rail()!).getByRole('button', { name: 'Close details' })
-    const discardPrompt = () => screen.findByRole('dialog', { name: 'Discard your comment?' })
-    const typeComment = async (text: string) =>
-      userEvent.type(await openCommentBox(rail()!, userEvent), text)
-    const pickBackToList = async (label: string, heading: string) => {
-      await userEvent.click(link(label))
-      loads.open()
-      await quiet(canvasElement)
-      await shows(heading)
-      await back()
-      await waitFor(() => expect(rail()).toBeNull())
-      await expect(address()).not.toContain('record=')
-    }
-
-    // Without a comment, the close starts at once.
-    await userEvent.click(link('Task 1'))
-    await shows('Task 1')
-    await quiet(canvasElement)
-    loads.hold()
-    await userEvent.click(closeButton())
-    await loading()
-    await pickBackToList('Task 1', 'Task 1')
-
-    // With an unsent comment, the close starts once you discard it.
-    await userEvent.click(link('Reminder run'))
-    await shows(approvalRequest.callPath)
-    await quiet(canvasElement)
-    await typeComment('Check the recipient')
-    loads.hold()
-    await userEvent.click(closeButton())
-    await userEvent.click(
-      within(await discardPrompt()).getByRole('button', { name: 'Discard comment' }),
-    )
-    await loading()
-    await pickBackToList('Reminder run', approvalRequest.callPath)
-
-    // Keep editing cancels the close; a later discarded close behaves the same.
-    await userEvent.click(link('Reminder run'))
-    await shows(approvalRequest.callPath)
-    await quiet(canvasElement)
-    await typeComment('Check the amount')
-    await userEvent.click(closeButton())
-    await userEvent.click(
-      within(await discardPrompt()).getByRole('button', { name: 'Keep editing' }),
-    )
-    await quiet(canvasElement)
-    await expect(address()).toContain('runs')
-    loads.hold()
-    await userEvent.click(closeButton())
-    await userEvent.click(
-      within(await discardPrompt()).getByRole('button', { name: 'Discard comment' }),
-    )
-    await loading()
-    await pickBackToList('Reminder run', approvalRequest.callPath)
-  },
-}
-
+/** Leaving a review with an unsent comment asks first, from a row and from the close control. */
 export const UnsentComment: Story = {
   parameters: {
-    initialEntry: `/workspaces/finance/activity?tree=1&record=${encodeURIComponent(waiting.name)}`,
+    initialEntry: `/workspaces/finance/activity?root=${encodeURIComponent(goal.name)}&record=${encodeURIComponent(waiting.name)}`,
   },
   play: async ({ canvasElement, userEvent }) => {
-    loads.open()
-    const { screen, link, address, rail, heading, focus } = await surface(canvasElement)
-    const review = await screen.findByRole('dialog', { name: 'Activity details' })
+    const { screen, link, address, rail, shows } = await surface(canvasElement)
+    const review = await screen.findByRole('dialog', { name: /^(Activity details|Review action)$/ })
     const comment = () => openCommentBox(review, userEvent)
     const confirm = () => screen.findByRole('dialog', { name: 'Discard your comment?' })
     const choose = async (name: 'Keep editing' | 'Discard comment') => {
@@ -534,37 +191,26 @@ export const UnsentComment: Story = {
     await userEvent.type(await comment(), 'Check the recipient')
     const reviewing = address()
 
-    // A row click asks first; Keep editing keeps the comment, detail, address and focus.
-    await userEvent.click(link('Task 1'))
-    const asked = await confirm()
-    // A docked rail sets no stacking order of its own: it draws at the page's level.
-    const layer = (element: Element) => {
-      const z = getComputedStyle(element.closest('[role="dialog"]')!).zIndex
-      return z === 'auto' ? 0 : Number(z)
-    }
-    await expect(layer(asked)).toBeGreaterThan(layer(review))
+    // A row click asks first; Keep editing keeps the comment, the review and the address.
+    await userEvent.click(link('Run 1'))
     await choose('Keep editing')
     await expect(rail()).toBe(review)
     await expect(await comment()).toHaveValue('Check the recipient')
     await expect(address()).toBe(reviewing)
-    // Focus is back on the table, whose cursor row is still the record under review.
-    await waitFor(() => expect(focus()).toBe('table on Reminder run'))
-    // Discard opens the record in the same rail.
-    await userEvent.click(link('Task 1'))
+    // Discard opens the record.
+    await userEvent.click(link('Run 1'))
     await choose('Discard comment')
-    await heading(review, 'Task 1')
-    await expect(rail()).toBe(review)
+    await shows('Run 1')
 
     // Closing asks too.
     await userEvent.click(link('Reminder run'))
-    await heading(review, approvalRequest.callPath)
-    await userEvent.type(await comment(), 'Check the amount')
-    const closeButton = within(review).getByRole('button', { name: 'Close details' })
+    await shows(approvalRequest.callPath)
+    const reopened = rail()!
+    await userEvent.type(await openCommentBox(reopened, userEvent), 'Check the amount')
+    const closeButton = within(reopened).getByRole('button', { name: 'Close details' })
     await userEvent.click(closeButton)
     await choose('Keep editing')
-    await expect(rail()).toBe(review)
-    await expect(await comment()).toHaveValue('Check the amount')
-    await waitFor(() => expect(closeButton).toHaveFocus())
+    await expect(rail()).toBe(reopened)
     await userEvent.click(closeButton)
     await choose('Discard comment')
     await waitFor(() => expect(rail()).toBeNull())
@@ -572,40 +218,21 @@ export const UnsentComment: Story = {
   },
 }
 
+/** At 640px or less the rail is a full-screen modal over the page. */
 export const Mobile: Story = {
   parameters: {
-    initialEntry: `/workspaces/finance/activity?tree=1&record=${encodeURIComponent(tasks[0].name)}`,
+    initialEntry: `/workspaces/finance/activity?root=${encodeURIComponent(goal.name)}&record=${encodeURIComponent(runs[0]!.name)}`,
   },
   play: async ({ canvasElement, userEvent }) => {
-    loads.open()
     // Storybook's own UI cannot resize its viewport, so this play needs the test runner.
     if (!(await resizeViewport(390, 800))) return
-    const { canvas, table, link, rail, heading } = await surface(canvasElement)
-    const opened = await within(document.body).findByRole('dialog', { name: 'Activity details' })
-    await heading(opened, 'Task 1')
-    // At 640px or less the rail is a full-screen modal over the table.
-    await waitFor(() => expect(within(table).queryByRole('link', { name: 'Task 2' })).toBeNull())
+    const { rail, shows } = await surface(canvasElement)
+    await shows('Run 1')
+    const opened = rail()!
     await expect(opened.getBoundingClientRect().width).toBeCloseTo(window.innerWidth, 0)
-
-    // Wider, the same record stays open beside the table, which is usable again.
-    await resizeViewport(1200, 900)
-    await waitFor(() =>
-      expect(within(table).queryByRole('link', { name: 'Task 2' })).not.toBeNull(),
-    )
-    await expect(rail()).toBe(opened)
-    await userEvent.click(link('Task 2'))
-    await heading(opened, 'Task 2')
-
-    // Narrow again, the rail keeps the record it switched to.
-    await resizeViewport(390, 800)
-    await expect(rail()).toBe(opened)
-    await heading(opened, 'Task 2')
-    await waitFor(() =>
-      expect(canvas.queryByRole('heading', { name: 'Your recent activity' })).toBeNull(),
-    )
     await userEvent.click(within(opened).getByRole('button', { name: 'Close details' }))
     await waitFor(() => expect(rail()).toBeNull())
-    await waitFor(() => expect(table).toHaveFocus())
+    await resizeViewport(1200, 900)
   },
 }
 
@@ -613,184 +240,29 @@ export const Mobile: Story = {
 const box = (element: Element) => element.getBoundingClientRect()
 
 /**
- * At 1200px or more the rail docks beside the list: the table shrinks to make room,
- * and no record sits under the rail. Narrower, the rail floats over the table as before.
+ * At 1200px or more the rail docks beside the timeline, which shrinks to make room and gets
+ * its width back when the rail closes.
  */
 export const Docked: Story = {
   play: async ({ canvasElement, userEvent }) => {
-    loads.open()
     // Storybook's own UI cannot resize its viewport, so this play needs the test runner.
     if (!(await resizeViewport(1440, 900))) return
-    const { table, link, rail, shows } = await surface(canvasElement)
-    const full = box(table).width
-
-    await userEvent.click(link('Task 1'))
-    await shows('Task 1')
+    const { timeline, link, rail, shows } = await surface(canvasElement)
+    const full = box(timeline).width
+    await userEvent.click(link('Run 1'))
+    await shows('Run 1')
     const opened = rail()!
-    // Once it slides in, the table ends before the rail starts, and the rail stays in the window.
-    const docked = () =>
-      waitFor(() => {
-        expect(box(table).right).toBeLessThanOrEqual(box(opened).left)
-        expect(box(opened).right).toBeLessThanOrEqual(window.innerWidth)
-      })
-    await docked()
-    await expect(box(table).width).toBeLessThan(full)
-    // Every record stays in reach beside the rail, and another one replaces its detail.
-    await userEvent.click(link('Task 3'))
-    await shows('Task 3')
+    await waitFor(() => {
+      expect(box(timeline).right).toBeLessThanOrEqual(box(opened).left)
+      expect(box(opened).right).toBeLessThanOrEqual(window.innerWidth)
+    })
+    await expect(box(timeline).width).toBeLessThan(full)
+    // Every record stays in reach beside the rail.
+    await userEvent.click(link('Run 3'))
+    await shows('Run 3')
     await expect(rail()).toBe(opened)
-
-    // Narrower than 1200px, the open rail floats over the table, which takes the width back.
-    await resizeViewport(1000, 900)
-    await waitFor(() => expect(box(opened).left).toBeLessThan(box(table).right))
-    await expect(rail()).toBe(opened)
-    await shows('Task 3')
-    // Wide again, the same rail docks with the record it shows.
-    await resizeViewport(1440, 900)
-    await docked()
-    await expect(rail()).toBe(opened)
-    await shows('Task 3')
-
-    // Closing gives the table its width back, and focus returns to it.
     await userEvent.click(within(opened).getByRole('button', { name: 'Close details' }))
     await waitFor(() => expect(rail()).toBeNull())
-    await waitFor(() => expect(box(table).width).toBeCloseTo(full, 0))
-    await waitFor(() => expect(table).toHaveFocus())
-  },
-}
-
-/**
- * Docked, the table resizes in step with the rail as it opens and closes, and turns back
- * from where it is when the reader reverses a close. Another record or a window resize
- * changes the width at once, and so does opening or closing with reduced motion.
- */
-export const DockedTransition: Story = {
-  play: async ({ canvasElement, userEvent }) => {
-    loads.open()
-    // Storybook's own UI cannot resize its viewport, so this play needs the test runner.
-    if (!(await resizeViewport(1440, 900))) return
-    const { table, link, rail, shows } = await surface(canvasElement)
-    const full = box(table).width
-    const closeRail = () =>
-      userEvent.click(within(rail()!).getByRole('button', { name: 'Close details' }))
-    // The element the rail portals into, beside the table in the page's row: the width
-    // the table gives up.
-    const dockOf = (popup: Element) => {
-      let dock = popup
-      while (!dock.parentElement!.contains(table)) dock = dock.parentElement!
-      return dock
-    }
-    const duration = (animation: Animation) => Number(animation.effect!.getTiming().duration)
-    /**
-     * Does `act`, then holds the dock's width transition at `fraction` of its duration,
-     * and the rail's own motion at the same point, on the frame they start: a short one
-     * cannot end, nor the rail unmount, before the play reads the frame. A rail motion
-     * left behind would still run once the dock's has ended. `release` resumes what is
-     * still held; a change of course has replaced the rest.
-     */
-    const hold = async (act: () => Promise<void>, fraction: number, phase: string) => {
-      const doc = canvasElement.ownerDocument
-      const started = new Promise<{ dock: Element; transition: Animation; release: () => void }>(
-        (resolve) => {
-          const onTransition = (event: TransitionEvent) => {
-            const dock = event.target as Element
-            if (event.propertyName !== 'flex-basis' || !dock.parentElement?.contains(table)) return
-            doc.removeEventListener('transitionrun', onTransition)
-            const [transition] = dock.getAnimations()
-            const motion = [transition!, ...(rail()?.getAnimations() ?? [])]
-            for (const animation of motion) {
-              animation.pause()
-              animation.currentTime = duration(animation) * fraction
-            }
-            const release = () => {
-              for (const animation of motion) if (animation.playState === 'paused') animation.play()
-            }
-            resolve({ dock, transition: transition!, release })
-          }
-          doc.addEventListener('transitionrun', onTransition)
-        },
-      )
-      await act()
-      const held = await started
-      // The transition the play reads is still the dock's own, and the only one.
-      await expect(held.dock.getAnimations(), phase).toEqual([held.transition])
-      return held
-    }
-
-    // Opening, the dock widens with the rail's own entrance, over the same time.
-    const open = await hold(() => userEvent.click(link('Task 1')), 0.5, 'opening')
-    const { dock } = open
-    await expect(duration(open.transition)).toBe(200)
-    const opened = rail()!
-    await expect(dockOf(opened)).toBe(dock)
-    await expect(opened.getAnimations().map(duration)).toContain(200)
-    const midway = box(table).width
-    const railWidth = box(opened).width
-    // Halfway, the table has given up part of its width, and nothing overlaps.
-    await expect(midway).toBeLessThan(full)
-    await expect(box(table).right + 16).toBeCloseTo(box(opened).left, 0)
-    open.release()
-    // The close below starts from rest. A close during the entrance starts no exit
-    // motion of its own; this play does not cover that case.
-    await Promise.all(opened.getAnimations().map(({ finished }) => finished))
-    await open.transition.finished
-    await shows('Task 1')
-    const settled = box(table).width
-    await expect(settled).toBeLessThan(midway)
-    // The rail keeps its width throughout, so its content never rewraps.
-    await expect(box(opened).width).toBeCloseTo(railWidth, 0)
-
-    // Another record and another window width resize nothing gradually.
-    await userEvent.click(link('Task 3'))
-    await shows('Task 3')
-    await expect(dock.getAnimations()).toHaveLength(0)
-    await expect(box(table).width).toBeCloseTo(settled, 0)
-    await resizeViewport(1300, 900)
-    await expect(dock.getAnimations()).toHaveLength(0)
-    await expect(box(table).width).toBeLessThan(settled)
-    await resizeViewport(1440, 900)
-    await waitFor(() => expect(box(table).width).toBeCloseTo(settled, 0))
-
-    // Closing, the dock narrows over the rail's own exit, which keeps the rail until then.
-    const close = await hold(closeRail, 0.5, 'closing')
-    await expect(duration(close.transition)).toBe(175)
-    // The rail's own exit runs with the dock's, held with it.
-    await expect(
-      opened
-        .getAnimations()
-        .filter((animation) => duration(animation) === 175)
-        .map(({ playState }) => playState),
-    ).toEqual(['paused', 'paused'])
-    const half = box(table).width
-    await expect(half).toBeGreaterThan(settled)
-    await expect(half).toBeLessThan(full)
-    // Another record reopens the same rail, and the dock widens again from where it was.
-    const reopen = await hold(() => userEvent.click(link('Task 2')), 0, 'reopening')
-    await expect(box(table).width).toBeCloseTo(half, 0)
-    close.release()
-    reopen.release()
-    await reopen.transition.finished
-    await shows('Task 2')
-    await expect(rail()).toBe(opened)
-    await expect(box(table).width).toBeCloseTo(settled, 0)
-
-    // A close that runs its course gives the table its whole width back.
-    await closeRail()
-    await waitFor(() => expect(rail()).toBeNull())
-    await expect(box(table).width).toBeCloseTo(full, 0)
-
-    // With reduced motion, the width changes at once both ways.
-    if (!(await emulateReducedMotion(true))) return
-    try {
-      await userEvent.click(link('Task 1'))
-      await shows('Task 1')
-      await expect(dock.getAnimations()).toHaveLength(0)
-      await expect(box(table).width).toBeCloseTo(settled, 0)
-      await closeRail()
-      await waitFor(() => expect(rail()).toBeNull())
-      await expect(box(table).width).toBeCloseTo(full, 0)
-    } finally {
-      await emulateReducedMotion(false)
-    }
+    await waitFor(() => expect(box(timeline).width).toBeCloseTo(full, 0))
   },
 }

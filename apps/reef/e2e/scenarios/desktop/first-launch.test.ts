@@ -97,7 +97,10 @@ test('A fresh Desktop runs its first Program over the workspace MCP endpoint', a
     })
     await step('See the run in the workspace activity', async () => {
       await page.goto(`/workspaces/${workspace}/activity`)
-      await page.getByRole('link', { name: 'Desktop first goal', exact: true }).waitFor()
+      await page
+        .getByRole('table', { name: 'Activity records', exact: true })
+        .getByRole('link', { name: 'Desktop first goal', exact: true })
+        .waitFor()
     })
   })
 })

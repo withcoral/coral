@@ -1,16 +1,9 @@
 import type { ActivityPage, ActivityRow } from '@/views/activity/types'
 
-export const ACTIVITY_CHILD_WINDOW = 100
-/** Ordinals only select a bounded window. Anchors are reauthorized, never retained content. */
-export interface ActivityViewport {
-  offset: number
-  anchor: string
-  preceding: number
-}
+/** The top-level records a live reader watches, and whether it follows the newest. */
 export interface ActivityReadingWindow {
   roots: string[]
   followRoot: boolean
-  branches: Record<string, ActivityViewport>
 }
 export interface ActivityObservation {
   path: string
@@ -49,16 +42,6 @@ export function readingWindow(page: ActivityPage): ActivityReadingWindow {
   return {
     roots: page.rows.map((row) => row.name),
     followRoot: !page.hasBefore && !page.anchorUnavailable,
-    branches: Object.fromEntries(
-      Object.entries(page.branches).map(([name, branch]) => [
-        name,
-        {
-          offset: branch.offset ?? 0,
-          anchor: '',
-          preceding: 0,
-        },
-      ]),
-    ),
   }
 }
 export function retainRows(rows: ActivityRow[], names: string[]): ActivityRow[] {

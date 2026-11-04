@@ -84,6 +84,11 @@ function fixture(children = 0) {
         exactReads++
         throw new ConnectError('forbidden', Code.NotFound)
       },
+      // A selected Run with no Task opens as its own timeline, which has no records here.
+      browseRunEntries: ({ name }) => {
+        if (!authorized) throw new ConnectError('forbidden', Code.NotFound)
+        return { run: { name, workspace }, entries: [] }
+      },
     })
     service(ProviderAccountService, {})
   })
@@ -121,7 +126,7 @@ function request(body: unknown, signal?: AbortSignal) {
 const observation = {
   path: `/${workspace}/activity`,
   search: '',
-  window: { roots: [task], followRoot: false, branches: {} },
+  window: { roots: [task], followRoot: false },
 }
 async function emission(reader: ReadableStreamDefaultReader<Uint8Array>) {
   return JSON.parse(
@@ -226,58 +231,6 @@ it('automatically inserts new roots when following the global edge', async () =>
     await reader.cancel()
   }
 })
-it('streams appended children into a later viewport without loading earlier exact history', async () => {
-  const f = fixture(150)
-  const response = await observeActivity(
-    request({
-      ...observation,
-      search: `?tree=1&expand=${task}`,
-      window: {
-        ...observation.window,
-        branches: { [task]: { offset: 125, anchor: '', preceding: 0 } },
-      },
-    }),
-    f.api,
-  )
-  const reader = response.body!.getReader()
-  try {
-    const first = await emission(reader)
-    expect(first.page.branches[task].rows).toHaveLength(25)
-    expect(first.page.branches[task].offset).toBe(125)
-    f.append()
-    const update = await emission(reader)
-    expect(update.page.branches[task].rows).toHaveLength(26)
-    expect(update.page.branches[task].rows.at(-1).name).toBe(child(151))
-    expect(update.page.branches[task].total).toBe('151')
-    expect(f.exactReads()).toBe(0)
-  } finally {
-    await reader.cancel()
-  }
-})
-it('bounds an automatically loaded child window instead of hydrating all children', async () => {
-  const f = fixture(250)
-  const response = await observeActivity(
-    request({
-      ...observation,
-      search: `?tree=1&expand=${task}`,
-      window: {
-        ...observation.window,
-        branches: { [task]: { offset: 100, anchor: '', preceding: 0 } },
-      },
-    }),
-    f.api,
-  )
-  const reader = response.body!.getReader()
-  try {
-    const update = await emission(reader)
-    expect(update.page.branches[task].rows).toHaveLength(100)
-    expect(update.page.branches[task].rows[0].name).toBe(child(101))
-    expect(update.page.branches[task].rows.at(-1).name).toBe(child(200))
-    expect(update.page.branches[task].total).toBe('250')
-  } finally {
-    await reader.cancel()
-  }
-})
 it('keeps the Workspace Activity destination while updating independent exact detail and concealing access loss', async () => {
   const path = `/${workspace}/activity`
   const f = fixture()
@@ -344,7 +297,7 @@ it('accepts encoded Agent navigation and rejects encoded path separators', async
     observeActivity(request({ ...observation, path: `/${workspace}/agents/agent%2Fother` }), f.api),
   ).rejects.toMatchObject({ status: 400 })
 })
-it('rejects unbounded or invalid viewports before any domain query', async () => {
+it('rejects an unbounded or invalid window before any domain query', async () => {
   const f = fixture()
   for (const body of [
     { ...observation, path: '/organization/members' },
@@ -355,13 +308,7 @@ it('rejects unbounded or invalid viewports before any domain query', async () =>
       ...observation,
       window: { ...observation.window, roots: Array(26).fill(task) },
     },
-    ...[-1, 1.5, Number.MAX_SAFE_INTEGER + 1].map((offset) => ({
-      ...observation,
-      window: {
-        ...observation.window,
-        branches: { [task]: { offset, anchor: '', preceding: 0 } },
-      },
-    })),
+    { ...observation, window: { ...observation.window, roots: ['workspaces/w/approvals/a'] } },
   ])
     await expect(observeActivity(request(body), f.api)).rejects.toMatchObject({
       status: 400,

@@ -29,7 +29,7 @@ test('The shell remembers navigation preferences and recovers from a missing pag
       expect(new URL(page.url()).pathname).toBe(`/workspaces/${workspace}/activity`)
       await page.reload()
       await breadcrumb(page, 'Activity').waitFor()
-      await page.getByRole('heading', { name: 'Your recent activity', exact: true }).waitFor()
+      await page.getByRole('table', { name: 'Activity records', exact: true }).waitFor()
     })
     await step('Collapse the sidebar', async () => {
       await page.getByRole('button', { name: 'Collapse sidebar', exact: true }).click()

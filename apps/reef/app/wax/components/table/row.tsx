@@ -1,5 +1,12 @@
 import classNames from 'classnames'
-import type { CSSProperties, MouseEvent, MouseEventHandler, PropsWithChildren, Ref } from 'react'
+import {
+  createContext,
+  type CSSProperties,
+  type MouseEvent,
+  type MouseEventHandler,
+  type PropsWithChildren,
+  type Ref,
+} from 'react'
 import { useHref, useNavigate } from 'react-router'
 
 import { ROW_CONTROLS } from './constants'
@@ -15,8 +22,11 @@ export type RowProps = PropsWithChildren<{
   active?: boolean
   /** Stable identity for reading-position preservation, never an authority grant. */
   recordKey?: string
-  /** A left-edge marker with an exact text description, independent of selection. */
-  status?: { tone: 'success' | 'error' | 'warning' | 'neutral'; label: string }
+  /**
+   * A left-edge marker with an exact text description, independent of selection. A
+   * `Table.Record` in the row repeats an error or a warning as an icon shape.
+   */
+  status?: RowStatus
   /** Opens the row's detail; the row shows a pointer. */
   onClick?: MouseEventHandler<HTMLDivElement>
   /**
@@ -35,6 +45,11 @@ export type RowProps = PropsWithChildren<{
   /** Marks a group heading that pins while its rows scroll. `Table.Group` sets it. */
   'data-pinned-heading'?: true
 }>
+
+export type RowStatus = { tone: 'success' | 'error' | 'warning' | 'neutral'; label: string }
+
+/** The status of the row a `Table.Record` sits in. */
+export const RowStatusContext = createContext<RowStatus | undefined>(undefined)
 
 export function Row({ to, preventScrollReset, ...props }: RowProps) {
   if (to === undefined) return <RowElement {...props} />
@@ -104,7 +119,7 @@ function RowElement({
       aria-description={status?.label}
       title={status?.label}
     >
-      {children}
+      <RowStatusContext value={status}>{children}</RowStatusContext>
     </div>
   )
 }

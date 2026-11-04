@@ -28,6 +28,7 @@ export function AnnotatedCodeBlock({
   followHighlight,
   revealKey,
   marks,
+  wrap = false,
 }: {
   code: string
   language: Language
@@ -38,6 +39,8 @@ export function AnnotatedCodeBlock({
   /** By line number, the parts of its text a Find found, in order. Each new map reveals
    * its current match, so keep it the same between renders until Find moves. */
   marks?: ReadonlyMap<number, Highlight[]>
+  /** Wrap long lines inside the block's width, for a narrow pane, instead of scrolling sideways. */
+  wrap?: boolean
 }) {
   const lines = useMemo(() => splitLines(highlightSource(code, language)), [code, language])
   // By line, each run's text with the parts of the marks that fall in it.
@@ -80,7 +83,11 @@ export function AnnotatedCodeBlock({
               key={lineNumber}
               data-line={lineNumber}
               data-highlighted={inRange || undefined}
-              className={classNames(styles.line, inRange && styles.lineHighlighted)}
+              className={classNames(
+                styles.line,
+                wrap && styles.lineWrapped,
+                inRange && styles.lineHighlighted,
+              )}
             >
               <span className={styles.gutter} aria-hidden>
                 {lineNumber}

@@ -26,6 +26,7 @@ import { Banner, Button } from '@/wax/components'
 import { AgentActivityPage } from '@/views/management/agent-activity-page'
 import { trail } from '@/views/management/layout'
 import { loadActivity } from '@/lib/activity.server'
+import { readsActivity } from '@/views/activity/navigation'
 import { activityProviderMarks } from '@/lib/providers.server'
 import { loadActivityPage } from '@/lib/activity-page-fetch'
 import { ACTIVITY_PAGE_SIZE } from '@/lib/activity-list'
@@ -57,6 +58,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         { headers: privateHeaders },
       )
     }
+    // A glimpse of the latest records shows no timeline, so it reads none.
+    const query = new URL(request.url).searchParams
+    const full = query.get('view') === 'activity' || readsActivity(query)
     // Settings own the Registration read; the page shows the accounts the agent needs.
     const [workspace, agent, providers, activity] = await Promise.all([
       api.workspaces.getWorkspace({ name: workspaceName(params.workspace) }),
@@ -64,6 +68,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       loadAgentProviders(context, name).catch(accountsUnavailable),
       loadActivity(request, api, {
         scope: { workspace: workspaceName(params.workspace), agent: name },
+        trace: full,
       }),
     ])
     return data(

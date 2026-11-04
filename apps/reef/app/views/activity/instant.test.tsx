@@ -6,12 +6,13 @@ import { Instant } from './instant'
 afterEach(() => vi.unstubAllEnvs())
 
 it.each([
-  ['2026-09-18T14:02:00.000Z', '18 Sep 2026, 14:02:00 UTC'],
-  ['2026-09-08T00:00:09Z', '8 Sep 2026, 00:00:09 UTC'],
-  // Sub-second digits stay in the attributes; the visible time keeps whole seconds.
-  ['2026-09-22T09:00:05.123456789Z', '22 Sep 2026, 09:00:05 UTC'],
+  ['2026-09-18T14:02:00.000Z', '18 Sep 2026, 14:02:00.000 UTC'],
+  ['2026-09-08T00:00:09Z', '8 Sep 2026, 00:00:09.000 UTC'],
+  // Work often starts and ends in the same second, so the visible time keeps milliseconds;
+  // finer digits stay in the attributes.
+  ['2026-09-22T09:00:05.123456789Z', '22 Sep 2026, 09:00:05.123 UTC'],
   // An offset instant reads in UTC, which can be another calendar day.
-  ['2026-10-01T01:30:00+02:00', '30 Sep 2026, 23:30:00 UTC'],
+  ['2026-10-01T01:30:00+02:00', '30 Sep 2026, 23:30:00.000 UTC'],
 ])('reads %s as %s and keeps the exact instant to inspect', (value, text) => {
   render(<Instant value={value} />)
   const time = screen.getByText(text)
@@ -25,7 +26,7 @@ it.each(['Pacific/Kiritimati', 'America/Los_Angeles'])(
   (zone) => {
     vi.stubEnv('TZ', zone)
     render(<Instant value="2026-09-18T23:59:59Z" />)
-    expect(screen.getByText('18 Sep 2026, 23:59:59 UTC')).toBeInTheDocument()
+    expect(screen.getByText('18 Sep 2026, 23:59:59.000 UTC')).toBeInTheDocument()
   },
 )
 

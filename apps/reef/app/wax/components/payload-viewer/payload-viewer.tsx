@@ -403,7 +403,13 @@ function Viewer({
   )
   const content = rows
     ? virtual('Structure', styles.wrapped, (index) => (
-        <StructureRow row={rows[index]!} folded={folded} toggle={toggle} marked={marked} />
+        <StructureRow
+          row={rows[index]!}
+          folded={folded}
+          toggle={toggle}
+          marked={marked}
+          sizeOf={(node) => byteSize(value.slice(node.start, node.end))}
+        />
       ))
     : format === 'text'
       ? virtual('Lines', false, (index) => {
@@ -546,11 +552,14 @@ function StructureRow({
   folded,
   toggle,
   marked,
+  sizeOf,
 }: {
   row: Row
   folded: Set<number>
   toggle: (start: number) => void
   marked: (start: number, text: string, cut?: number) => ReactNode
+  /** A value's retained size, such as "4.1 kB". */
+  sizeOf: (node: JsonNode) => string
 }) {
   const { node } = row
   const indent = { paddingInlineStart: row.depth * INDENT }
@@ -588,6 +597,9 @@ function StructureRow({
       )
     const isFolded = folded.has(node.start)
     const size = `${count} ${nouns[node.kind][count === 1 ? 0 : 1]}`
+    // A value under the top level states its size, so a large part reads as large; the expanded
+    // viewer's header states the whole payload's.
+    const summary = row.depth > 0 ? `${size} · ${sizeOf(node)}` : size
     return (
       <div className={styles.line} style={indent}>
         <Button.IconButton
@@ -606,10 +618,10 @@ function StructureRow({
             <>
               {' … '}
               {close}
-              {row.trailing} <span className={styles.summary}>{size}</span>
+              {row.trailing} <span className={styles.summary}>{summary}</span>
             </>
           ) : (
-            <span className={styles.summary}> {size}</span>
+            <span className={styles.summary}> {summary}</span>
           )}
         </span>
       </div>

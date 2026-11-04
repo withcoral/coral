@@ -1,6 +1,6 @@
 import { activityStream, type StreamDeadlines } from './activity-stream.server'
 import { loadActivity, type ActivityApi } from './activity.server'
-import { ACTIVITY_CHILD_WINDOW, type ActivityObservation } from './activity-live-types'
+import type { ActivityObservation } from './activity-live-types'
 import { agentName, workspaceName, privateHeaders } from './management.server'
 
 const invalid = () =>
@@ -42,29 +42,14 @@ async function observation(request: Request): Promise<ActivityObservation> {
       typeof value.window.followRoot !== 'boolean' ||
       !Array.isArray(value.window.roots) ||
       value.window.roots.length > 25 ||
-      !value.window.roots.every(name) ||
-      !value.window.branches ||
-      typeof value.window.branches !== 'object' ||
-      Array.isArray(value.window.branches)
+      !value.window.roots.every(name)
     )
       throw invalid()
-    const branches = Object.entries(value.window.branches)
-    if (
-      branches.length > 20 ||
-      branches.some(
-        ([parent, viewport]) =>
-          !name(parent) ||
-          !viewport ||
-          !Number.isSafeInteger(viewport.offset) ||
-          viewport.offset < 0 ||
-          !Number.isInteger(viewport.preceding) ||
-          viewport.preceding < 0 ||
-          viewport.preceding >= ACTIVITY_CHILD_WINDOW ||
-          (viewport.anchor !== '' && !name(viewport.anchor)),
-      )
-    )
-      throw invalid()
-    return value
+    return {
+      path: value.path,
+      search: value.search,
+      window: { roots: value.window.roots, followRoot: value.window.followRoot },
+    }
   } catch (error) {
     if (error instanceof Response) throw error
     throw invalid()
@@ -73,7 +58,7 @@ async function observation(request: Request): Promise<ActivityObservation> {
   }
 }
 
-/** Read-only observation: every bounded window and selected detail crosses its owner's authorization. */
+/** Read-only observation: the list, the open root and the selected detail each cross their owner's authorization. */
 export async function observeActivity(
   request: Request,
   api: ActivityApi,
@@ -90,11 +75,6 @@ export async function observeActivity(
         : { scope: { workspace } }
   const url = new URL(input.path, request.url)
   url.search = input.search
-  url.searchParams.set('tree', '1')
-  for (const parent of Object.keys(input.window.branches)) {
-    if (!url.searchParams.getAll('expand').includes(parent))
-      url.searchParams.append('expand', parent)
-  }
   return activityStream(
     request,
     api,

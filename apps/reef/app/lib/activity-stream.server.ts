@@ -16,7 +16,7 @@ function evidence(value: ActivityPageValue | ActivityCountValue) {
   return createHash('sha256')
     .update(
       JSON.stringify(value, (key, field: unknown) =>
-        key === 'durationNanos' || key === 'waitingNanos' ? undefined : field,
+        key === 'durationNanos' || key === 'waitingNanos' || key === 'readAt' ? undefined : field,
       ),
     )
     .digest('hex')

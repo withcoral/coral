@@ -1,4 +1,4 @@
-import type { Page } from 'playwright'
+import type { Locator, Page } from 'playwright'
 import { expect, test } from 'vitest'
 import { authenticatedTarget, loginActor, mcpToken } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
@@ -14,16 +14,6 @@ import {
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
 import { shownPayload } from '../../../support/payloads.ts'
 
-/** The Activity list anchored at `record` in `run` of `task`, with nothing selected. */
-function revealedAt(task: string, run: string, record: string) {
-  const query = new URLSearchParams({ anchor: task, tree: '1' })
-  query.append('expand', task)
-  query.append('expand', run)
-  query.set(`anchor.${task}`, run)
-  query.set(`anchor.${run}`, record)
-  return `/${task.split('/tasks/')[0]}/activity?${query}`
-}
-
 /**
  * Waits until the selected discovery Run's return value, the description its Program read
  * with `coral.workspace.search` then, shows the recorded source that holds `marker`.
@@ -35,7 +25,15 @@ async function openRecordedSource(page: Page, marker: string) {
   ).waitFor()
 }
 
-test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen reading position', async (context) => {
+/**
+ * Selects the Event that `mark` names on its Run's row. The Events of a quick Run share one
+ * point on the time axis, so the keyboard picks the named mark where a pointer could not.
+ */
+async function selectMark(mark: Locator) {
+  await mark.press('Enter')
+}
+
+test('Activity keeps each workspace apart, opens exact retained evidence from a timeline, and keeps a removed Agent’s history', async (context) => {
   const actor = await loginActor(context, authenticatedTarget().authentication.owner)
   const api = managementClients(actor.accessToken)
   await withBrowserSession(
@@ -49,6 +47,17 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
       const intent = `Shared activity goal ${crypto.randomUUID()}`
       const original = 'export default function snapshot() { return "historical-source-249"; }'
       const replacement = 'export default function snapshot() { return "replacement-source-249"; }'
+      // An open rail can hide the page behind it from the accessibility tree.
+      const list = page.getByRole('table', {
+        name: 'Activity records',
+        exact: true,
+        includeHidden: true,
+      })
+      const timeline = page.getByRole('table', {
+        name: 'Timeline records',
+        exact: true,
+        includeHidden: true,
+      })
       await step('Land on Overview and keep workspace administration reachable', async () => {
         first = await createWorkspace(actor.accessToken, firstName)
         await page.goto('/')
@@ -103,12 +112,6 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           ).not.toBe(true)
           const rejected = await execute.exec('return { invalid syntax;')
           expect(rejected.isError).toBe(true)
-          // Keep enough children to require real scrolling in the continuous history.
-          for (let index = 0; index < 45; index++) {
-            expect((await execute.describe('coral.functions.history.snapshot')).isError).not.toBe(
-              true,
-            )
-          }
           expect((await execute.endTask('failure', 'No invoice export tool 🪸')).isError).not.toBe(
             true,
           )
@@ -126,6 +129,8 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           await observeRun(other, await other.exec('return "second-workspace";'))
         },
       )
+      const taskName = () => `workspaces/${first}/tasks/${task}`
+      const runName = () => `workspaces/${first}/runs/${run}`
       await step(
         'Browse each workspace’s equal-intent goal separately without preloading its source',
         async () => {
@@ -135,40 +140,22 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           expect(
             await breadcrumb(page).getByRole('listitem', { includeHidden: true }).allInnerTexts(),
           ).toEqual([firstName, 'Activity'])
-          expect(await page.getByRole('button', { name: 'Workspace scope' }).count()).toBe(0)
-          const heading = await breadcrumb(page).boundingBox()
-          const tableBounds = await page
-            .getByRole('table', { name: 'Activity records', exact: true })
-            .boundingBox()
-          expect(tableBounds!.x).toBe(heading!.x)
-          expect(tableBounds!.y).toBeGreaterThan(heading!.y + heading!.height)
-          await page.getByRole('heading', { name: 'Your recent activity', exact: true }).waitFor()
-          expect(
-            await page.getByRole('navigation', { name: 'Activity scope', exact: true }).count(),
-          ).toBe(0)
-          expect(await page.getByRole('link', { name: /^Scope to / }).count()).toBe(0)
-          expect(await page.getByRole('link', { name: 'all', exact: true }).count()).toBe(0)
           // The other workspace's goal has the same intent but belongs to its own Activity.
-          expect(await page.getByRole('link', { name: intent, exact: true }).count()).toBe(1)
-          expect(
-            await page
-              .getByRole('table', { name: 'Activity records' })
-              .getByRole('columnheader')
-              .allInnerTexts(),
-          ).toEqual(['TIME · UTC', 'RECORD', 'DUR', 'CONTEXT'])
+          expect(await list.getByRole('link', { name: intent, exact: true }).count()).toBe(1)
+          // With no root named, the newest opens beside the list, and the address names it.
+          await page.waitForURL((url) => url.searchParams.get('root') === taskName())
+          await timeline.getByRole('link', { name: 'Find tools', exact: true }).first().waitFor()
           expect(await page.content()).not.toContain('historical-source-249')
           expect(await page.content()).not.toContain('replacement-source-249')
           expect(await page.content()).not.toContain('No invoice export tool')
           await page.goto(`/workspaces/${second}/activity`)
           await breadcrumb(page, 'Activity').waitFor()
-          expect(await page.getByRole('link', { name: intent, exact: true }).count()).toBe(1)
+          expect(await list.getByRole('link', { name: intent, exact: true }).count()).toBe(1)
           expect(await page.content()).not.toContain('historical-source-249')
         },
       )
       await step('Read completion feedback only in exact goal detail', async () => {
-        await page.goto(
-          `/workspaces/${first}/activity?record=${encodeURIComponent(`workspaces/${first}/tasks/${task}`)}`,
-        )
+        await page.goto(`/workspaces/${first}/activity?record=${encodeURIComponent(taskName())}`)
         await page.getByText('No invoice export tool 🪸', { exact: true }).waitFor()
         await page
           .getByRole('dialog')
@@ -176,36 +163,32 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           .getByText('failure', { exact: true })
           .waitFor()
         expect(await page.content()).not.toContain('Must not replace feedback')
-        expect(
-          await page
-            .getByRole('table', { name: 'Activity records', includeHidden: true })
-            .innerText(),
-        ).not.toContain('No invoice export tool')
-      })
-      await step('Inspect the recorded description instead of today’s function', async () => {
-        await page.goto(
-          `/workspaces/${first}/activity?${new URLSearchParams({ expand: `workspaces/${first}/tasks/${task}` })}`,
-        )
-        await page.getByRole('link', { name: 'Find tools', exact: true }).first().click()
-        await openRecordedSource(page, 'historical-source-249')
-        expect(await page.content()).not.toContain('replacement-source-249')
-        const rejectedRow = page
-          .getByRole('row', { includeHidden: true })
-          .and(page.getByTitle('rejected', { exact: true }))
-        await rejectedRow.waitFor()
-        expect(
-          await page.getByRole('button', { name: 'Copy record link', exact: true }).count(),
-        ).toBe(0)
+        expect(await list.innerText()).not.toContain('No invoice export tool')
+        expect(await timeline.innerText()).not.toContain('No invoice export tool')
       })
       await step(
-        'Close detail and use browser navigation without losing the workspace or expansion',
+        'Inspect the recorded description from the timeline instead of today’s function',
+        async () => {
+          await page.goto(
+            `/workspaces/${first}/activity?${new URLSearchParams({ root: taskName() })}`,
+          )
+          await timeline.getByRole('link', { name: 'Find tools', exact: true }).first().click()
+          await openRecordedSource(page, 'historical-source-249')
+          expect(await page.content()).not.toContain('replacement-source-249')
+          // The rejected submission keeps its own row, which names its outcome.
+          await timeline
+            .getByRole('row', { includeHidden: true })
+            .and(page.getByTitle('rejected', { exact: true }))
+            .waitFor()
+        },
+      )
+      await step(
+        'Close detail and use browser navigation without losing the workspace or its timeline',
         async () => {
           expect(new URL(page.url()).pathname).toBe(`/workspaces/${first}/activity`)
-          expect(new URL(page.url()).searchParams.getAll('expand')).toContain(
-            `workspaces/${first}/tasks/${task}`,
-          )
           await page.getByRole('button', { name: 'Close details', exact: true }).click()
           await page.waitForURL((url) => !url.searchParams.has('record'))
+          expect(new URL(page.url()).searchParams.get('root')).toBe(taskName())
           // The address changes first; the detail keeps its evidence while it exits.
           await page
             .getByRole('dialog', { name: 'Activity details', exact: true })
@@ -215,124 +198,24 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           await openRecordedSource(page, 'historical-source-249')
         },
       )
-      await step(
-        'Return from narrow detail to the same continuous history and scroll position',
-        async () => {
-          await page.setViewportSize({ width: 390, height: 844 })
-          await page.goto(
-            `/workspaces/${first}/activity?${new URLSearchParams({ expand: `workspaces/${first}/tasks/${task}` })}`,
-          )
-          const list = page.getByRole('table', {
-            name: 'Activity records',
-            exact: true,
-            includeHidden: true,
-          })
-          expect(
-            await page.getByRole('link', { name: /^(Next|Previous|First) records$/ }).count(),
-          ).toBe(0)
-          // The list starts at the top bar's gutter, where the drawer trigger opens it.
-          const barStart = await page
-            .getByRole('button', { name: 'Open navigation', exact: true })
-            .boundingBox()
-          expect((await list.boundingBox())!.x).toBe(barStart!.x)
-          const overflowingAncestors = await list.evaluate((element) => {
-            const overflowing = []
-            for (
-              let ancestor = element.parentElement;
-              ancestor;
-              ancestor = ancestor.parentElement
-            ) {
-              if (ancestor.scrollHeight > ancestor.clientHeight + 1) {
-                overflowing.push(ancestor.tagName)
-              }
-            }
-            return overflowing
-          })
-          expect(overflowingAncestors).toEqual([])
-          await list.evaluate((element) => {
-            element.scrollTop = element.scrollHeight
-          })
-          expect(await list.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
-          const selectedLink = list.getByRole('link', { name: 'Find tools', exact: true }).last()
-          const relativePosition = async () =>
-            (await selectedLink.boundingBox())!.y - (await list.boundingBox())!.y
-          const before = await relativePosition()
-          await selectedLink.click()
-          await openRecordedSource(page, 'replacement-source-249')
-          await page.getByRole('dialog', { name: 'Activity details' }).waitFor()
-          expect(await list.isVisible()).toBe(true)
-          await page.getByRole('button', { name: 'Close details', exact: true }).click()
-          await list.waitFor({ state: 'visible' })
-          await page.getByRole('dialog').waitFor({ state: 'hidden' })
-          await expect.poll(relativePosition, { timeout: 10_000 }).toBeCloseTo(before, 0)
-          expect(new URL(page.url()).searchParams.getAll('expand')).toContain(
-            `workspaces/${first}/tasks/${task}`,
-          )
-          await page.setViewportSize({ width: 1440, height: 900 })
-        },
-      )
-      await step('Reveal an exact emission beyond the first child page', async () => {
-        const selected = `workspaces/${first}/runs/${run}/events/31`
+      await step('Open an exact emission from its address, in its Task’s timeline', async () => {
+        const selected = `${runName()}/events/31`
         await page.goto(`/workspaces/${first}/activity?record=${encodeURIComponent(selected)}`)
-        const table = page.getByRole('table', {
-          name: 'Activity records',
-          exact: true,
-          includeHidden: true,
-        })
-        await table
-          .getByRole('link', { name: 'emission #31', exact: true, includeHidden: true })
+        // The Event's own Task opens around it, and the address names that Task.
+        await page.waitForURL(
+          (url) =>
+            url.searchParams.get('root') === taskName() &&
+            url.searchParams.get('record') === selected,
+        )
+        await timeline
+          .getByRole('button', { name: /^emission #31 at /, includeHidden: true })
           .waitFor()
         await shownPayload(page, '29').waitFor()
-        // The list anchored at the emission, as Activity reveals a record, opens no drawer.
-        await page.goto(
-          revealedAt(
-            `workspaces/${first}/tasks/${task}`,
-            `workspaces/${first}/runs/${run}`,
-            selected,
-          ),
+        // The Run's return value is a mark on the same row. It shows the snapshot's own value.
+        await selectMark(
+          timeline.getByRole('button', { name: /^return value at /, includeHidden: true }),
         )
-        await page.waitForURL(
-          (url) => url.searchParams.get(`anchor.workspaces/${first}/runs/${run}`) === selected,
-        )
-        await page.getByRole('dialog').waitFor({ state: 'hidden' })
-        // With no record selected, no row outside the page shows, so the link
-        // below is the revealed page's own row.
-        await page
-          .getByText('Outside this workspace or page:', { exact: true })
-          .waitFor({ state: 'detached' })
-        await table.getByRole('link', { name: 'emission #31', exact: true }).waitFor()
-        expect(new URL(page.url()).searchParams.has('scope')).toBe(false)
-        expect(new URL(page.url()).searchParams.has('record')).toBe(false)
-        expect(new URL(page.url()).searchParams.get('anchor')).toBe(
-          `workspaces/${first}/tasks/${task}`,
-        )
-        expect(new URL(page.url()).searchParams.get(`anchor.workspaces/${first}/runs/${run}`)).toBe(
-          selected,
-        )
-        await table
-          .getByRole('rowgroup', { name: 'Call one Tool records', exact: true })
-          .evaluate((element) => {
-            const port = element.closest('[role=table]')!
-            port.scrollTop +=
-              element.getBoundingClientRect().top - port.getBoundingClientRect().top - 40
-          })
-        await table
-          .getByRole('link', { name: 'emission #2', exact: true })
-          .waitFor({ timeout: 10_000 })
-        expect(
-          await table.getByRole('link', { name: 'execution accepted', exact: true }).count(),
-        ).toBe(0)
-        expect(
-          await table.getByRole('link', { name: 'execution ended', exact: true }).count(),
-        ).toBe(0)
-        // The Run's panel shows its return value, so the table neither marks nor repeats it.
-        expect(await table.getByRole('img', { name: 'return value', exact: true }).count()).toBe(0)
-        expect(await table.getByRole('link', { name: 'return value', exact: true }).count()).toBe(0)
-        await table
-          .locator(`[data-record-key="workspaces/${first}/runs/${run}"]`)
-          .locator('a[href]')
-          .click()
-        // The Run returns the snapshot's own value, and its panel counts it as its own share.
+        await page.waitForURL((url) => url.searchParams.get('record') === `${runName()}/final`)
         await shownPayload(page, 'historical-source-249').waitFor()
         await page
           .getByRole('region', { name: 'Agent context', exact: true })
@@ -342,7 +225,27 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         await page.getByRole('button', { name: 'Close details', exact: true }).click()
         await page.waitForURL((url) => !url.searchParams.has('record'))
       })
-      await step('Open a stable Run link in its workspace', async () => {
+      await step(
+        'Open a terminal Event without replacing its identity with the final value',
+        async () => {
+          const finalPage = await api.activity.browseRunEntries({
+            name: runName(),
+            anchor: `${runName()}/final`,
+            pageSize: 1,
+          })
+          const terminal = finalPage.entries[0]?.record
+          if (terminal?.case !== 'event') throw new Error('Expected the terminal Event')
+          const selected = `${runName()}/events/${terminal.value.sequence}`
+          await page.goto(`/workspaces/${first}/activity?record=${encodeURIComponent(selected)}`)
+          await page
+            .getByRole('dialog')
+            .getByRole('heading', { name: 'Program run ended: succeeded', exact: true })
+            .waitFor()
+          await page.waitForURL((url) => url.searchParams.get('root') === taskName())
+          expect(new URL(page.url()).searchParams.get('record')).toBe(selected)
+        },
+      )
+      await step('Open a stable Run link in its Task’s timeline', async () => {
         await page.goto(`/workspaces/${first}/runs/${run}`)
         // A Run panel leads with its timing; it keeps no source or snapshots.
         const started = page.getByRole('dialog').getByText('Started', { exact: true })
@@ -354,6 +257,11 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             .getByRole('listitem', { includeHidden: true })
             .allInnerTexts(),
         ).toEqual([firstName, 'Activity'])
+        // The Run's Task opens beside it, with the Run's own row selected.
+        await timeline
+          .getByRole('row', { selected: true, includeHidden: true })
+          .getByRole('link', { name: 'Call one Tool', exact: true, includeHidden: true })
+          .waitFor()
         expect(await page.content()).not.toContain('replacement-source-249')
         await page.setViewportSize({ width: 390, height: 844 })
         await started.waitFor()
@@ -386,23 +294,13 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           kind: 'value',
           value: 'tool_disabled',
         })
-        const tree = new URLSearchParams()
-        tree.append('expand', `workspaces/${first}/tasks/${execute.taskId()}`)
-        tree.append('expand', `workspaces/${first}/runs/${observed.update.run_id}`)
-        await page.goto(`/workspaces/${first}/activity?${tree}`)
+        await page.goto(
+          `/workspaces/${first}/activity?${new URLSearchParams({ root: `workspaces/${first}/tasks/${execute.taskId()}` })}`,
+        )
+        // The call shows under its Run, named by its provider and tool.
+        const toolLink = timeline.getByRole('link', { name: 'History fixture lookup', exact: true })
+        await toolLink.waitFor()
         expect(await page.content()).not.toContain('exact-arguments-249')
-        const toolLink = page
-          .getByRole('table', { name: 'Activity records', exact: true })
-          .getByRole('link', {
-            name: 'History fixture lookup',
-            exact: true,
-          })
-        const table = page.getByRole('table', { name: 'Activity records', exact: true })
-        // The Run returns only the failure code, so its context is that code's JSON: on the
-        // Task and the Run, and on no row of its own.
-        const added = `${JSON.stringify('tool_disabled').length} B added`
-        expect(await table.getByLabel(added, { exact: true }).count()).toBe(2)
-        expect(await table.getByLabel('No net context change', { exact: true }).count()).toBe(1)
         await toolLink.click()
         // The one scalar argument shows under its own field, with its exact JSON spelling.
         // The program beside it spells the same token, so read the record's own detail.
@@ -415,7 +313,6 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
       await step(
         'Keep Agent list context and retained history after removing its Registration',
         async () => {
-          await page.setViewportSize({ width: 1440, height: 900 })
           const issued = await api.agents.createAgent({
             parent: `workspaces/${first}`,
             displayName: 'History worker',
@@ -430,11 +327,11 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             execute,
             await execute.exec('return "retained-agent-output";'),
           )
-          const runName = `workspaces/${first}/runs/${observed.update.run_id}`
-          const taskName = `workspaces/${first}/tasks/${execute.taskId()}`
-          await page.goto(`/${name}?expand=${encodeURIComponent(taskName)}`)
-          await page.getByRole('link', { name: 'Call one Tool', exact: true }).click()
-          await page.waitForURL((url) => url.searchParams.get('record') === runName)
+          const agentRun = `workspaces/${first}/runs/${observed.update.run_id}`
+          const agentTask = `workspaces/${first}/tasks/${execute.taskId()}`
+          await page.goto(`/${name}?${new URLSearchParams({ root: agentTask })}`)
+          await timeline.getByRole('link', { name: 'Call one Tool', exact: true }).click()
+          await page.waitForURL((url) => url.searchParams.get('record') === agentRun)
           expect(new URL(page.url()).pathname).toBe(`/${name}`)
           await page.getByRole('button', { name: 'Close details', exact: true }).click()
           await page.waitForURL((url) => !url.searchParams.has('record'))
@@ -445,7 +342,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
               exact: true,
             })
             .waitFor()
-          await page.getByRole('link', { name: 'Call one Tool', exact: true }).click()
+          await timeline.getByRole('link', { name: 'Call one Tool', exact: true }).click()
           await shownPayload(page, 'retained-agent-output').waitFor()
           expect(
             await page
@@ -454,7 +351,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
               .allInnerTexts(),
           ).toEqual([firstName, 'Agents', 'History worker'])
           expect(await page.content()).not.toContain(issued.credential)
-          await page.goto(`/${runName}?tree=1`)
+          await page.goto(`/${agentRun}`)
           await shownPayload(page, 'retained-agent-output').waitFor()
         },
       )

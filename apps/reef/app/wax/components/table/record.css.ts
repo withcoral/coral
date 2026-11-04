@@ -8,6 +8,7 @@ export const record = style({
   minWidth: 0,
 })
 export const control = style({ display: 'flex', flex: '0 0 24px' })
+export const status = style({ display: 'flex', flexShrink: 0 })
 export const content = style({
   display: 'flex',
   alignItems: 'center',
@@ -41,4 +42,32 @@ export const marker = style({
   flexShrink: 0,
   padding: '2px 8px',
   whiteSpace: 'nowrap',
+})
+
+/** A stacked record: its label on one line, with its metadata on its own line below. */
+export const stackedContent = style({
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'flex-start',
+  gap: 2,
+  minWidth: 0,
+  flex: 1,
+  paddingBlock: 4,
+})
+export const stackedLabel = style({
+  width: '100%',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+})
+/** A label that wraps to two lines, then ends in an ellipsis. */
+export const wrappedLabel = style({
+  minWidth: 0,
+  overflow: 'hidden',
+  display: '-webkit-box',
+  WebkitLineClamp: 2,
+  WebkitBoxOrient: 'vertical',
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
 })

@@ -69,8 +69,7 @@ export const approvalContext: RunDetail = {
 export function activityPage(overrides: Partial<ActivityPage> = {}): ActivityPage {
   return {
     rows: [],
-    branches: {},
-    expanded: [],
+    trace: null,
     hasBefore: false,
     hasAfter: false,
     anchorUnavailable: false,

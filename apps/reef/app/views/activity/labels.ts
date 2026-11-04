@@ -15,6 +15,10 @@ export const invocationOutcomeLabels = {
 
 /** A call whose completion Coral did not record, neither success nor failure. */
 export const resultUnknown = 'result unknown'
+/** A Task's outcome in a Run's words, so one page never says both "success" and "succeeded". */
+export function taskOutcomeLabel(outcome: string) {
+  return outcome === 'success' ? 'succeeded' : outcome === 'failure' ? 'failed' : outcome
+}
 
 /**
  * Who asked for a Run's work: its agent's name, or you, then its workspace's name. A missing

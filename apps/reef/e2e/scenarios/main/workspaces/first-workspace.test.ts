@@ -46,7 +46,7 @@ test('Someone with no workspace lands on a page that creates their first one', a
           .getByRole('link', { name: 'Activity', exact: true })
           .click()
         await page.waitForURL((url) => url.pathname === `/workspaces/${id}/activity`)
-        await content.getByRole('heading', { name: 'Your recent activity', exact: true }).waitFor()
+        await content.getByRole('table', { name: 'Activity records', exact: true }).waitFor()
         await content.getByText('No activity yet', { exact: true }).waitFor()
       })
       await step(
@@ -76,6 +76,7 @@ test('Someone with no workspace lands on a page that creates their first one', a
         })
         await observeRun(runner, await runner.exec('return 1;'))
         await content
+          .getByRole('table', { name: 'Activity records', exact: true })
           .getByRole('link', { name: 'First MCP goal', exact: true })
           .waitFor({ timeout: 10_000 })
         expect(await content.getByText('No activity yet', { exact: true }).count()).toBe(0)

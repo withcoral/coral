@@ -5,7 +5,7 @@ import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
 import { ActionReviewSession } from '../actions/review'
 import { Activity } from './activity'
-import { activityPage, invocationRow, runRow } from './fixtures'
+import { activityPage, invocationRow, runRow, taskRow } from './fixtures'
 import type { ActivityPage, ActivityRow, RunDetail, RunEvent } from './types'
 import {
   emulateReducedMotion,
@@ -115,16 +115,24 @@ function runDetail(run: Extract<ActivityRow, { kind: 'run' }>): RunDetail {
   }
 }
 
+const motionTask = taskRow('motion', 'Remind owners and audit the sends')
 function pageFor(url: URL): ActivityPage {
   const record = url.searchParams.get('record')
   const selectedRow = records.find((row) => row.name === record) ?? null
   const contextOf = (run: string) => runDetail(run === audit.name ? audit : reminders)
   return activityPage({
     rows: [reminders, audit],
-    expanded: [reminders.name, audit.name],
-    branches: {
-      [reminders.name]: { rows: branchRows, offset: 0, total: '10', next: '', unavailable: false },
-      [audit.name]: { rows: [audited], offset: 0, total: '1', next: '', unavailable: false },
+    // Each Run opens as its own root, so its records slide in its Run's order.
+    // One Task holds both Runs, so the timeline lists every record a play selects.
+    trace: {
+      root: motionTask,
+      children: {
+        [motionTask.name]: [reminders, audit],
+        [reminders.name]: branchRows,
+        [audit.name]: [audited],
+      },
+      complete: true,
+      unavailable: [],
     },
     selected: selectedRow?.name ?? null,
     selectedRow,
@@ -225,7 +233,7 @@ interface Slide {
 async function surface({ canvasElement, userEvent }: Play) {
   const canvas = within(canvasElement)
   const body = within(canvasElement.ownerDocument.body)
-  const table = await canvas.findByRole('table', { name: 'Activity records', hidden: true })
+  const table = await canvas.findByRole('table', { name: 'Timeline records', hidden: true })
   const rail = () => body.getByRole('dialog', { name: 'Activity details' })
   const selected = () => within(rail()).getByRole('region', { name: 'Selected record' })
   /**
@@ -282,7 +290,14 @@ async function surface({ canvasElement, userEvent }: Play) {
     leavingCopy,
     recorder,
     shows,
-    select: (label: string) => userEvent.click(within(table).getByRole('link', { name: label })),
+    // A call or a Run is a row's link; an Event is a mark on its Run's row.
+    select: (label: string) =>
+      userEvent.click(
+        within(table).queryByRole('link', { name: label }) ??
+          within(table).getByRole('button', {
+            name: new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} at `),
+          }),
+      ),
     press: (name: string) => userEvent.click(canvas.getByRole('button', { name })),
   }
 }

@@ -210,8 +210,7 @@ function NavigableLocations() {
     <Activity
       page={activityPage({
         rows: [run],
-        branches: { [runName]: { rows: records, next: '', unavailable: false } },
-        expanded: [runName],
+        trace: { root: run, children: { [runName]: records }, complete: true, unavailable: [] },
         selected: row?.name ?? null,
         selectedRow: row,
         detail: detailFor(row),
@@ -340,13 +339,13 @@ export const SameRunNavigation: Story = {
     const detail = drawer.getByRole('region', { name: 'Selected record' })
     const height = (element: Element) => element.getBoundingClientRect().height
     if (wide) {
-      const table = within(canvasElement).getByRole('table', { name: 'Activity records' })
+      const table = within(canvasElement).getByRole('region', { name: 'Timeline' })
       await waitFor(() => {
-        // Docked, the rail starts after the table ends.
+        // Docked, the rail starts after the timeline ends.
         expect(table.getBoundingClientRect().right).toBeLessThanOrEqual(
           dialog.getBoundingClientRect().left,
         )
-        // The rail runs as low as the table, and its two panes share that height rather
+        // The rail runs as low as the timeline, and its two panes share that height rather
         // than shrinking to the split's 360px minimum.
         expect(dialog.getBoundingClientRect().bottom).toBeGreaterThanOrEqual(
           table.getBoundingClientRect().bottom - 1,

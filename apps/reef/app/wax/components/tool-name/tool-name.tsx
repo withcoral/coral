@@ -15,6 +15,8 @@ export interface ToolNameProps {
   size?: 'default' | 'small'
   /** The full name, shown on hover when the name is cut short. */
   title?: string
+  /** Break a long name over lines instead of cutting it, for a column that wraps its names. */
+  wrap?: boolean
   className?: string
 }
 
@@ -28,6 +30,7 @@ export function ToolName({
   provider,
   size = 'default',
   title,
+  wrap = false,
   className,
 }: ToolNameProps) {
   return (
@@ -37,7 +40,7 @@ export function ToolName({
           <Logo name={provider.name} icons={provider.icons} size="18" />
         </span>
       )}
-      <span className={styles.names[size]}>{children}</span>
+      <span className={classNames(styles.names[size], wrap && styles.wrapped)}>{children}</span>
     </span>
   )
 }

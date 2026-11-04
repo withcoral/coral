@@ -11,6 +11,7 @@ import { stored } from './discovery/fixtures'
 import { discoveryView } from './discovery/response'
 import { ActivityConnectedContext } from './live'
 import { ContextImpact } from './context-impact'
+import { exploreTrace } from './waterfall-fixtures'
 import type {
   ActionPage,
   ActivityPage,
@@ -24,6 +25,7 @@ import type {
   RequestDetail,
   RunDetail,
   RunEvent,
+  TaskRow,
 } from './types'
 
 /** A time reads in UTC; its element keeps the exact retained instant. */
@@ -246,16 +248,21 @@ it.each([true, false])(
     expect(container.textContent).not.toContain(call.provider)
     const label = within(container).getByText('recipient', { selector: 'dt' })
     expect(label.nextElementSibling).toHaveTextContent('"exact"')
-    // The call's own timing reads the same with or without its Run.
+    // The call's own timing reads the same with or without its Run: how long in all, running
+    // and waiting, then its times in the order they happened.
     const fact = (term: string) =>
       within(container).getByText(term, { selector: 'dt' }).nextElementSibling
-    expectInstant(fact('Started'), call.startedAt, '22 Sep 2026, 09:00:05 UTC')
-    expect(fact('Duration')).toHaveTextContent('2.0s')
-    expectInstant(fact('Ended'), call.endedAt!, '22 Sep 2026, 09:00:07 UTC')
+    const figure = (name: string) => within(container).getByText(name).previousElementSibling
+    expect(figure('total')).toHaveTextContent('2.00s')
+    expect(figure('running')).toHaveTextContent('1.00s')
+    expect(figure('waiting')).toHaveTextContent('1.00s')
+    expect(
+      [...container.querySelectorAll('dt')].map((term) => term.textContent).slice(0, 3),
+    ).toEqual(['Requested', 'Dispatched', 'Ended'])
+    expectInstant(fact('Requested'), call.startedAt, '22 Sep 2026, 09:00:05.000 UTC')
+    expectInstant(fact('Dispatched'), call.dispatchedAt!, '22 Sep 2026, 09:00:06.000 UTC')
+    expectInstant(fact('Ended'), call.endedAt!, '22 Sep 2026, 09:00:07.000 UTC')
     expect(within(container).queryByText('Initiated by')).toBeNull()
-    // Under a second of waiting reads in milliseconds, rounded down.
-    expect(fact('Waiting time')).toHaveTextContent('1ms')
-    expectInstant(fact('Dispatch'), call.dispatchedAt!, '22 Sep 2026, 09:00:06 UTC')
     // The header badge states the call's outcome; no State row repeats it.
     expect(within(container).queryByText('State', { selector: 'dt' })).toBeNull()
     expect(within(container.querySelector('header')!).getByText('completed')).toBeTruthy()
@@ -263,8 +270,10 @@ it.each([true, false])(
     expect(container.textContent).not.toContain('Technical details')
     expect(container.textContent).not.toContain(call.name)
     if (withRun) {
-      // The Run's intent leads the list.
-      expect(fact('Run intent')).toHaveTextContent('Send invoice reminders')
+      // The call names the program that made it, linked to it.
+      expect(
+        within(container).getByRole('link', { name: 'Send invoice reminders' }),
+      ).toHaveAttribute('href', expect.stringContaining(encodeURIComponent(call.run)))
     } else expect(container.textContent).not.toContain('Send invoice reminders')
   },
 )
@@ -466,14 +475,15 @@ it('heads a Run that failed for a reason this Reef does not know, without a code
 })
 
 it.each([
-  { outcome: 'open', withFeedback: false },
-  { outcome: 'success', withFeedback: true },
-  { outcome: 'success', withFeedback: false },
-  { outcome: 'failure', withFeedback: true },
-  { outcome: 'failure', withFeedback: false },
+  { outcome: 'open', badge: 'open', withFeedback: false },
+  // A Task's outcome reads in a Run's words, so one page never says both "success" and "succeeded".
+  { outcome: 'success', badge: 'succeeded', withFeedback: true },
+  { outcome: 'success', badge: 'succeeded', withFeedback: false },
+  { outcome: 'failure', badge: 'failed', withFeedback: true },
+  { outcome: 'failure', badge: 'failed', withFeedback: false },
 ])(
   'states a $outcome Task in the requested order without technical details (feedback: $withFeedback)',
-  ({ outcome, withFeedback }) => {
+  ({ outcome, badge, withFeedback }) => {
     const task = {
       name: `${workspace}/tasks/invoices`,
       workspace,
@@ -502,32 +512,79 @@ it.each([
     expect(within(container).queryAllByText('task')).toEqual([])
     // The outcome appears once in the header badge, not in the Task list.
     expect(header.querySelector('svg')).not.toBeNull()
-    expect(within(header).getByText(task.outcome)).toBeTruthy()
+    expect(within(header).getByText(badge)).toBeTruthy()
     expect(within(list).queryByText('Status', { selector: 'dt' })).toBeNull()
-    expectInstant(value('Started'), task.startedAt, '22 Sep 2026, 09:00:00 UTC')
+    expectInstant(value('Started'), task.startedAt, '22 Sep 2026, 09:00:00.000 UTC')
     expect(within(list).queryByText('Initiated by')).toBeNull()
-    if (task.endedAt) expectInstant(value('Ended'), task.endedAt, '22 Sep 2026, 09:05:00 UTC')
+    if (task.endedAt) expectInstant(value('Ended'), task.endedAt, '22 Sep 2026, 09:05:00.000 UTC')
     expect(
       within(list)
         .getAllByRole('term')
         .map((term) => term.textContent),
-    ).toEqual([
-      'Context',
-      'Started',
-      ...(task.endedAt ? ['Ended'] : []),
-      ...(withFeedback ? ['Feedback'] : []),
-    ])
+    ).toEqual(['Context', 'Started', ...(task.endedAt ? ['Ended'] : [])])
     expect(within(container).queryByText('Technical details')).toBeNull()
     expect(container.textContent).not.toContain(task.name)
+    // The agent's summary leads the panel, above every fact, with its line breaks kept.
+    const summary = container.querySelector('[aria-label="Agent summary"]')
     if (withFeedback) {
-      // Feedback reads like every other value: same typography, line breaks kept.
-      expect(value('Feedback').className).toBe(value('Started').className)
-      expect(value('Feedback').textContent).toBe(feedback)
-    } else expect(within(list).queryByText('Feedback', { selector: 'dt' })).toBeNull()
+      expect(summary!.textContent).toBe(`Agent summary${feedback}`)
+      expect(summary!.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    } else expect(summary).toBeNull()
     for (const gone of ['Goal outcome', 'Completion feedback', 'accepts no new tool calls'])
       expect(container.textContent).not.toContain(gone)
   },
 )
+
+// Catches: a Task panel that leaves what the Task produced and cost to the timeline, or nets
+// what reached the agent against what its programs kept out.
+it('fills a Task panel from its open timeline: functions, context and calls', () => {
+  const trace = exploreTrace()
+  const container = document.createElement('div')
+  container.innerHTML = markup({
+    ...personalPage,
+    trace,
+    selected: trace.root.name,
+    selectedRow: trace.root,
+    detail: { kind: 'task', task: trace.root as TaskRow, feedback: 'Saved three functions.' },
+  })
+  const saved = within(container).getByRole('region', { name: 'Saved functions' })
+  expect(within(saved).getAllByRole('listitem')).toHaveLength(3)
+  const list = container.querySelector('dl')!
+  const value = (term: string) =>
+    within(list).getByText(term, { selector: 'dt' }).nextElementSibling!.textContent
+  expect(
+    within(list)
+      .getAllByRole('term')
+      .map((term) => term.textContent),
+  ).toEqual(['Into context', 'Kept out', 'Provider data', 'Calls', 'Started', 'Ended'])
+  expect(value('Into context')).toBe('50 kB')
+  expect(value('Kept out')).toBe('84.3 kB')
+  expect(value('Provider data')).toBe('Programs read 106 kB and returned 21.4 kB')
+  expect(value('Calls')).toBe('coral.providers.clickstack17 calls')
+})
+
+// Catches: a program panel that lists its calls without saying they ran at once.
+it("states a program's calls from its open timeline, and that they overlapped", () => {
+  const trace = exploreTrace()
+  const smoke = trace.children[trace.root.name]!.find((row) => row.name.endsWith('/runs/smoke'))!
+  const container = document.createElement('div')
+  container.innerHTML = markup({
+    ...personalPage,
+    trace,
+    selected: smoke.name,
+    selectedRow: smoke,
+    detail: {
+      kind: 'run',
+      run: smoke as RunDetail['run'],
+      source: 'export default 1',
+      linkedFunctions: [],
+      terminal: { kind: 'succeeded', finalValue: null },
+    },
+  })
+  const calls = within(container).getByText('Calls', { selector: 'dt' }).nextElementSibling!
+  expect(calls.textContent).toMatch(/^11 calls · 272ms in parallel/)
+  expect(within(calls as HTMLElement).getAllByRole('link')).toHaveLength(11)
+})
 
 // Catches: a Task detail that drops, zeroes or re-formats the context total its table row shows.
 it.each([
@@ -906,8 +963,11 @@ it.each<[string, RunDetail, string | null]>([
     const container = document.createElement('div')
     container.innerHTML = markup({ ...personalPage, selected: null, selectedRow: null, detail })
     const timing = container.querySelector('dl')!
-    // The timing list comes straight after the header.
-    expect(container.querySelector('header')!.nextElementSibling).toBe(timing.closest('section'))
+    // What the Run produced leads; its times come last, since the timeline already places it.
+    if (outcome)
+      expect(container.textContent!.indexOf(outcome)).toBeLessThan(
+        container.textContent!.indexOf('Duration'),
+      )
     const ended = detail.run.endedAt
     expect(
       within(timing)
@@ -916,8 +976,8 @@ it.each<[string, RunDetail, string | null]>([
     ).toEqual(['Duration', 'Started', ...(ended ? ['Ended'] : [])])
     const fact = (term: string) =>
       within(timing).getByText(term, { selector: 'dt' }).nextElementSibling
-    expectInstant(fact('Started'), detail.run.startedAt, '22 Sep 2026, 09:00:00 UTC')
-    if (ended) expectInstant(fact('Ended'), ended, '22 Sep 2026, 09:05:00 UTC')
+    expectInstant(fact('Started'), detail.run.startedAt, '22 Sep 2026, 09:00:00.000 UTC')
+    if (ended) expectInstant(fact('Ended'), ended, '22 Sep 2026, 09:05:00.000 UTC')
     for (const gone of [
       'Context',
       'Requested by',
@@ -996,8 +1056,12 @@ it('leads a search with what it asked, then its intent and timing, and only its 
   // The intent is the title, so no row repeats it.
   expect(within(container).getByRole('heading', { level: 2 }).textContent).toBe(interaction.intent)
   expect(terms(call)).toEqual(['Started', 'Completed'])
-  expectInstant(factIn(call, 'Started'), interaction.startedAt, '22 Sep 2026, 09:00:00 UTC')
-  expectInstant(factIn(call, 'Completed'), interaction.completedAt!, '22 Sep 2026, 09:00:00 UTC')
+  expectInstant(factIn(call, 'Started'), interaction.startedAt, '22 Sep 2026, 09:00:00.000 UTC')
+  expectInstant(
+    factIn(call, 'Completed'),
+    interaction.completedAt!,
+    '22 Sep 2026, 09:00:00.000 UTC',
+  )
   for (const heading of ['Context', 'Call'])
     expect(within(container).queryByRole('heading', { name: heading })).toBeNull()
   for (const gone of ['Submission outcome', 'Raw response', 'Technical details', 'searched'])
@@ -1301,7 +1365,11 @@ it.each([
   if (row.context.types.length)
     expect(factIn(asked, 'Types')).toHaveTextContent(row.context.types.join(''))
   expect(factIn(asked, 'Intent')).toHaveTextContent('Check the inputs')
-  expectInstant(factIn(asked, 'Completed'), interaction.completedAt!, '22 Sep 2026, 09:00:00 UTC')
+  expectInstant(
+    factIn(asked, 'Completed'),
+    interaction.completedAt!,
+    '22 Sep 2026, 09:00:00.000 UTC',
+  )
   for (const heading of ['Context', 'Call'])
     expect(within(container).queryByRole('heading', { name: heading })).toBeNull()
   for (const gone of ['Submission outcome', 'Technical details'])
@@ -1465,7 +1533,7 @@ it.each<{
   const completed = row.overrides.completedAt !== null
   // The title is the intent, so no Intent row repeats it.
   expect(terms(lists[0])).toEqual(['Started', ...(completed ? ['Completed'] : [])])
-  expectInstant(factIn(lists[0], 'Started'), interaction.startedAt, '22 Sep 2026, 09:00:00 UTC')
+  expectInstant(factIn(lists[0], 'Started'), interaction.startedAt, '22 Sep 2026, 09:00:00.000 UTC')
   // The header badge states the submission outcome, once; no row repeats it.
   const badge = row.overrides.outcome === 'unknown' ? 'result unknown' : row.overrides.outcome!
   expect(within(header).getByText(badge)).toBeTruthy()
@@ -1601,7 +1669,7 @@ it.each(functionCases)('shows $case with its intent, target, then times', (row) 
     'Started',
     ...(completed ? ['Completed'] : []),
   ])
-  expectInstant(factIn(lists[0], 'Started'), interaction.startedAt, '22 Sep 2026, 09:00:00 UTC')
+  expectInstant(factIn(lists[0], 'Started'), interaction.startedAt, '22 Sep 2026, 09:00:00.000 UTC')
   const badge = row.overrides.outcome === 'unknown' ? 'result unknown' : row.overrides.outcome!
   expect(within(header).getByText(badge)).toBeTruthy()
   expect(within(container).getAllByText(badge)).toHaveLength(1)
@@ -1824,7 +1892,7 @@ it.each<[string, RunEvent, boolean, string, string[], string | null]>([
     ).toEqual(['Started'])
     const fact = (term: string) =>
       within(context).getByText(term, { selector: 'dt' }).nextElementSibling
-    expectInstant(fact('Started'), value.occurredAt, '22 Sep 2026, 09:00:00 UTC')
+    expectInstant(fact('Started'), value.occurredAt, '22 Sep 2026, 09:00:00.000 UTC')
     for (const gone of [
       'record #',
       'This log is not a user-facing result',
@@ -1849,7 +1917,7 @@ it('states another run event its time once, in its list', () => {
     detail: event({ ...at, kind: 'run.started' }),
   })
   const [list] = container.querySelectorAll('dl')
-  expectInstant(factIn(list, 'Started'), at.occurredAt, '22 Sep 2026, 09:00:00 UTC')
+  expectInstant(factIn(list, 'Started'), at.occurredAt, '22 Sep 2026, 09:00:00.000 UTC')
   expect(container.textContent).not.toContain('record #')
 })
 
@@ -2314,7 +2382,7 @@ describe('an account connection the Run waits on', () => {
       expect(terms(list)).toEqual(['Run intent', 'Requested by', 'Run duration', 'Run started'])
       expect(factIn(list, 'Run intent')).toHaveTextContent(run.intent!)
       expect(factIn(list, 'Requested by')).toHaveTextContent('Collections agent · Finance')
-      expectInstant(factIn(list, 'Run started'), run.startedAt, '22 Sep 2026, 09:00:00 UTC')
+      expectInstant(factIn(list, 'Run started'), run.startedAt, '22 Sep 2026, 09:00:00.000 UTC')
       // No Run cancel and no extra sentence about several calls.
       expect(screen.queryByRole('button', { name: 'Cancel run' })).not.toBeInTheDocument()
       expect(document.body).not.toHaveTextContent('One connection can unblock')
@@ -2863,18 +2931,24 @@ describe('each record states only what helps, once', () => {
       expect(within(container).queryByRole('link', { name: 'View in history' })).toBeNull()
       expect(within(container).queryByText('Details', { selector: 'summary' })).toBeNull()
       expect(within(container).queryByRole('region', { name: 'Return value' })).toBeNull()
-      // One list, its times last.
+      // One list: its times in the order they happened.
       const lists = [...container.querySelectorAll('dl')].filter((list) => !list.closest('details'))
       expect(lists).toHaveLength(1)
-      const times = ['Duration', 'Started', ...(detail.invocation.endedAt ? ['Ended'] : [])]
-      expect(terms(lists[0]).slice(-times.length)).toEqual(times)
-      // Nothing follows the call's outcome but the panel's empty footer slot.
+      const callEnded = detail.invocation.state === 'ended' && detail.invocation.endedAt
+      expect(terms(lists[0])).toEqual(
+        callEnded
+          ? ['Requested', 'Dispatched', 'Ended']
+          : ['Requested', 'Dispatched', 'Waiting time'],
+      )
+      // What the call returned comes before what it was asked; the footer slot stays empty.
       const panel = container.firstElementChild!
       const footer = panel.lastElementChild!
       expect(footer.tagName).toBe('FOOTER')
       expect(footer).toBeEmptyDOMElement()
-      if (shown.length)
-        expect(footer.previousElementSibling).toHaveTextContent(shown[shown.length - 1]!)
+      for (const text of shown)
+        expect(container.textContent!.indexOf(text)).toBeLessThan(
+          container.textContent!.indexOf('Arguments'),
+        )
     },
   )
 
@@ -2917,7 +2991,7 @@ describe('each record states only what helps, once', () => {
       expectInstant(
         factIn(list, 'Call started'),
         call.invocation.startedAt,
-        '22 Sep 2026, 09:00:00 UTC',
+        '22 Sep 2026, 09:00:00.000 UTC',
       )
     } else expect(terms(list).at(-1)).toBe('Requested by')
     expect(container.textContent).not.toMatch(/^Started$/m)
@@ -2960,17 +3034,21 @@ describe('each record states only what helps, once', () => {
     else expect(section).not.toHaveTextContent('saved)')
   })
 
-  // Catches: an ended Run's minutes that drop their seconds, or round up time not yet passed.
-  it("states an ended Run's duration in minutes and whole seconds", () => {
+  // Catches: a program that took 135ms shown as "0s", or a long one shown to the millisecond.
+  it.each([
+    ['263001000000', '4m 23s'],
+    ['6620000000', '6.6s'],
+    ['135000000', '135ms'],
+  ])("states an ended Run's duration of %s ns as %s", (durationNanos, text) => {
     const container = show(
       runPanel({
         state: 'succeeded',
-        durationNanos: '263001000000',
+        durationNanos,
         endedAt: '2026-09-22T09:05:00Z',
         requiresAction: false,
       }),
     )
-    expect(factIn(container.querySelector('dl')!, 'Duration')).toHaveTextContent('4m 23s')
+    expect(factIn(container.querySelector('dl')!, 'Duration')).toHaveTextContent(text)
   })
   // Catches: a counting duration whose last digit sits still between its one-second ticks.
   it('counts a running Run up in whole seconds', async () => {

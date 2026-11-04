@@ -13,9 +13,12 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
   })
   await withBrowserSession(context, async ({ page, target, step }) => {
     const id = workspace.name.split('/')[1]
+    // An open rail can hide the page behind it from the accessibility tree.
+    const list = page.getByRole('table', { name: 'Activity records', includeHidden: true })
     const first = programRunner(page, target, id, { taskIntent: 'First local goal' })
     const accepted = await observeRun(first, await first.exec('return "local-live-value";'))
     expect((await first.endTask('success', 'Local completion 🪸')).isError).not.toBe(true)
+    let second!: ReturnType<typeof programRunner>
     await step('Read exact retained output through local observation', async () => {
       const streams = Promise.all(
         ['count', 'observe'].map((name) =>
@@ -30,12 +33,13 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
         expect(response.headers()['content-type']).toContain('text/event-stream')
       }
       await shownPayload(page, 'local-live-value').waitFor()
-      const second = programRunner(page, target, id, { taskIntent: 'Second local goal' })
+      second = programRunner(page, target, id, { taskIntent: 'Second local goal' })
       await observeRun(second, await second.exec('return 42;'))
-      await page
+      await list
         .getByRole('link', { name: 'Second local goal', exact: true, includeHidden: true })
         .waitFor({ timeout: 10_000 })
       expect(await page.getByRole('dialog').count()).toBe(1)
+      // The new goal joins the list; the open timeline stays on the Run's own Task.
       expect(await page.getByText('Second local goal', { exact: true }).count()).toBe(1)
       await page.getByRole('button', { name: 'Close details', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `/${workspace.name}/activity`)
@@ -44,7 +48,7 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
         .getByRole('dialog', { name: 'Activity details', exact: true })
         .waitFor({ state: 'detached' })
       expect(await page.getByRole('button', { name: 'Load new', exact: true }).count()).toBe(0)
-      await page.getByRole('link', { name: 'Second local goal', exact: true }).waitFor()
+      await list.getByRole('link', { name: 'Second local goal', exact: true }).waitFor()
       expect(await page.content()).not.toContain('Local completion')
     })
     await step('Resolve local approvals and cancel a Run without a sign-in ceremony', async () => {
@@ -121,8 +125,17 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
         .locator('header')
         .getByText('success', { exact: true })
         .waitFor()
-      // The open detail leaves the list usable: another goal replaces it in place.
-      await page.getByRole('link', { name: 'Second local goal', exact: true }).click()
+      // The open detail leaves the list usable: another goal opens its own timeline.
+      await list.getByRole('link', { name: 'Second local goal', exact: true }).click()
+      await page.waitForURL(
+        (url) =>
+          url.searchParams.get('root') === `${workspace.name}/tasks/${second.taskId()}` &&
+          !url.searchParams.has('record'),
+      )
+      await page
+        .getByRole('table', { name: 'Timeline records', exact: true })
+        .getByRole('link', { name: 'Second local goal', exact: true })
+        .click()
       const detail = page.getByRole('dialog', { name: 'Activity details' })
       await detail.getByRole('heading', { name: 'Second local goal', exact: true }).waitFor()
       expect(await page.getByRole('dialog').count()).toBe(1)

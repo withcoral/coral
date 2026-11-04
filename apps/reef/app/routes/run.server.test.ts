@@ -40,6 +40,11 @@ const transport = fakeManagementTransport({
     }),
     browseActivityRoots: () => ({ roots: [] }),
     browseRequiredActions: () => ({ actions: [] }),
+    // The page opens the Run's timeline: a standalone Run with no records yet.
+    browseRunEntries: () => ({
+      run: { name: run, workspace, state: ActivityRunState.RUNNING },
+      entries: [],
+    }),
   },
 })
 afterEach(() => {

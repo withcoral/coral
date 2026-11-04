@@ -322,10 +322,11 @@ export const selectedRow = style({
   boxShadow: `inset 3px 0 ${theme.content.primary}`,
 })
 
-// The keyboard cursor: an outline, so it reads apart from an open row's edge bar.
+// The keyboard cursor: an outline, so it reads apart from an open row's edge bar. It is
+// neutral like the bar: in a table of outcomes, green and red already mean a status.
 const cursor = {
   backgroundColor: theme.surface.onMainContentSubtle,
-  boxShadow: `inset 0 0 0 2px ${theme.stroke.focused}`,
+  boxShadow: `inset 0 0 0 2px ${theme.content.secondary}`,
 }
 // The row's own focus ring would repeat the cursor's outline. Forced colors drop
 // the shadow and the background, but they show a transparent outline.

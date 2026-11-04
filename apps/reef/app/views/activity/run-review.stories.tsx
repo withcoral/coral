@@ -126,8 +126,7 @@ const page: ActivityPage = {
       actionPage: undefined,
     },
   ],
-  branches: {},
-  expanded: [],
+  trace: null,
   hasBefore: false,
   hasAfter: false,
   anchorUnavailable: false,
@@ -250,9 +249,11 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
       { ...context.run, kind: 'run' },
       ...value.rows.filter((row) => row.name !== context.run.name),
     ]
-    value.expanded = [context.run.name]
-    value.branches = {
-      [context.run.name]: { rows: [value.selectedRow], next: '', unavailable: false },
+    value.trace = {
+      root: { ...context.run, kind: 'run' },
+      children: { [context.run.name]: [value.selectedRow] },
+      complete: true,
+      unavailable: [],
     }
   }
   return (

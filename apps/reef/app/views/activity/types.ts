@@ -1,6 +1,5 @@
 import type { ConnectionState } from '@/views/accounts/types'
 import type { ToolHintsView } from '@/views/providers/types'
-import type { ActivityViewport } from '@/lib/activity-live-types'
 
 /** History, pending shortcuts, and exact selection share one authorized reader. */
 export interface ActivityViewProps {
@@ -32,7 +31,6 @@ export interface ActivityViewProps {
     connected: boolean
     followRoot: boolean
     atStart: (value: boolean) => void
-    viewport: (parent: string, value: ActivityViewport) => void
     /** The record keys on screen, first to last. */
     visible?: (records: string[]) => void
   }
@@ -45,7 +43,6 @@ export interface ActivityLoadControl {
   automatic: boolean
 }
 
-export const MAX_EXPANDED_RECORDS = 20
 export const runStates = [
   'running',
   'succeeded',
@@ -288,21 +285,43 @@ export type ActivityRow = { position?: number } & (
       sourceLocation?: RecordSourceLocation
     }
 )
-export interface ActivityBranch {
-  /** First ordinal in the bounded child viewport; other expanded executions can be pinned outside it. */
-  offset?: number
-  anchorUnavailable?: boolean
-  /** Authorized child count independent of this window. */
-  total?: string
-  rows: ActivityRow[]
-  next: string
-  unavailable: boolean
+/** One top-level record and the records under it that Coral returned, as a waterfall shows them. */
+export interface ActivityTrace {
+  root: Extract<ActivityRow, { kind: 'task' | 'run' }>
+  /**
+   * Each parent's children in Coral's order: a Task's tool calls and the Runs they started, and
+   * a Run's tool calls and Events. A parent with no entry has no children Coral returned.
+   */
+  children: Record<string, ActivityRow[]>
+  /** False when the read stopped at its limit, so later records are missing. */
+  complete: boolean
+  /** Runs in the Task whose records you cannot read. They have no children entry. */
+  unavailable: string[]
+  /** The last call or Run of the root that failed, with its error as Coral recorded it. */
+  failure?: TraceFailure
+  /** What the agent said when it ended the Task, if it said anything. */
+  feedback?: string
+  /** Why a call waited a second or more, by its name: the request it waited on. */
+  waitedFor?: Record<string, 'approval' | 'account connection'>
+  /**
+   * The function each save saved, by the save's name: its resource, its path when a later Run
+   * of the trace called it, and whether a Run that succeeded called it after this save.
+   */
+  saves?: Record<string, { savedFunction: string; path?: string; tested?: boolean }>
+}
+export interface TraceFailure {
+  record: string
+  /** Its name, as its row shows it. */
+  label: string
+  code: string
+  message: string
+  /** What the call waited for before it ran, if it waited on a request. */
+  waitedFor?: 'approval' | 'account connection'
+  /** Earlier calls of the same tool in the root that failed with the same error. */
+  sameBefore?: number
 }
 export interface ActivityPage {
   rows: ActivityRow[]
-  branches: Record<string, ActivityBranch>
-  expanded: string[]
-  anchors?: Record<string, string>
   hasBefore: boolean
   hasAfter: boolean
   anchorUnavailable: boolean
@@ -333,88 +352,26 @@ export interface ActivityPage {
   initialRequest?: string
   /** An exact approval resolves its tool as the review selection. */
   initialRecord?: string
-  /**
-   * The oldest action you can take in the selected record's Run, read while live mode
-   * follows that Run or a request review is open. Absent when it has none.
-   */
-  liveAction?: LiveAction
-  /**
-   * What page live mode needs that the list and its loaded windows do not show. Read
-   * only while it follows the newest activity with no Run that runs open.
-   */
-  liveLatest?: LiveLatest
   selectedRow: ActivityRow | null
   listPath: string
-}
-
-/**
- * A current request of a Run and the record that reviews it: the waiting tool for
- * an approval, the Run for an account connection.
- */
-export interface LiveAction {
-  run: string
-  record: string
-  request: string
+  /**
+   * The open Task or standalone Run and its records: the one `root` names, else the selected
+   * record's, else the newest in the list. Null when there is none, or you cannot read it.
+   */
+  trace: ActivityTrace | null
+  /**
+   * Why the page has no timeline for its root: Coral refused the read, or failed it in passing.
+   * A live update that failed keeps the timeline the reader shows.
+   */
+  traceUnavailable?: 'refused' | 'failed'
+  /**
+   * When the loader read the page, in epoch milliseconds: the "now" of ongoing bars, the same
+   * on the server and in the browser. A clock sample, not evidence.
+   */
+  readAt?: number
 }
 
 export type RunRow = Extract<ActivityRow, { kind: 'run' }>
-
-/** What page live mode knows past the list and its loaded windows. */
-export interface LiveLatest {
-  /**
-   * The oldest action you can take in any Run page live mode may follow, timed by when
-   * the tool that waits on it started, not by when the request was made. `task`
-   * is the Run's Task, empty for a standalone Run.
-   */
-  action?: { task: string; action: LiveAction }
-  /**
-   * By top-level record, as Coral's records say: every standalone Run that runs, under
-   * its own name, and a Task's newest Run that runs by submission. It names a Task only
-   * when the Task started `TAKS_MAX_AGE` ago or less and its row says a Run of it runs,
-   * so a Run of an older Task never shows here, even while it runs.
-   */
-  running?: Record<string, RunRow>
-  /**
-   * The newest top-level record, when the snapshot does not start with it, such as one
-   * that holds only the records you watch.
-   */
-  newest?: string
-  /**
-   * The newest record page live mode may follow when it has nothing else to follow, read
-   * only while no action waits and no Run runs. Its candidates are:
-   * - each standalone Run, timed by when Coral accepted it;
-   * - the newest child, as Coral orders them, of each Task that started `TAKS_MAX_AGE`
-   *   ago or less, timed by when its tool call started;
-   * - each such Task that has no child yet, timed by when it started.
-   *
-   * The one that started last wins, to the nanosecond, and at an equal time the newer
-   * top-level record. `root` is its top-level record, and `run` says the record is a Run.
-   * Absent unless the loader read every record and the newest child of every such Task.
-   * When it is absent and no held Run, action or running Run gives page live mode a
-   * target, page live mode keeps the record it shows.
-   */
-  latest?: { root: string; record: string; run: boolean }
-  /**
-   * The loader read every top-level record and every Task it looked in, so `running`
-   * names every Run that runs that page live mode may follow. A row or a Task window
-   * of the list it did not refresh can lag its Run's end, so `running` wins over them.
-   */
-  complete?: boolean
-}
-
-/**
- * What live mode follows: the selected record's Run, the newest Task or Run in the
- * list, or the Runs of the selected Task in order.
- */
-export type LiveScope = 'run' | 'latest' | 'task'
-/** Each scope's `live=` value. `1` is the Run scope, which older links name. */
-const liveValues: Record<LiveScope, string> = { run: '1', latest: 'latest', task: 'task' }
-export const liveValue = (scope: LiveScope) => liveValues[scope]
-/** The scope a `live=` value names, or null when live mode is off. */
-export function liveScopeOf(value: string | null): LiveScope | null {
-  const scope = Object.entries(liveValues).find(([, item]) => item === value)?.[0]
-  return (scope as LiveScope | undefined) ?? null
-}
 
 export interface TaskRow {
   contextImpactBytes?: string

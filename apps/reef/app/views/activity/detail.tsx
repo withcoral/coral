@@ -1,5 +1,5 @@
 import { useId } from 'react'
-import { ElapsedDuration } from './duration'
+import { ElapsedDuration, preciseDuration } from './duration'
 import { Link } from 'react-router'
 import { List, Typography } from '@/wax/components'
 import { CodeChip } from '@/wax/components/code-chip'
@@ -25,14 +25,17 @@ import { Arguments } from '../actions/arguments'
 import { DescribeParameters, DiscoveryEvidence, SearchParameters } from './discovery/discovery'
 import { DetailHeader, StateBadge } from './detail-header'
 import { useCallProvider } from './call-tool'
-import { Bytes, ContextImpact } from './context-impact'
+import { Bytes, ContextImpact, formatBytes } from './context-impact'
 import { Instant } from './instant'
 import { PayloadViewer, type PayloadViewerProps } from '@/wax/components/payload-viewer'
-import { invocationOutcomeLabels, requestedBy, resultUnknown } from './labels'
+import { invocationOutcomeLabels, requestedBy, resultUnknown, taskOutcomeLabel } from './labels'
 import { Panel } from './panel'
 import { useActivityConnected, useActivityInspect } from './live'
 import { useActivityNavigation } from './navigation'
+import { SavedFunctions } from './saved-functions'
 import * as styles from './task-activity.css'
+import { ContextRows, ProviderCallsRow, RunCallsRow } from './trace-panels'
+import { savedFunctionsOf } from './trace-summary'
 
 /** The Run whose accepted source a selected record shows beside its own detail, if any.
  * A tool or an output carries it as context; it never replaces the record's detail. */
@@ -67,9 +70,14 @@ function ExecutionDetail({
   detail: RunDetail
   tool: InvocationDetail | null
 }) {
-  const { href } = useActivityNavigation(page)
+  const { href, recordHref } = useActivityNavigation(page)
   const connected = useActivityConnected()
   const request = tool?.request ?? detail.request
+  // The open timeline holds the Run's calls and what they cost, when it is this Run's root's.
+  const trace =
+    page.trace && (page.trace.root.name === detail.run.name || page.trace.children[detail.run.name])
+      ? page.trace
+      : null
   const running = detail.run.state === 'running'
   // An approval review names the call and decides only it: no program, history or Run cancel.
   const review = request?.kind === 'approval'
@@ -109,26 +117,6 @@ function ExecutionDetail({
             title={detail.submission?.intent || detail.run.intent || 'Program run'}
             status={detail.run.state}
           />
-          {/* Its times together, last. */}
-          <DescriptionList.List>
-            <DescriptionList.Row label="Duration">
-              <ElapsedDuration
-                milliseconds={Number(detail.run.durationNanos) / 1_000_000}
-                running={connected && running}
-              />
-            </DescriptionList.Row>
-            <DescriptionList.Row label="Started">
-              <Instant value={detail.run.startedAt} />
-            </DescriptionList.Row>
-            {detail.run.endedAt && (
-              <DescriptionList.Row label="Ended">
-                <Instant value={detail.run.endedAt} />
-              </DescriptionList.Row>
-            )}
-          </DescriptionList.List>
-          {detail.contextImpact && (
-            <RunContextBreakdown parts={detail.contextImpact} net={detail.run.contextImpactBytes} />
-          )}
         </>
       )}
       <RunActions
@@ -154,7 +142,32 @@ function ExecutionDetail({
       )}
       {/* The Run's final value or failure is not a selected request's outcome: the Run's own
           panel holds it. */}
+      {/* What it produced, then what it did and cost, then its times: the timeline already
+          places it in time. */}
       {!review && !connection && <TerminalEvidence terminal={detail.terminal} />}
+      {!review && !connection && (
+        <DescriptionList.List>
+          {trace && <RunCallsRow trace={trace} run={run.name} recordHref={recordHref} />}
+          <DescriptionList.Row label="Duration">
+            <ElapsedDuration
+              milliseconds={Number(detail.run.durationNanos) / 1_000_000}
+              running={connected && running}
+            />
+          </DescriptionList.Row>
+          <DescriptionList.Row label="Started">
+            <Instant value={detail.run.startedAt} />
+          </DescriptionList.Row>
+          {detail.run.endedAt && (
+            <DescriptionList.Row label="Ended">
+              <Instant value={detail.run.endedAt} />
+            </DescriptionList.Row>
+          )}
+        </DescriptionList.List>
+      )}
+      {/* Coral's exact parts of the Run's context impact, which the timeline cannot split. */}
+      {!review && !connection && detail.contextImpact && (
+        <RunContextBreakdown parts={detail.contextImpact} net={detail.run.contextImpactBytes} />
+      )}
       {/* A selected request decides itself; the Run's cancel stays on the Run's own panel. */}
       {!review && !connection && running && (
         <div className={styles.endActions}>
@@ -222,6 +235,13 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
   // A connection request belongs to the call's Run, which is where you connect or decline.
   const connectionHref = (name: string) => href({ record: call.run, request: name })
   const expiresId = useId()
+  // The tool result as Coral measured it, else as retained.
+  const responseSize =
+    detail.result.kind !== 'upstream_outcome'
+      ? undefined
+      : call.contextImpactBytes !== undefined
+        ? formatBytes(BigInt(call.contextImpactBytes))
+        : formatBytes(new TextEncoder().encode(detail.result.value).length)
   // The selected connection's card links to it, so the list does not repeat it.
   const selected = detail.request
   const otherRequests = detail.requests.filter(
@@ -252,38 +272,50 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
         }
         provider={provider}
       />
-      {/* What the call belongs to and how it waited, then its times together, last. */}
-      <DescriptionList.List>
-        {runIntent && <DescriptionList.Row label="Run intent">{runIntent}</DescriptionList.Row>}
-        <DescriptionList.Row label="Dispatch">
-          {detail.invocation.dispatchedAt ? (
-            <Instant value={detail.invocation.dispatchedAt} />
-          ) : (
-            'Not started'
-          )}
-        </DescriptionList.Row>
-        <DescriptionList.Row label="Waiting time">
-          <ElapsedDuration
-            milliseconds={Number(detail.invocation.waitingNanos) / 1_000_000}
-            running={connected && detail.invocation.state === 'pending'}
-          />
-        </DescriptionList.Row>
-        <DescriptionList.Row label="Duration">
-          <ElapsedDuration
-            milliseconds={Number(call.durationNanos) / 1_000_000}
-            running={connected && ['pending', 'dispatching'].includes(call.state)}
-          />
-        </DescriptionList.Row>
-        <DescriptionList.Row label="Started">
-          <Instant value={call.startedAt} />
-        </DescriptionList.Row>
-        {call.endedAt && (
-          <DescriptionList.Row label="Ended">
-            <Instant value={call.endedAt} />
+      {/* The program that made the call, which holds its source. */}
+      {runIntent && (
+        <Typography.BodySmall>
+          in{' '}
+          <Link to={href({ record: call.run })} preventScrollReset>
+            {runIntent}
+          </Link>
+        </Typography.BodySmall>
+      )}
+      {/* How long it took and how that splits, then its times in the order they happened. */}
+      {call.state === 'ended' && call.endedAt ? (
+        <CallTiming call={call} />
+      ) : (
+        <DescriptionList.List>
+          <DescriptionList.Row label="Requested">
+            <Instant value={call.startedAt} />
           </DescriptionList.Row>
-        )}
-      </DescriptionList.List>
-      {detail.invocation.requiresAction && <Typography.Body>Requires your action.</Typography.Body>}
+          <DescriptionList.Row label="Dispatched">
+            {call.dispatchedAt ? <Instant value={call.dispatchedAt} /> : 'Not yet'}
+          </DescriptionList.Row>
+          <DescriptionList.Row label="Waiting time">
+            <ElapsedDuration
+              milliseconds={Number(call.waitingNanos) / 1_000_000}
+              running={connected && call.state === 'pending'}
+            />
+          </DescriptionList.Row>
+        </DescriptionList.List>
+      )}
+      {call.requiresAction && <Typography.Body>Requires your action.</Typography.Body>}
+      {/* Once it ended, what it returned leads; what it was asked follows. */}
+      {call.state === 'ended' && (
+        // Never folded: a failure's card must stay in view.
+        <section aria-label="Response" className={styles.callResponse}>
+          <Typography.BodySmallStrong color="primary">
+            {`Response${responseSize ? ` · ${responseSize}` : ''}`}
+          </Typography.BodySmallStrong>
+          {detail.result.kind === 'upstream_outcome' && responseSize && (
+            <Typography.BodySmall>
+              {responseSize} returned to its program, not to the agent.
+            </Typography.BodySmall>
+          )}
+          <InvocationOutcome detail={detail} />
+        </section>
+      )}
       <Arguments source={detail.arguments} />
       {detail.requestUnavailable && <Typography.Body>This request is unavailable.</Typography.Body>}
       {/* A shared Account Connection Request is Run-level: retained here, not actioned as this call's own Approval. */}
@@ -308,7 +340,6 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
           </List.Item>
         </List.Container>
       )}
-      <InvocationOutcome detail={detail} />
       {!!otherRequests.length && (
         <List.Container as="ul" aria-label="Requests for this call">
           {otherRequests.map((request, index) => (
@@ -342,6 +373,9 @@ function RecordDetail({ page }: { page: ActivityPage }) {
   const connected = useActivityConnected()
   const detail = page.detail
   const row = page.selectedRow
+  // The open timeline, when it is the selected Task's: what the Task produced and cost.
+  const trace =
+    detail?.kind === 'task' && page.trace?.root.name === detail.task.name ? page.trace : null
   if (!detail || detail.kind === 'run' || detail.kind === 'invocation') return null
   const title =
     detail.kind === 'task'
@@ -356,7 +390,12 @@ function RecordDetail({ page }: { page: ActivityPage }) {
         ? detail.interaction.outcome
         : // An output's title names it; a status would say nothing more.
           null
-  const label = detail.kind === 'tool' && status === 'unknown' ? resultUnknown : undefined
+  const label =
+    detail.kind === 'tool' && status === 'unknown'
+      ? resultUnknown
+      : detail.kind === 'task'
+        ? taskOutcomeLabel(detail.task.outcome)
+        : undefined
   // A run event states its own time when no row does.
   const started = row?.startedAt ?? (detail.kind === 'output' ? detail.event.occurredAt : undefined)
   // A search is titled by its intent; it leads with what it asked and its times, then results.
@@ -435,26 +474,45 @@ function RecordDetail({ page }: { page: ActivityPage }) {
       )}
       {detail.kind === 'task' && (
         <>
+          {/* What the agent said it did leads: it is the Task's answer. */}
+          {detail.feedback !== undefined && (
+            <section aria-label="Agent summary" className={styles.agentSummary}>
+              <Typography.BodySmallStrong>Agent summary</Typography.BodySmallStrong>
+              <Typography.Body color="primary" className={styles.native}>
+                {detail.feedback}
+              </Typography.Body>
+            </section>
+          )}
+          {trace && (
+            <SavedFunctions
+              functions={savedFunctionsOf(trace)}
+              workspace={trace.root.workspace}
+              origin={Date.parse(trace.root.startedAt)}
+              href={recordHref}
+              selected={page.selected}
+            />
+          )}
           <DescriptionList.List>
-            {/* The Task's stored total, as its table row shows it: — when unavailable. */}
-            <DescriptionList.Row label="Context">
-              <ContextImpact
-                bytes={detail.task.contextImpactBytes}
-                partial={detail.task.contextImpactPartial}
-              />
-            </DescriptionList.Row>
+            {trace ? (
+              <>
+                <ContextRows trace={trace} record={detail.task.name} />
+                <ProviderCallsRow trace={trace} />
+              </>
+            ) : (
+              // Without its timeline, the Task's stored total, as its table row shows it.
+              <DescriptionList.Row label="Context">
+                <ContextImpact
+                  bytes={detail.task.contextImpactBytes}
+                  partial={detail.task.contextImpactPartial}
+                />
+              </DescriptionList.Row>
+            )}
             <DescriptionList.Row label="Started">
               <Instant value={detail.task.startedAt} />
             </DescriptionList.Row>
             {detail.task.endedAt && (
               <DescriptionList.Row label="Ended">
                 <Instant value={detail.task.endedAt} />
-              </DescriptionList.Row>
-            )}
-            {detail.feedback !== undefined && (
-              <DescriptionList.Row label="Feedback">
-                {/* Keeps the agent's line breaks; the row owns the typography. */}
-                <span className={styles.native}>{detail.feedback}</span>
               </DescriptionList.Row>
             )}
           </DescriptionList.List>
@@ -864,4 +922,49 @@ function ErrorDetail({ error, place }: { error: ProgramError; place?: string }) 
 /** A payload in its viewer. Live mode holds while you inspect it expanded. */
 function Payload(props: PayloadViewerProps) {
   return <PayloadViewer {...props} onExpandedChange={useActivityInspect()} />
+}
+
+/**
+ * An ended call's timing: how long it took in all, ran and waited, then when it was requested,
+ * dispatched and ended, in that order.
+ */
+function CallTiming({ call }: { call: InvocationDetail['invocation'] }) {
+  const requested = Date.parse(call.startedAt)
+  const ended = Date.parse(call.endedAt!)
+  const dispatched = call.dispatchedAt ? Date.parse(call.dispatchedAt) : ended
+  return (
+    <>
+      <div className={styles.callFigures}>
+        <span className={styles.callFigure}>
+          <Typography.BodyStrong color="primary">
+            {preciseDuration(ended - requested)}
+          </Typography.BodyStrong>
+          <Typography.BodySmall>total</Typography.BodySmall>
+        </span>
+        <span className={styles.callFigure}>
+          <Typography.BodyStrong color="primary">
+            {preciseDuration(ended - dispatched)}
+          </Typography.BodyStrong>
+          <Typography.BodySmall>running</Typography.BodySmall>
+        </span>
+        <span className={styles.callFigure}>
+          <Typography.BodyStrong color="primary">
+            {preciseDuration(dispatched - requested)}
+          </Typography.BodyStrong>
+          <Typography.BodySmall>waiting</Typography.BodySmall>
+        </span>
+      </div>
+      <DescriptionList.List density="compact">
+        <DescriptionList.Row label="Requested">
+          <Instant value={call.startedAt} />
+        </DescriptionList.Row>
+        <DescriptionList.Row label="Dispatched">
+          {call.dispatchedAt ? <Instant value={call.dispatchedAt} /> : 'Never'}
+        </DescriptionList.Row>
+        <DescriptionList.Row label="Ended">
+          <Instant value={call.endedAt!} />
+        </DescriptionList.Row>
+      </DescriptionList.List>
+    </>
+  )
 }

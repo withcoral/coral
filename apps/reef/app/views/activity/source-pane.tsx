@@ -102,12 +102,14 @@ export function SourcePane({
         )}
       </div>
       {missing}
+      {/* The drawer is narrow: lines wrap so none is cut at its edge. Expand keeps them whole. */}
       <AnnotatedCodeBlock
         code={document.code}
         language="typescript"
         highlight={highlight}
         followHighlight
         revealKey={revealKey}
+        wrap
       />
     </div>
   )

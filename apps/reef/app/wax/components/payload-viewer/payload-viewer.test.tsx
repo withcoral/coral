@@ -49,6 +49,14 @@ const large = JSON.stringify({
   note: 'n'.repeat(400),
 })
 
+// Catches: a folded value that says how many keys it has but not how big it is, so nothing
+// ties a large output to the bytes it cost.
+it('states the size of each value under the top level', () => {
+  const region = view(large)
+  expect(within(region).getByText('120 items · 3.14 kB')).toBeInTheDocument()
+  expect(within(region).getByText('1 property · 10 B')).toBeInTheDocument()
+})
+
 // Catches: a copy or download of only what is shown, or of the formatted structure.
 it('copies and downloads the complete payload as retained', async () => {
   const user = userEvent.setup()

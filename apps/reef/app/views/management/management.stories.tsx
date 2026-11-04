@@ -93,8 +93,7 @@ const activityPage = (
   <Activity
     page={{
       rows,
-      branches: {},
-      expanded: [],
+      trace: null,
       hasBefore: false,
       hasAfter: false,
       anchorUnavailable: false,
@@ -956,23 +955,14 @@ export const AgentFullActivity: Story = {
       'href',
       agent.path,
     )
-    // Catches: an icon-only live toggle, which reads as nothing here without the list heading.
-    const live = canvas.getByRole('button', { name: 'Live' })
-    await expect(live).toBeVisible()
-    await expect(live).toHaveTextContent(/^Live$/)
-    await expect(live).toHaveAttribute('aria-pressed', 'false')
-    await expect(live).toHaveAccessibleDescription('Follow the newest task or run.')
-    await expect(live.querySelector('svg')).toHaveClass('lucide-locate')
-    await userEvent.click(live)
-    await waitFor(() => expect(live).toHaveAttribute('aria-pressed', 'true'))
-    await expect(live).toHaveTextContent(/^Live$/)
-    await expect(live.querySelector('svg')).toHaveClass('lucide-locate-fixed')
+    // The agent's full history lists its records beside the open one's timeline.
+    await expect(canvas.getByRole('table', { name: 'Activity records' })).toBeVisible()
   },
 }
 // Catches: a link into the agent's Activity list opening the dashboard instead.
 export const AgentActivityAfterRecord: Story = {
   ...AgentFullActivity,
-  parameters: { initialEntry: `${agent.path}?anchor=x&tree=1` },
+  parameters: { initialEntry: `${agent.path}?anchor=x` },
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('link', { name: 'Back to agent' })).toBeVisible()
     await expect(canvas.queryByRole('heading', { name: 'Recent activity' })).toBeNull()

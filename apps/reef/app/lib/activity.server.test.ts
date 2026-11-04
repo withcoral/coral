@@ -1,12 +1,8 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { describe, expect, it } from 'vitest'
-import { createElement } from 'react'
-import { renderToString } from 'react-dom/server'
-import { createMemoryRouter, RouterProvider } from 'react-router'
-import { Activity } from '@/views/activity/activity'
 import { activityNavigation } from '@/views/activity/navigation'
 import { stored } from '@/views/activity/discovery/fixtures'
-import type { ActivityPage, LiveLatest } from '@/views/activity/types'
+import type { ActivityPage } from '@/views/activity/types'
 import {
   ActivityRunState,
   ActivityInvocationState,
@@ -14,9 +10,7 @@ import {
   ActivityLogLevel,
 } from '@/generated/coral/management/v1/activity_pb'
 import { AccountConnectionState } from '@/generated/coral/management/v1/account_pb'
-import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { fakeManagement, type ManagementHandlers } from './management.test-support'
-import { ACTIVITY_CHILD_WINDOW } from './activity-live-types'
 import { approvalReading, loadActivity, loadRunActivity, pendingActions } from './activity.server'
 
 const workspace = 'workspaces/00000000-0000-4000-8000-000000000001'
@@ -35,15 +29,6 @@ const goal = {
   outcome: 'open',
   actor: 'user',
   startedAtUnixNanos: 1_000_000_000n,
-}
-/** Renders Activity inside a data router, as the app does. Row decisions need one. */
-function renderActivity(location: string, page: ActivityPage) {
-  const router = createMemoryRouter([{ path: '*', element: createElement(Activity, { page }) }], {
-    initialEntries: [location],
-  })
-  const html = renderToString(createElement(RouterProvider, { router }))
-  router.dispose()
-  return html
 }
 const execution = {
   name: run,
@@ -117,8 +102,21 @@ const READS: Record<string, string> = {
   getAccountConnectionRequest: 'connection',
 }
 
+/**
+ * The open root's timeline reads, as empty pages, for a test that serves none: the page reads
+ * them beside whatever the test is about. A call the timeline reads for its wait has no request.
+ */
+const emptyTimeline: Handlers = {
+  activity: {
+    inspectTask: (input) => ({ task: { ...goal, name: input.name }, interactions: [] }),
+    browseRunEntries: (input) => ({ run: { ...execution, name: input.name }, entries: [] }),
+    inspectInvocation: (input) => ({ invocation: { ...tool, name: input.name }, requests: [] }),
+  },
+}
+
 /** An in-memory Coral serving `parts`; `calls` records each read in order. */
 function coral(...parts: Handlers[]) {
+  parts = [emptyTimeline, ...parts]
   type Method = (input: unknown, context: unknown) => unknown
   const calls: { method: string; input: unknown }[] = []
   const handlers: Record<string, Record<string, Method>> = {}
@@ -208,6 +206,8 @@ function taskDetail(
     feedback?: string
     /** Refuse the Task read, with this code or NotFound. */
     taskUnavailable?: boolean | Code
+    /** Refuse only the exact one-record read, such as an approval review's intent read. */
+    onlyExactRead?: boolean
     contextImpact?: boolean
     outOfWindow?: boolean
   } = {},
@@ -215,7 +215,11 @@ function taskDetail(
   return {
     activity: {
       inspectTask: (input) => {
-        if (options.taskUnavailable && input.name === task)
+        if (
+          options.taskUnavailable &&
+          input.name === task &&
+          (!options.onlyExactRead || input.pageSize === 1)
+        )
           refuse(
             'task unavailable',
             options.taskUnavailable === true ? Code.NotFound : options.taskUnavailable,
@@ -255,7 +259,8 @@ function taskDetail(
                   agent: agentOf(options),
                 },
               ],
-          nextAfter: 'next-interaction',
+          // One page: a timeline read stops here.
+          nextAfter: '',
         }
       },
     },
@@ -425,7 +430,8 @@ function runEntries(
                 },
               ],
           nextAfter: options.endedEvent ? 4n : 3n,
-          hasMore: !options.endedEvent && !options.completedEntries,
+          // One page: a timeline read stops here.
+          hasMore: false,
         }
       },
     },
@@ -637,8 +643,13 @@ function searchHits(page: ActivityPage) {
   if (view?.kind !== 'search') throw new Error('expected a search page in the detail')
   return view.page.hits
 }
-function loaded(calls: { method: string }[], ...methods: string[]) {
-  return calls.filter((call) => methods.includes(call.method)).length
+/** A read of the open root's timeline, which every page makes beside what it shows. */
+const timelineRead = (call: { method: string; input: unknown }) =>
+  call.method === 'entries' ||
+  (call.method === 'task' && (call.input as { pageSize: number }).pageSize > 1)
+/** How many of `methods` the page read for its list and detail, apart from its timeline. */
+function loaded(calls: { method: string; input: unknown }[], ...methods: string[]) {
+  return calls.filter((call) => methods.includes(call.method) && !timelineRead(call)).length
 }
 function request(values: Record<string, string | string[] | undefined> = {}) {
   const query = new URLSearchParams()
@@ -665,7 +676,7 @@ describe('hierarchical activity through the private server interface', () => {
     expect(calls.filter(({ method }) => method === 'approval')).toHaveLength(1)
     const update = await loadActivity(input, api, {
       scope,
-      reading: { roots: [], followRoot: true, branches: {} },
+      reading: { roots: [], followRoot: true },
     })
     expect(update.initialRequest).toBeUndefined()
     expect(update.detail).toMatchObject({ kind: 'invocation', request: null })
@@ -737,14 +748,14 @@ describe('hierarchical activity through the private server interface', () => {
       expect(selected.selected).toBe(invocation)
       expect(selected.selectedRow).toMatchObject({ kind: 'invocation', name: invocation })
       expect(selected.detail).toMatchObject({ kind: 'invocation', request: { name: approval } })
-      expect(selected.branches[task]?.rows ?? []).toContainEqual(
+      // The review opens in its Task's timeline, which holds its Run and its call.
+      expect(selected.trace?.root.name).toBe(task)
+      expect(selected.trace?.children[task] ?? []).toContainEqual(
         expect.objectContaining({ kind: 'run', name: run }),
       )
-      expect(selected.branches[run]?.rows ?? []).toContainEqual(
+      expect(selected.trace?.children[run] ?? []).toContainEqual(
         expect.objectContaining({ kind: 'invocation', name: invocation }),
       )
-      const rendered = renderActivity(href, selected)
-      expect(rendered).not.toContain('Outside this workspace or page:')
     },
   )
   it('reads the original resolved account request only after verifying its retained Run association', async () => {
@@ -809,14 +820,17 @@ describe('hierarchical activity through the private server interface', () => {
       expect(summary.listPath).toBe(`/${workspace}/activity`)
       expect(summary.rows[0]).toMatchObject({ name: task, kind: 'task' })
       expect(loaded(calls, 'actions')).toBe(0)
-      expect(loaded(calls, ...DETAIL_OR_CHILD)).toBe(0)
+      expect(loaded(calls, ...DETAIL_OR_CHILD.filter((method) => method !== 'invocation'))).toBe(0)
+      // The timeline reads only the call that waits on a person, to name what it waits for.
+      expect(
+        calls.filter((call) => call.method === 'invocation').map((call) => call.input),
+      ).toMatchObject([{ name: invocation }])
       expect(JSON.stringify(summary)).not.toMatch(/secretSource|private@example|arguments/)
       await loadActivity(input, api, {
         scope,
-        reading: { roots: [task], followRoot: false, branches: {} },
+        reading: { roots: [task], followRoot: false },
       })
-      expect(calls.at(-1)).toMatchObject({
-        method: 'roots',
+      expect(calls.findLast((call) => call.method === 'roots')).toMatchObject({
         input: { retained: { names: [task] } },
       })
       const url = new URL(input.url)
@@ -846,86 +860,31 @@ describe('hierarchical activity through the private server interface', () => {
     },
   )
   it.each([undefined, '<script>private completion 🪸</script>'])(
-    'keeps optional completion feedback only in exact detail (%s)',
+    'keeps optional completion feedback to exact reads of its Task (%s)',
     async (feedback) => {
       const { api } = coral(list(), taskDetail({ feedback }))
-      const page = await loadActivity(request({ record: task, expand: [task] }), api, { scope })
+      const page = await loadActivity(request({ record: task }), api, { scope })
       expect(page.detail).toMatchObject({ kind: 'task', feedback })
-      expect(JSON.stringify([page.rows, page.branches, page.selectedRow])).not.toContain(
-        'private completion',
-      )
-      expect(page.branches[task].rows).toHaveLength(1)
+      // The open root's timeline is an exact read of its Task; a list row never carries it.
+      expect(page.trace?.feedback).toBe(feedback)
+      expect(JSON.stringify([page.rows, page.selectedRow])).not.toContain('private completion')
+      expect(page.trace?.children[task]).toHaveLength(1)
     },
   )
-  it.each(['automatic', 'explicit', 'already expanded'] as const)(
-    'keeps the terminal Event selected inside the expanded branch with %s navigation',
-    async (mode) => {
-      const name = `${run}/events/4`
-      const { api } = coral(
-        list(),
-        taskDetail(),
-        runEntries({ endedEvent: true }),
-        runEvent({ endedEvent: true }),
-        runDetail(),
-      )
-      const input = request({
-        record: name,
-        tree: mode === 'automatic' ? undefined : '1',
-        expand: mode === 'already expanded' ? [task, run] : undefined,
-      })
-      let page = await loadActivity(input, api, { scope })
-      let location = new URL(input.url)
-      if (mode === 'explicit') {
-        location = revealLink(page, location.pathname + location.search)
-        page = await loadActivity(new Request(location), api, { scope })
-      }
-      expect(page.selected).toBe(name)
-      expect(page.selectedRow).toMatchObject({
-        name,
-        label: 'execution ended',
-        contextImpactBytes: '4',
-      })
-      expect(page.branches[run].rows).toMatchObject([
-        { name, label: 'execution ended', contextImpactBytes: '4' },
-      ])
-      expect(page.branches[run].rows).toHaveLength(1)
-      const markup = renderActivity(location.pathname + location.search, page)
-      expect(markup).not.toContain('Outside this workspace or page:')
-      expect(markup.match(/aria-selected="true"/g)).toHaveLength(1)
-    },
-  )
-  it('keeps a terminal Event anchor after closing detail and paging away', async () => {
-    const name = `${run}/events/4`
-    const { api } = coral(list(), taskDetail(), runEntries({ endedEvent: true }))
-    const query = { expand: [task, run], [`anchor.${run}`]: name }
-    const anchored = await loadActivity(request(query), api, { scope })
-    expect(anchored.selected).toBeNull()
-    expect(anchored.branches[run].rows).toMatchObject([
-      { name, label: 'execution ended', contextImpactBytes: '4' },
-    ])
-    // A later page shows the terminal Event as Coral sent it, never as a return value row.
-    const paged = await loadActivity(request({ ...query, [`cursor.${run}`]: '3' }), api, { scope })
-    expect(paged.branches[run].rows).toMatchObject([
-      { name, label: 'execution ended', contextImpactBytes: '4' },
-    ])
-  })
-  it('preserves complete signed totals without summing only loaded children or coercing unavailable to zero', async () => {
+  it('preserves complete signed totals without summing the records under them or coercing unavailable to zero', async () => {
     const { api } = coral(
       list({ contextImpact: true }),
       taskDetail({ contextImpact: true }),
       runEntries({ contextImpact: true }),
     )
-    const collapsed = await loadActivity(request(), api, { scope })
-    const expanded = await loadActivity(request({ expand: [task, run] }), api, {
-      scope,
-    })
-    expect(collapsed.rows[0]).toMatchObject({
+    const page = await loadActivity(request(), api, { scope })
+    expect(page.rows[0]).toMatchObject({
       contextImpactBytes: '-141800',
       contextImpactPartial: false,
     })
-    expect(expanded.rows[0]).toMatchObject({ contextImpactBytes: '-141800' })
-    expect(expanded.branches[task].rows[0]).toMatchObject({ contextImpactBytes: '-148000' })
-    expect(expanded.branches[run].rows).toMatchObject([
+    // Each record keeps the total Coral reports for it, not a sum of the records under it.
+    expect(page.trace?.children[task]?.[0]).toMatchObject({ contextImpactBytes: '-148000' })
+    expect(page.trace?.children[run]).toMatchObject([
       { contextImpactBytes: '-150000' },
       { contextImpactBytes: '2000', name: `${run}/events/3` },
     ])
@@ -943,25 +902,18 @@ describe('hierarchical activity through the private server interface', () => {
       contextImpactPartial: true,
     })
   })
-  it('loads one bounded mixed root window, with no child or exact evidence for collapsed rows', async () => {
+  it('loads one bounded root window, with no exact evidence for its rows', async () => {
     const { api, calls } = coral(list())
     const page = await loadActivity(request({ after: task, load: 'page' }), api, { scope })
     expect(page.rows).toMatchObject([{ kind: 'task', name: task }])
-    expect(page.branches).toEqual({})
     expect(loaded(calls, ...DETAIL_OR_CHILD)).toBe(0)
     expect(calls.find((call) => call.method === 'roots')?.input).toMatchObject({ after: task })
     expect(JSON.stringify(page)).not.toMatch(/secretSource|private@example|unselected-event/)
   })
-  it('reopens the list at the reading anchor with its anchored child windows instead of loading a shifted first page', async () => {
+  it('reopens the list at the reading anchor instead of loading a shifted first page', async () => {
     const { api, calls } = coral(list(), ...reviewReads())
-    const initial = await loadActivity(request({ expand: [task, run], tree: '1' }), api, { scope })
-    const nav = activityNavigation(initial, `/${workspace}/activity`, '', {
-      anchor: task,
-      branches: {
-        [task]: { offset: 125, anchor: interaction, preceding: 25 },
-        [run]: { offset: 300, anchor: `${run}/events/320`, preceding: 20 },
-      },
-    })
+    const initial = await loadActivity(request(), api, { scope })
+    const nav = activityNavigation(initial, `/${workspace}/activity`, '', { anchor: task })
     calls.length = 0
     const page = await loadActivity(
       new Request(new URL(nav.recordHref(invocation), 'http://reef')),
@@ -974,165 +926,21 @@ describe('hierarchical activity through the private server interface', () => {
       after: '',
       anchor: task,
     })
-    // The approval review also reads its Task once for the intent; the branch read is last.
-    expect(calls.findLast((call) => call.method === 'task')?.input).toMatchObject({
-      viewport: { offset: 125n, anchor: interaction, preceding: 25 },
-      pageSize: ACTIVITY_CHILD_WINDOW,
-    })
-    expect(calls.find((call) => call.method === 'entries')?.input).toMatchObject({
-      viewport: { offset: 300n, anchor: `${run}/events/320`, preceding: 20 },
-      pageSize: ACTIVITY_CHILD_WINDOW,
-    })
     expect(page.rows.map((row) => row.name)).toEqual([task])
     expect(page).not.toHaveProperty('total')
     expect(page.selectedRow?.name).toBe(invocation)
     expect(page.detail?.kind).toBe('invocation')
   })
-  it.each([
-    { before: invocation },
-    { after: `${run}/events/1` },
-    { expand: task, [`offset.${task}`]: '1', [`preceding.${task}`]: '100' },
-    { expand: task, [`offset.${task}`]: '-1', [`preceding.${task}`]: '0' },
-  ])('rejects unbounded or malformed navigation coordinates: %j', async (query) => {
-    await expect(
-      loadActivity(request(query), coral(list(), taskDetail()).api, {
-        scope,
-      }),
-    ).rejects.toMatchObject({ status: 400 })
-  })
-  it('expands accepted exec exactly once and loads only source-free child summaries', async () => {
-    const { api, calls } = coral(list(), taskDetail(), runEntries())
-    const page = await loadActivity(request({ expand: [task, run], tree: '1' }), api, { scope })
-    expect(page.branches[task].rows).toMatchObject([
-      {
-        kind: 'run',
-        name: run,
-        submission: { tool: 'exec', outcome: 'succeeded' },
-      },
-    ])
-    expect(page.branches[run].rows).toMatchObject([
-      { kind: 'invocation', name: invocation },
-      { kind: 'output', name: `${run}/events/3` },
-    ])
-    expect(page.branches[run].next).toBe('3')
-    expect(loaded(calls, 'task')).toBe(1)
-    expect(loaded(calls, 'entries')).toBe(1)
-    expect(loaded(calls, 'tool', 'run', 'event', 'invocation', 'approval')).toBe(0)
-    expect(JSON.stringify(page)).not.toMatch(/secretSource|private@example|invoices.*24/)
-  })
-  it.each([0n, 200n])(
-    'pins an independently authorized expanded Run at ordinal %s outside the Task viewport',
-    async (position) => {
-      const { api, calls } = coral(
-        list(),
-        taskDetail({ outOfWindow: true }),
-        runEntries({ submissionPosition: position }),
-      )
-      const page = await loadActivity(
-        request({ expand: [task, run], [`offset.${task}`]: '100', tree: '1' }),
-        api,
-        { scope },
-      )
-      expect(page.branches[task]).toMatchObject({ offset: 100, total: '300', unavailable: false })
-      expect(page.branches[task].rows.map((row) => [row.name, row.position])).toEqual(
-        position === 0n
-          ? [
-              [run, 0],
-              [`${task}/interactions/visible`, 100],
-            ]
-          : [
-              [`${task}/interactions/visible`, 100],
-              [run, 200],
-            ],
-      )
-      expect(page.branches[task].rows.find((row) => row.name === run)).toMatchObject({
-        kind: 'run',
-        task,
-        submission: { name: interaction, tool: 'exec', intent: 'Send invoice reminders' },
-      })
-      expect(page.branches[run].rows).toMatchObject([
-        { name: invocation },
-        { name: `${run}/events/3` },
-      ])
-      expect(loaded(calls, 'tool', 'run', 'event', 'invocation', 'approval')).toBe(0)
-      expect(calls.find((call) => call.method === 'task')?.input).toMatchObject({
-        viewport: { offset: 100n },
-      })
-      expect(calls.find((call) => call.method === 'entries')?.input).toMatchObject({ name: run })
-      expect(page.detail).toBeNull()
-      expect(JSON.stringify(page)).not.toMatch(/secretSource|private@example/)
-    },
-  )
-  it.each([
-    { runUnavailable: Code.NotFound },
-    { runUnavailable: Code.PermissionDenied },
-    { runAssociation: 'missing-run' },
-    { runAssociation: 'missing-task' },
-    { runAssociation: 'other-task' },
-    { runAssociation: 'missing-submission' },
-    { runAssociation: 'missing-position' },
-  ] as const)(
-    'does not pin stale or unrelated Run data without an authorized association: %j',
-    async (options) => {
-      const { api, calls } = coral(list(), taskDetail({ outOfWindow: true }), runEntries(options))
-      const page = await loadActivity(request({ expand: [task, run], tree: '1' }), api, { scope })
-      expect(calls.filter((call) => call.method === 'entries')).toHaveLength(1)
-      expect(page.branches[task].rows.map((row) => row.name)).toEqual([
-        `${task}/interactions/visible`,
-      ])
-      expect(page.branches[run]).toBeUndefined()
-      expect(page.rows.map((row) => row.name)).toEqual([task])
-      expect(page.selectedRow).toBeNull()
-      expect(page.detail).toBeNull()
-      expect(JSON.stringify(page.branches)).not.toMatch(/Send invoice reminders|mail.send/)
-    },
-  )
-  it.each([
-    { taskUnavailable: true, neighbors: false },
-    { taskUnavailable: false, neighbors: false },
-    { taskUnavailable: true, neighbors: true },
-    { taskUnavailable: false, neighbors: true },
-  ])(
-    'does not use another Task or an expanded Run reference to bypass an unavailable or collapsed Task: %j',
-    async (options) => {
-      const { api, calls } = coral(
-        list({ neighbors: options.neighbors }),
-        taskDetail({ outOfWindow: true, taskUnavailable: options.taskUnavailable }),
-        runEntries(),
-      )
-      const page = await loadActivity(
-        request({
-          expand: [
-            ...(options.taskUnavailable ? [task] : []),
-            ...(options.neighbors ? [`${task}-neighbor`] : []),
-            run,
-          ],
-          tree: '1',
+  it.each([{ before: invocation }, { after: `${run}/events/1` }])(
+    'rejects malformed page coordinates: %j',
+    async (query) => {
+      await expect(
+        loadActivity(request(query), coral(list(), taskDetail()).api, {
+          scope,
         }),
-        api,
-        { scope },
-      )
-      expect(page.branches[task]).toEqual(
-        options.taskUnavailable ? { rows: [], next: '', unavailable: true } : undefined,
-      )
-      expect(page.branches[run]).toBeUndefined()
-      expect(calls.filter((call) => call.method === 'entries')).toHaveLength(
-        options.neighbors ? 1 : 0,
-      )
-      expect(
-        Object.values(page.branches)
-          .flatMap((branch) => branch.rows)
-          .map((row) => row.name),
-      ).toEqual(options.neighbors ? [`${task}-neighbor/interactions/visible`] : [])
-      expect(page.detail).toBeNull()
-      expect(page.selectedRow).toBeNull()
+      ).rejects.toMatchObject({ status: 400 })
     },
   )
-  it('does not fetch arbitrary or collapsed branches supplied in the URL', async () => {
-    const { api, calls } = coral(list())
-    await loadActivity(request({ expand: run, tree: '1' }), api, { scope })
-    expect(loaded(calls, ...DETAIL_OR_CHILD)).toBe(0)
-  })
   it.each([
     ['from its Run', run, false, goal.intent],
     ['from its tool', invocation, false, goal.intent],
@@ -1178,7 +986,8 @@ describe('hierarchical activity through the private server interface', () => {
         runDetail(),
         invocationDetail(),
         approvalDetail(),
-        taskDetail({ taskUnavailable: code }),
+        // The review's own intent read; the timeline reads the Task apart from it.
+        taskDetail({ taskUnavailable: code, onlyExactRead: true }),
       )
       const load = loadActivity(
         request({ record: invocation, request: approval, tree: '1' }),
@@ -1325,33 +1134,6 @@ describe('hierarchical activity through the private server interface', () => {
       },
     })
   })
-  it('direct output links reveal and seek both the task and execution ancestors', async () => {
-    const { api, calls } = coral(list(), taskDetail(), runEntries(), runEvent(), runDetail())
-    const page = await loadActivity(request({ record: `${run}/events/3` }), api, { scope })
-    expect(page.expanded).toEqual([task, run])
-    expect(page.branches[task].rows[0].name).toBe(run)
-    expect(page.branches[run].rows).toContainEqual(
-      expect.objectContaining({ name: `${run}/events/3` }),
-    )
-    expect(calls.find((call) => call.method === 'task')?.input).toMatchObject({ anchor: run })
-    expect(calls.find((call) => call.method === 'entries')?.input).toMatchObject({
-      anchor: `${run}/events/3`,
-    })
-  })
-  it('retains effective direct-link anchors after the observation route normalizes tree state', async () => {
-    const page = await loadActivity(
-      request({
-        record: `${run}/events/3`,
-        tree: '1',
-        expand: [task, run],
-        [`anchor.${task}`]: run,
-        [`anchor.${run}`]: `${run}/events/3`,
-      }),
-      coral(list(), taskDetail(), runEntries(), runEvent(), runDetail()).api,
-      { scope },
-    )
-    expect(page.anchors).toEqual({ [task]: run, [run]: `${run}/events/3` })
-  })
   it('reads one exact emission, with its parent Run’s authorized accepted-source context', async () => {
     const { api, calls } = coral(list(), runEvent(), runDetail())
     const page = await loadActivity(request({ record: `${run}/events/3`, tree: '1' }), api, {
@@ -1381,10 +1163,10 @@ describe('hierarchical activity through the private server interface', () => {
       (page) => [page.selectedRow],
     ],
     [
-      'an expanded Run’s tool and emission',
+      'a tool and an emission in the timeline',
       [taskDetail(), runEntries({ location: inSnapshot })],
-      { expand: [task, run] },
-      (page) => page.branches[run]!.rows,
+      {},
+      (page) => page.trace?.children[run] ?? [],
     ],
   ])('keeps the source location Coral stored for %s', async (_, reads, query, records) => {
     const { api } = coral(list(), ...reads)
@@ -1569,22 +1351,6 @@ describe('hierarchical activity through the private server interface', () => {
     await loadActivity(request({ record: invocation, tree: '1' }), api, { scope })
     expect(loaded(calls, 'run')).toBe(1)
   })
-  it('keeps the original intent on the expanded exec row', async () => {
-    const page = await loadActivity(
-      request({ expand: [task, run], tree: '1' }),
-      coral(list(), taskDetail(), runEntries({ completedEntries: true })).api,
-      { scope },
-    )
-    expect(page.branches[task].rows).toMatchObject([
-      {
-        kind: 'run',
-        name: run,
-        submission: { intent: 'Send reminders' },
-      },
-    ])
-    expect(page.detail).toBeNull()
-    expect(JSON.stringify(page)).not.toContain('secretSource')
-  })
   it('retains accepted source snapshots and distinguishes explicit null from no final value', async () => {
     const present = await loadActivity(
       request({ record: run, tree: '1' }),
@@ -1725,12 +1491,12 @@ describe('hierarchical activity through the private server interface', () => {
   })
   it('does not mix owner-visible Agent work into personal scope', async () => {
     const page = await loadActivity(
-      request({ anchor: task, expand: [task, run] }),
-      coral(list({ agentRun: true })).api,
+      request({ anchor: task, root: task }),
+      coral(list({ agentRun: true }), taskDetail({ agentRun: true })).api,
       { scope },
     )
     expect(page.rows).toEqual([])
-    expect(page.branches).toEqual({})
+    expect(page.trace).toBeNull()
   })
   it('preserves the stable Run path over unrelated query selection', async () => {
     const { api, calls } = coral(list(), runDetail())
@@ -1813,13 +1579,13 @@ describe('hierarchical activity through the private server interface', () => {
     })
     expect(revealed.listUnavailable).toBe(false)
     expect(target.searchParams.has('scope')).toBe(false)
-    expect(target.searchParams.get('anchor')).toBe(task)
+    expect(target.searchParams.get('root')).toBe(task)
     expect(revealed.rows).toMatchObject([
       { kind: 'task', name: task },
       { name: `${task}-neighbor` },
     ])
     expect(revealed.rows).toHaveLength(2)
-    expect(revealed.branches[task].rows).toMatchObject([{ kind: 'run', name: run }])
+    expect(revealed.trace?.children[task]).toMatchObject([{ kind: 'run', name: run }])
     expect(revealed.selected).toBe(run)
     expect(revealed.detail?.kind).toBe('run')
   })
@@ -1856,1025 +1622,17 @@ describe('hierarchical activity through the private server interface', () => {
     const revealed = await loadActivity(new Request(target), api, { scope })
     expect(revealed.listUnavailable).toBe(false)
     expect(revealed.rows).toMatchObject([{ name: task }])
-    expect(revealed.branches[task].rows).toMatchObject([{ name: run }])
+    expect(revealed.trace?.children[task]).toMatchObject([{ name: run }])
     expect(revealed.selected).toBe(run)
   })
-  it.each([
-    { record: 'bad' },
-    { anchor: invocation },
-    { expand: invocation },
-    { expand: [task, run], [`cursor.${run}`]: '-1' },
-    { expand: [task, run], [`cursor.${run}`]: '18446744073709551616' },
-    { expand: Array.from({ length: 21 }, (_, i) => `${workspace}/tasks/${i}`) },
-  ])('rejects malformed or unbounded active tree state: %j', async (query) => {
-    await expect(
-      loadActivity(request(query), coral(list(), taskDetail()).api, { scope }),
-    ).rejects.toMatchObject({ status: 400 })
-  })
-})
-
-/** A tool of `run` that waits on a request, as Coral lists and inspects it. */
-interface Wait {
-  id: string
-  startedAt: bigint
-  request: { kind: 'approval' | 'accountConnection'; id: string }
-  /** The caller can decide the approval, or the connection is still pending. */
-  actionable?: boolean
-  /** Coral still reports the tool waiting. */
-  waiting?: boolean
-  /** Its approval was approved; the tool no longer waits. */
-  decided?: boolean
-  /** The 100-child page of the Run's children that lists it. */
-  page?: number
-}
-const waitName = (id: string) => `${workspace}/invocations/${id}`
-const requestName = (wait: Wait) =>
-  `${workspace}/${wait.request.kind === 'approval' ? 'approvals' : 'accountConnections'}/${wait.request.id}`
-const waiting = (wait?: Wait) => wait?.waiting !== false && !wait?.decided
-/** The action summary Coral lists for the request `name`. */
-const summary = (name: string) => ({
-  request: {
-    request: name.includes('/approvals/')
-      ? { case: 'approval' as const, value: name }
-      : { case: 'accountConnection' as const, value: name },
-  },
-  callPath: 'mail.send',
-  providerLabel: 'Mail',
-  deadlineAtUnixNanos: 902_000_000_000n,
-})
-const approvalWait = (id: string, startedAt: bigint, extra: Partial<Wait> = {}): Wait => ({
-  id,
-  startedAt,
-  request: { kind: 'approval', id: `approval-${id}` },
-  ...extra,
-})
-const connectionWait = (id: string, startedAt: bigint, extra: Partial<Wait> = {}): Wait => ({
-  id,
-  startedAt,
-  request: { kind: 'accountConnection', id: `connection-${id}` },
-  ...extra,
-})
-/** An emission of `run`, selected while live mode follows the Run. */
-const followed = (extra: Record<string, string | undefined> = {}) =>
-  request({ record: `${run}/events/3`, tree: '1', live: '1', ...extra })
-/** The action that reviews `wait` on its tool. */
-const target = (wait: Wait) => ({ run, record: waitName(wait.id), request: requestName(wait) })
-
-/**
- * A Run whose tools wait on `waits`, listed in the order given. Its current requests
- * come in two action pages: the first holds the last wait, the second all the others.
- */
-function waitingRun(waits: Wait[]): Handlers {
-  return waitingRuns({ [run]: waits })
-}
-/** Several Runs, each read by its name, as `waitingRun` reads one. */
-function waitingRuns(runs: Record<string, Wait[]>): Handlers {
-  const all = Object.values(runs).flat()
-  const ownerOf = (wait?: Wait) =>
-    Object.keys(runs).find((name) => wait && runs[name]!.includes(wait)) ?? run
-  const byName = (name: string) => all.find((wait) => requestName(wait) === name)
-  const of = (name: string) => {
-    const waits = runs[name] ?? []
-    return {
-      waits,
-      current: [...new Set(waits.filter(waiting).map(requestName))],
-      pages: Math.max(1, ...waits.map((wait) => (wait.page ?? 0) + 1)),
-    }
-  }
-  return {
-    accounts: {
-      getAccountConnectionRequest: (input) => ({
-        name: input.name,
-        provider: `${workspace}/providers/mail`,
-        state:
-          byName(input.name)?.actionable === false
-            ? AccountConnectionState.DECLINED
-            : AccountConnectionState.PENDING,
-      }),
-    },
-    activity: {
-      inspectRun: (input) => {
-        const { current } = of(input.name)
-        return {
-          run: {
-            ...execution,
-            name: input.name,
-            actionPage: {
-              actions: (input.actionAfter ? current.slice(0, -1) : current.slice(-1)).map(summary),
-              total: BigInt(current.length),
-              nextAction: input.actionAfter || current.length < 2 ? '' : 'older-actions',
-            },
-            requiresAction: current.length > 0,
-          },
-          submittedSource: 'return secretSource;',
-          terminal: { case: 'succeeded', value: { finalValueJson: 'null' } },
-        }
-      },
-      browseRunEntries: (input) => {
-        const { waits, pages } = of(input.name)
-        const page = Number(input.after) / 100
-        return {
-          run: { ...execution, name: input.name },
-          offset: input.after,
-          total: BigInt(pages * 100),
-          entries: [
-            {
-              record: {
-                case: 'event',
-                value: { sequence: input.after + 1n, kind: 'program.logged' },
-              },
-            },
-            ...waits
-              .filter((wait) => (wait.page ?? 0) === page)
-              .map((wait) => ({
-                record: {
-                  case: 'invocation' as const,
-                  value: {
-                    ...tool,
-                    name: waitName(wait.id),
-                    startedAtUnixNanos: wait.startedAt,
-                    requiresAction: waiting(wait),
-                  },
-                },
-              })),
-          ],
-          nextAfter: input.after + 100n,
-          hasMore: page + 1 < pages,
-        }
-      },
-      inspectInvocation: (input) => {
-        const wait = all.find((item) => waitName(item.id) === input.name)
-        return {
-          invocation: {
-            ...tool,
-            run: ownerOf(wait),
-            name: input.name,
-            startedAtUnixNanos: wait?.startedAt,
-            requiresAction: waiting(wait),
-          },
-          requests: wait ? [{ request: summary(requestName(wait)).request.request }] : [],
-        }
-      },
-      inspectApproval: (input) => {
-        const wait = byName(input.name)
-        return {
-          name: input.name,
-          run: ownerOf(wait),
-          invocation: wait ? waitName(wait.id) : '',
-          state: wait?.decided ? 'approved' : 'pending',
-          actionable: !wait?.decided && wait?.actionable !== false,
-        }
-      },
-    },
-  }
-}
-
-describe("Live's oldest action in the followed Run", () => {
-  it('times every approval on every action page by its tool, then identity', async () => {
-    // `b` alone is on the first action page; its equal-time tie `a` and the newer `c`
-    // are on the second, and far past the first history page.
-    const a = approvalWait('a', 5n, { page: 3 })
-    const b = approvalWait('b', 5n)
-    const c = approvalWait('c', 1_000n)
-    const { api, calls } = coral(list(), runEvent(), waitingRun([c, a, b]))
-    const page = await loadActivity(followed(), api, { scope })
-    expect(page.liveAction).toEqual(target(a))
-    // Each approval and its tool are read once; the Run's history is not.
-    expect(loaded(calls, 'entries')).toBe(0)
-    expect(loaded(calls, 'approval')).toBe(3)
-    expect(loaded(calls, 'invocation')).toBe(3)
-  })
-  it.each(['latest', 'task'])('reads it while live mode follows the %s scope', async (live) => {
-    const oldest = approvalWait('a', 1n)
-    const { api } = coral(list(), runEvent(), waitingRun([approvalWait('b', 9n), oldest]))
-    const page = await loadActivity(followed({ live }), api, { scope })
-    expect(page.liveAction).toEqual(target(oldest))
-  })
-  it('reads the first action page when the review shows a later one', async () => {
-    const oldest = approvalWait('a', 1n)
-    const newer = approvalWait('b', 9n)
-    // The first page holds `a`; the reader's `actionsAfter` page holds only `b`.
-    const { api } = coral(list(), runEvent(), waitingRun([newer, oldest]))
-    const page = await loadActivity(followed({ actionsAfter: 'older-actions' }), api, { scope })
-    expect(page.liveAction).toEqual(target(oldest))
-  })
-  it('reads no tool of an approval you cannot decide, and no history', async () => {
-    const waits = ['a', 'b', 'c'].map((id, index) =>
-      approvalWait(id, BigInt(index), { actionable: false, page: 9 }),
-    )
-    const { api, calls } = coral(list(), runEvent(), waitingRun(waits))
-    const page = await loadActivity(followed(), api, { scope })
-    expect(page.liveAction).toBeUndefined()
-    expect(loaded(calls, 'entries', 'invocation')).toBe(0)
-  })
-  it.each([
-    { name: 'an earlier timestamp', early: 1n, approvalTime: 5n },
-    { name: 'an equal timestamp with a lower identity', early: 10n, approvalTime: 10n },
-  ])('times a shared connection across child pages by $name', async ({ early, approvalTime }) => {
-    const first = connectionWait('z', 10n)
-    const oldest = connectionWait('a', early, { page: 1, request: first.request })
-    const other = approvalWait('m', approvalTime)
-    const { api } = coral(list(), runEvent(), waitingRun([first, oldest, other]))
-    const page = await loadActivity(followed(), api, { scope })
-    expect(page.liveAction).toEqual({ ...target(oldest), record: run })
-  })
-  it.each([
-    { name: 'an older connection wins', connected: 3n, approved: 4n, chosen: 'x' },
-    { name: 'an older approval wins', connected: 5n, approved: 4n, chosen: 'y' },
-  ])(
-    'times a connection by the first tool that waits on it: $name',
-    async ({ connected, approved, chosen }) => {
-      const x = connectionWait('x', connected, { page: 1 })
-      const y = approvalWait('y', approved)
-      const { api, calls } = coral(list(), runEvent(), waitingRun([x, y]))
-      const page = await loadActivity(followed(), api, { scope })
-      expect(page.liveAction).toEqual(chosen === 'x' ? { ...target(x), record: run } : target(y))
-      // Connection ordering reads every child page, including shared requests.
-      expect(loaded(calls, 'entries')).toBe(2)
+  it.each([{ record: 'bad' }, { anchor: invocation }])(
+    'rejects a malformed record or anchor: %j',
+    async (query) => {
+      await expect(
+        loadActivity(request(query), coral(list(), taskDetail()).api, { scope }),
+      ).rejects.toMatchObject({ status: 400 })
     },
   )
-  it.each([
-    {
-      name: 'an approval you cannot decide',
-      waits: [approvalWait('a', 1n, { actionable: false }), approvalWait('b', 2n)],
-      chosen: 'b',
-    },
-    {
-      name: 'a tool that no longer waits',
-      waits: [approvalWait('a', 1n, { waiting: false }), approvalWait('b', 2n)],
-      chosen: 'b',
-    },
-    {
-      name: 'a connection that is no longer pending',
-      waits: [connectionWait('a', 1n, { actionable: false }), connectionWait('b', 2n)],
-      chosen: 'b',
-    },
-    {
-      name: 'every request you cannot act on',
-      waits: [
-        approvalWait('a', 1n, { actionable: false }),
-        connectionWait('b', 2n, { actionable: false }),
-      ],
-      chosen: undefined,
-    },
-  ])('skips $name', async ({ waits, chosen }) => {
-    const { api } = coral(list(), runEvent(), waitingRun(waits))
-    const page = await loadActivity(followed(), api, { scope })
-    const wait = waits.find((item) => item.id === chosen)
-    // An account connection is reviewed on its Run, an approval on its tool.
-    expect(page.liveAction).toEqual(
-      wait && {
-        ...target(wait),
-        record: wait.request.kind === 'approval' ? waitName(wait.id) : run,
-      },
-    )
-  })
-  it.each([
-    { name: 'live mode is off', query: { live: '' }, waits: [approvalWait('a', 1n)] },
-    { name: 'live names no scope', query: { live: 'on' }, waits: [approvalWait('a', 1n)] },
-    { name: 'the Run waits on nothing', query: {}, waits: [] },
-  ])('reads no children when $name', async ({ query, waits }) => {
-    const { api, calls } = coral(list(), runEvent(), waitingRun(waits))
-    const page = await loadActivity(followed(query), api, { scope })
-    expect(page.liveAction).toBeUndefined()
-    expect(loaded(calls, 'entries', 'invocation', 'approval', 'connection')).toBe(0)
-  })
-  it('reads the next action once the reviewed approval is decided, with live mode off', async () => {
-    const decided = approvalWait('a', 1n, { decided: true })
-    const next = approvalWait('b', 2n)
-    const { api } = coral(list(), taskDetail(), waitingRun([decided, next]))
-    const query = { record: waitName('a'), request: requestName(decided), tree: '1' }
-    const page = await loadActivity(request(query), api, { scope })
-    expect(page.detail).toMatchObject({ kind: 'invocation', request: { state: 'approved' } })
-    expect(page.liveAction).toEqual(target(next))
-    // A live snapshot of that review never reads it: only the read after the decision advances.
-    const reading = { followRoot: false, roots: [], branches: {} }
-    expect((await loadActivity(request(query), api, { scope, reading })).liveAction).toBeUndefined()
-    // A pending review reads nothing more.
-    const pending = coral(list(), taskDetail(), waitingRun([approvalWait('a', 1n), next]))
-    const query2 = { ...query, request: `${workspace}/approvals/approval-a` }
-    expect((await loadActivity(request(query2), pending.api, { scope })).liveAction).toBeUndefined()
-    expect(loaded(pending.calls, 'entries')).toBe(0)
-  })
-})
-
-const runOf = (id: string) => `${workspace}/runs/${id}`
-interface TaskRun {
-  id: string
-  ended?: boolean
-  waits?: Wait[]
-  /** A Search that started no Run. */
-  tool?: boolean
-  /**
-   * When its tool call started, in seconds after its Task, to the nanosecond. Its
-   * position by default. A standalone Run's is when Coral accepted it, after `recent`.
-   */
-  at?: number
-}
-/** `count` standalone Runs that ended, named from `prefix`. */
-const endedRoots = (count: number, prefix = 'gone'): LiveRoot[] =>
-  Array.from({ length: count }, (_, index) => ({
-    kind: 'run',
-    run: { id: `${prefix}-${index}`, ended: true },
-  }))
-/** `count` Runs that ended, before the newer Runs the window holds. */
-const endedRuns = (count: number) =>
-  Array.from({ length: count }, (_, index) => ({ id: `old-${index}`, ended: true }))
-const nameOf = (call: { input: unknown }) => (call.input as { name?: string }).name ?? ''
-const actionOf = (id: string, wait: Wait) => ({
-  run: runOf(id),
-  record: wait.request.kind === 'approval' ? waitName(wait.id) : runOf(id),
-  request: requestName(wait),
-})
-
-/** A listed root of `liveWorld`: a Task with its Runs in order, or a standalone Run. */
-type LiveRoot =
-  | {
-      kind: 'task'
-      id: string
-      runs: TaskRun[]
-      /** The Task's row says a Run of it runs. */
-      partial?: boolean
-      /** It started over an hour ago. */
-      old?: boolean
-      /** The list does not hold it. */
-      unlisted?: boolean
-    }
-  | {
-      kind: 'run'
-      run: TaskRun
-      /** The list's scope does not hold it, such as another Agent's Run. */
-      unlisted?: boolean
-    }
-const taskName = (id: string) => `${workspace}/tasks/${id}`
-/** Whether `item` runs and waits on you. */
-const asks = (item: TaskRun) => !item.ended && (item.waits ?? []).some(waiting)
-/**
- * Coral holding `roots`, newest first. Your pending requests list each once, under the
- * first Run that waits on it, or under `listedUnder[request]` when given.
- */
-function liveWorld(roots: LiveRoot[], listedUnder: Record<string, string> = {}) {
-  const tasks = roots.flatMap((root) => (root.kind === 'task' ? [root] : []))
-  const all = roots.flatMap((root) =>
-    root.kind === 'task'
-      ? root.runs.map((item) => ({ item, task: taskName(root.id) }))
-      : [{ item: root.run, task: '' }],
-  )
-  const recent = BigInt(Date.now()) * 1_000_000n
-  /** `seconds` after `start`, to the nanosecond. */
-  const after = (seconds: number, start = recent) => start + BigInt(Math.round(seconds * 1e9))
-  /** When the Task `root` started: `recent`, or long before it when it is old. */
-  const startOf = (root: (typeof tasks)[number]) => (root.old ? 1_000_000_000n : recent)
-  const runView = ({ item, task: owner }: (typeof all)[number]) => ({
-    ...execution,
-    ...(!owner && item.at !== undefined && { startedAtUnixNanos: after(item.at) }),
-    name: runOf(item.id),
-    task: owner,
-    state: item.ended ? ActivityRunState.SUCCEEDED : ActivityRunState.RUNNING,
-    requiresAction: asks(item),
-    actionPage: undefined,
-  })
-  const pending = new Map<string, (typeof all)[number]>()
-  for (const entry of all)
-    if (asks(entry.item))
-      for (const wait of (entry.item.waits ?? []).filter(waiting))
-        if (!pending.has(requestName(wait))) pending.set(requestName(wait), entry)
-  for (const [name, waiter] of Object.entries(listedUnder))
-    pending.set(
-      name,
-      all.find(({ item }) => runOf(item.id) === waiter)!,
-    )
-  const reads = waitingRuns(
-    Object.fromEntries(all.map(({ item }) => [runOf(item.id), item.waits ?? []])),
-  )
-  /** When the record at `position` of the Task `root` started. */
-  const childAt = (root: (typeof tasks)[number], position: number) =>
-    after(root.runs[position]!.at ?? position, startOf(root))
-  const taskValue = (root: (typeof tasks)[number]) => ({
-    ...goal,
-    name: taskName(root.id),
-    startedAtUnixNanos: startOf(root),
-    contextImpactBytes: 1n,
-    contextImpactPartial: root.partial ?? false,
-  })
-  return {
-    ...reads,
-    workspaces: {
-      getWorkspace: (input: { name: string }) => ({
-        name: input.name,
-        state: WorkspaceState.ACTIVE,
-      }),
-    },
-    activity: {
-      ...reads.activity,
-      browseRequiredActions: () => ({
-        actions: [...pending].map(([name, entry]) => ({
-          action: summary(name),
-          run: runView(entry),
-        })),
-        actionCount: BigInt(pending.size),
-      }),
-      // A page of the listed roots after `after`, as Coral pages them.
-      browseActivityRoots: (input: {
-        after?: string
-        pageSize?: number
-        retained?: { names: string[] }
-      }) => {
-        const listed = roots.flatMap(
-          (root): { name: string; record: { case: 'task' | 'run'; value: object } }[] =>
-            root.unlisted
-              ? []
-              : root.kind === 'run'
-                ? [
-                    {
-                      name: runOf(root.run.id),
-                      record: { case: 'run', value: runView({ item: root.run, task: '' }) },
-                    },
-                  ]
-                : [{ name: taskName(root.id), record: { case: 'task', value: taskValue(root) } }],
-        )
-        // As Coral does, a read of the records you watch says whether newer ones exist.
-        if (input.retained) {
-          const first = listed.findIndex(({ name }) => input.retained!.names.includes(name))
-          return {
-            roots: listed
-              .filter(({ name }) => input.retained!.names.includes(name))
-              .map(({ record }) => ({ record })),
-            hasBefore: first > 0,
-            hasAfter: false,
-          }
-        }
-        const from = input.after ? listed.findIndex(({ name }) => name === input.after) + 1 : 0
-        const size = input.pageSize || 50
-        return {
-          roots: listed.slice(from, from + size).map(({ record }) => ({ record })),
-          hasAfter: from + size < listed.length,
-        }
-      },
-      inspectTask: (input: { name: string; pageSize: number; viewport?: { offset: bigint } }) => {
-        const root = tasks.find((item) => taskName(item.id) === input.name)!
-        const total = root.runs.length
-        const offset = Number(input.viewport?.offset ?? 0)
-        // An offset at or past the end reads the last window, as Coral does.
-        const from = offset >= total ? Math.max(0, total - input.pageSize) : offset
-        return {
-          task: taskValue(root),
-          offset: BigInt(from),
-          total: BigInt(total),
-          interactions: root.runs.slice(from, from + input.pageSize).map((item, index) => ({
-            name: `${input.name}/interactions/${item.id}`,
-            position: BigInt(from + index),
-            kind: item.tool ? 'search' : 'submit',
-            intent: item.id,
-            outcome: 'succeeded',
-            startedAtUnixNanos: childAt(root, from + index),
-            ...(!item.tool && {
-              acceptedRun: runOf(item.id),
-              run: runView({ item, task: input.name }),
-            }),
-          })),
-          nextAfter: '',
-        }
-      },
-    },
-  } as Handlers
-}
-/** Page live mode on, with `values` in the address. */
-const onLatest = (values: Record<string, string | string[]> = {}) =>
-  request({ tree: '1', live: 'latest', ...values })
-/** `liveLatest`, with each Run it names by its name only. */
-const liveNames = (value: ActivityPage['liveLatest']) =>
-  value && {
-    ...value,
-    ...(value.running && {
-      running: Object.fromEntries(
-        Object.entries(value.running).map(([key, row]) => [key, row.name]),
-      ),
-    }),
-  }
-const actionIn = (owner: string, id: string, wait: Wait) => ({
-  task: owner && taskName(owner),
-  action: actionOf(id, wait),
-})
-
-/** The windows of the Task `owner` that `calls` read in order: `head` for its first record. */
-const windowsOf = (calls: { method: string; input: unknown }[], owner: string) =>
-  calls
-    .filter((call) => call.method === 'task' && nameOf(call) === owner)
-    .map((call) => {
-      const offset = (call.input as { viewport?: { offset: bigint } }).viewport?.offset
-      return offset === undefined ? 'head' : String(offset)
-    })
-/** Each Task whose children `calls` read, and how many children each read asked for. */
-const childReads = (calls: { method: string; input: unknown }[]) =>
-  calls
-    .filter((call) => call.method === 'task')
-    .map((call) => [nameOf(call), (call.input as { pageSize: number }).pageSize])
-/** `world`, where Reef cannot read the window of the Task `owner` from `offset`. */
-function refusing(world: Handlers, owner: string, offset: number): Handlers {
-  const read = world.activity!.inspectTask as (input: unknown) => never
-  return {
-    activity: {
-      inspectTask: (input: { name: string; viewport?: { offset: bigint } }) =>
-        input.name === owner && input.viewport?.offset === BigInt(offset)
-          ? refuse('task unavailable')
-          : read(input),
-    },
-  }
-}
-
-describe("Page live's projection past the list", () => {
-  const early = approvalWait('early', 2n)
-  const late = approvalWait('late', 9n)
-  // A Task with no Run that runs, newer than everything else.
-  const idle: LiveRoot = { kind: 'task', id: 'idle', runs: [{ id: 'idle-run', ended: true }] }
-  it.each<{ name: string; roots: LiveRoot[]; chosen: ReturnType<typeof actionIn> }>([
-    {
-      name: 'the tool that started waiting first, across Tasks',
-      roots: [
-        idle,
-        { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b', waits: [late] }] },
-        { kind: 'task', id: 'o', partial: true, runs: [{ id: 'a', waits: [early] }] },
-      ],
-      chosen: actionIn('o', 'a', early),
-    },
-    {
-      name: 'a standalone Run that waits first',
-      roots: [
-        { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b', waits: [late] }] },
-        { kind: 'run', run: { id: 's', waits: [early] } },
-      ],
-      chosen: actionIn('', 's', early),
-    },
-    {
-      name: 'only a Task under an hour old',
-      roots: [
-        { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b', waits: [late] }] },
-        { kind: 'task', id: 'o', partial: true, old: true, runs: [{ id: 'a', waits: [early] }] },
-      ],
-      chosen: actionIn('n', 'b', late),
-    },
-  ])('names $name', async ({ roots, chosen }) => {
-    const { api } = coral(liveWorld(roots))
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(page.liveLatest?.action).toEqual(chosen)
-  })
-  // Your pending requests list a shared connection once, under `x` of a Task over an hour old.
-  // `y`, of the Task `n`, waits on it too, before 150 Runs that ended and then `later`.
-  const shared = connectionWait('x', 5n)
-  const also = { ...connectionWait('y', 3n), request: shared.request }
-  const sharing = (later: TaskRun[]): LiveRoot[] => [
-    idle,
-    {
-      kind: 'task',
-      id: 'n',
-      partial: true,
-      runs: [{ id: 'y', waits: [also] }, ...endedRuns(150), ...later],
-    },
-    { kind: 'task', id: 'o', partial: true, old: true, runs: [{ id: 'x', waits: [shared] }] },
-  ]
-  const listedUnder = { [requestName(shared)]: runOf('x') }
-  it('names a Run that waits on a connection your pending requests list under another Task, reading each window once', async () => {
-    // `z` runs, submitted last.
-    const { api, calls } = coral(liveWorld(sharing([{ id: 'z' }]), listedUnder))
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(page.liveLatest?.action).toEqual(actionIn('n', 'y', also))
-    expect(liveNames(page.liveLatest)?.running).toEqual({ [taskName('n')]: runOf('z') })
-    // Its first record, then its 152 Runs from the end, 100 at a time, each once.
-    expect(windowsOf(calls, taskName('n'))).toEqual(['head', '52', '0'])
-  })
-  it.each<{
-    name: string
-    roots: LiveRoot[]
-    listedUnder?: Record<string, string>
-    refused: [task: string, offset: number]
-    named: ReturnType<typeof liveNames>
-    windows: Record<string, string[]>
-  }>([
-    {
-      name: 'a window of a Task it looks in for its newest Run that runs',
-      roots: [
-        { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b' }] },
-        { kind: 'task', id: 'm', partial: true, runs: [{ id: 'c' }] },
-      ],
-      refused: [taskName('m'), 0],
-      named: { running: { [taskName('n')]: runOf('b') } },
-      windows: { [taskName('n')]: ['head', '0'], [taskName('m')]: ['head', '0'] },
-    },
-    {
-      name: 'a window of a Task it reads in full while your pending requests hold a connection',
-      roots: sharing([]),
-      listedUnder,
-      refused: [taskName('n'), 0],
-      named: {},
-      windows: { [taskName('n')]: ['head', '51', '0'] },
-    },
-    {
-      name: 'an older window of a Task, after it found its newest Run that runs',
-      roots: sharing([{ id: 'z' }]),
-      listedUnder,
-      refused: [taskName('n'), 0],
-      named: { running: { [taskName('n')]: runOf('z') } },
-      windows: { [taskName('n')]: ['head', '52', '0'] },
-    },
-  ])('never says it read every record when Reef cannot read $name', async (item) => {
-    const world = liveWorld(item.roots, item.listedUnder)
-    const { api, calls } = coral(world, refusing(world, ...item.refused))
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(liveNames(page.liveLatest)).toEqual(item.named)
-    // Each window once: a window Reef could not read is not read again.
-    for (const [owner, windows] of Object.entries(item.windows))
-      expect(windowsOf(calls, owner), owner).toEqual(windows)
-  })
-  it('names an older Run that runs before the loaded window of an older Task', async () => {
-    const roots: LiveRoot[] = [
-      idle,
-      { kind: 'task', id: 'o', partial: true, runs: [{ id: 'a' }, ...endedRuns(250)] },
-    ]
-    const o = taskName('o')
-    const window = { expand: o, [`offset.${o}`]: '152', [`preceding.${o}`]: '0' }
-    const { api } = coral(liveWorld(roots))
-    const page = await loadActivity(onLatest(window), api, { scope })
-    expect(page.branches[o]?.rows.some((row) => row.name === runOf('a'))).toBe(false)
-    expect(liveNames(page.liveLatest)).toEqual({ running: { [o]: runOf('a') }, complete: true })
-  })
-  it('reads past a Task whose row says a Run runs when none does', async () => {
-    const roots: LiveRoot[] = [
-      { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b', ended: true }] },
-      { kind: 'task', id: 'o', partial: true, runs: [{ id: 'a' }] },
-    ]
-    const { api } = coral(liveWorld(roots))
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(liveNames(page.liveLatest)).toEqual({
-      running: { [taskName('o')]: runOf('a') },
-      complete: true,
-    })
-  })
-  it('names the newest Run that runs in every Task whose row says one runs, whatever is newer', async () => {
-    const roots: LiveRoot[] = [
-      { kind: 'run', run: { id: 's' } },
-      { kind: 'task', id: 'n', runs: [{ id: 'quiet', ended: true }] },
-      { kind: 'task', id: 'm', partial: true, runs: [{ id: 'c' }, { id: 'd' }] },
-      { kind: 'task', id: 'o', partial: true, runs: [{ id: 'a' }] },
-    ]
-    const { api, calls } = coral(liveWorld(roots))
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(liveNames(page.liveLatest)).toEqual({
-      running: {
-        [runOf('s')]: runOf('s'),
-        [taskName('m')]: runOf('d'),
-        [taskName('o')]: runOf('a'),
-      },
-      complete: true,
-    })
-    // A Task whose row says no Run of it runs is never read.
-    expect(calls.filter((call) => nameOf(call) === taskName('n'))).toEqual([])
-  })
-  it('reads the list, not the Task you have a Search of open, when the list does not hold it', async () => {
-    const roots: LiveRoot[] = [
-      { kind: 'task', id: 'gone', unlisted: true, runs: [{ id: 'g' }] },
-      { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b' }] },
-    ]
-    const taskTool: Handlers = {
-      activity: {
-        inspectTaskInteraction: () => ({
-          interaction: {
-            name: `${taskName('gone')}/interactions/search`,
-            kind: 'search',
-            intent: 'find',
-            outcome: 'succeeded',
-          },
-        }),
-      },
-    }
-    const { api, calls } = coral(liveWorld(roots), taskTool)
-    const record = `${taskName('gone')}/interactions/search`
-    const page = await loadActivity(onLatest({ record }), api, { scope })
-    expect(liveNames(page.liveLatest)).toEqual({
-      running: { [taskName('n')]: runOf('b') },
-      complete: true,
-    })
-    expect(calls.filter((call) => nameOf(call) === taskName('gone'))).toEqual([])
-  })
-  // The list loads its newest 25 records. Live mode reads every older page too.
-  it('names a Run that runs in a Task past the loaded list', async () => {
-    const roots: LiveRoot[] = [
-      ...endedRoots(130),
-      { kind: 'task', id: 'far', partial: true, runs: [{ id: 'a' }] },
-    ]
-    const { api } = coral(liveWorld(roots))
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(page.rows.some((row) => row.name === taskName('far'))).toBe(false)
-    expect(liveNames(page.liveLatest)).toEqual({
-      running: { [taskName('far')]: runOf('a') },
-      complete: true,
-    })
-  })
-  it('names a standalone Run that runs past the loaded list, whatever its age', async () => {
-    // The fixtures' Runs started in 1970.
-    const roots: LiveRoot[] = [...endedRoots(130), { kind: 'run', run: { id: 'far' } }]
-    const { api } = coral(liveWorld(roots))
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(page.rows.some((row) => row.name === runOf('far'))).toBe(false)
-    expect(liveNames(page.liveLatest)).toEqual({
-      running: { [runOf('far')]: runOf('far') },
-      complete: true,
-    })
-  })
-  it('names a standalone Run that waits past the loaded list', async () => {
-    const roots: LiveRoot[] = [
-      ...endedRoots(30),
-      { kind: 'run', run: { id: 'far', waits: [early] } },
-      { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b', waits: [late] }] },
-    ]
-    const { api } = coral(liveWorld(roots))
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(page.liveLatest?.action).toEqual(actionIn('', 'far', early))
-  })
-  it('never names a Run from your pending requests that the list does not hold', async () => {
-    const roots: LiveRoot[] = [
-      { kind: 'run', run: { id: 'other', waits: [early] }, unlisted: true },
-      { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b', waits: [late] }] },
-    ]
-    const { api, calls } = coral(liveWorld(roots))
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(page.liveLatest?.action).toEqual(actionIn('n', 'b', late))
-    expect(calls.filter((call) => nameOf(call) === runOf('other'))).toEqual([])
-  })
-  it('keeps the loaded list as it pages, and reads each older page once', async () => {
-    const world = liveWorld(endedRoots(230))
-    const off = await loadActivity(request({ tree: '1' }), coral(world).api, { scope })
-    const { api, calls } = coral(world)
-    const page = await loadActivity(onLatest(), api, { scope })
-    // The list and its pages are as without live mode.
-    expect(page.rows).toEqual(off.rows)
-    expect(page.hasAfter).toBe(off.hasAfter)
-    // Each older read starts after the last record the one before it read, once.
-    const afters = calls
-      .filter((call) => call.method === 'roots')
-      .map((call) => (call.input as { after?: string }).after ?? '')
-      .slice(1)
-    expect(afters[0]).toBe(page.rows.at(-1)?.name)
-    expect(new Set(afters).size).toBe(afters.length)
-    // Nothing runs anywhere: it says so, so no row of the list can lag a Run's end. The
-    // newest record is the newest standalone Run, which ended.
-    expect(page.liveLatest).toEqual({
-      latest: { root: runOf('gone-0'), record: runOf('gone-0'), run: true },
-      complete: true,
-    })
-  })
-  // A snapshot of only the records you watch, `w`: Coral says when newer ones exist.
-  const watched: LiveRoot = { kind: 'task', id: 'w', runs: [{ id: 'w1', ended: true }] }
-  it.each<{ name: string; roots: LiveRoot[]; named: ReturnType<typeof liveNames> }>([
-    {
-      name: 'a newer Task',
-      roots: [{ kind: 'task', id: 'fresh', runs: [] }, watched],
-      named: {
-        newest: taskName('fresh'),
-        latest: { root: taskName('fresh'), record: taskName('fresh'), run: false },
-        complete: true,
-      },
-    },
-    {
-      name: 'every standalone Run that runs, newer or not',
-      roots: [
-        { kind: 'run', run: { id: 'runs' } },
-        { kind: 'run', run: { id: 'over', ended: true } },
-        watched,
-      ],
-      named: { running: { [runOf('runs')]: runOf('runs') }, newest: runOf('runs'), complete: true },
-    },
-    {
-      name: 'the newest record, when nothing runs',
-      roots: [watched, { kind: 'run', run: { id: 'over', ended: true } }],
-      named: {
-        latest: { root: taskName('w'), record: runOf('w1'), run: true },
-        complete: true,
-      },
-    },
-  ])('names $name when the snapshot holds only the records you watch', async (item) => {
-    const { api } = coral(liveWorld(item.roots))
-    const reading = { roots: [taskName('w')], followRoot: false, branches: {} }
-    const page = await loadActivity(onLatest(), api, { scope, reading })
-    expect(page.rows.map((row) => row.name)).toEqual([taskName('w')])
-    expect(liveNames(page.liveLatest)).toEqual(item.named)
-  })
-  it('keeps what it read when Reef cannot read an older page', async () => {
-    const roots: LiveRoot[] = [
-      { kind: 'run', run: { id: 'near' } },
-      ...endedRoots(30),
-      { kind: 'run', run: { id: 'far' } },
-    ]
-    const world = liveWorld(roots)
-    const browse = world.activity!.browseActivityRoots as (input: { after?: string }) => never
-    const refused: Handlers = {
-      activity: {
-        browseActivityRoots: (input: { after?: string }) =>
-          input.after ? refuse('roots unavailable') : browse(input),
-      },
-    }
-    const off = await loadActivity(request({ tree: '1' }), coral(world).api, { scope })
-    const { api } = coral(world, refused)
-    const page = await loadActivity(onLatest(), api, { scope })
-    // The list stays as without live mode; only what lies past it is unknown.
-    expect(page.listUnavailable).toBe(false)
-    expect(page.rows).toEqual(off.rows)
-    // It names the Run it read, and never says it read every record.
-    expect(liveNames(page.liveLatest)).toEqual({ running: { [runOf('near')]: runOf('near') } })
-  })
-  it.each<{ name: string; query: Record<string, string> }>([
-    { name: 'live mode follows a Task', query: { live: 'task' } },
-    { name: 'live mode is off', query: { live: '' } },
-    { name: 'you have a Run that runs open', query: { record: `${runOf('b')}/events/3` } },
-  ])('reads nothing when $name', async ({ query }) => {
-    const roots: LiveRoot[] = [
-      { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b', waits: [late] }] },
-    ]
-    const { api, calls } = coral(liveWorld(roots), runEvent())
-    const page = await loadActivity(onLatest(query), api, { scope })
-    expect(page.liveLatest).toBeUndefined()
-    expect(calls.filter((call) => [runOf('b'), taskName('n')].includes(nameOf(call)))).toEqual(
-      query.record ? [expect.objectContaining({ method: 'run' })] : [],
-    )
-  })
-  // The list orders Tasks by when they started, not by their newest record. With nothing
-  // that runs, live mode's newest record is the one that started last across them.
-  // Catches: live mode returning to a newer Task's older record once another Task's Run ended.
-  const search = (owner: string, id: string) => `${taskName(owner)}/interactions/${id}`
-  it.each<{ name: string; roots: LiveRoot[]; latest: NonNullable<LiveLatest['latest']> }>([
-    {
-      name: "an older Task's Run that started after a newer Task's Search",
-      roots: [
-        { kind: 'task', id: 'newer', runs: [{ id: 's', tool: true, ended: true, at: 1 }] },
-        { kind: 'task', id: 'older', runs: [{ id: 'r', ended: true, at: 2 }] },
-      ],
-      latest: { root: taskName('older'), record: runOf('r'), run: true },
-    },
-    {
-      name: "a newer Task's Search that started after an older Task's Run",
-      roots: [
-        { kind: 'task', id: 'newer', runs: [{ id: 's', tool: true, ended: true, at: 3 }] },
-        { kind: 'task', id: 'older', runs: [{ id: 'r', ended: true, at: 2 }] },
-      ],
-      latest: { root: taskName('newer'), record: search('newer', 's'), run: false },
-    },
-    {
-      name: 'the newer Task, at an equal time',
-      roots: [
-        { kind: 'task', id: 'newer', runs: [{ id: 's', tool: true, ended: true, at: 2 }] },
-        { kind: 'task', id: 'older', runs: [{ id: 'r', ended: true, at: 2 }] },
-      ],
-      latest: { root: taskName('newer'), record: search('newer', 's'), run: false },
-    },
-    {
-      // Both started in the same millisecond, 800 ns apart.
-      name: "an older Task's Run that started in the same millisecond, but later",
-      roots: [
-        { kind: 'task', id: 'newer', runs: [{ id: 's', tool: true, ended: true, at: 1.0000001 }] },
-        { kind: 'task', id: 'older', runs: [{ id: 'r', ended: true, at: 1.0000009 }] },
-      ],
-      latest: { root: taskName('older'), record: runOf('r'), run: true },
-    },
-    {
-      // A Task's Run by when its submitting call started, which Coral orders the Task's
-      // records by, a standalone Run by when Coral accepted it, which orders the list.
-      name: "a standalone Run accepted after the call that submitted a Task's Run",
-      roots: [
-        { kind: 'run', run: { id: 'alone', ended: true, at: 2.5 } },
-        { kind: 'task', id: 'work', runs: [{ id: 'r', ended: true, at: 2 }] },
-      ],
-      latest: { root: runOf('alone'), record: runOf('alone'), run: true },
-    },
-    {
-      name: 'a Task with no record, newer than a record that started with it',
-      roots: [
-        { kind: 'task', id: 'fresh', runs: [] },
-        { kind: 'task', id: 'older', runs: [{ id: 'r', ended: true, at: 0 }] },
-      ],
-      latest: { root: taskName('fresh'), record: taskName('fresh'), run: false },
-    },
-    {
-      name: 'a standalone Run of any age, past a Task over an hour old',
-      roots: [
-        { kind: 'task', id: 'stale', old: true, runs: [{ id: 'x', ended: true }] },
-        { kind: 'run', run: { id: 'alone', ended: true } },
-      ],
-      latest: { root: runOf('alone'), record: runOf('alone'), run: true },
-    },
-    {
-      name: 'a Search of a Task past the loaded list',
-      roots: [
-        ...endedRoots(130),
-        { kind: 'task', id: 'far', runs: [{ id: 'f', tool: true, ended: true }] },
-      ],
-      latest: { root: taskName('far'), record: search('far', 'f'), run: false },
-    },
-  ])('names as the newest record $name', async ({ roots, latest }) => {
-    const { api } = coral(liveWorld(roots))
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(page.liveLatest?.latest).toEqual(latest)
-  })
-  // `b`, whose last Run started last, then 150 idle recent Tasks.
-  const busy: LiveRoot[] = [
-    {
-      kind: 'task',
-      id: 'b',
-      runs: [
-        { id: 'b1', ended: true, at: 1 },
-        { id: 'b2', ended: true, at: 3 },
-      ],
-    },
-    ...Array.from({ length: 150 }, (_, index): LiveRoot => ({
-      kind: 'task',
-      id: `idle${index}`,
-      runs: [{ id: `i${index}`, ended: true, at: 1 }],
-    })),
-  ]
-  const recentTasks = busy.map((root) => taskName((root as { id: string }).id))
-  // `b` first, in the loaded list, or last, at index 150, outside the initial window.
-  // Catches: finding the newest record only among the Tasks the list loaded, or reading
-  // a Task's children more than once in a load.
-  it.each<[string, LiveRoot[]]>([
-    ['in the loaded list', busy],
-    ['past the loaded list', [...busy.slice(1), busy[0]!]],
-  ])('reads the newest child of each recent Task once, with `b` %s', async (_, roots) => {
-    const { api, calls } = coral(liveWorld(roots))
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(page.liveLatest?.latest).toEqual({ root: taskName('b'), record: runOf('b2'), run: true })
-    expect(childReads(calls).toSorted()).toEqual(recentTasks.map((name) => [name, 1]).toSorted())
-  })
-  // Catches: reading again the newest child a window of this load already holds.
-  it('reads no child of a Task when a window of this load holds its newest one', async () => {
-    const world = liveWorld(busy)
-    const expand = { expand: taskName('b') }
-    const off = coral(world)
-    await loadActivity(request({ tree: '1', ...expand }), off.api, { scope })
-    const { api, calls } = coral(world)
-    const page = await loadActivity(onLatest(expand), api, { scope })
-    expect(page.liveLatest?.latest).toEqual({ root: taskName('b'), record: runOf('b2'), run: true })
-    const ofB = (reads: unknown[][]) => reads.filter(([name]) => name === taskName('b'))
-    expect(ofB(childReads(calls))).toEqual(ofB(childReads(off.calls)))
-    expect(childReads(calls).filter(([name]) => name !== taskName('b'))).toHaveLength(150)
-  })
-  // Catches: reading children for a newest record that a Run that runs makes moot.
-  it('reads no newest record while a Run runs', async () => {
-    const roots: LiveRoot[] = [
-      { kind: 'task', id: 'idle', runs: [{ id: 'i', ended: true }] },
-      { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b' }] },
-    ]
-    const { api, calls } = coral(liveWorld(roots))
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(page.liveLatest?.latest).toBeUndefined()
-    expect(windowsOf(calls, taskName('idle'))).toEqual([])
-  })
-  // Catches: reading again the newest child that Live's own read of a Task's Runs holds.
-  it('reuses a read of this snapshot that holds the newest child of a Task', async () => {
-    // The Task's row lags its Run's end, so live mode reads its Runs from the end.
-    const roots: LiveRoot[] = [
-      { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b', ended: true }] },
-    ]
-    const { api, calls } = coral(liveWorld(roots))
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(page.liveLatest?.latest).toEqual({ root: taskName('n'), record: runOf('b'), run: true })
-    expect(windowsOf(calls, taskName('n'))).toEqual(['head', '0'])
-  })
-  // `older` holds the newest record, a Run that started after `newer`'s Search. Any Task
-  // Reef cannot read could hold a newer one.
-  // Catches: naming a newest record past a Task Reef could not read.
-  it.each<[string]>([['older'], ['newer']])(
-    'names no newest record when Reef cannot read the newest child of `%s`',
-    async (refused) => {
-      const roots: LiveRoot[] = [
-        { kind: 'task', id: 'newer', runs: [{ id: 's', tool: true, ended: true, at: 1 }] },
-        { kind: 'task', id: 'older', runs: [{ id: 'r', ended: true, at: 2 }] },
-      ]
-      const world = liveWorld(roots)
-      const { api } = coral(world, refusing(world, taskName(refused), Number.MAX_SAFE_INTEGER))
-      const page = await loadActivity(onLatest(), api, { scope })
-      expect(page.liveLatest).toEqual({ complete: true })
-    },
-  )
-  it('reads no action in an archived workspace', async () => {
-    const roots: LiveRoot[] = [
-      { kind: 'task', id: 'n', partial: true, runs: [{ id: 'b', waits: [late] }] },
-    ]
-    const archived: Handlers = {
-      workspaces: {
-        getWorkspace: (input: { name: string }) => ({
-          name: input.name,
-          state: WorkspaceState.ARCHIVED,
-        }),
-      },
-    }
-    const { api, calls } = coral(liveWorld(roots), archived)
-    const page = await loadActivity(onLatest(), api, { scope })
-    expect(liveNames(page.liveLatest)).toEqual({
-      running: { [taskName('n')]: runOf('b') },
-      complete: true,
-    })
-    // An archived workspace takes no action, so it reads no request.
-    expect(calls.filter((call) => ['run', 'approval', 'actions'].includes(call.method))).toEqual([])
-  })
 })
 
 describe('links from before continuous loading', () => {

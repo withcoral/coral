@@ -5,17 +5,15 @@ import { createMemoryRouter, Outlet, RouterProvider, useLoaderData } from 'react
 import { createStore, Provider } from 'jotai'
 import { renderToString } from 'react-dom/server'
 import { afterEach, expect, it, vi } from 'vitest'
-import type { ActivityPage, ActivityRow, ExecutionRow } from '@/views/activity/types'
+import type { ActivityPage, ExecutionRow } from '@/views/activity/types'
 import type { ActivityObservation } from './activity-live-types'
 import { activityObservation, activityView, useActivityReader } from './activity-observation'
 import { loadActivityPage } from './activity-page-fetch'
-import { liveTarget } from '@/views/activity/navigation'
-import { runRow, taskRow } from '@/views/activity/fixtures'
+import { taskRow } from '@/views/activity/fixtures'
 
 const page: ActivityPage = {
   rows: [],
-  branches: {},
-  expanded: [],
+  trace: null,
   hasBefore: false,
   hasAfter: false,
   anchorUnavailable: false,
@@ -67,104 +65,6 @@ it('aborts an unused subscription and ignores even a transport that delivers aft
   )
   await new Promise((resolve) => setTimeout(resolve, 0))
   expect(store.get(state).page.hasAfter).toBe(false)
-})
-it('reconnects with the latest bounded viewport without hiding the current window during a scroll request', async () => {
-  vi.useFakeTimers()
-  let controller!: ReadableStreamDefaultController<Uint8Array>
-  const requests: ActivityObservation[] = []
-  vi.stubGlobal(
-    'fetch',
-    vi.fn((_url, init) => {
-      requests.push(JSON.parse(init.body))
-      return Promise.resolve(
-        new Response(
-          new ReadableStream({
-            start(c) {
-              controller = c
-              // Coral always answers a connection with its first snapshot.
-              c.enqueue(snapshot(initial))
-              init.signal.addEventListener(
-                'abort',
-                () => c.error(new DOMException('Canceled', 'AbortError')),
-                { once: true },
-              )
-            },
-          }),
-          { headers: { 'Content-Type': 'text/event-stream' } },
-        ),
-      )
-    }),
-  )
-  const initial = { ...page, expanded: ['run'] }
-  const store = createStore()
-  const state = activityObservation(initial, '/activity', '')
-  const unmount = store.sub(state, () => {})
-  try {
-    await vi.waitFor(() => expect(requests).toHaveLength(1))
-    const viewport = { offset: 125, anchor: 'run/events/150', preceding: 25 }
-    store.set(state, { kind: 'viewport', parent: 'run', viewport })
-    expect(store.get(state).connected).toBe(true)
-    await vi.advanceTimersByTimeAsync(120)
-    expect(requests).toHaveLength(2)
-    expect(requests[1].window.branches.run).toEqual(viewport)
-    controller.close()
-    await vi.waitFor(() => expect(store.get(state).connected).toBe(false))
-    await vi.advanceTimersByTimeAsync(2000)
-    expect(requests).toHaveLength(3)
-    expect(requests[2].window.branches.run).toEqual(viewport)
-  } finally {
-    unmount()
-    await vi.advanceTimersByTimeAsync(0)
-  }
-})
-// A snapshot answers the request that opened its connection. It must not put
-// back the child offset that the reader has scrolled away from since.
-it('requests the viewport a reader scrolls to before the first snapshot answers', async () => {
-  vi.useFakeTimers()
-  let controller!: ReadableStreamDefaultController<Uint8Array>
-  const requests: ActivityObservation[] = []
-  vi.stubGlobal(
-    'fetch',
-    vi.fn((_url, init) => {
-      requests.push(JSON.parse(init.body))
-      return Promise.resolve(
-        new Response(
-          new ReadableStream({
-            start(c) {
-              controller = c
-              init.signal.addEventListener(
-                'abort',
-                () => c.error(new DOMException('Canceled', 'AbortError')),
-                { once: true },
-              )
-            },
-          }),
-          { headers: { 'Content-Type': 'text/event-stream' } },
-        ),
-      )
-    }),
-  )
-  const initial: ActivityPage = {
-    ...page,
-    expanded: ['run'],
-    branches: { run: { offset: 0, total: '300', rows: [], next: '', unavailable: false } },
-  }
-  const store = createStore()
-  const state = activityObservation(initial, '/activity', '')
-  const unmount = store.sub(state, () => {})
-  try {
-    await vi.waitFor(() => expect(controller).toBeDefined())
-    const viewport = { offset: 125, anchor: 'run/events/150', preceding: 25 }
-    store.set(state, { kind: 'viewport', parent: 'run', viewport })
-    // The first snapshot reports the window the connection was opened with.
-    controller.enqueue(snapshot(initial))
-    await vi.advanceTimersByTimeAsync(120)
-    expect(requests).toHaveLength(2)
-    expect(requests[1].window.branches.run).toEqual(viewport)
-  } finally {
-    unmount()
-    await vi.advanceTimersByTimeAsync(0)
-  }
 })
 it('keeps history reading identities when observation reconnects', async () => {
   vi.useFakeTimers()
@@ -220,7 +120,7 @@ it('does not interpret a later root page at local scroll top as the global live 
   store.set(state, { kind: 'root', atStart: true })
   expect(store.get(state).followRoot).toBe(false)
 })
-it('starts navigation observation with only fresh payload and the reauthorized anchored viewport', async () => {
+it('starts navigation observation with only fresh payload and the list window', async () => {
   const requests: ActivityObservation[] = []
   vi.stubGlobal(
     'fetch',
@@ -232,24 +132,13 @@ it('starts navigation observation with only fresh payload and the reauthorized a
   const initial: ActivityPage = {
     ...page,
     hasBefore: true,
-    expanded: ['run'],
-    branches: { run: { rows: [], total: '0', next: '', offset: 126, unavailable: false } },
   }
   const store = createStore()
-  const query = new URLSearchParams({
-    'offset.run': '125',
-    'anchor.run': 'run/events/150',
-    'preceding.run': '25',
-  })
-  const state = activityObservation(initial, '/activity', query.toString())
+  const state = activityObservation(initial, '/activity', '')
   const unmount = store.sub(state, () => {})
   try {
     expect(store.get(state).page).toBe(initial)
-    expect(requests[0].window).toEqual({
-      roots: [],
-      followRoot: false,
-      branches: { run: { offset: 126, anchor: 'run/events/150', preceding: 25 } },
-    })
+    expect(requests[0].window).toEqual({ roots: [], followRoot: false })
   } finally {
     unmount()
   }
@@ -285,8 +174,7 @@ it('conceals rows, selectors and selected exact evidence on disconnect before re
   const initial: ActivityPage = {
     ...page,
     rows: [run],
-    branches: { run: { rows: [output], total: '1', next: '', unavailable: false } },
-    expanded: [run.name],
+    trace: { root: run, children: { [run.name]: [output] }, complete: true, unavailable: [] },
     hasBefore: true,
     hasAfter: true,
     selected: output.name,
@@ -311,7 +199,7 @@ it('conceals rows, selectors and selected exact evidence on disconnect before re
     expect(store.get(state).page).toEqual({
       ...initial,
       rows: [],
-      branches: {},
+      trace: null,
       hasBefore: false,
       hasAfter: false,
       detail: null,
@@ -379,8 +267,7 @@ const second = 'workspaces/w/approvals/second'
 function review(name: string, resolved: boolean, initialRequest?: string): ActivityPage {
   return {
     rows: [],
-    branches: {},
-    expanded: [],
+    trace: null,
     hasBefore: false,
     hasAfter: false,
     anchorUnavailable: false,
@@ -526,82 +413,6 @@ it.each([false, true])(
   },
 )
 
-const revealTask = 'workspaces/work/tasks/t'
-const revealRun = 'workspaces/work/runs/run'
-const revealEvent = `${revealRun}/events/200`
-const revealOutput = (name: string, position: number, eventKind = 'program.emitted') => ({
-  kind: 'output' as const,
-  name,
-  position,
-  workspace: 'workspaces/work',
-  run: revealRun,
-  label: `emission #${position + 1}`,
-  eventKind,
-  startedAt: '1970-01-01T00:00:00.000Z',
-  agent: '',
-})
-const revealWindow = (...rows: ActivityRow[]) => ({
-  [revealRun]: { rows, offset: 174, next: '', unavailable: false },
-})
-// A continuous reading URL: the Run is open at a sparse window anchored on an Event.
-const revealReading = `anchor=${revealTask}&expand=${revealRun}&anchor.${revealRun}=${revealEvent}&offset.${revealRun}=174&preceding.${revealRun}=25`
-// Catches: a direct link that leaves its record off screen, because the table reveals
-// something else.
-it.each<{
-  name: string
-  selected: string | null
-  search: string
-  branches: ActivityPage['branches']
-  anchors: Record<string, string>
-  revealed: string
-}>([
-  {
-    name: 'an identity-only child anchor',
-    selected: null,
-    search: revealReading,
-    branches: revealWindow(revealOutput(revealEvent, 199)),
-    anchors: { [revealRun]: revealEvent },
-    revealed: revealEvent,
-  },
-  {
-    name: 'a selected Run',
-    selected: revealRun,
-    search: `${revealReading}&record=${revealRun}`,
-    branches: revealWindow(revealOutput(revealEvent, 199)),
-    anchors: { [revealRun]: revealEvent },
-    revealed: revealRun,
-  },
-])(
-  'reveals $name when its URL opens a new list',
-  ({ selected, search, branches, anchors, revealed }) => {
-    const initial: ActivityPage = {
-      ...page,
-      selected,
-      branches,
-      expanded: Object.keys(branches),
-      anchors,
-    }
-    function Reveal() {
-      return <output>{useActivityReader(initial).revealRecord}</output>
-    }
-    const router = createMemoryRouter([{ path: '/activity', element: <Reveal /> }], {
-      initialEntries: [`/activity?${search}`],
-    })
-    try {
-      // Server rendering runs no effects, so no observation connects.
-      expect(
-        renderToString(
-          <Provider>
-            <RouterProvider router={router} />
-          </Provider>,
-        ),
-      ).toBe(`<output>${revealed}</output>`)
-    } finally {
-      router.dispose()
-    }
-  },
-)
-
 const listed = (n: number, state: ExecutionRow['state'] = 'succeeded') => ({
   ...parentRun,
   kind: 'run' as const,
@@ -612,7 +423,6 @@ const listed = (n: number, state: ExecutionRow['state'] = 'succeeded') => ({
 const shortNames = (value: ActivityPage) =>
   value.rows.map((row) => `${row.name.split('/').at(-1)}:${row.kind === 'run' ? row.state : ''}`)
 
-// Catches: "Open the first page" still saying the page is unavailable, and not following.
 it('drops an unavailable anchor when the first page joins the list', () => {
   const store = createStore()
   const missing = activityObservation(
@@ -682,139 +492,6 @@ it('away from the newest records, watches the running records and lets a snapsho
 
 // Catches: page live mode resting on an old record while a new Task or Search arrives
 // that a snapshot of only the records you watch never adds to the list.
-it('away from the newest records, sends page live mode to a newer record the snapshot names', async () => {
-  vi.useFakeTimers()
-  const streams: ReadableStreamDefaultController<Uint8Array>[] = []
-  vi.stubGlobal(
-    'fetch',
-    vi.fn((_url, init) =>
-      Promise.resolve(
-        new Response(
-          new ReadableStream({
-            start(c) {
-              streams.push(c)
-              c.enqueue(snapshot(initial))
-              init.signal.addEventListener('abort', () => c.close(), { once: true })
-            },
-          }),
-          { headers: { 'Content-Type': 'text/event-stream' } },
-        ),
-      ),
-    ),
-  )
-  // Page live mode shows the end of r1, which ended. Nothing runs.
-  const initial = { ...page, rows: [listed(1), listed(2)], selected: listed(1).name }
-  const store = createStore()
-  const state = activityObservation(initial, '/activity', '?live=latest')
-  const unmount = store.sub(state, () => {})
-  try {
-    await vi.waitFor(() => expect(streams).toHaveLength(1))
-    store.set(state, { kind: 'root', atStart: false })
-    await vi.advanceTimersByTimeAsync(120)
-    await vi.waitFor(() => expect(streams).toHaveLength(2))
-    const newer = 'workspaces/w/tasks/new'
-    await act(async () =>
-      streams[1].enqueue(snapshot({ ...page, rows: [listed(1)], liveLatest: { newest: newer } })),
-    )
-    const view = activityView(store.get(state))
-    expect(view.rows.map((row) => row.name)).not.toContain(newer)
-    expect(liveTarget(view, 'latest')).toEqual({ kind: 'newest' })
-  } finally {
-    unmount()
-    await vi.advanceTimersByTimeAsync(0)
-  }
-})
-
-/** A child window that holds only `row`. */
-const oneChild = (row: ActivityRow) => ({
-  rows: [{ ...row, position: 0 }],
-  total: '1',
-  next: '',
-  unavailable: false,
-  offset: 0,
-})
-// Catches: page live mode reopening a finished Run that the window of a Task still
-// shows running, because a snapshot of only the records you watch never refreshed
-// that window, while another Run runs.
-it.each([
-  { name: 'a Task the snapshot leaves out', ended: false },
-  { name: 'a Task the snapshot says ended', ended: true },
-])(
-  'away from the newest records, passes a Run that a window the snapshot did not refresh says runs, in $name',
-  async ({ ended }) => {
-    vi.useFakeTimers()
-    const streams: ReadableStreamDefaultController<Uint8Array>[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((_url, init) =>
-        Promise.resolve(
-          new Response(
-            new ReadableStream({
-              start(c) {
-                streams.push(c)
-                c.enqueue(snapshot(initial))
-                init.signal.addEventListener('abort', () => c.close(), { once: true })
-              },
-            }),
-            { headers: { 'Content-Type': 'text/event-stream' } },
-          ),
-        ),
-      ),
-    )
-    const newer = taskRow('newer')
-    const older = taskRow('older')
-    const at = (minute: number) => new Date(Date.parse(older.startedAt) + minute * 60_000)
-    const runs = (task: string, id: string, minute: number, state: ExecutionRow['state']) =>
-      runRow(id, task, { state, endedAt: null, startedAt: at(minute).toISOString() })
-    // `a`, submitted last, runs in the older Task. `b` runs in the newer one.
-    const a = runs(older.name, 'a', 30, 'running')
-    const b = runs(newer.name, 'b', 21, 'running')
-    const initial: ActivityPage = {
-      ...page,
-      rows: [newer, older],
-      expanded: [newer.name, older.name],
-      branches: { [newer.name]: oneChild(b), [older.name]: oneChild(a) },
-    }
-    const store = createStore()
-    const search = `?live=latest&expand=${newer.name}&expand=${older.name}`
-    const state = activityObservation(initial, '/activity', search)
-    const unmount = store.sub(state, () => {})
-    const now = at(31).getTime()
-    try {
-      await vi.waitFor(() => expect(streams).toHaveLength(1))
-      expect(liveTarget(activityView(store.get(state)), 'latest', now)).toMatchObject({
-        run: a.name,
-      })
-      store.set(state, { kind: 'root', atStart: false })
-      await vi.advanceTimersByTimeAsync(120)
-      await vi.waitFor(() => expect(streams).toHaveLength(2))
-      // `a` ended. The snapshot refreshes only the newer Task's window, so the older
-      // Task's window still says `a` runs. The loader read every record.
-      const olderEnded = { ...older, outcome: 'succeeded', endedAt: at(31).toISOString() }
-      await act(async () =>
-        streams[1].enqueue(
-          snapshot({
-            ...initial,
-            rows: ended ? [newer, olderEnded] : [newer],
-            branches: { [newer.name]: oneChild(b) },
-            liveLatest: { running: { [newer.name]: b }, complete: true },
-          }),
-        ),
-      )
-      const view = activityView(store.get(state))
-      expect(view.branches[older.name]?.rows.map((row) => row.name)).toEqual([a.name])
-      expect(liveTarget(view, 'latest', now)).toEqual({
-        kind: 'run',
-        run: b.name,
-        chain: [newer.name, b.name],
-      })
-    } finally {
-      unmount()
-      await vi.advanceTimersByTimeAsync(0)
-    }
-  },
-)
-
 it('loads older records through the Activity loader, keeps them on a failure, and keeps them across a navigation inside the list', async () => {
   vi.stubGlobal(
     'fetch',
@@ -861,12 +538,7 @@ it('loads older records through the Activity loader, keeps them on a failure, an
     await act(async () => latest.current!.list.older!.load())
     await vi.waitFor(() => expect(latest.current!.list.older?.failed).toBe(true))
     expect(container.textContent).toBe('r1:succeeded r2:succeeded')
-    expect(Object.fromEntries(reads.at(-1)!)).toEqual({
-      tree: '1',
-      after: listed(2).name,
-      load: 'page',
-      expand: 'workspaces/w/runs/r9',
-    })
+    expect(Object.fromEntries(reads.at(-1)!)).toEqual({ after: listed(2).name, load: 'page' })
 
     failing = false
     const loaded = latest.current!.list.count
@@ -1052,3 +724,70 @@ it('stays connected while scrolling past running records keeps changing the watc
     await vi.advanceTimersByTimeAsync(0)
   }
 })
+
+// Catches: a new list scrolling to the top instead of the root it opened, or a list that
+// jumps to the open root again on each navigation inside it.
+it('reveals the root a new list opened, and nothing on a navigation inside the list', () => {
+  const root = taskRow('open')
+  const initial: ActivityPage = {
+    ...page,
+    rows: [root],
+    trace: { root, children: {}, complete: true, unavailable: [] },
+  }
+  function Reveal() {
+    return <output>{useActivityReader(initial).revealRecord ?? 'none'}</output>
+  }
+  const router = createMemoryRouter([{ path: '/activity', element: <Reveal /> }], {
+    initialEntries: [`/activity?root=${root.name}`],
+  })
+  try {
+    // Server rendering runs no effects, so no observation connects.
+    expect(
+      renderToString(
+        <Provider>
+          <RouterProvider router={router} />
+        </Provider>,
+      ),
+    ).toBe(`<output>${root.name}</output>`)
+  } finally {
+    router.dispose()
+  }
+})
+
+// Catches: a passing fault in one snapshot's root read closing the open timeline, and with it
+// the reader's zoom and collapsed rows, or a refusal leaving a timeline you can no longer read.
+it.each([
+  { reason: 'failed' as const, kept: true },
+  { reason: 'refused' as const, kept: false },
+])(
+  'a snapshot whose timeline read $reason keeps the open timeline: $kept',
+  async ({ reason, kept }) => {
+    const root = taskRow('open')
+    const trace = { root, children: {}, complete: true, unavailable: [] }
+    const initial: ActivityPage = { ...page, rows: [root], trace }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(snapshot({ ...initial, trace: null, traceUnavailable: reason }))
+              },
+            }),
+            { headers: { 'Content-Type': 'text/event-stream' } },
+          ),
+        ),
+      ),
+    )
+    const store = createStore()
+    const state = activityObservation(initial, '/activity', `root=${root.name}`)
+    const unmount = store.sub(state, () => {})
+    try {
+      await vi.waitFor(() => expect(store.get(state).page).not.toBe(initial))
+      expect(store.get(state).page.trace).toEqual(kept ? trace : null)
+    } finally {
+      unmount()
+    }
+  },
+)

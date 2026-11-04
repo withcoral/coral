@@ -104,6 +104,8 @@ export const Default: Story = {
   render: () => <ExampleTable density="default" />,
 }
 
+// Each tone's edge, and the shape a record repeats an error or a warning with, so a
+// color-blind reader can tell them apart.
 export const RowStatusMarkers: Story = {
   render: () => (
     <Container
@@ -116,15 +118,23 @@ export const RowStatusMarkers: Story = {
       <Head />
       <Body>
         <Row status={{ tone: 'success', label: 'succeeded' }}>
-          <Cell>Completed execution</Cell>
+          <Cell>
+            <RecordLabel icon={{ name: 'Play', label: 'exec' }}>Completed execution</RecordLabel>
+          </Cell>
           <Cell mono>24ms</Cell>
         </Row>
         <Row selected status={{ tone: 'error', label: 'failed' }}>
-          <Cell>Selected failed execution</Cell>
+          <Cell>
+            <RecordLabel icon={{ name: 'Play', label: 'exec' }}>
+              Selected failed execution
+            </RecordLabel>
+          </Cell>
           <Cell mono>16ms</Cell>
         </Row>
         <Row status={{ tone: 'warning', label: 'indeterminate' }}>
-          <Cell>Uncertain dispatch</Cell>
+          <Cell>
+            <RecordLabel icon={{ name: 'Zap', label: 'tool' }}>Uncertain dispatch</RecordLabel>
+          </Cell>
           <Cell mono>2s</Cell>
         </Row>
         <Row status={{ tone: 'neutral', label: 'upstream outcome' }}>

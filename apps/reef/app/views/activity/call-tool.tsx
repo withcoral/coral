@@ -26,11 +26,21 @@ export function useToolOwner(callPath: string) {
  * tool's path inside that provider. A call whose provider is gone shows its full Call Path.
  * The full Call Path is on hover either way.
  */
-export function CallTool({ callPath, size }: { callPath: string; size?: 'default' | 'small' }) {
+export function CallTool({
+  callPath,
+  size,
+  wrap,
+}: {
+  callPath: string
+  size?: 'default' | 'small'
+  /** Break a long name over lines instead of cutting it. */
+  wrap?: boolean
+}) {
   const owner = useToolOwner(callPath)
   return (
     <ToolName
       size={size}
+      wrap={wrap}
       title={callPath}
       provider={
         owner ? { name: owner.provider.displayName, icons: owner.provider.icons } : undefined

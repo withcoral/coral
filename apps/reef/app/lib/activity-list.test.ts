@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { activityPage } from '@/views/activity/fixtures'
-import type { ActivityBranch, ActivityPage, ActivityRow } from '@/views/activity/types'
+import type { ActivityPage, ActivityRow } from '@/views/activity/types'
 import {
   MAX_LOADED_RECORDS,
   activityDays,
@@ -52,11 +52,6 @@ function task(n: number, overrides: Partial<Extract<ActivityRow, { kind: 'task' 
 const range = (from: number, to: number) =>
   Array.from({ length: to - from + 1 }, (_, index) => run(from + index))
 const names = (list: ActivityList) => list.rows.map((row) => row.name.split('/').at(-1))
-const branch = (rows: ActivityRow[] = []): ActivityBranch => ({
-  rows,
-  next: '',
-  unavailable: false,
-})
 const page = (overrides: Partial<ActivityPage>) => activityPage(overrides)
 
 describe('pages', () => {
@@ -134,26 +129,6 @@ describe('pages', () => {
     // The button still loads more.
     expect(pageQuery(full, 'older')).not.toBeNull()
   })
-  it('adds the branches of expanded records that a page brings', () => {
-    const list = openActivityList(
-      page({
-        rows: [run(1)],
-        hasAfter: true,
-        expanded: [run(1).name, run(2).name],
-        branches: { [run(1).name]: branch() },
-      }),
-    )
-    const loaded = receivePage(
-      startPage(list, 'older'),
-      'older',
-      page({
-        rows: [run(2)],
-        expanded: [run(2).name],
-        branches: { [run(2).name]: branch([run(9)]) },
-      }),
-    )
-    expect(Object.keys(loaded.branches)).toEqual([run(1).name, run(2).name])
-  })
 })
 
 describe('merging', () => {
@@ -161,8 +136,6 @@ describe('merging', () => {
     page({
       rows: [run(1), run(2, { state: 'running' }), run(3)],
       hasAfter: true,
-      expanded: [run(2).name, run(3).name],
-      branches: { [run(2).name]: branch(), [run(3).name]: branch([run(30)]) },
     }),
   )
   it('replaces watched records in place and never drops or reorders the others', () => {
@@ -171,8 +144,6 @@ describe('merging', () => {
       opened,
       page({
         rows: [finished, run(1)],
-        expanded: [run(2).name, run(3).name],
-        branches: { [run(2).name]: branch([run(20)]) },
         // A watched window reports nothing about the list around it.
         hasBefore: true,
         anchorUnavailable: true,
@@ -181,19 +152,11 @@ describe('merging', () => {
     )!
     expect(names(merged)).toEqual(['r1', 'r2', 'r3'])
     expect(merged.rows[1]).toBe(finished)
-    expect(merged.branches[run(2).name]!.rows).toEqual([run(20)])
-    expect(merged.branches[run(3).name]).toBe(opened.branches[run(3).name])
     expect(merged).toMatchObject({ hasNewer: false, hasOlder: true, anchorUnavailable: false })
   })
   it('drops watched records that are not loaded', () => {
     const merged = mergeActivityPage(opened, page({ rows: [run(0), run(9)] }), { retained: true })!
     expect(names(merged)).toEqual(['r1', 'r2', 'r3'])
-  })
-  it('drops the branches of records that are no longer expanded', () => {
-    const merged = mergeActivityPage(opened, page({ rows: [run(1)], expanded: [run(3).name] }), {
-      retained: true,
-    })!
-    expect(Object.keys(merged.branches)).toEqual([run(3).name])
   })
   it.each([
     {

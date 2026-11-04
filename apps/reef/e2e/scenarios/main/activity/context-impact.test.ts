@@ -13,7 +13,7 @@ import {
   programRunner,
 } from '../../../support/providers.ts'
 
-test('Activity and the Overview summary reconcile discovery costs and saved tool results without loading payloads into the table', async (context) => {
+test('Activity and the Overview summary reconcile discovery costs and saved tool results without loading payloads into the page', async (context) => {
   const actor = await loginActor(context, authenticatedTarget().authentication.owner)
   const api = managementClients(actor.accessToken)
   const upstream = await listen(
@@ -90,26 +90,25 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
       expect(goal.task!.contextImpactBytes).toBe(
         discovered.run!.contextImpactBytes! + 10n - rawBytes,
       )
+      // Only an exact byte count tells the discovery Run apart from the other Run's saving.
+      const saved = (-goal.task!.contextImpactBytes!).toLocaleString('en-US')
       await step(
         'Keep the parent total when a saved function has no applicable context measurement',
         async () => {
-          const query = new URLSearchParams()
           await page.goto(`/workspaces/${workspace}/activity`)
-          const table = page.getByRole('table', { name: 'Activity records', exact: true })
-          const root = table
-            .getByRole('row')
-            .filter({ has: page.getByRole('link', { name: intent, exact: true }) })
-          const total = await root.getByRole('cell').last().innerText()
-          expect(total).toBe('−1.97 MB')
-          query.append('expand', task)
-          query.append('expand', run)
-          await page.goto(`/workspaces/${workspace}/activity?${query}`)
-          expect(await root.getByRole('cell').last().innerText()).toBe(total)
-          expect(await table.locator('[aria-label$="B saved"]').count()).toBe(4)
-          // The log and the emission; the return value is the Run's own, on its panel.
-          expect(await table.locator('[aria-label$="B added"]').count()).toBe(2)
+          const list = page.getByRole('table', { name: 'Activity records', exact: true })
+          await list.getByRole('link', { name: intent, exact: true }).click()
+          // The Task's timeline header states Coral's exact total: the saved function adds
+          // nothing to it.
+          await page
+            .getByRole('region', { name: 'Timeline', exact: true })
+            .locator(`header [title^="${saved} bytes saved."]`)
+            .waitFor()
+          // The timeline does not load the response the Task saved.
+          const timeline = page.getByRole('table', { name: 'Timeline records', exact: true })
+          await timeline.getByRole('link', { name: 'Context fixture read', exact: true }).waitFor()
           expect(await page.content()).not.toContain('x'.repeat(100))
-          await table.locator(`[data-record-key="${run}"]`).locator('a[href]').click()
+          await timeline.getByRole('button', { name: /^return value at / }).press('Enter')
           await shownPayload(page, '"ok"').waitFor()
           await page
             .getByRole('region', { name: 'Agent context', exact: true })
@@ -121,8 +120,6 @@ test('Activity and the Overview summary reconcile discovery costs and saved tool
         },
       )
       await step('The Overview counts the same context as the Task', async () => {
-        // Only an exact byte count tells the discovery Run apart from the other Run's saving.
-        const saved = (-goal.task!.contextImpactBytes!).toLocaleString('en-US')
         await page.goto(`/workspaces/${workspace}?lens=context`)
         await page
           .getByRole('region', { name: 'Activity summary', exact: true })

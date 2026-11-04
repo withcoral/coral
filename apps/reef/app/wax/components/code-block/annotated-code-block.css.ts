@@ -14,6 +14,8 @@ export const line = style({
   borderLeft: '3px solid transparent',
   whiteSpace: 'pre',
 })
+/** A wrapped line breaks inside the pane; its gutter keeps the line's one number. */
+export const lineWrapped = style({ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' })
 export const lineHighlighted = style({
   background: theme.surface.onMainContentSubtle,
   borderLeftColor: theme.content.link,

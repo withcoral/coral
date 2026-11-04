@@ -15,7 +15,7 @@ import { shownPayload } from '../../../support/payloads.ts'
 import { ToolAccessState } from '../../../generated/coral/management/v1/policy_pb.ts'
 import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_pb.ts'
 
-test('Activity automatically streams new rows and continuously loads bounded child viewports without losing detail', async (context) => {
+test('Activity streams new roots and the open timeline’s records, and keeps your place in the list', async (context) => {
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
     const workspace = await api.workspaces.createWorkspace({
@@ -50,6 +50,18 @@ test('Activity automatically streams new rows and continuously loads bounded chi
     const activityUrl = `/workspaces/${id}/activity`
     const table = page.getByRole('table', { name: 'Activity records', includeHidden: true })
     const records = () => table.locator('[data-record-key]')
+    // An open rail can hide the page behind it from the accessibility tree.
+    const timelineRegion = page.getByRole('region', {
+      name: 'Timeline',
+      exact: true,
+      includeHidden: true,
+    })
+    const timeline = page.getByRole('table', { name: 'Timeline records', includeHidden: true })
+    /** The open timeline's row of its one Run, named by the intent its submission gave it. */
+    const runRow = () =>
+      timeline.getByRole('row', { includeHidden: true }).filter({
+        has: page.getByRole('link', { name: 'Call one Tool', exact: true, includeHidden: true }),
+      })
     const names = () =>
       records().evaluateAll((elements) =>
         elements.map((element) => element.getAttribute('data-record-key')),
@@ -141,24 +153,25 @@ test('Activity automatically streams new rows and continuously loads bounded chi
       },
     )
     await step(
-      'Reopen a selected record around its anchor, then load newer records without moving it',
+      'Reopen an older timeline around its list anchor, then load newer records without moving it',
       async () => {
         const chosen = records().nth(-3)
         const name = (await chosen.getAttribute('data-record-key'))!
         await chosen.scrollIntoViewIfNeeded()
         // The URL anchors at the first record on screen, even one partly hidden.
         const anchor = (await (await onScreen(true)).getAttribute('data-record-key'))!
+        // The row opens its timeline, not its detail.
         await chosen.getByRole('link').first().click()
-        await page.waitForURL((url) => url.searchParams.get('record') === name)
+        await page.waitForURL((url) => url.searchParams.get('root') === name)
         expect(new URL(page.url()).searchParams.get('anchor')).toBe(anchor)
+        expect(new URL(page.url()).searchParams.has('record')).toBe(false)
         await page.reload()
         const anchored = table.locator(`[data-record-key="${anchor}"]`)
         await anchored.waitFor()
+        await timeline.waitFor()
         const offset = async () =>
           (await anchored.boundingBox())!.y - (await table.boundingBox())!.y
         const opening = await offset()
-        await page.getByRole('button', { name: 'Close details', exact: true }).click()
-        await page.waitForURL((url) => !url.searchParams.has('record'))
         // The newer records load above the anchor; the anchor stays the first record on screen.
         await expect.poll(async () => (await names()).indexOf(anchor)).toBeGreaterThan(0)
         expect(Math.abs((await offset()) - opening)).toBeLessThan(2)
@@ -178,155 +191,72 @@ test('Activity automatically streams new rows and continuously loads bounded chi
     let taskLabel = ''
     let task = ''
     let run = ''
+    await step('Watch the open timeline gain records while its Task goes on', async () => {
+      taskLabel = `Live goal ${sequence}`
+      task = `${workspace.name}/tasks/${latest.taskId()}`
+      await page.goto(`${activityUrl}?${new URLSearchParams({ root: task })}`)
+      await timelineRegion.locator('header').getByText(taskLabel, { exact: true }).waitFor()
+      await timeline.getByRole('link', { name: 'Find tools', exact: true }).first().waitFor()
+      const saved = timeline.getByRole('link', {
+        name: 'Prepare current work before offboarding',
+        exact: true,
+      })
+      expect(await saved.count()).toBe(0)
+      expect(
+        (await latest.saveFunction('live.added', 'New child', 'export default () => 43;')).isError,
+      ).not.toBe(true)
+      await saved.waitFor({ timeout: 10_000 })
+      const observed = await observeRun(
+        latest,
+        await latest.exec(
+          'for (let i = 0; i < 5; i++) await coral.emit({ marker: `live-mark-${i}` });',
+        ),
+      )
+      run = `${workspace.name}/runs/${observed.update.run_id}`
+      // The Run arrives with its Events as marks on its own row.
+      await runRow()
+        .getByRole('button', { name: /^emission #6 at / })
+        .waitFor({ timeout: 10_000 })
+      expect(new URL(page.url()).searchParams.get('root')).toBe(task)
+    })
     await step(
-      'Expand an execution outside the first task window without fetching the whole history',
+      'Keep the selected Event and its timeline through arrivals, back/forward and a lost connection',
       async () => {
-        // Fill the Task with plain records, not Runs: only their place around the observed
-        // Run matters, and each Run costs a Program and more Activity work per read.
-        async function fill(count: number) {
-          for (let index = 0; index < count; index++)
-            expect(
-              (
-                await latest.saveFunction(
-                  'live.filler',
-                  'Filler',
-                  'export default () => 1;',
-                  'Fill the task history',
-                )
-              ).isError,
-            ).not.toBe(true)
-        }
-        await fill(200)
-        const observed = await observeRun(
-          latest,
-          await latest.exec('for (let i = 0; i < 300; i++) await coral.emit({i});'),
-        )
-        await fill(150)
-        taskLabel = `Live goal ${sequence}`
-        task = `${workspace.name}/tasks/${latest.taskId()}`
-        run = `${workspace.name}/runs/${observed.update.run_id}`
-        const query = new URLSearchParams({ tree: '1' })
-        query.append('expand', task)
-        query.append('expand', run)
-        await page.goto(`${activityUrl}?${query}`)
-        await table.locator(`[data-record-key="${run}"]`).waitFor()
-        expect(await records().count()).toBeLessThanOrEqual(226)
-        expect(
-          await page.getByRole('link', { name: /^(Next|Previous|First) records$/ }).count(),
-        ).toBe(0)
-        expect(await page.content()).not.toContain('"i":299')
-      },
-    )
-    const taskSection = () =>
-      table.getByRole('rowgroup', { name: `${taskLabel} records`, exact: true })
-    const runSection = () =>
-      table.getByRole('rowgroup', { name: 'Call one Tool records', exact: true })
-    await step(
-      'Scroll through later execution output and later task records without page controls',
-      async () => {
-        await table.locator(`[data-record-key="${run}"]`).scrollIntoViewIfNeeded()
-        await runSection().evaluate((element) => {
-          const port = element.closest('[role=table]')!
-          port.scrollTop +=
-            element.getBoundingClientRect().bottom -
-            port.getBoundingClientRect().top -
-            port.clientHeight +
-            80
-        })
-        await table
-          .getByRole('link', { name: 'emission #301', exact: true })
-          .waitFor({ timeout: 10_000 })
-        expect(await records().count()).toBeLessThanOrEqual(226)
-        await taskSection().evaluate((element) => {
-          const port = element.closest('[role=table]')!
-          port.scrollTop +=
-            element.getBoundingClientRect().bottom -
-            port.getBoundingClientRect().top -
-            port.clientHeight
-        })
-        const newLabel = 'Prepare current work before offboarding'
-        expect(
-          (await latest.saveFunction('live.added', 'New child', 'export default () => 43;'))
-            .isError,
-        ).not.toBe(true)
-        await taskSection()
-          .getByRole('link', { name: newLabel, exact: true })
-          .waitFor({ timeout: 10_000 })
-        expect(await table.locator(`[data-record-key="${run}"]`).count()).toBe(1)
-        expect(await runSection().count()).toBe(1)
-        expect(await records().count()).toBeLessThanOrEqual(226)
-        // The expanded Run's row is a sticky heading, so scroll to the start of its output.
-        await runSection().evaluate((element) => element.scrollIntoView({ block: 'start' }))
-        await table
-          .getByRole('link', { name: 'emission #2', exact: true })
-          .waitFor({ timeout: 10_000 })
-        await runSection().evaluate((element) => {
-          const port = element.closest('[role=table]')!
-          port.scrollTop +=
-            element.getBoundingClientRect().bottom -
-            port.getBoundingClientRect().top -
-            port.clientHeight
-        })
-        await table
-          .getByRole('link', { name: 'emission #301', exact: true })
-          .waitFor({ timeout: 10_000 })
-      },
-    )
-    await step(
-      'Keep exact detail, mobile reading position and back/forward navigation during arrivals',
-      async () => {
-        await page.setViewportSize({ width: 390, height: 700 })
-        const selected = `${run}/events/301`
-        const link = table.getByRole('link', { name: 'emission #301', exact: true })
-        await link.scrollIntoViewIfNeeded()
-        const relativePosition = async () =>
-          (await link.boundingBox())!.y - (await table.boundingBox())!.y
-        const top = await relativePosition()
-        expect(await table.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
-        await link.click()
-        await page.getByRole('dialog').waitFor()
+        const selected = `${run}/events/6`
+        await runRow()
+          .getByRole('button', { name: /^emission #6 at / })
+          .press('Enter')
+        await page.waitForURL((url) => url.searchParams.get('record') === selected)
+        await shownPayload(page, 'live-mark-4').waitFor()
         await observedArrival()
         expect(new URL(page.url()).searchParams.get('record')).toBe(selected)
-        await shownPayload(page, '299').waitFor()
+        // A live update reads the open root again, never the newer one that arrived.
+        expect(new URL(page.url()).searchParams.get('root')).toBe(task)
+        await timelineRegion.locator('header').getByText(taskLabel, { exact: true }).waitFor()
+        await shownPayload(page, 'live-mark-4').waitFor()
         await page.getByRole('button', { name: 'Close details', exact: true }).click()
         await page.waitForURL((url) => !url.searchParams.has('record'))
         // Back must reopen the detail, not find the one still exiting.
         await page
           .getByRole('dialog', { name: 'Activity details', exact: true })
           .waitFor({ state: 'detached' })
-        await expect.poll(relativePosition, { timeout: 10_000 }).toBeCloseTo(top, 0)
         await page.goBack()
         await page.waitForURL((url) => url.searchParams.get('record') === selected)
-        await shownPayload(page, '299').waitFor()
+        await shownPayload(page, 'live-mark-4').waitFor()
         await page.goForward()
         await page.waitForURL((url) => !url.searchParams.has('record'))
         await page.getByRole('dialog').waitFor({ state: 'hidden' })
-        const before = await relativePosition()
         await page.context().setOffline(true)
         await page
           .getByText('Activity is unavailable. Reconnecting…', { exact: true })
           .waitFor({ timeout: 10_000 })
         expect(await records().count()).toBe(0)
+        await expect.poll(() => timeline.count()).toBe(0)
         await page.context().setOffline(false)
-        await table
-          .getByRole('link', { name: 'emission #301', exact: true })
+        await runRow()
+          .getByRole('button', { name: /^emission #6 at / })
           .waitFor({ timeout: 10_000 })
-        await expect.poll(relativePosition, { timeout: 10_000 }).toBeCloseTo(before, 0)
-        const anchor = new URL(page.url()).searchParams.get(`anchor.${run}`)
-        expect(anchor).toBeTruthy()
-        await page.reload()
-        const anchored = table.locator(`[data-record-key="${anchor}"]`)
-        await anchored.waitFor()
-        await expect
-          .poll(
-            async () => {
-              const rowBox = await anchored.boundingBox()
-              const box = await table.boundingBox()
-              return rowBox && box && rowBox.y >= box.y && rowBox.y < box.y + box.height
-            },
-            { timeout: 10_000 },
-          )
-          .toBe(true)
+        expect(new URL(page.url()).searchParams.get('root')).toBe(task)
       },
     )
   })
@@ -410,25 +340,18 @@ test('Current Run and tool actions settle live while exact review stays selected
         )!.record
         if (invocation.case !== 'invocation') throw new Error('Expected a pending tool')
         const selected = invocation.value.name
-        const query = new URLSearchParams({ tree: '1', record: selected })
-        query.append('expand', `${workspace.name}/tasks/${runner.taskId()}`)
-        query.append('expand', run)
+        const query = new URLSearchParams({ record: selected })
         await page.goto(
           `${scope === 'personal' ? activityUrl : `/${issued.agent!.name.split('/').map(encodeURIComponent).join('/')}`}?${query}`,
         )
         const logical = { marker: 'live-logical-arguments' }
         expect(await shownArguments(page.getByRole('dialog'))).toEqual(logical)
-        expect(await page.getByText('needs action', { exact: true }).count()).toBeGreaterThan(0)
         await page.locator('summary').filter({ hasText: 'Add a comment' }).click()
         await page.getByRole('textbox', { name: 'Comment (optional)' }).fill('Keep my review')
         await api.policies.updateToolPolicies({
           parent: provider,
           policies: [{ tool, accessState: ToolAccessState.DISABLED }],
         })
-        // The tool stops waiting on you as soon as the policy commits.
-        await expect
-          .poll(() => page.getByText('needs action', { exact: true }).count(), { timeout: 10_000 })
-          .toBe(0)
         // The policy alone ends the parked call at its Run Owner's next periodic
         // precheck, up to 15 s later. An approval from elsewhere wakes the call now,
         // and the Policy Enforcement Point still refuses the disabled Tool.
@@ -459,6 +382,13 @@ test('Current Run and tool actions settle live while exact review stays selected
           `return await Promise.allSettled([coral.providers.liveGate.lookup({marker:"${'first '.repeat(240)}"}), coral.providers.liveGate.lookup({marker:"${'second '.repeat(240)}"})]);`,
         )
         const run = `${workspace.name}/runs/${accepted.structuredContent.run_id}`
+        const task = `${workspace.name}/tasks/${runner.taskId()}`
+        // An open review can hide the page behind it from the accessibility tree.
+        const timeline = page.getByRole('table', {
+          name: 'Timeline records',
+          exact: true,
+          includeHidden: true,
+        })
         await expect
           .poll(
             async () =>
@@ -480,17 +410,16 @@ test('Current Run and tool actions settle live while exact review stays selected
         await breadcrumb(page, 'Activity').waitFor()
         expect(new URL(page.url()).pathname).toBe(activityUrl)
         if (scope === 'personal') {
-          const query = new URLSearchParams({ tree: '1' })
-          query.append('expand', `${workspace.name}/tasks/${runner.taskId()}`)
-          query.append('expand', run)
-          await page.goto(`${activityUrl}?${query}`)
-          const table = page.getByRole('table', { name: 'Activity records', exact: true })
-          await table.getByRole('link', { name: 'Live gate lookup', exact: true }).first().click()
+          await page.goto(`${activityUrl}?${new URLSearchParams({ root: task })}`)
+          await timeline
+            .getByRole('link', { name: 'Live gate lookup', exact: true })
+            .first()
+            .click()
           await page.getByRole('dialog', { name: 'Review action', exact: true }).waitFor()
           await page.waitForURL((url) => Boolean(url.searchParams.get('request')))
           await page.getByRole('button', { name: 'Close details', exact: true }).click()
           await page.waitForURL((url) => !url.searchParams.has('record'))
-          await table.getByRole('link', { name: 'Call one Tool', exact: true }).click()
+          await timeline.getByRole('link', { name: 'Call one Tool', exact: true }).click()
           await page.getByRole('dialog', { name: 'Activity details', exact: true }).waitFor()
           expect(new URL(page.url()).searchParams.get('record')).toBe(run)
           expect(await page.getByRole('button', { name: 'Approve', exact: true }).count()).toBe(0)
@@ -515,48 +444,21 @@ test('Current Run and tool actions settle live while exact review stays selected
           await page.getByRole('link', { name: 'Open in activity', exact: true }).click()
         }
         await page.getByRole('dialog', { name: 'Review action', exact: true }).waitFor()
-        const history = page.getByRole('table', {
-          name: 'Activity records',
-          exact: true,
-          includeHidden: true,
-        })
-        await history
-          .getByRole('rowgroup', {
-            name: `Concurrent ${scope} actions records`,
-            exact: true,
-            includeHidden: true,
-          })
+        // The review opens in its Task's timeline, with the call selected under its Run.
+        await page.waitForURL(
+          (url) =>
+            url.searchParams.get('root') === task &&
+            Boolean(url.searchParams.get('record')?.includes('/invocations/')),
+        )
+        await timeline
           .getByRole('link', { name: 'Call one Tool', exact: true, includeHidden: true })
           .waitFor()
-        await history
-          .getByRole('rowgroup', {
-            name: 'Call one Tool records',
-            exact: true,
-            includeHidden: true,
-          })
-          .getByRole('link', {
-            name: 'Live gate lookup',
-            exact: true,
-            includeHidden: true,
-          })
-          .first()
-          .waitFor()
-        expect(
-          await page.getByText('Outside this workspace or page:', { exact: true }).count(),
-        ).toBe(0)
-        await page.waitForURL((url) =>
-          Boolean(url.searchParams.get('record')?.includes('/invocations/')),
-        )
         const selectedTool = new URL(page.url()).searchParams.get('record')!
-        const selectedRow = history.locator('[role="row"][aria-selected="true"]')
+        const selectedRow = timeline.getByRole('row', { selected: true, includeHidden: true })
         expect(await selectedRow.getAttribute('data-record-key')).toBe(selectedTool)
-        expect(await selectedRow.getByText('needs action', { exact: true }).count()).toBe(1)
-        expect(
-          await history
-            .locator(`[data-record-key="${run}"]`)
-            .getByText('needs action', { exact: true })
-            .count(),
-        ).toBe(0)
+        await selectedRow
+          .getByRole('link', { name: 'Live gate lookup', exact: true, includeHidden: true })
+          .waitFor()
         await page.locator('summary').filter({ hasText: 'Add a comment' }).click()
         const comment = page.getByRole('textbox', { name: 'Comment (optional)' })
         const selectedRequest = new URL(page.url()).searchParams.get('request')
@@ -589,18 +491,28 @@ test('Current Run and tool actions settle live while exact review stays selected
         expect(remaining.invocation).not.toBe(selectedTool)
         const before = calls
         await page.getByRole('button', { name: 'Approve', exact: true }).click()
-        // Your decision wins, so the review advances to the approval the Run waits on now.
-        await page.waitForURL((url) => url.searchParams.get('request') === remaining.name)
-        expect(new URL(page.url()).searchParams.get('record')).toBe(remaining.invocation)
-        await expect
-          .poll(() => selectedRow.getAttribute('data-record-key'))
-          .toBe(remaining.invocation)
-        await page.getByRole('dialog', { name: 'Review action', exact: true }).waitFor()
-        await page.getByRole('button', { name: 'Approve', exact: true }).waitFor()
+        // The review stays on the call you decided; it does not move to the next approval.
+        await page
+          .getByRole('dialog', { name: 'Review action', exact: true })
+          .getByText('Approved', { exact: true })
+          .waitFor()
+        expect(new URL(page.url()).searchParams.get('record')).toBe(selectedTool)
+        expect(new URL(page.url()).searchParams.get('request')).toBe(selectedRequest)
         // The decision keeps the exact comment as its Comment fact.
         const approved = await api.activity.inspectApproval({ name: decided.name })
         expect(approved.state).toBe('approved')
         expect(approved.comment).toBe('Reviewed once')
+        // The other call still waits on its own row; its review opens from there.
+        await timeline
+          .locator(`[data-record-key="${remaining.invocation}"]`)
+          .getByRole('link', { includeHidden: true })
+          .click()
+        await page.waitForURL(
+          (url) =>
+            url.searchParams.get('record') === remaining.invocation &&
+            url.searchParams.get('request') === remaining.name,
+        )
+        await page.getByRole('dialog', { name: 'Review action', exact: true }).waitFor()
         await page.setViewportSize({ width: 1440, height: 900 })
         await page.getByRole('button', { name: 'Decline', exact: true }).click()
         await expect
@@ -626,12 +538,10 @@ test('Current Run and tool actions settle live while exact review stays selected
           [remaining, 'Declined', 0],
         ] as const) {
           const review = new URLSearchParams({
-            tree: '1',
+            root: task,
             record: approval.invocation,
             request: approval.name,
           })
-          review.append('expand', `${workspace.name}/tasks/${runner.taskId()}`)
-          review.append('expand', run)
           await page.goto(`${activityUrl}?${review}`)
           const dialog = page.getByRole('dialog')
           await dialog.getByText(label, { exact: true }).waitFor()
@@ -697,10 +607,11 @@ test('Navigation never restores revoked workspace summaries while observation is
           /* Navigation can cancel a held observation. */
         })
       })
+      const list = page.getByRole('table', { name: 'Activity records', includeHidden: true })
       try {
         await step('Read the workspace before the first observation response', async () => {
           await page.goto(`/${privateWorkspace.name}/activity`)
-          await page.getByRole('link', { name: 'Revoked private goal', exact: true }).waitFor()
+          await list.getByRole('link', { name: 'Revoked private goal', exact: true }).waitFor()
           expect(
             await page.getByRole('link', { name: 'Available personal goal', exact: true }).count(),
           ).toBe(0)
@@ -713,9 +624,9 @@ test('Navigation never restores revoked workspace summaries while observation is
             name: membership.name,
             etag: membership.etag,
           })
-          // The stalled observation still shows the old row; navigating must not restore it.
-          await page.getByRole('link', { name: 'Revoked private goal', exact: true }).click()
-          await page.waitForURL((url) => url.searchParams.has('record'))
+          // The stalled observation still shows the old row; navigating must not restore it,
+          // in the list or in the timeline the row opens.
+          await list.getByRole('link', { name: 'Revoked private goal', exact: true }).click()
           await expect
             .poll(() =>
               page
@@ -736,18 +647,13 @@ test('Navigation never restores revoked workspace summaries while observation is
         })
         await step('Keep the other workspace available', async () => {
           await page.goto(`/${availableWorkspace.name}/activity`)
-          await page.getByRole('link', { name: 'Available personal goal', exact: true }).waitFor()
+          await list.getByRole('link', { name: 'Available personal goal', exact: true }).waitFor()
           expect(
             await page
               .getByRole('link', { name: 'Revoked private goal', exact: true, includeHidden: true })
               .count(),
           ).toBe(0)
-          expect(
-            await page
-              .getByRole('table', { name: 'Activity records', includeHidden: true })
-              .locator('[data-record-key]')
-              .count(),
-          ).toBe(1)
+          expect(await list.locator('[data-record-key]').count()).toBe(1)
         })
       } finally {
         resume()
@@ -830,6 +736,12 @@ test('Live authority loss conceals Agent history and exact snapshots without gra
             await page
               .getByRole('table', { name: 'Activity records', includeHidden: true })
               .locator('[data-record-key]')
+              .count(),
+          ).toBe(0)
+          // The Agent's timeline goes with its list.
+          expect(
+            await page
+              .getByRole('table', { name: 'Timeline records', includeHidden: true })
               .count(),
           ).toBe(0)
           await page.getByText('This history is unavailable.', { exact: true }).waitFor()

@@ -407,7 +407,7 @@ describe('approval review layout', () => {
         .map(([term]) => term)
         .slice(-2),
     ).toEqual(['Requested by', 'Call started'])
-    expect(rows(list).at(-1)![1]).toBe('22 Sep 2026, 09:00:05 UTC')
+    expect(rows(list).at(-1)![1]).toBe('22 Sep 2026, 09:00:05.000 UTC')
     expect(list.querySelector('time')).toHaveAttribute('dateTime', '2026-09-22T09:00:05Z')
   })
 
@@ -527,7 +527,7 @@ describe('approval review layout', () => {
     if (decided) {
       expect(rows(decision as HTMLElement)).toEqual([
         ['Reviewed by', 'You'],
-        ['Decided', '22 Sep 2026, 09:01:00 UTC'],
+        ['Decided', '22 Sep 2026, 09:01:00.000 UTC'],
         ['Comment', 'Checked the recipient.'],
       ])
       expect(decision!.querySelector('time')).toHaveAttribute('dateTime', '2026-09-22T09:01:00Z')

@@ -24,6 +24,9 @@ const name = style({
   whiteSpace: 'nowrap',
 })
 
+/** A name that breaks over lines; a tool name has no spaces, so it breaks anywhere. */
+export const wrapped = style({ whiteSpace: 'normal', overflowWrap: 'anywhere' })
+
 /** One face for every tool name: the body font, never code, in a table or a line of
  * metadata alike. */
 export const names = styleVariants({
