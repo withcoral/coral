@@ -2,6 +2,7 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import type { Workspace } from '@/generated/coral/management/v1/workspace_pb'
 import type { ActionCountKind, ActionCounts } from './activity-live-types'
 import { resourcePath, type ManagementApi } from './management.server'
+import { traceLoaderStep } from '../../server-tracing.js'
 
 /** One authenticated count-only read per Workspace; unavailable is never reported as zero.
  * A rejected session is not one Workspace's failure, so it rejects the whole read. */
@@ -32,6 +33,16 @@ export async function loadActionCounts(
       }),
     ),
   )
+}
+
+/** The app shell's read of every Workspace's count, in a span of its own: the shell loader
+ * reads it last, so it can hold back a data response that waits for every loader. */
+export function loadShellActionCounts(
+  api: Pick<ManagementApi, 'activity'>,
+  workspaces: Pick<Workspace, 'name'>[],
+  signal?: AbortSignal,
+): Promise<ActionCounts> {
+  return traceLoaderStep('app-shell action counts', () => loadActionCounts(api, workspaces, signal))
 }
 
 /** The revision of one kind in `workspace`, for a page that follows it. Read it before the

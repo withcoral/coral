@@ -3,6 +3,11 @@
 // call. Coral's server span for a call is the child of its client span, so a
 // gap between the two is time spent between the processes.
 //
+// A request span ends when its last byte goes to the socket. Its `response ready`
+// event marks when React Router handed over the response, after every loader of a
+// data request, and `caller left` marks a request the caller gave up on. Neither
+// says when a browser received or showed anything.
+//
 // This module sets the fields Coral's server spans carry (see
 // crates/coral-telemetry/src/field.rs): the method, the route template and the
 // status. A span never carries headers, bodies, query strings, cookies, full
@@ -121,6 +126,7 @@ export function createRequestTracing({
         }
         throw error
       } finally {
+        if (request.signal.aborted) span.addEvent('caller left')
         span.end()
       }
     },
@@ -293,6 +299,24 @@ function endCoralCall(span, error) {
   span.end()
 }
 
+/**
+ * Runs `work`, one stretch of a loader, in a child span named `name`. A name is a
+ * fixed string, because a span carries no identifiers. A Coral status is on the
+ * client span of the call that returned it.
+ */
+export async function traceLoaderStep(name, work) {
+  const span = startChildSpan(name)
+  if (!span) return work()
+  try {
+    return await context.with(trace.setSpan(context.active(), span), work)
+  } catch (error) {
+    if (!(error instanceof ConnectError)) failSpan(span, '_OTHER')
+    throw error
+  } finally {
+    span.end()
+  }
+}
+
 async function traceRouteFunction(name, run) {
   const span = startChildSpan(name)
   if (!span) {
@@ -325,8 +349,12 @@ async function recordResponse(handleRequest, { request }) {
     const route = `/${meta.pattern.replace(/^\//, '')}`
     span.setAttribute('http.route', route)
     span.updateName(`${spanName(request.method)} ${route}`)
+    // The same route answers a page and a client data request, whose costs differ.
+    if (new URL(request.url).pathname.endsWith('.data'))
+      span.setAttribute('url.template', `${route}.data`)
   }
   if (statusCode >= 500) failSpan(span, String(statusCode))
+  span.addEvent('response ready')
 }
 
 function failSpan(span, errorType) {

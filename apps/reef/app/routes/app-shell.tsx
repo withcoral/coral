@@ -12,7 +12,7 @@ import { requestAuthContext } from '@/auth/server-context'
 import type { BrowserAuth, RequestAuth } from '@/auth/types'
 import { ContentContainer } from '@/components/content-container'
 import { Sidebar } from '@/components/sidebar'
-import { loadActionCounts } from '@/lib/action-count.server'
+import { loadShellActionCounts } from '@/lib/action-count.server'
 import { LocalDeploymentContext } from '@/lib/deployment'
 import { ActionSignalContext, useActionSignal } from '@/lib/use-action-signal'
 import { memberWorkspaces } from '@/lib/workspace-route.server'
@@ -40,7 +40,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     const profile = membership?.profile
     return data(
       {
-        actionCounts: await loadActionCounts(api, workspaces, request.signal).catch(() => null),
+        actionCounts: await loadShellActionCounts(api, workspaces, request.signal).catch(
+          () => null,
+        ),
         organizationOwner,
         newerRelease:
           organizationOwner && release?.release
