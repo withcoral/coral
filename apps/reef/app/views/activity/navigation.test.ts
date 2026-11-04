@@ -273,15 +273,15 @@ describe('keyboard traversal', () => {
   const last = toolRow(a.name, 'last', { position: 3 })
   const emitted = output(b.name, 'events/1', 0)
   const logged = output(b.name, 'events/2', 1)
-  const final = output(b.name, 'final', 4)
-  // a ▸ first, b ▸ (emitted, logged, ·gap·, final), ·gap·, last; c collapsed;
+  const later = output(b.name, 'events/5', 4)
+  // a ▸ first, b ▸ (emitted, logged, ·gap·, later), ·gap·, last; c collapsed;
   // d's history is unavailable; e.
   const tree = activityPage({
     rows: [a, c, d, e],
     expanded: [a.name, b.name, d.name],
     branches: {
       [a.name]: childPage([first, b, last], 4),
-      [b.name]: childPage([emitted, logged, final], 5),
+      [b.name]: childPage([emitted, logged, later], 5),
       [d.name]: { ...childPage([], 0), unavailable: true },
     },
   })
@@ -308,8 +308,8 @@ describe('keyboard traversal', () => {
     ['↑ from the first record does not wrap', a, -1, []],
     ['↓ from the last record does not wrap', e, 1, []],
     ['↓ stops before a gap between child ordinals', logged, 1, []],
-    ['↑ stops after a gap between child ordinals', final, -1, []],
-    ['↓ from a final value stops at the gap that follows its Run', final, 1, []],
+    ['↑ stops after a gap between child ordinals', later, -1, []],
+    ["↓ from a Run's last child stops at the gap that follows its Run", later, 1, []],
     ['↓ leaves a branch for the next loaded sibling', last, 1, [c, d]],
     ['↑ from a collapsed record reaches the record above its sibling branch', c, -1, [last]],
     ['↓ stops at unavailable history', c, 1, [d]],
@@ -324,7 +324,7 @@ describe('keyboard traversal', () => {
 
   it('rests a record inside a collapsed branch on that branch, and an expanded branch never stands in', () => {
     const collapsed = activityStops({ ...tree, expanded: [a.name, d.name] }, tree.rows)
-    const hidden = positionOf(final)
+    const hidden = positionOf(later)
     expect(restsOn(collapsed, hidden)).toBe(b.name)
     // The gap at ordinal 2 follows b, as when it shows its children.
     expect(stepStop(collapsed, hidden, 1)).toBeNull()
@@ -332,11 +332,6 @@ describe('keyboard traversal', () => {
     // b is expanded but its window lacks this record: no stop until it arrives.
     expect(resolveStop(stops, positionOf(output(b.name, 'events/3', 2)))).toBe(-1)
     expect(stepStop(stops, positionOf(output(b.name, 'events/3', 2)), 1)).toBeNull()
-  })
-
-  it('names the parents of a final value that only its URL identifies', () => {
-    expect(recordParents(b, `${b.name}/final`)).toEqual([b.name, a.name])
-    expect(recordParents(b)).toEqual([a.name])
   })
 
   it('follows a submission to the Run it was accepted as', () => {
@@ -374,7 +369,7 @@ describe('detail slide order', () => {
     ['a Tool Invocation', ordered, call, 1],
     ['a Program Log', ordered, logged, 2],
     ['a cancellation request', ordered, cancelling, 3],
-    ['not the Run itself or its final value, which its Task orders', ordered, owner, undefined],
+    ['not the Run itself, which its Task orders', ordered, owner, undefined],
     ['not a record without a position', ordered, unordered, undefined],
     ["not a record its Run's loaded window does not hold", ordered, unloaded, undefined],
     ['not a record of a Run with no loaded records', activityPage(), call, undefined],
@@ -426,7 +421,7 @@ describe('live mode', () => {
     })
   const log = output(owner.name, 'events/3', 1)
   const emission = output(owner.name, 'events/4', 2)
-  const final = output(owner.name, 'final', 3)
+  const newest = output(owner.name, 'events/5', 3)
   const other = runRow('other', '')
   it.each<[string, ActivityPage, ReturnType<typeof liveStep>]>([
     [
@@ -438,11 +433,11 @@ describe('live mode', () => {
       },
     ],
     [
-      'selects the final value while no record of the Run says it ended',
-      branchPage([call, log, emission, final], 4),
+      'selects the newest child while no record of the Run says it ended',
+      branchPage([call, log, emission, newest], 4),
       {
         kind: 'select',
-        record: final.name,
+        record: newest.name,
       },
     ],
     [
@@ -506,7 +501,7 @@ describe('live mode', () => {
       (state): [string, ActivityPage, ReturnType<typeof liveStep>][] => {
         const ended = { ...owner, state }
         const says: [string, ActivityPage][] = [
-          ['its row', { ...branchPage([call, log, emission, final], 4), rows: [ended] }],
+          ['its row', { ...branchPage([call, log, emission, newest], 4), rows: [ended] }],
           ['the selected row', { ...branchPage([emission], 1000, 2), selectedRow: ended }],
           [
             'its detail',

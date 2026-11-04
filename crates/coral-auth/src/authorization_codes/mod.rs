@@ -21,6 +21,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use coral_db::Database;
 use sha2::{Digest as _, Sha256};
 
+use crate::oauth_clients::AuthenticatedClient;
+
 /// How long an issued code can be redeemed.
 pub const AUTHORIZATION_CODE_TTL: Duration = Duration::from_mins(5);
 
@@ -48,8 +50,9 @@ pub struct AuthorizationGrant {
 /// The request bindings a redemption presents.
 #[derive(Clone, Copy, Debug)]
 pub struct CodeRedemption<'a> {
-    /// The client redeeming the code.
-    pub client_id: &'a str,
+    /// The client redeeming the code, which has already authenticated, so
+    /// no redemption spends a code before its client's check.
+    pub client: &'a AuthenticatedClient,
     /// The redirect URI the token request repeats.
     pub redirect_uri: &'a str,
     /// The S256 challenge of the verifier the client presented.

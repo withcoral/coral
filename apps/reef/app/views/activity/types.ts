@@ -165,6 +165,14 @@ export interface RunDetail {
   source: string
   linkedFunctions: { savedFunction: string; path: string; source: string }[]
   terminal: RunTerminal
+  /** The parts of the Run's context impact, in exact bytes. Absent while the total is. */
+  contextImpact?: RunContextImpact
+}
+/** Final Value plus emissions and logs, minus tool results: the Run's net context impact. */
+export interface RunContextImpact {
+  finalValueBytes: string
+  outputBytes: string
+  toolResultBytes: string
 }
 export type InvocationResult =
   | { kind: 'upstream_outcome'; value: string }
@@ -262,7 +270,7 @@ export interface InvocationDetail {
 }
 export type ActivityRow = { position?: number } & (
   | ({ kind: 'task' } & TaskRow)
-  | ({ kind: 'run'; submission?: InteractionRow; hasFinalValue?: boolean } & ExecutionRow)
+  | ({ kind: 'run'; submission?: InteractionRow } & ExecutionRow)
   | ({ kind: 'invocation' } & InvocationRow)
   | ({ kind: 'tool'; workspace: string; task: string } & InteractionRow)
   | {

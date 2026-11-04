@@ -10,7 +10,7 @@ service ActivityService {
   rpc WatchActivity(WatchActivityRequest) returns (stream WatchActivityResponse);
   // Lists top-level activity (Tasks and standalone Runs), newest first.
   rpc BrowseActivityRoots(BrowseActivityRootsRequest) returns (BrowseActivityRootsResponse);
-  // Lists one Run's Tools, Events and Final Value in order, as summaries.
+  // Lists one Run's Tools and Events in order, as summaries. The Final Value is not a child.
   rpc BrowseRunEntries(BrowseRunEntriesRequest) returns (BrowseRunEntriesResponse);
   // Gets one Event of a Run by its sequence number.
   rpc InspectRunEvent(InspectRunEventRequest) returns (InspectRunEventResponse);
@@ -555,6 +555,18 @@ message InspectRunResponse {
   // W3C trace ID of a Run that failed, timed out or was interrupted, or empty.
   // Give it to the operator to find the Run in Coral's telemetry.
   string trace_id = 14;
+  // The parts of run.context_impact_bytes. Absent when that total is absent.
+  ActivityRunContextImpact context_impact = 15;
+}
+// The retained payload bytes that net to a Run's context impact:
+// final_value_bytes + output_bytes - tool_result_bytes.
+message ActivityRunContextImpact {
+  // Bytes of the Final Value; zero if the Run returned none.
+  int64 final_value_bytes = 1;
+  // Bytes of the Run's Emissions and Logs.
+  int64 output_bytes = 2;
+  // Bytes of the Tool Results its Tool calls received.
+  int64 tool_result_bytes = 3;
 }
 // The Program finished.
 message ActivityRunSucceeded {
@@ -1000,8 +1012,8 @@ message BrowseRunEntriesRequest {
   uint32 page_size = 3;
   // Optional list scope the Run must belong to. Leave empty to select the Run on its own.
   ActivityScope scope = 4;
-  // Start the page at this Tool call, Event ({run}/events/{sequence}) or Final
-  // Value ({run}/final). Cannot be combined with after.
+  // Start the page at this Tool call or Event ({run}/events/{sequence}).
+  // Cannot be combined with after.
   string anchor = 5;
   // Return the rows around a scroll position. Cannot be combined with after or anchor.
   ActivityViewport viewport = 6;
@@ -1040,8 +1052,8 @@ message BrowseRunEntriesResponse {
   uint64 next_after = 3;
   // More children follow this page.
   bool has_more = 4;
-  // The Run has a Final Value, including null. Read it with InspectRun.
-  bool has_final_value = 5;
+  reserved 5;
+  reserved "has_final_value";
   // The Task tool call that submitted this Run, if the caller can see it. Summary only.
   ActivityInteraction submission = 6;
   // Number of children the caller can see, including ones outside this page.

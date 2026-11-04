@@ -39,12 +39,25 @@ pub struct SourceSnapshot {
     /// Exact accepted TypeScript source.
     pub source: String,
 }
+/// Where an ended Run's Context Impact comes from. `final_value_bytes` plus
+/// `output_bytes` minus `tool_result_bytes` is the Run's `context_impact_bytes`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunContextImpact {
+    /// Retained Final Value bytes; zero when the Run returned none.
+    pub final_value_bytes: i64,
+    /// Retained Emission and Log bytes.
+    pub output_bytes: i64,
+    /// Retained Tool Result bytes of the Run's Invocations.
+    pub tool_result_bytes: i64,
+}
 /// Exact Run evidence and one bounded Event page.
 pub struct RunDetail {
     /// Independently verified original User-private request; absent when not selected or unavailable.
     pub account_connection: Option<coral_provider::account::ConnectionRequestId>,
     /// Source-free state projection.
     pub summary: RunSummary,
+    /// The parts of `summary.context_impact_bytes`, absent when it is.
+    pub context_impact: Option<RunContextImpact>,
     /// Exact submitted TypeScript body.
     pub submitted_source: String,
     /// Admission-bounded linked snapshots.
@@ -223,6 +236,12 @@ impl RunModule {
         } else {
             None
         };
+        let context_impact = match summary.context_impact_bytes {
+            Some(_) => {
+                Some(crate::inspection_repository::run_context_impact(tx, workspace, id).await?)
+            }
+            None => None,
+        };
         let (submitted_source, linked_functions) =
             crate::inspection_repository::sources(tx, workspace, id).await?;
         let (events, has_more_events) = crate::run_repository::event_page_in_transaction(
@@ -237,6 +256,7 @@ impl RunModule {
         Ok(RunDetail {
             account_connection,
             summary,
+            context_impact,
             submitted_source,
             linked_functions,
             events,
@@ -340,7 +360,7 @@ async fn human_summary(
     now: i64,
 ) -> Result<RunSummary, Error> {
     // human_run already authorized this exact record in the same snapshot.
-    let (summary, _) = crate::history_repository::visible_run_summary(
+    crate::history_repository::visible_run_summary(
         tx,
         actor.principal(),
         true,
@@ -348,6 +368,5 @@ async fn human_summary(
         &run.id,
         now,
     )
-    .await?;
-    Ok(summary)
+    .await
 }

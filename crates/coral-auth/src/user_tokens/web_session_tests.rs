@@ -4,7 +4,7 @@
 )]
 use std::time::Duration;
 
-use super::tests::{CLIENT, Fixture, NOW, REEF, SECOND, refresh_token};
+use super::tests::{Fixture, NOW, REEF, SECOND, refresh_token};
 use super::{AccessTarget, TokenRefusal, WebSessionToken};
 
 const HOUR: Duration = Duration::from_hours(1);
@@ -20,7 +20,7 @@ impl Fixture {
     async fn web_session(&self, max_age: Duration) -> String {
         let token = self.reef_refresh_token().await;
         self.tokens
-            .start_web_session(&token, CLIENT, max_age, NOW + SECOND)
+            .start_web_session(&token, &self.client, max_age, NOW + SECOND)
             .await
             .unwrap()
             .handle
@@ -29,7 +29,9 @@ impl Fixture {
     }
 
     async fn session_token(&self, handle: &str, now: i64) -> Result<WebSessionToken, TokenRefusal> {
-        self.tokens.web_session_token(handle, CLIENT, now).await
+        self.tokens
+            .web_session_token(handle, &self.client, now)
+            .await
     }
 }
 
@@ -62,7 +64,7 @@ async fn a_web_session_mints_reef_tokens_until_it_ends() {
         .unwrap();
     fixture
         .tokens
-        .end_web_session(&handle, CLIENT)
+        .end_web_session(&handle, &fixture.client)
         .await
         .unwrap();
     assert_eq!(
@@ -102,13 +104,9 @@ async fn only_a_reef_grant_from_its_own_client_starts_a_session() {
     );
     let reef = fixture.reef_refresh_token().await;
     for (case, token, client) in [
-        ("an MCP grant", mcp.as_str(), CLIENT),
-        (
-            "another client",
-            reef.as_str(),
-            "https://other.example.test/client.json",
-        ),
-        ("an unknown token", "coral_rt_unknown", CLIENT),
+        ("an MCP grant", mcp.as_str(), &fixture.client),
+        ("another client", reef.as_str(), &fixture.other),
+        ("an unknown token", "coral_rt_unknown", &fixture.client),
     ] {
         assert_eq!(
             fixture
@@ -136,7 +134,7 @@ async fn the_spent_refresh_token_cannot_outlive_its_session() {
     let token = fixture.reef_refresh_token().await;
     let handle = fixture
         .tokens
-        .start_web_session(&token, CLIENT, HOUR, NOW + SECOND)
+        .start_web_session(&token, &fixture.client, HOUR, NOW + SECOND)
         .await
         .unwrap()
         .handle;
@@ -209,9 +207,9 @@ async fn only_the_sessions_own_client_ends_it() {
     let fixture = Fixture::new().await;
     let handle = fixture.web_session(HOUR).await;
     for (client, refused) in [
-        ("https://other.example.test/client.json", None),
-        (CLIENT, Some(TokenRefusal::InvalidGrant)),
-        (CLIENT, Some(TokenRefusal::InvalidGrant)),
+        (&fixture.other, None),
+        (&fixture.client, Some(TokenRefusal::InvalidGrant)),
+        (&fixture.client, Some(TokenRefusal::InvalidGrant)),
     ] {
         fixture
             .tokens
@@ -221,13 +219,14 @@ async fn only_the_sessions_own_client_ends_it() {
         assert_eq!(
             fixture.session_token(&handle, NOW + 2 * SECOND).await.err(),
             refused,
-            "{client}"
+            "{}",
+            client.client_id()
         );
     }
     assert_eq!(
         fixture
             .tokens
-            .web_session_token(&handle, "https://other.example.test/client.json", NOW)
+            .web_session_token(&handle, &fixture.other, NOW)
             .await
             .err(),
         Some(TokenRefusal::InvalidGrant)
@@ -242,11 +241,15 @@ async fn revoking_the_grant_ends_its_session() {
     let token = fixture.reef_refresh_token().await;
     let handle = fixture
         .tokens
-        .start_web_session(&token, CLIENT, HOUR, NOW + SECOND)
+        .start_web_session(&token, &fixture.client, HOUR, NOW + SECOND)
         .await
         .unwrap()
         .handle;
-    fixture.tokens.revoke(&token, CLIENT).await.unwrap();
+    fixture
+        .tokens
+        .revoke(&token, &fixture.client)
+        .await
+        .unwrap();
     assert_eq!(
         fixture
             .session_token(handle.expose(), NOW + 2 * SECOND)
@@ -270,10 +273,10 @@ async fn processes_resolve_one_session_concurrently() {
         } else {
             peer.clone()
         };
-        let handle = handle.clone();
+        let (handle, client) = (handle.clone(), fixture.client.clone());
         resolves.spawn(async move {
             tokens
-                .web_session_token(&handle, CLIENT, NOW + 2 * SECOND)
+                .web_session_token(&handle, &client, NOW + 2 * SECOND)
                 .await
         });
     }

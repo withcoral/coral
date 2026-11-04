@@ -111,23 +111,40 @@ pub(crate) fn measured_context() -> SimpleExpr {
 }
 
 fn context_impact(workspace: &SimpleExpr, run: &SimpleExpr) -> SimpleExpr {
-    let sum = |table: &str, field: &str| {
-        Expr::SubQuery(
-            None,
-            Box::new(sea_query::SubQueryStatement::SelectStatement(
-                Query::select()
-                    .expr(Func::cast_as(
-                        Func::coalesce([Expr::col(Alias::new(field)).sum(), Expr::val(0_i64)]),
-                        Alias::new("bigint"),
-                    ))
-                    .from(Alias::new(table))
-                    .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace.clone()))
-                    .and_where(Expr::col(Alias::new("run_id")).eq(run.clone()))
-                    .to_owned(),
-            )),
-        )
-    };
-    sum("program_run_events", "output_bytes").sub(sum("tool_invocations", "result_bytes"))
+    retained_bytes("program_run_events", "output_bytes", workspace, run, None).sub(retained_bytes(
+        "tool_invocations",
+        "result_bytes",
+        workspace,
+        run,
+        None,
+    ))
+}
+
+/// The sum of one Run's retained payload bytes in `table`, zero when it has none. `only`
+/// narrows the rows summed.
+pub(crate) fn retained_bytes(
+    table: &str,
+    field: &str,
+    workspace: &SimpleExpr,
+    run: &SimpleExpr,
+    only: Option<SimpleExpr>,
+) -> SimpleExpr {
+    let mut query = Query::select();
+    query
+        .expr(Func::cast_as(
+            Func::coalesce([Expr::col(Alias::new(field)).sum(), Expr::val(0_i64)]),
+            Alias::new("bigint"),
+        ))
+        .from(Alias::new(table))
+        .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace.clone()))
+        .and_where(Expr::col(Alias::new("run_id")).eq(run.clone()));
+    if let Some(only) = only {
+        query.and_where(only);
+    }
+    Expr::SubQuery(
+        None,
+        Box::new(sea_query::SubQueryStatement::SelectStatement(query)),
+    )
 }
 
 /// Whether retained Invocation evidence is incomplete. No payloads leave the repository.
@@ -200,10 +217,6 @@ fn run_select(now: i64) -> SelectStatement {
             active_run(now).and(run_action()),
             Alias::new("requires_action"),
         )
-        .expr_as(
-            col("r", "final_value_json").is_not_null(),
-            Alias::new("has_final_value"),
-        )
         .to_owned()
 }
 
@@ -221,7 +234,6 @@ struct RunRow {
     ended_at: Option<i64>,
     duration: i64,
     requires_action: bool,
-    has_final_value: bool,
 }
 impl RunRow {
     fn decode(self) -> Result<RunSummary, Error> {
@@ -266,7 +278,7 @@ pub(crate) async fn visible_run_summary(
     workspace: &WorkspaceId,
     id: &crate::RunId,
     now: i64,
-) -> Result<(RunSummary, bool), Error> {
+) -> Result<RunSummary, Error> {
     let mut select = run_select(now);
     select
         .and_where(col("r", "workspace_id").eq(workspace.to_string()))
@@ -280,8 +292,7 @@ pub(crate) async fn visible_run_summary(
         own
     });
     let row: RunRow = tx.fetch_optional(select).await?.ok_or(Error::RunNotFound)?;
-    let has_final_value = row.has_final_value;
-    Ok((row.decode()?, has_final_value))
+    row.decode()
 }
 #[derive(sqlx::FromRow)]
 struct InvocationRow {

@@ -325,81 +325,23 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         expect(
           await table.getByRole('link', { name: 'execution ended', exact: true }).count(),
         ).toBe(0)
-        await table.getByRole('img', { name: 'return value', exact: true }).waitFor()
-        await table.getByRole('link', { name: 'return value', exact: true }).waitFor()
-        const finalRow = table
-          .getByRole('row')
-          .filter({ has: page.getByRole('link', { name: 'return value', exact: true }) })
-        await finalRow.getByLabel('23 B added', { exact: true }).waitFor()
-        await finalRow.getByRole('link', { name: 'return value', exact: true }).click()
-        // The Run returns the snapshot's own value.
+        // The Run's panel shows its return value, so the table neither marks nor repeats it.
+        expect(await table.getByRole('img', { name: 'return value', exact: true }).count()).toBe(0)
+        expect(await table.getByRole('link', { name: 'return value', exact: true }).count()).toBe(0)
+        await table
+          .locator(`[data-record-key="workspaces/${first}/runs/${run}"]`)
+          .locator('a[href]')
+          .click()
+        // The Run returns the snapshot's own value, and its panel counts it as its own share.
         await shownPayload(page, 'historical-source-249').waitFor()
+        await page
+          .getByRole('region', { name: 'Agent context', exact: true })
+          .locator('div', { has: page.getByText('Return value sent', { exact: true }) })
+          .getByText('23 B', { exact: true })
+          .waitFor()
         await page.getByRole('button', { name: 'Close details', exact: true }).click()
         await page.waitForURL((url) => !url.searchParams.has('record'))
       })
-      await step(
-        'Reveal a terminal Event without replacing its identity with the final value',
-        async () => {
-          const runName = `workspaces/${first}/runs/${run}`
-          const finalPage = await api.activity.browseRunEntries({
-            name: runName,
-            anchor: `${runName}/final`,
-            pageSize: 1,
-          })
-          const terminal = finalPage.entries[0]?.record
-          if (terminal?.case !== 'event') throw new Error('Expected the terminal Event')
-          const selected = `${runName}/events/${terminal.value.sequence}`
-          const table = page.getByRole('table', {
-            name: 'Activity records',
-            exact: true,
-            includeHidden: true,
-          })
-          for (const explicit of [false, true]) {
-            await page.goto(
-              `/workspaces/${first}/activity?record=${encodeURIComponent(selected)}${explicit ? '&tree=1' : ''}`,
-            )
-            if (explicit) {
-              await page.getByText('Outside this workspace or page:', { exact: true }).waitFor()
-              await page.goto(revealedAt(`workspaces/${first}/tasks/${task}`, runName, selected))
-              await page.waitForURL(
-                (url) =>
-                  url.searchParams.get(`anchor.${runName}`) === selected &&
-                  !url.searchParams.has('record'),
-              )
-              await page.getByRole('dialog').waitFor({ state: 'hidden' })
-            }
-            // Selected, the Event's own row; revealed, the one row the anchored page holds.
-            const row = explicit
-              ? table.getByRole('row').filter({
-                  has: page.getByRole('link', { name: 'execution ended', exact: true }),
-                })
-              : table.locator('[role="row"][aria-selected="true"]')
-            const eventLink = row.getByRole('link', {
-              name: 'execution ended',
-              exact: true,
-              includeHidden: true,
-            })
-            await eventLink.waitFor()
-            expect(
-              new URL((await eventLink.getAttribute('href'))!, page.url()).searchParams.get(
-                'record',
-              ),
-            ).toBe(selected)
-            expect(await row.count()).toBe(1)
-            expect(await row.getByLabel('23 B added', { exact: true }).count()).toBe(1)
-            expect(
-              await table
-                .getByRole('link', { name: 'return value', exact: true, includeHidden: true })
-                .count(),
-            ).toBe(0)
-            expect(
-              await page.getByText('Outside this workspace or page:', { exact: true }).count(),
-            ).toBe(0)
-          }
-          await page.waitForURL((url) => !url.searchParams.has('record'))
-          await table.getByRole('link', { name: 'execution ended', exact: true }).waitFor()
-        },
-      )
       await step('Open a stable Run link in its workspace', async () => {
         await page.goto(`/workspaces/${first}/runs/${run}`)
         // A Run panel leads with its timing; it keeps no source or snapshots.
@@ -456,9 +398,10 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             exact: true,
           })
         const table = page.getByRole('table', { name: 'Activity records', exact: true })
-        // The Run returns only the failure code, so its context is that code's JSON.
+        // The Run returns only the failure code, so its context is that code's JSON: on the
+        // Task and the Run, and on no row of its own.
         const added = `${JSON.stringify('tool_disabled').length} B added`
-        expect(await table.getByLabel(added, { exact: true }).count()).toBe(3)
+        expect(await table.getByLabel(added, { exact: true }).count()).toBe(2)
         expect(await table.getByLabel('No net context change', { exact: true }).count()).toBe(1)
         await toolLink.click()
         // The one scalar argument shows under its own field, with its exact JSON spelling.

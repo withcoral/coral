@@ -28,6 +28,7 @@ use tokio::task::JoinHandle;
 mod approval_page;
 mod authorize;
 mod callback;
+mod client_authentication;
 mod client_metadata;
 mod cookies;
 mod provider_callback;
@@ -529,6 +530,37 @@ mod test_state {
     use super::AuthorizationServerHttpState;
     use crate::auth::test_config::{loopback_policy, resolved_settings};
 
+    /// The public URL client `client_id`, authenticated as a token request
+    /// that presents no credential authenticates it.
+    pub(super) async fn authenticated(
+        database: Arc<coral_db::Database>,
+        client_id: &str,
+    ) -> coral_auth::oauth_clients::AuthenticatedClient {
+        coral_auth::oauth_clients::OAuthClients::new(database, Arc::new(NoFetch))
+            .authenticate(
+                client_id,
+                &coral_auth::oauth_clients::PresentedCredential::None,
+            )
+            .await
+            .expect("a URL client authenticates as a public client")
+    }
+
+    /// A URL client authenticates without its metadata document.
+    struct NoFetch;
+
+    #[async_trait::async_trait]
+    impl super::ClientMetadataResolver for NoFetch {
+        async fn resolve(
+            &self,
+            _: &str,
+        ) -> Result<
+            coral_auth::oauth_clients::OAuthClientRegistration,
+            coral_auth::oauth_clients::ClientMetadataError,
+        > {
+            panic!("client authentication must never fetch URLs")
+        }
+    }
+
     /// Opens a migrated database for the server to record its sign-ins in.
     pub(super) async fn database() -> TestDatabase {
         TestDatabase::new(coral_db::migration_plan())
@@ -591,13 +623,13 @@ async fn authorization_server_metadata(
         "registration_endpoint": format!("{}/oauth/register", authorization_server.issuer),
         // Revocation accepts refresh tokens only; access tokens expire.
         "revocation_endpoint": format!("{}/oauth/revoke", authorization_server.issuer),
-        "revocation_endpoint_auth_methods_supported": ["none"],
+        "revocation_endpoint_auth_methods_supported": ["none", "client_secret_post"],
         // Reef's web sessions; `/token` and `/end` sit beneath it.
         "coral_web_session_endpoint": format!("{}/oauth/session", authorization_server.issuer),
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
-        "token_endpoint_auth_methods_supported": ["none"],
+        "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
         "client_id_metadata_document_supported": true,
     }))
 }
@@ -887,12 +919,12 @@ mod tests {
                 "token_endpoint": "http://localhost:9080/oauth/token",
                 "registration_endpoint": "http://localhost:9080/oauth/register",
                 "revocation_endpoint": "http://localhost:9080/oauth/revoke",
-                "revocation_endpoint_auth_methods_supported": ["none"],
+                "revocation_endpoint_auth_methods_supported": ["none", "client_secret_post"],
                 "coral_web_session_endpoint": "http://localhost:9080/oauth/session",
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code", "refresh_token"],
                 "code_challenge_methods_supported": ["S256"],
-                "token_endpoint_auth_methods_supported": ["none"],
+                "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
                 "client_id_metadata_document_supported": true,
             })
         );
@@ -942,7 +974,7 @@ mod tests {
             ("{}".to_string(), "text/plain", "invalid_client_metadata"),
             (json!({"redirect_uris": []}).to_string(), "application/json", "invalid_redirect_uri"),
             (json!({"redirect_uris": ["http://unsafe.test/callback"]}).to_string(), "application/json", "invalid_redirect_uri"),
-            (json!({"redirect_uris": ["https://safe.test/callback"], "token_endpoint_auth_method": "client_secret_post"}).to_string(), "application/json", "invalid_client_metadata"),
+            (json!({"redirect_uris": ["https://safe.test/callback"], "token_endpoint_auth_method": "client_secret_basic"}).to_string(), "application/json", "invalid_client_metadata"),
             (json!({"redirect_uris": ["https://safe.test/callback"], "unknown": "x".repeat(5120)}).to_string(), "application/json", "invalid_client_metadata"),
         ] {
             let response = client.post(&endpoint).header("content-type", content_type).body(body).send().await.unwrap();

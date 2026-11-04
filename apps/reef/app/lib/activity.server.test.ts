@@ -416,7 +416,7 @@ function runEntries(
                     case: 'event',
                     value: {
                       sequence: 3n,
-                      kind: options.contextImpact ? 'run.ended' : 'program.emitted',
+                      kind: 'program.emitted',
                       contextImpactBytes: options.contextImpact ? 2000n : undefined,
                       occurredAtUnixNanos: 3_000_000_000n,
                       sourceLocation: options.location,
@@ -426,7 +426,6 @@ function runEntries(
               ],
           nextAfter: options.endedEvent ? 4n : 3n,
           hasMore: !options.endedEvent && !options.completedEntries,
-          hasFinalValue: options.endedEvent || (options.completedEntries ?? false),
         }
       },
     },
@@ -439,6 +438,7 @@ function runDetail(
     resolved?: boolean
     retainedConnection?: boolean
     noFinalValue?: boolean
+    unmeasured?: boolean
   } = {},
 ): Handlers {
   return {
@@ -453,6 +453,8 @@ function runDetail(
           run: {
             ...execution,
             agent: agentOf(options),
+            // The parts below net to this total: 4 + 2 − 150.
+            contextImpactBytes: options.unmeasured ? undefined : -144n,
             actionPage: {
               actions: options.resolved || input.actionAfter ? [] : execution.actionPage.actions,
               total: options.resolved ? 0n : 1n,
@@ -474,6 +476,9 @@ function runDetail(
             case: 'succeeded',
             value: { finalValueJson: options.noFinalValue ? undefined : 'null' },
           },
+          contextImpact: options.unmeasured
+            ? undefined
+            : { finalValueBytes: 4n, outputBytes: 2n, toolResultBytes: 150n },
           events: [
             {
               sequence: 3n,
@@ -889,7 +894,7 @@ describe('hierarchical activity through the private server interface', () => {
       expect(markup.match(/aria-selected="true"/g)).toHaveLength(1)
     },
   )
-  it('keeps a terminal Event anchor after closing detail, but restores the final-value shortcut when paging away', async () => {
+  it('keeps a terminal Event anchor after closing detail and paging away', async () => {
     const name = `${run}/events/4`
     const { api } = coral(list(), taskDetail(), runEntries({ endedEvent: true }))
     const query = { expand: [task, run], [`anchor.${run}`]: name }
@@ -898,9 +903,10 @@ describe('hierarchical activity through the private server interface', () => {
     expect(anchored.branches[run].rows).toMatchObject([
       { name, label: 'execution ended', contextImpactBytes: '4' },
     ])
+    // A later page shows the terminal Event as Coral sent it, never as a return value row.
     const paged = await loadActivity(request({ ...query, [`cursor.${run}`]: '3' }), api, { scope })
     expect(paged.branches[run].rows).toMatchObject([
-      { name: `${run}/final`, label: 'return value', contextImpactBytes: '4' },
+      { name, label: 'execution ended', contextImpactBytes: '4' },
     ])
   })
   it('preserves complete signed totals without summing only loaded children or coercing unavailable to zero', async () => {
@@ -921,7 +927,7 @@ describe('hierarchical activity through the private server interface', () => {
     expect(expanded.branches[task].rows[0]).toMatchObject({ contextImpactBytes: '-148000' })
     expect(expanded.branches[run].rows).toMatchObject([
       { contextImpactBytes: '-150000' },
-      { contextImpactBytes: '2000', label: 'return value', name: `${run}/final` },
+      { contextImpactBytes: '2000', name: `${run}/events/3` },
     ])
     const unavailable = await loadActivity(request(), coral(list()).api, {
       scope,
@@ -1563,7 +1569,7 @@ describe('hierarchical activity through the private server interface', () => {
     await loadActivity(request({ record: invocation, tree: '1' }), api, { scope })
     expect(loaded(calls, 'run')).toBe(1)
   })
-  it('keeps the final value and original intent on the expanded exec row', async () => {
+  it('keeps the original intent on the expanded exec row', async () => {
     const page = await loadActivity(
       request({ expand: [task, run], tree: '1' }),
       coral(list(), taskDetail(), runEntries({ completedEntries: true })).api,
@@ -1573,17 +1579,15 @@ describe('hierarchical activity through the private server interface', () => {
       {
         kind: 'run',
         name: run,
-        hasFinalValue: true,
         submission: { intent: 'Send reminders' },
       },
     ])
-    expect(page.branches[run].rows.every((row) => !row.name.endsWith('/final'))).toBe(true)
     expect(page.detail).toBeNull()
     expect(JSON.stringify(page)).not.toContain('secretSource')
   })
   it('retains accepted source snapshots and distinguishes explicit null from no final value', async () => {
     const present = await loadActivity(
-      request({ record: `${run}/final`, tree: '1' }),
+      request({ record: run, tree: '1' }),
       coral(list(), runDetail()).api,
       { scope },
     )
@@ -1593,16 +1597,48 @@ describe('hierarchical activity through the private server interface', () => {
       linkedFunctions: [{ source: 'export default () => 41' }],
     })
     expect(present.selected).toBe(run)
-    expect(present.selectedRow).toMatchObject({ kind: 'run', name: run, hasFinalValue: true })
+    expect(present.selectedRow).toMatchObject({ kind: 'run', name: run })
     expect(JSON.stringify(present)).not.toContain('unselected-event')
     const absent = await loadActivity(
-      request({ record: `${run}/final`, tree: '1' }),
+      request({ record: run, tree: '1' }),
       coral(list(), runDetail({ noFinalValue: true })).api,
       { scope },
     )
-    expect(absent.unavailable).toBe(true)
-    expect(absent.detail).toBeNull()
+    expect(absent.detail).toMatchObject({ kind: 'run', terminal: { finalValue: null } })
   })
+  // Catches: a Run panel that shows a breakdown Coral did not measure, or drops one it did.
+  it.each([
+    ['measured', {}, { finalValueBytes: '4', outputBytes: '2', toolResultBytes: '150' }],
+    ['unmeasured', { unmeasured: true }, undefined],
+  ] as const)(
+    'gives a %s Run its context breakdown as Coral sent it',
+    async (_, options, parts) => {
+      const page = await loadActivity(
+        request({ record: run, tree: '1' }),
+        coral(list(), runDetail(options)).api,
+        { scope },
+      )
+      expect(page.detail).toMatchObject({ kind: 'run' })
+      expect(page.detail?.kind === 'run' && page.detail.contextImpact).toEqual(parts ?? undefined)
+      // The net the panel shows is the Run's own total.
+      expect(page.detail?.kind === 'run' && page.detail.run.contextImpactBytes).toBe(
+        parts ? '-144' : undefined,
+      )
+    },
+  )
+  // Catches: a link from before the return value left the Run's rows no longer opening.
+  it.each([{}, { noFinalValue: true }])(
+    'opens the Run from a link to its former return value row',
+    async (options) => {
+      const page = await loadActivity(
+        request({ record: `${run}/final`, tree: '1' }),
+        coral(list(), runDetail(options)).api,
+        { scope },
+      )
+      expect(page.selected).toBe(run)
+      expect(page.detail).toMatchObject({ kind: 'run' })
+    },
+  )
   it('preserves upstream 404 as an upstream outcome, not a Coral failure', async () => {
     const page = await loadActivity(
       request({ record: invocation, tree: '1' }),

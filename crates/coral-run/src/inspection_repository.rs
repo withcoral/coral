@@ -216,9 +216,6 @@ pub(crate) async fn entry_start(
                 .and_where(Expr::col(Alias::new("invocation_id")).eq(id.to_string()))
                 .and_where(Expr::col(Alias::new("event_type")).eq("invocation.started"));
         }
-        W::Final => {
-            query.and_where(Expr::col(Alias::new("event_type")).eq("run.ended"));
-        }
     }
     let (sequence,): (i64,) = tx.fetch_optional(query).await?.ok_or(Error::RunNotFound)?;
     u64::try_from(sequence - 1)
@@ -237,6 +234,51 @@ pub(crate) async fn event_context_bytes(
     );
     let (bytes,) = tx.fetch_optional(query).await?.ok_or(Error::RunNotFound)?;
     Ok(bytes)
+}
+
+/// The retained byte totals that net to a Run's Context Impact, read in one statement of the
+/// caller's snapshot.
+pub(crate) async fn run_context_impact(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    run: &RunId,
+) -> Result<crate::RunContextImpact, Error> {
+    use crate::history_repository::retained_bytes;
+    let workspace = Expr::val(workspace.to_string());
+    let run = Expr::val(run.to_string());
+    let ended = || Expr::col(Alias::new("event_type")).eq("run.ended");
+    let mut query = Query::select();
+    query
+        .expr(retained_bytes(
+            "program_run_events",
+            "output_bytes",
+            &workspace,
+            &run,
+            Some(ended()),
+        ))
+        .expr(retained_bytes(
+            "program_run_events",
+            "output_bytes",
+            &workspace,
+            &run,
+            Some(ended().not()),
+        ))
+        .expr(retained_bytes(
+            "tool_invocations",
+            "result_bytes",
+            &workspace,
+            &run,
+            None,
+        ));
+    let (final_value_bytes, output_bytes, tool_result_bytes): (i64, i64, i64) = tx
+        .fetch_optional(query)
+        .await?
+        .ok_or_else(|| Error::CorruptData("a byte total returned no row".into()))?;
+    Ok(crate::RunContextImpact {
+        final_value_bytes,
+        output_bytes,
+        tool_result_bytes,
+    })
 }
 
 pub(crate) struct EntrySummary {
@@ -330,9 +372,6 @@ pub(crate) async fn entry_summaries(
         .and_where(
             Expr::col(Alias::new("event_type"))
                 .is_not_in(["invocation.ended", "run.started", "run.ended"])
-                .or(Expr::col(Alias::new("event_type"))
-                    .eq("run.ended")
-                    .and(Expr::col(Alias::new("output_bytes")).gt(0_i64)))
                 .or(Expr::val(include_anchor)
                     .and(Expr::col(Alias::new("sequence")).eq(after.saturating_add(1)))),
         );

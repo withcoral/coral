@@ -91,6 +91,7 @@ sea-query-sqlx = { version = "0.9", default-features = false, features = [
   "with-time",
 ] }
 sha2 = "0.11"
+subtle = "2.6"
 sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "postgres", "regexp", "runtime-tokio", "sqlite", "tls-rustls"] }
 sourcemap = "9.3.2"
 sse-stream = "0.2.6"

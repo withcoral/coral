@@ -7,7 +7,6 @@ import { renderToString } from 'react-dom/server'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { ActivityPage, ActivityRow, ExecutionRow } from '@/views/activity/types'
 import type { ActivityObservation } from './activity-live-types'
-import { finalValue } from '@/views/activity/navigation'
 import { activityObservation, activityView, useActivityReader } from './activity-observation'
 import { loadActivityPage } from './activity-page-fetch'
 import { liveTarget } from '@/views/activity/navigation'
@@ -530,15 +529,13 @@ it.each([false, true])(
 const revealTask = 'workspaces/work/tasks/t'
 const revealRun = 'workspaces/work/runs/run'
 const revealEvent = `${revealRun}/events/200`
-const revealEnded = `${revealRun}/events/201`
-const revealFinal = finalValue(revealRun)
 const revealOutput = (name: string, position: number, eventKind = 'program.emitted') => ({
   kind: 'output' as const,
   name,
   position,
   workspace: 'workspaces/work',
   run: revealRun,
-  label: name === revealFinal ? 'return value' : `emission #${position + 1}`,
+  label: `emission #${position + 1}`,
   eventKind,
   startedAt: '1970-01-01T00:00:00.000Z',
   agent: '',
@@ -548,9 +545,8 @@ const revealWindow = (...rows: ActivityRow[]) => ({
 })
 // A continuous reading URL: the Run is open at a sparse window anchored on an Event.
 const revealReading = `anchor=${revealTask}&expand=${revealRun}&anchor.${revealRun}=${revealEvent}&offset.${revealRun}=174&preceding.${revealRun}=25`
-// Catches: the table revealing the Run when the URL names its final value, so it scrolls
-// to the Run's first records. Catches too: a final value the page has no row for, which
-// the table never reveals, so a direct link leaves the selected Run off screen.
+// Catches: a direct link that leaves its record off screen, because the table reveals
+// something else.
 it.each<{
   name: string
   selected: string | null
@@ -566,30 +562,6 @@ it.each<{
     branches: revealWindow(revealOutput(revealEvent, 199)),
     anchors: { [revealRun]: revealEvent },
     revealed: revealEvent,
-  },
-  {
-    name: "a Run's final value, not the Run its detail shows",
-    selected: revealRun,
-    search: `${revealReading}&record=${revealFinal}`,
-    branches: revealWindow(revealOutput(revealEvent, 199), revealOutput(revealFinal, 200)),
-    anchors: { [revealRun]: revealEvent },
-    revealed: revealFinal,
-  },
-  {
-    name: 'the Run of a final value its collapsed Run does not show',
-    selected: revealRun,
-    search: `record=${revealFinal}`,
-    branches: {},
-    anchors: { [revealTask]: revealRun },
-    revealed: revealRun,
-  },
-  {
-    name: 'the Run of a final value its ending Event stands for',
-    selected: revealRun,
-    search: `anchor=${revealTask}&expand=${revealRun}&anchor.${revealRun}=${revealEnded}&record=${revealFinal}`,
-    branches: revealWindow(revealOutput(revealEnded, 200, 'run.ended')),
-    anchors: { [revealRun]: revealEnded },
-    revealed: revealRun,
   },
   {
     name: 'a selected Run',
@@ -639,60 +611,6 @@ const listed = (n: number, state: ExecutionRow['state'] = 'succeeded') => ({
 })
 const shortNames = (value: ActivityPage) =>
   value.rows.map((row) => `${row.name.split('/').at(-1)}:${row.kind === 'run' ? row.state : ''}`)
-
-// Catches: a step onto a final value inside the list revealing its Run, because the
-// step's page arrives without the final value's row. The table then leaves the final value.
-it('keeps revealing a final value that a step inside the list reaches before its row loads', async () => {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(() => new Promise(() => {})),
-  )
-  const latest = createRef<ReturnType<typeof useActivityReader>>()
-  function StepReader() {
-    const value = useActivityReader(useLoaderData<ActivityPage>())
-    useLayoutEffect(() => {
-      latest.current = value
-    })
-    return null
-  }
-  const router = createMemoryRouter(
-    [
-      {
-        path: '/activity',
-        element: <StepReader />,
-        loader: ({ request }): ActivityPage => {
-          const stepped = new URL(request.url).searchParams.has('record')
-          return {
-            ...page,
-            rows: [{ ...listed(1), name: revealRun }],
-            expanded: [revealRun],
-            selected: stepped ? revealRun : null,
-            branches: stepped
-              ? revealWindow(revealOutput(revealEvent, 199))
-              : revealWindow(revealOutput(revealEvent, 199), revealOutput(revealFinal, 200)),
-          }
-        },
-      },
-    ],
-    { initialEntries: [`/activity?tree=1&expand=${revealRun}`] },
-  )
-  const container = document.body.appendChild(document.createElement('div'))
-  const root = createRoot(container)
-  try {
-    await act(async () => root.render(<RouterProvider router={router} />))
-    const before = latest.current!.windowKey
-    await act(async () => {
-      await router.navigate(latest.current!.navigation.recordHref(revealFinal))
-    })
-    // The step joins the list, so the table keeps the Run's sparse window.
-    expect(latest.current!.windowKey).toBe(before)
-    expect(latest.current!.revealRecord).toBe(revealFinal)
-  } finally {
-    await act(async () => root.unmount())
-    router.dispose()
-    container.remove()
-  }
-})
 
 // Catches: "Open the first page" still saying the page is unavailable, and not following.
 it('drops an unavailable anchor when the first page joins the list', () => {
