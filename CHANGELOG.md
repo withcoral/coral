@@ -1,5 +1,59 @@
 # Changelog
 
+## [1.5.0](https://github.com/withcoral/coral/compare/v1.4.0...v1.5.0) (2026-11-04)
+
+
+### Features
+
+* **auth:** accept DCR clients that authenticate with client_secret_post ([#2849](https://github.com/withcoral/coral/issues/2849)) ([55a1a02](https://github.com/withcoral/coral/commit/55a1a0208128aacebe9b8c133696e1e2e4a1c1ce)), closes [#2823](https://github.com/withcoral/coral/issues/2823)
+* **auth:** keep MCP clients and Reef signed in with rotating refresh tokens ([#2816](https://github.com/withcoral/coral/issues/2816)) ([3e0debd](https://github.com/withcoral/coral/commit/3e0debd6096fecd25029b9a921d4a4ea0348cf8f))
+* **mcp:** sketch the Tool Results a failed Program received ([#2819](https://github.com/withcoral/coral/issues/2819)) ([0f30889](https://github.com/withcoral/coral/commit/0f3088946e04794da55fee72df05a3cea12e37ba))
+* **provider:** add Datadog v2 API and per-site MCP endpoints ([#2787](https://github.com/withcoral/coral/issues/2787)) ([5df6217](https://github.com/withcoral/coral/commit/5df6217b5a4eb371d920acd8e7c94779c701bb84))
+* **provider:** send every Setup a Program prepares to a person ([#2768](https://github.com/withcoral/coral/issues/2768)) ([d7faeb4](https://github.com/withcoral/coral/commit/d7faeb4fc2c916a8a848fbd3f7fd3674c31a3ca8))
+* **recipes:** add the WorkOS recipes ([#2788](https://github.com/withcoral/coral/issues/2788)) ([17d5877](https://github.com/withcoral/coral/commit/17d58772298f19783b39f0906b3a2b24947475c5))
+* **run:** name the nearest Call Paths when a Program names no Tool ([#2806](https://github.com/withcoral/coral/issues/2806)) ([1d61caf](https://github.com/withcoral/coral/commit/1d61caf9beb6486fbc51fa59c9e4c3712f7c91c4))
+* **search:** let Programs discover through coral.workspace.search ([#2803](https://github.com/withcoral/coral/issues/2803)) ([cb3861f](https://github.com/withcoral/coral/commit/cb3861f35c158d3a8871aa25607af3c1cd33868f))
+* **telemetry:** concurrent load metrics ([#2763](https://github.com/withcoral/coral/issues/2763)) ([0fe4ce7](https://github.com/withcoral/coral/commit/0fe4ce78dd6078141dc6ad8d1244b1e7276c2d66))
+* **telemetry:** export only allowlisted span and log fields ([#2728](https://github.com/withcoral/coral/issues/2728)) ([c2e5e73](https://github.com/withcoral/coral/commit/c2e5e7301406540fd4e50b774690668656eefdd7))
+* **telemetry:** record Coral's stable metric catalog and telemetry drops ([#2747](https://github.com/withcoral/coral/issues/2747)) ([da2539e](https://github.com/withcoral/coral/commit/da2539e194f326c85c8c372d7b4cd205301efaff))
+* **ui:** add a compact DescriptionList, gaps and tick labels to LineChart, and five custom icons ([#2786](https://github.com/withcoral/coral/issues/2786)) ([e9d7e4a](https://github.com/withcoral/coral/commit/e9d7e4ad1efd283d3bd529cf8aae6904d5d2406f))
+* **ui:** add an Approvals page and move required actions out of Activity ([#2805](https://github.com/withcoral/coral/issues/2805)) ([72e6198](https://github.com/withcoral/coral/commit/72e6198583fcbb5d2e2912149c9f927f773a4ac5))
+* **ui:** guide workspace setup with an agent onboarding prompt ([#2681](https://github.com/withcoral/coral/issues/2681)) ([fb78652](https://github.com/withcoral/coral/commit/fb78652e2adb08741d568a9bfd52f105d4295139))
+* **ui:** link the Slack setup guide from provider setup ([#2814](https://github.com/withcoral/coral/issues/2814)) ([c64d3c4](https://github.com/withcoral/coral/commit/c64d3c45ded7bf7bed2f7ccd46f67e544a322af2))
+* **ui:** open the workspace Overview from home ([#2810](https://github.com/withcoral/coral/issues/2810)) ([2c8b3f8](https://github.com/withcoral/coral/commit/2c8b3f807e2f27d493b412e19c3e1c3d0b5b387a))
+* **ui:** show a Run's agent context breakdown, finer durations and Wax syntax colours ([#2852](https://github.com/withcoral/coral/issues/2852)) ([f273f17](https://github.com/withcoral/coral/commit/f273f17dfa3a4799c1839b56233574b027fef92a))
+* **ui:** simplify Activity details and inspect large payloads ([#2726](https://github.com/withcoral/coral/issues/2726)) ([44f4310](https://github.com/withcoral/coral/commit/44f431023892095dd7a3f1584148062789a94842))
+* **ui:** trace server requests so Coral's gRPC spans have a real parent ([#2766](https://github.com/withcoral/coral/issues/2766)) ([826cc6b](https://github.com/withcoral/coral/commit/826cc6b21272d2cb48cd397fe145ee29db01687f))
+* **ui:** upload an icon for a provider ([#2850](https://github.com/withcoral/coral/issues/2850)) ([3362fec](https://github.com/withcoral/coral/commit/3362fecba750c6e6e16429c997871dc8b97be124))
+* **ui:** upload an icon for a provider ([#2850](https://github.com/withcoral/coral/issues/2850)) ([be6f856](https://github.com/withcoral/coral/commit/be6f856f9bdb0972747ac1203eed8dd8412c5394))
+
+
+### Bug Fixes
+
+* **mcp:** let wait batch output until the Run needs attention ([#2784](https://github.com/withcoral/coral/issues/2784)) ([8b87252](https://github.com/withcoral/coral/commit/8b87252ce5fa35da4d458620939f63f4341311b7))
+* **run:** name the declared arguments when a Tool argument is unknown ([#2783](https://github.com/withcoral/coral/issues/2783)) ([92e4b55](https://github.com/withcoral/coral/commit/92e4b55626f7377a26614e0dbe2a8f7a539906a1))
+* **run:** report a busy or timed-out compiler accurately ([#2764](https://github.com/withcoral/coral/issues/2764)) ([1979efd](https://github.com/withcoral/coral/commit/1979efdc3136d1a7ae7eb8f8e1a219936faa6c4f))
+* **search:** stop Saved Function deletes waiting on the search index ([#2781](https://github.com/withcoral/coral/issues/2781)) ([5cee835](https://github.com/withcoral/coral/commit/5cee83511f0bb2ea619c016a2f80cd2ce7c1d3ff))
+* **server:** set TCP_NODELAY on accepted gRPC, MCP and auth connections ([#2767](https://github.com/withcoral/coral/issues/2767)) ([e66b24e](https://github.com/withcoral/coral/commit/e66b24e2a958bdd61aca8b6025df09c197252382))
+* **telemetry:** keep caller text out of exports and protocol errors ([#2762](https://github.com/withcoral/coral/issues/2762)) ([aef6bf5](https://github.com/withcoral/coral/commit/aef6bf536aecad129a14809e42d125d9f4dd5564))
+* **ui:** block every lucide-react dynamic entry point in Wax ([#2789](https://github.com/withcoral/coral/issues/2789)) ([3e7b876](https://github.com/withcoral/coral/commit/3e7b8766d5f5d77fc1964aa245717599a2d4b02d))
+* **ui:** follow newest activity with a minimum live record stay ([#2729](https://github.com/withcoral/coral/issues/2729)) ([feca0e7](https://github.com/withcoral/coral/commit/feca0e78165286560d93b7fd5469104ce8c9a312))
+* **ui:** keep huge payload lines and code Find marks bounded ([#2759](https://github.com/withcoral/coral/issues/2759)) ([75cdea9](https://github.com/withcoral/coral/commit/75cdea9d0c50f3dabdddbb3ec4c329234fc0ccce))
+* **ui:** keep the activity rail closed when Escape beats a key step ([#2851](https://github.com/withcoral/coral/issues/2851)) ([ec54da0](https://github.com/withcoral/coral/commit/ec54da07e2b3aa998f4c99a21135f58995620cfd))
+* **ui:** remove workspace onboarding modal ([#2854](https://github.com/withcoral/coral/issues/2854)) ([c82b170](https://github.com/withcoral/coral/commit/c82b1700e343cd7340f3d4a30766a71c7db2ca7e))
+
+
+### Performance Improvements
+
+* **mcp:** load the core tools in the first request ([#2782](https://github.com/withcoral/coral/issues/2782)) ([f08c348](https://github.com/withcoral/coral/commit/f08c348d910c95fe8a8d1128c1213943414c0190))
+* **search:** demote weak matches instead of comparing a shared strength ([#2792](https://github.com/withcoral/coral/issues/2792)) ([7ecd78d](https://github.com/withcoral/coral/commit/7ecd78da8acb1129c39bd9ffe8439c227e9547fe))
+* **search:** page search by a plain offset instead of a cursor ([#2824](https://github.com/withcoral/coral/issues/2824)) ([2b954aa](https://github.com/withcoral/coral/commit/2b954aad824936d74515092c327c789042b46ff2))
+* **search:** stop reconcile holding the writer and indexing Generations twice ([#2769](https://github.com/withcoral/coral/issues/2769)) ([bdeeae6](https://github.com/withcoral/coral/commit/bdeeae6af06dcc8ee66a3d4800bb521cb857ab6c))
+* **search:** write each search row once and recount statistics off the write path ([#2822](https://github.com/withcoral/coral/issues/2822)) ([7b3dad5](https://github.com/withcoral/coral/commit/7b3dad5016edc9f5a1e126d8bf0920b51c42e910))
+* **ui:** bundle only the Lucide icons the UI uses ([#2772](https://github.com/withcoral/coral/issues/2772)) ([0b30593](https://github.com/withcoral/coral/commit/0b305934166bcd35a4ddffeb1e05d6073273e289))
+* **ui:** keep the providers page fast with large catalogs ([#2770](https://github.com/withcoral/coral/issues/2770)) ([6bebd65](https://github.com/withcoral/coral/commit/6bebd6571ebe572d6de72176e0473be48c7bbe88))
+* **ui:** send tool keys instead of resource names to the providers page ([#2771](https://github.com/withcoral/coral/issues/2771)) ([ddee515](https://github.com/withcoral/coral/commit/ddee51506b7bd179411fe7ccb4f8a56c0bec9e42))
+
 ## [1.4.0](https://github.com/withcoral/coral/compare/v1.3.0...v1.4.0) (2026-10-29)
 
 
