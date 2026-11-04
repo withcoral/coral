@@ -390,6 +390,7 @@ impl ServerHandler for McpServer {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
+                .enable_extensions_with(crate::app::extensions())
                 .build(),
         )
         .with_protocol_version(fallback_protocol_version())
@@ -462,13 +463,16 @@ impl ServerHandler for McpServer {
 
     fn read_resource(
         &self,
-        _request: ReadResourceRequestParams,
+        request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + MaybeSendFuture + '_ {
-        std::future::ready(Err(ErrorData::resource_not_found(
-            "Resource not found",
-            None,
-        )))
+        // The app that shows a Run's Required Action is the one readable
+        // resource; an embedded output block's URI stays unreadable.
+        std::future::ready(if request.uri == crate::app::RESOURCE_URI {
+            Ok(crate::app::resource().into())
+        } else {
+            Err(ErrorData::resource_not_found("Resource not found", None))
+        })
     }
 
     fn list_resource_templates(

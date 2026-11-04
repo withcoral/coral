@@ -321,17 +321,23 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
             "Delete one Saved Function.",
             mutation_annotations("Delete Function", true, false),
         ),
-        always_loaded(tool::<ExecArguments, crate::projection::ExecResult<'_>>(
+        shown_as_app(always_loaded(tool::<
+            ExecArguments,
+            crate::projection::ExecResult<'_>,
+        >(
             EXEC_TOOL_DESCRIPTION,
             mutation_annotations("Execute Program", true, true),
-        )),
-        always_loaded(tool::<WaitArguments, crate::projection::ObservedRun<'_>>(
+        ))),
+        shown_as_app(always_loaded(tool::<
+            WaitArguments,
+            crate::projection::ObservedRun<'_>,
+        >(
             concat!(
                 "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Returns when `required_actions` change, the Run ends, or `wait_ms` runs out, with the output that arrived by then. New output alone does not end the wait. Observing consumes nothing, so an earlier cursor reads the same output again.",
                 handoff_steps!()
             ),
             read_annotations("Wait for Run"),
-        )),
+        ))),
         tool::<CancelArguments, crate::projection::ObservedRun<'_>>(
             "Request cancellation of one Program Run.",
             mutation_annotations("Cancel Run", true, false),
@@ -366,6 +372,14 @@ fn always_loaded(tool: Tool) -> Tool {
     let mut meta = MetaObject::new();
     meta.0
         .insert(ALWAYS_LOAD_META_KEY.into(), Value::Bool(true));
+    tool.with_meta(meta)
+}
+
+/// Links a tool's Run Update to the app that shows its Required Actions, in
+/// a client that renders MCP Apps.
+fn shown_as_app(mut tool: Tool) -> Tool {
+    let mut meta = tool.meta.take().unwrap_or_default();
+    crate::app::link_tool(&mut meta);
     tool.with_meta(meta)
 }
 

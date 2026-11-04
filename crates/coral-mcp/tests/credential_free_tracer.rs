@@ -630,11 +630,58 @@ async fn requests_are_bound_to_host_credential_workspace_and_protocol_window() {
     assert_eq!(structured(&concealed)["code"], "task_not_found");
 }
 
+/// `exec` and `wait` link the MCP App that shows a Run's Required Action, no
+/// other tool does, and the app is the one readable resource.
+async fn the_app_is_linked_and_readable(session: &RawSession, version: &ProtocolVersion) {
+    const APP: &str = "ui://coral/required-actions";
+    let tools = session
+        .result("tools/list", json!({}))
+        .await
+        .expect("tools/list");
+    let tools = tools.get("tools").and_then(Value::as_array).expect("tools");
+    assert!(!tools.is_empty(), "{version}");
+    for tool in tools {
+        let name = tool.get("name").and_then(Value::as_str).expect("tool name");
+        let linked = tool.pointer("/_meta/ui/resourceUri");
+        if name == "exec" || name == "wait" {
+            assert_eq!(linked, Some(&json!(APP)), "{version}: {name} shows the app");
+        } else {
+            assert_eq!(linked, None, "{version}: {name} shows no app");
+        }
+    }
+    let app = session
+        .result("resources/read", json!({"uri": APP}))
+        .await
+        .expect("the app is readable");
+    let content = app.pointer("/contents/0").expect("one content");
+    assert_eq!(content.get("uri"), Some(&json!(APP)), "{version}");
+    assert_eq!(
+        content.get("mimeType"),
+        Some(&json!("text/html;profile=mcp-app")),
+        "{version}"
+    );
+    let html = content
+        .get("text")
+        .and_then(Value::as_str)
+        .expect("the app's HTML");
+    assert!(
+        html.starts_with("<!DOCTYPE html>") && html.contains("ui/open-link"),
+        "{version}: the app opens the entry's link through the host"
+    );
+    assert_eq!(
+        content.pointer("/_meta/ui/prefersBorder"),
+        Some(&json!(false)),
+        "{version}"
+    );
+}
+
 /// Clients add server instructions to the model's context, so they carry the
 /// agent workflow. Embedded output blocks declare the resources capability,
-/// but their URIs are never listed or readable.
+/// but their URIs are never listed or readable; the one readable resource is
+/// the MCP App that shows a Run's Required Action, which `exec` and `wait`
+/// link and the server declares as an extension.
 #[tokio::test(flavor = "multi_thread")]
-async fn handshakes_carry_instructions_and_no_readable_resources_on_every_version() {
+async fn handshakes_carry_instructions_and_only_the_app_is_readable_on_every_version() {
     let tracer = Tracer::start().await;
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = RawSession::open(&tracer.endpoint(), version).await;
@@ -666,6 +713,12 @@ async fn handshakes_carry_instructions_and_no_readable_resources_on_every_versio
         assert!(capabilities.get("tools").is_some(), "{version}");
         assert!(capabilities.get("resources").is_some(), "{version}");
         assert!(capabilities.get("tasks").is_none(), "{version}");
+        assert_eq!(
+            capabilities.pointer("/extensions/io.modelcontextprotocol~1ui"),
+            Some(&json!({"mimeTypes": ["text/html;profile=mcp-app"]})),
+            "{version}: the server declares MCP Apps"
+        );
+        the_app_is_linked_and_readable(&session, version).await;
         let listed = session
             .result("resources/list", json!({}))
             .await
@@ -2400,6 +2453,7 @@ fn result_definition(method: &str) -> &'static str {
         "tools/list" => "ListToolsResult",
         "tools/call" => "CallToolResult",
         "resources/list" => "ListResourcesResult",
+        "resources/read" => "ReadResourceResult",
         "resources/templates/list" => "ListResourceTemplatesResult",
         other => panic!("no schema definition mapped for {other}"),
     }
