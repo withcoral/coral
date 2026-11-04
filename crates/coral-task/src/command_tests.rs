@@ -660,9 +660,9 @@ async fn a_launch_failure_after_commit_still_returns_the_started_task() {
     );
     fixture.commands.control.arm(Checkpoint::AfterCommit);
     let commands = fixture.commands.clone();
-    let request =
+    let mut request =
         tokio::spawn(async move { commands.submit_new_task(&call, "return 1;", 30_000).await });
-    fixture.commands.control.reached.notified().await;
+    fixture.commands.control.reached_by(&mut request).await;
     // The fixture holds this one Run. Launch rereads it and finds it corrupt.
     fixture
         .test_database
@@ -1093,6 +1093,16 @@ impl Control {
             self.release.notified().await;
         }
     }
+    /// Waits until `request` pauses at the armed checkpoint. A request that
+    /// ends first, such as a Program whose compilation timed out, fails the
+    /// test with its result instead of leaving the wait to hang.
+    async fn reached_by<T: std::fmt::Debug>(&self, request: &mut tokio::task::JoinHandle<T>) {
+        tokio::select! {
+            biased;
+            () = self.reached.notified() => {}
+            ended = request => panic!("the request ended before its checkpoint: {ended:?}"),
+        }
+    }
 }
 
 #[tokio::test]
@@ -1161,9 +1171,9 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
     let call = fixture.call(&goal, "Accept exactly once");
     fixture.commands.control.arm(Checkpoint::AfterBegin);
     let commands = fixture.commands.clone();
-    let submission =
+    let mut submission =
         tokio::spawn(async move { commands.submit(&call, "return 42;", 30_000).await });
-    fixture.commands.control.reached.notified().await;
+    fixture.commands.control.reached_by(&mut submission).await;
     fixture
         .tasks
         .end(
@@ -1178,7 +1188,7 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
         .unwrap();
     fixture.commands.control.arm(Checkpoint::AfterCommit);
     fixture.commands.control.release.notify_one();
-    fixture.commands.control.reached.notified().await;
+    fixture.commands.control.reached_by(&mut submission).await;
     submission.abort();
     assert!(submission.await.unwrap_err().is_cancelled());
     let history = fixture
@@ -1281,12 +1291,12 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
     let call = fixture.call(&abandoned, "Interrupted preparation");
     fixture.commands.control.arm(Checkpoint::AfterBegin);
     let commands = fixture.commands.clone();
-    let request = tokio::spawn(async move {
+    let mut request = tokio::spawn(async move {
         commands
             .save_function(&call, "abandoned", "Never saved", "export default () => 0;")
             .await
     });
-    fixture.commands.control.reached.notified().await;
+    fixture.commands.control.reached_by(&mut request).await;
     request.abort();
     assert!(request.await.unwrap_err().is_cancelled());
     let attempts = fixture
@@ -1812,7 +1822,7 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_function_acc
         );
         fixture.commands.control.arm(point);
         let commands = fixture.commands.clone();
-        let request = tokio::spawn(async move {
+        let mut request = tokio::spawn(async move {
             if point == Checkpoint::AfterBegin {
                 commands
                     .save_function(
@@ -1830,12 +1840,7 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_function_acc
                     .map(|_| ())
             }
         });
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            fixture.commands.control.reached.notified(),
-        )
-        .await
-        .unwrap();
+        fixture.commands.control.reached_by(&mut request).await;
         let mut blocker = fixture.tasks.database.begin().await.unwrap();
         fixture
             .tasks
@@ -1888,12 +1893,12 @@ async fn cleanup_rechecks_begin_and_completion_winners_under_the_goal_lock() {
         let call = fixture.call(&goal, "Fresh work wins expiry");
         fixture.commands.control.arm(point);
         let commands = fixture.commands.clone();
-        let request = tokio::spawn(async move {
+        let mut request = tokio::spawn(async move {
             commands
                 .save_function(&call, "survivor", "Keep", "export default () => 42;")
                 .await
         });
-        fixture.commands.control.reached.notified().await;
+        fixture.commands.control.reached_by(&mut request).await;
         let expiry_time = if point == Checkpoint::CompletionLocked {
             let entries = fixture
                 .tasks
@@ -1943,12 +1948,12 @@ async fn cleanup_winners_prevent_late_begin_or_completion_from_committing() {
             Checkpoint::BeforeBeginLock
         });
         let commands = fixture.commands.clone();
-        let request = tokio::spawn(async move {
+        let mut request = tokio::spawn(async move {
             commands
                 .save_function(&call, "expired", "No", "export default () => 42;")
                 .await
         });
-        fixture.commands.control.reached.notified().await;
+        fixture.commands.control.reached_by(&mut request).await;
         let expiry_time = if begun {
             fixture
                 .tasks
@@ -1969,9 +1974,13 @@ async fn cleanup_winners_prevent_late_begin_or_completion_from_committing() {
         let tasks = fixture.tasks.clone();
         let workspace = fixture.workspace.clone();
         let id = goal.id().clone();
-        let cleanup =
+        let mut cleanup =
             tokio::spawn(async move { tasks.expire_group(&workspace, &id, expiry_time).await });
-        fixture.tasks.retention_control.reached.notified().await;
+        fixture
+            .tasks
+            .retention_control
+            .reached_by(&mut cleanup)
+            .await;
         fixture.commands.control.release.notify_one();
         tokio::task::yield_now().await;
         fixture.tasks.retention_control.release.notify_one();
@@ -1996,8 +2005,9 @@ async fn concurrent_run_termination_protects_its_group_from_stale_cleanup() {
     let call = fixture.call(&goal, "Protect the accepted Run");
     fixture.commands.control.arm(Checkpoint::AfterCommit);
     let commands = fixture.commands.clone();
-    let request = tokio::spawn(async move { commands.submit(&call, "return 42;", 30_000).await });
-    fixture.commands.control.reached.notified().await;
+    let mut request =
+        tokio::spawn(async move { commands.submit(&call, "return 42;", 30_000).await });
+    fixture.commands.control.reached_by(&mut request).await;
     request.abort();
     assert!(request.await.unwrap_err().is_cancelled());
     let history = fixture

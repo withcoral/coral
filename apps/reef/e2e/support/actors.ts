@@ -58,6 +58,11 @@ export async function newUser(
   return user
 }
 
+// Each sign-in redirect crosses Reef, Coral and the identity provider. On a
+// starved runner that chain takes longer than the session's 10 s navigation
+// default, so these waits get their own budget.
+const SIGN_IN_REDIRECT = { timeout: 30_000 }
+
 // No cookie signing, token minting, or auth-module imports: drive the normal
 // browser redirects. Reuse only genuine storage state after this flow succeeds.
 export async function signIn(page: Page, user: SyntheticUser, target = authenticatedTarget()) {
@@ -65,6 +70,7 @@ export async function signIn(page: Page, user: SyntheticUser, target = authentic
   await page.waitForURL(
     (url) =>
       url.origin === target.authentication.oidcURL && url.pathname.startsWith('/interaction/'),
+    SIGN_IN_REDIRECT,
   )
   await page.getByRole('heading', { name: 'Synthetic identity provider', exact: true }).waitFor()
   // Subject is the stable identity; labels may repeat across scenarios.
@@ -74,6 +80,7 @@ export async function signIn(page: Page, user: SyntheticUser, target = authentic
     (url) =>
       url.origin === target.baseURL &&
       (url.pathname === '/' || /^\/workspaces\/[^/]+$/.test(url.pathname)),
+    SIGN_IN_REDIRECT,
   )
   await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
 }
