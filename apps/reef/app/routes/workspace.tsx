@@ -19,7 +19,6 @@ import { agentView, membershipView, ownerView } from '@/lib/management-views.ser
 import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
 import { blockerLabel, listAllProviders, providerPath } from '@/lib/providers.server'
 import { runtimeConfigContext } from '@/lib/runtime-config.server'
-import { consumeWorkspaceOnboarding } from '@/lib/workspace-onboarding.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { ActivitySummary } from '@/views/activity/summary/summary'
 import { GLIMPSE_FETCH, WorkspaceOverview } from '@/views/management/workspace-overview'
@@ -72,10 +71,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       ],
       icons: RECIPE_CHOICES.find((r) => r.id === provider.namespace)?.icons,
     }))
-    // Onboarding needs the MCP endpoint, so a workspace without one keeps the onboarding cookie.
-    const { onboarding, setCookie } = w.mcpEndpoint
-      ? await consumeWorkspaceOnboarding(request, w.name, context)
-      : { onboarding: false, setCookie: null }
     return data(
       {
         workspace: w,
@@ -98,10 +93,9 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
             icons,
           })),
         },
-        onboarding,
         clientsWithAvailablePlugins: context.get(runtimeConfigContext).clientsWithAvailablePlugins,
       },
-      { headers: setCookie ? { ...privateHeaders, 'Set-Cookie': setCookie } : privateHeaders },
+      { headers: privateHeaders },
     )
   } catch (error) {
     managementFailure(error)
