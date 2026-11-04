@@ -472,6 +472,98 @@ fn multiple_servers_require_explicit_selection_or_custom_destination() {
 }
 
 #[test]
+fn review_marks_each_server_that_tools_use_and_that_can_be_answered_as_required() {
+    use serde_json::json;
+    let operation = json!({"get":{"responses":{"200":{"description":"OK"}}}});
+    let listed = json!([{"url":"https://one.test"}]);
+    // The root always needs an answer for its Tools, since a person can type a
+    // URL. A Tool's own declaration needs one only when it lists servers; with
+    // none it has nothing to choose, so its Tools stay unavailable.
+    // (case, root, local, root serves tools, local serves tools, root required, local required)
+    for (case, root, local, root_tools, local_tools, root_required, local_required) in [
+        (
+            "both list servers",
+            listed.clone(),
+            listed.clone(),
+            true,
+            true,
+            true,
+            true,
+        ),
+        (
+            "root lists none",
+            json!([]),
+            listed.clone(),
+            true,
+            true,
+            true,
+            true,
+        ),
+        (
+            "local lists none",
+            listed.clone(),
+            json!([]),
+            true,
+            true,
+            true,
+            false,
+        ),
+        (
+            "root serves no tools",
+            listed.clone(),
+            listed.clone(),
+            false,
+            true,
+            false,
+            true,
+        ),
+        (
+            "local serves no tools",
+            listed.clone(),
+            listed.clone(),
+            true,
+            false,
+            true,
+            false,
+        ),
+    ] {
+        // An operation that declares its own servers uses neither the path's nor the root's.
+        let own = |mut path: serde_json::Value, uses: bool| {
+            if !uses {
+                path["get"]["servers"] = json!([{"url":"https://own.test"}]);
+            }
+            path
+        };
+        let source = json!({
+            "openapi":"3.0.3", "info":{"title":"Required","version":"1"}, "security":[],
+            "servers": root,
+            "paths":{
+                "/data": own(operation.clone(), root_tools),
+                "/local": own(json!({"servers": local, "get": operation["get"]}), local_tools),
+            }
+        });
+        let review = OpenApiDocument::parse(&source.to_string())
+            .unwrap()
+            .configuration_review()
+            .unwrap();
+        let required = |declaration: &str| {
+            review
+                .servers
+                .iter()
+                .find(|group| group.declaration == declaration)
+                .unwrap_or_else(|| panic!("{case}: {declaration}"))
+                .required
+        };
+        assert_eq!(required("#/servers"), root_required, "{case}");
+        assert_eq!(
+            required("#/paths/~1local/servers"),
+            local_required,
+            "{case}"
+        );
+    }
+}
+
+#[test]
 fn unresolved_local_servers_need_an_answer_and_never_inherit_root_replacement() {
     use coral_catalog::{ServerSelection, ToolAvailability};
     use serde_json::json;

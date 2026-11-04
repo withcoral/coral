@@ -2553,3 +2553,39 @@ async fn upgrade_renames_the_tools_a_setup_cached() {
         .expect("the cached review decodes");
     assert_eq!(after, before);
 }
+
+/// A Setup cached before server groups said whether they are required: it
+/// loads, and its old preparation version rejects it as not applicable, not
+/// corrupt, so the person can start again.
+#[tokio::test]
+async fn a_setup_cached_before_required_servers_is_not_applicable() {
+    let h = harness().await;
+    let (actor, workspace) = workspace_owner(&h, "user:cached-servers").await;
+    let context = change_context(actor.clone(), 10, '1');
+    let setup = h
+        .providers
+        .create_openapi_setup(
+            &context,
+            workspace.id(),
+            document("https://api.example.test"),
+        )
+        .await
+        .unwrap();
+    h.fixture
+        .execute_fixture_sql(
+            "UPDATE provider_setups \
+             SET source_analysis = REPLACE(REPLACE(REPLACE(source_analysis, \
+             '],\"required\":true}', ']}'), \
+             '],\"required\":false}', ']}'), \
+             '{\"version\":8,', '{\"version\":7,')",
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        h.providers
+            .review_setup_configuration(&actor, workspace.id(), setup.id())
+            .await,
+        Err(Error::ProviderSetupNotApplicable)
+    ));
+}

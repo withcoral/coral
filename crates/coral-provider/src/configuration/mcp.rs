@@ -118,6 +118,8 @@ pub(super) fn inspect(loaded: &LoadedSetup) -> Result<ProviderConfigurationRevie
                 url: source,
                 variables: BTreeMap::new(),
             }],
+            // An MCP server's URL is its source, so there is nothing to choose.
+            required: false,
         }],
     })
 }

@@ -55,6 +55,7 @@ const datadog: SetupView = {
       {
         declaration: '#/servers',
         tools: ['metrics/list', 'monitors/list'],
+        required: true,
         options: [{ url: 'https://api.datadoghq.com/', variables: [] }],
       },
     ],

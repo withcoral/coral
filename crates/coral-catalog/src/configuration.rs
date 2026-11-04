@@ -116,6 +116,11 @@ pub struct ServerGroup {
     pub tools: Vec<String>,
     /// Declared alternatives; an empty list needs owner review.
     pub options: Vec<ServerOption>,
+    /// Whether confirmation needs an answer for this declaration.
+    // A Setup cached before this field still loads, so its old preparation
+    // version can reject it as not applicable rather than corrupt.
+    #[serde(default)]
+    pub required: bool,
 }
 
 /// Source suggestions are never an owner's configuration confirmation.

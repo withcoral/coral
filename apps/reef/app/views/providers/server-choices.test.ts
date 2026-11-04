@@ -8,7 +8,7 @@ function variable(name: string, defaultValue: string, values: string[] = []): Se
 }
 
 function group(options: ServerGroup['options']): ServerGroup {
-  return { declaration: '#/servers', tools: ['metrics'], options }
+  return { declaration: '#/servers', tools: ['metrics'], required: true, options }
 }
 
 const site = variable('site', 'datadoghq.com', ['datadoghq.com', 'datadoghq.eu'])
@@ -136,18 +136,6 @@ describe('serverProblem', () => {
 
   it.each(['v1/records', 'two words', 'café'])('accepts the safe declared path %s', (path) => {
     expect(serverProblem(declared, { ...selection, variables: { path } })).toBeUndefined()
-  })
-
-  // Catches: a tool's own servers left unchosen, which published the tool as
-  // unavailable, as Open-Meteo's two path servers did.
-  it('requires a destination for the root and for tool declarations that list servers', () => {
-    const local = { ...declared, declaration: '#/paths/~1logs/servers' }
-    expect(serverProblem(declared, undefined)).toBeDefined()
-    expect(serverProblem({ ...declared, tools: [] }, undefined)).toBeUndefined()
-    expect(serverProblem({ ...declared, options: [] }, undefined)).toBeDefined()
-    expect(serverProblem(local, undefined)).toBeDefined()
-    expect(serverProblem({ ...local, tools: [] }, undefined)).toBeUndefined()
-    expect(serverProblem({ ...local, options: [] }, undefined)).toBeUndefined()
   })
 
   it.each(['https://api.example.test/v1', 'http://localhost:8080'])(
