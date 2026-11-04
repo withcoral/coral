@@ -113,10 +113,12 @@ struct Arguments {
     #[schemars(
         with = "BTreeMap<String, ServerInput>",
         description = "Server choice per server declaration, keyed by declaration pointer such \
-                       as #/servers. Omit it to use the source's server. If the source declares \
-                       none, or a server variable has no default, the call fails with \
-                       invalid_input: find the value in the source's documentation or ask the \
-                       user, then pass it here."
+                       as #/servers or #/paths/~1forecast/servers. Omit it to use each \
+                       declaration's one server. A map you send replaces those, so include \
+                       every declaration. The call fails with invalid_input when a declaration \
+                       lists several servers, a server variable has no default, or the source \
+                       declares no server. The problem names the declaration: find the value in \
+                       the source's documentation or ask the user, then pass it here."
     )]
     servers: Option<BTreeMap<String, ServerInput>>,
     #[serde(default, deserialize_with = "present")]

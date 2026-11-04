@@ -301,7 +301,7 @@ pub fn validate_openapi_configuration(
         if (selected.is_some() || required) && resolve_selection(group, selected).is_err() {
             errors.push(field_error(
                 &group.declaration,
-                "Select a server and complete its declared variables, or supply a valid base URL.",
+                "Choose a server and complete its variables, or enter a valid base URL.",
             ));
         }
     }
@@ -749,7 +749,7 @@ pub(super) fn normalize_base_url(value: &str) -> Result<String, CatalogDiagnosti
 fn invalid_server() -> CatalogDiagnostic {
     CatalogDiagnostic::stable(
         "unresolved_server_configuration",
-        "Select a server for this tool and complete its variables.",
+        "Choose a server for this tool and complete its variables.",
     )
 }
 fn invalid_document() -> CatalogDiagnostic {

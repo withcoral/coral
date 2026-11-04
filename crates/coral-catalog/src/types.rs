@@ -310,6 +310,13 @@ impl CatalogDiagnostic {
         self.severity
     }
 
+    /// Whether this is a reason the Tool cannot run. A widening warning leaves
+    /// it runnable, so it is never one.
+    #[must_use]
+    pub const fn is_blocking(&self) -> bool {
+        matches!(self.severity, CatalogDiagnosticSeverity::Error)
+    }
+
     pub(crate) fn list_from_storage(value: &str) -> Result<Vec<Self>, Error> {
         let diagnostics: Vec<Self> = serde_json::from_str(value).map_err(|_error| {
             Error::CorruptData("Materialized Tool diagnostics are not valid JSON".to_string())
@@ -1123,10 +1130,7 @@ impl MaterializedTool {
         diagnostics: Vec<CatalogDiagnostic>,
         diagnostics_json: String,
     ) -> Self {
-        let availability = if diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity == CatalogDiagnosticSeverity::Error)
-        {
+        let availability = if diagnostics.iter().any(CatalogDiagnostic::is_blocking) {
             ToolAvailability::Unavailable
         } else {
             ToolAvailability::Available
@@ -1298,7 +1302,7 @@ impl MaterializedTool {
     pub fn diagnostic(&self) -> Option<&CatalogDiagnostic> {
         self.diagnostics
             .iter()
-            .find(|diagnostic| diagnostic.severity == CatalogDiagnosticSeverity::Error)
+            .find(|diagnostic| diagnostic.is_blocking())
     }
 }
 

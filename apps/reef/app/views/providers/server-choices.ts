@@ -114,7 +114,7 @@ export function serverRequired(group: ServerGroup) {
  * answer; this one names the field before the step is posted.
  */
 export function serverProblem(group: ServerGroup, selection: ServerSelection | undefined) {
-  if (!selection) return serverRequired(group) ? 'Choose where Coral sends these tools.' : undefined
+  if (!selection) return serverRequired(group) ? 'Choose a server for these tools.' : undefined
   if (selection.custom) return destinationProblem(selection.url)
   const option = group.options.find((choice) => choice.url === selection.url)
   if (!option) return 'This document no longer declares this server. Choose another URL.'

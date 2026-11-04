@@ -710,7 +710,7 @@ export const ConfigurationFieldError: Story = {
       {...stepperWorkspace}
       setup={configurationSetup}
       result={{
-        error: 'Select a server and complete its declared variables.',
+        error: 'Choose a server and complete its variables.',
         credential: null,
       }}
     />
@@ -937,7 +937,7 @@ export const ConfigurationResolvedDestinations: Story = {
           unavailableTools: [
             {
               key: 'events',
-              reasons: ['Select a server for this tool and complete its variables.'],
+              reasons: ['Choose a server for this tool and complete its variables.'],
             },
             {
               key: 'stream',
@@ -1476,7 +1476,7 @@ const discovered: SetupView = {
     unavailableTools: [
       {
         key: 'events/stream',
-        reasons: ['Select a server for this tool and complete its variables.'],
+        reasons: ['Choose a server for this tool and complete its variables.'],
       },
     ],
     tools: [
@@ -1484,7 +1484,7 @@ const discovered: SetupView = {
       previewedTool('users/create', 'users', 'Invite one person to the account.'),
       previewedTool('logs/submit', 'logs', 'Send one log line.'),
       previewedTool('events/stream', 'events', 'Read the event stream.', [
-        'Select a server for this tool and complete its variables.',
+        'Choose a server for this tool and complete its variables.',
       ]),
     ],
   },
