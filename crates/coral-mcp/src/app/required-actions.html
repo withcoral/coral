@@ -174,7 +174,8 @@
           const open = document.createElement("button");
           const connection = action.kind === "account_connection";
           title.textContent = connection ? "Connect your account" : "Approve this call";
-          if (connection) {
+          // Each card names the waiting Tool where one Tool waits.
+          if (connection && !action.tool) {
             what.textContent = action.provider
               ? `The run calls ${action.provider} as you.`
               : "The run calls a provider as you.";

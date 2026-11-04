@@ -820,6 +820,64 @@ async fn the_queue_counts_each_shared_request_once_across_waiters_runs_and_pages
     );
 }
 
+/// A wait returns when what names an entry changes, as a renamed Provider
+/// does, though the request itself stays the same.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wait_returns_when_the_waiting_tools_provider_is_renamed() {
+    let fixture = TestModules::new(Arc::new(
+        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
+    ))
+    .await;
+    let tool = fixture
+        .user_tool("user:renamed-provider", "Rename while waiting")
+        .await;
+    fixture.require_approval(&tool).await;
+    let (user, scope) = (&tool.principal, &tool.workspace_id);
+    let runs = fixture.runs.clone();
+    let accepted = runs
+        .start(user, scope, submission(WAIT_FOR_ACCOUNT))
+        .await
+        .unwrap();
+    let waiting = wait_for_actions(&runs, user, scope, accepted.run_id(), 1, 1).await;
+    let [before] = waiting.required_actions() else {
+        panic!("one action: {waiting:?}")
+    };
+    let before = before.clone();
+    let observation = RunObservation::immediate(Some(waiting.next_cursor().clone()), 1)
+        .unwrap()
+        .with_wait(Duration::from_secs(20))
+        .unwrap();
+    let wait = tokio::spawn({
+        let (runs, user, scope, run) = (
+            runs.clone(),
+            user.clone(),
+            scope.clone(),
+            accepted.run_id().clone(),
+        );
+        async move { runs.observe(&user, &scope, &run, &observation).await }
+    });
+    let _renamed = fixture
+        .providers
+        .rename_provider(
+            &change(tool.user.clone(), 50, '5'),
+            scope,
+            &tool.provider_id,
+            coral_provider::ProviderDisplayName::parse("Forecasts").unwrap(),
+        )
+        .await
+        .unwrap();
+    let woken = tokio::time::timeout(Duration::from_secs(10), wait)
+        .await
+        .expect("the rename ends the wait before its 20 s")
+        .unwrap()
+        .unwrap();
+    let [after] = woken.required_actions() else {
+        panic!("one action: {woken:?}")
+    };
+    assert_eq!(after.request, before.request, "the same request waits");
+    assert_eq!(after.provider_label.as_deref(), Some("Forecasts"));
+}
+
 /// One connection request that calls to different Tools wait on names no
 /// Tool, but still names its Provider.
 #[tokio::test(flavor = "multi_thread")]

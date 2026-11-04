@@ -497,6 +497,12 @@ pub(crate) fn revision(actions: &[RequiredAction]) -> [u8; 32] {
             RequiredActor::InvokingUser => 0,
             RequiredActor::WorkspaceOwner => 1,
         }]);
+        // What names the entry is part of it too: a renamed Provider wakes a wait.
+        for name in [&action.call_path, &action.provider_label] {
+            let name = name.as_deref().unwrap_or_default();
+            digest.update((name.len() as u64).to_be_bytes());
+            digest.update(name.as_bytes());
+        }
     }
     digest.finalize().into()
 }
