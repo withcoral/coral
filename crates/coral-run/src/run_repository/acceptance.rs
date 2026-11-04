@@ -12,8 +12,8 @@ use crate::CoralInstanceId;
 use crate::engine::ProgramPackage;
 use crate::types::AcceptedRun;
 use crate::{
-    COMPILATION_TIMEOUT, EMITTED_JAVASCRIPT_MAX_BYTES, Error, PROGRAM_SOURCE_MAX_BYTES,
-    ProgramSource, RunId, RunState, SOURCE_MAP_MAX_BYTES,
+    EMITTED_JAVASCRIPT_MAX_BYTES, Error, PROGRAM_SOURCE_MAX_BYTES, ProgramSource, RunId, RunState,
+    SOURCE_MAP_MAX_BYTES,
 };
 
 #[cfg(test)]
@@ -63,7 +63,8 @@ impl PackageRow {
     }
 }
 
-/// Inserts the Run row, claimed by `holder`, and its package. `false` means a
+/// Inserts the Run row, claimed by `holder`, and its package, which records
+/// the `compilation_timeout` it was compiled under. `false` means a
 /// Run with this identifier already exists and nothing was written: the
 /// caller draws a new identifier.
 pub(crate) async fn insert_acceptance(
@@ -73,13 +74,14 @@ pub(crate) async fn insert_acceptance(
     source: &ProgramSource,
     package: &ProgramPackage,
     linked: &[SavedFunctionSelection],
+    compilation_timeout: std::time::Duration,
 ) -> Result<bool, Error> {
     let program_source_max_bytes = stored_usize(PROGRAM_SOURCE_MAX_BYTES)?;
     let emitted_javascript_max_bytes = stored_usize(EMITTED_JAVASCRIPT_MAX_BYTES)?;
     let source_map_max_bytes = stored_usize(SOURCE_MAP_MAX_BYTES)?;
     let program_value_max_bytes = stored_usize(run.value_limits.host_bytes())?;
     let compilation_timeout_millis =
-        i64::try_from(COMPILATION_TIMEOUT.as_millis()).map_err(|_error| {
+        i64::try_from(compilation_timeout.as_millis()).map_err(|_error| {
             Error::CorruptData("compilation timeout exceeds durable range".to_string())
         })?;
     if !insert_record(transaction, run, holder).await? {

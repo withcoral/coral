@@ -105,6 +105,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
         database,
         workspaces.clone(),
         coral_functions::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
     let path = SavedFunctionPath::parse("fresh").unwrap();

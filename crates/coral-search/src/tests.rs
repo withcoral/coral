@@ -3724,6 +3724,7 @@ impl TestModules {
             database.clone(),
             workspaces.clone(),
             coral_functions::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .expect("start Saved Function compiler");
         let index = crate::SearchIndex::new(database.clone(), std::time::Duration::from_mins(5));

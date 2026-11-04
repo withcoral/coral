@@ -22,7 +22,7 @@ use tracing as _;
 use v8 as _;
 
 fn compilation_deadline() -> std::time::Instant {
-    std::time::Instant::now() + coral_v8::COMPILATION_TIMEOUT
+    std::time::Instant::now() + coral_test_support::TEST_COMPILATION_TIMEOUT
 }
 
 fn linked_source(path: &[&str], source: &str) -> LinkedSavedFunctionSource {
