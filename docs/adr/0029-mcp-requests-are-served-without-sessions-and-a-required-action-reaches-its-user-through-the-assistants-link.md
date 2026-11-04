@@ -31,7 +31,8 @@ With the session goes the prompt. Coral calls a request that a Run waits on a **
 Action of a Run that a User invoked reaches that User one way, through the assistant's link: the tool call that observes
 the Run returns the Run Update with the Required Action and the link to the page where that User decides it, the
 assistant passes the link and the Run identifier to the person, the waiting call shows the link to a client that asks
-for progress, and the person decides on that page, signed in to Reef, with the exact Tool arguments in view. Reef is
+for progress or renders the request as an MCP App, and the person decides on that page, signed in to Reef, with the
+exact Tool arguments in view. Reef is
 the standing place: the Approvals Page holds every Approval Request, and the Run Status Page every Required Action,
 from the moment it exists, and the first answer counts wherever it comes from. Coral sends no MCP elicitation and no notification, and it
 offers the assistant no tool, argument or path by which to decide: the assistant can only pass the request on. Nothing
@@ -72,9 +73,17 @@ summary. Codex wrote the link as text before its first wait. Making the link the
   message on that call's own response stream, the link first and the request after it, so a client that cuts the
   line keeps the link. The message is for the person, not the assistant, which still reads the Run Update. A client
   that sends no token gets nothing but the Run Update, and nothing is sent outside the response to the request.
-  Claude Code and VS Code show that line on the running call; Codex's terminal does not, and claude.ai and Claude
-  Desktop are unverified, so the assistant's text stays the first way and the progress line the second. The link
-  reaches the person when either works, and only a client that shows neither leaves it to the final reply.
+  Claude Code and VS Code show that line on the running call; Codex's terminal and Claude Desktop do not, so the
+  assistant's text stays the first way and the progress line the second.
+- **A client that renders MCP Apps shows the request itself.** Claude Desktop condenses the assistant's text to one
+  line while tools run and renders no progress, so neither way reached the person there. The observing tools link
+  one `ui://` resource, an app the host renders with the tool result, in place, while the turn goes on: it shows
+  the entries that name the invoking User, what is asked, the Tool, the Provider and the deadline, with one control
+  that asks the host to open the entry's page, and shows the address itself when the host declines. It decides
+  nothing, calls no tool and holds no state: the Run Update it receives is its whole input. Every client gets the
+  same declaration; one without the extension sees only the Run Update. claude.ai, Claude Desktop and VS Code render
+  it. The link reaches the person when any of the three ways works, and only a client that shows none leaves it
+  to the final reply.
 - **Waiting is exact.** From the cursor it was given, the observing tool call that waits holds, for at most one
   bounded call, until the Required Action list changes or the Run ends, then returns at once; ordinary output does
   not wake it, and a call without a cursor treats what it first reads as already seen
