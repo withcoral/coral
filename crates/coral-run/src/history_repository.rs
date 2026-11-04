@@ -86,6 +86,12 @@ fn current_approval() -> SimpleExpr {
             .to_owned(),
     )
 }
+/// The Invocation `i` is pending, as the literal that migration 0058's index
+/// states. Given a bound state, `SQLite` would prepare the statement again on
+/// every execution to compare the value with that index's predicate.
+pub(crate) fn invocation_pending() -> SimpleExpr {
+    col("i", "state").eq(Expr::cust("'pending'"))
+}
 fn invocation_action() -> SimpleExpr {
     let connection = coral_provider::account::history_repository::has_pending_connection(
         (Alias::new("i"), Alias::new("workspace_id")).into_column_ref(),
@@ -93,9 +99,7 @@ fn invocation_action() -> SimpleExpr {
         (Alias::new("r"), Alias::new("principal_kind")).into_column_ref(),
         (Alias::new("i"), Alias::new("account_connection_request_id")).into_column_ref(),
     );
-    col("i", "state")
-        .eq("pending")
-        .and(current_approval().or(connection))
+    invocation_pending().and(current_approval().or(connection))
 }
 fn invoking_authority(now: i64) -> SimpleExpr {
     let column = |field: &str| (Alias::new("r"), Alias::new(field)).into_column_ref();
