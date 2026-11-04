@@ -116,9 +116,10 @@ struct Arguments {
                        as #/servers or #/paths/~1forecast/servers. Omit it to use each \
                        declaration's one server. A map you send replaces those, so include \
                        every declaration. The call fails with invalid_input when a declaration \
-                       lists several servers, a server variable has no default, or the source \
-                       declares no server. The problem names the declaration: find the value in \
-                       the source's documentation or ask the user, then pass it here."
+                       lists several servers, a server variable has no default, or no root \
+                       server is declared for a tool. A tool whose own declaration lists no \
+                       servers stays unavailable. The problem names the declaration: find the \
+                       value in the source's documentation or ask the user, then pass it here."
     )]
     servers: Option<BTreeMap<String, ServerInput>>,
     #[serde(default, deserialize_with = "present")]
