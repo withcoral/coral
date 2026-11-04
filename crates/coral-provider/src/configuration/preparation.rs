@@ -14,7 +14,7 @@ use crate::{Error, repository::LoadedSetup};
 
 // Advance when source analysis, validation, or preview semantics change. Never reuse
 // a preparation produced by a different algorithm, even for identical source bytes.
-const VERSION: u32 = 7;
+const VERSION: u32 = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SourceAnalysis {

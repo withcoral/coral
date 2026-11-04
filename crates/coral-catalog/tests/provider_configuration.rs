@@ -479,11 +479,13 @@ fn review_marks_each_server_that_tools_use_and_that_can_be_answered_as_required(
     // The root always needs an answer for its Tools, since a person can type a
     // URL. A Tool's own declaration needs one only when it lists servers; with
     // none it has nothing to choose, so its Tools stay unavailable.
-    for (case, root, local, local_tools, root_required, local_required) in [
+    // (case, root, local, root serves tools, local serves tools, root required, local required)
+    for (case, root, local, root_tools, local_tools, root_required, local_required) in [
         (
             "both list servers",
             listed.clone(),
             listed.clone(),
+            true,
             true,
             true,
             true,
@@ -495,6 +497,7 @@ fn review_marks_each_server_that_tools_use_and_that_can_be_answered_as_required(
             true,
             true,
             true,
+            true,
         ),
         (
             "local lists none",
@@ -502,26 +505,42 @@ fn review_marks_each_server_that_tools_use_and_that_can_be_answered_as_required(
             json!([]),
             true,
             true,
+            true,
             false,
         ),
         (
-            "local serves no tools",
+            "root serves no tools",
             listed.clone(),
             listed.clone(),
             false,
             true,
             false,
+            true,
+        ),
+        (
+            "local serves no tools",
+            listed.clone(),
+            listed.clone(),
+            true,
+            false,
+            true,
+            false,
         ),
     ] {
-        let mut local_path = json!({"servers": local, "get": operation["get"]});
-        if !local_tools {
-            // The operation declares its own servers, so it does not use the path's.
-            local_path["get"]["servers"] = json!([{"url":"https://own.test"}]);
-        }
+        // An operation that declares its own servers uses neither the path's nor the root's.
+        let own = |mut path: serde_json::Value, uses: bool| {
+            if !uses {
+                path["get"]["servers"] = json!([{"url":"https://own.test"}]);
+            }
+            path
+        };
         let source = json!({
             "openapi":"3.0.3", "info":{"title":"Required","version":"1"}, "security":[],
             "servers": root,
-            "paths":{"/data": operation, "/local": local_path}
+            "paths":{
+                "/data": own(operation.clone(), root_tools),
+                "/local": own(json!({"servers": local, "get": operation["get"]}), local_tools),
+            }
         });
         let review = OpenApiDocument::parse(&source.to_string())
             .unwrap()
