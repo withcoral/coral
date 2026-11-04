@@ -151,8 +151,9 @@ pub struct RequiredAction {
     pub deadline_at_unix_nanos: i64,
     /// Stable, non-secret root-relative Reef path of the page where the person
     /// decides this request: the Approval Request's own address, which opens
-    /// it in review, or the Run's page for a connection request. Adapters
-    /// resolve the Reef origin. Kept short: a client shows it on one line.
+    /// it in review, or the invoking User's account page for the Provider for
+    /// a connection request. Adapters resolve the Reef origin. Kept short: a
+    /// client shows it on one line.
     pub action_path: String,
     /// The waiting Tool's Call Path; absent when one shared connection request
     /// spans Invocations of different Tools.

@@ -218,7 +218,7 @@ impl McpServer {
         // the Run Trace.
         let observation = RunObservation::initial(Duration::from_millis(wait_ms))
             .map_err(invalid_input)?
-            .by_acceptor();
+            .without_trace_link();
         self.observe_update(
             accepted.run_id(),
             &observation,
@@ -244,8 +244,10 @@ impl McpServer {
         // waits for while this call holds, so the link reaches them even
         // when the assistant writes nothing between its calls.
         if let Some(progress) = progress.filter(|_| wait_ms > 0) {
+            // The observation below links this request to the Run Trace.
             let peek = RunObservation::immediate(cursor.clone(), RUN_EVENT_PAGE_MAX)
-                .map_err(invalid_input)?;
+                .map_err(invalid_input)?
+                .without_trace_link();
             let current = self.observe(&run_id, &peek).await?;
             if let Some(message) =
                 projection::handoff_progress(&current, &self.runtime.modules.human_interface)

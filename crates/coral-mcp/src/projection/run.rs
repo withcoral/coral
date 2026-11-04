@@ -103,7 +103,7 @@ struct Action {
     /// The display name of the Provider whose Tool waits.
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
-    /// When acting stops helping this Run: the Run ends `timed_out` at its deadline.
+    /// When the request expires and its waiting call fails; the Run ends `timed_out` at its own deadline if that comes first.
     #[schemars(schema_with = "timestamp_schema")]
     deadline_at: String,
     /// Absolute URL of the page where the person decides this entry, signed in to Coral: the approval request in review, or the person's account page for the Provider for a connection. Pass it on exactly as given. It grants no approval or access authority.
@@ -380,11 +380,8 @@ pub(crate) fn handoff_progress(
         .iter()
         .find(|action| action.required_actor == RequiredActor::InvokingUser)?;
     let url = human_interface.page_url(&action.action_path);
-    let provider = action
-        .provider_label
-        .as_deref()
-        .map(|label| format!(" ({label})"))
-        .unwrap_or_default();
+    let label = action.provider_label.as_deref();
+    let provider = label.map(|label| format!(" ({label})")).unwrap_or_default();
     // The link comes first: a client that cuts the line keeps it whole.
     Some(match (&action.request, action.call_path.as_deref()) {
         (RequiredActionRequest::InvocationApproval(_), Some(tool)) => {
@@ -393,9 +390,10 @@ pub(crate) fn handoff_progress(
         (RequiredActionRequest::InvocationApproval(_), None) => {
             format!("{url} · approve a tool call{provider}")
         }
-        (RequiredActionRequest::AccountConnection(_), _) => {
-            format!("{url} · connect your{provider} account")
-        }
+        (RequiredActionRequest::AccountConnection(_), _) => match label {
+            Some(label) => format!("{url} · connect your {label} account"),
+            None => format!("{url} · connect your account"),
+        },
     })
 }
 

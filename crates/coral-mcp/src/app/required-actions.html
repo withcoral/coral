@@ -88,7 +88,6 @@
       const root = document.getElementById("root");
       const pending = new Map();
       let nextId = 1;
-      const host = { openLinks: false };
 
       function post(message) {
         window.parent.postMessage(message, "*");
@@ -111,6 +110,7 @@
       }
 
       window.addEventListener("message", (event) => {
+        if (event.source !== window.parent) return;
         const message = event.data;
         if (!message || message.jsonrpc !== "2.0") return;
         if (message.id !== undefined && message.method === undefined) {
@@ -150,10 +150,13 @@
         if (context.theme) document.documentElement.dataset.theme = context.theme;
       }
 
+      // The time alone on the same day, with the date otherwise.
       function clock(iso) {
         const date = new Date(iso);
         if (Number.isNaN(date.getTime())) return "";
-        return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        if (date.toDateString() === new Date().toDateString()) return time;
+        return `${date.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
       }
 
       function render(result) {
@@ -207,7 +210,9 @@
         }
         let opened = null;
         try {
-          opened = window.open(url, "_blank", "noopener");
+          // With "noopener" the browser returns no window, so the opener is cleared here.
+          opened = window.open(url, "_blank");
+          if (opened) opened.opener = null;
         } catch (error) {
           console.warn("window.open failed", error);
         }
@@ -226,7 +231,8 @@
       }
 
       function reportSize() {
-        const height = root.hidden ? 0 : document.documentElement.scrollHeight;
+        // The body's height follows the cards; the document's never drops below the frame's.
+        const height = root.hidden ? 0 : document.body.scrollHeight;
         notify("ui/notifications/size-changed", { width: document.documentElement.scrollWidth, height });
       }
       new ResizeObserver(() => reportSize()).observe(document.body);
@@ -238,10 +244,10 @@
             appCapabilities: { availableDisplayModes: ["inline"] },
             appInfo: { name: "Coral required actions", version: "1" },
           });
-          host.openLinks = Boolean(result && result.hostCapabilities && result.hostCapabilities.openLinks);
           applyContext(result && result.hostContext);
-        } finally {
           notify("ui/notifications/initialized", {});
+        } catch (error) {
+          console.warn("ui/initialize failed", error);
         }
       })();
     </script>
