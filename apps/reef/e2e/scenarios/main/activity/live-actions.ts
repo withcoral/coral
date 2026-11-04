@@ -116,7 +116,8 @@ export async function liveActions(context: TestContext) {
         .locator('header')
         .getByRole('button', { name: 'Follow latest record', exact: true })
         .waitFor()
-      expect(await toggle.getAttribute('aria-pressed')).toBe(String(on))
+      // The address changes before React commits the toggle's new state.
+      await expect.poll(() => toggle.getAttribute('aria-pressed')).toBe(String(on))
     }
     // Each waiting call, oldest first, with the approval it waits on and its stored line.
     const waits: { invocation: string; approval: string; line: number }[] = []

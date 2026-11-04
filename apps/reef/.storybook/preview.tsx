@@ -1,5 +1,6 @@
 import type { Preview, Decorator } from '@storybook/react-vite'
 import { useEffect } from 'react'
+import { configure } from 'storybook/test'
 
 import '../app/wax/theme/reset.css'
 import '../app/wax/theme/global.css'
@@ -38,6 +39,12 @@ const withShellForm: Decorator = (Story) => (
     <Story />
   </ShellFormContext>
 )
+
+// Testing Library waits 1 s by default. A starved CI runner renders a page or
+// opens a 400 ms tooltip slower than that, so `findBy*` and `waitFor` failed
+// stories that were correct. This stays below the 15 s story timeout, so a
+// missing element still reports what it could not find.
+configure({ asyncUtilTimeout: 5000 })
 
 const preview: Preview = {
   decorators: [themeComparisonDecorator, withThemeDecorator, withShellForm],

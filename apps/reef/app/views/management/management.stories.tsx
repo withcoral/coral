@@ -1654,7 +1654,9 @@ export const AddMembersTypedTwice: Story = {
     await slow.type(input, 'one@example.com{Enter}')
     await slow.type(input, 'two@example.com{Enter}')
     await userEvent.keyboard('{Escape}')
-    const submit = dialog.getByRole('button', { name: 'Add 2 members' }) as HTMLButtonElement
+    const submit = (await dialog.findByRole('button', {
+      name: 'Add 2 members',
+    })) as HTMLButtonElement
     await expect(new FormData(submit.form!).getAll('email')).toEqual([
       'one@example.com',
       'two@example.com',
