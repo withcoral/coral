@@ -29,8 +29,9 @@ Coral runs TypeScript Programs that call the user's connected providers.
 - Report a failed, canceled, timed-out or interrupted Run to the user as its outcome.
 
 ## Human handoff
-A non-empty `required_actions` means the Run waits for a person; `exec` and `wait` say what to do.
-- Show the user the full `run_status_url` and the `run_id`. Ask the person that `required_actor` names to act.
+A non-empty `required_actions` means the Run waits for a person.
+- Before any other call, write the full `run_status_url` in your reply. The user does not see tool results.
+- Ask the person `required_actor` names to act, then keep calling `wait`.
 - Never ask for a token, password or account in the chat: a connection happens on that page.
 ";
 

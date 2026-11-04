@@ -39,7 +39,7 @@ Then call it in a later Program by its literal Call Path:
 ```ts
 return (await coral.providers.github.pulls.list({ owner: "acme", repo: "api" })).data.map((pull) => pull.title);
 ```
-A non-empty `required_actions` means the Run waits for a person: follow the human handoff steps in `wait`'s description."#;
+A non-empty `required_actions` means the Run waits for a person. Before any other call, write its `run_status_url` to the user in your reply: the user does not see tool results. Then follow the human handoff steps in `wait`'s description."#;
 
 // Claude Code 2.1.296 keeps the first 4096 characters of a tool's
 // description. `exec` stays within 2048, the budget the server instructions
@@ -305,7 +305,7 @@ pub(crate) fn served_name(name: &str) -> Option<&'static str> {
 /// discovery example within its budget, so it points here.
 macro_rules! handoff_steps {
     () => {
-        " Human handoff: a non-empty `required_actions` means the Run waits for a person. Tell the user what is asked (`tool`, `provider`, `kind`), the `run_id`, the `run_status_url` exactly as given, and by when (`deadline_at`). Then keep calling `wait` with `wait_ms` 30000 and the latest `next_cursor` until `required_actions` is empty or the Run ends: the person's decision on that page resumes the Run on its own, so do not ask them to report back. You cannot decide it and must not say you did; a connection happens on that page, so never ask for a token, password or account in the chat. A decline reaches the Program as `coral.ToolError`, and a Run that waits past `deadline_at` ends `timed_out`: report what happened from the Run's output, and do not start the Program again unless asked. For `account_connection`, ask only when the entry appears."
+        " Human handoff: a non-empty `required_actions` means the Run waits for a person. Do these steps in order. 1. Before any other call, write to the user in your reply what is asked (`tool`, `provider`, `kind`), the `run_status_url` exactly as given, the `run_id` and the `deadline_at`. The user does not see tool results, so a link left only in one never reaches them. 2. Then call `wait` with `wait_ms` 30000 and the latest `next_cursor` until `required_actions` is empty or the Run ends. The person's decision on that page resumes the Run on its own, so do not ask them to report back. 3. When an entry with a new `request_id` appears, write its link to the user before the next `wait`. You cannot decide an entry and must not say you did. A connection happens on that page, so never ask for a token, password or account in the chat. A decline reaches the Program as `coral.ToolError`, and a Run that waits past `deadline_at` ends `timed_out`: report what happened from the Run's output, and do not start the Program again unless asked. For `account_connection`, ask only when the entry appears."
     };
 }
 
