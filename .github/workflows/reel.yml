@@ -32,7 +32,7 @@ on:
         options: [sqlite, postgres]
         default: sqlite
       film:
-        description: Slow down recordings for human review
+        description: Record a slowed-down video of each session for human review
         type: boolean
         default: false
 

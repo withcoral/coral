@@ -41,7 +41,8 @@ const child = spawn(process.execPath, ['e2e/scripts/run.ts'], {
     E2E_HARNESS_PROBES: '1',
     // Container self-check evidence has its own final host-visible directory.
     E2E_RUN_ID: process.env.E2E_SELF_CHECK_RUN_ID,
-    E2E_FILM: '0',
+    // Only a film records video, and the checks below play every recording.
+    E2E_FILM: '1',
     E2E_BASE_URL: '',
     E2E_ALLOW_ATTACHED: '',
     E2E_FFMPEG_BINARY: join(reefRoot, 'e2e/probes/intentionally-missing-ffmpeg'),

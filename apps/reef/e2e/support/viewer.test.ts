@@ -26,6 +26,7 @@ const result: Result = {
   scenario: 'Cancel Workspace archival',
   source: 'e2e/scenarios/workspaces.test.ts',
   target: 'local-sqlite',
+  film: true,
   status: 'passed',
   startedAt: '2026-09-08T10:00:00.000Z',
   durationMs: 4200,
@@ -466,6 +467,7 @@ test('reviewers can navigate to a recording and reveal source without browser sc
       ...result,
       scenario:
         'A long scenario name covering Agent credential rotation, disablement, restoration, and all retained historical attribution',
+      film: false,
       recording: undefined,
       trace: undefined,
       steps: [],
@@ -490,6 +492,7 @@ test('reviewers can navigate to a recording and reveal source without browser sc
       await page.getByRole('heading', { name: 'Cancel Workspace archival' }).waitFor()
       await page.getByRole('link', { name: /Reef interaction/ }).click()
       await page.getByRole('heading', { name: 'Reef interaction' }).waitFor()
+      await page.getByText('Fast mode records no video.', { exact: false }).waitFor()
       assert.match(
         await page.getByRole('navigation', { name: 'Breadcrumb' }).innerText(),
         /All runs/,

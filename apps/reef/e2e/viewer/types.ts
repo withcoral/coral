@@ -9,6 +9,8 @@ export interface Result {
   scenario: string
   source: string
   target: string
+  /** Whether the session filmed a video. */
+  film: boolean
   status: 'passed' | 'failed' | 'skipped'
   startedAt: string
   durationMs: number

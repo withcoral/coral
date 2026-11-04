@@ -143,6 +143,8 @@ test('one Vitest command shares its run identity and converter decision across p
     )
     for (let command = 0; command < 2; command++) {
       const selectedRun = command === 0 ? bootstrapConfig({}).runDir : undefined
+      // Only a film records video, so only a film checks for the converter.
+      const film = command === 0
       const { stdout, stderr } = await exec(
         process.execPath,
         ['node_modules/vitest/vitest.mjs', 'run', '--config', configPath],
@@ -152,6 +154,7 @@ test('one Vitest command shares its run identity and converter decision across p
             ...process.env,
             E2E_BASE_URL: '',
             E2E_HARNESS_PROBES: '1',
+            E2E_FILM: film ? '1' : '0',
             E2E_FFMPEG_BINARY: join(fixture, 'missing-ffmpeg'),
             E2E_SOURCE_COMMIT: 'a'.repeat(40),
             E2E_SOURCE_DIRTY: '0',
@@ -170,7 +173,10 @@ test('one Vitest command shares its run identity and converter decision across p
         runs.add(dir)
       }
       assert.equal(reported.length, 1, `Projects must not create separate viewer runs:\n${output}`)
-      assert.equal((output.match(/ffmpeg not found; keeping WebM recordings\./g) ?? []).length, 1)
+      assert.equal(
+        (output.match(/ffmpeg not found; keeping WebM recordings\./g) ?? []).length,
+        film ? 1 : 0,
+      )
       const dir = reported[0]
       if (selectedRun) assert.equal(dir, selectedRun, 'use the final container-mounted directory')
       const metadata = JSON.parse(await readFile(join(dir, 'run.json'), 'utf8'))
