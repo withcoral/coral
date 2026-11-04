@@ -446,7 +446,8 @@ async fn a_bounded_activity_read_costs_about_the_same_for_runs_as_for_records() 
         runs.push(timed_window_read(&f, &with_runs).await);
         records.push(timed_window_read(&f, &with_records).await);
     }
-    let (runs, records) = (median(runs), median(records));
+    // Contention only adds time, so the fastest read is the steadiest estimate of cost.
+    let (runs, records) = (fastest(runs), fastest(records));
     // A Run child still costs a few key lookups more than a record.
     assert!(
         runs < records * 4 + std::time::Duration::from_millis(5),
@@ -481,11 +482,11 @@ async fn filled_task(f: &Fixture, workspace: &coral_workspace::WorkspaceId, runs
             .await
             .unwrap();
     }
-    let mut last = None;
+    let mut submitted = Vec::new();
     for _ in 0..FILLERS {
         if runs {
             let run = f.commands.submit(&call, "return 1;", 30_000).await.unwrap();
-            last = Some(run.run_id().clone());
+            submitted.push(run.run_id().clone());
         } else {
             f.commands
                 .search(&call, coral_search::SearchInput::default())
@@ -493,8 +494,9 @@ async fn filled_task(f: &Fixture, workspace: &coral_workspace::WorkspaceId, runs
                 .unwrap();
         }
     }
-    if let Some(run) = last {
-        f.wait_for_terminal(&run).await;
+    // Every Run has ended, so each read measures them all and no Run owner runs beside it.
+    for run in &submitted {
+        f.wait_for_terminal(run).await;
     }
     goal
 }
@@ -539,9 +541,8 @@ async fn timed_window_read(f: &Fixture, goal: &Task) -> std::time::Duration {
     elapsed
 }
 
-fn median(mut samples: Vec<std::time::Duration>) -> std::time::Duration {
-    samples.sort();
-    *samples.get(samples.len() / 2).expect("a sample")
+fn fastest(samples: Vec<std::time::Duration>) -> std::time::Duration {
+    samples.into_iter().min().expect("a sample")
 }
 
 /// The Task's context impact and partial flag, which both Task reads must agree on.
