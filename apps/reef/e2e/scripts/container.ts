@@ -29,6 +29,7 @@ if (process.env.REEL_SELF_CHECK === '1') artifacts.push(bootstrapConfig({}).runD
 const scratch = await mkdtemp(join(tmpdir(), 'reel-container-'))
 let child: ReturnType<typeof spawn> | undefined
 let interrupted = false
+let imageBuilt = false
 let networkCreated = false
 const stop = () => {
   interrupted = true
@@ -85,6 +86,7 @@ try {
     join(scratch, 'image'),
     '.',
   ])
+  imageBuilt = true
   const image = (await readFile(join(scratch, 'image'), 'utf8')).trim()
   await run(['network', 'create', name])
   networkCreated = true
@@ -141,8 +143,10 @@ try {
     try {
       execFileSync(engine, commandArgs, { stdio: 'ignore', timeout: 20_000 })
     } catch {
-      if (commandArgs[0] === 'network' && networkCreated) {
-        console.error(`Reel network cleanup failed; inspect ${name}`)
+      // Report only what this run made. A failed build leaves no image to remove.
+      const made = { image: imageBuilt, network: networkCreated }[commandArgs[0]]
+      if (made) {
+        console.error(`Reel ${commandArgs[0]} cleanup failed; inspect ${name}`)
         process.exitCode = 1
       }
     }
