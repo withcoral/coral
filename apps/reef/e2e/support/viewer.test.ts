@@ -430,6 +430,24 @@ test('empty and unfinished runs are not presented as successful tests', async ()
   }
 })
 
+test('a session without a video says why: fast mode, or a failed recording', async () => {
+  const f = await fixture()
+  try {
+    const dir = await f.run('missing-video', result.startedAt)
+    const { film: _, ...legacy } = result
+    for (const [name, session, expected] of [
+      ['fast mode', { ...result, film: false }, /Fast mode records no video\./],
+      ['film mode', { ...result, film: true }, /No recording available for this session\./],
+      ['before video became opt-in', legacy, /No recording available for this session\./],
+    ] as const) {
+      await renderSession(dir, { ...session, recording: undefined })
+      assert.match(await readFile(join(dir, 'index.html'), 'utf8'), expected, name)
+    }
+  } finally {
+    await f.close()
+  }
+})
+
 test('inline source and inventory never read evidence symlinked outside their directories', async () => {
   const f = await fixture()
   const outside = await mkdtemp(join(tmpdir(), 'reel-private-'))
