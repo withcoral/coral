@@ -111,8 +111,17 @@ if (args[0] === 'run') {
     exported.push(...runs.flatMap(artifactIds))
     assert.equal(new Set(names).size, 3)
     assert.equal(new Set(exported).size, 4, 'self-check and product evidence have separate runs')
+    const builds = observed.filter((args) => args[0] === 'build')
     for (const name of names) {
-      assert.ok(observed.some((args) => args.join(' ') === `network rm ${name}`))
+      assert.ok(
+        builds.some((args) => args[args.indexOf('--tag') + 1] === name),
+        `build tags ${name}`,
+      )
+      for (const cleanup of [`image rm ${name}`, `network rm ${name}`])
+        assert.ok(
+          observed.some((args) => args.join(' ') === cleanup),
+          cleanup,
+        )
       assert.ok(!(await readdir(runsRoot)).includes(`.${name}`))
     }
     for (const id of exported)
