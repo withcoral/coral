@@ -301,14 +301,20 @@ pub(crate) fn served_name(name: &str) -> Option<&'static str> {
 
 static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
     vec![
-        tool::<SaveFunctionArguments, crate::projection::SavedFunctionResult<'_>>(
+        always_loaded(tool::<
+            SaveFunctionArguments,
+            crate::projection::SavedFunctionResult<'_>,
+        >(
             "Atomically create or replace one Saved Function. Programs call it as `coral.functions.<path>(...)`.",
             mutation_annotations("Save Function", true, false),
-        ),
-        tool::<DeleteFunctionArguments, crate::projection::DeletedFunction>(
+        )),
+        always_loaded(tool::<
+            DeleteFunctionArguments,
+            crate::projection::DeletedFunction,
+        >(
             "Delete one Saved Function.",
             mutation_annotations("Delete Function", true, false),
-        ),
+        )),
         always_loaded(tool::<ExecArguments, crate::projection::ExecResult<'_>>(
             EXEC_TOOL_DESCRIPTION,
             mutation_annotations("Execute Program", true, true),
@@ -467,8 +473,8 @@ mod tests {
             ("exec", Some(json!(true))),
             ("wait", Some(json!(true))),
             ("end_task", Some(json!(true))),
-            ("save_function", None),
-            ("delete_function", None),
+            ("save_function", Some(json!(true))),
+            ("delete_function", Some(json!(true))),
             ("cancel", None),
         ]
         .map(|(name, always_load)| (name.to_owned(), always_load));
