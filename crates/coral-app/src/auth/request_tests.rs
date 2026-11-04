@@ -108,6 +108,30 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
     fixture.server.shutdown().await.unwrap();
 }
 
+/// Only POST is served, so a GET or DELETE answers 405 before any credential is read.
+#[tokio::test]
+async fn http_get_and_delete_answer_405_before_any_credential_is_read() {
+    let fixture = Fixture::new().await;
+    for url in [fixture.url(&fixture.workspace), fixture.organization_url()] {
+        for method in [reqwest::Method::GET, reqwest::Method::DELETE] {
+            for bearer in [None, Some("not-a-token")] {
+                let mut request = reqwest::Client::new().request(method.clone(), &url);
+                if let Some(bearer) = bearer {
+                    request = request.bearer_auth(bearer);
+                }
+                let response = request.send().await.unwrap();
+                assert_eq!(
+                    response.status(),
+                    405,
+                    "{method} {url} (bearer: {bearer:?})"
+                );
+                assert_eq!(response.headers()["allow"], "POST");
+                assert!(response.headers().get("www-authenticate").is_none());
+            }
+        }
+    }
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,

@@ -6,7 +6,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{Request, StatusCode, header};
+use axum::http::{Method, Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::serve::ListenerExt as _;
@@ -290,6 +290,11 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
     let Some(endpoint) = McpEndpoint::parse_path(request.uri().path()) else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    // Without a session only POST means anything, so the answer is the same
+    // with or without a credential.
+    if request.method() != Method::POST {
+        return (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST")]).into_response();
+    }
     let Ok(bearer) = bearer_credential(request.headers()) else {
         return unauthorized(
             &state,
