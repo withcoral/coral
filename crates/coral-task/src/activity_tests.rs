@@ -430,6 +430,120 @@ async fn context_impact_is_partial_while_a_run_runs_and_skips_an_unmeasured_chil
     f.cancel(waiting.run_id()).await;
 }
 
+/// Reading a bounded window of a Task with many Runs costs about what the same
+/// window costs in a Task of records, on both databases: the Task's context total
+/// finds each child's Run by its key, whatever plan the database picks.
+#[tokio::test]
+async fn a_bounded_activity_read_costs_about_the_same_for_runs_as_for_records() {
+    const READS: usize = 9;
+    let f = Fixture::new().await;
+    let records_workspace = f.owned_workspace("Records").await;
+    // Each Task has a Workspace of its own, so neither read sees the other's Runs.
+    let with_runs = filled_task(&f, &f.workspace, true).await;
+    let with_records = filled_task(&f, &records_workspace, false).await;
+    let (mut runs, mut records) = (Vec::new(), Vec::new());
+    for _ in 0..READS {
+        runs.push(timed_window_read(&f, &with_runs).await);
+        records.push(timed_window_read(&f, &with_records).await);
+    }
+    let (runs, records) = (median(runs), median(records));
+    // A Run child still costs a few key lookups more than a record.
+    assert!(
+        runs < records * 4 + std::time::Duration::from_millis(5),
+        "a Task of {FILLERS} Runs reads in {runs:?}, of {FILLERS} records in {records:?}"
+    );
+}
+
+/// Children after the leading window in [`filled_task`].
+const FILLERS: usize = 350;
+/// The bounded window [`timed_window_read`] reads.
+const WINDOW: u16 = 5;
+
+/// A Task that starts with [`WINDOW`] searches, then has [`FILLERS`] Runs or searches.
+async fn filled_task(f: &Fixture, workspace: &coral_workspace::WorkspaceId, runs: bool) -> Task {
+    let intent = TaskIntent::parse("Fill the task history").unwrap();
+    let goal = f
+        .tasks
+        .start(&f.actor, workspace, intent.clone(), 20)
+        .await
+        .unwrap();
+    let call = AttributedCommand::new(
+        f.actor.clone(),
+        workspace.clone(),
+        goal.id().clone(),
+        intent,
+        coral_test_support::trace('1'),
+    );
+    // The same leading children, so both windows read the same kind of row.
+    for _ in 0..WINDOW {
+        f.commands
+            .search(&call, coral_search::SearchInput::default())
+            .await
+            .unwrap();
+    }
+    let mut last = None;
+    for _ in 0..FILLERS {
+        if runs {
+            let run = f.commands.submit(&call, "return 1;", 30_000).await.unwrap();
+            last = Some(run.run_id().clone());
+        } else {
+            f.commands
+                .search(&call, coral_search::SearchInput::default())
+                .await
+                .unwrap();
+        }
+    }
+    if let Some(run) = last {
+        f.wait_for_terminal(&run).await;
+    }
+    goal
+}
+
+/// Times one read of the Task's first [`WINDOW`] children and of the first root page.
+async fn timed_window_read(f: &Fixture, goal: &Task) -> std::time::Duration {
+    let workspace = goal.workspace_id().clone();
+    let started = std::time::Instant::now();
+    let identity = TaskIdentity {
+        workspace: workspace.clone(),
+        task: goal.id().clone(),
+    };
+    let page = f
+        .tasks
+        .activity_interactions(
+            &f.runs,
+            &f.actor,
+            &identity,
+            &InteractionWindow::Start,
+            WINDOW,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.rows.len(), usize::from(WINDOW));
+    let roots = f
+        .tasks
+        .activity_roots(
+            &f.runs,
+            &f.actor,
+            &HistoryScope::Personal(Some(workspace)),
+            &ActivityWindow::Edge,
+            1,
+        )
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    let [ActivityRoot::Task(root)] = roots.rows.as_slice() else {
+        panic!("the Task is the newest root")
+    };
+    assert_eq!(root.id(), goal.id());
+    elapsed
+}
+
+fn median(mut samples: Vec<std::time::Duration>) -> std::time::Duration {
+    samples.sort();
+    *samples.get(samples.len() / 2).expect("a sample")
+}
+
 /// The Task's context impact and partial flag, which both Task reads must agree on.
 async fn task_impact(f: &Fixture, goal: &Task) -> (Option<i64>, bool) {
     let roots = f
@@ -483,18 +597,9 @@ struct TiedRoots {
 
 impl TiedRoots {
     async fn new(f: &Fixture) -> Self {
-        let user = f.actor.authenticated_user().unwrap().clone();
-        let second = f
-            .tasks
-            .workspaces
-            .create(
-                &ChangeContext::new(user, 1, coral_test_support::trace('1')),
-                WorkspaceDisplayName::parse("Second").unwrap(),
-            )
-            .await
-            .unwrap();
+        let second = f.owned_workspace("Second").await;
         let mut goals = Vec::new();
-        for workspace in [&f.workspace, second.id()] {
+        for workspace in [&f.workspace, &second] {
             for _ in 0..3 {
                 goals.push(
                     f.tasks
@@ -512,10 +617,7 @@ impl TiedRoots {
         // All timestamps tie: qualified identity, never intent text, determines the order.
         goals.sort_by_key(|task| (task.workspace_id().to_string(), task.id().to_string()));
         goals.reverse();
-        Self {
-            second: second.id().clone(),
-            goals,
-        }
+        Self { second, goals }
     }
 
     fn names<'a>(

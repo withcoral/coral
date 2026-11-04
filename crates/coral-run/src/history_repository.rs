@@ -19,16 +19,52 @@ pub fn run_positions(authority: &HistoryAuthority) -> SelectStatement {
     restrict(&mut select, authority);
     select
 }
-/// Authorized Run byte measurements for Task-owned aggregate queries. A running Run
-/// has no bytes and a true `running` column, so callers can tell it from an
-/// unmeasurable one.
+/// One Run's context measurement, for each row of a Task-owned aggregate query.
+pub struct ContextMeasurement {
+    /// The Run's measured bytes. Null while it runs, when it is unmeasurable, or
+    /// when the authority cannot see it.
+    pub bytes: SimpleExpr,
+    /// Whether the Run is running. Null when the authority cannot see it.
+    pub running: SimpleExpr,
+}
+
+/// Measures the Run that `workspace` and `run` name in the enclosing row. Each
+/// value finds the Run by its primary key alone, then matches its Workspace and
+/// `authority` in the selected expression, so a Run in another Workspace reads as
+/// absent. A Workspace or principal filter would let a planner without fresh
+/// statistics pick a principal index and scan the Workspace's Runs for each row.
+/// With none, a query measures only the Runs its rows name.
 #[must_use]
-pub fn context_measurements(authority: &HistoryAuthority) -> SelectStatement {
-    let mut select = run_positions(authority);
-    select
-        .expr_as(measured_context(), Alias::new("context_impact_bytes"))
-        .expr_as(running(), Alias::new("running"));
-    select
+pub fn context_measurement(
+    authority: &HistoryAuthority,
+    workspace: SimpleExpr,
+    run: SimpleExpr,
+) -> ContextMeasurement {
+    let column = |field: &str| (Alias::new("r"), Alias::new(field)).into_column_ref();
+    let authorized = col("r", "workspace_id").eq(workspace).and(
+        coral_workspace::history_repository::authorizes(
+            authority,
+            column("workspace_id"),
+            column("principal_id"),
+            column("principal_kind"),
+        ),
+    );
+    let key = col("r", "id").eq(run);
+    let value = |expr: SimpleExpr| {
+        let select = Query::select()
+            .expr(Expr::case(authorized.clone(), expr))
+            .from_as(Alias::new("program_run_records"), Alias::new("r"))
+            .and_where(key.clone())
+            .to_owned();
+        Expr::SubQuery(
+            None,
+            Box::new(sea_query::SubQueryStatement::SelectStatement(select)),
+        )
+    };
+    ContextMeasurement {
+        bytes: value(measured_context()),
+        running: value(running()),
+    }
 }
 
 /// Restricts Runs aliased `r` to `authority`, resolved in the same snapshot.

@@ -1,7 +1,7 @@
 //! Narrow repository facet for authorized cross-Workspace history queries.
 //! Only owning repositories compose SQL with this facet. Domains receive typed history.
 use crate::HistoryAuthority;
-use sea_query::{Alias, Expr, ExprTrait as _, Query, SelectStatement};
+use sea_query::{Alias, Expr, ExprTrait as _, Query, SelectStatement, SimpleExpr};
 
 /// Safe label for the Workspace of independently authorized history.
 #[must_use]
@@ -167,10 +167,22 @@ pub fn restrict(
     principal: sea_query::ColumnRef,
     kind: sea_query::ColumnRef,
 ) {
+    query.and_where(authorizes(authority, workspace, principal, kind));
+}
+
+/// Whether `authority` sees the row, as [`restrict`] decides. Test it on a row
+/// already found by its key, so the row's own index serves the lookup.
+#[must_use]
+pub fn authorizes(
+    authority: &HistoryAuthority,
+    workspace: sea_query::ColumnRef,
+    principal: sea_query::ColumnRef,
+    kind: sea_query::ColumnRef,
+) -> SimpleExpr {
     let own = Expr::col(principal)
         .eq(authority.principal.id().as_str())
         .and(Expr::col(kind.clone()).eq(authority.principal.kind().as_storage_str()));
-    query.and_where(if authority.include_owned_agents {
+    let principal = if authority.include_owned_agents {
         let owned = Query::select()
             .column(Alias::new("workspace_id"))
             .from(Alias::new("workspace_memberships"))
@@ -182,8 +194,8 @@ pub fn restrict(
             .and(Expr::col(workspace.clone()).in_subquery(owned)))
     } else {
         own
-    });
-    restrict_workspaces(query, authority, workspace);
+    };
+    principal.and(accessible_workspaces(authority, workspace))
 }
 
 /// As [`restrict`], for rows only a User can own, such as private Account connections.
@@ -200,22 +212,21 @@ pub fn restrict_user_rows(
             Expr::val(1_i64).eq(0_i64)
         },
     );
-    restrict_workspaces(query, authority, workspace);
+    query.and_where(accessible_workspaces(authority, workspace));
 }
 
-fn restrict_workspaces(
-    query: &mut SelectStatement,
+fn accessible_workspaces(
     authority: &HistoryAuthority,
     workspace: sea_query::ColumnRef,
-) {
+) -> SimpleExpr {
     if let Some(id) = &authority.workspace {
-        query.and_where(Expr::col(workspace).eq(id.to_string()));
+        Expr::col(workspace).eq(id.to_string())
     } else {
         let accessible = Query::select()
             .column(Alias::new("workspace_id"))
             .from(Alias::new("workspace_memberships"))
             .and_where(Expr::col(Alias::new("user_id")).eq(authority.user.as_str()))
             .to_owned();
-        query.and_where(Expr::col(workspace).in_subquery(accessible));
+        Expr::col(workspace).in_subquery(accessible)
     }
 }
