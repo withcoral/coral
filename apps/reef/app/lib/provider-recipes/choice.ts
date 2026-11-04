@@ -1,4 +1,4 @@
-import type { RecipeInputView } from '@/views/providers/types'
+import type { ProviderLogo, RecipeInputView } from '@/views/providers/types'
 import { inputReference } from './input-reference'
 
 // What Add provider offers before a source is read: a recipe from the library, or
@@ -20,9 +20,6 @@ export type SourceLocation =
       document: string
     }
 
-/** A recipe's logo URLs. `light` serves both themes when `dark` is absent. */
-export type RecipeIcons = { light: string; dark?: string }
-
 export type SourceChoice = SourceLocation & {
   /** The recipe's id; empty for a typed URL. */
   id: string
@@ -37,7 +34,7 @@ export type SourceChoice = SourceLocation & {
   /** One line on the catalog row. */
   description: string
   /** URLs of the logos bundled beside the recipe; a lettermark when absent. */
-  icons?: RecipeIcons
+  icons?: ProviderLogo
   /** Non-secret service headers needed before reading the MCP catalog. */
   requestHeaders?: { name: string; value: string }[]
   /** Non-secret answers needed to locate this source before discovery. */

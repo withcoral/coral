@@ -4,7 +4,7 @@
 //! Every path that changes an existing Provider names its change here, and
 //! [`ProviderModule::hold_for_change`] runs the steps every such change shares:
 //! Owner configuration authority, the exclusive hold, the Call Root's
-//! allow-list and, for a rename, a state change or a removal, the etag. An
+//! allow-list and, for a rename, an icon, a state change or a removal, the etag. An
 //! Owner-added Provider permits every change. The
 //! Built-in Provider, which Coral manages, permits only disabling and
 //! restoring it, so a new kind of change is denied for it until someone allows
@@ -31,6 +31,8 @@ use crate::{
 pub(crate) enum ProviderChange {
     /// Change the Provider's display name.
     Rename,
+    /// Replace or remove the Provider's icon.
+    SetIcon,
     /// Prepare or create a Setup that updates the Provider's configuration.
     Reconfigure,
     /// Materialize the Provider's catalog again.
@@ -68,7 +70,10 @@ impl ProviderChange {
     /// Provider's. A Setup and a secret rotation leave the Provider's own
     /// fields alone, so they take no etag.
     const fn checks_etag(self) -> bool {
-        matches!(self, Self::Rename | Self::SetState | Self::Delete)
+        matches!(
+            self,
+            Self::Rename | Self::SetIcon | Self::SetState | Self::Delete
+        )
     }
 }
 

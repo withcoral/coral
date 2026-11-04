@@ -1,4 +1,4 @@
-import type { RecipeIcons } from '@/lib/provider-recipes/choice'
+import type { ProviderLogo } from '@/views/providers/types'
 import type { ActivitySummaryData, CallerCalls, StopReason } from '@/lib/activity-summary'
 import { toolOwner } from '@/lib/call-root'
 
@@ -9,7 +9,7 @@ export interface SummaryProvider {
   callRoot: string
   displayName: string
   path: string
-  icons?: RecipeIcons
+  icons?: ProviderLogo
 }
 
 export interface ToolRow {
@@ -18,7 +18,7 @@ export interface ToolRow {
   provider: string
   /** The last part of the provider's Call Root, which tells apart two providers with one name. */
   namespace: string
-  icons?: RecipeIcons
+  icons?: ProviderLogo
   /** The Call Path after the provider's Call Root. */
   tool: string
   /** The tool's pages, when its provider is in the workspace. */

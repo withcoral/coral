@@ -737,6 +737,18 @@ async fn a_member_cannot_change_a_provider_and_the_refusal_changes_nothing() {
                 .map(|committed| committed.skip_search().etag()),
         ),
         (
+            "set icon",
+            providers
+                .set_provider_icon(
+                    &by_member,
+                    workspace.id(),
+                    provider.id(),
+                    Some(crate::ProviderIcon::parse(b"<svg/>".to_vec()).unwrap()),
+                )
+                .await
+                .map(|changed| changed.etag()),
+        ),
+        (
             "disable",
             providers
                 .disable_provider(&by_member, workspace.id(), provider.id())
@@ -763,4 +775,199 @@ async fn a_member_cannot_change_a_provider_and_the_refusal_changes_nothing() {
         );
         assert_eq!(stored().await, before, "{change} changed nothing");
     }
+}
+
+// Catches: an icon that a member cannot read, that another Workspace can
+// read, that leaves the etag or the projected digest stale, that a stale etag
+// still replaces, or a repeated upload or removal that writes an event.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey through every icon change and read"
+)]
+async fn an_owner_sets_and_removes_a_providers_icon_that_members_read() {
+    let (db, workspaces, providers) = test_modules().await;
+    let owner = organization_user(db.database(), "user:icon-owner", OrganizationRole::Owner).await;
+    let member =
+        organization_user(db.database(), "user:icon-member", OrganizationRole::Member).await;
+    let context = change_context(owner.clone(), 1, '1');
+    let workspace = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Icons").unwrap())
+        .await
+        .unwrap();
+    let other = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Elsewhere").unwrap())
+        .await
+        .unwrap();
+    workspaces
+        .set_membership(
+            &context,
+            workspace.id(),
+            &member,
+            coral_workspace::WorkspaceRole::Member,
+        )
+        .await
+        .unwrap();
+    let provider = super::tests::publish_provider(
+        &providers,
+        &context,
+        workspace.id(),
+        super::tests::CREDENTIAL_FREE_OPENAPI,
+        "iconic",
+        CredentialRoute::None,
+    )
+    .await;
+    assert_eq!(provider.icon_digest(), None);
+    let events = || async {
+        providers
+            .list_lifecycle_events(&owner, workspace.id())
+            .await
+            .unwrap()
+    };
+    let before = events().await.len();
+    let icon = crate::ProviderIcon::parse(b"\x89PNG\r\n\x1a\nicon".to_vec()).unwrap();
+
+    let set = providers
+        .set_provider_icon(
+            &with_etag(change_context(owner.clone(), 2, '2'), &provider.etag()),
+            workspace.id(),
+            provider.id(),
+            Some(icon.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(set.icon_digest(), Some(icon.digest()));
+    assert_ne!(set.etag(), provider.etag());
+    let recorded = events().await;
+    assert_eq!(recorded.len(), before + 1);
+    let event = recorded
+        .iter()
+        .find(|event| event.changed_field_paths() == ["icon"])
+        .expect("the icon change is recorded");
+    assert_eq!(event.action(), crate::LifecycleAction::ProviderUpdated);
+    assert_eq!(
+        providers
+            .inspect_provider_icon(&member, workspace.id(), provider.id())
+            .await
+            .unwrap(),
+        Some(icon.clone()),
+        "a member reads the icon"
+    );
+    assert_eq!(
+        providers
+            .inspect_providers(&member, workspace.id())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|listed| listed.id() == provider.id())
+            .unwrap()
+            .icon_digest(),
+        Some(icon.digest()),
+        "the list carries the digest"
+    );
+    assert!(
+        matches!(
+            providers
+                .inspect_provider_icon(&owner, other.id(), provider.id())
+                .await,
+            Err(Error::ProviderNotFound)
+        ),
+        "another Workspace finds no Provider"
+    );
+
+    // The schema refuses a stored icon that loses one part, whatever writes it.
+    // Each case clears or changes one column of the icon set above, so no case
+    // needs a binary literal, which the two databases spell differently.
+    for (case, column) in [
+        ("no media type", "icon_media_type = NULL"),
+        ("no content", "icon_content = NULL"),
+        ("no digest", "icon_digest = NULL"),
+        ("an unknown media type", "icon_media_type = 'image/gif'"),
+    ] {
+        let refused = db
+            .execute_fixture_sql(&format!(
+                "UPDATE provider_records SET {column} WHERE id = '{}'",
+                provider.id()
+            ))
+            .await
+            .expect_err(case);
+        assert!(
+            refused
+                .to_string()
+                .contains("provider_records_icon_complete"),
+            "{case}: {refused}"
+        );
+    }
+    assert_eq!(
+        providers
+            .inspect_provider_icon(&owner, workspace.id(), provider.id())
+            .await
+            .unwrap(),
+        Some(icon.clone()),
+        "a refused row changes nothing"
+    );
+
+    let unchanged = providers
+        .set_provider_icon(
+            &with_etag(change_context(owner.clone(), 3, '3'), &set.etag()),
+            workspace.id(),
+            provider.id(),
+            Some(icon.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unchanged, set, "the same icon writes nothing");
+    assert_eq!(events().await.len(), before + 1);
+
+    let replacement = crate::ProviderIcon::parse(b"<svg/>".to_vec()).unwrap();
+    assert!(matches!(
+        providers
+            .set_provider_icon(
+                &with_etag(change_context(owner.clone(), 4, '4'), &provider.etag()),
+                workspace.id(),
+                provider.id(),
+                Some(replacement),
+            )
+            .await,
+        Err(Error::EtagMismatch)
+    ));
+    assert_eq!(
+        providers
+            .inspect_provider_icon(&owner, workspace.id(), provider.id())
+            .await
+            .unwrap(),
+        Some(icon),
+        "a stale etag replaces nothing"
+    );
+    assert_eq!(events().await.len(), before + 1);
+
+    let removed = providers
+        .set_provider_icon(
+            &with_etag(change_context(owner.clone(), 5, '5'), &set.etag()),
+            workspace.id(),
+            provider.id(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(removed.icon_digest(), None);
+    assert_eq!(
+        providers
+            .inspect_provider_icon(&owner, workspace.id(), provider.id())
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(events().await.len(), before + 2);
+    let again = providers
+        .set_provider_icon(
+            &with_etag(change_context(owner.clone(), 6, '6'), &removed.etag()),
+            workspace.id(),
+            provider.id(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(again, removed, "removing no icon writes nothing");
+    assert_eq!(events().await.len(), before + 2);
 }

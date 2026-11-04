@@ -298,6 +298,25 @@ impl ProviderModule {
         tx.rollback().await?;
         Ok(stored.provider)
     }
+    /// Reads the icon of one Provider that `actor` may inspect; none when
+    /// it has no uploaded icon.
+    ///
+    /// # Errors
+    /// Returns current Workspace authority, missing Provider or persistence
+    /// failures.
+    pub async fn inspect_provider_icon(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+        provider: &ProviderId,
+    ) -> Result<Option<crate::ProviderIcon>, Error> {
+        let mut tx = self.database.begin_read_snapshot().await?;
+        self.inspected_provider(&mut tx, actor, workspace, provider)
+            .await?;
+        let icon = repository::provider_icon(&mut tx, workspace, provider).await?;
+        tx.rollback().await?;
+        Ok(icon)
+    }
     /// Reads one page of the current catalog without exposing private
     /// execution bindings. It leaves out each Tool `actor` does not reach.
     ///
@@ -400,6 +419,55 @@ impl ProviderModule {
 }
 
 impl ProviderModule {
+    /// Replaces the Provider's icon or, with `None`, removes it, in its own
+    /// transaction. The same icon, or removing an absent one, writes
+    /// nothing. Search indexes no icon, so the change hands it nothing.
+    ///
+    /// # Errors
+    /// Requires current owner authority, an exact Provider that an Owner
+    /// added, and its current etag.
+    pub async fn set_provider_icon(
+        &self,
+        context: &coral_workspace::ChangeContext,
+        workspace: &WorkspaceId,
+        id: &ProviderId,
+        icon: Option<crate::ProviderIcon>,
+    ) -> Result<Provider, Error> {
+        let mut tx = self.database.begin().await?;
+        let held = self
+            .hold_for_change(
+                &mut tx,
+                context,
+                workspace,
+                id,
+                crate::change::ProviderChange::SetIcon,
+            )
+            .await?;
+        if held.current.provider.icon_digest() == icon.as_ref().map(crate::ProviderIcon::digest) {
+            tx.rollback().await?;
+            return Ok(held.current.provider);
+        }
+        repository::update_icon(&mut tx, &held.current.provider, icon.as_ref()).await?;
+        held.record(
+            &mut tx,
+            context,
+            crate::LifecycleAction::ProviderUpdated,
+            &["icon"],
+        )
+        .await?;
+        let updated = repository::current_provider(
+            &mut tx,
+            workspace,
+            repository::ProviderKey::Id(id),
+            repository::ProviderHold::None,
+        )
+        .await?
+        .ok_or(Error::ProviderNotFound)?
+        .provider;
+        tx.commit().await?;
+        Ok(updated)
+    }
+
     /// Changes safe display metadata in its own transaction, retaining
     /// identity, namespace, route and policy. An unchanged display name
     /// writes nothing.

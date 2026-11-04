@@ -2,7 +2,7 @@ import { useId } from 'react'
 import { Button, Table, Typography } from '@/wax/components'
 import { Logo } from '@/wax/components/logo'
 import { StatusDot } from '@/wax/components/status'
-import type { RecipeIcons } from '@/lib/provider-recipes/choice'
+import type { ProviderLogo } from '@/views/providers/types'
 import type { AccountView } from '@/views/accounts/types'
 import type { FormContext } from './types'
 import { ConnectAccountDialog } from './connect-account-dialog'
@@ -17,7 +17,7 @@ export interface AgentProviderView {
     | { kind: 'shared'; path: string }
     | { kind: 'separate'; path: string; state: AccountView['state']; canConnect: boolean }
   blockers: string[]
-  icons?: RecipeIcons
+  icons?: ProviderLogo
 }
 
 const ACCOUNT_KIND = { none: 'None', shared: 'Shared', separate: 'Individual' } as const

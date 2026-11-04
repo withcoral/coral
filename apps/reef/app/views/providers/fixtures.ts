@@ -1,6 +1,7 @@
 // Provider data for unit tests: providers and their tools in the Demo
 // workspace, which the test user owns.
 
+import { CORAL_ICONS } from './coral-icons'
 import type { ToolView, ProviderView, WorkspaceView } from './types'
 
 export const workspaceView: WorkspaceView = {
@@ -67,6 +68,7 @@ export function builtinProvider(id: string): ProviderView {
   const view: ProviderView = {
     ...provider(id, 'Coral', ''),
     builtin: true,
+    icons: CORAL_ICONS,
     callRoot: 'coral.workspace',
   }
   view.tools = [

@@ -47,6 +47,14 @@ service ProviderService {
   rpc GetProviderSource(GetProviderSourceRequest) returns (ProviderSource);
   // Changes display metadata without changing identity or namespace.
   rpc UpdateProvider(UpdateProviderRequest) returns (Provider);
+  // Reads the icon an Owner uploaded. Fails with NotFound when the Provider
+  // has none.
+  rpc GetProviderIcon(GetProviderIconRequest) returns (ProviderIcon);
+  // Replaces the Provider's icon. The Built-in Provider keeps Coral's mark and
+  // fails with FailedPrecondition.
+  rpc SetProviderIcon(SetProviderIconRequest) returns (Provider);
+  // Removes the Provider's uploaded icon; a Provider without one is unchanged.
+  rpc DeleteProviderIcon(DeleteProviderIconRequest) returns (Provider);
   // Blocks new Invocations and later pre-dispatch work without deleting credentials.
   rpc DisableProvider(DisableProviderRequest) returns (Provider);
   // Restores otherwise-current Provider access.
@@ -161,6 +169,9 @@ message Provider {
   // Whether this is the Workspace's Built-in Provider, which Coral defines
   // and manages under coral.workspace.
   bool builtin = 13;
+  // Digest of the uploaded icon's content, which changes with the icon.
+  // Empty when the Provider has no uploaded icon.
+  string icon_digest = 14;
 }
 
 // Lists Providers owned by one authorized Workspace.
@@ -967,4 +978,39 @@ message UpdateProviderRequest {
   string etag = 2;
   // Nonblank display name; never changes the Program namespace.
   string display_name = 3;
+}
+
+// Reads one Provider's uploaded icon.
+message GetProviderIconRequest {
+  // Canonical Workspace Provider name.
+  string name = 1;
+}
+
+// An image an Owner uploaded to stand for a Provider in every theme.
+message ProviderIcon {
+  // image/png, image/jpeg, image/webp or image/svg+xml, read from the content.
+  string media_type = 1;
+  // The image, at most 100 KiB.
+  bytes content = 2;
+  // Same as Provider.icon_digest.
+  string digest = 3;
+}
+
+// Replaces one Provider's icon.
+message SetProviderIconRequest {
+  // Canonical Workspace Provider name.
+  string name = 1;
+  // Required current Provider concurrency token.
+  string etag = 2;
+  // A PNG, JPEG, WebP or SVG image of at most 100 KiB. Coral reads its type
+  // from the content and rejects anything else.
+  bytes content = 3;
+}
+
+// Removes one Provider's uploaded icon.
+message DeleteProviderIconRequest {
+  // Canonical Workspace Provider name.
+  string name = 1;
+  // Required current Provider concurrency token.
+  string etag = 2;
 }

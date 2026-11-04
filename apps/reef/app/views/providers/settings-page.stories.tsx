@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
 import { expect, userEvent, within } from 'storybook/test'
 
+import gitlabIcon from '../../../recipes/gitlab/logo.svg'
 import { workspace } from './providers.stories'
 import { ProviderSettingsPage } from './settings-page'
 import type { ProviderSettingsPageProps, ProviderSettingsView } from './types'
@@ -21,6 +22,7 @@ const provider: ProviderSettingsView = {
   canConnect: true,
   canReconnect: true,
   accountSettingIncompatible: false,
+  uploadedIcon: false,
 }
 const member = { ...workspace, effectiveRole: 'member' }
 const archived = { ...workspace, state: 'archived' }
@@ -88,6 +90,30 @@ export const NoAccount: Story = {
       kind: 'mcp',
       location: { type: 'url', url: 'https://mcp.example.com/mcp', host: 'mcp.example.com' },
     },
+  },
+}
+
+// An owner's own logo, which they can remove.
+export const UploadedIcon: Story = {
+  args: { provider: { ...provider, icons: { light: gitlabIcon }, uploadedIcon: true } },
+}
+
+// A file over the limit is refused before it is sent.
+export const IconTooLarge: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const icon = canvas.getByRole('region', { name: 'Icon' })
+    await expect(within(icon).queryByRole('button', { name: 'Remove icon' })).toBeNull()
+    await userEvent.upload(
+      within(icon).getByLabelText('Icon file'),
+      new File([new Uint8Array(100 * 1024 + 1)], 'logo.png', { type: 'image/png' }),
+    )
+    await expect(
+      within(icon).getByText(
+        'This file is too large. Use a PNG, JPEG, WebP or SVG file of 100 KiB or less.',
+      ),
+    ).toBeVisible()
+    await expect(within(icon).getByRole('button', { name: 'Upload icon' })).toBeDisabled()
   },
 }
 

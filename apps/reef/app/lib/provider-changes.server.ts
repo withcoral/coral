@@ -1,3 +1,4 @@
+import { Code, ConnectError } from '@connectrpc/connect'
 import { data, redirect, type RouterContextProvider } from 'react-router'
 import { field, privateHeaders } from './management.server'
 import type { ManagementApi } from './management.server'
@@ -13,6 +14,7 @@ import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
 import { decodeSelectedTools, selectionKey, type SelectedTool } from '@/views/providers/selection'
 import { countLabel } from '@/utils/count-label'
 import type { ToolOutcome } from '@/views/providers/types'
+import { PROVIDER_ICON_MAX_BYTES, PROVIDER_ICON_RULE } from './provider-input-limits'
 
 /**
  * One owner change to a workspace's providers, from a form the route already
@@ -38,6 +40,39 @@ export async function applyProviderChange(
         })
         return data(
           { error: null, credential: null, message: 'Provider name saved.' },
+          { headers: privateHeaders },
+        )
+      }
+      case 'setProviderIcon': {
+        const icon = form.get('icon')
+        if (!(icon instanceof File) || icon.size === 0)
+          return data(
+            { error: `Choose an icon file. ${PROVIDER_ICON_RULE}`, credential: null },
+            { status: 400, headers: privateHeaders },
+          )
+        if (icon.size > PROVIDER_ICON_MAX_BYTES)
+          return data(
+            { error: `This file is too large. ${PROVIDER_ICON_RULE}`, credential: null },
+            { status: 400, headers: privateHeaders },
+          )
+        // Coral reads the image's type from its bytes, not from the browser.
+        await api.providers.setProviderIcon({
+          name: providerName(w.name, field(form, 'provider')),
+          etag: field(form, 'etag'),
+          content: new Uint8Array(await icon.arrayBuffer()),
+        })
+        return data(
+          { error: null, credential: null, message: 'Icon saved.' },
+          { headers: privateHeaders },
+        )
+      }
+      case 'deleteProviderIcon': {
+        await api.providers.deleteProviderIcon({
+          name: providerName(w.name, field(form, 'provider')),
+          etag: field(form, 'etag'),
+        })
+        return data(
+          { error: null, credential: null, message: 'Icon removed.' },
           { headers: privateHeaders },
         )
       }
@@ -118,8 +153,21 @@ export async function applyProviderChange(
         throw new Response('Invalid action', { status: 400, headers: privateHeaders })
     }
   } catch (error) {
+    // Coral refuses an image it cannot read as one of the accepted types.
+    if (
+      intent === 'setProviderIcon' &&
+      error instanceof ConnectError &&
+      error.code === Code.InvalidArgument &&
+      error.rawMessage === 'INVALID_PROVIDER_INPUT'
+    )
+      return data(
+        { error: `Coral cannot use this file as an icon. ${PROVIDER_ICON_RULE}`, credential: null },
+        { status: 400, headers: privateHeaders },
+      )
     const failures: Record<string, string> = {
       renameProvider: 'Coral could not change the provider name. ',
+      setProviderIcon: 'Coral could not save the icon. ',
+      deleteProviderIcon: 'Coral could not remove the icon. ',
       disableProvider: 'Coral could not disable the provider. ',
       enableProvider: 'Coral could not enable the provider. ',
       removeProvider: 'Coral could not remove the provider. ',

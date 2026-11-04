@@ -37,6 +37,7 @@ const provider: ProviderSettingsView = {
   canConnect: true,
   canReconnect: true,
   accountSettingIncompatible: false,
+  uploadedIcon: false,
 }
 const source: ProviderSettingsPageProps['source'] = {
   state: 'loaded',
@@ -236,7 +237,7 @@ test('each account setting explains whose account calls use', async () => {
 })
 
 // Catches: members seeing owner actions, owner-only source metadata, or a
-// configuration section they cannot use.
+// configuration or icon section they cannot use.
 test('a member sees readable settings and only their own account action', async () => {
   await render({
     workspace: { ...workspace, effectiveRole: 'member' },
@@ -245,6 +246,7 @@ test('a member sees readable settings and only their own account action', async 
   })
   expect(byLabel('Edit provider name')).toBeNull()
   expect(document.querySelector('[aria-label="Configuration"]')).toBeNull()
+  expect(byLabel('Icon')).toBeNull()
   expect(document.querySelector('[aria-label="Source"]')).toBeNull()
   expect(named('button', 'Change account setting')).toBeUndefined()
   expect(named('button', 'Remove provider')).toBeUndefined()
@@ -383,6 +385,8 @@ test('the built-in provider offers no change', async () => {
   expect(byLabel('Edit provider name')).toBeNull()
   expect(byLabel('Source')).toBeNull()
   expect(document.querySelector('[aria-label="Configuration"]')).toBeNull()
+  // Coral's mark stands for the Built-in Provider.
+  expect(byLabel('Icon')).toBeNull()
   for (const name of ['Change account setting', 'Remove provider'])
     expect(named('button', name)).toBeUndefined()
 })
@@ -424,7 +428,7 @@ test('the account comes before configuration, and removal comes last', async () 
   const sections = [...document.querySelectorAll('section[aria-label]')].map((section) =>
     section.getAttribute('aria-label'),
   )
-  expect(sections).toEqual(['Account', 'Configuration', 'Remove provider'])
+  expect(sections).toEqual(['Account', 'Icon', 'Configuration', 'Remove provider'])
 })
 
 // Catches: configuration left as loose text beside the cards around it.

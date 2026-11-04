@@ -77,6 +77,9 @@ enum ProviderRecords {
     ResourceVersion,
     State,
     CreatedAtUnixNanos,
+    IconMediaType,
+    IconContent,
+    IconDigest,
 }
 
 #[derive(Iden)]
@@ -342,6 +345,7 @@ struct ProviderWithActiveGenerationRow {
     source_url: Option<String>,
     resource_version: i64,
     state: String,
+    icon_digest: Option<String>,
 }
 
 impl ProviderWithActiveGenerationRow {
@@ -371,7 +375,8 @@ impl ProviderWithActiveGenerationRow {
                 display_name,
                 state,
             )
-            .with_version(self.resource_version),
+            .with_version(self.resource_version)
+            .with_icon_digest(self.icon_digest),
             generation_id,
             source_url: self.source_url,
         })
@@ -888,7 +893,7 @@ pub(super) async fn consume_setup(
     Ok(transaction.execute(statement).await? == 1)
 }
 
-fn stored_provider_columns() -> [ProviderRecords; 10] {
+fn stored_provider_columns() -> [ProviderRecords; 11] {
     [
         ProviderRecords::Id,
         ProviderRecords::WorkspaceId,
@@ -900,6 +905,7 @@ fn stored_provider_columns() -> [ProviderRecords; 10] {
         ProviderRecords::SourceUrl,
         ProviderRecords::ResourceVersion,
         ProviderRecords::State,
+        ProviderRecords::IconDigest,
     ]
 }
 
@@ -1475,6 +1481,75 @@ pub(crate) async fn unconsumed_setups_for_user(
     rows.into_iter()
         .map(|(id,)| ProviderSetupId::parse(&id))
         .collect()
+}
+
+/// Replaces or, with `None`, removes `current`'s icon at its current version.
+pub(super) async fn update_icon(
+    tx: &mut Transaction<'_>,
+    current: &Provider,
+    icon: Option<&crate::ProviderIcon>,
+) -> Result<(), Error> {
+    let changed = tx
+        .execute(
+            Query::update()
+                .table(ProviderRecords::Table)
+                .value(
+                    ProviderRecords::IconMediaType,
+                    icon.map(|icon| icon.media_type().as_str()),
+                )
+                .value(
+                    ProviderRecords::IconContent,
+                    icon.map(|icon| icon.content().to_vec()),
+                )
+                .value(
+                    ProviderRecords::IconDigest,
+                    icon.map(|icon| icon.digest().to_string()),
+                )
+                .value(ProviderRecords::ResourceVersion, current.version() + 1)
+                .and_where(exact_provider_owner(current.workspace_id()))
+                .and_where(Expr::col(ProviderRecords::Id).eq(current.id().to_string()))
+                .and_where(Expr::col(ProviderRecords::ResourceVersion).eq(current.version()))
+                .to_owned(),
+        )
+        .await?;
+    if changed != 1 {
+        return Err(Error::EtagMismatch);
+    }
+    Ok(())
+}
+
+/// A Provider's icon columns: media type, content and digest.
+type StoredIcon = (Option<String>, Option<Vec<u8>>, Option<String>);
+
+/// Reads the icon of one Provider in `workspace`; none when it has no icon.
+pub(super) async fn provider_icon(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    provider: &ProviderId,
+) -> Result<Option<crate::ProviderIcon>, Error> {
+    let row: Option<StoredIcon> = tx
+        .fetch_optional(
+            Query::select()
+                .columns([
+                    ProviderRecords::IconMediaType,
+                    ProviderRecords::IconContent,
+                    ProviderRecords::IconDigest,
+                ])
+                .from(ProviderRecords::Table)
+                .and_where(exact_provider_owner(workspace))
+                .and_where(Expr::col(ProviderRecords::Id).eq(provider.to_string()))
+                .to_owned(),
+        )
+        .await?;
+    match row {
+        None | Some((None, None, None)) => Ok(None),
+        Some((Some(media_type), Some(content), Some(digest))) => {
+            crate::ProviderIcon::from_storage(&media_type, content, digest).map(Some)
+        }
+        Some(_) => Err(Error::CorruptData(
+            "Provider icon is incomplete".to_string(),
+        )),
+    }
 }
 
 pub(super) async fn update_display_name(

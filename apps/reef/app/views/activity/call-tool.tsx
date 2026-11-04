@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react'
 import { toolOwner } from '@/lib/call-root'
-import type { RecipeIcons } from '@/lib/provider-recipes/choice'
+import type { ProviderLogo } from '@/views/providers/types'
 import { Logo, type LogoIcons } from '@/wax/components/logo'
 import { ToolName } from '@/wax/components/tool-name'
 import * as styles from './call-tool.css'
@@ -9,7 +9,7 @@ import * as styles from './call-tool.css'
 export interface ProviderMark {
   callRoot: string
   displayName: string
-  icons?: RecipeIcons
+  icons?: ProviderLogo
 }
 
 /** The workspace's providers. Without them, every call names its tool by its full Call Path. */

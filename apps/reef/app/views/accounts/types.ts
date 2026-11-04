@@ -1,4 +1,4 @@
-import type { RecipeIcons } from '@/lib/provider-recipes/choice'
+import type { ProviderLogo } from '@/views/providers/types'
 import type { Crumb, FormContext, ActionResult, WorkspaceView } from '@/views/management/types'
 import type { CredentialFieldView } from '@/views/providers/types'
 export type { FormContext, ActionResult }
@@ -72,7 +72,7 @@ export interface UserAccountRow {
   provider: string
   name: string
   /** The provider's logo; its initial shows without one. */
-  icons?: RecipeIcons
+  icons?: ProviderLogo
   state: PersonalAccountState
   accountId?: string
   /** OAuth signs in at the provider in one click; secrets open a dialog here. */
