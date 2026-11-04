@@ -646,7 +646,7 @@ async fn handshakes_carry_instructions_and_no_readable_resources_on_every_versio
         for expected in [
             "`wait`",
             "`next_cursor`",
-            "`run_status_url`",
+            "`url`",
             "complete literal Call Path",
             "`fetch`",
             "`setTimeout`",
@@ -1959,10 +1959,13 @@ async fn check_raw_human_action(endpoint: &str, task: &str, version: &ProtocolVe
         .next()
         .expect("Workspace identity");
     assert_eq!(
-        update.pointer("/required_actions/0/run_status_url"),
+        update.pointer("/required_actions/0/url"),
         Some(&json!(format!(
-            "https://reef.example.test/workspaces/{workspace}/runs/{}",
-            update["run_id"].as_str().expect("Run identity")
+            "https://reef.example.test/workspaces/{workspace}/approvals?request=workspaces/{workspace}/approvals/{}",
+            update
+                .pointer("/required_actions/0/request_id")
+                .and_then(Value::as_str)
+                .expect("request identity")
         )))
     );
     let action = actions.first().expect("approval action");
@@ -2802,10 +2805,10 @@ async fn initial_wait_surfaces_approval_promptly(
     assert_eq!(action["kind"], "invocation_approval");
     assert_eq!(action["required_actor"], "invoking_user");
     assert_eq!(
-        action["run_status_url"],
+        action["url"],
         format!(
-            "https://reef.example.test/workspaces/{workspace}/runs/{}",
-            update["run_id"].as_str().expect("Run identity")
+            "https://reef.example.test/workspaces/{workspace}/approvals?request=workspaces/{workspace}/approvals/{}",
+            action["request_id"].as_str().expect("request identity")
         )
     );
     assert!(action.get("arguments").is_none());

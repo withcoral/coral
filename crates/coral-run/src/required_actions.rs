@@ -149,8 +149,10 @@ pub struct RequiredAction {
     pub required_actor: RequiredActor,
     /// Request deadline in Unix nanoseconds.
     pub deadline_at_unix_nanos: i64,
-    /// Stable, non-secret root-relative Reef path. Adapters resolve the Reef origin.
-    pub run_status_path: String,
+    /// Stable, non-secret root-relative Reef path of the page where the person
+    /// decides this request: the Approvals Page with the request open, or the
+    /// Run's page with the connection request open. Adapters resolve the Reef origin.
+    pub action_path: String,
     /// The waiting Tool's Call Path; absent when one shared connection request
     /// spans Invocations of different Tools.
     pub call_path: Option<String>,
@@ -390,18 +392,21 @@ pub(crate) async fn snapshot(
     {
         return Ok(Vec::new());
     }
-    let path = format!("/workspaces/{}/runs/{}", run.workspace_id, run.id);
     let required_actor = match run.principal.kind() {
         PrincipalKind::User => RequiredActor::InvokingUser,
         PrincipalKind::Agent => RequiredActor::WorkspaceOwner,
     };
     let mut actions = Vec::new();
     for (id, deadline) in approval::pending_for_run(tx, run).await? {
+        let action_path = format!(
+            "/workspaces/{ws}/approvals?request=workspaces/{ws}/approvals/{id}",
+            ws = run.workspace_id
+        );
         actions.push(RequiredAction {
             request: RequiredActionRequest::InvocationApproval(id),
             required_actor,
             deadline_at_unix_nanos: deadline,
-            run_status_path: path.clone(),
+            action_path,
             call_path: None,
             provider_label: None,
         });
@@ -417,11 +422,16 @@ pub(crate) async fn snapshot(
                 )
                 .await?
             {
+                let action_path = format!(
+                    "/workspaces/{ws}/runs/{run}?request=workspaces/{ws}/accountConnections/{id}",
+                    ws = run.workspace_id,
+                    run = run.id
+                );
                 actions.push(RequiredAction {
                     request: RequiredActionRequest::AccountConnection(id),
                     required_actor: RequiredActor::InvokingUser,
                     deadline_at_unix_nanos: deadline,
-                    run_status_path: path.clone(),
+                    action_path,
                     call_path: None,
                     provider_label: None,
                 });

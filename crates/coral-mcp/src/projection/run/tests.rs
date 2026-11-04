@@ -9,7 +9,7 @@ fn javascript_preserves_required_action_nanoseconds_through_json() {
         ),
         required_actor: RequiredActor::InvokingUser,
         deadline_at_unix_nanos: 1_767_225_600_123_456_789,
-        run_status_path: "/workspaces/example/runs/example".into(),
+        action_path: "/workspaces/example/approvals?request=workspaces/example/approvals/example".into(),
         call_path: Some("coral.providers.weather.getForecast".into()),
         provider_label: Some("Weather".into()),
     };

@@ -18,7 +18,7 @@ test('Reef cancels through one Coral Instance a Run that the other owns, over it
       })
       await step('Open the Run in Reef through the Coral Instance that owns it', async () => {
         await instances.on(owner, async () => {
-          await page.goto(waiting.paused.required_actions[0].run_status_url)
+          await page.goto(`/${waiting.run}`)
           await page.getByRole('button', { name: 'Cancel run', exact: true }).waitFor()
         })
       })

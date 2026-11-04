@@ -714,7 +714,8 @@ export interface RunUpdate {
     provider?: string
     /** Exact RFC 3339 UTC date-time text; Date conversion is lossy. */
     deadline_at: string
-    run_status_url: string
+    /** The page where the person decides this entry, with the request open. */
+    url: string
   }[]
   final_value?: unknown
   failure?: { code: string }
@@ -1046,10 +1047,9 @@ export async function pausedForApproval(runner: ReturnType<typeof programRunner>
 
 /** Opens the paused call's review of the Built-in `tool` from the link the Program got. */
 export async function openReview(page: Page, paused: RunUpdate, tool: string) {
-  await page.goto(paused.required_actions[0].run_status_url)
-  const name = `Review coral.workspace.${tool}`
-  await page.getByRole('link', { name, exact: true }).click()
-  const review = page.getByRole('region', { name, exact: true })
+  // The entry's link opens the Approvals Page with its review already open.
+  await page.goto(paused.required_actions[0].url)
+  const review = page.getByRole('region', { name: `Review coral.workspace.${tool}`, exact: true })
   await review.getByRole('button', { name: 'Approve', exact: true }).waitFor()
   return review
 }

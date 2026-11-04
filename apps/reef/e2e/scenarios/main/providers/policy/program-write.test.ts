@@ -53,10 +53,7 @@ test("An owner's Program changes an added provider's policy once the owner appro
       ])
     })
     await step('Approve the call, and the Program gets each new state', async () => {
-      await page.goto(paused.required_actions[0].run_status_url)
-      await page
-        .getByRole('link', { name: 'Review coral.workspace.updatePolicy', exact: true })
-        .click()
+      await page.goto(paused.required_actions[0].url)
       await page
         .getByRole('region', { name: 'Review coral.workspace.updatePolicy', exact: true })
         .getByRole('button', { name: 'Approve', exact: true })

@@ -175,7 +175,7 @@ export async function separateUserAccount(choice: 'connect' | 'retry', context: 
               required_actor: 'invoking_user',
             }),
           ])
-          await page.goto(update.required_actions[0].run_status_url)
+          await page.goto(update.required_actions[0].url)
           // One click goes straight to the provider's sign-in.
           await page
             .getByRole('dialog', { name: 'Review action', exact: true })

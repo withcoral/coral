@@ -69,9 +69,9 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
           .toBe(1)
         const observed = await runner.wait(waiting.structuredContent)
         const required = observed.structuredContent.required_actions[0]
-        expect(new URL(required.run_status_url).pathname).toBe(`/${run}`)
+        expect(new URL(required.url).pathname).toBe(`/${workspace.name}/approvals`)
         expect(Date.parse(required.deadline_at) - Date.now()).toBeGreaterThan(10 * 60_000)
-        await page.goto(required.run_status_url)
+        await page.goto(required.url)
         if (decision === 'approvals-row') {
           // Decide from the Approvals row, without opening the review.
           await page.goto(`/${workspace.name}/approvals`)
@@ -86,10 +86,13 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
             )
             .toEqual({ kind: 'value', value: 'approval_declined' })
         } else if (decision === 'decline') {
-          await page.getByRole('link', { name: /^Review .*localActions\.read$/ }).click()
-          await page.getByRole('button', { name: 'Decline', exact: true }).click()
+          await page
+            .getByRole('region', { name: /^Review .*localActions\.read$/ })
+            .getByRole('button', { name: 'Decline', exact: true })
+            .click()
           await page.getByText('Declined', { exact: true }).waitFor()
         } else {
+          await page.goto(`/${run}`)
           await page.getByRole('button', { name: 'Cancel run', exact: true }).click()
           await page
             .getByRole('dialog', { name: 'Cancel this run?' })

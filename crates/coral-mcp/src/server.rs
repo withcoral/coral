@@ -79,7 +79,7 @@ impl McpServer {
     ) -> Result<CallToolResponse, DispatchError> {
         // Coral asks a client no in-band question, so no call is a retry that
         // answers one: a Run that waits on a person reports it in the Run
-        // Update, and the person decides on the Run Status Page.
+        // Update, and the person decides on the page its link opens.
         if request.request_state.is_some() || request.input_responses.is_some() {
             return Err(invalid_input_message(
                 "tool does not accept requestState or inputResponses".to_owned(),

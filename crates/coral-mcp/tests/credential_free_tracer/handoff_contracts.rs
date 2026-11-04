@@ -141,15 +141,16 @@ impl Session {
     }
 }
 
-fn run_status_url(endpoint: &str, run: &Value) -> String {
+/// The Approvals Page with one approval request open, where the User decides.
+fn approval_url(endpoint: &str, request: &Value) -> String {
     let workspace = endpoint
         .split("/workspaces/")
         .nth(1)
         .and_then(|path| path.split('/').next())
         .expect("Workspace identity");
     format!(
-        "https://reef.example.test/workspaces/{workspace}/runs/{}",
-        run.as_str().expect("Run identity")
+        "https://reef.example.test/workspaces/{workspace}/approvals?request=workspaces/{workspace}/approvals/{}",
+        request.as_str().expect("request identity")
     )
 }
 
@@ -250,7 +251,7 @@ async fn agent_sessions_learn_an_owner_must_act_and_are_never_prompted() {
 
 /// Every version declares form mode here, and none is asked: Coral keeps no
 /// session to ask over and asks no in-band question on any version. The Run
-/// Update names the action and the Run Status Page, where the User decides,
+/// Update names the action and the Approvals Page, where the User decides,
 /// and a later `wait` reads the same action.
 #[tokio::test(flavor = "multi_thread")]
 async fn every_client_learns_where_to_act_and_is_never_prompted() {
@@ -271,8 +272,8 @@ async fn every_client_learns_where_to_act_and_is_never_prompted() {
         assert_eq!(action["kind"], "invocation_approval");
         assert_eq!(action["required_actor"], "invoking_user");
         assert_eq!(
-            action["run_status_url"],
-            run_status_url(&endpoint, &update["run_id"]),
+            action["url"],
+            approval_url(&endpoint, &action["request_id"]),
             "{version:?}: the update links where the User acts"
         );
         let observed = session

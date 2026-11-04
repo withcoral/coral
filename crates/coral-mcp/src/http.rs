@@ -201,7 +201,7 @@ async fn start_server(
     // Instance can serve it. A pre-2026-07-28 client still gets its
     // `initialize` answer, without a session id. No client is asked anything
     // in-band: a Run that waits on a person reports it in the Run Update with
-    // the Run Status Page link (ADR 0029).
+    // the link to the page where the person decides (ADR 0029).
     let streamable_config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
         .with_allowed_hosts(allowed_hosts)

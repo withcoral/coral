@@ -92,7 +92,7 @@ enum State {
 struct Action {
     /// What the person must do: approve one Tool call, or connect their account with the Provider.
     kind: ActionKind,
-    /// Identifies the request on the Run Status Page. It grants no authority.
+    /// Identifies the request on the page `url` opens. It grants no authority.
     #[schemars(schema_with = "crate::arguments::uuid_schema")]
     request_id: String,
     /// Who can act: the user who started the Run, or a workspace owner.
@@ -106,9 +106,9 @@ struct Action {
     /// When acting stops helping this Run: the Run ends `timed_out` at its deadline.
     #[schemars(schema_with = "timestamp_schema")]
     deadline_at: String,
-    /// Absolute URL that opens authenticated human review. It grants no approval or access authority.
+    /// Absolute URL of the page where the person decides this entry, signed in to Coral: the Approvals Page with this request open, or the Run's page for a connection. Pass it on exactly as given. It grants no approval or access authority.
     #[schemars(extend("format" = "uri"))]
-    run_status_url: String,
+    url: String,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -388,7 +388,7 @@ fn required_action(action: &RequiredAction, human_interface: &crate::HumanInterf
         tool: action.call_path.clone(),
         provider: action.provider_label.clone(),
         deadline_at: timestamp(action.deadline_at_unix_nanos),
-        run_status_url: human_interface.page_url(&action.run_status_path),
+        url: human_interface.page_url(&action.action_path),
     }
 }
 
