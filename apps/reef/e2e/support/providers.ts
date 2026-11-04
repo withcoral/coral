@@ -888,13 +888,21 @@ export function programRunner(
    * left out of `calls`.
    */
   const discover = async <T>(program: string): Promise<ToolResult<T> | undefined> => {
-    await ensureTask()
+    await initialize()
     const counted = { ...calls }
     try {
-      let result: ToolResult<RunUpdate> = await rpc('tools/call', {
-        name: 'exec',
-        arguments: { task_id: taskId, intent: 'Find tools', program, wait_ms: waitMs },
-      })
+      // Without a Task, this Run starts it, as an agent's first exec does.
+      let result: ToolResult<RunUpdate> = started(
+        await rpc('tools/call', {
+          name: 'exec',
+          arguments: {
+            ...(taskId ? { task_id: taskId } : { goal }),
+            intent: 'Find tools',
+            program,
+            wait_ms: waitMs,
+          },
+        }),
+      )
       for (
         let pages = 0;
         pages < 10 &&
@@ -954,13 +962,18 @@ export function programRunner(
         arguments: { task_id: taskId, outcome, feedback },
       })
     },
-    async saveFunction(path: string, description: string, source: string): Promise<ToolResult> {
+    async saveFunction(
+      path: string,
+      description: string,
+      source: string,
+      intent = 'Prepare current work before offboarding',
+    ): Promise<ToolResult> {
       await ensureTask()
       return rpc('tools/call', {
         name: 'save_function',
         arguments: {
           task_id: taskId,
-          intent: 'Prepare current work before offboarding',
+          intent,
           path,
           description,
           source,

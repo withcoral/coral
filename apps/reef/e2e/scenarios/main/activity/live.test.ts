@@ -181,14 +181,27 @@ test('Activity automatically streams new rows and continuously loads bounded chi
     await step(
       'Expand an execution outside the first task window without fetching the whole history',
       async () => {
-        for (let index = 0; index < 200; index++)
-          await latest.describe('coral.functions.live.fixture')
+        // Fill the Task with plain records, not Runs: only their place around the observed
+        // Run matters, and each Run costs a Program and more Activity work per read.
+        async function fill(count: number) {
+          for (let index = 0; index < count; index++)
+            expect(
+              (
+                await latest.saveFunction(
+                  'live.filler',
+                  'Filler',
+                  'export default () => 1;',
+                  'Fill the task history',
+                )
+              ).isError,
+            ).not.toBe(true)
+        }
+        await fill(200)
         const observed = await observeRun(
           latest,
           await latest.exec('for (let i = 0; i < 300; i++) await coral.emit({i});'),
         )
-        for (let index = 0; index < 150; index++)
-          await latest.describe('coral.functions.live.fixture')
+        await fill(150)
         taskLabel = `Live goal ${sequence}`
         task = `${workspace.name}/tasks/${latest.taskId()}`
         run = `${workspace.name}/runs/${observed.update.run_id}`
