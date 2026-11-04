@@ -293,13 +293,15 @@ pub fn validate_openapi_configuration(
     }
     for group in review.iter().flat_map(|review| &review.servers) {
         let selected = configuration.servers.get(&group.declaration);
-        // Missing local configuration is previewed as unavailable, not replaced by the root.
-        if (selected.is_some() || (group.declaration == "#/servers" && !group.tools.is_empty()))
-            && resolve_selection(group, selected).is_err()
-        {
+        // A local declaration left unanswered publishes its Tools as unavailable;
+        // it never falls back to the root. So each one that serves Tools and
+        // offers servers needs an answer. One that offers none stays unavailable.
+        let required = !group.tools.is_empty()
+            && (group.declaration == "#/servers" || !group.options.is_empty());
+        if (selected.is_some() || required) && resolve_selection(group, selected).is_err() {
             errors.push(field_error(
                 &group.declaration,
-                "Select a server and complete its declared variables, or supply a valid base URL.",
+                "Choose a server and complete its variables, or enter a valid base URL.",
             ));
         }
     }
@@ -747,7 +749,7 @@ pub(super) fn normalize_base_url(value: &str) -> Result<String, CatalogDiagnosti
 fn invalid_server() -> CatalogDiagnostic {
     CatalogDiagnostic::stable(
         "unresolved_server_configuration",
-        "review the selected server and its declared variables",
+        "Choose a server for this tool and complete its variables.",
     )
 }
 fn invalid_document() -> CatalogDiagnostic {

@@ -138,12 +138,16 @@ describe('serverProblem', () => {
     expect(serverProblem(declared, { ...selection, variables: { path } })).toBeUndefined()
   })
 
-  it('requires a root destination only when tools use it', () => {
+  // Catches: a tool's own servers left unchosen, which published the tool as
+  // unavailable, as Open-Meteo's two path servers did.
+  it('requires a destination for the root and for tool declarations that list servers', () => {
+    const local = { ...declared, declaration: '#/paths/~1logs/servers' }
     expect(serverProblem(declared, undefined)).toBeDefined()
     expect(serverProblem({ ...declared, tools: [] }, undefined)).toBeUndefined()
-    expect(
-      serverProblem({ ...declared, declaration: '#/paths/~1logs/servers' }, undefined),
-    ).toBeUndefined()
+    expect(serverProblem({ ...declared, options: [] }, undefined)).toBeDefined()
+    expect(serverProblem(local, undefined)).toBeDefined()
+    expect(serverProblem({ ...local, tools: [] }, undefined)).toBeUndefined()
+    expect(serverProblem({ ...local, options: [] }, undefined)).toBeUndefined()
   })
 
   it.each(['https://api.example.test/v1', 'http://localhost:8080'])(

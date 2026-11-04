@@ -368,7 +368,7 @@ impl ToolListingRow {
         )?;
         let unavailable = diagnostics
             .iter()
-            .any(|d| d.severity() == crate::CatalogDiagnosticSeverity::Error);
+            .any(crate::CatalogDiagnostic::is_blocking);
         if unavailable != (availability == ToolAvailability::Unavailable) {
             return Err(Error::CorruptData(
                 "Tool listing has inconsistent availability".into(),
@@ -504,7 +504,7 @@ impl ToolRow {
         let diagnostics = CatalogDiagnostic::list_from_storage(&diagnostics_json)?;
         let diagnostic = diagnostics
             .iter()
-            .find(|diagnostic| diagnostic.severity() == crate::CatalogDiagnosticSeverity::Error);
+            .find(|diagnostic| diagnostic.is_blocking());
         if diagnostic != stored_diagnostic.as_ref()
             || diagnostic.is_some() != (availability == ToolAvailability::Unavailable)
         {
