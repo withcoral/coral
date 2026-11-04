@@ -25,6 +25,7 @@ npm run test:e2e --prefix apps/reef -- --suite desktop
 npm run test:e2e --prefix apps/reef -- --suite multi-instance
 # Remaining arguments reach Vitest unchanged; select a file or test name.
 npm run test:e2e --prefix apps/reef -- providers/catalog/
+# Film each session: record a slowed-down video for review. Runs record no video otherwise.
 E2E_FILM=1 npm run test:e2e --prefix apps/reef -- shell/navigation
 npm run test:e2e --prefix apps/reef -- --help
 
@@ -108,7 +109,7 @@ order. Actor, recording label and setup/interaction purpose are separate fields;
 repeated logins retain separate recording numbers. Retries/repeats keep their
 recordings under separate attempts, with the runner's final outcome on the parent.
 Recording pages provide compact named screenshot thumbnails and inline source.
-Recordings autoplay muted with playback controls and inline mobile playback.
+In film mode, recordings autoplay muted with playback controls and inline mobile playback.
 Use **Playback speed** to select 0.1×, 0.25×, or 1× (normal). Changing speed
 does not restart playback or change the recording. Step times are
 since session start, **not video seek positions**. Source snapshots may contain
@@ -119,8 +120,9 @@ available as secondary downloads. Inspect traces locally from `apps/reef` with:
 npx playwright show-trace e2e/runs/<run>/<target>/<scenario>/sessions/<session>/trace.zip
 ```
 
-Fast mode records without artificial pauses. Film mode uses 400 ms Playwright
-slowdown and 1.5 seconds after each successful step. Neither replaces readiness
+Fast mode, the default, records no video and adds no pauses. Film mode records a
+video of each session, with 400 ms Playwright slowdown and 1.5 seconds after each
+successful step. Neither replaces readiness
 checks. Playwright records the page viewport, **not** native browser chrome,
 Desktop windows or other popup pages.
 
@@ -556,12 +558,13 @@ The custom Vitest reporter owns scenario identity, final result and total timing
 `withBrowserSession` owns only its uniquely identified child recording. Artifact
 attempts are bounded and independent;
 a screenshot/trace failure cannot prevent browser shutdown or replace an original
-assertion/timeout. A green recorded test requires video, trace and browser cleanup.
-Only optional MP4 conversion can fail without failing an otherwise passing test;
-`session.webm` is preserved. Each command checks ffmpeg once before target setup. If it
+assertion/timeout. A green recorded test requires a trace and browser cleanup, and
+in film mode a video. Only optional MP4 conversion can fail without failing an
+otherwise passing test; `session.webm` is preserved. Each film command checks ffmpeg
+once before target setup. If it
 is missing or cannot start, one setup notice explains the WebM-only fallback;
 recordings do not repeat conversion attempts or warnings. If an available ffmpeg
-later fails to convert a recording, that recording still gets its normal warning. The self-check deliberately removes ffmpeg from its
+later fails to convert a recording, that recording still gets its normal warning. The self-check runs in film mode, deliberately removes ffmpeg from its
 configuration and decodes passing, failing and timeout recordings in Chromium.
 It also checks nested sessions, duplicate labels/names, retries, skips, failures
 before recording and failures after sessions close, including cleanup hooks.
@@ -653,7 +656,8 @@ Keep later journeys with the work that owns them:
 `runs/<timestamp-uuid>/<target>/<scenario-id>/` contains the runner-owned
 `scenario.json`, source snapshot and scenario page. Each
 `sessions/<session-uuid>/` beneath it contains its own `result.json`, source
-snapshot, video, `trace.zip`, numbered screenshots and optional `failure.png`.
+snapshot, `trace.zip`, numbered screenshots, optional `failure.png`, and in film
+mode a video.
 The session metadata references its parent scenario ID and records an explicit
 sequence, attempt, actor, label and purpose. No grouping is inferred from names.
 The reporter owns the command's `run.json`: commit, dirty-checkout flag, selected

@@ -70,6 +70,7 @@ pub(super) fn provider_view(
             .unwrap_or_default(),
         call_root: call_root.as_str().into(),
         builtin: matches!(call_root, ProviderCallRoot::Builtin),
+        icon_digest: provider.icon_digest().unwrap_or_default().into(),
         credential_route: Some(credential_route(provider.credential_route())),
         account_setting_version: provider.account_setting_version(),
         blockers: blockers
@@ -949,6 +950,72 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
                 &domain::ProviderId::parse(id).map_err(error)?,
                 domain::ProviderDisplayName::parse(&req.display_name).map_err(error)?,
             )
+            .await
+            .map_err(error)?;
+        self.provider_projection(context.actor(), &workspace, provider.id())
+            .await
+            .map(Response::new)
+    }
+
+    #[tracing::instrument(skip_all, name = "coral.private.get_provider_icon")]
+    async fn get_provider_icon(
+        &self,
+        request: Request<wire::GetProviderIconRequest>,
+    ) -> Result<Response<wire::ProviderIcon>, Status> {
+        let user = self.management_user(&request).await?;
+        let (workspace, id) = resource(&request.get_ref().name, "providers")?;
+        let icon = self
+            .providers
+            .inspect_provider_icon(
+                &user,
+                &workspace,
+                &domain::ProviderId::parse(id).map_err(error)?,
+            )
+            .await
+            .map_err(error)?
+            .ok_or_else(|| safe_status(tonic::Code::NotFound, "NOT_FOUND"))?;
+        Ok(Response::new(wire::ProviderIcon {
+            media_type: icon.media_type().as_str().into(),
+            digest: icon.digest().into(),
+            content: icon.into_content(),
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "coral.private.set_provider_icon")]
+    async fn set_provider_icon(
+        &self,
+        request: Request<wire::SetProviderIconRequest>,
+    ) -> Result<Response<wire::Provider>, Status> {
+        let context = change(self.management_user(&request).await?)?
+            .with_etag(&request.get_ref().etag)
+            .map_err(super::workspaces::error)?;
+        let req = request.into_inner();
+        let (workspace, id) = resource(&req.name, "providers")?;
+        let id = domain::ProviderId::parse(id).map_err(error)?;
+        let icon = domain::ProviderIcon::parse(req.content).map_err(error)?;
+        let provider = self
+            .providers
+            .set_provider_icon(&context, &workspace, &id, Some(icon))
+            .await
+            .map_err(error)?;
+        self.provider_projection(context.actor(), &workspace, provider.id())
+            .await
+            .map(Response::new)
+    }
+
+    #[tracing::instrument(skip_all, name = "coral.private.delete_provider_icon")]
+    async fn delete_provider_icon(
+        &self,
+        request: Request<wire::DeleteProviderIconRequest>,
+    ) -> Result<Response<wire::Provider>, Status> {
+        let context = change(self.management_user(&request).await?)?
+            .with_etag(&request.get_ref().etag)
+            .map_err(super::workspaces::error)?;
+        let (workspace, id) = resource(&request.get_ref().name, "providers")?;
+        let id = domain::ProviderId::parse(id).map_err(error)?;
+        let provider = self
+            .providers
+            .set_provider_icon(&context, &workspace, &id, None)
             .await
             .map_err(error)?;
         self.provider_projection(context.actor(), &workspace, provider.id())

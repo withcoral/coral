@@ -600,3 +600,18 @@ export const requiredMark = style({
   color: theme.content.error,
   '::after': { content: '"*" / ""' },
 })
+
+// The current logo beside the controls that change it.
+export const iconRow = style({
+  alignItems: 'flex-start',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 16,
+})
+export const iconUpload = style({
+  display: 'flex',
+  flex: '1 1 240px',
+  flexDirection: 'column',
+  gap: 8,
+  minWidth: 0,
+})

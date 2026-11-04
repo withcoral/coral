@@ -20,9 +20,9 @@ export interface Session {
 export interface SessionSurface {
   context: BrowserContext
   page: Page
-  /** Ends the context, which finalizes its video. */
+  /** Ends the context, which finalizes a film's video. */
   closeContext(): Promise<void>
-  /** Saves the finalized video. */
+  /** Saves the finalized video. Only a film records one. */
   saveVideo(path: string): Promise<void>
   /** Closes whatever launched the context. Safe to call again. */
   closeOwner(): Promise<void>
@@ -34,6 +34,7 @@ export type OpenSurface = (recording: {
   baseURL: string
   videoDir: string
   size: { width: number; height: number }
+  /** Records a video, slowed down for a person to watch. */
   film: boolean
 }) => Promise<SessionSurface>
 
@@ -100,6 +101,7 @@ export async function withBrowserSession(
     scenario: test.task.name,
     source: relative(reefRoot, source),
     target: config.target.name,
+    film: config.film,
     status: 'passed',
     startedAt: new Date(started).toISOString(),
     durationMs: 0,
@@ -144,12 +146,13 @@ export async function withBrowserSession(
           result.trace = 'trace.zip'
         })
         await attempt('Context close', () => surface!.closeContext())
-        await attempt('Video', async () => {
-          await surface!.saveVideo(join(dir, 'session.webm'))
-          result.recording = 'session.webm'
-          // Remove Playwright scratch files only after a durable WebM exists.
-          await rm(join(dir, '.video'), { recursive: true, force: true })
-        })
+        if (config.film)
+          await attempt('Video', async () => {
+            await surface!.saveVideo(join(dir, 'session.webm'))
+            result.recording = 'session.webm'
+            // Remove Playwright scratch files only after a durable WebM exists.
+            await rm(join(dir, '.video'), { recursive: true, force: true })
+          })
         await attempt('Browser close', () => surface!.closeOwner())
       }
       result.browserClosed = surface?.ownerClosed() ?? true
@@ -187,7 +190,8 @@ export async function withBrowserSession(
           22_000,
         )
       const originalFailed = result.status === 'failed'
-      const missingEvidence = !result.recording || !result.trace || !result.browserClosed
+      const missingEvidence =
+        (config.film && !result.recording) || !result.trace || !result.browserClosed
       if (result.status === 'passed' && missingEvidence) {
         result.status = 'failed'
         result.failure = 'Recording, trace, or browser cleanup failed; see artifact warnings'
@@ -290,7 +294,7 @@ function openChromium(storageState: BrowserContextOptions['storageState']): Open
         viewport: size,
         colorScheme: 'dark',
         storageState,
-        recordVideo: { dir: videoDir, size },
+        ...(film ? { recordVideo: { dir: videoDir, size } } : {}),
       })
       const page = await context.newPage()
       const video = page.video()

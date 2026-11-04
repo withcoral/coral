@@ -40,7 +40,6 @@ import {
   sourceButtonLabel,
   sourceSearch,
   sourcesInOrder,
-  type RecipeIcons,
   type ServiceChoices,
 } from '@/lib/provider-recipes/choice'
 import { ActionNotice, Fields } from '@/views/management/forms'
@@ -68,7 +67,6 @@ import type {
   WorkspaceProvidersPageProps,
 } from './types'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
-import { CORAL_ICONS } from './coral-icons'
 import * as styles from './providers.css'
 
 /** Coral's own mark, which stands for the Built-in Provider. */
@@ -177,18 +175,6 @@ function WorkspaceProvidersContent({
   const location = useLocation()
   const [railFilter, setRailFilter] = useState('')
   const sortedProviders = useMemo(() => sortProviders(installed), [installed])
-  // A provider added from a recipe usually keeps the recipe's id as its
-  // namespace, so that recipe's logo stands for it; otherwise a lettermark.
-  // Coral's mark stands for the Built-in Provider.
-  const recipeIcons = useMemo(
-    () => new Map(recipes.flatMap((recipe) => (recipe.icons ? [[recipe.id, recipe.icons]] : []))),
-    [recipes],
-  )
-  const providerIcons = useCallback(
-    (provider: ProviderView) =>
-      provider.builtin ? CORAL_ICONS : recipeIcons.get(provider.namespace),
-    [recipeIcons],
-  )
   const entry = {
     form,
     pending,
@@ -267,7 +253,6 @@ function WorkspaceProvidersContent({
           form={form}
           providers={sortedProviders}
           providersPath={providersPath}
-          providerIcons={providerIcons}
           railFilter={railFilter}
           selectedProvider={selected ?? null}
           selectedTool={tool ?? null}
@@ -557,7 +542,6 @@ function ProvidersTableScreen({
   form,
   providers,
   providersPath,
-  providerIcons,
   railEmpty,
   railFilter,
   selectedProvider,
@@ -575,8 +559,6 @@ function ProvidersTableScreen({
   providers: ProviderView[]
   /** The address of every provider's tab. */
   providersPath: string
-  /** Recipe logos by namespace, for providers that kept the recipe's id. */
-  providerIcons: (provider: ProviderView) => RecipeIcons | undefined
   /** What the rail shows when its filter matches no provider; null while one matches. */
   railEmpty: CatalogRailEmpty | null
   railFilter: string
@@ -1041,7 +1023,7 @@ function ProvidersTableScreen({
                     blockers={mutations.blockers(provider)}
                     personalAccountAction={provider.personalAccountAction}
                   />
-                  <Logo name={providerLabel(provider)} icons={providerIcons(provider)} size="20" />
+                  <Logo name={providerLabel(provider)} icons={provider.icons} size="20" />
                 </>
               }
               name={providerLabel(provider)}
@@ -1146,7 +1128,6 @@ function ProvidersTableScreen({
             policyFilter={policyFilter?.value ?? null}
             query={tableQuery}
             virtual={virtual}
-            providerIcons={providerIcons}
             sections={sections}
             selected={selected}
             showSelected={showSelected}
@@ -1254,7 +1235,6 @@ const TableSections = memo(function TableSections({
   markRevealed,
   onToggleCollapsed,
   policyFilter,
-  providerIcons,
   query,
   sections,
   selected,
@@ -1274,7 +1254,6 @@ const TableSections = memo(function TableSections({
   /** Collapses or expands the heading with this key, at this row index and depth. */
   onToggleCollapsed: (key: string, index: number, depth: number) => void
   policyFilter: PolicyFilter['value'] | null
-  providerIcons: (provider: ProviderView) => RecipeIcons | undefined
   /** The tool filter, bolded where it matches a name. */
   query: FilterQuery
   sections: ProviderSection[]
@@ -1304,7 +1283,7 @@ const TableSections = memo(function TableSections({
             <>
               <Logo
                 name={providerLabel(section.provider)}
-                icons={providerIcons(section.provider)}
+                icons={section.provider.icons}
                 size="20"
               />
               <Typography.BodyStrong as="span">

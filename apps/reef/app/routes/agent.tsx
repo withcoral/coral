@@ -18,7 +18,6 @@ import {
   authorizationProgressPath,
   loadAgentProviders,
 } from '@/lib/accounts.server'
-import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
 import { callbackRedirectUri } from '@/lib/provider-publication-attempt/setup.server'
 import { agentView, workspaceView } from '@/lib/management-views.server'
 import { LiveActivity } from './activity-live'
@@ -72,11 +71,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
         mode: 'current' as const,
         workspace: workspaceView(workspace),
         agent: agentView(agent),
-        providers:
-          providers?.map((provider) => ({
-            ...provider,
-            icons: RECIPE_CHOICES.find((r) => r.id === provider.namespace)?.icons,
-          })) ?? null,
+        providers,
         form: formContext(context),
         activity,
         providerMarks: await providerMarks,

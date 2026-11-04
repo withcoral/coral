@@ -30,6 +30,7 @@ import { authorizedWorkspace } from './workspace-route.server'
 import { loadRevision } from './action-count.server'
 import {
   blockerLabel,
+  providerIcons,
   providerLogos,
   providerName,
   routeChoice,
@@ -340,6 +341,7 @@ export async function loadAgentProviders(
       provider: provider.name,
       name: provider.displayName,
       namespace: provider.namespace,
+      icons: providerIcons(provider),
       account,
       blockers: provider.blockers.map(blockerLabel),
     }

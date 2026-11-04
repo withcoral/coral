@@ -1,6 +1,6 @@
 import { create } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
-import { beforeEach, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   CredentialRoute_Kind,
@@ -13,7 +13,8 @@ import {
   ProviderAccountScope,
   ProviderAccountState,
 } from '@/generated/coral/management/v1/account_pb'
-import { loader } from './provider-settings'
+import { authRouteTestArgs } from '@/auth/server-context.test-helper'
+import { action, loader } from './provider-settings'
 
 const mocks = vi.hoisted(() => ({ workspace: vi.fn() }))
 vi.mock('@/lib/workspace-route.server', () => ({ authorizedWorkspace: mocks.workspace }))
@@ -287,4 +288,110 @@ it('says whether the provider is enabled and has tools ready', async () => {
 
   responses['providers.getProvider'] = () => provider()
   expect((await load()).provider).toMatchObject({ enabled: true, toolsReady: true })
+})
+
+// Catches: an uploaded icon losing to the recipe's logo, or a provider
+// without one offering a removal.
+it('shows the uploaded icon first and lets an owner remove only that', async () => {
+  signedInAs('member')
+  // GitLab's recipe logo stands for a provider that keeps its namespace.
+  const recipe = (await load()).provider as { icons?: { light: string }; uploadedIcon: boolean }
+  expect(recipe.uploadedIcon).toBe(false)
+  expect(recipe.icons?.light).not.toContain('/icon?v=')
+
+  responses['providers.getProvider'] = () => provider({ iconDigest: 'digest-1' })
+  expect((await load()).provider).toMatchObject({
+    uploadedIcon: true,
+    icons: { light: `/${name}/icon?v=digest-1` },
+  })
+})
+
+/** Posts the icon form as a same-origin browser would, with `icon` as the chosen file. */
+async function post(intent: string, icon?: File) {
+  const form = new FormData()
+  form.set('intent', intent)
+  form.set('provider', providerId)
+  form.set('etag', 'etag-1')
+  if (icon) form.set('icon', icon)
+  const origin = 'http://127.0.0.1:3000'
+  const result = (await action(
+    authRouteTestArgs(
+      new Request(`${origin}/workspaces/${workspaceId}/providers/${providerId}/settings`, {
+        method: 'POST',
+        headers: { origin },
+        body: form,
+      }),
+      { workspace: workspaceId, provider: providerId },
+      null,
+    ) as never,
+  )) as unknown as { data: { error: string | null; message?: string }; init?: ResponseInit }
+  return { ...result.data, status: result.init?.status ?? 200 }
+}
+
+const png = (size: number) => new File([new Uint8Array(size)], 'logo.png', { type: 'image/png' })
+
+describe('icon changes', () => {
+  const sent: Record<string, unknown>[] = []
+  beforeEach(() => {
+    sent.length = 0
+    for (const method of ['setProviderIcon', 'deleteProviderIcon'])
+      responses[`providers.${method}`] = (request) => {
+        sent.push({ method, ...(request as object) })
+        return provider()
+      }
+    signedInAs('owner')
+  })
+
+  // Catches: an empty or oversized file reaching Coral, which would answer
+  // with a generic error instead of the rule the reader must follow.
+  it.each([
+    ['no file', undefined, 'Choose an icon file.'],
+    ['an empty file', png(0), 'Choose an icon file.'],
+    ['a file over 100 KiB', png(100 * 1024 + 1), 'This file is too large.'],
+  ])('refuses %s before it calls Coral', async (_, icon, error) => {
+    expect(await post('setProviderIcon', icon)).toMatchObject({
+      status: 400,
+      error: `${error} Use a PNG, JPEG, WebP or SVG file of 100 KiB or less.`,
+    })
+    expect(sent).toEqual([])
+  })
+
+  // Catches: the file sent as text or without the etag it was chosen against.
+  it('sends the file bytes with the etag', async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
+    expect(
+      await post('setProviderIcon', new File([bytes], 'logo.png', { type: 'image/png' })),
+    ).toMatchObject({ error: null, message: 'Icon saved.' })
+    expect(sent).toEqual([{ method: 'setProviderIcon', name, etag: 'etag-1', content: bytes }])
+  })
+
+  // Catches: Coral refusing the image shown as a generic form error.
+  it('explains an image Coral refuses', async () => {
+    responses['providers.setProviderIcon'] = () => {
+      throw new ConnectError('INVALID_PROVIDER_INPUT', Code.InvalidArgument)
+    }
+    expect(await post('setProviderIcon', png(10))).toMatchObject({
+      status: 400,
+      error:
+        'Coral cannot use this file as an icon. Use a PNG, JPEG, WebP or SVG file of 100 KiB or less.',
+    })
+  })
+
+  // Catches: another invalid argument, such as a malformed etag, blamed on the file.
+  it('does not blame the file for another invalid argument', async () => {
+    responses['providers.setProviderIcon'] = () => {
+      throw new ConnectError('INVALID_ARGUMENT', Code.InvalidArgument)
+    }
+    const result = await post('setProviderIcon', png(10))
+    expect(result).toMatchObject({ status: 400 })
+    expect(result.error).not.toContain('Coral cannot use this file as an icon.')
+  })
+
+  it('removes the icon with the etag', async () => {
+    expect(await post('deleteProviderIcon')).toMatchObject({
+      error: null,
+      message: 'Icon removed.',
+    })
+    expect(sent).toEqual([{ method: 'deleteProviderIcon', name, etag: 'etag-1' }])
+  })
 })

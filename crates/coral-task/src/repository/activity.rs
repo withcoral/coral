@@ -37,6 +37,7 @@ pub(crate) struct ContextTotals {
 
 /// Sums the Task's measured participating children, across the whole Task.
 /// A child without bytes adds nothing, including a Run hidden from `authority`.
+/// Only a child with a Run measures it, so the cost follows the Task's children.
 pub(crate) async fn context_totals(
     tx: &mut Transaction<'_>,
     authority: &HistoryAuthority,
@@ -44,25 +45,22 @@ pub(crate) async fn context_totals(
     task: &TaskId,
 ) -> Result<ContextTotals, Error> {
     use coral_db::col;
-    use sea_query::{Func, JoinType};
+    use sea_query::Func;
+    let measurement = coral_run::history_repository::context_measurement(
+        authority,
+        col("interaction", "workspace_id"),
+        col("interaction", "run_id"),
+    );
     let bytes = Expr::case(
-        col("interaction", "run_id").is_not_null(),
-        col("measurement", "context_impact_bytes"),
+        col("interaction", "run_id").is_null(),
+        col("interaction", "response_bytes"),
     )
-    .finally(col("interaction", "response_bytes"));
-    let running_child = Expr::case(col("measurement", "running"), Expr::val(1_i64));
+    .finally(measurement.bytes);
+    let running_child = Expr::case(measurement.running, Expr::val(1_i64));
     let children = Query::select()
         .expr_as(bytes, Alias::new("bytes"))
         .expr_as(running_child, Alias::new("running_child"))
         .from_as(Alias::new("task_interactions"), Alias::new("interaction"))
-        .join_subquery(
-            JoinType::LeftJoin,
-            coral_run::history_repository::context_measurements(authority),
-            Alias::new("measurement"),
-            col("interaction", "workspace_id")
-                .eq(col("measurement", "workspace_id"))
-                .and(col("interaction", "run_id").eq(col("measurement", "id"))),
-        )
         .and_where(col("interaction", "workspace_id").eq(workspace.to_string()))
         .and_where(col("interaction", "task_id").eq(task.to_string()))
         .and_where(

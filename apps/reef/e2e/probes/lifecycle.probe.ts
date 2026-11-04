@@ -24,6 +24,7 @@ for (const outcome of ['pass', 'assertion', 'timeout', 'after-session'] as const
         expect('actual', 'REEL_LATE_ASSERTION').toBe('expected')
       }
     },
-    outcome === 'timeout' ? 5000 : 30_000,
+    // The timeout probe's one step must finish first, at film pacing.
+    outcome === 'timeout' ? 10_000 : 30_000,
   )
 }

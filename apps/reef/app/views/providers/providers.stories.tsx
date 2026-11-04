@@ -6,6 +6,7 @@ import type { CreationAttempt, UpdateAttempt } from '@/lib/provider-publication-
 import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import githubIcon from '../../../recipes/github/github.svg'
 import stripeIcon from '../../../recipes/stripe/stripe.svg'
+import { CORAL_ICONS } from './coral-icons'
 import { StepperPage } from './stepper-page'
 import type { ProviderView, ToolDetailView, ToolView, ReviewToolView, SetupView } from './types'
 import { UpdatePage } from './update-page'
@@ -91,6 +92,7 @@ const github: ProviderView = {
   path: '/workspaces/demo/providers/prov-github',
   enabled: true,
   tools: githubOps('prov-github'),
+  icons: { light: githubIcon },
 }
 const weather: ProviderView = {
   id: 'prov-weather',
@@ -124,6 +126,7 @@ const blocked: ProviderView = {
   id: 'prov-hr',
   displayName: 'HR system',
   namespace: 'hr',
+  icons: undefined,
   account: 'One shared account',
   enabled: false,
   blockers: ['Provider disabled'],
@@ -154,6 +157,7 @@ const coral: ProviderView = {
   namespace: '',
   callRoot: 'coral.workspace',
   builtin: true,
+  icons: CORAL_ICONS,
   path: '/workspaces/demo/providers/prov-coral',
   readyCount: coralTools.length,
   totalCount: coralTools.length,
@@ -371,6 +375,7 @@ const largeProviders: ProviderView[] = Array.from({ length: 6 }, (_, providerInd
     id,
     displayName: `API ${providerIndex + 1}`,
     namespace: `api${providerIndex + 1}`,
+    icons: undefined,
     path: `/workspaces/demo/providers/${id}`,
     readyCount: tools.length,
     totalCount: tools.length,

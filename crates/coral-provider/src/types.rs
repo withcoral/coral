@@ -339,6 +339,7 @@ pub struct Provider {
     display_name: ProviderDisplayName,
     state: ProviderState,
     version: i64,
+    icon_digest: Option<String>,
 }
 impl Provider {
     pub(crate) const fn new(
@@ -351,11 +352,21 @@ impl Provider {
             display_name,
             state,
             version: 1,
+            icon_digest: None,
         }
     }
     pub(crate) const fn with_version(mut self, version: i64) -> Self {
         self.version = version;
         self
+    }
+    pub(crate) fn with_icon_digest(mut self, icon_digest: Option<String>) -> Self {
+        self.icon_digest = icon_digest;
+        self
+    }
+    /// Names the content of the icon an Owner uploaded; none without one.
+    #[must_use]
+    pub fn icon_digest(&self) -> Option<&str> {
+        self.icon_digest.as_deref()
     }
     pub(crate) const fn version(&self) -> i64 {
         self.version

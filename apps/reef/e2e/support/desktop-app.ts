@@ -75,12 +75,12 @@ export async function withDesktopApp(
     },
     {
       label: options.label ?? 'Desktop window',
-      async open({ videoDir, size }) {
+      async open({ videoDir, size, film }) {
         const launched = await _electron.launch({
           executablePath: desktop.executable,
           env: { ...desktop.env, ...profile.env },
           colorScheme: 'dark',
-          recordVideo: { dir: videoDir, size },
+          ...(film ? { recordVideo: { dir: videoDir, size } } : {}),
           timeout: 30_000,
         })
         app = launched

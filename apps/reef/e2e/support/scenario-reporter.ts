@@ -46,7 +46,10 @@ export default class ScenarioReporter implements Reporter {
       await mkdir(join(config.runDir, name), { recursive: true })
       await json(join(config.runDir, name, 'target.json'), { name, state: 'waiting', pids: [] })
     }
-    const converter = await detectFfmpeg(config.ffmpegBinary)
+    // Only a film records video, so only a film needs the converter.
+    const converter = config.film
+      ? await detectFfmpeg(config.ffmpegBinary)
+      : { binary: null, notice: undefined }
     if (converter.notice) console.warn(`Reel: ${converter.notice}`)
     for (const project of projects) {
       project.provide('reelBootstrap', {

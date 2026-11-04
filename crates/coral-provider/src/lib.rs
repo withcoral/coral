@@ -24,6 +24,8 @@ pub use change::{Committed, SearchChange};
 #[cfg(test)]
 mod credential_lifecycle_tests;
 mod error;
+mod icon;
+pub use icon::{MAX_PROVIDER_ICON_BYTES, ProviderIcon, ProviderIconMediaType};
 mod lifecycle;
 mod management;
 pub use management::{ProviderSource, ProviderWithConfiguration};

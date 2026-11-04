@@ -168,6 +168,20 @@ impl Fixture {
         user
     }
 
+    /// Creates another Workspace that the fixture's User owns.
+    async fn owned_workspace(&self, name: &str) -> coral_workspace::WorkspaceId {
+        self.tasks
+            .workspaces
+            .create(
+                &ChangeContext::new(self.user.clone(), 1, coral_test_support::trace('1')),
+                WorkspaceDisplayName::parse(name).unwrap(),
+            )
+            .await
+            .unwrap()
+            .id()
+            .clone()
+    }
+
     async fn goal(&self) -> Task {
         self.tasks
             .start(
