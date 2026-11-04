@@ -241,7 +241,7 @@ pub(super) fn pending_invocation() -> SimpleExpr {
         .eq(col("i", "workspace_id"))
         .and(col("a", "invocation_id").eq(col("i", "id")))
         .and(col("a", "run_id").eq(col("i", "run_id")))
-        .and(col("i", "state").eq("pending"))
+        .and(crate::history_repository::invocation_pending())
         .and(col("a", "state").eq(ApprovalState::Pending.storage()))
         .and(coral_policy::history_repository::approval_required(
             column("workspace_id"),
