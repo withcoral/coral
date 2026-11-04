@@ -106,7 +106,7 @@ struct Action {
     /// When acting stops helping this Run: the Run ends `timed_out` at its deadline.
     #[schemars(schema_with = "timestamp_schema")]
     deadline_at: String,
-    /// Absolute URL of the page where the person decides this entry, signed in to Coral: the Approvals Page with this request open, or the Run's page for a connection. Pass it on exactly as given. It grants no approval or access authority.
+    /// Absolute URL of the page where the person decides this entry, signed in to Coral: the approval request in review, or the Run's page for a connection. Pass it on exactly as given. It grants no approval or access authority.
     #[schemars(extend("format" = "uri"))]
     url: String,
 }
@@ -367,6 +367,36 @@ fn project_run_update<Task: Serialize>(
     })?;
     result.content.extend(rich);
     Ok(result)
+}
+
+/// One line for the person while a call holds: what the Run waits for from
+/// them and where to act. None when nothing waits on the invoking User.
+pub(crate) fn handoff_progress(
+    update: &RunUpdate,
+    human_interface: &crate::HumanInterfaceUrl,
+) -> Option<String> {
+    let action = update
+        .required_actions()
+        .iter()
+        .find(|action| action.required_actor == RequiredActor::InvokingUser)?;
+    let url = human_interface.page_url(&action.action_path);
+    let provider = action
+        .provider_label
+        .as_deref()
+        .map(|label| format!(" ({label})"))
+        .unwrap_or_default();
+    // The link comes first: a client that cuts the line keeps it whole.
+    Some(match (&action.request, action.call_path.as_deref()) {
+        (RequiredActionRequest::InvocationApproval(_), Some(tool)) => {
+            format!("{url} · approve {tool}{provider}")
+        }
+        (RequiredActionRequest::InvocationApproval(_), None) => {
+            format!("{url} · approve a tool call{provider}")
+        }
+        (RequiredActionRequest::AccountConnection(_), _) => {
+            format!("{url} · connect your{provider} account")
+        }
+    })
 }
 
 fn required_action(action: &RequiredAction, human_interface: &crate::HumanInterfaceUrl) -> Action {

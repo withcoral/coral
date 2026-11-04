@@ -150,8 +150,9 @@ pub struct RequiredAction {
     /// Request deadline in Unix nanoseconds.
     pub deadline_at_unix_nanos: i64,
     /// Stable, non-secret root-relative Reef path of the page where the person
-    /// decides this request: the Approvals Page with the request open, or the
-    /// Run's page with the connection request open. Adapters resolve the Reef origin.
+    /// decides this request: the Approval Request's own address, which opens
+    /// it in review, or the Run's page for a connection request. Adapters
+    /// resolve the Reef origin. Kept short: a client shows it on one line.
     pub action_path: String,
     /// The waiting Tool's Call Path; absent when one shared connection request
     /// spans Invocations of different Tools.
@@ -398,10 +399,7 @@ pub(crate) async fn snapshot(
     };
     let mut actions = Vec::new();
     for (id, deadline) in approval::pending_for_run(tx, run).await? {
-        let action_path = format!(
-            "/workspaces/{ws}/approvals?request=workspaces/{ws}/approvals/{id}",
-            ws = run.workspace_id
-        );
+        let action_path = format!("/workspaces/{}/approvals/{id}", run.workspace_id);
         actions.push(RequiredAction {
             request: RequiredActionRequest::InvocationApproval(id),
             required_actor,
@@ -422,11 +420,8 @@ pub(crate) async fn snapshot(
                 )
                 .await?
             {
-                let action_path = format!(
-                    "/workspaces/{ws}/runs/{run}?request=workspaces/{ws}/accountConnections/{id}",
-                    ws = run.workspace_id,
-                    run = run.id
-                );
+                // The Run's page opens its first waiting connection request itself.
+                let action_path = format!("/workspaces/{}/runs/{}", run.workspace_id, run.id);
                 actions.push(RequiredAction {
                     request: RequiredActionRequest::AccountConnection(id),
                     required_actor: RequiredActor::InvokingUser,

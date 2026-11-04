@@ -69,7 +69,7 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
           .toBe(1)
         const observed = await runner.wait(waiting.structuredContent)
         const required = observed.structuredContent.required_actions[0]
-        expect(new URL(required.url).pathname).toBe(`/${workspace.name}/approvals`)
+        expect(new URL(required.url).pathname).toMatch(new RegExp(`^/${workspace.name}/approvals/[^/]+$`))
         expect(Date.parse(required.deadline_at) - Date.now()).toBeGreaterThan(10 * 60_000)
         await page.goto(required.url)
         if (decision === 'approvals-row') {

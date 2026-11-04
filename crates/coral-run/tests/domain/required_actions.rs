@@ -856,14 +856,16 @@ async fn required_actions_name_their_request_and_ignore_event_paging() {
         assert_eq!(action.required_actor, crate::RequiredActor::InvokingUser);
         let expected = match &action.request {
             crate::RequiredActionRequest::InvocationApproval(id) => {
-                format!("/workspaces/{scope}/approvals?request=workspaces/{scope}/approvals/{id}")
+                format!("/workspaces/{scope}/approvals/{id}")
             }
-            crate::RequiredActionRequest::AccountConnection(id) => format!(
-                "/workspaces/{scope}/runs/{}?request=workspaces/{scope}/accountConnections/{id}",
-                mixed.run
-            ),
+            crate::RequiredActionRequest::AccountConnection(_) => {
+                format!("/workspaces/{scope}/runs/{}", mixed.run)
+            }
         };
-        assert_eq!(action.action_path, expected, "each entry links its own review");
+        assert_eq!(
+            action.action_path, expected,
+            "each entry links its own review"
+        );
         assert!(
             action
                 .call_path

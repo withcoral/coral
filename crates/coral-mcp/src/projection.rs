@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 pub(crate) use function::{SavedFunctionResult, saved_function};
-pub(crate) use run::{ExecResult, ObservedRun, Reporter, run_update};
+pub(crate) use run::{ExecResult, ObservedRun, Reporter, handoff_progress, run_update};
 
 /// Every Coral-owned result keeps the SDK's compact JSON text of
 /// `structuredContent` as `content[0]`, as both served MCP versions advise.

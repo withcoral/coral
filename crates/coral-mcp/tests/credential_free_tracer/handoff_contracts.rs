@@ -149,7 +149,7 @@ fn approval_url(endpoint: &str, request: &Value) -> String {
         .and_then(|path| path.split('/').next())
         .expect("Workspace identity");
     format!(
-        "https://reef.example.test/workspaces/{workspace}/approvals?request=workspaces/{workspace}/approvals/{}",
+        "https://reef.example.test/workspaces/{workspace}/approvals/{}",
         request.as_str().expect("request identity")
     )
 }
@@ -247,6 +247,60 @@ async fn agent_sessions_learn_an_owner_must_act_and_are_never_prompted() {
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         agents_are_never_prompted(&tracer.endpoint(), version, &tracer.agent_credential).await;
     }
+}
+
+/// A client that asks for progress is shown what the Run waits for while
+/// `wait` holds: one progress message on the call's own response stream, the
+/// link first, so a client that cuts the line keeps it. A client that sends
+/// no token gets only the Run Update.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wait_reports_the_link_as_progress_for_a_client_that_asks() {
+    let tracer = approval_tracer().await;
+    let endpoint = tracer.endpoint();
+    let version = SUPPORTED_PROTOCOL_VERSIONS
+        .last()
+        .expect("a supported version");
+    let session = super::RawSession::open(&endpoint, version).await;
+    let task = session.start_task("Show progress").await;
+    let update = session
+        .tool(
+            "exec",
+            json!({"task_id":task, "intent":"Invoke an approval-gated Tool", "wait_ms":5000, "program":PROGRAM}),
+        )
+        .await;
+    let page = &update["structuredContent"];
+    let action = &page["required_actions"][0];
+    assert_eq!(action["kind"], "invocation_approval", "{update}");
+    let arguments = json!({"run_id":page["run_id"], "cursor":page["next_cursor"], "wait_ms":500});
+    let streamed = session
+        .tool_messages(json!({
+            "name":"wait", "arguments":arguments,
+            "_meta":{"progressToken":"handoff-1"}
+        }))
+        .await;
+    let [progress, answer] = streamed.as_slice() else {
+        panic!("one progress message, then the answer: {streamed:?}")
+    };
+    assert_eq!(progress["method"], "notifications/progress", "{streamed:?}");
+    assert_eq!(progress["params"]["progressToken"], "handoff-1");
+    let message = progress["params"]["message"]
+        .as_str()
+        .expect("a progress message");
+    let url = action["url"].as_str().expect("the entry's link");
+    assert!(
+        message.starts_with(&format!(
+            "{url} · approve coral.providers.weather.getForecast"
+        )),
+        "the link comes first: {message}"
+    );
+    assert!(answer.get("result").is_some(), "{answer}");
+    let quiet = session
+        .tool_messages(json!({"name":"wait", "arguments":arguments}))
+        .await;
+    assert_eq!(quiet.len(), 1, "no token, no progress: {quiet:?}");
+    session
+        .tool("cancel", json!({"run_id":page["run_id"]}))
+        .await;
 }
 
 /// Every version declares form mode here, and none is asked: Coral keeps no

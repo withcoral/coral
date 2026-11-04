@@ -30,8 +30,7 @@ Coral runs TypeScript Programs that call the user's connected providers.
 
 ## Human handoff
 A non-empty `required_actions` means the Run waits for a person.
-- If an entry names `invoking_user`, end your turn with its `url`: the user sees only your final reply. Call `wait` when they write back.
-- Otherwise keep calling `wait`.
+- For `invoking_user`, write the full `url` as reply text, then keep calling `wait`: it reports the link as progress while it holds, and the decision resumes the Run.
 - Never ask for a token, password or account in the chat: a connection happens on that page.
 ";
 
