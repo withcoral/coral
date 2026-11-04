@@ -135,7 +135,7 @@ the account page for the Provider is the page for a connection, and the Run Stat
   its own; the review moves to the Run's next pending request when there is one, in the order the requests were made.
 - An Account Connection Request's link opens the person's own account page for the Provider,
   `/workspaces/<workspace>/accounts/<provider>`, whose one Connect control goes straight to the Provider's sign-in.
-  Sign-in returns to the Workspace's Activity, where the Run continues.
+  Sign-in returns to the same account page, which shows the account connected.
 - "Approve all" decides each open Approval Request of the Run on its own, and there is no "Deny all".
 - From the review, a Workspace Owner can stop the Tool from asking again, through a confirmed change that sets the
   Tool's policy to `enabled`; the waiting call continues, as the glossary's Approval Request entry says.
