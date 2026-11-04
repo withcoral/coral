@@ -91,8 +91,8 @@ summary. Codex wrote the link as text before its first wait. Making the link the
   told, so it is the loop's outer bound.
 - **The page is the request.** The link opens the request, not a list: an Approval Request's own address opens the
   Approvals Page with that request in review, its exact arguments in view; a connection request's link opens the
-  Run's page, which opens the request. After the last decision the page tells the person to go back to their AI app.
-  The section below settles the pages.
+  person's own account page for the Provider, whose Connect control is the request. After the last decision the page
+  tells the person to go back to their AI app. The section below settles the pages.
 
 ## Consequences
 
@@ -127,13 +127,15 @@ summary. Codex wrote the link as text before its first wait. Making the link the
 The page the assistant's link opens is where the person decides, so it opens the request, not an activity list
 ([the prototype decision](https://github.com/withcoral/coral/issues/2739#issuecomment-6520881303)). The Approvals Page
 landed while this decision was being made (#2805) and already decides Approval Requests with the exact arguments in
-view, so it is the page for an approval; the Run Status Page keeps the Run's record and the connection request.
+view, so it is the page for an approval. The same change moved connection requests to the person's account pages, so
+the account page for the Provider is the page for a connection, and the Run Status Page keeps the Run's record.
 
 - An Approval Request has its own address, `/workspaces/<workspace>/approvals/<request>`, which opens the Approvals
   Page with that request in review: the exact arguments, a comment, Approve and Decline. Each request is decided on
   its own; the review moves to the Run's next pending request when there is one, in the order the requests were made.
-- An Account Connection Request's link opens the Run Status Page, which opens the request with one Connect control
-  that goes straight to the Provider's sign-in. Sign-in returns to the same Run and request.
+- An Account Connection Request's link opens the person's own account page for the Provider,
+  `/workspaces/<workspace>/accounts/<provider>`, whose one Connect control goes straight to the Provider's sign-in.
+  Sign-in returns to the Workspace's Activity, where the Run continues.
 - "Approve all" decides each open Approval Request of the Run on its own, and there is no "Deny all".
 - From the review, a Workspace Owner can stop the Tool from asking again, through a confirmed change that sets the
   Tool's policy to `enabled`; the waiting call continues, as the glossary's Approval Request entry says.
