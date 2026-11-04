@@ -989,14 +989,10 @@ mod tests {
         let compiler =
             ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
         compiler
-            .request(
-                CompilerOperation::Analysis,
-                Instant::now() + Duration::from_secs(30),
-                |_| {
-                    std::thread::sleep(Duration::from_millis(2_100));
-                    Ok(())
-                },
-            )
+            .request(CompilerOperation::Analysis, deadline(), |_| {
+                std::thread::sleep(Duration::from_millis(2_100));
+                Ok(())
+            })
             .expect("the compiler applies no deadline of its own");
     }
 

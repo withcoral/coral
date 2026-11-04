@@ -681,8 +681,8 @@ pub fn compiler_isolate_built(
     });
 }
 
-/// Tracks a compiler job across the queue and worker thread. Its captured
-/// catalog follows it even though the compiler thread has no tracing dispatcher.
+/// Tracks a compiler job across the queue and worker thread. It records to
+/// the requester's catalog, which can differ from the compiler thread's.
 #[derive(Debug)]
 pub struct CompilerActivity {
     metrics: Option<Metrics>,
