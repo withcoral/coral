@@ -9,7 +9,6 @@ import { AgentKeyDialog } from './agent-key-dialog'
 import { ActionDialog, NameInput } from './forms'
 import { ManagementLayout, trail } from './layout'
 import { NameHeading } from './name-heading'
-import { OnboardingDialog } from './onboarding-dialog'
 import { onboardingPrompt } from './onboarding-prompt'
 import { Person } from './person'
 import { WorkspaceQuickStart } from './quick-start'
@@ -46,8 +45,6 @@ export interface WorkspaceOverviewProps {
   recipes: readonly SourceChoice[]
   /** Recent activity totals, supplied by the route. */
   summary?: ReactNode
-  /** Whether this visit follows the workspace's creation, so onboarding opens. */
-  onboarding?: boolean
   /** The MCP clients this deployment says may have a Coral plugin. The prompt asks them to look for it. */
   clientsWithAvailablePlugins: readonly string[]
 }
@@ -65,7 +62,6 @@ export function WorkspaceOverview({
   form,
   recipes,
   summary,
-  onboarding = false,
   clientsWithAvailablePlugins,
 }: WorkspaceOverviewProps) {
   const owner = w.effectiveRole === 'owner'
@@ -76,11 +72,9 @@ export function WorkspaceOverview({
   const [created, setCreated] = useState<ActionResult>()
   const [createOpen, setCreateOpen] = useState(false)
   const createTrigger = useRef<HTMLButtonElement>(null)
-  // Revalidation reports no onboarding after the first load, so it must not close it.
-  const [onboardingOpen, setOnboardingOpen] = useState(onboarding)
-  // One prompt for the onboarding dialog and the quick start's last tab. Coral serves the
-  // implicit local user only when it runs without authentication, and that same runtime
-  // setting serves its MCP server with no sign-in.
+  // The prompt for the quick start's last tab. Coral serves the implicit local user only
+  // when it runs without authentication, and that same runtime setting serves its MCP
+  // server with no sign-in.
   const prompt = onboardingPrompt({
     displayName: w.displayName,
     endpoint: w.mcpEndpoint,
@@ -128,15 +122,6 @@ export function WorkspaceOverview({
         endpoint={w.connectEndpoint}
         onClose={() => setCreated(undefined)}
       />
-      {/* Without an MCP URL there is no prompt to give, so onboarding does not open. */}
-      {w.mcpEndpoint && (
-        <OnboardingDialog
-          prompt={prompt}
-          owner={owner}
-          open={onboardingOpen}
-          onClose={() => setOnboardingOpen(false)}
-        />
-      )}
       {active && w.connectEndpoint && (
         <WorkspaceQuickStart endpoint={w.connectEndpoint} prompt={prompt} owner={owner} />
       )}

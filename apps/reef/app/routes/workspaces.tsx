@@ -8,7 +8,6 @@ import {
   privateHeaders,
   resourcePath,
 } from '@/lib/management.server'
-import { commitWorkspaceOnboarding } from '@/lib/workspace-onboarding.server'
 
 // The sidebar lists Workspaces, so this path only accepts creation. Old links
 // to the former directory land on home.
@@ -24,13 +23,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       displayName: field(form, 'displayName'),
       requestId: field(form, 'requestId'),
     })
-    // The new Workspace's overview opens onboarding once.
-    return redirect(resourcePath(workspace.name), {
-      headers: {
-        ...privateHeaders,
-        'Set-Cookie': await commitWorkspaceOnboarding(workspace.name, context),
-      },
-    })
+    return redirect(resourcePath(workspace.name), { headers: privateHeaders })
   } catch (error) {
     return actionFailure(error, 'Coral could not create the workspace. ')
   }

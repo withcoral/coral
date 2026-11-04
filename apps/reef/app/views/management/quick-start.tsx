@@ -240,7 +240,7 @@ export function AgentQuickStart({
 
 /**
  * How a person connects their MCP client to the Workspace, until they have activity.
- * Its last tab holds the onboarding prompt, so it outlasts the dialog that first shows it.
+ * Its last tab holds the onboarding prompt.
  */
 export function WorkspaceQuickStart({
   endpoint,
