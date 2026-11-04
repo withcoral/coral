@@ -104,7 +104,9 @@ export function SessionPage({ result: r, source, hasFailureScreenshot }: Session
           </>
         ) : (
           <Empty>
-            No recording available for this session. Check the failure and artifact warnings.
+            {r.film === false
+              ? 'Fast mode records no video. Run with E2E_FILM=1 to film this session.'
+              : 'No recording available for this session. Check the failure and artifact warnings.'}
           </Empty>
         )}
       </Section>

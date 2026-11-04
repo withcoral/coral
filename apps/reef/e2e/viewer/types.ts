@@ -9,6 +9,11 @@ export interface Result {
   scenario: string
   source: string
   target: string
+  /**
+   * Whether the session filmed a video. Sessions recorded before video became
+   * opt-in have no value, and they always filmed.
+   */
+  film?: boolean
   status: 'passed' | 'failed' | 'skipped'
   startedAt: string
   durationMs: number
