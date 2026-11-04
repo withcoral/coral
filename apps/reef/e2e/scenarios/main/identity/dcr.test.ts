@@ -194,9 +194,10 @@ test('URL-only MCP client registers, obtains consent, signs in, and uses the exa
         } finally {
           await again.close()
         }
-        const refused = await fetch(`${target.mcpURL}/${other.name}/mcp`, {
-          headers: { Authorization: `Bearer ${refreshed!.access_token}` },
-        })
+        const refused = await initialize(
+          `${target.mcpURL}/${other.name}/mcp`,
+          refreshed!.access_token,
+        )
         expect(refused.status).toBe(401)
         const replay = await page.request.post(`${target.authentication.issuerURL}/oauth/token`, {
           form: correct,
@@ -288,9 +289,7 @@ test('URL-only MCP client connects at /mcp, picks a workspace, and acts only the
           await mcp.close()
         }
         for (const workspace of [picked, unpicked]) {
-          const refused = await fetch(`${target.mcpURL}/${workspace.name}/mcp`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          })
+          const refused = await initialize(`${target.mcpURL}/${workspace.name}/mcp`, accessToken)
           expect(refused.status, workspace.displayName).toBe(401)
           await refused.body?.cancel()
         }
@@ -298,24 +297,7 @@ test('URL-only MCP client connects at /mcp, picks a workspace, and acts only the
       await step('Archiving the workspace sends the client back to sign in', async () => {
         const current = await api.workspaces.getWorkspace({ name: picked.name })
         await api.workspaces.archiveWorkspace({ name: picked.name, etag: current.etag })
-        const lost = await fetch(resource, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            Accept: 'application/json, text/event-stream',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'initialize',
-            params: {
-              protocolVersion: '2025-11-25',
-              capabilities: {},
-              clientInfo: { name: 'Fixed URL client', version: '1' },
-            },
-          }),
-        })
+        const lost = await initialize(resource, accessToken)
         expect(lost.status).toBe(401)
         expect(lost.headers.get('www-authenticate')).toContain('error="invalid_token"')
         await lost.body?.cancel()
@@ -324,3 +306,26 @@ test('URL-only MCP client connects at /mcp, picks a workspace, and acts only the
     { actor: owner.label, label: 'Fixed /mcp sign-in' },
   )
 })
+
+/** Sends `initialize` with `accessToken`. MCP serves only POST, so a refused credential
+ * shows on a request the endpoint would otherwise answer. */
+function initialize(url: string, accessToken: string) {
+  return fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json, text/event-stream',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-11-25',
+        capabilities: {},
+        clientInfo: { name: 'Fixed URL client', version: '1' },
+      },
+    }),
+  })
+}
