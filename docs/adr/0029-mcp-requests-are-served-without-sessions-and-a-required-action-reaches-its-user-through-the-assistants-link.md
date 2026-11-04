@@ -31,8 +31,8 @@ With the session goes the prompt. Coral calls a request that a Run waits on a **
 Action of a Run that a User invoked reaches that User one way, through the assistant's link: the tool call that observes
 the Run returns the Run Update with the Required Action and the link to the page where that User decides it, the
 assistant passes the link and the Run identifier to the person, the waiting call shows the link to a client that asks
-for progress or renders the request as an MCP App, and the person decides on that page, signed in to Reef, an
-approval with the exact Tool arguments in view. Reef is the standing place: the Approvals Page holds every Approval
+for progress or renders the request as an MCP App, and the person decides on that page, signed in to Reef. An
+approval's page shows the exact Tool arguments. Reef is the standing place: the Approvals Page holds every Approval
 Request, the person's account pages their Account Connection Requests, and the Run Status Page every Required Action
 of its Run, from the moment it exists, and the first answer counts wherever it comes from. Coral sends no MCP
 elicitation and no notification apart from the waiting call's progress message, and it offers the assistant no tool,
