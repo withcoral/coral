@@ -1,8 +1,13 @@
 ---
-status: accepted
+status: superseded
 ---
 
 # One Run Owner per Run writes the Run Ledger; the database holds no Run work queue
+
+Superseded by [ADR 0027](0027-run-executors-compile-and-execute-programs.md) on 2026-11-03. Programs execute on Run
+Executors that dial Coral and take waiting Runs from the database; the Coral Instance that holds a Run's stream commits
+its chunks under the same head, and there is no Run Owner. ADR 0027 keeps the Run Ledger, the chunk predicate, the
+budgets, the enforcement point and this contract, amended. The text below is kept as history.
 
 A Program Run is coordinated by one in-process **Run Owner**: an actor that exists from Run acceptance until the Run is
 terminal and is the only writer of that Run's **Run Ledger**. Every Run-scoped request reaches its mailbox as a **Run
