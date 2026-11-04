@@ -21,7 +21,7 @@
   transport-neutral interface.
 - Coral keeps no MCP session: every MCP request stands on its own credential,
   so any Coral Instance serves it
-  ([ADR 0026](docs/adr/0026-mcp-requests-are-served-without-sessions-and-a-required-action-reaches-its-user-through-the-assistants-link.md)). Do
+  ([ADR 0029](docs/adr/0029-mcp-requests-are-served-without-sessions-and-a-required-action-reaches-its-user-through-the-assistants-link.md)). Do
   not hold state between a client's requests in the Adapter, and do not send a
   client anything outside the response to its own request.
 - Read process environment only at process bootstrap. Pass explicit values to
