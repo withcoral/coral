@@ -7,8 +7,9 @@ export interface LineChartProps {
   /** Marks each point with a dot. Turn it off for dense series. */
   dots?: boolean
   /**
-   * With no values, the empty grid runs from 0 to this value (at least 0), so the chart
-   * keeps its size while data loads or when there is none.
+   * With no values, the empty grid runs from 0 to at least this value (at least 0),
+   * rounded up to a nice tick as real values are. The chart keeps its size while data
+   * loads or when there is none.
    */
   emptyMax?: number
   /** The text of a y-axis tick. */
