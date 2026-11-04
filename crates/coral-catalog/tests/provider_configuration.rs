@@ -472,14 +472,29 @@ fn multiple_servers_require_explicit_selection_or_custom_destination() {
 }
 
 #[test]
-fn unresolved_local_servers_do_not_discard_usable_siblings_or_inherit_root_replacement() {
+fn unresolved_local_servers_need_an_answer_and_never_inherit_root_replacement() {
     use coral_catalog::{ServerSelection, ToolAvailability};
     use serde_json::json;
-    for servers in [
-        json!([{"url":"https://{site}","variables":{"site":{"enum":["one.test"]}}}]),
-        json!([{"url":"https://one.test"},{"url":"https://two.test"}]),
-        json!([{"url":"https://user:secret-canary@private.test"}]),
-        json!("malformed"),
+    // A local declaration that offers servers asks the owner to choose; one that
+    // offers none leaves its Tool unavailable. Neither takes the root's server.
+    for (case, servers, needs_answer) in [
+        (
+            "variable without a default",
+            json!([{"url":"https://{site}","variables":{"site":{"enum":["one.test"]}}}]),
+            true,
+        ),
+        (
+            "two servers",
+            json!([{"url":"https://one.test"},{"url":"https://two.test"}]),
+            true,
+        ),
+        (
+            "URL credentials",
+            json!([{"url":"https://user:secret-canary@private.test"}]),
+            true,
+        ),
+        ("no servers", json!([]), false),
+        ("malformed", json!("malformed"), false),
     ] {
         let mut source: serde_json::Value =
             serde_json::from_str(simple_document().as_str()).unwrap();
@@ -493,28 +508,41 @@ fn unresolved_local_servers_do_not_discard_usable_siblings_or_inherit_root_repla
                 url: "https://replacement.test".into(),
             },
         );
-        let catalog = prepared(&document.configure(configuration).unwrap());
-        assert_eq!(catalog.tools().len(), 2);
+        let configured = document.configure(configuration);
+        if needs_answer {
+            let errors = configured.expect_err(case);
+            assert_eq!(
+                errors
+                    .iter()
+                    .map(|error| error.field.as_str())
+                    .collect::<Vec<_>>(),
+                ["#/paths/~1local/get/servers"],
+                "{case}"
+            );
+            assert!(!format!("{errors:?}").contains("secret-canary"), "{case}");
+            continue;
+        }
+        let catalog = prepared(&configured.expect(case));
+        assert_eq!(catalog.tools().len(), 2, "{case}");
         assert_eq!(
             catalog.tools()[0].availability(),
-            ToolAvailability::Available
+            ToolAvailability::Available,
+            "{case}"
         );
         assert_eq!(
             catalog.tools()[1].availability(),
-            ToolAvailability::Unavailable
+            ToolAvailability::Unavailable,
+            "{case}"
         );
         assert_eq!(
             catalog.tools()[1].diagnostic().unwrap().code(),
-            "unresolved_server_configuration"
+            "unresolved_server_configuration",
+            "{case}"
         );
         assert_eq!(
             catalog.credential_contract().destinations(),
-            &["https://replacement.test/"]
-        );
-        assert!(
-            !serde_json::to_string(catalog.tools()[1].diagnostics())
-                .unwrap()
-                .contains("secret-canary")
+            &["https://replacement.test/"],
+            "{case}"
         );
     }
 }

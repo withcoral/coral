@@ -152,9 +152,21 @@ fn tool_view(parent: &str, tool: &coral_catalog::ToolSummary) -> wire::ProviderT
         description: tool.description.clone(),
         hints: Some(tool_hints(tool.hints)),
         available: tool.availability == coral_catalog::ToolAvailability::Available,
-        diagnostics: tool.diagnostics.iter().map(diagnostic).collect(),
+        diagnostics: blocking_diagnostics(&tool.diagnostics),
         tags: tool.tags.clone(),
     }
+}
+
+/// The reasons a Tool cannot run. Warnings about how its TypeScript types widen
+/// leave it runnable, so they are not among them.
+pub(super) fn blocking_diagnostics(
+    diagnostics: &[domain::PublicationDiagnostic],
+) -> Vec<wire::ProviderDiagnostic> {
+    diagnostics
+        .iter()
+        .filter(|value| value.severity() == coral_catalog::CatalogDiagnosticSeverity::Error)
+        .map(diagnostic)
+        .collect()
 }
 
 pub(super) fn consent_navigation(
@@ -1198,6 +1210,25 @@ pub(super) fn readiness_error(failure: coral_search::Error) -> Status {
 mod tests {
     use coral_provider::Error as E;
     use tonic::Code;
+
+    /// Catches: Reef listing TypeScript widening warnings beside the reason a
+    /// Tool cannot run, which ran them into one unreadable sentence.
+    #[test]
+    fn tool_diagnostics_list_only_what_blocks_the_tool() {
+        use coral_provider::PublicationDiagnostic as D;
+        let shown = super::blocking_diagnostics(&[
+            D::warning("typescript_constraint_widened", "widened"),
+            D::stable("unresolved_server_configuration", "Select a server."),
+            D::warning("typescript_closed_object_widened", "widened"),
+        ]);
+        assert_eq!(
+            shown
+                .iter()
+                .map(|diagnostic| diagnostic.code.as_str())
+                .collect::<Vec<_>>(),
+            ["unresolved_server_configuration"]
+        );
+    }
 
     /// Reef turns these reasons into form messages (`apps/reef/app/lib/providers.server.ts`)
     /// and these codes into HTTP statuses. A changed pair silently changes what people see.

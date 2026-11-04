@@ -100,11 +100,12 @@ export function serverChoices(
 }
 
 /**
- * A document without a root server has nowhere to send the tools it
- * declares there. Tools with their own server may go unanswered.
+ * A server that tools use needs an answer. Without one, Coral has nowhere to
+ * send those tools, and they publish as unavailable. A tool's own server that
+ * offers no URLs has nothing to choose, so its tools stay unavailable.
  */
 export function serverRequired(group: ServerGroup) {
-  return group.declaration === '#/servers' && group.tools.length > 0
+  return group.tools.length > 0 && (group.declaration === '#/servers' || group.options.length > 0)
 }
 
 /**
