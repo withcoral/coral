@@ -548,7 +548,7 @@ request with a deadline, decided by the person or role the Run names, and the fi
 one way: the observing tool call returns it with the link to the page where the User decides it, an Approval Request's
 own address on the Approvals Page or the person's account page for the Provider for a connection request, the assistant passes the link on,
 and the waiting call shows it to a client that asks for progress or renders it as an MCP App. Reef holds the request
-from the moment it exists, so a page is never a second way in, and the assistant has no path to decide. Coral sends no MCP elicitation and no notification for a Required Action. An
+from the moment it exists, so a page is never a second way in, and the assistant has no path to decide. Coral sends no MCP elicitation for a Required Action, and no notification apart from the waiting call's progress message. An
 Account Connection Request that several Runs wait on is one Required Action in each of their Run Updates: each
 assistant passes it on, and the first answer settles it for all of them. _Avoid_: pending action, human action,
 elicitation, prompt, in-band prompt, notification, per-client route, assistant approval, allow-tool prompt as approval,
@@ -810,7 +810,7 @@ carries an Upstream Outcome. _Avoid_: Program request, connection-scoped executi
 and joined by hyphens, such as `height-word-database-library`. Coral draws the words at random, inserts the Run with
 them as its primary key, and draws again when the name is already in use, so no two Runs in one deployment share one. A
 Run accepted before Coral issued words keeps its UUID text. The identifier names the Run in MCP, in gRPC resource
-names, in the Run Status Page URL and `run_status_url`, and in logs. It grants no authority: a Principal who guesses it
+names, in the Run Status Page URL, and in logs. It grants no authority: a Principal who guesses it
 sees nothing more than for a Run that does not exist. _Avoid_: run id, run key, run handle, run alias, short
 identifier, agent identifier
 
@@ -907,7 +907,9 @@ outcome appears on the final output page; `has_more` means authored records or t
 The required actions are a current snapshot, not a Run state or Program Run Events. Several can exist for
 concurrent Invocations. Each visible Request appears once, even if several Invocations wait on it. Required actions
 identify an account connection or Invocation approval, its required actor, deadline, opaque non-authorizing request
-identifier, and stable non-secret Run Status Page URL. An Account Connection Request appears only to its invoking User.
+identifier, the stable non-secret URL of the page where the person decides it (the Approvals Page with the Request in
+review, or the person's account page for the Provider for a connection request), the waiting Tool's Call Path (absent when one connection
+request is shared by Invocations of different Tools) and its Provider's display name. An Account Connection Request appears only to its invoking User.
 An Agent can see that its own Run requires a Workspace Owner action, but cannot inspect or resolve the request. A
 terminal Run has no required actions. The cursor identifies authored-record delivery progress and the last visible
 required-action revision; internal execution bookkeeping alone is not a meaningful update. Adapters may project a Run

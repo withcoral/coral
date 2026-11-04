@@ -31,11 +31,12 @@ With the session goes the prompt. Coral calls a request that a Run waits on a **
 Action of a Run that a User invoked reaches that User one way, through the assistant's link: the tool call that observes
 the Run returns the Run Update with the Required Action and the link to the page where that User decides it, the
 assistant passes the link and the Run identifier to the person, the waiting call shows the link to a client that asks
-for progress or renders the request as an MCP App, and the person decides on that page, signed in to Reef, with the
-exact Tool arguments in view. Reef is
-the standing place: the Approvals Page holds every Approval Request, and the Run Status Page every Required Action,
-from the moment it exists, and the first answer counts wherever it comes from. Coral sends no MCP elicitation and no notification, and it
-offers the assistant no tool, argument or path by which to decide: the assistant can only pass the request on. Nothing
+for progress or renders the request as an MCP App, and the person decides on that page, signed in to Reef, an
+approval with the exact Tool arguments in view. Reef is the standing place: the Approvals Page holds every Approval
+Request, the person's account pages their Account Connection Requests, and the Run Status Page every Required Action
+of its Run, from the moment it exists, and the first answer counts wherever it comes from. Coral sends no MCP
+elicitation and no notification apart from the waiting call's progress message, and it offers the assistant no tool,
+argument or path by which to decide: the assistant can only pass the request on. Nothing
 in the request (protocol revision, declared capabilities, client name) chooses anything, so Coral keeps no list of
 known clients, and a client it has never seen is served the same way. The map that decided this is
 [#2732](https://github.com/withcoral/coral/issues/2732); the parent of the implementation is #2825.
@@ -55,7 +56,7 @@ summary. Codex wrote the link as text before its first wait. Making the link the
   Tool waits (a connection request shared by Invocations of different Tools names none), the actor, the deadline and
   the link to the page where that person decides it. The assistant phrases the request for the person from these
   fields alone; Coral supplies the assistant no ready-made sentence, and the link travels to it only in its own field,
-  never inside prose. The link is the request's own address, kept short, because a client shows it on one line.
+  never inside prose. The link is kept short, because a client shows it on one line.
 - **The assistant's loop is written down, in the tools, not only in the instructions.** The server instructions state
   the rule in brief: a non-empty Required Action list means the Run waits for a person; show the link and the Run
   identifier and ask that person to act; never ask for credentials in the chat. The descriptions of the tools that
@@ -70,20 +71,22 @@ summary. Codex wrote the link as text before its first wait. Making the link the
   Account only when that Required Action appears, never ahead of a Run.
 - **The waiting call shows the link too.** When a request carries a progress token, the observing tool call that
   waits reads the Run once before it holds and, if a Required Action names the invoking User, sends one progress
-  message on that call's own response stream, the link first and the request after it, so a client that cuts the
-  line keeps the link. The message is for the person, not the assistant, which still reads the Run Update. A client
-  that sends no token gets nothing but the Run Update, and nothing is sent outside the response to the request.
-  Claude Code and VS Code show that line on the running call; Codex's terminal and Claude Desktop do not, so the
-  assistant's text stays the first way and the progress line the second.
+  message on that call's own response stream for the first such entry, the link first and the request after it, so
+  a client that cuts the line keeps the link. When that entry is decided the wait returns, and the next wait names
+  the next entry. The message is for the person, not the assistant, which still reads the Run Update. A client that
+  sends no token gets nothing but the Run Update, and nothing is sent outside the response to the request. Claude
+  Code shows that line on the running call; Codex's terminal and Claude Desktop do not (checked by hand on
+  2026-11-04, #2846), so the assistant's text stays the first way and the progress line the second.
 - **A client that renders MCP Apps shows the request itself.** Claude Desktop condenses the assistant's text to one
   line while tools run and renders no progress, so neither way reached the person there. The observing tools link
   one `ui://` resource, an app the host renders with the tool result, in place, while the turn goes on: it shows
-  the entries that name the invoking User, what is asked, the Tool, the Provider and the deadline, with one control
-  that asks the host to open the entry's page, and shows the address itself when the host declines. It decides
-  nothing, calls no tool and holds no state: the Run Update it receives is its whole input. Every client gets the
-  same declaration; one without the extension sees only the Run Update. claude.ai, Claude Desktop and VS Code render
-  it. The link reaches the person when any of the three ways works, and only a client that shows none leaves it
-  to the final reply.
+  the entries that name the invoking User, what is asked, the waiting Tool where one Tool waits, the Provider and
+  the deadline, with one control that opens the entry's page. It decides nothing, calls no tool and holds no state:
+  the Run Update it receives is its whole input. Every client gets the same declaration; one without the extension
+  sees only the Run Update. Claude Desktop renders it (checked by hand on 2026-11-04, #2846), and the
+  [MCP Apps documentation](https://modelcontextprotocol.io/extensions/apps/overview#client-support) lists claude.ai
+  and VS Code among its hosts. The link reaches the person when any of the three ways works, and only a client that
+  shows none leaves it to the final reply.
 - **Waiting is exact.** From the cursor it was given, the observing tool call that waits holds, for at most one
   bounded call, until the Required Action list changes or the Run ends, then returns at once; ordinary output does
   not wake it, and a call without a cursor treats what it first reads as already seen
@@ -128,7 +131,8 @@ The page the assistant's link opens is where the person decides, so it opens the
 ([the prototype decision](https://github.com/withcoral/coral/issues/2739#issuecomment-6520881303)). The Approvals Page
 landed while this decision was being made (#2805) and already decides Approval Requests with the exact arguments in
 view, so it is the page for an approval. The same change moved connection requests to the person's account pages, so
-the account page for the Provider is the page for a connection, and the Run Status Page keeps the Run's record.
+the account page for the Provider is the page for a connection, and the Run Status Page keeps the Run's record and
+lists its Required Actions.
 
 - An Approval Request has its own address, `/workspaces/<workspace>/approvals/<request>`, which opens the Approvals
   Page with that request in review: the exact arguments, a comment, Approve and Decline. Each request is decided on
