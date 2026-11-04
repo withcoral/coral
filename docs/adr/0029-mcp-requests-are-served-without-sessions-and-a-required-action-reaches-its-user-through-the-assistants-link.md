@@ -29,10 +29,11 @@ which revision and how each handles elicitation, is in
 
 With the session goes the prompt. Coral calls a request that a Run waits on a **Required Action**, and every Required
 Action of a Run that a User invoked reaches that User one way, through the assistant's link: the tool call that observes
-the Run returns the Run Update with the Required Action and the Run Status Page link, the assistant passes the link and the Run identifier to the person, and the person
-decides on the Run Status Page, signed in to Reef, with the exact Tool arguments in view. Reef is the standing place:
-the Run Status Page holds every Required Action, and the Approvals Page every Approval Request, from the moment it
-exists, and the first answer counts wherever it comes from. Coral sends no MCP elicitation and no notification, and it
+the Run returns the Run Update with the Required Action and the link to the page where that User decides it, the
+assistant passes the link and the Run identifier to the person, the waiting call shows the link to a client that asks
+for progress, and the person decides on that page, signed in to Reef, with the exact Tool arguments in view. Reef is
+the standing place: the Approvals Page holds every Approval Request, and the Run Status Page every Required Action,
+from the moment it exists, and the first answer counts wherever it comes from. Coral sends no MCP elicitation and no notification, and it
 offers the assistant no tool, argument or path by which to decide: the assistant can only pass the request on. Nothing
 in the request (protocol revision, declared capabilities, client name) chooses anything, so Coral keeps no list of
 known clients, and a client it has never seen is served the same way. The map that decided this is
@@ -43,14 +44,17 @@ known clients, and a client it has never seen is served the same way. The map th
 The assistant's link existed before this decision, as the fallback for clients that got no prompt, and the live check
 showed why it was not yet reliable: the assistant stopped after one call and asked the person to say when
 they had acted, named the Tool by guesswork, and left the person to find the request on a page that led with the Run's
-activity. Making it the one way means removing each of those
-([what the assistant receives](https://github.com/withcoral/coral/issues/2736#issuecomment-6519311420)):
+activity ([what the assistant receives](https://github.com/withcoral/coral/issues/2736#issuecomment-6519311420)). A
+second live check, in Claude Code, showed that the assistant's text alone is not enough: told three ways to write the
+link and then keep waiting, it wrote its message inside its own thinking, said "the link provided", and kept calling
+the tool, because that client steers its model to plan privately between tool calls and shows thinking only as a
+summary. Codex wrote the link as text before its first wait. Making the link the one way means fixing each of those:
 
 - **The Run Update says what is asked.** Each Required Action names its kind, the Provider, the waiting Tool where one
   Tool waits (a connection request shared by Invocations of different Tools names none), the actor, the deadline and
-  the Run Status Page link, naming the request. The assistant phrases the request for the
-  person from these fields alone; Coral supplies no ready-made sentence, and the link travels only in its own field,
-  never inside prose.
+  the link to the page where that person decides it. The assistant phrases the request for the person from these
+  fields alone; Coral supplies the assistant no ready-made sentence, and the link travels to it only in its own field,
+  never inside prose. The link is the request's own address, kept short, because a client shows it on one line.
 - **The assistant's loop is written down, in the tools, not only in the instructions.** The server instructions state
   the rule in brief: a non-empty Required Action list means the Run waits for a person; show the link and the Run
   identifier and ask that person to act; never ask for credentials in the chat. The descriptions of the tools that
@@ -63,22 +67,31 @@ activity. Making it the one way means removing each of those
   assistant cannot decide and must not say it did. A decline reaches the Program as an error; the assistant reports it
   from the Run's output and does not run the Program again unasked. The assistant asks the person to connect an
   Account only when that Required Action appears, never ahead of a Run.
+- **The waiting call shows the link too.** When a request carries a progress token, the observing tool call that
+  waits reads the Run once before it holds and, if a Required Action names the invoking User, sends one progress
+  message on that call's own response stream, the link first and the request after it, so a client that cuts the
+  line keeps the link. The message is for the person, not the assistant, which still reads the Run Update. A client
+  that sends no token gets nothing but the Run Update, and nothing is sent outside the response to the request.
+  Claude Code and VS Code show that line on the running call; Codex's terminal does not, and claude.ai and Claude
+  Desktop are unverified, so the assistant's text stays the first way and the progress line the second. The link
+  reaches the person when either works, and only a client that shows neither leaves it to the final reply.
 - **Waiting is exact.** From the cursor it was given, the observing tool call that waits holds, for at most one
   bounded call, until the Required Action list changes or the Run ends, then returns at once; ordinary output does
   not wake it, and a call without a cursor treats what it first reads as already seen
   ([#2731](https://github.com/withcoral/coral/issues/2731)). The Run Deadline bounds every deadline the assistant is
   told, so it is the loop's outer bound.
-- **The page is the request.** The link opens the Run's page. The page is headed by the Run identifier the assistant
-  said; each request is a card decided on its own, an approval card with the exact arguments; after the last decision
-  the page tells the person to go back to their AI app. The Run Status Page section settles the page.
+- **The page is the request.** The link opens the request, not a list: an Approval Request's own address opens the
+  Approvals Page with that request in review, its exact arguments in view; a connection request's link opens the
+  Run's page, which opens the request. After the last decision the page tells the person to go back to their AI app.
+  The section below settles the pages.
 
 ## Consequences
 
 - **Any Coral Instance serves any MCP request.** A load balancer needs no affinity, and a rolling deploy breaks no
   client's connection to Coral, since no client holds a session that one instance owned.
 - **No standalone stream.** The MCP endpoints serve only requests, never a stream a client opens on its own or a
-  request to end a session. Nothing is announced to a client outside the response to its own request; the next Run
-  Update shows a decision made elsewhere.
+  request to end a session. Nothing is announced to a client outside the response to its own request: the progress
+  message rides the waiting call's response, and the next Run Update shows a decision made elsewhere.
 - **A stale session header is ignored.** A request that still names a session is served like any other.
 - **The assistant is told, not asked.** Nothing from the arguments or the Account travels in the Run Update, and no
   field says whether the person saw anything; what the assistant receives is fixed above.
@@ -100,24 +113,26 @@ activity. Making it the one way means removing each of those
 - **A Provider's own question to the User** (#2447) becomes a third kind of Required Action with the same shape: one
   exact person, one request with a deadline, the same link and the same first-wins rule.
 
-## The Run Status Page
+## The pages the link opens
 
-The page the assistant's link opens is where the person decides, so it is a handoff sheet, not an activity list
-([the prototype decision](https://github.com/withcoral/coral/issues/2739#issuecomment-6520881303)):
+The page the assistant's link opens is where the person decides, so it opens the request, not an activity list
+([the prototype decision](https://github.com/withcoral/coral/issues/2739#issuecomment-6520881303)). The Approvals Page
+landed while this decision was being made (#2805) and already decides Approval Requests with the exact arguments in
+view, so it is the page for an approval; the Run Status Page keeps the Run's record and the connection request.
 
-- It is headed by the Run identifier, the name the assistant said, with the Run's intent under it. Each Required Action
-  is its own card with its own decision; an approval card shows the exact arguments. The Program follows, folded. Cards
-  are in the order the requests were made, and the request the link names is not marked, since every card is decided
-  the same way.
-- "Approve all" decides each open Approval Request on its own, and there is no "Deny all".
-- From the card, a Workspace Owner can stop the Tool from asking again, through a confirmed change that sets the Tool's
-  policy to `enabled`; the waiting call continues, as the glossary's Approval Request entry says.
-- After the last decision the page tells the person to close the tab and go back to their AI app, and that the Run
-  continues there. The app is named when Coral recorded its name with the Run, and is "your agent" otherwise. A Run that
-  already ended says so and decides nothing.
-- Each request shows how long it has waited and no countdown: the assistant already told the person the deadline, and
-  a late arriver reads that the Run ended.
-- A row on the Approvals Page names the Run and opens this page; it decides nothing, since a gist is not the arguments.
+- An Approval Request has its own address, `/workspaces/<workspace>/approvals/<request>`, which opens the Approvals
+  Page with that request in review: the exact arguments, a comment, Approve and Decline. Each request is decided on
+  its own; the review moves to the Run's next pending request when there is one, in the order the requests were made.
+- An Account Connection Request's link opens the Run Status Page, which opens the request with one Connect control
+  that goes straight to the Provider's sign-in. Sign-in returns to the same Run and request.
+- "Approve all" decides each open Approval Request of the Run on its own, and there is no "Deny all".
+- From the review, a Workspace Owner can stop the Tool from asking again, through a confirmed change that sets the
+  Tool's policy to `enabled`; the waiting call continues, as the glossary's Approval Request entry says.
+- After the last decision the page tells the person to go back to their AI app, and that the Run continues there.
+  The app is named when Coral recorded its name with the Run, and is "your agent" otherwise. A Run that already
+  ended says so and decides nothing.
+- Each request shows how long it has waited and no countdown: the assistant already told the person the deadline,
+  and a late arriver reads that the Run ended.
 
 ## Rejected
 
@@ -130,6 +145,10 @@ The page the assistant's link opens is where the person decides, so it is a hand
 - **MCP elicitation, chosen per client.** It renders in one client today, blinds that client's model to what
   was asked and answered, and outlives the Run Deadline. It returns only when a client renders every elicitation mode
   and tells its model what was asked and answered ([the elicitation decision](https://github.com/withcoral/coral/issues/2737#issuecomment-6602262606)).
+- **Ending the assistant's turn on each Required Action.** Tried on 2026-11-04 after the Claude Code check: the
+  final reply is the one thing every client shows, so the link reached the person, but the Run then went on without
+  its assistant until the person wrote back, and the person had to. It returns only for a client that shows no
+  progress message and whose model writes nothing between tool calls.
 - **A notification** from Reef, Desktop, email or a chat app. The person is at the AI app they invoked the Run
   from, and a deadline measured in minutes leaves a notification little to do. It returns as a fresh effort if the
   timeout case hurts in use.

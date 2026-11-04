@@ -545,9 +545,10 @@ User for a Run a User invoked, any Workspace Owner for a Run an Agent invoked. T
 Account Connection Request; any later kind (a Provider's own question to the User, #2447) keeps the same shape: one
 request with a deadline, decided by the person or role the Run names, and the first answer counts. A Run Update's
 `required_actions` lists the Run's current Required Actions. A Required Action of a Run a User invoked reaches that User
-one way: the observing tool call returns it with the Run Status Page link, the assistant passes the link on, and the
-User decides on that page. Reef holds the request from the moment it exists, so a page is never a second way in, and
-the assistant has no path to decide. Coral sends no MCP elicitation and no notification for a Required Action. An
+one way: the observing tool call returns it with the link to the page where the User decides it, an Approval Request's
+own address on the Approvals Page or the Run Status Page for a connection request, the assistant passes the link on,
+and the waiting call shows it to a client that asks for progress. Reef holds the request from the moment it exists, so
+a page is never a second way in, and the assistant has no path to decide. Coral sends no MCP elicitation and no notification for a Required Action. An
 Account Connection Request that several Runs wait on is one Required Action in each of their Run Updates: each
 assistant passes it on, and the first answer settles it for all of them. _Avoid_: pending action, human action,
 elicitation, prompt, in-band prompt, notification, per-client route, assistant approval, allow-tool prompt as approval,
