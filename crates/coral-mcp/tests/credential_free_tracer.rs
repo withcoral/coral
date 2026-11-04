@@ -652,7 +652,7 @@ async fn handshakes_carry_instructions_and_no_readable_resources_on_every_versio
             "`setTimeout`",
             "`coral.ToolError`",
             "`coral.workspace.search`",
-            "`required_actor`",
+            "`invoking_user`",
         ] {
             assert!(
                 instructions.contains(expected),

@@ -39,7 +39,7 @@ Then call it in a later Program by its literal Call Path:
 ```ts
 return (await coral.providers.github.pulls.list({ owner: "acme", repo: "api" })).data.map((pull) => pull.title);
 ```
-A non-empty `required_actions` means the Run waits for a person. Write its `run_status_url` as reply text before your next tool call: neither tool results nor your thinking reach the user. Then follow the human handoff steps in `wait`'s description."#;
+A non-empty `required_actions` means the Run waits for a person. If an entry names `invoking_user`, end your turn with its `run_status_url` and call nothing first: the user sees only your final reply. `wait`'s description has the full steps."#;
 
 // Claude Code 2.1.296 keeps the first 4096 characters of a tool's
 // description. `exec` stays within 2048, the budget the server instructions
@@ -300,12 +300,14 @@ pub(crate) fn served_name(name: &str) -> Option<&'static str> {
         .find(|served| *served == name)
 }
 
-/// What `wait` tells the assistant to do when a Run waits on a person.
-/// `exec` returns the same Run Update, but its description keeps the
-/// discovery example within its budget, so it points here.
+/// What `wait` tells the assistant to do when a Run waits on a person:
+/// end the turn with the link, since a client shows the person only the
+/// assistant's final reply. `exec` returns the same Run Update, but its
+/// description keeps the discovery example within its budget, so it gives
+/// the first step and points here.
 macro_rules! handoff_steps {
     () => {
-        " Human handoff: a non-empty `required_actions` means the Run waits for a person. Do these steps in order. 1. Write to the user, as reply text before your next tool call, what is asked (`tool`, `provider`, `kind`), the `run_status_url` exactly as given, the `run_id` and the `deadline_at`. Neither tool results nor your thinking reach the user, so a link left in either never reaches them. 2. Then call `wait` with `wait_ms` 30000 and the latest `next_cursor` until `required_actions` is empty or the Run ends. The person's decision on that page resumes the Run on its own, so do not ask them to report back. 3. When an entry with a new `request_id` appears, write its link to the user before the next `wait`. You cannot decide an entry and must not say you did. A connection happens on that page, so never ask for a token, password or account in the chat. A decline reaches the Program as `coral.ToolError`, and a Run that waits past `deadline_at` ends `timed_out`: report what happened from the Run's output, and do not start the Program again unless asked. For `account_connection`, ask only when the entry appears."
+        " Human handoff: a non-empty `required_actions` means the Run waits for a person. For an entry whose `required_actor` is `invoking_user` and whose `request_id` you have not yet passed on, end your turn now and call nothing first. Your final reply is all the user sees: tool results and your thinking stay hidden. In that reply, say what is asked (`tool`, `provider`, `kind`), give the `run_status_url` exactly as given, the `run_id` and the `deadline_at`, and ask the user to write back once they have acted. Their decision on that page resumes the Run on its own. When they write back, call `wait` with `wait_ms` 30000 and the latest `next_cursor` until `required_actions` is empty or the Run ends, and end your turn the same way for any new entry. For any other `required_actor`, keep calling `wait` the same way: a Workspace Owner decides it in Coral. You cannot decide an entry and must not say you did. A connection happens on that page, so never ask for a token, password or account in the chat. A decline reaches the Program as `coral.ToolError`, and a Run that waits past `deadline_at` ends `timed_out`: report what happened from the Run's output, and do not start the Program again unless asked. For `account_connection`, ask only when the entry appears."
     };
 }
 
