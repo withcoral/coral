@@ -28,13 +28,14 @@ async fn finish(
     actor: &AuthenticatedPrincipal,
     workspace: &coral_workspace::WorkspaceId,
     source: &str,
-) {
+) -> crate::RunId {
     let run = fixture
         .runs
         .start(actor, workspace, submission(source))
         .await
         .unwrap();
     wait_for_terminal(&fixture.runs, actor, workspace, run.run_id()).await;
+    run.run_id().clone()
 }
 
 /// Starts a Run whose call waits on approval, with the request that holds it.
@@ -441,6 +442,91 @@ async fn summary_marks_the_total_partial_while_a_run_is_unmeasured() {
         "the unmeasured Run adds nothing"
     );
     assert_eq!(added(after.calls, measured.calls).failed, 1);
+}
+
+/// Sets a one-call Run's net bytes to `-spent` by rewriting its call's result size.
+async fn set_net_bytes(fixture: &TestModules, run: &crate::RunId, spent: i64) {
+    let rewritten = fixture
+        .inject_fault(&format!(
+            "UPDATE tool_invocations SET result_bytes = {spent} + \
+             (SELECT SUM(e.output_bytes) FROM program_run_events e WHERE e.run_id = '{run}') \
+             WHERE run_id = '{run}'"
+        ))
+        .await;
+    assert_eq!(rewritten, 1);
+}
+
+async fn make_unmeasured(fixture: &TestModules, run: &crate::RunId) {
+    let rewritten = fixture
+        .inject_fault(&format!(
+            "UPDATE tool_invocations SET result_kind = 'indeterminate', result_json = NULL \
+             WHERE run_id = '{run}'"
+        ))
+        .await;
+    assert_eq!(rewritten, 1);
+}
+
+/// A Principal's total sums only measured Runs. Without one the Principal has no
+/// total, and a total of zero is still a total.
+#[tokio::test(flavor = "multi_thread")]
+async fn summary_totals_only_each_principals_measured_runs() {
+    let (fixture, tool) = forecast_fixture().await;
+    let (owner, workspace) = (&tool.principal, &tool.workspace_id);
+    let agent = registered_agent(&fixture.workspaces, owner, workspace).await;
+    let member = AuthenticatedPrincipal::user(
+        fixture
+            .workspace_user(
+                workspace,
+                &tool.user,
+                "user:summary-measured-member",
+                WorkspaceRole::Member,
+            )
+            .await,
+    );
+    let actors = |seen: &ActivitySummary| {
+        seen.actors
+            .iter()
+            .map(|share| {
+                (
+                    share.principal.clone(),
+                    share.agent_label.clone(),
+                    share.bytes,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let owner_bytes = |bytes| (owner.principal().clone(), None, bytes);
+    let agent_bytes = |bytes| (agent.principal().clone(), Some("Worker".to_string()), bytes);
+
+    let measured = finish(&fixture, owner, workspace, CALL).await;
+    set_net_bytes(&fixture, &measured, 7).await;
+    let only_unmeasured = finish(&fixture, &agent, workspace, CALL).await;
+    make_unmeasured(&fixture, &only_unmeasured).await;
+    let seen = summary(&fixture, owner, workspace).await;
+    assert_eq!(actors(&seen), [owner_bytes(-7)], "the Agent has no total");
+    assert_eq!(seen.context_impact_bytes, Some(-7));
+    assert!(seen.context_impact_partial);
+    assert_eq!(seen.calls.failed, 1, "the Agent's call still counts");
+
+    let mixed = finish(&fixture, owner, workspace, CALL).await;
+    make_unmeasured(&fixture, &mixed).await;
+    let seen = summary(&fixture, owner, workspace).await;
+    assert_eq!(actors(&seen), [owner_bytes(-7)], "the new Run adds nothing");
+
+    set_net_bytes(&fixture, &measured, 0).await;
+    let seen = summary(&fixture, owner, workspace).await;
+    assert_eq!(actors(&seen), [owner_bytes(0)], "zero is still a total");
+    assert_eq!(seen.context_impact_bytes, Some(0));
+
+    let agent_measured = finish(&fixture, &agent, workspace, CALL).await;
+    set_net_bytes(&fixture, &agent_measured, 5).await;
+    let seen = summary(&fixture, owner, workspace).await;
+    assert_eq!(actors(&seen), [agent_bytes(-5), owner_bytes(0)]);
+    assert_eq!(seen.context_impact_bytes, Some(-5));
+
+    let hidden = summary(&fixture, &member, workspace).await;
+    assert!(hidden.actors.is_empty());
+    assert_eq!(hidden.context_impact_bytes, None);
 }
 
 /// A call counts only once it ended: pending and dispatching calls add nothing.

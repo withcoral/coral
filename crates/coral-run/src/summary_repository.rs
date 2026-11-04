@@ -235,11 +235,13 @@ struct ActorRow {
     principal_id: String,
     principal_kind: String,
     agent_label: Option<String>,
-    bytes: i64,
+    bytes: Option<i64>,
 }
 
 /// Net bytes of measured Runs that ended in the window, per invoking Principal.
-/// Running and indeterminate Runs have no total and add nothing.
+/// Running and indeterminate Runs have no total and add nothing. `SUM` skips them,
+/// so a Principal with only such Runs sums to NULL and has no row in the result. A
+/// SQL filter on `m.bytes` would run the measurement's subqueries a second time.
 pub(crate) async fn actor_context(
     tx: &mut Transaction<'_>,
     authority: &HistoryAuthority,
@@ -270,17 +272,18 @@ pub(crate) async fn actor_context(
             Alias::new("agent_label"),
         )
         .expr_as(big_sum(col("m", "bytes")), Alias::new("bytes"))
-        .and_where(col("m", "bytes").is_not_null())
         .group_by_columns(fields.map(|name| (Alias::new("m"), Alias::new(name))))
         .to_owned();
     let rows: Vec<ActorRow> = tx.fetch_all(select).await?;
     rows.into_iter()
-        .map(|row| {
-            Ok(ActorContext {
-                principal: principal(&row.principal_id, &row.principal_kind)?,
+        .filter_map(|row| {
+            let bytes = row.bytes?;
+            let principal = principal(&row.principal_id, &row.principal_kind);
+            Some(principal.map(|principal| ActorContext {
+                principal,
                 agent_label: row.agent_label,
-                bytes: row.bytes,
-            })
+                bytes,
+            }))
         })
         .collect()
 }
