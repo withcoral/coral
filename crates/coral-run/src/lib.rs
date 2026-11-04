@@ -350,7 +350,7 @@ impl RunModule {
             applied_output_cap: AppliedOutputCap::default(),
             fan_out_limit: FanOutLimit::default(),
             shutdown_drain: ShutdownDrain::default(),
-            compilation_timeout: coral_test_support::COMPILATION_TIMEOUT,
+            compilation_timeout: coral_test_support::TEST_COMPILATION_TIMEOUT,
             instance: CoralInstanceId::generate(),
             inbox,
             owners: Owners::default(),

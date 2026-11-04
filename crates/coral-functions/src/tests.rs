@@ -1353,7 +1353,7 @@ impl SavedFunctionTestModules {
             database.clone(),
             workspaces.clone(),
             crate::IsolateLimits::default(),
-            coral_test_support::COMPILATION_TIMEOUT,
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .expect("start Saved Function compiler");
         Self {

@@ -24,7 +24,7 @@ use std::time::Duration;
 /// The compilation deadline for tests whose subject is not that deadline, so
 /// a starved runner does not fail them on timing. Production keeps the
 /// two-second Program Authoring Limit; deadline tests set a short one.
-pub const COMPILATION_TIMEOUT: Duration = Duration::from_secs(30);
+pub const TEST_COMPILATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub use coral_credentials::CredentialValues as FixtureCredentialValues;
 pub use coral_credentials::Secret as FixtureSecret;

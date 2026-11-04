@@ -523,7 +523,7 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
             f.database.database(),
             f.workspaces.clone(),
             coral_functions::IsolateLimits::default(),
-            coral_test_support::COMPILATION_TIMEOUT,
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .unwrap(),
         coral_search::UniversalSearchModule::new(f.database.database(), f.workspaces.clone()),
@@ -770,7 +770,7 @@ async fn action_groups_keep_exec_intent_and_labels_after_selected_run_leaves_que
             f.database.database(),
             f.workspaces.clone(),
             coral_functions::IsolateLimits::default(),
-            coral_test_support::COMPILATION_TIMEOUT,
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .unwrap(),
         coral_search::UniversalSearchModule::new(f.database.database(), f.workspaces.clone()),
@@ -893,7 +893,7 @@ async fn submission_position_is_only_projected_for_activity_browsing_not_exact_e
             f.database.database(),
             f.workspaces.clone(),
             coral_functions::IsolateLimits::default(),
-            coral_test_support::COMPILATION_TIMEOUT,
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .unwrap(),
         coral_search::UniversalSearchModule::new(f.database.database(), f.workspaces.clone()),

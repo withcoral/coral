@@ -25,3 +25,4 @@ rustix.workspace = true
 
 [dev-dependencies]
 coral-telemetry = { workspace = true, features = ["test-support"] }
+coral-test-support.workspace = true

@@ -11,7 +11,7 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
-        coral_test_support::COMPILATION_TIMEOUT,
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
     let path = SavedFunctionPath::parse("snapshots.value").unwrap();

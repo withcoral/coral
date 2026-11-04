@@ -196,7 +196,7 @@ impl SavedFunctionModule {
             database,
             workspaces,
             compiler,
-            compilation_timeout: coral_test_support::COMPILATION_TIMEOUT,
+            compilation_timeout: coral_test_support::TEST_COMPILATION_TIMEOUT,
         }
     }
 

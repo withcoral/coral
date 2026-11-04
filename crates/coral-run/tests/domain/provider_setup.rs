@@ -1447,7 +1447,7 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
             scope.fixture.workspaces.clone(),
         ),
         crate::RuntimeLimits::default()
-            .with_compilation_timeout(coral_test_support::COMPILATION_TIMEOUT),
+            .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
         crate::CoralInstanceId::generate(),
         crate::RunInbox::table(scope.fixture.database.clone()),
     )

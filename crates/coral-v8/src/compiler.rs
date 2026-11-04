@@ -943,9 +943,9 @@ mod tests {
     use crate::CompileFailure;
     use std::time::Duration;
 
-    /// A deadline for tests whose subject is not the deadline.
-    const TEST_COMPILATION_TIMEOUT: Duration = Duration::from_secs(30);
+    use coral_test_support::TEST_COMPILATION_TIMEOUT;
 
+    /// A deadline for tests whose subject is not the deadline.
     fn deadline() -> Instant {
         Instant::now() + TEST_COMPILATION_TIMEOUT
     }

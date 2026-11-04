@@ -207,7 +207,7 @@ impl TestModules {
             self.workspaces.clone(),
             self.providers.clone(),
             crate::RuntimeLimits::default()
-                .with_compilation_timeout(coral_test_support::COMPILATION_TIMEOUT),
+                .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
             crate::CoralInstanceId::generate(),
             crate::RunInbox::table(self.database.clone()),
         )

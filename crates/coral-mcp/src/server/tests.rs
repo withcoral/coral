@@ -33,7 +33,7 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         database.clone(),
         workspaces.clone(),
         IsolateLimits::default(),
-        coral_test_support::COMPILATION_TIMEOUT,
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .unwrap();
     let search = UniversalSearchModule::new(database.clone(), workspaces.clone());
@@ -47,7 +47,8 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
             database.clone(),
             workspaces.clone(),
         ),
-        RuntimeLimits::default().with_compilation_timeout(coral_test_support::COMPILATION_TIMEOUT),
+        RuntimeLimits::default()
+            .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
         coral_run::CoralInstanceId::generate(),
         coral_run::RunInbox::table(database.clone()),
     )

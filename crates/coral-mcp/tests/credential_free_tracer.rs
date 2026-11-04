@@ -274,7 +274,7 @@ impl Tracer {
             db.clone(),
             workspaces.clone(),
             coral_run::IsolateLimits::default(),
-            coral_test_support::COMPILATION_TIMEOUT,
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .expect("start Saved Function compiler");
         let runs = RunModule::new(
@@ -283,7 +283,7 @@ impl Tracer {
             workspaces.clone(),
             providers.clone(),
             coral_run::RuntimeLimits::default()
-                .with_compilation_timeout(coral_test_support::COMPILATION_TIMEOUT),
+                .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
             coral_run::CoralInstanceId::generate(),
             coral_run::RunInbox::table(db.clone()),
         )
@@ -1821,7 +1821,7 @@ async fn start_lost_worker(
                 database.clone(),
                 workspaces,
                 providers,
-                coral_run::RuntimeLimits::default().with_compilation_timeout(coral_test_support::COMPILATION_TIMEOUT),
+                coral_run::RuntimeLimits::default().with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
                 coral_run::CoralInstanceId::generate(),
                 coral_run::RunInbox::table(database),
             )

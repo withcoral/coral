@@ -211,7 +211,7 @@ async fn a_lookup_fails_rather_than_round_a_saved_diagnostic_integer() {
         scope.fixture.database.clone(),
         scope.fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
-        coral_test_support::COMPILATION_TIMEOUT,
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Saved Function compiler")
     .save(

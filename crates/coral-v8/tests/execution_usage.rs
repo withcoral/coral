@@ -40,7 +40,7 @@ fn an_execution_records_its_cpu_time_and_heap_peak() {
     ] {
         let program = compiler
             .compile(
-                std::time::Instant::now() + std::time::Duration::from_secs(30),
+                std::time::Instant::now() + coral_test_support::TEST_COMPILATION_TIMEOUT,
                 source,
             )
             .expect("compile");
@@ -142,7 +142,7 @@ fn an_output_refused_before_the_host_is_counted() {
     ] {
         let program = compiler
             .compile(
-                std::time::Instant::now() + std::time::Duration::from_secs(30),
+                std::time::Instant::now() + coral_test_support::TEST_COMPILATION_TIMEOUT,
                 source,
             )
             .expect("compile");
