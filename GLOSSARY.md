@@ -9,8 +9,8 @@ Services.
 **Organization**: The administrative owner above Workspaces. Each Coral deployment contains exactly one Organization.
 Isolating multiple Organizations means running separate deployments, so the cross-Organization boundary is physical
 rather than an in-query filter within one deployment. An Organization Owner governs Workspaces without authority inside
-them: the Owner can list every Workspace with its name, state, and designated Owners, assign a designated Owner, and
-archive or restore a Workspace. Everything else in a Workspace needs a Workspace Membership there. A local deployment
+them: the Owner can list every Workspace with its name, state, and designated Owners, assign a designated Owner,
+archive or restore a Workspace, and grant a Secret Store to it. Everything else in a Workspace needs a Workspace Membership there. A local deployment
 has one implicit Organization whose implicit local User is its Organization Owner. _Avoid_: Mutable Organization
 resource, inherited Workspace authority, Organization-wide access to another User's private work
 
@@ -97,7 +97,7 @@ assigning a separate Agent Owner. Its authority comes from current Workspace pol
 Providers. It has no Principal-specific Tool policy; an Agent that needs a different Tool set
 belongs in a different Workspace. A `fixed` Credential Route uses the Provider's shared Account for every caller.
 A `caller` route uses the Agent's own Provider Account, provisioned beforehand by a Workspace Owner through
-secret entry or OAuth for that exact Agent and Provider. The Agent does not sign in interactively; the provisioning
+secret entry, Secret References or OAuth for that exact Agent and Provider. The Agent does not sign in interactively; the provisioning
 human is not the invoking Principal. Account ownership does not become Agent authority. An Agent is `enabled` or
 `disabled`. Disabling it rejects new Runs and later upstream
 dispatches, including pending Invocations, and disables its Provider Accounts while preserving attribution. An
@@ -353,7 +353,7 @@ masked while typed, schemas, Call Paths, and Tools added at an already-authorize
 compatibility.
 _Avoid_: Provider Account, credential material, scope compatibility check
 
-**Provider Account Authorization**: A durable host-owned process that obtains credentials through secret entry or OAuth
+**Provider Account Authorization**: A durable host-owned process that obtains credentials through secret entry, Secret References or OAuth
 for temporary Provider Setup use, an initial Provider Account, or explicit replacement of one exact Account. Its safe
 progress and completion metadata contain no credentials, and completion cannot silently retarget another caller,
 account setting, or changed authentication requirement.
@@ -383,7 +383,8 @@ _Avoid_: vault, credential vault, external credential store
 
 **Secret Reference**: The address of one Credential Field's value in a Secret Store granted to the Account's Workspace:
 the store, a path, and a key where the store has keys. Only a Workspace Owner sets one, on a shared
-Account or an Agent's Account; the value stays in the store and Coral never keeps a copy.
+Account or an Agent's Account, and changing one replaces the Account. The value stays in the store and Coral never
+stores a copy.
 _Avoid_: vault path, secret pointer, linked secret
 
 **Credential Route**: The Provider setting that determines whether Invocations use no credentials (`none`), its single
