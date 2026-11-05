@@ -202,9 +202,7 @@ struct StoredReference {
 }
 
 /// The references stored beside an Account's sealed record, by field name.
-pub(in crate::account) fn decode_references(
-    value: &str,
-) -> Result<BTreeMap<String, SecretReference>, Error> {
+pub(super) fn decode_references(value: &str) -> Result<BTreeMap<String, SecretReference>, Error> {
     let stored: BTreeMap<String, StoredReference> =
         serde_json::from_str(value).map_err(|_invalid| Error::AccountInput)?;
     stored

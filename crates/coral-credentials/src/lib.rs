@@ -110,7 +110,7 @@ impl std::fmt::Debug for SecretReference {
     }
 }
 impl SecretReference {
-    /// The longest store name, path or key.
+    /// The longest store name, path or key, in bytes.
     pub const MAX_LEN: usize = 1024;
 
     /// Accepts a nonempty bounded store, path and key without control characters.

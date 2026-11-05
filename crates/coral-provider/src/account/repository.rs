@@ -6,8 +6,8 @@ mod encoding;
 mod intent;
 pub(super) use accounts::{ensure_account, scoped_account, scoped_account_locked};
 pub(super) use encoding::{
-    decode_device, decode_flow, decode_references, decode_sealed_fields, decode_token,
-    decode_values, encode_device, encode_flow, encode_token, encode_values,
+    decode_device, decode_flow, decode_sealed_fields, decode_token, decode_values, encode_device,
+    encode_flow, encode_token, encode_values,
 };
 
 use super::connection::{LoadedConnection, PendingConnection};
@@ -1527,6 +1527,20 @@ struct AccountRow {
     token_expires_at_unix_nanos: Option<i64>,
 }
 
+/// An Account's Secret References as stored, not yet decoded.
+pub(super) struct StoredReferences(String);
+
+impl StoredReferences {
+    /// Each field's reference, by field name.
+    /// # Errors
+    /// Rejects a value that is not a set of valid references.
+    pub(super) fn decode(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, coral_credentials::SecretReference>, Error> {
+        encoding::decode_references(&self.0)
+    }
+}
+
 impl AccountRow {
     fn decode(self) -> Result<LoadedAccount, Error> {
         Ok(LoadedAccount {
@@ -1539,7 +1553,7 @@ impl AccountRow {
             contract: ProviderCredentialContract::from_storage(&self.contract)?,
             disconnected: self.encrypted_credentials.is_empty(),
             encrypted_credentials: self.encrypted_credentials,
-            secret_references: self.secret_references,
+            secret_references: self.secret_references.map(StoredReferences),
             user_id: self
                 .user_id
                 .as_deref()

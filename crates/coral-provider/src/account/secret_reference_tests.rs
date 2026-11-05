@@ -233,6 +233,17 @@ async fn scrubbing_an_account_removes_its_references() {
                 .remove_organization_member(&account.administrator, account.user.user_id(), 1, None)
                 .await
                 .unwrap();
+                let scrubbed = account
+                    .db
+                    .execute_fixture_sql(&format!(
+                        "UPDATE provider_accounts SET secret_references = NULL \
+                         WHERE id = '{}' AND secret_references IS NULL \
+                         AND encrypted_credentials = ''",
+                        account.account
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(scrubbed, 1, "removal retires this Account");
             }
         }
     }

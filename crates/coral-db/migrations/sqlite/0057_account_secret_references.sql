@@ -6,4 +6,6 @@
 -- as for every existing row. A scrubbed Account holds none.
 ALTER TABLE provider_accounts
     ADD COLUMN secret_references TEXT
-        CHECK (secret_references IS NULL OR encrypted_credentials <> '');
+        CONSTRAINT provider_accounts_secret_references_connected CHECK (
+            secret_references IS NULL OR encrypted_credentials <> ''
+        );

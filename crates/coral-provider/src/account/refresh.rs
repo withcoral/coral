@@ -44,8 +44,9 @@ fn stored_fields(
     let Some(references) = &row.secret_references else {
         return Ok(fields);
     };
-    let references =
-        repository::decode_references(references).map_err(|_invalid| Error::AccountRequired)?;
+    let references = references
+        .decode()
+        .map_err(|_invalid| Error::AccountRequired)?;
     for (name, reference) in references {
         if fields
             .insert(name, CredentialField::Reference(reference))

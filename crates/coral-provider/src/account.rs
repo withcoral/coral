@@ -347,9 +347,10 @@ struct LoadedAccount {
     authorization_version: String,
     contract: ProviderCredentialContract,
     encrypted_credentials: String,
-    /// The fields a Secret Store holds, as stored. Decoded only for a dispatch,
-    /// so a bad value leaves that Account unusable and every other read intact.
-    secret_references: Option<String>,
+    /// The Secret References stored for this Account's fields. Decoded only for
+    /// a dispatch, so a bad value leaves that Account unusable and every other
+    /// read intact.
+    secret_references: Option<repository::StoredReferences>,
     user_id: Option<coral_workspace::UserId>,
     agent_id: Option<coral_workspace::PrincipalId>,
     requires_authorization: bool,
