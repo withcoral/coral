@@ -263,6 +263,7 @@ impl ProgramEngine for V8ProgramEngine {
                 },
             },
             Err(coral_v8::Error::MemoryLimitExceeded) => ExecutionCompletion::MemoryLimitExceeded,
+            Err(coral_v8::Error::CpuLimitExceeded) => ExecutionCompletion::CpuLimitExceeded,
             Err(coral_v8::Error::ResourceLimitExceeded) => {
                 ExecutionCompletion::Failed(RunFailure::new(
                     RunFailureCode::ResourceLimitExceeded,
@@ -429,4 +430,5 @@ pub(crate) enum ExecutionCompletion {
     Failed(RunFailure),
     ProgramHostTerminated,
     MemoryLimitExceeded,
+    CpuLimitExceeded,
 }

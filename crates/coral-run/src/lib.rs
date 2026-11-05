@@ -51,10 +51,6 @@
 //!   [`RunModule::sweep_interval`]. Coral never resumes a Run.
 //! - [`RunModule::shutdown`] refuses new Runs, lets the live ones end for the
 //!   Shutdown Drain, then interrupts the rest within the commit grace.
-//! - [`RunModule::action_prompts`] and [`RunModule::answer_action_prompt`] let an
-//!   interactive client ask the invoking User about each current action of their
-//!   own Run. An approval answer decides through the same Approval rules as Reef;
-//!   a connection answer changes nothing. Prompts keep no state.
 //! - [`approval::ApprovalModule`] exposes human-only exact Invocation decisions;
 //!   request validity and lifecycle evidence stay behind that separate Interface.
 //!
@@ -130,11 +126,9 @@
 //! Runs, while an Agent can address only that same Agent's Run in its fixed
 //! Workspace. Run identifiers and cursors grant no authority.
 
-mod action_prompts;
 mod activity;
 mod activity_observation;
 mod admission;
-pub use action_prompts::{ActionPrompt, PromptAnswer};
 pub use activity::{RunEntries, RunEntry, RunEntryAnchor, RunEntryWindow};
 pub use activity_observation::{ActivityObservation, ActivityWake};
 pub use admission::{PreparedRun, StagedRun};
@@ -221,9 +215,9 @@ pub use types::{
     COMPILATION_TIMEOUT, EMITTED_JAVASCRIPT_MAX_BYTES, FanOutLimit, FinalValue, InvocationId,
     InvocationResultKind, LINKED_SAVED_FUNCTION_MAX_COUNT, PROGRAM_LOG_MESSAGE_MAX_BYTES,
     PROGRAM_SOURCE_MAX_BYTES, ProgramLogLevel, ProgramSource, ProgramValue, RUN_EVENT_PAGE_MAX,
-    RUN_TIMEOUT_MAX_MS, RunCursor, RunEvent, RunEventKind, RunFailure, RunFailureCode, RunId,
-    RunObservation, RunState, RunSubmission, RunTerminalOutcome, RunTimeout, RunUpdate,
-    RuntimeLimits, SOURCE_MAP_MAX_BYTES, ShutdownDrain, SourceDocument, SourceLocation,
+    RUN_TIMEOUT_MAX_MS, RunCpuBudget, RunCursor, RunEvent, RunEventKind, RunFailure,
+    RunFailureCode, RunId, RunObservation, RunState, RunSubmission, RunTerminalOutcome, RunTimeout,
+    RunUpdate, RuntimeLimits, SOURCE_MAP_MAX_BYTES, ShutdownDrain, SourceDocument, SourceLocation,
 };
 
 #[cfg(test)]
@@ -260,6 +254,7 @@ pub struct RunModule {
     applied_output_cap: AppliedOutputCap,
     fan_out_limit: FanOutLimit,
     shutdown_drain: ShutdownDrain,
+    cpu_budget: Option<RunCpuBudget>,
     /// The deadline for one Program compilation, from admission's start.
     compilation_timeout: std::time::Duration,
     /// The Coral Instance this module runs in; a Run row it claims records it.
@@ -344,6 +339,7 @@ impl RunModule {
             applied_output_cap: limits.applied_output_cap(),
             fan_out_limit: limits.fan_out_limit(),
             shutdown_drain: limits.shutdown_drain(),
+            cpu_budget: limits.cpu_budget(),
             compilation_timeout: limits.compilation_timeout(),
             instance,
             inbox,
@@ -384,6 +380,7 @@ impl RunModule {
             applied_output_cap: AppliedOutputCap::default(),
             fan_out_limit: FanOutLimit::default(),
             shutdown_drain: ShutdownDrain::default(),
+            cpu_budget: None,
             compilation_timeout: coral_test_support::TEST_COMPILATION_TIMEOUT,
             instance: CoralInstanceId::generate(),
             inbox,
@@ -460,6 +457,13 @@ impl RunModule {
     #[cfg(test)]
     pub(crate) const fn with_fan_out_limit(mut self, limit: FanOutLimit) -> Self {
         self.fan_out_limit = limit;
+        self
+    }
+
+    /// Replaces the Run CPU Budget on a built module.
+    #[cfg(all(test, unix))]
+    pub(crate) const fn with_cpu_budget(mut self, budget: RunCpuBudget) -> Self {
+        self.cpu_budget = Some(budget);
         self
     }
 

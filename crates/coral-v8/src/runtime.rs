@@ -101,9 +101,12 @@ impl ProgramExecutor {
                 .heap_limits(0, self.limits.execution_heap_bytes()),
         );
         let cpu_started = thread_cpu_time();
+        let cpu_budget = host.as_ref().and_then(|host| host.cpu_budget());
         HEAP_PEAK.set(0);
         let result = crate::memory::with_heap_limit(&mut isolate, |isolate| {
-            Self::execute_in_isolate(isolate, program, host, control)
+            crate::cpu::with_cpu_budget(isolate, cpu_budget, cpu_started, |isolate| {
+                Self::execute_in_isolate(isolate, program, host, control)
+            })
         });
         sample_heap(&mut isolate);
         let mut heap_peak = HEAP_PEAK.get();
@@ -342,6 +345,7 @@ fn program_execution_terminated(
     control: Option<&ProgramExecutionControl>,
 ) -> bool {
     control.is_some_and(ProgramExecutionControl::is_requested)
+        || crate::cpu::budget_exceeded()
         || scope.is_execution_terminating()
         || scope
             .get_slot::<ProgramHostSlot>()
@@ -1079,7 +1083,7 @@ fn sample_heap(isolate: &mut v8::Isolate) {
 /// The CPU time the current thread has used. The Program's thread parks
 /// while it waits for its Tools, so this is the time it spent running.
 #[cfg(unix)]
-fn thread_cpu_time() -> Option<std::time::Duration> {
+pub(crate) fn thread_cpu_time() -> Option<std::time::Duration> {
     let time = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
     Some(std::time::Duration::new(
         u64::try_from(time.tv_sec).ok()?,
@@ -1089,6 +1093,6 @@ fn thread_cpu_time() -> Option<std::time::Duration> {
 
 /// No thread CPU clock is read on this platform.
 #[cfg(not(unix))]
-const fn thread_cpu_time() -> Option<std::time::Duration> {
+pub(crate) const fn thread_cpu_time() -> Option<std::time::Duration> {
     None
 }

@@ -20,7 +20,7 @@ coral-search.workspace = true
 coral-task.workspace = true
 coral-telemetry.workspace = true
 coral-workspace.workspace = true
-rmcp = { workspace = true, features = ["elicitation"] }
+rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,7 +29,6 @@ thiserror.workspace = true
 tokio.workspace = true
 tower.workspace = true
 tracing.workspace = true
-uuid.workspace = true
 
 [dev-dependencies]
 coral-catalog.workspace = true

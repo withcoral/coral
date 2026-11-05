@@ -16,6 +16,7 @@
 //! credentials, persistence, and process environment never cross this Adapter.
 
 mod compiler;
+mod cpu;
 mod memory;
 mod profile;
 mod program_error;
@@ -36,6 +37,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 pub use compiler::ProgramCompiler;
+pub use cpu::cpu_budget_supported;
 pub use memory::IsolateLimits;
 pub use profile::{TYPESCRIPT_PROFILE, TYPESCRIPT_PROFILE_ID, TypeScriptProfile};
 pub use program_error::{ProgramError, ProgramErrorFrame, ProgramToolError};
@@ -143,6 +145,12 @@ pub trait ProgramHost: Send + Sync {
     /// The trace a Tool rejection decided before [`Self::invoke`] names, as
     /// the host's own rejections do.
     fn trace_id(&self) -> Option<String> {
+        None
+    }
+
+    /// The CPU time the Program may use on its own thread before execution
+    /// ends with [`Error::CpuLimitExceeded`]. `None` runs it without a budget.
+    fn cpu_budget(&self) -> Option<std::time::Duration> {
         None
     }
 
@@ -769,6 +777,9 @@ pub enum Error {
     /// The isolate exceeded its configured heap budget.
     #[error("V8 isolate memory limit exceeded")]
     MemoryLimitExceeded,
+    /// The Program used more CPU time than its host's budget.
+    #[error("Program CPU budget exceeded")]
+    CpuLimitExceeded,
     /// The configured heap budgets cannot safely initialize bounded isolates.
     #[error("isolate heap budgets must be at least 8 MiB and leave room for termination")]
     InvalidIsolateLimits,
@@ -807,6 +818,7 @@ impl Error {
             Self::ProgramOutputRejected { .. } => "program_output_rejected",
             Self::ResourceLimitExceeded { .. } => "resource_limit_exceeded",
             Self::MemoryLimitExceeded { .. } => "memory_limit_exceeded",
+            Self::CpuLimitExceeded { .. } => "cpu_limit_exceeded",
             Self::InvalidIsolateLimits { .. } => "invalid_isolate_limits",
             Self::PendingProgram { .. } => "pending_program",
             Self::ProgramHostTerminated { .. } => "program_host_terminated",

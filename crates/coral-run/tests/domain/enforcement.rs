@@ -1367,7 +1367,7 @@ async fn the_precheck_and_the_enforcement_point_reach_the_same_decision_on_the_s
     let invoker = test_invoker(&fixture, &tool, &record);
     let deadline = record.deadline_at_unix_nanos;
     let context = change(tool.user.clone(), 100, 'a');
-    let cases: [(&str, ToolAccessState, ApprovalFact, Decision); 5] = [
+    let cases: [(&str, ToolAccessState, ApprovalFact, Decision); 6] = [
         (
             "every fact current",
             ToolAccessState::Enabled,
@@ -1391,9 +1391,19 @@ async fn the_precheck_and_the_enforcement_point_reach_the_same_decision_on_the_s
             },
         ),
         (
-            "an approval expired",
+            "an approval decided at its deadline counts after it",
             ToolAccessState::ApprovalRequired,
             ApprovalFact::Approved {
+                decided_at_unix_nanos: 1,
+                deadline_at_unix_nanos: 1,
+            },
+            Decision::Dispatch,
+        ),
+        (
+            "an approval was decided after its deadline",
+            ToolAccessState::ApprovalRequired,
+            ApprovalFact::Approved {
+                decided_at_unix_nanos: 2,
                 deadline_at_unix_nanos: 1,
             },
             Decision::Deny(CoralFailure::ApprovalExpired),

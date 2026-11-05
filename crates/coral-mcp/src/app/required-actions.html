@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Coral needs you</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: var(--color-background-primary, Canvas);
+        --bg-2: var(--color-background-secondary, color-mix(in srgb, Canvas 92%, CanvasText));
+        --fg: var(--color-text-primary, CanvasText);
+        --fg-2: var(--color-text-secondary, color-mix(in srgb, CanvasText 65%, Canvas));
+        --line: var(--color-border-primary, color-mix(in srgb, CanvasText 18%, Canvas));
+        --accent: var(--color-background-inverse, CanvasText);
+        --accent-fg: var(--color-text-inverse, Canvas);
+        --font: var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif);
+        --mono: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+      }
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+        color: var(--fg);
+        font: 14px/1.45 var(--font);
+      }
+      main {
+        display: grid;
+        gap: 10px;
+        padding: 2px;
+      }
+      main[hidden] {
+        display: none;
+      }
+      article {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 4px 16px;
+        align-items: center;
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--bg);
+      }
+      h1 {
+        grid-column: 1;
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      p {
+        grid-column: 1;
+        margin: 0;
+        color: var(--fg-2);
+      }
+      code {
+        font: 13px var(--mono);
+        color: var(--fg);
+      }
+      button {
+        grid-column: 2;
+        grid-row: 1 / span 3;
+        padding: 8px 14px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--accent);
+        color: var(--accent-fg);
+        font: 600 14px var(--font);
+        cursor: pointer;
+      }
+      button:hover {
+        filter: brightness(1.1);
+      }
+      a {
+        color: inherit;
+        overflow-wrap: anywhere;
+      }
+      .address {
+        grid-column: 1 / span 2;
+        user-select: all;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="root" hidden></main>
+    <script>
+      const PROTOCOL = "2026-01-26";
+      const root = document.getElementById("root");
+      const pending = new Map();
+      let nextId = 1;
+
+      function post(message) {
+        window.parent.postMessage(message, "*");
+      }
+      function request(method, params, timeoutMs) {
+        const id = nextId++;
+        return new Promise((resolve, reject) => {
+          pending.set(id, { resolve, reject });
+          post({ jsonrpc: "2.0", id, method, params });
+          if (timeoutMs) {
+            setTimeout(() => {
+              if (!pending.delete(id)) return;
+              reject(new Error(`${method} timed out`));
+            }, timeoutMs);
+          }
+        });
+      }
+      function notify(method, params) {
+        post({ jsonrpc: "2.0", method, params });
+      }
+
+      window.addEventListener("message", (event) => {
+        if (event.source !== window.parent) return;
+        const message = event.data;
+        if (!message || message.jsonrpc !== "2.0") return;
+        if (message.id !== undefined && message.method === undefined) {
+          const waiting = pending.get(message.id);
+          if (!waiting) return;
+          pending.delete(message.id);
+          if (message.error) waiting.reject(message.error);
+          else waiting.resolve(message.result);
+          return;
+        }
+        switch (message.method) {
+          case "ui/notifications/tool-result":
+            render(message.params);
+            break;
+          case "ui/notifications/tool-cancelled":
+            render(null);
+            break;
+          case "ui/notifications/host-context-changed":
+            applyContext(message.params);
+            break;
+          case "ui/resource-teardown":
+            if (message.id !== undefined) post({ jsonrpc: "2.0", id: message.id, result: {} });
+            break;
+          default:
+            break;
+        }
+      });
+
+      function applyContext(context) {
+        if (!context) return;
+        const variables = context.styles && context.styles.variables;
+        if (variables) {
+          for (const [name, value] of Object.entries(variables)) {
+            if (value) document.documentElement.style.setProperty(name, value);
+          }
+        }
+        if (context.theme) document.documentElement.dataset.theme = context.theme;
+      }
+
+      // The time alone on the same day, with the date otherwise.
+      function clock(iso) {
+        const date = new Date(iso);
+        if (Number.isNaN(date.getTime())) return "";
+        const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        if (date.toDateString() === new Date().toDateString()) return time;
+        return `${date.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+      }
+
+      function render(result) {
+        root.replaceChildren();
+        const update = result && result.structuredContent;
+        const actions = ((update && update.required_actions) || []).filter(
+          (action) => action.required_actor === "invoking_user",
+        );
+        root.hidden = actions.length === 0;
+        for (const action of actions) {
+          const card = document.createElement("article");
+          const title = document.createElement("h1");
+          const what = document.createElement("p");
+          const when = document.createElement("p");
+          const open = document.createElement("button");
+          const connection = action.kind === "account_connection";
+          title.textContent = connection ? "Connect your account" : "Approve this call";
+          // Each card names the waiting Tool where one Tool waits.
+          if (connection && !action.tool) {
+            what.textContent = action.provider
+              ? `The run calls ${action.provider} as you.`
+              : "The run calls a provider as you.";
+          } else {
+            const tool = document.createElement("code");
+            tool.textContent = action.tool || "a tool";
+            what.append(tool);
+            if (action.provider) what.append(` on ${action.provider}`);
+          }
+          const by = clock(action.deadline_at);
+          when.textContent = by ? `Decide before ${by}. Run ${update.run_id}.` : `Run ${update.run_id}.`;
+          open.type = "button";
+          open.textContent = "Open in Coral";
+          open.addEventListener("click", () => openLink(action.url, open));
+          card.append(title, what, when, open);
+          root.append(card);
+        }
+        reportSize();
+      }
+
+      // The host opens the page in the person's browser. When it declines or
+      // never answers, the card shows the address itself, to open or copy.
+      async function openLink(url, button) {
+        button.disabled = true;
+        try {
+          const result = await request("ui/open-link", { url }, 2000);
+          console.info("ui/open-link answered", result);
+          if (!(result && result.isError)) return;
+        } catch (error) {
+          console.warn("ui/open-link failed", error);
+        } finally {
+          button.disabled = false;
+        }
+        let opened = null;
+        try {
+          // With "noopener" the browser returns no window, so the opener is cleared here.
+          opened = window.open(url, "_blank");
+          if (opened) opened.opener = null;
+        } catch (error) {
+          console.warn("window.open failed", error);
+        }
+        if (opened) return;
+        const address = document.createElement("p");
+        address.className = "address";
+        address.append("Open this address in your browser: ");
+        const link = document.createElement("a");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = url;
+        address.append(link);
+        button.closest("article").append(address);
+        reportSize();
+      }
+
+      function reportSize() {
+        // The body's height follows the cards; the document's never drops below the frame's.
+        const height = root.hidden ? 0 : document.body.scrollHeight;
+        notify("ui/notifications/size-changed", { width: document.documentElement.scrollWidth, height });
+      }
+      new ResizeObserver(() => reportSize()).observe(document.body);
+
+      (async () => {
+        try {
+          const result = await request("ui/initialize", {
+            protocolVersion: PROTOCOL,
+            appCapabilities: { availableDisplayModes: ["inline"] },
+            appInfo: { name: "Coral required actions", version: "1" },
+          });
+          applyContext(result && result.hostContext);
+          notify("ui/notifications/initialized", {});
+        } catch (error) {
+          console.warn("ui/initialize failed", error);
+        }
+      })();
+    </script>
+  </body>
+</html>

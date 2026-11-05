@@ -82,15 +82,16 @@ test('A fresh Desktop runs its first Program over the workspace MCP endpoint', a
       expect(waiting.required_actions).toHaveLength(1)
       expect(calls).toBe(0)
     })
-    await step('Approve the call on its run status page in the window', async () => {
+    await step('Approve the call on its Approvals Page in the window', async () => {
       const [action] = waiting!.required_actions
-      expect(new URL(action.run_status_url).origin).toBe(reef)
-      await page.goto(action.run_status_url)
-      await page
-        .getByRole('link', { name: 'Review coral.providers.ledger.listEntries', exact: true })
-        .click()
-      await page.getByRole('button', { name: 'Approve', exact: true }).click()
-      await page.getByText('Approved', { exact: true }).waitFor()
+      expect(new URL(action.url).origin).toBe(reef)
+      await page.goto(action.url)
+      const review = page.getByRole('region', {
+        name: 'Review coral.providers.ledger.listEntries',
+        exact: true,
+      })
+      await review.getByRole('button', { name: 'Approve', exact: true }).click()
+      await review.getByText('Approved', { exact: true }).waitFor()
       const done = await observeRun(runner, await runner.wait(waiting!))
       expect(done.update.final_value).toEqual({ kind: 'value', value: { entries: ['first'] } })
       expect(calls).toBe(1)

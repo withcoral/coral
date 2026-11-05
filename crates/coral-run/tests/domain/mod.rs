@@ -1,4 +1,3 @@
-mod action_prompts;
 mod admission;
 mod agents;
 mod approvals;
@@ -6,6 +5,8 @@ mod binary;
 mod call_paths;
 mod cancellation;
 mod connections;
+#[cfg(unix)]
+mod cpu;
 mod credentials;
 mod emissions;
 mod enforcement;

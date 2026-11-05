@@ -18,7 +18,9 @@ import {
   openCustomSource,
   programRunner,
   signInToReadTools,
+  waitForNoAccount,
   waitForPublication,
+  waitForYourAccount,
 } from '../../../support/providers.ts'
 import { withOwner } from '../../../support/topology.ts'
 
@@ -175,24 +177,21 @@ export async function separateUserAccount(choice: 'connect' | 'retry', context: 
               required_actor: 'invoking_user',
             }),
           ])
-          await page.goto(update.required_actions[0].run_status_url)
+          // The link opens your account page for the provider.
+          const accountPage = new URL(update.required_actions[0].url).pathname
+          expect(accountPage).toMatch(new RegExp(`^/workspaces/${workspace}/accounts/[^/]+$`))
+          await page.goto(update.required_actions[0].url)
+          await waitForNoAccount(page)
           // One click goes straight to the provider's sign-in.
-          await page
-            .getByRole('dialog', { name: 'Review action', exact: true })
-            .getByRole('button', { name: /^Connect / })
-            .click()
+          await page.getByRole('button', { name: 'Connect', exact: true }).click()
           // The grant is already expired when the waiting Invocation resumes.
           // Its refresh must continue this same call, not require another exec.
           upstream.knobs.expiresIn = 0
           upstream.knobs.refreshAccess = replacementAccess
           await approveConsent()
-          // Sign-in returns to the same Run and request.
-          await page.waitForURL((url) => url.searchParams.get('request') === requestName)
-          await page
-            .getByText('Account connected. Coral continues after its other checks.', {
-              exact: true,
-            })
-            .waitFor()
+          // Sign-in returns to the same account page, now connected.
+          await page.waitForURL((url) => url.pathname === accountPage)
+          await waitForYourAccount(page)
           expect(
             (
               await api.accounts.getAccountConnectionRequest({

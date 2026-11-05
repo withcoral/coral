@@ -22,10 +22,12 @@ Principal evidence, including private JWT checks and current authority lookup.
 URL and projects safe errors and OAuth metadata. Bootstrap supplies resolved
 signing configuration and authority Modules. Login HTTP orchestration remains here.
 
-Every HTTP request verifies its credential again. MCP sessions are partitioned
-by Workspace and canonical Principal; session IDs and `clientInfo` cannot select
-another actor. Domain Modules read current Coral-owned Organization Membership
-or Agent/Registration state rather than trusting a session's retained role.
+Every HTTP request verifies its credential again. Coral keeps no MCP session
+([ADR 0029](../../../../docs/adr/0029-mcp-requests-are-served-without-sessions-and-a-required-action-reaches-its-user-through-the-assistants-link.md)):
+each request's credential and endpoint fix its Workspace and canonical
+Principal, and a session header or `clientInfo` cannot select another actor.
+Domain Modules read current Coral-owned Organization Membership or
+Agent/Registration state on every request rather than a retained role.
 
 ## Organization MCP Endpoint
 

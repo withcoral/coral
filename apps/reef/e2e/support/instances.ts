@@ -23,7 +23,7 @@ export function coralInstances() {
     return answer as T
   }
   const requests = () => control<ProxiedRequest[]>('/requests')
-  /** Sends every request outside an MCP session through the proxy to `instance` while `act` runs. */
+  /** Sends every request through the proxy to `instance` while `act` runs. */
   const on = async <T>(instance: number, act: () => Promise<T>): Promise<T> => {
     await control('/pin', { instance })
     try {
@@ -39,8 +39,8 @@ export function coralInstances() {
     /**
      * Starts a Run through `instance` and returns its name. The instance that
      * accepts a Run holds it, so this also teaches the harness that instance's id.
-     * Every MCP request must have reached `instance`: one in a session that
-     * another instance issued would not follow the pin.
+     * Every MCP request must have reached `instance`; the proxy follows the pin
+     * since no MCP request carries a session.
      */
     async startOn(instance: number, start: () => Promise<string>) {
       const before = (await requests()).length

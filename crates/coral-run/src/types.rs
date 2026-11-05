@@ -794,7 +794,7 @@ pub struct RunObservation {
     event_limit: u16,
     wait: Duration,
     batch_output: bool,
-    by_acceptor: bool,
+    links_trace: bool,
 }
 
 impl RunObservation {
@@ -815,22 +815,22 @@ impl RunObservation {
             event_limit,
             wait: Duration::ZERO,
             batch_output: false,
-            by_acceptor: false,
+            links_trace: true,
         })
     }
 
-    /// Marks this observation as made by the request that accepted the Run.
-    /// Acceptance already linked that request to the Run Trace, so the
-    /// observation links nothing more.
+    /// Leaves the current request unlinked from the Run Trace, because the
+    /// request links it once elsewhere: acceptance linked the request that
+    /// accepted the Run, or a later observation in the same request does.
     #[must_use]
-    pub const fn by_acceptor(mut self) -> Self {
-        self.by_acceptor = true;
+    pub const fn without_trace_link(mut self) -> Self {
+        self.links_trace = false;
         self
     }
 
-    /// Whether the request making this observation accepted the Run.
-    pub(crate) const fn is_by_acceptor(&self) -> bool {
-        self.by_acceptor
+    /// Whether this observation links the current request to the Run Trace.
+    pub(crate) const fn links_trace(&self) -> bool {
+        self.links_trace
     }
 
     /// Observes a newly accepted Run, batching authored output until terminal state,
@@ -1081,6 +1081,11 @@ impl AcceptedRun {
     pub(crate) fn held_id(&self) -> HeldRunId {
         HeldRunId(self.id.clone())
     }
+
+    /// The Run's time limit: from its acceptance to its deadline.
+    pub(crate) fn time_limit(&self) -> Duration {
+        crate::duration_until(self.deadline_at_unix_nanos, self.accepted_at_unix_nanos)
+    }
 }
 
 impl crate::lifecycle::RunRecord {
@@ -1217,6 +1222,52 @@ impl Default for ShutdownDrain {
     }
 }
 
+/// The Run CPU Budget an operator sets: the CPU time one Run's Program may
+/// use on its own thread. Waiting for a Tool, an approval or an answer from
+/// Coral does not count. A Run's budget is the lower of this and its time
+/// limit, so without one only the deadline ends a Run. Set at process
+/// bootstrap; none by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunCpuBudget {
+    cpu: Duration,
+}
+
+impl RunCpuBudget {
+    /// Accepts a positive budget on a platform that can measure it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] for zero, and on Windows, which has
+    /// no safe call for a thread's CPU clock.
+    pub fn new(cpu: Duration) -> Result<Self, Error> {
+        if !coral_v8::cpu_budget_supported() {
+            return Err(Error::InvalidInput(
+                "a Run CPU Budget is not supported on Windows, which has no safe call for a thread's CPU clock"
+                    .to_string(),
+            ));
+        }
+        if cpu.is_zero() {
+            return Err(Error::InvalidInput(
+                "a Run CPU Budget must be positive".to_string(),
+            ));
+        }
+        Ok(Self { cpu })
+    }
+
+    /// The budget in CPU time.
+    #[must_use]
+    pub const fn cpu(self) -> Duration {
+        self.cpu
+    }
+
+    /// The budget a Run with `time_limit` executes under: this one when it
+    /// is below the time limit, else none, since the deadline ends the Run
+    /// first.
+    pub(crate) fn below(self, time_limit: Duration) -> Option<Duration> {
+        (self.cpu < time_limit).then_some(self.cpu)
+    }
+}
+
 /// The limits one deployment sets for Program execution: the V8 isolate
 /// heaps, the Run Owner's Applied cap and its Fan-out Limit, and the
 /// Shutdown Drain. Resolved once at process bootstrap and handed to the Run
@@ -1228,6 +1279,7 @@ pub struct RuntimeLimits {
     applied_output_cap: AppliedOutputCap,
     fan_out_limit: FanOutLimit,
     shutdown_drain: ShutdownDrain,
+    cpu_budget: Option<RunCpuBudget>,
     compilation_timeout: Duration,
 }
 
@@ -1256,8 +1308,22 @@ impl RuntimeLimits {
             applied_output_cap,
             fan_out_limit,
             shutdown_drain,
+            cpu_budget: None,
             compilation_timeout: COMPILATION_TIMEOUT,
         }
+    }
+
+    /// Sets the Run CPU Budget; without one only the deadline ends a Run.
+    #[must_use]
+    pub const fn with_cpu_budget(mut self, cpu_budget: RunCpuBudget) -> Self {
+        self.cpu_budget = Some(cpu_budget);
+        self
+    }
+
+    /// The Run CPU Budget, if the operator set one.
+    #[must_use]
+    pub const fn cpu_budget(&self) -> Option<RunCpuBudget> {
+        self.cpu_budget
     }
 
     /// Replaces the compilation deadline, for a test that is not about it or
