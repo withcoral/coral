@@ -371,7 +371,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           'historyFixture',
         )
         await page.goto(providerPath)
-        await setToolPolicy(page, 'lookup', 'Disabled')
+        await setToolPolicy(page, 'lookup', 'Block')
         const execute = programRunner(page, target, first, {
           accessToken: await mcpToken(page, first),
           taskIntent: `Inspect an invocation ${crypto.randomUUID()}`,

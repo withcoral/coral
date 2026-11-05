@@ -1144,8 +1144,8 @@ it.each([
     expect(row).toHaveTextContent(hit.kind === 'provider_tool' ? 'tool' : 'saved function')
     if (hit.matched.fields.length + hit.matched.tags.length > 0)
       expect(row).toHaveTextContent('Matched in')
-    // Approval shows as the Providers page's Needs approval hand, named, never as a text badge.
-    const approval = row.querySelector('[role="img"][aria-label^="Needs approval"]')
+    // Approval shows as the Providers page's Ask hand, named, never as a text badge.
+    const approval = row.querySelector('[role="img"][aria-label^="Ask"]')
     expect(Boolean(approval)).toBe(Boolean(hit.tool?.approvalRequired))
     if (approval) expect(approval.querySelector('svg')).not.toBeNull()
     expect(row.textContent).not.toContain('approval required')

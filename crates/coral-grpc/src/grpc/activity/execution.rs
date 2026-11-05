@@ -165,6 +165,12 @@ fn caller_calls(
         calls: caller.calls,
     }
 }
+/// The catalog's resource name for a summarized Tool.
+fn summary_tool(workspace: &WorkspaceId, tool: &coral_run::ToolAddress) -> String {
+    let provider = format!("workspaces/{workspace}/providers/{}", tool.provider_id);
+    super::super::providers::tool_name(&provider, &tool.tool_key)
+}
+
 pub(super) fn summary(
     workspace: &WorkspaceId,
     value: coral_run::ActivitySummary,
@@ -183,6 +189,7 @@ pub(super) fn summary(
             .stopped
             .into_iter()
             .map(|op| wire::ActivityStoppedTool {
+                tool: summary_tool(workspace, &op.tool),
                 call_path: op.call_path,
                 blocked: op.blocked,
                 not_allowed: op.not_allowed,
@@ -193,6 +200,7 @@ pub(super) fn summary(
             .tools
             .into_iter()
             .map(|op| wire::ActivityToolCalls {
+                tool: summary_tool(workspace, &op.tool),
                 callers: op
                     .callers
                     .iter()
@@ -200,6 +208,7 @@ pub(super) fn summary(
                     .collect(),
                 call_path: op.call_path,
                 calls: op.calls,
+                daily: op.daily,
             })
             .collect(),
         approvals: Some(wire::ActivityApprovalDecisions {

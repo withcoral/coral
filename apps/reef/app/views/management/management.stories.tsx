@@ -17,6 +17,9 @@ import { resizeViewport } from '../../../.storybook/browser'
 import { WorkspaceOverview, type WorkspaceOverviewProps } from './workspace-overview'
 import { onboardingPrompt } from './onboarding-prompt'
 
+/** A tool's stand-in resource name beside its Call Path. */
+const summaryTool = (callPath: string) => ({ tool: `${callPath}#tool`, callPath })
+
 const form = { csrf: 'storybook-csrf', requestId: 'storybook-request' }
 // The app shell bounds a page's height; a story that scrolls inside it needs the same bound.
 const viewportHeight: Decorator = (Story) => (
@@ -225,22 +228,37 @@ export const SummaryOverview: Story = {
             },
             stopped: [
               {
-                callPath: 'coral.providers.github.deleteRepository',
+                ...summaryTool('coral.providers.github.deleteRepository'),
                 blocked: 4,
                 notAllowed: 0,
                 needsSetup: 0,
               },
               {
-                callPath: 'coral.providers.gmail.sendMessage',
+                ...summaryTool('coral.providers.gmail.sendMessage'),
                 blocked: 0,
                 notAllowed: 2,
                 needsSetup: 0,
               },
             ],
             tools: [
-              { callPath: 'coral.providers.github.getIssue', calls: 81, callers: [] },
-              { callPath: 'coral.providers.linear.searchIssues', calls: 40, callers: [] },
-              { callPath: 'coral.providers.gmail.sendMessage', calls: 16, callers: [] },
+              {
+                ...summaryTool('coral.providers.github.getIssue'),
+                calls: 81,
+                daily: [],
+                callers: [],
+              },
+              {
+                ...summaryTool('coral.providers.linear.searchIssues'),
+                calls: 40,
+                daily: [],
+                callers: [],
+              },
+              {
+                ...summaryTool('coral.providers.gmail.sendMessage'),
+                calls: 16,
+                daily: [],
+                callers: [],
+              },
             ],
             approvals: { approved: 5, declined: 2, medianWaitSeconds: 95 },
             callers: [],

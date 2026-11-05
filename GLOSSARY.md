@@ -314,22 +314,29 @@ not Provider Tools. _Avoid_: Operation, Capability, function, MCP tool (for a Pr
 _In Reef_: "tool"
 
 **Tool Key**: The Upstream Service-authored or deterministically derived key that addresses a Tool within one
-Provider's active catalog. It is not a cross-generation identity or a public client name. Management represents the
-current Provider-plus-Key address as a deterministic, transport-safe Tool resource name; that representation does
-not add another Tool identity or pin a Provider generation. A changed Key produces a changed resource name, and
-policy does not transfer silently. _Avoid_: Operation Key, Tool revision, public Call Path, independent management
-id
+Provider's catalog, such as an OpenAPI `operationId`, or the method and path of an Operation that has none. A Tool
+stays the same Tool across Provider Generations while its Key stays the same, even when its definition changes, and its
+Tool Access State and call history follow the Key. A changed Key is a new Tool that inherits neither. It is not a
+public client name. Management represents the Provider-plus-Key address as a deterministic, transport-safe Tool
+resource name; that representation does not add another Tool identity or pin a Provider generation. _Avoid_:
+Operation Key, Tool revision, public Call Path, independent management id
+
+**Tool-relative Path**: The part of a Tool Call Path after its Provider Call Root, such as `issues.get`. Provider
+Publication assigns it from the Tool Key and carries it forward while that Key stays active. It names a Tool within one
+Provider but does not identify it: a removed path can later name another Tool. _Avoid_: Tool Key
+_In Reef_: "tool name"
 
 **Tool Call Path**: The collision-free JavaScript path for one Provider Tool in Coral Programs and
 Principal-facing discovery. It is the only v1 client name for the Tool; v1 has no separate
-language-neutral Tool Logical Name. Every Call Path starts with its Provider's Call Root. Provider
-Publication assigns and collision-resolves the Tool-relative projection, then carries it forward while the same
-Tool Key stays active. The projection is idiomatic JavaScript: `/` and `.` in the Tool Key separate dotted
+language-neutral Tool Logical Name. Every Call Path is its Provider's Call Root followed by the Tool-relative
+Path, which Provider Publication collision-resolves. The projection is idiomatic JavaScript: `/` and `.` in the Tool Key separate dotted
 namespace segments and each segment is lowerCamelCase, so `actions/add-repo-access` projects as
 `actions.addRepoAccess`. Each Provider prefixes that projection with its immutable Call Root. The path
 persists outside an MCP session and is distinct from the internal Tool Key.
 A removed Tool-relative path or Provider namespace is not reserved and can be reused later. V1 provides
-no alias or historical Call Path compatibility guarantee. A Call Path does not pin a Provider Generation. _Avoid_:
+no alias or historical Call Path compatibility guarantee. A Call Path does not pin a Provider Generation. A Tool
+Invocation keeps the Call Path its Program called as a label; activity counts and attributes the call by its Provider
+and Tool Key, so calls made under a reused path never count toward the Tool that holds it now. _Avoid_:
 Operation Call Path, Tool Key, language-neutral intermediate name, Provider name, session-local function name,
 Provider-specific MCP tool
 
@@ -548,6 +555,7 @@ stale an exact rule in v1. A changed Tool Key does. Policy for one Provider does
 A Principal that needs a different Tool set belongs in a different Workspace.
 _Avoid_: Principal policy, Agent policy, Account-specific policy, Credential Route policy, Provider permission,
 Tool Availability, allow/ask/deny
+_In Reef_: "policy"; the states are "Allow", "Ask" and "Block"
 
 **Context Impact**: The net payload bytes one ended Program Run adds to its caller's context: the bytes of its
 Emissions, Logs and Final Value, minus the bytes of its Invocations' retained Tool Results. Negative means saved. A

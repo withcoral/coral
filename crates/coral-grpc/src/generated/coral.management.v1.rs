@@ -6416,10 +6416,10 @@ pub struct SummarizeActivityResponse {
     /// Tool calls that ended in the window, by outcome.
     #[prost(message, optional, tag = "1")]
     pub calls: ::core::option::Option<ActivityCallOutcomes>,
-    /// Tools with calls stopped in the window, one entry per Call Path, most stopped first.
+    /// Tools with calls stopped in the window, one entry per Tool, most stopped first.
     #[prost(message, repeated, tag = "2")]
     pub stopped: ::prost::alloc::vec::Vec<ActivityStoppedTool>,
-    /// Tools with calls that ended in the window, one entry per Call Path.
+    /// Tools with calls that ended in the window, one entry per Tool.
     #[prost(message, repeated, tag = "3")]
     pub tools: ::prost::alloc::vec::Vec<ActivityToolCalls>,
     /// Approval requests decided in the window.
@@ -6467,10 +6467,11 @@ pub struct ActivityCallOutcomes {
     #[prost(int64, tag = "6")]
     pub canceled: i64,
 }
-/// One Tool's stopped calls, split by who must act.
+/// One Tool's stopped calls, split by who must act. One entry per Tool, so
+/// calls under a Call Path that another Tool held before count apart.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityStoppedTool {
-    /// Retained Program Call Path.
+    /// Call Path of the Tool's latest stopped call.
     #[prost(string, tag = "1")]
     pub call_path: ::prost::alloc::string::String,
     /// Calls a rule stopped.
@@ -6482,11 +6483,16 @@ pub struct ActivityStoppedTool {
     /// Calls that need setup.
     #[prost(int64, tag = "4")]
     pub needs_setup: i64,
+    /// {provider}/tools/{encoded Tool Key} of the Provider at the time of the calls,
+    /// as the catalog names it. The Tool may since have left the catalog.
+    #[prost(string, tag = "5")]
+    pub tool: ::prost::alloc::string::String,
 }
-/// One Tool's ended calls.
+/// One Tool's ended calls. One entry per Tool, so calls under a Call Path that
+/// another Tool held before count apart.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ActivityToolCalls {
-    /// Retained Program Call Path.
+    /// Call Path of the Tool's latest ended call.
     #[prost(string, tag = "1")]
     pub call_path: ::prost::alloc::string::String,
     /// Calls that ended in the window.
@@ -6495,6 +6501,15 @@ pub struct ActivityToolCalls {
     /// The same calls per invoking actor, busiest first. They add up to calls.
     #[prost(message, repeated, tag = "3")]
     pub callers: ::prost::alloc::vec::Vec<ActivityCallerCalls>,
+    /// {provider}/tools/{encoded Tool Key} of the Provider at the time of the calls,
+    /// as the catalog names it. The Tool may since have left the catalog.
+    #[prost(string, tag = "4")]
+    pub tool: ::prost::alloc::string::String,
+    /// The same calls in each day of the window, oldest first: one entry per day.
+    /// A day is 24 hours counted from the window's start, so the last one ends now.
+    /// They add up to calls.
+    #[prost(int64, repeated, tag = "5")]
+    pub daily: ::prost::alloc::vec::Vec<i64>,
 }
 /// Ended calls for one actor.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

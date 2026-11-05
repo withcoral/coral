@@ -1,12 +1,21 @@
 import classNames from 'classnames'
 import type { MouseEvent, ReactNode, Ref } from 'react'
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
 
-import { ActionBar, Banner, Button, Dialog, Inputs, Menu, Typography } from '@/wax/components'
+import { ActionBar, Banner, Button, Dialog, Inputs, Typography } from '@/wax/components'
 import { animations } from '@/wax/animations'
 import { CodeChip } from '@/wax/components/code-chip'
-import { Icon, type IconName } from '@/wax/components/icon'
+import { Icon } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { HighlightedMatches } from '@/wax/components/highlighted-matches'
 import { Logo } from '@/wax/components/logo'
@@ -14,8 +23,11 @@ import { Markdown } from '@/wax/components/markdown'
 import { PageLayout } from '@/wax/components/page-layout'
 import { Picker } from '@/wax/components/picker'
 import { Pill, type PillColor } from '@/wax/components/pill'
+import { Stat } from '@/wax/components/stat'
 import { StatusDot } from '@/wax/components/status'
 import { InfoTip, Tooltip } from '@/wax/components/tooltip'
+import { SegmentedControl } from '@/wax/components/segmented-control'
+import { Meter, Sparkline } from '@/wax/components/charts'
 import { ToolName } from '@/wax/components/tool-name'
 import * as Table from '@/wax/components/table'
 import { CELL_HEIGHT_PX, groupHeadingHeightPx } from '@/wax/components/table'
@@ -29,12 +41,7 @@ import {
 } from '@/components/catalog'
 import { filterQuery, type FilterQuery } from '@/utils/filter-query'
 import { EmptyPage } from '@/components/empty-page'
-import {
-  PolicyToggle,
-  policyLabels,
-  policyOptions,
-  type PolicyState,
-} from '@/components/policy-toggle'
+import { PolicyToggle, policyOptions, type PolicyState } from '@/components/policy-toggle'
 import {
   byService,
   sourceButtonLabel,
@@ -64,6 +71,8 @@ import type {
   ToolHintsView,
   ToolView,
   ProviderView,
+  ToolCallCounts,
+  ToolUsage,
   WorkspaceProvidersPageProps,
 } from './types'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
@@ -163,6 +172,7 @@ function WorkspaceProvidersContent({
   selectedProvider: selectedProviderRoute,
   selectedTool,
   selectedToolDetail = null,
+  toolCalls = null,
   form,
   result,
   pending = false,
@@ -260,6 +270,7 @@ function WorkspaceProvidersContent({
             selectedToolDetail?.relativePath === tool?.relativePath ? selectedToolDetail : null
           }
           setRailFilter={setRailFilter}
+          toolCalls={toolCalls}
         />
       )}
     </PageLayout>
@@ -424,15 +435,6 @@ function searchableProviders(providers: ProviderView[]): SearchableProvider[] {
  */
 type PolicyFilter = { value: PolicyState | 'unavailable'; keys: ReadonlySet<SelectionKey> }
 
-type FilterByPolicy = (
-  value: PolicyFilter['value'],
-  inFlight: ReturnType<typeof usePolicyMutations>,
-) => void
-
-function policyFilterLabel(value: PolicyFilter['value']) {
-  return value === 'unavailable' ? 'Unavailable' : policyLabels[value]
-}
-
 function matchingTools(
   { provider, sorted }: SearchableProvider,
   tableFilter: FilterQuery,
@@ -548,6 +550,7 @@ function ProvidersTableScreen({
   selectedTool,
   selectedToolDetail,
   setRailFilter,
+  toolCalls,
 }: {
   /** An info tip beside the title. */
   titleInfo: ReactNode
@@ -567,6 +570,8 @@ function ProvidersTableScreen({
   selectedTool: ToolView | null
   selectedToolDetail: ToolDetailView | null
   setRailFilter: (value: string) => void
+  /** Null hides the Calls column. */
+  toolCalls: ToolCallCounts | null
 }) {
   const navigate = useNavigate()
   const mutations = usePolicyMutations()
@@ -576,6 +581,9 @@ function ProvidersTableScreen({
   const tableFilter = useDeferredValue(tableFilterInput)
   const tableQuery = useMemo(() => filterQuery(tableFilter), [tableFilter])
   const [policyFilter, setPolicyFilter] = useState<PolicyFilter | null>(null)
+  // Off, rows sort by name under their headings; on, every tool ranks in one list.
+  const [sortByUsage, setSortByUsage] = useState(false)
+  const usageOrder = sortByUsage && toolCalls ? toolCalls : null
   const [selected, setSelected] = useState<Set<SelectionKey>>(new Set())
   // "Show selected" lists the selection as it was when clicked, like a policy
   // filter, so a row the reader unchecks or applies a policy to stays in view.
@@ -584,6 +592,21 @@ function ProvidersTableScreen({
   // leaves them collapsed; their headings still count the matches.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const tableRef = useRef<HTMLDivElement>(null)
+  // Every bar measures against the busiest tool, so bars compare across providers.
+  // Only the catalog's tools count: a removed tool's calls stay in the summary
+  // but have no row, so they must not set the scale.
+  const maxCalls = useMemo(
+    () =>
+      providers.reduce(
+        (max, provider) =>
+          provider.tools.reduce(
+            (most, tool) => Math.max(most, usageOf(toolCalls, provider, tool)?.calls ?? 0),
+            max,
+          ),
+        0,
+      ),
+    [providers, toolCalls],
+  )
   const searchable = useMemo(() => searchableProviders(providers), [providers])
   const selectedProviderId = selectedProvider?.id ?? null
   const selectedToolKey = selectedTool?.key ?? null
@@ -597,6 +620,27 @@ function ProvidersTableScreen({
   const routeTab = keepsTab ? undefined : selectedProviderId
   if (routeTab !== undefined && routeTab !== lastTab) setLastTab(routeTab)
   const tab = routeTab === undefined ? lastTab : routeTab
+  // The toolbar filter counts the tab and the search, not what the filter keeps.
+  const { policies } = mutations
+  const filterCounts = useMemo(() => {
+    const counts: FilterCounts = {
+      all: 0,
+      enabled: 0,
+      approval_required: 0,
+      disabled: 0,
+      unavailable: 0,
+    }
+    for (const { provider, sorted } of searchable) {
+      if (tab !== null && provider.id !== tab) continue
+      for (const tool of sorted) {
+        if (!tableQuery.matches(tool.relativePath)) continue
+        counts.all += 1
+        counts[effectivePolicy(policies, provider, tool)] += 1
+        if (!tool.available) counts.unavailable += 1
+      }
+    }
+    return counts
+  }, [policies, searchable, tab, tableQuery])
   const visibleByProvider = useMemo(() => {
     const entries = searchable
       .filter((entry) => tab === null || entry.provider.id === tab)
@@ -633,7 +677,26 @@ function ProvidersTableScreen({
     [selected, visibleTools],
   )
   const allVisibleSelected = visibleTools.length > 0 && visibleSelectedCount === visibleTools.length
-  const { rows, sections } = useMemo(() => {
+  const { rows, sections, ranked } = useMemo(() => {
+    if (usageOrder) {
+      // One list across providers, busiest first. The sort is stable, so equal
+      // usage keeps provider order, then name order.
+      const callsOf = ({ provider, tool }: { provider: ProviderView; tool: ToolView }) =>
+        usageOf(usageOrder, provider, tool)?.calls ?? 0
+      const list = visibleByProvider
+        .flatMap(({ provider, listed }) => listed.map((tool) => ({ provider, tool })))
+        .toSorted((a, b) => callsOf(b) - callsOf(a))
+      return {
+        rows: list.map(({ provider, tool }): TableRowItem => ({
+          kind: 'tool',
+          key: `tool:${provider.id}:${tool.key}`,
+          provider,
+          tool,
+        })),
+        sections: [],
+        ranked: list.map((row, index) => ({ ...row, index })),
+      }
+    }
     const flat: TableRowItem[] = []
     const tree: ProviderSection[] = []
     for (const { provider, matching, listed } of visibleByProvider) {
@@ -713,10 +776,11 @@ function ProvidersTableScreen({
         }
       }
     }
-    return { rows: flat, sections: tree }
+    return { rows: flat, sections: tree, ranked: null }
   }, [
     collapsed,
     policyFilter,
+    usageOrder,
     selectedTool,
     selectedProviderId,
     selectedView,
@@ -810,17 +874,6 @@ function ProvidersTableScreen({
       return { value, keys }
     },
     [providers],
-  )
-  // A heading count toggles its filter; the toolbar menu sets one.
-  // A summary count, like the menu, leaves the selected view.
-  const filterByPolicy: FilterByPolicy = useCallback(
-    (value, inFlight) => {
-      setSelectedView(null)
-      setPolicyFilter((current) =>
-        current?.value === value ? null : policyFilterFor(value, inFlight),
-      )
-    },
-    [policyFilterFor],
   )
 
   // The selected view clears the searches and opens every provider's tab, so
@@ -1052,6 +1105,17 @@ function ProvidersTableScreen({
         title="Providers"
         titleInfo={titleInfo}
         action={addButton}
+        // Beside the search while the row has room; on its own line below it when not.
+        picker={
+          <PolicyFilterBar
+            value={policyFilter?.value ?? null}
+            counts={filterCounts}
+            onChange={(value) => {
+              setSelectedView(null)
+              setPolicyFilter(value ? policyFilterFor(value, mutations) : null)
+            }}
+          />
+        }
         filter={{
           id: TOOL_FILTER_ID,
           label: 'Filter tools',
@@ -1059,17 +1123,7 @@ function ProvidersTableScreen({
           value: tableFilterInput,
           onChange: setTableFilterInput,
         }}
-      >
-        <PolicyFilterMenu
-          value={selectedView ? 'selected' : (policyFilter?.value ?? null)}
-          selectedCount={selected.size}
-          onChange={(value) => {
-            if (value === 'selected') return showSelected()
-            setSelectedView(null)
-            setPolicyFilter(value ? policyFilterFor(value, mutations) : null)
-          }}
-        />
-      </CatalogToolbar>
+      />
       {!canChange && (
         <Banner variant="info">Only owners can change policy in an active workspace.</Banner>
       )}
@@ -1081,7 +1135,12 @@ function ProvidersTableScreen({
           layout="scroll"
           ref={tableRef}
           className={styles.providersTable}
-          columns={[{ width: 44 }, { width: 'minmax(340px, 1fr)' }, { width: 'max-content' }]}
+          columns={[
+            { width: 44 },
+            { width: 'minmax(340px, 1fr)' },
+            ...(toolCalls ? [{ width: 'content' } as const] : []),
+            { width: 'max-content' },
+          ]}
         >
           <Table.Head>
             <Table.Row>
@@ -1110,29 +1169,69 @@ function ProvidersTableScreen({
                 />
                 Tool name
               </span>
+              {toolCalls && (
+                <Table.Heading
+                  align="center"
+                  className={styles.callsColumn}
+                  sort={sortByUsage ? 'descending' : 'none'}
+                >
+                  <span className={styles.callsHeading}>
+                    <Table.SortButton
+                      label="Sort by usage"
+                      sort={sortByUsage ? 'descending' : 'none'}
+                      onClick={() => setSortByUsage((on) => !on)}
+                    >
+                      Usage
+                    </Table.SortButton>
+                    <InfoTip ariaLabel="About usage">
+                      {`Your calls and your agents' calls in the last ${toolCalls.days} days.`}
+                    </InfoTip>
+                  </span>
+                </Table.Heading>
+              )}
               <span role="columnheader" className={styles.policyHeader}>
                 Policy
               </span>
             </Table.Row>
           </Table.Head>
-          {sections.length === 0 && <Table.Status>No providers match.</Table.Status>}
-          <TableSections
-            activeKey={activeKey}
-            bulkPending={mutations.bulkPending}
-            canChange={canChange}
-            onToggleCollapsed={toggleCollapsed}
-            drawerOpen={drawerKey !== null}
-            filterByPolicy={filterByPolicy}
-            markRevealed={markRevealed}
-            form={form}
-            policyFilter={policyFilter?.value ?? null}
-            query={tableQuery}
-            virtual={virtual}
-            sections={sections}
-            selected={selected}
-            showSelected={showSelected}
-            toggleTools={toggleTools}
-          />
+          {ranked ? (
+            <RankedRows
+              activeKey={activeKey}
+              bulkPending={mutations.bulkPending}
+              canChange={canChange}
+              drawerOpen={drawerKey !== null}
+              form={form}
+              markRevealed={markRevealed}
+              maxCalls={maxCalls}
+              query={tableQuery}
+              ranked={ranked}
+              selected={selected}
+              toggleTools={toggleTools}
+              toolCalls={toolCalls}
+              virtual={virtual}
+            />
+          ) : (
+            sections.length === 0 && <Table.Status>No providers match.</Table.Status>
+          )}
+          {!ranked && (
+            <TableSections
+              activeKey={activeKey}
+              bulkPending={mutations.bulkPending}
+              canChange={canChange}
+              onToggleCollapsed={toggleCollapsed}
+              drawerOpen={drawerKey !== null}
+              markRevealed={markRevealed}
+              form={form}
+              query={tableQuery}
+              virtual={virtual}
+              sections={sections}
+              selected={selected}
+              showSelected={showSelected}
+              toggleTools={toggleTools}
+              toolCalls={toolCalls}
+              maxCalls={maxCalls}
+            />
+          )}
         </Table.Container>
         {selected.size > 0 && (
           <ActionBar.Bar>
@@ -1168,6 +1267,7 @@ function ProvidersTableScreen({
       <ToolDetailsDrawer
         tool={selectedTool}
         detail={selectedToolDetail}
+        toolCalls={toolCalls}
         provider={selectedProvider ?? undefined}
         canChange={canChange}
         form={form}
@@ -1225,21 +1325,84 @@ function useRevealScroll(
   }, [])
 }
 
+/** The tools ranked by usage in one list, each naming its provider. */
+const RankedRows = memo(function RankedRows({
+  activeKey,
+  bulkPending,
+  canChange,
+  drawerOpen,
+  form,
+  markRevealed,
+  maxCalls,
+  query,
+  ranked,
+  selected,
+  toggleTools,
+  toolCalls,
+  virtual,
+}: {
+  activeKey: string | null
+  bulkPending: boolean
+  canChange: boolean
+  drawerOpen: boolean
+  form: FormContext
+  markRevealed: (provider: string, tool: string) => void
+  maxCalls: number
+  query: FilterQuery
+  ranked: { index: number; provider: ProviderView; tool: ToolView }[]
+  selected: Set<SelectionKey>
+  toggleTools: (targets: { provider: ProviderView; tool: ToolView }[], checked: boolean) => void
+  toolCalls: ToolCallCounts | null
+  virtual: Table.VirtualRowsHandle
+}) {
+  if (ranked.length === 0) return <Table.Status>No tools match.</Table.Status>
+  return (
+    <Table.Body>
+      <Table.VirtualRows rows={ranked} virtual={virtual}>
+        {({ index, provider, tool }) => {
+          const key = selectionKey(provider.id, tool.key)
+          return (
+            <ToolRow
+              key={key}
+              active={activeKey === key}
+              drawerOpen={drawerOpen}
+              canChange={canChange}
+              checked={selected.has(key)}
+              disabled={bulkPending}
+              form={form}
+              index={index}
+              provider={provider}
+              measure={virtual.measureRow}
+              tool={tool}
+              usage={usageOf(toolCalls, provider, tool)}
+              maxCalls={maxCalls}
+              namesProvider
+              query={query}
+              onOpen={markRevealed}
+              onCheck={(checked) => toggleTools([{ provider, tool }], checked)}
+            />
+          )
+        }}
+      </Table.VirtualRows>
+    </Table.Body>
+  )
+})
+
 const TableSections = memo(function TableSections({
   activeKey,
   bulkPending,
   canChange,
   drawerOpen,
-  filterByPolicy,
   form,
   markRevealed,
   onToggleCollapsed,
-  policyFilter,
   query,
   sections,
   selected,
   showSelected,
   toggleTools,
+  toolCalls,
+  maxCalls,
   virtual,
 }: {
   /** The keyboard cursor's tool, or the drawer's while one is open. */
@@ -1247,19 +1410,20 @@ const TableSections = memo(function TableSections({
   bulkPending: boolean
   canChange: boolean
   drawerOpen: boolean
-  filterByPolicy: FilterByPolicy
   form: FormContext
   /** Records a tool the reader opened in place, so its route does not scroll the table. */
   markRevealed: (provider: string, tool: string) => void
   /** Collapses or expands the heading with this key, at this row index and depth. */
   onToggleCollapsed: (key: string, index: number, depth: number) => void
-  policyFilter: PolicyFilter['value'] | null
   /** The tool filter, bolded where it matches a name. */
   query: FilterQuery
   sections: ProviderSection[]
   selected: Set<SelectionKey>
   showSelected: () => void
   toggleTools: (targets: { provider: ProviderView; tool: ToolView }[], checked: boolean) => void
+  toolCalls: ToolCallCounts | null
+  /** The busiest tool's calls, which a full bar stands for. */
+  maxCalls: number
   virtual: Table.VirtualRowsHandle
 }) {
   return sections.map((section) => (
@@ -1294,13 +1458,7 @@ const TableSections = memo(function TableSections({
           members={section.tools}
           name={providerLabel(section.provider)}
           provider={section.provider}
-          summary={
-            <PolicySummary
-              active={policyFilter}
-              onFilter={filterByPolicy}
-              provider={section.provider}
-            />
-          }
+          notices={<ProviderNotices provider={section.provider} />}
           selected={selected}
           toggleTools={toggleTools}
         />
@@ -1360,6 +1518,8 @@ const TableSections = memo(function TableSections({
                   provider={section.provider}
                   measure={virtual.measureRow}
                   tool={tool}
+                  usage={usageOf(toolCalls, section.provider, tool)}
+                  maxCalls={maxCalls}
                   query={query}
                   onOpen={markRevealed}
                   onCheck={(checked) =>
@@ -1413,7 +1573,7 @@ function GroupHeading({
   provider,
   selected,
   toggleTools,
-  summary,
+  notices,
   ...cell
 }: {
   bulkPending: boolean
@@ -1431,8 +1591,8 @@ function GroupHeading({
   provider: ProviderView
   selected: Set<SelectionKey>
   toggleTools: ToggleTools
-  /** Closes the label cell, at the heading's end. */
-  summary?: ReactNode
+  /** Follows the tool count in the label cell. */
+  notices?: ReactNode
   className: string
 }) {
   // A provider heading stays mounted over all its tools, through every scroll.
@@ -1470,7 +1630,7 @@ function GroupHeading({
             ? countLabel(count, 'tool')
             : `${count.toLocaleString('en-US')} of ${countLabel(total, 'tool')}`}
         </Typography.BodySmall>
-        {summary && <span className={styles.policySummary}>{summary}</span>}
+        {notices}
       </span>
     </>
   )
@@ -1576,6 +1736,9 @@ const ToolRow = memo(function ToolRow({
   provider,
   measure,
   tool,
+  usage,
+  maxCalls,
+  namesProvider = false,
   query,
   onCheck,
   onOpen,
@@ -1592,6 +1755,12 @@ const ToolRow = memo(function ToolRow({
   provider: ProviderView
   measure: Ref<HTMLDivElement>
   tool: ToolView
+  /** The tool's calls; null while the table has no Usage column. */
+  usage: ToolUsage | null
+  /** The busiest tool's calls, which a full bar stands for. */
+  maxCalls: number
+  /** Names the provider before the tool, for a list with no provider headings. */
+  namesProvider?: boolean
   query: FilterQuery
   onCheck: (checked: boolean) => void
   /** Runs before a click opens the tool, which the reader can already see. */
@@ -1631,7 +1800,15 @@ const ToolRow = memo(function ToolRow({
       </span>
       <span role="cell" className={styles.toolNameCell}>
         {/* The row opens the drawer; the name stays a link for the keyboard. */}
-        {/* The provider names the group, so the tool stands alone. */}
+        {/* A provider heading names the group, so the tool stands alone under one. */}
+        {namesProvider && (
+          <span className={styles.rankedProvider}>
+            <Logo name={providerLabel(provider)} icons={provider.icons} size="20" />
+            <Typography.BodySmall as="span" variant="secondary">
+              {providerLabel(provider)}
+            </Typography.BodySmall>
+          </span>
+        )}
         <ToolName className={styles.toolNameFace}>
           <Tooltip content={tool.relativePath} showOnlyWhenTruncated>
             <Link
@@ -1656,6 +1833,16 @@ const ToolRow = memo(function ToolRow({
           </Tooltip>
         )}
       </span>
+      {usage && (
+        <Table.Cell className={styles.callsColumn}>
+          <Tooltip content={countLabel(usage.calls, 'call')}>
+            <span className={styles.callsBar}>
+              <Meter value={usage.calls} max={maxCalls} size="small" />
+              <span className={visuallyHidden}>{countLabel(usage.calls, 'call')}</span>
+            </span>
+          </Tooltip>
+        </Table.Cell>
+      )}
       <span role="cell" className={styles.policyCell}>
         <PolicySelect canChange={canChange} compact form={form} provider={provider} tool={tool} />
       </span>
@@ -1775,11 +1962,6 @@ const PolicySelect = memo(function PolicySelect({
   )
 })
 
-const policyFilterOptions: { value: PolicyFilter['value']; label: string; icon: IconName }[] = [
-  ...policyOptions.map(({ value, label, icon }) => ({ value, label, icon })),
-  { value: 'unavailable', label: policyFilterLabel('unavailable'), icon: 'CircleAlert' },
-]
-
 /** A provider's no-match status. It counts the selected tools the filter
  * hides there and offers to show them, and says nothing more while none are.
  * It shows only when the provider lists no rows, so each of them is hidden. */
@@ -1812,55 +1994,45 @@ function NoMatchStatus({
   )
 }
 
-type TableFilterValue = PolicyFilter['value'] | 'selected'
+type FilterCounts = Record<PolicyState | 'all' | 'unavailable', number>
 
-/** Narrows the table to the tools one policy covers. It sits beside the search. */
-function PolicyFilterMenu({
+/**
+ * Narrows the table to the tools one policy covers, or the unavailable ones. It
+ * counts each choice's tools in the tab and the search, and a choice with none
+ * is disabled unless it applies.
+ */
+function PolicyFilterBar({
   value,
-  selectedCount,
+  counts,
   onChange,
 }: {
-  value: TableFilterValue | null
-  selectedCount: number
-  onChange: (value: TableFilterValue | null) => void
+  value: PolicyFilter['value'] | null
+  counts: FilterCounts
+  onChange: (value: PolicyFilter['value'] | null) => void
 }) {
-  const active =
-    value === 'selected'
-      ? { icon: 'ListChecks' as const, label: 'Selected' }
-      : policyFilterOptions.find((option) => option.value === value)
+  const choices = [
+    ...policyOptions,
+    ...(counts.unavailable > 0 || value === 'unavailable'
+      ? [{ value: 'unavailable' as const, label: 'Unavailable', icon: 'CircleAlert' as const }]
+      : []),
+  ]
   return (
-    <Menu.Container>
-      <Menu.Trigger render={<Button.Container variant="secondary" ariaLabel="Filter tools by" />}>
-        <Button.Icon name={active?.icon ?? 'ListFilter'} />
-        <Button.Text>{active?.label ?? 'All policies'}</Button.Text>
-        <Button.Icon name="ChevronDown" />
-      </Menu.Trigger>
-      <Menu.Content>
-        <Menu.RadioGroup
-          value={value ?? 'all'}
-          onValueChange={(next: string) =>
-            onChange(next === 'all' ? null : (next as TableFilterValue))
-          }
-        >
-          <Menu.RadioItem value="all" iconName="ListFilter">
-            All policies
-          </Menu.RadioItem>
-          {policyFilterOptions.map((option) => (
-            <Menu.RadioItem key={option.value} value={option.value} iconName={option.icon}>
-              {option.label}
-            </Menu.RadioItem>
-          ))}
-          <Menu.Separator />
-          <Menu.RadioItem
-            value="selected"
-            iconName="ListChecks"
-            disabled={selectedCount === 0 && value !== 'selected'}
-          >
-            {`Selected (${selectedCount})`}
-          </Menu.RadioItem>
-        </Menu.RadioGroup>
-      </Menu.Content>
-    </Menu.Container>
+    <SegmentedControl<PolicyFilter['value'] | 'all'>
+      label="Filter tools by policy"
+      value={value ?? 'all'}
+      onChange={(next) => onChange(next === 'all' ? null : next)}
+      options={[
+        { value: 'all', label: 'All', count: counts.all },
+        ...choices.map(({ value: choice, label, icon }) => ({
+          value: choice,
+          label,
+          icon,
+          withLabel: true,
+          count: counts[choice],
+          disabled: counts[choice] === 0 && value !== choice,
+        })),
+      ]}
+    />
   )
 }
 
@@ -1873,32 +2045,21 @@ function effectivePolicy(
 }
 
 /**
- * How many of a provider's tools each policy covers, and how many are
- * unavailable, with the policy changes still in flight. Each count pairs its
- * icon with text, so the summary does not depend on color. A count filters
- * the table to its tools across every provider.
+ * The provider's state beside its name: search indexing, its unavailable tools,
+ * and its destructive tools that run without approval. Each pairs an icon or
+ * words with its color.
  */
-function PolicySummary({
-  active,
-  onFilter,
-  provider,
-}: {
-  active: PolicyFilter['value'] | null
-  onFilter: FilterByPolicy
-  provider: ProviderView
-}) {
-  const mutations = usePolicyMutations()
-  const { policies } = mutations
-  // A provider heading stays mounted over all its tools, through every scroll.
-  const counts = useMemo(() => {
-    const tally = new Map<PolicyState, number>()
-    for (const tool of provider.tools) {
-      const policy = effectivePolicy(policies, provider, tool)
-      tally.set(policy, (tally.get(policy) ?? 0) + 1)
-    }
-    return tally
-  }, [policies, provider])
+function ProviderNotices({ provider }: { provider: ProviderView }) {
+  const { policies } = usePolicyMutations()
   const unavailable = provider.totalCount - provider.readyCount
+  // A provider heading stays mounted over all its tools, through every scroll.
+  const destructive = useMemo(
+    () =>
+      provider.tools.filter(
+        (tool) => tool.hints.destructive && effectivePolicy(policies, provider, tool) === 'enabled',
+      ).length,
+    [policies, provider],
+  )
   return (
     <>
       {provider.searchIndex?.state === 'pending' && (
@@ -1924,36 +2085,124 @@ function PolicySummary({
         </Tooltip>
       )}
       {unavailable > 0 && (
-        <Tooltip content="Show only unavailable tools.">
-          <Button.Container
-            variant="bare"
-            size="22"
-            className={styles.policySummaryItem}
-            aria-pressed={active === 'unavailable'}
-            onClick={() => onFilter('unavailable', mutations)}
-          >
+        <Pill size="small" color="amber">
+          {`${unavailable} unavailable`}
+        </Pill>
+      )}
+      {destructive > 0 && (
+        <Tooltip content="These tools can delete or change data. They run without approval.">
+          <span className={styles.inlineTooltipTarget} tabIndex={0}>
             <Pill size="small" color="amber">
-              {`${unavailable} unavailable`}
+              <Icon name="TriangleAlert" size="14" color="inherit" />
+              {`${countLabel(destructive, 'destructive tool')} allowed`}
             </Pill>
-          </Button.Container>
+          </span>
         </Tooltip>
       )}
-      {policyOptions.map(({ value, label, icon }) => (
-        <Tooltip key={value} content={`Show only tools set to ${label}.`}>
-          <Button.Container
-            variant="bare"
-            size="22"
-            className={styles.policySummaryItem}
-            aria-pressed={active === value}
-            onClick={() => onFilter(value, mutations)}
-          >
-            <Icon name={icon} size="14" color="inherit" />
-            <span aria-hidden>{counts.get(value) ?? 0}</span>
-            <span className={visuallyHidden}>{`${counts.get(value) ?? 0} ${label}`}</span>
-          </Button.Container>
-        </Tooltip>
-      ))}
     </>
+  )
+}
+
+// A tool with no calls, one shared value per window, so a memoized row keeps it.
+const noUsage = new Map<number, ToolUsage>()
+function unused(days: number) {
+  let usage = noUsage.get(days)
+  if (!usage) {
+    usage = { calls: 0, daily: Array.from({ length: days }, () => 0), callers: [] }
+    noUsage.set(days, usage)
+  }
+  return usage
+}
+
+/** A tool's usage over the window; null while Coral cannot count calls. */
+function usageOf(toolCalls: ToolCallCounts | null, provider: ProviderView, tool: ToolView) {
+  if (!toolCalls) return null
+  return toolCalls.tools[selectionKey(provider.id, tool.key)] ?? unused(toolCalls.days)
+}
+
+/** When a day of the window was, counted back from now. */
+function dayAgo(day: number, days: number) {
+  const ago = days - 1 - day
+  return ago === 0 ? 'in the last 24 hours' : ago === 1 ? '1 day ago' : `${ago} days ago`
+}
+
+/** The hovered day's calls, then the window's total. */
+function usageTip(usage: ToolUsage, day: number) {
+  const days = usage.daily.length
+  return (
+    <>
+      <span className={styles.usageTipDay}>
+        {`${countLabel(usage.daily[day] ?? 0, 'call')} ${dayAgo(day, days)}`}
+      </span>
+      <span className={styles.usageTipTotal}>
+        {`${countLabel(usage.calls, 'call')} in ${days} days`}
+      </span>
+    </>
+  )
+}
+
+/** One tool's calls over the window: the total, each day, and who called it. */
+function ToolUsageSection({ usage }: { usage: ToolUsage }) {
+  const headingId = useId()
+  const days = usage.daily.length
+  return (
+    <section aria-labelledby={headingId} className={styles.usage}>
+      <Typography.BodyStrong as="h3" id={headingId}>
+        Usage
+      </Typography.BodyStrong>
+      <Stat
+        size="small"
+        icon="Activity"
+        label={`Calls in ${days} days`}
+        value={usage.calls.toLocaleString('en-US')}
+      />
+      <div className={styles.usageChart}>
+        <Sparkline
+          color="neutral"
+          variant="bars"
+          data={usage.daily}
+          fill
+          width={352}
+          height={56}
+          describe={(day) => usageTip(usage, day)}
+        />
+        <span className={styles.usageAxis} aria-hidden>
+          <span>{`${days} days ago`}</span>
+          <span>Last 24 hours</span>
+        </span>
+        {/* The bars are hidden from assistive technology and name a day only on
+            hover, so each day with calls is also read out here. */}
+        <ul aria-label="Calls by day" className={visuallyHidden}>
+          {usage.daily.flatMap((calls, day) =>
+            calls > 0
+              ? [<li key={day}>{`${countLabel(calls, 'call')} ${dayAgo(day, days)}`}</li>]
+              : [],
+          )}
+        </ul>
+      </div>
+      {usage.callers.length > 0 && (
+        <ul aria-label="Callers" className={styles.usageCallers}>
+          {usage.callers.map((caller) => (
+            <li key={caller.key} className={styles.usageCaller}>
+              {caller.agentPath ? (
+                <Link to={caller.agentPath} className={styles.usageCallerName}>
+                  {caller.label}
+                </Link>
+              ) : (
+                <span className={styles.usageCallerName}>{caller.label}</span>
+              )}
+              <Typography.BodySmall
+                as="span"
+                variant="tertiary"
+                className={styles.usageCallerCalls}
+              >
+                {countLabel(caller.calls, 'call')}
+              </Typography.BodySmall>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   )
 }
 
@@ -1963,6 +2212,7 @@ function ToolDetailsDrawer({
   detail: routedDetail,
   form,
   tool: routed,
+  toolCalls,
   onClose,
   onKeyDown,
 }: {
@@ -1970,6 +2220,8 @@ function ToolDetailsDrawer({
   canChange: boolean
   /** The prose of `tool`, which the table does not load. */
   detail: ToolDetailView | null
+  /** Null shows no usage. */
+  toolCalls: ToolCallCounts | null
   form: FormContext
   tool: ToolView | null
   /** Runs as the close starts, so the URL and the keys follow it at once. */
@@ -1993,6 +2245,7 @@ function ToolDetailsDrawer({
   const summary = detail?.summary.trim() ?? ''
   const description = detail?.description.trim() ?? ''
   const callPath = tool && provider ? toolCallPath(provider.callRoot, tool.relativePath) : ''
+  const usage = tool && provider ? usageOf(toolCalls, provider, tool) : null
   // The drawer stays open from one tool to the next, so only its content
   // changes. The content mounts once per tool, which starts it at the top.
   const popup = useRef<HTMLDivElement>(null)
@@ -2054,6 +2307,7 @@ function ToolDetailsDrawer({
                   {tool.reasons.join(' ') || 'Coral did not provide a reason.'}
                 </Banner>
               )}
+              {usage && <ToolUsageSection usage={usage} />}
             </div>
           )}
           <Dialog.Close />

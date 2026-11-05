@@ -13,11 +13,7 @@ import {
 } from '../../../../support/providers.ts'
 
 /** Waits until the provider page shows `name` with `state` chosen. */
-async function expectPolicy(
-  page: Page,
-  name: string,
-  state: 'Always allow' | 'Needs approval' | 'Disabled',
-) {
+async function expectPolicy(page: Page, name: string, state: 'Allow' | 'Ask' | 'Block') {
   const row = page.getByRole('row').filter({
     has: page.getByRole('checkbox', { name: `Select ${name}`, exact: true }),
   })
@@ -65,8 +61,8 @@ test("An owner's Program changes an added provider's policy once the owner appro
     })
     await step('The provider page shows the policy the Program set', async () => {
       await page.goto(`/${provider}`)
-      await expectPolicy(page, 'lookup', 'Disabled')
-      await expectPolicy(page, 'remove', 'Always allow')
+      await expectPolicy(page, 'lookup', 'Block')
+      await expectPolicy(page, 'remove', 'Allow')
     })
   })
 })
@@ -86,8 +82,8 @@ test("An owner's Program cannot change the policy of the built-in provider's too
     })
     await step('The owner lets updatePolicy run without approval', async () => {
       await page.goto(`/${coral.name}`)
-      await setToolPolicy(page, 'updatePolicy', 'Always allow')
-      await expectPolicy(page, 'addProvider', 'Needs approval')
+      await setToolPolicy(page, 'updatePolicy', 'Allow')
+      await expectPolicy(page, 'addProvider', 'Ask')
     })
     await step('No namespace reaches Coral, so the Program gets provider_not_found', async () => {
       // The Built-in Provider's tools are called under coral.workspace.
@@ -101,8 +97,8 @@ test("An owner's Program cannot change the policy of the built-in provider's too
     })
     await step("Coral's policy stays as the owner set it", async () => {
       await page.reload()
-      await expectPolicy(page, 'updatePolicy', 'Always allow')
-      await expectPolicy(page, 'addProvider', 'Needs approval')
+      await expectPolicy(page, 'updatePolicy', 'Allow')
+      await expectPolicy(page, 'addProvider', 'Ask')
     })
   })
 })

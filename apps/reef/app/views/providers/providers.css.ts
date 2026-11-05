@@ -174,25 +174,6 @@ export const providerGroupLabel = style({
   gridColumn: '2 / -1',
   minWidth: 0,
 })
-// The provider's policy counts, at the end of its pinned heading. They sit in
-// the heading's label cell, not the policy column, so the column sizes to the
-// rows' toggles and a changing count moves only the heading.
-export const policySummary = style({
-  alignItems: 'center',
-  display: 'flex',
-  flexShrink: 0,
-  flexWrap: 'nowrap',
-  gap: 4,
-  marginInlineStart: 'auto',
-})
-// A count is a Wax toggle button; pressed, it reads as the active filter.
-export const policySummaryItem = style({
-  color: theme.content.secondary,
-  ...theme.typography.bodySmall,
-  selectors: {
-    '&:hover, &[aria-pressed="true"]': { color: theme.content.primary },
-  },
-})
 // A checked row is filled, so the selection reads down the table at a glance.
 export const checkedRow = style({
   backgroundColor: theme.surface.onMainContent,
@@ -235,6 +216,21 @@ export const toolDescriptionText = style({
 export const inlineTooltipTarget = style({ display: 'inline-flex' })
 // The collapse-all toggle starts the column, above the headings' own toggles.
 export const nameHeader = style({ alignItems: 'center', display: 'flex', gap: 8 })
+// The bars keep clear of the policy toggles beside them; the heading's label
+// and its info tip sit on one line, as the header's own text does.
+export const callsColumn = style({ marginInlineEnd: 16 })
+// A hover anywhere in a 24px band shows the count, not only on the thin bar.
+export const callsBar = style({
+  display: 'flex',
+  flexDirection: 'column',
+  height: 24,
+  justifyContent: 'center',
+  width: '100%',
+})
+// The usage tooltip leads with the hovered day, then the window's total.
+export const usageTipDay = style({ display: 'block', ...theme.typography.bodySmallStrong })
+export const usageTipTotal = style({ color: theme.content.secondary, display: 'block' })
+export const callsHeading = style({ alignItems: 'center', display: 'inline-flex', gap: 6 })
 // The column is as wide as its toggles; the header centres over them.
 export const policyHeader = style({ display: 'flex', justifyContent: 'center' })
 // One line: a wrapped outcome pill would change the row's height after a save.
@@ -614,4 +610,39 @@ export const iconUpload = style({
   flexDirection: 'column',
   gap: 8,
   minWidth: 0,
+})
+
+// The drawer's usage: the total, the days as bars, then who called the tool.
+export const usage = style({ display: 'grid', gap: 12 })
+export const usageChart = style({ display: 'grid', gap: 4 })
+export const usageAxis = style({
+  ...theme.typography.bodySmall,
+  color: theme.content.tertiary,
+  display: 'flex',
+  justifyContent: 'space-between',
+})
+export const usageCallers = style({
+  display: 'grid',
+  gap: 4,
+  listStyle: 'none',
+  margin: 0,
+  padding: 0,
+})
+export const usageCaller = style({
+  ...theme.typography.bodySmall,
+  display: 'flex',
+  gap: 8,
+  justifyContent: 'space-between',
+  minWidth: 0,
+})
+// A long caller name wraps rather than push its count out of the drawer.
+export const usageCallerName = style({ minWidth: 0, overflowWrap: 'anywhere' })
+export const usageCallerCalls = style({ flexShrink: 0 })
+
+// A ranked row's provider, before its tool, where no heading names it.
+export const rankedProvider = style({
+  alignItems: 'center',
+  display: 'inline-flex',
+  flexShrink: 0,
+  gap: 6,
 })

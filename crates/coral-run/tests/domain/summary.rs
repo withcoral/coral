@@ -1,7 +1,8 @@
 use super::*;
 use crate::approval::ApprovalDecision;
 use crate::{
-    ActivitySummary, ApprovalDecisions, CallOutcomes, CallerCalls, StoppedTool, ToolCalls,
+    ActivitySummary, ApprovalDecisions, CallOutcomes, CallerCalls, StoppedTool, ToolAddress,
+    ToolCalls,
 };
 
 const DAY: i64 = 86_400 * 1_000_000_000;
@@ -91,7 +92,16 @@ async fn summary(
     actor: &AuthenticatedPrincipal,
     workspace: &coral_workspace::WorkspaceId,
 ) -> ActivitySummary {
-    let since = fixture.runs.summary_window_start(1).unwrap();
+    summary_over(fixture, actor, workspace, 1).await
+}
+
+async fn summary_over(
+    fixture: &TestModules,
+    actor: &AuthenticatedPrincipal,
+    workspace: &coral_workspace::WorkspaceId,
+    days: u32,
+) -> ActivitySummary {
+    let window = fixture.runs.summary_window(days).unwrap();
     let mut tx = fixture.database.begin_read_snapshot().await.unwrap();
     let authority = fixture
         .workspaces
@@ -100,7 +110,7 @@ async fn summary(
         .unwrap();
     fixture
         .runs
-        .activity_summary_in_transaction(&mut tx, &authority, since, Vec::new())
+        .activity_summary_in_transaction(&mut tx, &authority, &window, Vec::new())
         .await
         .unwrap()
 }
@@ -149,6 +159,10 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
         }
     );
     let call_path = "coral.providers.weather.getForecast";
+    let forecast = ToolAddress {
+        provider_id: tool.provider_id.clone(),
+        tool_key: ToolKey::parse("getForecast").unwrap(),
+    };
     let caller = CallerCalls {
         principal: actor.principal().clone(),
         agent_label: None,
@@ -157,8 +171,10 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
     assert_eq!(
         after.tools,
         [ToolCalls {
+            tool: forecast.clone(),
             call_path: call_path.into(),
             calls: 4,
+            daily: vec![4],
             callers: vec![caller.clone()],
         }]
     );
@@ -166,6 +182,7 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
     assert_eq!(
         after.stopped,
         [StoppedTool {
+            tool: forecast.clone(),
             call_path: call_path.into(),
             blocked: 1,
             not_allowed: 1,
@@ -196,6 +213,65 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
         actor_share.bytes
     );
     assert_eq!(after.context_impact_bytes, Some(actor_share.bytes));
+}
+
+/// A Tool's calls split into the window's days, oldest first. A day is 24 hours
+/// counted from the window's start, so the last one ends now.
+#[tokio::test(flavor = "multi_thread")]
+async fn summary_splits_each_tools_calls_into_days_oldest_first() {
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    fixture.clock.next.fetch_add(10 * DAY, Ordering::SeqCst);
+    finish(&fixture, actor, workspace, CALL).await;
+    fixture.clock.next.fetch_add(2 * DAY, Ordering::SeqCst);
+    finish(&fixture, actor, workspace, CALL).await;
+    finish(&fixture, actor, workspace, CALL).await;
+
+    let seen = summary_over(&fixture, actor, workspace, 3).await;
+    let [row] = seen.tools.as_slice() else {
+        panic!("one Tool: {:?}", seen.tools)
+    };
+    assert_eq!((row.calls, row.daily.as_slice()), (3, [1, 0, 2].as_slice()));
+}
+
+/// A Tool is its Provider and Tool Key. Calls made under an earlier Key keep
+/// their own row, though the Tool that holds their Call Path now has another Key.
+#[tokio::test(flavor = "multi_thread")]
+async fn summary_counts_a_reused_call_path_apart_by_tool_key() {
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    finish(&fixture, actor, workspace, CALL).await;
+    // That call stands for one made before the upstream renamed the operation.
+    let renamed = fixture
+        .inject_fault(&format!(
+            "UPDATE tool_invocations SET tool_key = 'forecast' WHERE workspace_id = '{workspace}'"
+        ))
+        .await;
+    assert_eq!(renamed, 1);
+    finish(&fixture, actor, workspace, CALL).await;
+    finish(&fixture, actor, workspace, CALL).await;
+
+    let seen = summary(&fixture, actor, workspace).await;
+    let rows: Vec<_> = seen
+        .tools
+        .iter()
+        .map(|row| {
+            (
+                &row.tool.provider_id,
+                row.tool.tool_key.as_str(),
+                row.call_path.as_str(),
+                row.calls,
+            )
+        })
+        .collect();
+    let call_path = tool.call_path.as_str();
+    assert_eq!(
+        rows,
+        [
+            (&tool.provider_id, "getForecast", call_path, 2),
+            (&tool.provider_id, "forecast", call_path, 1),
+        ]
+    );
 }
 
 /// Work outside the caller's attribution adds nothing. Calls name who made them.
@@ -371,7 +447,7 @@ async fn summary_marks_the_total_partial_while_a_run_is_unmeasured() {
 async fn summary_rejects_a_window_outside_one_to_thirty_days() {
     let (fixture, _) = forecast_fixture().await;
     for days in [0, crate::MAX_SUMMARY_DAYS + 1, u32::MAX] {
-        let error = fixture.runs.summary_window_start(days).unwrap_err();
+        let error = fixture.runs.summary_window(days).unwrap_err();
         assert!(
             matches!(error, Error::InvalidInput(_)),
             "{days} days: {error:?}"

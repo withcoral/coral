@@ -22,12 +22,15 @@ import type {
   AccountLabel,
   ToolDetailView,
   ToolHintsView,
+  ToolUsage,
   ToolView,
   ProviderSettingsView,
   ProviderView,
   SearchIndexView,
 } from '@/views/providers/types'
 import type { PersonalAccountState } from '@/views/accounts/types'
+import { selectionKey, type SelectionKey } from '@/views/providers/selection'
+import type { ToolCalls } from './activity-summary'
 import { accountLabels } from '@/views/providers/account-labels'
 import { privateHeaders, type ManagementApi } from './management.server'
 import { OPENAPI_DOCUMENT_SIZE_LABEL } from './provider-input-limits'
@@ -47,6 +50,17 @@ export function providerPath(workspacePath: string, name: string) {
 /** The Tool Key a tool's resource name encodes. */
 function toolKey(name: string) {
   return Buffer.from(name.split('/').at(-1)!, 'base64url').toString()
+}
+/** Each tool's usage in a summary, by provider and Tool Key. */
+export function toolUsage(
+  tools: readonly Pick<ToolCalls, 'tool' | 'calls' | 'daily' | 'callers'>[],
+): Record<SelectionKey, ToolUsage> {
+  return Object.fromEntries(
+    tools.flatMap(({ tool, calls, daily, callers }) => {
+      const provider = /\/providers\/([^/]+)\/tools\/[^/]+$/.exec(tool)?.[1]
+      return provider ? [[selectionKey(provider, toolKey(tool)), { calls, daily, callers }]] : []
+    }),
+  )
 }
 /** A tool's resource name, from a Provider's resource name and a Tool Key. */
 export function toolName(provider: string, key: string) {
