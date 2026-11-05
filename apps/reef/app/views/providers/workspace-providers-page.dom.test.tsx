@@ -717,7 +717,6 @@ test('selection survives filtering', async () => {
   await filterTools('forecast')
   expect(rowNames()).toEqual(['getForecast'])
   expect(selectionCount()).toBe('2 selected')
-  expect(document.body).toHaveTextContent('No tools match “forecast”.')
 
   await filterTools('')
   expect(checkbox('Select repos.get')).toBeChecked()
@@ -732,10 +731,9 @@ test('selection survives filtering', async () => {
   expect(checkbox('Select repos.get')).not.toBeChecked()
 })
 
-// Catches: a later filter dropping what an earlier one selected, a provider's
-// no-match row not naming the query or the selection it hides, or the
-// selected view, from a no-match row or the bulk form, missing a selection the
-// searches hide.
+// Catches: a later filter dropping what an earlier one selected, or the
+// selected view, from the no-match status or the bulk form, missing a
+// selection the searches hide.
 test('selection builds up across filters and the selected view shows all of it', async () => {
   renderPage()
   const all = () => checkbox('Select all matching tools')
@@ -743,9 +741,13 @@ test('selection builds up across filters and the selected view shows all of it',
   await user.click(all())
   await filterTools('list')
   await user.click(all())
-  expect(table()).toHaveTextContent('No tools match “list”. 1 selected tool is hidden.')
+  expect(rowNames()).toEqual(['issues.list'])
   expect(selectionCount()).toBe('3 selected')
 
+  await filterTools('nothing matches')
+  expect(table()).toHaveTextContent(
+    'No tools match “nothing matches”. The filter hides 3 selected tools.',
+  )
   await filterProviders('Weather')
   await user.click(within(table()).getByRole('button', { name: 'Show all selected tools' }))
   expect(bulkCount()).toHaveAttribute('aria-pressed', 'true')
@@ -772,6 +774,46 @@ test('selection builds up across filters and the selected view shows all of it',
   // It types four filters and renders the whole catalog after each. That takes
   // under 1 s here, but longer than the default 5 s on a starved CI runner.
 }, 15_000)
+
+// Catches: a filter that leaves no provider showing an empty table, a status
+// that drops the query, or one that offers a hidden selection when none is.
+test.each([
+  { by: 'search', selects: false, status: 'No tools match “nothing”.' },
+  {
+    by: 'search',
+    selects: true,
+    status: 'No tools match “nothing”. The filter hides 2 selected tools.',
+  },
+  { by: 'policy', selects: false, status: 'No matching tools.' },
+  { by: 'policy', selects: true, status: 'No matching tools. The filter hides 1 selected tool.' },
+])('a $by that leaves no provider says so once', async ({ by, selects, status }) => {
+  const [list, get] = github.tools
+  const mixed = { ...github, tools: [{ ...list!, policy: 'enabled' as const }, get!] }
+  const { show } = renderPage({ providers: [mixed, weather] })
+  if (selects) {
+    await user.click(checkbox('Select repos.get'))
+    await user.click(checkbox('Select getForecast'))
+  }
+  if (by === 'search') {
+    await filterTools('nothing')
+  } else {
+    // Weather lists no tool the Allow filter keeps. The tab, not the filter,
+    // hides the selected GitHub tool, so the status leaves it out.
+    await choosePolicyFilter('Allow')
+    await show(null, weather.id)
+  }
+  for (const name of ['GitHub', 'Weather'])
+    expect(within(table()).queryByRole('rowgroup', { name })).toBeNull()
+  // One row says so, in place of every provider's.
+  expect(
+    within(table())
+      .getAllByRole('row')
+      .filter((row) => row.textContent?.startsWith(status)),
+  ).toHaveLength(1)
+  expect(within(table()).queryByRole('button', { name: 'Show all selected tools' }) !== null).toBe(
+    selects,
+  )
+})
 
 // Catches: the filter matching text the row does not show, such as the call
 // path's namespace, not marking where the name matches, or not reading the
@@ -975,15 +1017,11 @@ test('a toolbar filter narrows every provider to its tools until cleared', async
 
   await choosePolicyFilter('Allow')
   expect(rowNames()).toEqual(['issues.list'])
-  expect(within(table()).getByRole('rowgroup', { name: 'Weather' })).toHaveTextContent(
-    'No matching tools.',
-  )
-  // A provider heading counts what the filter leaves of its tools.
+  // A provider with no match leaves the table, and a heading counts what the
+  // filter leaves of its tools.
+  expect(within(table()).queryByRole('rowgroup', { name: 'Weather' })).toBeNull()
   expect(within(table()).getByRole('rowgroup', { name: 'GitHub' })).toHaveTextContent(
     '1 of 2 tools',
-  )
-  expect(within(table()).getByRole('rowgroup', { name: 'Weather' })).toHaveTextContent(
-    '0 of 1 tool',
   )
   await user.click(checkbox('Select all matching tools'))
   expect(selectionCount()).toBe('1 selected')
@@ -1103,9 +1141,7 @@ test('arrow keys move a cursor through the listed tools', async () => {
   // From the search box, ↑ and ↓ move through what the filter leaves.
   await user.click(screen.getByLabelText('Filter tools'))
   await user.keyboard('repos')
-  // A provider with no match keeps its heading, the last stop.
-  await user.keyboard('{ArrowUp}')
-  expect(cursorName()).toBe('Weather')
+  // A provider with no match leaves the table, so the last stop is a tool.
   await user.keyboard('{ArrowUp}')
   expect(cursorName()).toBe('repos.get')
   expect(screen.getByLabelText('Filter tools')).toHaveValue('repos')
