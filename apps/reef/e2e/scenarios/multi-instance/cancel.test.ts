@@ -23,30 +23,32 @@ test('Reef cancels through one Coral Instance a Run that the other owns, over it
         })
       })
       await step('Cancel it through the other Coral Instance', async () => {
-        const sent = await instances.during(() =>
-          instances.on(instances.other(owner), async () => {
-            await page.getByRole('button', { name: 'Cancel run', exact: true }).click()
-            await page
-              .getByRole('dialog', { name: 'Cancel this run?' })
-              .getByRole('button', { name: 'Cancel run', exact: true })
-              .click()
-            // The owner ends the Run within its five-second shutdown grace.
-            await page
-              .getByRole('dialog', { name: 'Activity details' })
-              .locator('header')
-              .getByText('canceled', { exact: true })
-              .waitFor({ timeout: 15_000 })
-          }),
-        )
-        const cancel = sent.filter(
-          ({ path }) => path === '/coral.management.v1.ActivityService/CancelActivityRun',
-        )
-        expect(cancel).toEqual([
-          expect.objectContaining({ instance: instances.other(owner), grpcStatus: '0' }),
-        ])
+        const before = (await instances.requests()).length
+        await instances.on(instances.other(owner), async () => {
+          await page.getByRole('button', { name: 'Cancel run', exact: true }).click()
+          await page
+            .getByRole('dialog', { name: 'Cancel this run?' })
+            .getByRole('button', { name: 'Cancel run', exact: true })
+            .click()
+          // The owner ends the Run within its five-second shutdown grace.
+          await page
+            .getByRole('dialog', { name: 'Activity details' })
+            .locator('header')
+            .getByText('canceled', { exact: true })
+            .waitFor({ timeout: 15_000 })
+        })
+        // The activity stream can show the Run canceled before the cancel call returns.
+        const cancels = async () =>
+          (await instances.requests())
+            .slice(before)
+            .filter(({ path }) => path === '/coral.management.v1.ActivityService/CancelActivityRun')
+        await expect
+          .poll(cancels)
+          .toEqual([expect.objectContaining({ instance: instances.other(owner), grpcStatus: '0' })])
+        const [cancel] = await cancels()
         // Reef's one connection carried requests to both Coral Instances.
         const reef = (await instances.requests()).filter(
-          ({ front, connection }) => front === 'grpc' && connection === cancel[0].connection,
+          ({ front, connection }) => front === 'grpc' && connection === cancel.connection,
         )
         expect(new Set(reef.map(({ instance }) => instance))).toEqual(new Set([0, 1]))
       })

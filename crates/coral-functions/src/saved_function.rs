@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use coral_db::{Database, Transaction};
 use coral_telemetry::safe;
@@ -7,13 +7,10 @@ use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, Principal, PrincipalId, PrincipalKind,
     PrincipalWorkspaceEvidence, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
-use tokio::time::{timeout, timeout_at};
+use tokio::time::timeout_at;
 
 use coral_run_executor::{CompilerClient, time_left};
-use coral_v8::{
-    COMPILATION_TIMEOUT, CallableDeclaration, CompileFailure, CoralDeclarations,
-    SavedFunctionCallPaths,
-};
+use coral_v8::{CallableDeclaration, CompileFailure, CoralDeclarations, SavedFunctionCallPaths};
 
 use crate::repository;
 use crate::tool_typing::{self, ToolDeclarationReader};
@@ -146,12 +143,16 @@ pub struct SavedFunctionModule {
     inspection: SavedFunctionInspection,
     deletion: SavedFunctionDeletion,
     compiler: Arc<dyn SavedFunctionCompiler>,
+    /// The deadline for preparing one save, including typing and queueing.
+    compilation_timeout: Duration,
 }
 
 impl SavedFunctionModule {
     /// Builds the Module with a warm compiler of its own, within the
-    /// deployment's compiler heap budget. A composed process shares its one
-    /// compiler through [`Self::with_compiler_client`] instead.
+    /// deployment's compiler heap budget. `compilation_timeout` bounds each
+    /// save's preparation; production passes [`crate::COMPILATION_TIMEOUT`].
+    /// A composed process shares its one compiler through
+    /// [`Self::with_compiler_client`] instead.
     ///
     /// # Errors
     ///
@@ -160,6 +161,7 @@ impl SavedFunctionModule {
         database: Arc<Database>,
         workspaces: WorkspaceModule,
         isolate_limits: coral_v8::IsolateLimits,
+        compilation_timeout: Duration,
     ) -> Result<Self, Error> {
         let compiler = coral_run_executor::InProcessCompiler::new(isolate_limits)
             .map_err(|error| Error::CompilerUnavailable(error.to_string()))?;
@@ -167,16 +169,18 @@ impl SavedFunctionModule {
             database,
             workspaces,
             Arc::new(compiler),
+            compilation_timeout,
         ))
     }
 
-    /// Builds the Module, which compiles through `compiler`, the process's
-    /// one warm compiler.
+    /// Builds the Module as [`Self::new`] does, except that it compiles
+    /// through `compiler`, the process's one warm compiler.
     #[must_use]
     pub fn with_compiler_client(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
         compiler: Arc<dyn CompilerClient>,
+        compilation_timeout: Duration,
     ) -> Self {
         Self {
             inspection: SavedFunctionInspection::new(database.clone(), workspaces.clone()),
@@ -184,6 +188,7 @@ impl SavedFunctionModule {
             database,
             workspaces,
             compiler: Arc::new(V8SavedFunctionCompiler { compiler }),
+            compilation_timeout,
         }
     }
 
@@ -199,6 +204,7 @@ impl SavedFunctionModule {
             database,
             workspaces,
             compiler,
+            compilation_timeout: coral_test_support::TEST_COMPILATION_TIMEOUT,
         }
     }
 
@@ -610,7 +616,7 @@ impl SavedFunctionModule {
         tools: Option<&dyn ToolDeclarationReader>,
     ) -> Result<PreparedSavedFunction, Error> {
         let source_name = format!("Saved Function coral.functions.{}", path.as_str());
-        let deadline = Instant::now() + COMPILATION_TIMEOUT;
+        let deadline = Instant::now() + self.compilation_timeout;
         let preparation = async {
             let declarations = self
                 .declarations(actor, workspace_id, source, tools, deadline)
@@ -638,7 +644,7 @@ impl SavedFunctionModule {
                 }
             })
         };
-        timeout(COMPILATION_TIMEOUT, preparation)
+        timeout_at(deadline.into(), preparation)
             .await
             .map_err(|_elapsed| Error::SavedFunctionCompilationTimedOut)?
     }

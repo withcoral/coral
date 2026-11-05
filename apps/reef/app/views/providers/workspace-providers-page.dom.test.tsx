@@ -584,7 +584,9 @@ test('selection builds up across filters and the menu shows all of it', async ()
   await user.click(count)
   expect(count).toHaveAttribute('aria-pressed', 'false')
   expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
-})
+  // It types four filters and renders the whole catalog after each. That takes
+  // under 1 s here, but longer than the default 5 s on a starved CI runner.
+}, 15_000)
 
 // Catches: the filter matching text the row does not show, such as the call
 // path's namespace, not marking where the name matches, or not reading the

@@ -12,6 +12,8 @@ const spinningAnimation = keyframes({
 
 export const spinning = style({
   animation: `${spinningAnimation} 2s linear infinite`,
+  // Like Wax's spin animation: the icon stands still, and the busy label stays.
+  '@media': { '(prefers-reduced-motion: reduce)': { animation: 'none' } },
 })
 
 export const iconContainer = recipe({

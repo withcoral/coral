@@ -196,10 +196,25 @@ struct ToolResultShape<'a> {
 enum FailureCode {
     ResourceLimitExceeded,
     MemoryLimitExceeded,
+    CpuLimitExceeded,
     ProgramRejected,
     InvalidProgramValue,
     ProgramExecutionFailed,
     RunAuthorityLost,
+}
+
+impl From<RunFailureCode> for FailureCode {
+    fn from(code: RunFailureCode) -> Self {
+        match code {
+            RunFailureCode::ResourceLimitExceeded => Self::ResourceLimitExceeded,
+            RunFailureCode::MemoryLimitExceeded => Self::MemoryLimitExceeded,
+            RunFailureCode::CpuLimitExceeded => Self::CpuLimitExceeded,
+            RunFailureCode::ProgramRejected => Self::ProgramRejected,
+            RunFailureCode::InvalidProgramValue => Self::InvalidProgramValue,
+            RunFailureCode::ProgramExecutionFailed => Self::ProgramExecutionFailed,
+            RunFailureCode::RunAuthorityLost => Self::RunAuthorityLost,
+        }
+    }
 }
 
 /// Projects the largest prefix of `update` that fits `page_bytes`, or one
@@ -283,14 +298,7 @@ fn project_run_update<Task: Serialize>(
         Some(RunTerminalOutcome::Failed(failure)) => (
             None,
             Some(Failure {
-                code: match failure.code() {
-                    RunFailureCode::ResourceLimitExceeded => FailureCode::ResourceLimitExceeded,
-                    RunFailureCode::MemoryLimitExceeded => FailureCode::MemoryLimitExceeded,
-                    RunFailureCode::ProgramRejected => FailureCode::ProgramRejected,
-                    RunFailureCode::InvalidProgramValue => FailureCode::InvalidProgramValue,
-                    RunFailureCode::ProgramExecutionFailed => FailureCode::ProgramExecutionFailed,
-                    RunFailureCode::RunAuthorityLost => FailureCode::RunAuthorityLost,
-                },
+                code: failure.code().into(),
                 message: failure.message(),
                 error: failure.error().map(ProgramError::try_from).transpose()?,
                 tool_result_shapes: update

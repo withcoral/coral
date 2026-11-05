@@ -29,6 +29,10 @@ export default defineConfig({
     testTimeout: 60_000,
     hookTimeout: 90_000,
     teardownTimeout: 30_000,
+    // `expect.poll` waits 1 s by default, less than a Reef action and Coral
+    // round trip takes on a starved runner. Match the 5 s that browser
+    // sessions give each Playwright action (`setDefaultTimeout`).
+    expect: { poll: { timeout: 5_000 } },
     retry: 0,
     reporters: ['default', './e2e/support/scenario-reporter.ts'],
   },

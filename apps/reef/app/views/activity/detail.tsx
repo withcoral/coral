@@ -799,6 +799,7 @@ const runFailureHeadings = {
   invalid_program_value: 'The program returned a value Coral cannot store',
   resource_limit_exceeded: 'A value or the output was too large',
   memory_limit_exceeded: 'The program ran out of memory',
+  cpu_limit_exceeded: 'The program used too much CPU time',
   program_execution_failed: 'The program failed',
   run_authority_lost: 'The run lost the access it needed',
   unknown: 'The run failed',

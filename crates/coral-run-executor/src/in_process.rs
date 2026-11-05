@@ -2,9 +2,9 @@ use std::time::{Duration, Instant};
 
 use coral_telemetry::metric::CompilerRole;
 use coral_v8::{
-    COMPILATION_TIMEOUT, CompileFailure, CompiledProgram, CoralDeclarations, IsolateLimits,
-    LinkedSavedFunctionSource, ProgramCompiler, SavedFunctionCallPaths, SavedFunctionCompilation,
-    SavedFunctionReference, ToolReferences, UnknownToolCall,
+    CompileFailure, CompiledProgram, CoralDeclarations, IsolateLimits, LinkedSavedFunctionSource,
+    ProgramCompiler, SavedFunctionCallPaths, SavedFunctionCompilation, SavedFunctionReference,
+    ToolReferences, UnknownToolCall,
 };
 
 use crate::{CompileError, CompilerClient, Diagnostics, Unavailable};
@@ -109,7 +109,7 @@ impl CompilerClient for InProcessCompiler {
 }
 
 fn deadline(time_left: Duration) -> Instant {
-    Instant::now() + time_left.min(COMPILATION_TIMEOUT)
+    Instant::now() + time_left
 }
 
 fn compile_error(error: coral_v8::Error) -> CompileError {
@@ -138,6 +138,8 @@ fn compile_error(error: coral_v8::Error) -> CompileError {
 
 #[cfg(test)]
 mod tests {
+    use coral_test_support::TEST_COMPILATION_TIMEOUT;
+
     use super::*;
 
     #[test]
@@ -180,7 +182,7 @@ mod tests {
             Err(CompileError::TimedOut)
         );
         compiler
-            .compile(COMPILATION_TIMEOUT, "return 42;", &[])
+            .compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[])
             .expect("a call with time left compiles");
     }
 }

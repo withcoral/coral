@@ -12,3 +12,6 @@ workspace = true
 [dependencies]
 coral-telemetry.workspace = true
 coral-v8.workspace = true
+
+[dev-dependencies]
+coral-test-support.workspace = true

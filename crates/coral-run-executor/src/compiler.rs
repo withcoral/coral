@@ -9,9 +9,9 @@ use coral_v8::{
 /// The calls Program Admission and Saved Function save make of one warm
 /// Program Compiler, one for each compiler request.
 ///
-/// Each call carries `time_left`, the time left in its caller's
-/// [`coral_v8::COMPILATION_TIMEOUT`]. A call ends [`CompileError::TimedOut`]
-/// once that time runs out, while it waits or while it compiles. A call
+/// Each call carries `time_left`, the time left until its caller's
+/// compilation deadline. A call ends [`CompileError::TimedOut`] once that
+/// time runs out, while it waits or while it compiles. A call
 /// carries source and no authority.
 pub trait CompilerClient: Send + Sync {
     /// The Saved Functions and Tools that a Program body names directly.

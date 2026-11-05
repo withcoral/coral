@@ -27,6 +27,12 @@ const taskName = (id: string) => `${workspace}/tasks/${id}`
 const runName = (id: string) => `${workspace}/runs/${id}`
 const now = BigInt(Date.now()) * 1_000_000n
 const second = 1_000_000_000n
+// One live step renders the page and lets live mode act on a snapshot. On a
+// starved CI runner a page of many records takes longer than 5 s to render.
+const STEP_TIMEOUT_MS = 15_000
+// A journey takes several steps. Its limit stays well above one step's, so a
+// step that never settles reports its own assertion, not a test timeout.
+const JOURNEY_TIMEOUT_MS = 60_000
 interface Run {
   id: string
   task: string
@@ -337,7 +343,9 @@ function open(world: ReturnType<typeof coral>, task: string) {
     /** Once a record showed for the minimum time, live mode selects `record`, and stays on. */
     async selects(record: string) {
       await act(() => vi.advanceTimersByTimeAsync(MIN_LIVE_RECORD_STAY_MS))
-      await vi.waitFor(() => expect(address().get('record')).toBe(record), { timeout: 5000 })
+      await vi.waitFor(() => expect(address().get('record')).toBe(record), {
+        timeout: STEP_TIMEOUT_MS,
+      })
       expect(address().get('live')).toBe('latest')
     },
     /** Scrolls down, away from the newest records, until observation reads only those near. */
@@ -348,7 +356,7 @@ function open(world: ReturnType<typeof coral>, task: string) {
           expect(found).not.toBeNull()
           return found!
         },
-        { timeout: 5000 },
+        { timeout: STEP_TIMEOUT_MS },
       )
       // The router holds a page before React commits it, and a page React has not
       // committed starts a new observation from the one before. A scroll before then
@@ -359,12 +367,14 @@ function open(world: ReturnType<typeof coral>, task: string) {
           expect(router.state.revalidation).toBe('idle')
           expect(committed).toBe(Object.values(router.state.loaderData).at(-1))
         },
-        { timeout: 5000 },
+        { timeout: STEP_TIMEOUT_MS },
       )
       await act(async () => {
         table.dispatchEvent(new WheelEvent('wheel', { deltaY: 400, bubbles: true }))
       })
-      await vi.waitFor(() => expect(windows.at(-1)!.followRoot).toBe(false), { timeout: 5000 })
+      await vi.waitFor(() => expect(windows.at(-1)!.followRoot).toBe(false), {
+        timeout: STEP_TIMEOUT_MS,
+      })
     },
     /**
      * Changes Coral, then waits for its snapshot and live mode's steps. Returns how many
@@ -383,7 +393,9 @@ function open(world: ReturnType<typeof coral>, task: string) {
         world.notify()
       })
       // Each snapshot reads the records you watch once.
-      await vi.waitFor(() => expect(watched()).toBeGreaterThan(before.watched), { timeout: 5000 })
+      await vi.waitFor(() => expect(watched()).toBeGreaterThan(before.watched), {
+        timeout: STEP_TIMEOUT_MS,
+      })
       // Live mode takes its steps from the snapshot.
       await act(() => new Promise((resolve) => setTimeout(resolve, 200)))
       const reads = world.roots.slice(before.roots)
@@ -399,171 +411,191 @@ function open(world: ReturnType<typeof coral>, task: string) {
   }
 }
 
-it('keeps a Run that runs while new Tasks arrive deep in its logs, then moves to the newest Run that runs', async () => {
-  const world = coral()
-  const long = world.start('long', { logs: 250 })
-  const view = open(world, 'long')
-  // Live mode reads the end of the long Run, past its first windows.
-  await view.selects(`${long}/events/250`)
-  await view.readDeep()
+it(
+  'keeps a Run that runs while new Tasks arrive deep in its logs, then moves to the newest Run that runs',
+  async () => {
+    const world = coral()
+    const long = world.start('long', { logs: 250 })
+    const view = open(world, 'long')
+    // Live mode reads the end of the long Run, past its first windows.
+    await view.selects(`${long}/events/250`)
+    await view.readDeep()
 
-  // Each log reads the records you watch, never the list past them.
-  for (const sequence of [251, 252]) {
-    const reads = await view.change(() => world.log(long))
-    expect(reads).toMatchObject({ scans: 0, tasks: [taskName('long')], newest: 0 })
-    await view.selects(`${long}/events/${sequence}`)
-  }
+    // Each log reads the records you watch, never the list past them.
+    for (const sequence of [251, 252]) {
+      const reads = await view.change(() => world.log(long))
+      expect(reads).toMatchObject({ scans: 0, tasks: [taskName('long')], newest: 0 })
+      await view.selects(`${long}/events/${sequence}`)
+    }
 
-  // Tasks that ended, then one that runs, arrive past the records you watch.
-  let next = ''
-  const arrived = await view.change(() => {
-    for (const id of ['q1', 'q2', 'q3', 'q4', 'q5', 'q6']) world.start(id, { ended: true })
-    next = world.start('next')
-  })
-  expect(arrived).toMatchObject({ scans: 0, tasks: [taskName('long')], newest: 0 })
-  await view.selects(`${long}/events/252`)
-  expect(view.readingDeep()).toBe(true)
+    // Tasks that ended, then one that runs, arrive past the records you watch.
+    let next = ''
+    const arrived = await view.change(() => {
+      for (const id of ['q1', 'q2', 'q3', 'q4', 'q5', 'q6']) world.start(id, { ended: true })
+      next = world.start('next')
+    })
+    expect(arrived).toMatchObject({ scans: 0, tasks: [taskName('long')], newest: 0 })
+    await view.selects(`${long}/events/252`)
+    expect(view.readingDeep()).toBe(true)
 
-  // The long Run ends. Live mode moves to the Run that runs, without a scroll or a click.
-  await view.change(() => world.end(long))
-  await view.selects(next)
-}, 20_000)
+    // The long Run ends. Live mode moves to the Run that runs, without a scroll or a click.
+    await view.change(() => world.end(long))
+    await view.selects(next)
+  },
+  JOURNEY_TIMEOUT_MS,
+)
 
-it('rests on the Run that ended, then follows a new Task that arrives while you read deep', async () => {
-  const world = coral()
-  // More history than one page past the list holds.
-  for (let index = 0; index < 150; index++) world.start(`old${index}`, { ended: true })
-  const long = world.start('long', { logs: 250 })
-  const view = open(world, 'long')
-  await view.selects(`${long}/events/250`)
-  await view.readDeep()
+it(
+  'rests on the Run that ended, then follows a new Task that arrives while you read deep',
+  async () => {
+    const world = coral()
+    // More history than one page past the list holds.
+    for (let index = 0; index < 150; index++) world.start(`old${index}`, { ended: true })
+    const long = world.start('long', { logs: 250 })
+    const view = open(world, 'long')
+    await view.selects(`${long}/events/250`)
+    await view.readDeep()
 
-  // The Run ends with nothing else to follow: live mode selects the Run itself, not its
-  // last log, and stays on. With nothing that runs, each read of the page reads the
-  // history past it once, here two pages, and only the newest child of each of the 150
-  // other Tasks, never their Runs. The long Task's window holds its own.
-  const ended = await view.change(() => world.end(long))
-  await view.selects(long)
-  expect(ended.snapshots).toBeGreaterThan(0)
-  expect(ended.scans).toBe(2 * (ended.snapshots + ended.loads))
-  expect(ended.tasks).toEqual([taskName('long')])
-  expect(ended.newest).toBe(150 * (ended.snapshots + ended.loads))
-  await view.readDeep()
+    // The Run ends with nothing else to follow: live mode selects the Run itself, not its
+    // last log, and stays on. With nothing that runs, each read of the page reads the
+    // history past it once, here two pages, and only the newest child of each of the 150
+    // other Tasks, never their Runs. The long Task's window holds its own.
+    const ended = await view.change(() => world.end(long))
+    await view.selects(long)
+    expect(ended.snapshots).toBeGreaterThan(0)
+    expect(ended.scans).toBe(2 * (ended.snapshots + ended.loads))
+    expect(ended.tasks).toEqual([taskName('long')])
+    expect(ended.newest).toBe(150 * (ended.snapshots + ended.loads))
+    await view.readDeep()
 
-  // Reef cannot read the history past the list: live mode stays where it is.
-  world.scanUnavailable(true)
-  let next = ''
-  await view.change(() => {
-    next = world.start('next')
-  })
-  await view.selects(long)
-  expect(view.rowShown(long)).toBe(true)
+    // Reef cannot read the history past the list: live mode stays where it is.
+    world.scanUnavailable(true)
+    let next = ''
+    await view.change(() => {
+      next = world.start('next')
+    })
+    await view.selects(long)
+    expect(view.rowShown(long)).toBe(true)
 
-  // Once it can, live mode follows the new Task's Run, with no scroll or click.
-  world.scanUnavailable(false)
-  await view.change(() => {})
-  await view.selects(next)
-}, 20_000)
+    // Once it can, live mode follows the new Task's Run, with no scroll or click.
+    world.scanUnavailable(false)
+    await view.change(() => {})
+    await view.selects(next)
+  },
+  JOURNEY_TIMEOUT_MS,
+)
 
-it("keeps one Agent's Run that runs while other Agents' Runs run, log and end", async () => {
-  const world = coral()
-  const alpha = world.start('alpha', { agent: 'alpha' })
-  const beta = world.start('beta', { agent: 'beta' })
-  const gamma = world.start('gamma', { agent: 'gamma' })
-  // Live mode follows beta's Run, though gamma's started later. The table reads away
-  // from the newest records.
-  const view = open(world, 'beta')
-  await view.readDeep()
+it(
+  "keeps one Agent's Run that runs while other Agents' Runs run, log and end",
+  async () => {
+    const world = coral()
+    const alpha = world.start('alpha', { agent: 'alpha' })
+    const beta = world.start('beta', { agent: 'beta' })
+    const gamma = world.start('gamma', { agent: 'gamma' })
+    // Live mode follows beta's Run, though gamma's started later. The table reads away
+    // from the newest records.
+    const view = open(world, 'beta')
+    await view.readDeep()
 
-  // The other Agents' Runs log, one ends, and a fourth Agent starts a Task. Each
-  // snapshot leaves live mode on beta's Run.
-  await view.change(() => world.log(gamma))
-  await view.change(() => world.log(alpha))
-  await view.change(() => world.end(alpha))
-  let delta = ''
-  await view.change(() => {
-    delta = world.start('delta', { agent: 'delta' })
-  })
-  await view.selects(beta)
+    // The other Agents' Runs log, one ends, and a fourth Agent starts a Task. Each
+    // snapshot leaves live mode on beta's Run.
+    await view.change(() => world.log(gamma))
+    await view.change(() => world.log(alpha))
+    await view.change(() => world.end(alpha))
+    let delta = ''
+    await view.change(() => {
+      delta = world.start('delta', { agent: 'delta' })
+    })
+    await view.selects(beta)
 
-  // Beta's Run ends: live mode moves to the Run that runs and started last.
-  await view.change(() => world.end(beta))
-  await view.selects(delta)
-  expect(view.steals).toEqual([])
-  expect(view.records.filter((record) => record !== beta && record !== delta)).toEqual([])
-}, 20_000)
+    // Beta's Run ends: live mode moves to the Run that runs and started last.
+    await view.change(() => world.end(beta))
+    await view.selects(delta)
+    expect(view.steals).toEqual([])
+    expect(view.records.filter((record) => record !== beta && record !== delta)).toEqual([])
+  },
+  JOURNEY_TIMEOUT_MS,
+)
 
 // The shape of a real capture with three Agents, one Task each. The list orders Tasks by
 // when they started, so `single`, the last to start, comes first.
 // Catches: live mode leaving a Run that just ended for an older record of the newest
 // Task: its Search, or its Run that ended earlier.
-it('stays on the Run that ended last until a newer record starts, whichever Task holds it', async () => {
-  const world = coral()
-  world.create('major')
-  world.create('red')
-  world.create('single')
-  const lookup = world.search('single', 'lookup')
-  const own = world.submit('red', 'red-run')
-  const view = open(world, 'red')
-  await view.selects(own)
-  await view.readDeep()
+it(
+  'stays on the Run that ended last until a newer record starts, whichever Task holds it',
+  async () => {
+    const world = coral()
+    world.create('major')
+    world.create('red')
+    world.create('single')
+    const lookup = world.search('single', 'lookup')
+    const own = world.submit('red', 'red-run')
+    const view = open(world, 'red')
+    await view.selects(own)
+    await view.readDeep()
 
-  // The Run ends with nothing else to follow: live mode shows it, not the older Search
-  // of the newer Task.
-  await view.change(() => world.end(own))
-  await view.selects(own)
+    // The Run ends with nothing else to follow: live mode shows it, not the older Search
+    // of the newer Task.
+    await view.change(() => world.end(own))
+    await view.selects(own)
 
-  // A Run of the newest Task starts, then one of the oldest, which ends last: through
-  // the loader's reads, live mode stays on it.
-  let house = ''
-  await view.change(() => {
-    house = world.submit('single', 'house')
-  })
-  await view.selects(house)
-  let late = ''
-  await view.change(() => {
-    late = world.submit('major', 'late')
-  })
-  await view.selects(house)
-  await view.change(() => world.end(house))
-  await view.selects(late)
-  await view.change(() => world.end(late))
-  await view.selects(late)
+    // A Run of the newest Task starts, then one of the oldest, which ends last: through
+    // the loader's reads, live mode stays on it.
+    let house = ''
+    await view.change(() => {
+      house = world.submit('single', 'house')
+    })
+    await view.selects(house)
+    let late = ''
+    await view.change(() => {
+      late = world.submit('major', 'late')
+    })
+    await view.selects(house)
+    await view.change(() => world.end(house))
+    await view.selects(late)
+    await view.change(() => world.end(late))
+    await view.selects(late)
 
-  // A newer record replaces it, and live mode stays on.
-  let later = ''
-  await view.change(() => {
-    later = world.search('single', 'later')
-  })
-  await view.selects(later)
-  expect(view.steals).toEqual([])
-  expect(view.records).not.toContain(lookup)
-  expect(view.records.filter((record) => ![own, house, late, later].includes(record))).toEqual([])
-}, 20_000)
+    // A newer record replaces it, and live mode stays on.
+    let later = ''
+    await view.change(() => {
+      later = world.search('single', 'later')
+    })
+    await view.selects(later)
+    expect(view.steals).toEqual([])
+    expect(view.records).not.toContain(lookup)
+    expect(view.records.filter((record) => ![own, house, late, later].includes(record))).toEqual([])
+  },
+  JOURNEY_TIMEOUT_MS,
+)
 
 // The shape of a real capture: you read deep, a Run you follow ends before its record
 // showed for MIN_LIVE_RECORD_STAY_MS, and a newer Task the list does not hold runs.
 // Catches: live mode expanding that Task's Run, which a snapshot of the records you
 // watch never loads, and then waiting on it.
-it('follows a newer Task the list does not hold once a Run ends during the wait', async () => {
-  const world = coral()
-  for (let index = 0; index < 40; index++) world.start(`old${index}`, { ended: true })
-  const long = world.start('long', { logs: 250 })
-  const view = open(world, 'long')
-  await view.selects(`${long}/events/250`)
-  await view.readDeep()
-  let next = ''
-  await view.change(() => {
-    next = world.start('next', { logs: 1 })
-  })
-  await view.change(() => world.end(long))
-  await view.selects(`${next}/events/1`)
-  // Within the wait: a newer Task starts, and the Run you follow ends.
-  let later = ''
-  await view.change(() => {
-    later = world.start('later', { logs: 1 })
-  })
-  await view.change(() => world.end(next))
-  await view.selects(`${later}/events/1`)
-  expect(view.steals).toEqual([])
-}, 30_000)
+it(
+  'follows a newer Task the list does not hold once a Run ends during the wait',
+  async () => {
+    const world = coral()
+    for (let index = 0; index < 40; index++) world.start(`old${index}`, { ended: true })
+    const long = world.start('long', { logs: 250 })
+    const view = open(world, 'long')
+    await view.selects(`${long}/events/250`)
+    await view.readDeep()
+    let next = ''
+    await view.change(() => {
+      next = world.start('next', { logs: 1 })
+    })
+    await view.change(() => world.end(long))
+    await view.selects(`${next}/events/1`)
+    // Within the wait: a newer Task starts, and the Run you follow ends.
+    let later = ''
+    await view.change(() => {
+      later = world.start('later', { logs: 1 })
+    })
+    await view.change(() => world.end(next))
+    await view.selects(`${later}/events/1`)
+    expect(view.steals).toEqual([])
+  },
+  JOURNEY_TIMEOUT_MS,
+)
