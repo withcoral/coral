@@ -210,6 +210,11 @@ impl RunTimeout {
     pub(crate) const fn nanoseconds(self) -> i64 {
         self.nanoseconds
     }
+
+    /// The time limit as a duration, counted from the Run's start.
+    pub(crate) const fn duration(self) -> Duration {
+        Duration::from_nanos(self.nanoseconds.unsigned_abs())
+    }
 }
 
 /// Complete caller submission needed for core Program admission.
@@ -1216,6 +1221,52 @@ impl Default for ShutdownDrain {
     }
 }
 
+/// The Run CPU Budget an operator sets: the CPU time one Run's Program may
+/// use on its own thread. Waiting for a Tool, an approval or an answer from
+/// Coral does not count. A Run's budget is the lower of this and its time
+/// limit, so without one only the deadline ends a Run. Set at process
+/// bootstrap; none by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunCpuBudget {
+    cpu: Duration,
+}
+
+impl RunCpuBudget {
+    /// Accepts a positive budget on a platform that can measure it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] for zero, and on Windows, which has
+    /// no safe call for a thread's CPU clock.
+    pub fn new(cpu: Duration) -> Result<Self, Error> {
+        if !coral_v8::cpu_budget_supported() {
+            return Err(Error::InvalidInput(
+                "a Run CPU Budget is not supported on Windows, which has no safe call for a thread's CPU clock"
+                    .to_string(),
+            ));
+        }
+        if cpu.is_zero() {
+            return Err(Error::InvalidInput(
+                "a Run CPU Budget must be positive".to_string(),
+            ));
+        }
+        Ok(Self { cpu })
+    }
+
+    /// The budget in CPU time.
+    #[must_use]
+    pub const fn cpu(self) -> Duration {
+        self.cpu
+    }
+
+    /// The budget a Run with `time_limit` executes under: this one when it
+    /// is below the time limit, else none, since the deadline ends the Run
+    /// first.
+    pub(crate) fn below(self, time_limit: Duration) -> Option<Duration> {
+        (self.cpu < time_limit).then_some(self.cpu)
+    }
+}
+
 /// The limits one deployment sets for Program execution: the V8 isolate
 /// heaps, the Run Owner's Applied cap and its Fan-out Limit, and the
 /// Shutdown Drain. Resolved once at process bootstrap and handed to the Run
@@ -1227,6 +1278,7 @@ pub struct RuntimeLimits {
     applied_output_cap: AppliedOutputCap,
     fan_out_limit: FanOutLimit,
     shutdown_drain: ShutdownDrain,
+    cpu_budget: Option<RunCpuBudget>,
     compilation_timeout: Duration,
 }
 
@@ -1255,8 +1307,22 @@ impl RuntimeLimits {
             applied_output_cap,
             fan_out_limit,
             shutdown_drain,
+            cpu_budget: None,
             compilation_timeout: COMPILATION_TIMEOUT,
         }
+    }
+
+    /// Sets the Run CPU Budget; without one only the deadline ends a Run.
+    #[must_use]
+    pub const fn with_cpu_budget(mut self, cpu_budget: RunCpuBudget) -> Self {
+        self.cpu_budget = Some(cpu_budget);
+        self
+    }
+
+    /// The Run CPU Budget, if the operator set one.
+    #[must_use]
+    pub const fn cpu_budget(&self) -> Option<RunCpuBudget> {
+        self.cpu_budget
     }
 
     /// Replaces the compilation deadline, for a test that is not about it or

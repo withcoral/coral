@@ -431,7 +431,7 @@ fn run_effect(
             package,
             deadline_at_unix_nanos,
         } => {
-            if let OwnerStart::Program { actor, .. } = start {
+            if let OwnerStart::Program { actor, time_limit } = start {
                 start_program(
                     module,
                     accepted,
@@ -439,6 +439,7 @@ fn run_effect(
                     handle,
                     package,
                     deadline_at_unix_nanos,
+                    *time_limit,
                 );
             }
         }
@@ -482,7 +483,8 @@ fn run_effect(
 }
 
 /// Executes the accepted package with the Run's invoker and output, bound by
-/// the deadline its start recorded, and reports its end into the mailbox.
+/// the deadline its start recorded and by the Run CPU Budget when it is below
+/// `time_limit`, and reports its end into the mailbox.
 fn start_program(
     module: &RunModule,
     accepted: &AcceptedRun,
@@ -490,6 +492,7 @@ fn start_program(
     handle: &OwnerHandle,
     package: engine::ProgramPackage,
     deadline_at_unix_nanos: i64,
+    time_limit: RunTimeout,
 ) {
     let invoker = ToolInvoker::new(
         module.accounts.clone(),
@@ -513,6 +516,9 @@ fn start_program(
     let engine = module.engine.clone();
     let linked_snapshots = accepted.linked_snapshots.clone();
     let limits = accepted.value_limits;
+    let cpu_budget = module
+        .cpu_budget
+        .and_then(|budget| budget.below(time_limit.duration()));
     let stop = handle.stop();
     let handle = handle.clone();
     let span = phase_span(accepted.trace.as_ref(), &accepted.held_id(), Phase::Execute);
@@ -524,6 +530,7 @@ fn start_program(
             invoker,
             output,
             limits,
+            cpu_budget,
             stop,
         )
         .await;
