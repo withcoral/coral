@@ -361,8 +361,8 @@ pub(crate) struct OwnerState {
     /// Outside requests whose chunk is recorded: a repeat records nothing,
     /// and only its row rides the next chunk.
     recorded_requests: HashSet<RequestKey>,
-    /// Cancellations waiting to be applied again once the terminal write
-    /// has answered.
+    /// Cancellations waiting to be applied once the start mark or the
+    /// terminal write has answered.
     parked: Vec<Message>,
     /// The Run Inbox rows the owner applied, each riding a chunk that deletes
     /// it. The reader delivers a row again until that chunk lands, and may
@@ -1094,46 +1094,67 @@ impl OwnerState {
     /// termination is applied (the Program is terminated, the intent rides
     /// the next chunk with the row's deletion), a repeat otherwise, whose
     /// row the next chunk deletes; past the Run deadline the Run times out
-    /// instead, as its timer would have decided first. During the terminal
-    /// write it waits for that write's answer. An owner that commits nothing
+    /// instead, as its timer would have decided first. Before the start mark
+    /// answers, the owner stops at once and the cancellation waits for the
+    /// deadline the mark records; during the terminal write, it waits for that
+    /// write's answer. An owner that commits nothing
     /// more leaves the row to be delivered again.
     fn cancel(&mut self, requester: Principal, row: InboxRow, now_unix_nanos: i64) -> Vec<Effect> {
         if self.inbox_rows.contains(&row) {
             return Vec::new();
         }
         let mut effects = Vec::new();
+        let parked = self.parked.iter().any(
+            |message| matches!(message, Message::Cancel { row: waiting, .. } if *waiting == row),
+        );
         match self.phase {
             // Once per row: the reader delivers it again while it waits.
             Phase::Completing => {
-                let parked = self.parked.iter().any(
-                    |message| matches!(message, Message::Cancel { row: waiting, .. } if *waiting == row),
-                );
                 if !parked {
                     self.parked.push(Message::Cancel { requester, row });
                 }
             }
-            Phase::Starting | Phase::Running | Phase::Ending if self.termination.is_none() => {
-                if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
-                    effects = self.deadline(now_unix_nanos);
+            // The Program never starts, and the kind waits for the deadline.
+            Phase::Starting => {
+                if !parked {
+                    self.parked.push(Message::Cancel { requester, row });
                 }
-                if self.termination.is_none() {
-                    effects.extend(self.terminate(
-                        RunTerminationKind::Canceled,
-                        Some(requester),
-                        Some(row),
-                        now_unix_nanos,
-                    ));
-                } else {
-                    self.acknowledge(row);
-                }
+                effects = self.stop();
+            }
+            Phase::Running | Phase::Ending if self.termination.is_none() => {
+                effects = self.apply_cancel(requester, row, now_unix_nanos);
             }
             // A termination is applied, or recorded and settling: a repeat.
-            Phase::Starting | Phase::Running | Phase::Ending | Phase::Settling => {
+            Phase::Running | Phase::Ending | Phase::Settling => {
                 self.acknowledge(row);
             }
             // Nothing the owner applies commits any more; a recovered owner
             // applies its requests in `recovering`.
             Phase::Stopped(_) | Phase::Interrupting | Phase::Recovering | Phase::Retired => {}
+        }
+        effects
+    }
+
+    /// Applies a cancellation, or the timeout when the Run deadline passed.
+    fn apply_cancel(
+        &mut self,
+        requester: Principal,
+        row: InboxRow,
+        now_unix_nanos: i64,
+    ) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
+            effects = self.deadline(now_unix_nanos);
+        }
+        if self.termination.is_none() {
+            effects.extend(self.terminate(
+                RunTerminationKind::Canceled,
+                Some(requester),
+                Some(row),
+                now_unix_nanos,
+            ));
+        } else {
+            self.acknowledge(row);
         }
         effects
     }
@@ -1395,19 +1416,27 @@ impl OwnerState {
         self.termination.clone()
     }
 
-    /// The owner's first chunk landed: the head it left is the owner's. A
-    /// stop or a termination that reached the owner meanwhile means the
-    /// Program never starts; the Run ends as the terminal write finds it.
-    /// The start mark landed with the Run deadline: the deadline timer is
-    /// armed from it, never before.
+    /// The owner's first chunk landed: the head it left is the owner's. The
+    /// start mark landed with the Run deadline: the deadline timer is armed
+    /// from it, never before, and a cancellation that waited for it is
+    /// applied against it. A stop or a termination that reached the owner
+    /// meanwhile means the Program never starts; the Run ends as the
+    /// terminal write finds it.
     fn started(&mut self, started: StartedExecution, now_unix_nanos: i64) -> Vec<Effect> {
         self.head = started.head;
         self.limits.deadline_at_unix_nanos = started.deadline_at_unix_nanos;
         self.commit_succeeded(now_unix_nanos);
+        let mut effects = Vec::new();
+        for message in std::mem::take(&mut self.parked) {
+            if let Message::Cancel { requester, row } = message {
+                effects.extend(self.apply_cancel(requester, row, now_unix_nanos));
+            }
+        }
         if self.stop_requested {
             self.phase = Phase::Ending;
             self.completion = Some(ExecutionCompletion::ProgramHostTerminated);
-            return self.advance_ending();
+            effects.extend(self.advance_ending());
+            return effects;
         }
         self.phase = Phase::Running;
         vec![

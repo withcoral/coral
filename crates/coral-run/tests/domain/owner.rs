@@ -379,9 +379,9 @@ fn deliver(effects: Vec<Effect>) -> Vec<Effect> {
 }
 
 /// An owner launched at 1 and started at 2 with the deadline `limits`
-/// names: the launch arms the idle tick (the owner's liveness is judged from
-/// the start mark on) and no deadline, which the start mark records; the
-/// start mark arms the Run deadline and the idle tick again.
+/// names: the launch arms the idle tick and no deadline, which the start
+/// mark records; the start mark arms the Run deadline and the idle tick
+/// again.
 fn started(limits: OwnerLimits) -> OwnerState {
     let mut state = OwnerState::new(limits, 1);
     assert!(matches!(
@@ -1901,31 +1901,6 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         );
     }
 
-    // A Run has no deadline before its start mark: a cancel past what its
-    // time limit would be from acceptance is a cancellation, never a timeout.
-    {
-        let limits = OwnerLimits {
-            deadline_at_unix_nanos: 100,
-            ..LIMITS
-        };
-        let mut state = OwnerState::new(limits, 1);
-        deliver(apply_without_tick(&mut state, Message::Launch, 1));
-        assert!(stops(&deliver(cancel(&mut state, "waiting", 200))));
-        let chunk = committed_chunk(apply_without_tick(
-            &mut state,
-            Message::Started(Ok(Some(StartedExecution {
-                package: ProgramPackage::scripted("x"),
-                head: 1,
-                deadline_at_unix_nanos: 300,
-            }))),
-            201,
-        ));
-        assert_eq!(
-            chunk.termination.map(|intent| intent.termination.kind),
-            Some(RunTerminationKind::Canceled)
-        );
-    }
-
     // A cancel past the deadline times the Run out: the Program is
     // terminated, and the timeout rides the next chunk with the deletion of
     // the cancel's row, a repeat of the timeout.
@@ -2032,23 +2007,48 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         assert_eq!(state.pending_chunks(), 0);
     }
 
-    // A cancel before the Run started: the Program never starts, the intent
-    // commits once the start mark has, and the terminal write ends the Run.
-    {
-        let mut state = OwnerState::new(LIMITS, 1);
+    // A cancel before the Run started: the owner stops at once, so the
+    // Program never starts. The Run has no deadline yet (none from
+    // acceptance), so the cancel waits for the one the start mark records: a
+    // cancellation before it, a timeout past it. The intent commits once the
+    // start mark has, and the terminal write ends the Run.
+    for (deadline, kind, events) in [
+        (
+            LIMITS.deadline_at_unix_nanos,
+            RunTerminationKind::Canceled,
+            1,
+        ),
+        (2, RunTerminationKind::TimedOut, 0),
+    ] {
+        let limits = OwnerLimits {
+            deadline_at_unix_nanos: 1,
+            ..LIMITS
+        };
+        let mut state = OwnerState::new(limits, 1);
         deliver(apply_without_tick(&mut state, Message::Launch, 1));
         assert!(stops(&deliver(cancel(&mut state, "early", 2))));
-        let chunk = committed_chunk(apply_without_tick(
+        assert_eq!(state.parked_requests(), 1);
+        let started = apply_without_tick(
             &mut state,
             Message::Started(Ok(Some(StartedExecution {
                 package: ProgramPackage::scripted("x"),
                 head: 1,
-                deadline_at_unix_nanos: LIMITS.deadline_at_unix_nanos,
+                deadline_at_unix_nanos: deadline,
             }))),
             3,
-        ));
+        );
+        let chunk = committed_chunk(
+            started
+                .into_iter()
+                .filter(|effect| !matches!(effect, Effect::TerminateProgram))
+                .collect(),
+        );
         assert_eq!(state.phase(), Phase::Ending);
-        assert_eq!((chunk.events, chunk.inbox_rows), (1, 1));
+        assert_eq!((chunk.events, chunk.inbox_rows), (events, 1), "{kind:?}");
+        assert_eq!(
+            chunk.termination.map(|intent| intent.termination.kind),
+            Some(kind)
+        );
         let effects = apply_without_tick(&mut state, Message::Committed, 4);
         assert!(
             matches!(
