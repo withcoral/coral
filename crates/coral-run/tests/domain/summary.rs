@@ -656,12 +656,14 @@ async fn summary_window_includes_a_call_that_ended_at_its_start() {
             .action_history_authority_in_transaction(&mut tx, actor, Some(workspace))
             .await
             .unwrap();
-        let seen = fixture
-            .runs
-            .activity_summary_in_transaction(&mut tx, &authority, since, Vec::new())
+        let seen = crate::summary_repository::call_outcomes(&mut tx, &authority, since)
             .await
             .unwrap();
-        assert_eq!(seen.calls.answered, answered, "since {since}");
+        assert_eq!(
+            seen.iter().map(|row| row.calls).sum::<i64>(),
+            answered,
+            "since {since}"
+        );
     }
 }
 
