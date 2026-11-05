@@ -166,8 +166,9 @@ impl From<CompileError> for CompileFailure {
     fn from(error: CompileError) -> Self {
         match error {
             CompileError::TimedOut => Self::TimedOut,
+            // Bound here: any adapter can build the public `Message` variant.
             CompileError::Diagnostics(Diagnostics::Message { message, .. }) => {
-                Self::Rejected(message)
+                Self::Rejected(coral_v8::bounded_diagnostic_message(&message))
             }
             CompileError::Diagnostics(Diagnostics::Reference {
                 message,
@@ -184,5 +185,23 @@ impl From<CompileError> for CompileFailure {
             CompileError::Unavailable(Unavailable::Stopped) => Self::Stopped,
             CompileError::Unavailable(Unavailable::Failed(kind)) => Self::Failed(kind),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_message_from_any_adapter_keeps_the_diagnostic_bound() {
+        let message = "x".repeat(8 * 1024);
+        let error = CompileError::Diagnostics(Diagnostics::Message {
+            kind: "compilation",
+            message: message.clone(),
+        });
+        assert_eq!(
+            CompileFailure::from(error),
+            CompileFailure::Rejected(coral_v8::bounded_diagnostic_message(&message))
+        );
     }
 }
