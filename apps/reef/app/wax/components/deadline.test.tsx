@@ -35,3 +35,21 @@ it('wakes only when its label changes: each minute, each second in the last minu
     vi.useRealTimers()
   }
 })
+
+it('names what expires when given a subject', async () => {
+  vi.useFakeTimers({ now: 0 })
+  try {
+    const { container } = render(
+      <Deadline at={new Date(90_500).toISOString()} subject="Connection request" />,
+    )
+    expect(container.textContent).toBe(
+      `Connection request deadline: ${new Date(90_500).toISOString()}`,
+    )
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(container.textContent).toBe('Connection request expires in 2 minutes')
+  } finally {
+    vi.useRealTimers()
+  }
+})

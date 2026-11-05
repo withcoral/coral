@@ -114,7 +114,7 @@ it('says why a decline failed in place of the deadline, and keeps the request', 
   )
   await userEvent.click(screen.getByRole('button', { name: 'Decline Linear' }))
   expect(await screen.findByRole('alert')).toHaveTextContent('Coral could not apply this change.')
-  expect(screen.queryByText(/^Connection request expires in/)).toBeNull()
+  expect(rowOf('Linear').querySelector('time')).toBeNull()
   expect(screen.getByRole('button', { name: 'Decline Linear' })).toBeInTheDocument()
 })
 

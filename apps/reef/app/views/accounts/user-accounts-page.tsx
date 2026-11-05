@@ -93,8 +93,12 @@ export function UserAccountsPage({
           { label: 'Status', width: { fill: 2 } },
           // Fixed for a screen width, so filtering out the widest buttons does not move the
           // other columns. It fits a request's deadline, Decline, and Connect on one line; on a
-          // narrow screen the deadline truncates and the buttons keep their width.
-          { ariaLabel: 'Actions', width: 'clamp(124px, 55%, 448px)', align: 'right' },
+          // narrow screen the deadline shortens, then hides, and the buttons keep their width.
+          {
+            ariaLabel: 'Actions',
+            width: 'clamp(176px, calc(100% - 300px), 448px)',
+            align: 'right',
+          },
         ]}
       >
         <Table.Head />
@@ -144,7 +148,10 @@ export function UserAccountsPage({
   )
 }
 
-/** A waiting connection request's deadline, or why its decline failed, on one line. */
+/**
+ * A waiting connection request's deadline, or why its decline failed, on one line.
+ * A narrower row drops the subject, and a phone-width row drops the deadline.
+ */
 function WaitingRequest({ request }: { request: ConnectionRequest }) {
   const failure = useDeclineFailure(request.name)
   return (
@@ -154,7 +161,14 @@ function WaitingRequest({ request }: { request: ConnectionRequest }) {
           {failure}
         </Typography.BodySmall>
       ) : (
-        <Deadline at={request.expiresAt} subject="Connection request" variant="secondary" />
+        <>
+          <span className={styles.wideNote}>
+            <Deadline at={request.expiresAt} subject="Connection request" variant="secondary" />
+          </span>
+          <span className={styles.narrowNote}>
+            <Deadline at={request.expiresAt} variant="secondary" />
+          </span>
+        </>
       )}
     </span>
   )

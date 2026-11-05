@@ -1,4 +1,4 @@
-import { globalStyle, style } from '@vanilla-extract/css'
+import { createContainer, globalStyle, style } from '@vanilla-extract/css'
 
 export const stack = style({
   display: 'flex',
@@ -49,8 +49,11 @@ export const credentialForm = style({
   gap: '0.75rem',
 })
 export const credentialInputs = style({ flex: '1 1 280px', minWidth: 0 })
+const rowActionsContainer = createContainer()
 // A request's deadline, Decline, then Connect, on one line at the end of a row.
 export const rowActions = style({
+  containerName: rowActionsContainer,
+  containerType: 'inline-size',
   alignItems: 'center',
   display: 'flex',
   gap: 8,
@@ -60,11 +63,21 @@ export const rowActions = style({
 })
 globalStyle(`${rowActions} > *`, { flexShrink: 0 })
 // A request's deadline or failed decline: it truncates first, so the buttons stay whole.
+// A row too narrow for the short deadline shows only the buttons.
 export const requestNote = style({
   selectors: { [`${rowActions} > &`]: { flexShrink: 1 } },
   minWidth: 0,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
+  '@container': { [`${rowActionsContainer} (max-width: 279.98px)`]: { display: 'none' } },
+})
+// The full deadline fits beside both buttons from 392px; a narrower row shows the short one.
+export const wideNote = style({
+  display: 'none',
+  '@container': { [`${rowActionsContainer} (min-width: 392px)`]: { display: 'inline' } },
+})
+export const narrowNote = style({
+  '@container': { [`${rowActionsContainer} (min-width: 392px)`]: { display: 'none' } },
 })
 // The provider's logo, then its name.
 export const provider = style({
