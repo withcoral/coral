@@ -27,6 +27,7 @@
       }
       main {
         display: grid;
+        grid-template-columns: minmax(0, 1fr);
         gap: 8px;
         padding: 2px;
       }
@@ -35,7 +36,7 @@
       }
       article {
         display: grid;
-        grid-template-columns: auto 1fr auto;
+        grid-template-columns: auto minmax(0, 1fr) auto;
         column-gap: 12px;
         align-items: center;
         padding: 12px;
@@ -63,6 +64,7 @@
       }
       .text {
         display: grid;
+        grid-template-columns: minmax(0, 1fr);
         gap: 2px;
         min-width: 0;
       }
@@ -90,9 +92,12 @@
         margin-left: 6px;
         font-family: var(--font);
       }
-      /* A Call Path wraps only after a dot, so the separator stays on its last line. */
+      /* A Call Path wraps after a dot, so the separator stays on its last line.
+         A segment wider than the line breaks inside it rather than overflow. */
       code {
+        min-width: 0;
         font: 12px/16px var(--mono);
+        overflow-wrap: break-word;
       }
       time {
         font-variant-numeric: tabular-nums;
@@ -162,7 +167,7 @@
       }
       @media (max-width: 400px) {
         article {
-          grid-template-columns: auto 1fr;
+          grid-template-columns: auto minmax(0, 1fr);
           row-gap: 12px;
         }
         button {
