@@ -64,6 +64,7 @@ import type {
   ToolHintsView,
   ToolView,
   ProviderView,
+  ToolCallCounts,
   WorkspaceProvidersPageProps,
 } from './types'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
@@ -163,6 +164,7 @@ function WorkspaceProvidersContent({
   selectedProvider: selectedProviderRoute,
   selectedTool,
   selectedToolDetail = null,
+  toolCalls = null,
   form,
   result,
   pending = false,
@@ -260,6 +262,7 @@ function WorkspaceProvidersContent({
             selectedToolDetail?.relativePath === tool?.relativePath ? selectedToolDetail : null
           }
           setRailFilter={setRailFilter}
+          toolCalls={toolCalls}
         />
       )}
     </PageLayout>
@@ -548,6 +551,7 @@ function ProvidersTableScreen({
   selectedTool,
   selectedToolDetail,
   setRailFilter,
+  toolCalls,
 }: {
   /** An info tip beside the title. */
   titleInfo: ReactNode
@@ -567,6 +571,8 @@ function ProvidersTableScreen({
   selectedTool: ToolView | null
   selectedToolDetail: ToolDetailView | null
   setRailFilter: (value: string) => void
+  /** Null hides the Calls column. */
+  toolCalls: ToolCallCounts | null
 }) {
   const navigate = useNavigate()
   const mutations = usePolicyMutations()
@@ -1081,7 +1087,12 @@ function ProvidersTableScreen({
           layout="scroll"
           ref={tableRef}
           className={styles.providersTable}
-          columns={[{ width: 44 }, { width: 'minmax(340px, 1fr)' }, { width: 'max-content' }]}
+          columns={[
+            { width: 44 },
+            { width: 'minmax(340px, 1fr)' },
+            ...(toolCalls ? [{ width: 'content', align: 'right' } as const] : []),
+            { width: 'max-content' },
+          ]}
         >
           <Table.Head>
             <Table.Row>
@@ -1110,6 +1121,14 @@ function ProvidersTableScreen({
                 />
                 Tool name
               </span>
+              {toolCalls && (
+                <Table.Heading>
+                  Calls
+                  <InfoTip ariaLabel="About calls">
+                    {`Your calls and your agents' calls in the last ${toolCalls.days} days.`}
+                  </InfoTip>
+                </Table.Heading>
+              )}
               <span role="columnheader" className={styles.policyHeader}>
                 Policy
               </span>
@@ -1132,6 +1151,7 @@ function ProvidersTableScreen({
             selected={selected}
             showSelected={showSelected}
             toggleTools={toggleTools}
+            toolCalls={toolCalls}
           />
         </Table.Container>
         {selected.size > 0 && (
@@ -1240,6 +1260,7 @@ const TableSections = memo(function TableSections({
   selected,
   showSelected,
   toggleTools,
+  toolCalls,
   virtual,
 }: {
   /** The keyboard cursor's tool, or the drawer's while one is open. */
@@ -1260,6 +1281,7 @@ const TableSections = memo(function TableSections({
   selected: Set<SelectionKey>
   showSelected: () => void
   toggleTools: (targets: { provider: ProviderView; tool: ToolView }[], checked: boolean) => void
+  toolCalls: ToolCallCounts | null
   virtual: Table.VirtualRowsHandle
 }) {
   return sections.map((section) => (
@@ -1360,6 +1382,9 @@ const TableSections = memo(function TableSections({
                   provider={section.provider}
                   measure={virtual.measureRow}
                   tool={tool}
+                  calls={
+                    toolCalls && (toolCalls.calls[selectionKey(section.provider.id, tool.key)] ?? 0)
+                  }
                   query={query}
                   onOpen={markRevealed}
                   onCheck={(checked) =>
@@ -1576,6 +1601,7 @@ const ToolRow = memo(function ToolRow({
   provider,
   measure,
   tool,
+  calls,
   query,
   onCheck,
   onOpen,
@@ -1592,6 +1618,8 @@ const ToolRow = memo(function ToolRow({
   provider: ProviderView
   measure: Ref<HTMLDivElement>
   tool: ToolView
+  /** The tool's calls; null while the table has no Calls column. */
+  calls: number | null
   query: FilterQuery
   onCheck: (checked: boolean) => void
   /** Runs before a click opens the tool, which the reader can already see. */
@@ -1656,6 +1684,13 @@ const ToolRow = memo(function ToolRow({
           </Tooltip>
         )}
       </span>
+      {calls !== null && (
+        <Table.Cell>
+          <Typography.BodySmall as="span" variant={calls === 0 ? 'tertiary' : 'secondary'}>
+            {calls.toLocaleString('en-US')}
+          </Typography.BodySmall>
+        </Table.Cell>
+      )}
       <span role="cell" className={styles.policyCell}>
         <PolicySelect canChange={canChange} compact form={form} provider={provider} tool={tool} />
       </span>

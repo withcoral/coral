@@ -49,7 +49,7 @@ export function NeedsYouLens({
               {toFix.map(({ row, reason, count }) => {
                 const fix = fixFor(reason, row.pages)
                 return (
-                  <Table.Row key={`${row.callPath}/${reason}`} to={fix}>
+                  <Table.Row key={`${row.tool}/${reason}`} to={fix}>
                     <Table.Cell title={row.callPath}>
                       <ToolName row={row} to={fix} />
                     </Table.Cell>
@@ -99,7 +99,7 @@ export function NeedsYouLens({
               {notAllowed.map((row) => {
                 const to = row.pages?.tool
                 return (
-                  <Table.Row key={row.callPath} to={to}>
+                  <Table.Row key={row.tool} to={to}>
                     <Table.Cell title={row.callPath}>
                       <ToolName row={row} to={to} />
                     </Table.Cell>

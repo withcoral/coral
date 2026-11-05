@@ -6,7 +6,9 @@ import {
   mutationForm,
   privateHeaders,
 } from '@/lib/management.server'
-import { providerView, listAllProviders, uuidOr404 } from '@/lib/providers.server'
+import { providerView, listAllProviders, toolCallCounts, uuidOr404 } from '@/lib/providers.server'
+import { DEFAULT_SUMMARY_DAYS } from '@/lib/activity-summary'
+import { glimpseActivitySummary } from '@/lib/activity-summary.server'
 import { personalAccountStates } from '@/lib/accounts.server'
 import { applyProviderChange } from '@/lib/provider-changes.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
@@ -51,12 +53,14 @@ export function shouldRevalidate({
 }
 
 /** Loads the Workspace tree independently of tool selection. */
-export async function loader({ context, params }: Route.LoaderArgs) {
+export async function loader({ context, params, request }: Route.LoaderArgs) {
   try {
     const { api, workspace: w } = await authorizedWorkspace(context, params.workspace)
-    const [listed, personalAccounts] = await Promise.all([
+    const days = DEFAULT_SUMMARY_DAYS
+    const [listed, personalAccounts, summary] = await Promise.all([
       listAllProviders(api, w.name),
       personalAccountStates(api, w.name),
+      glimpseActivitySummary(api, w.name, days, request.signal),
     ])
     const providers = await Promise.all(
       listed.map((provider) => providerView(api, provider, w.path, personalAccounts)),
@@ -76,6 +80,7 @@ export async function loader({ context, params }: Route.LoaderArgs) {
       {
         workspace: w,
         providers,
+        toolCalls: summary && { days, calls: toolCallCounts(summary.tools) },
         recipes: RECIPE_CHOICES,
         selectedProvider,
         selectedTool,

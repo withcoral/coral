@@ -672,9 +672,9 @@ message SummarizeActivityRequest {
 message SummarizeActivityResponse {
   // Tool calls that ended in the window, by outcome.
   ActivityCallOutcomes calls = 1;
-  // Tools with calls stopped in the window, one entry per Call Path, most stopped first.
+  // Tools with calls stopped in the window, one entry per Tool, most stopped first.
   repeated ActivityStoppedTool stopped = 2;
-  // Tools with calls that ended in the window, one entry per Call Path.
+  // Tools with calls that ended in the window, one entry per Tool.
   repeated ActivityToolCalls tools = 3;
   // Approval requests decided in the window.
   ActivityApprovalDecisions approvals = 4;
@@ -709,9 +709,10 @@ message ActivityCallOutcomes {
   // The Run ended before the call did.
   int64 canceled = 6;
 }
-// One Tool's stopped calls, split by who must act.
+// One Tool's stopped calls, split by who must act. One entry per Tool, so
+// calls under a Call Path that another Tool held before count apart.
 message ActivityStoppedTool {
-  // Retained Program Call Path.
+  // Call Path of the Tool's latest stopped call.
   string call_path = 1;
   // Calls a rule stopped.
   int64 blocked = 2;
@@ -719,15 +720,22 @@ message ActivityStoppedTool {
   int64 not_allowed = 3;
   // Calls that need setup.
   int64 needs_setup = 4;
+  // {provider}/tools/{encoded Tool Key} of the Provider at the time of the calls,
+  // as the catalog names it. The Tool may since have left the catalog.
+  string tool = 5;
 }
-// One Tool's ended calls.
+// One Tool's ended calls. One entry per Tool, so calls under a Call Path that
+// another Tool held before count apart.
 message ActivityToolCalls {
-  // Retained Program Call Path.
+  // Call Path of the Tool's latest ended call.
   string call_path = 1;
   // Calls that ended in the window.
   int64 calls = 2;
   // The same calls per invoking actor, busiest first. They add up to calls.
   repeated ActivityCallerCalls callers = 3;
+  // {provider}/tools/{encoded Tool Key} of the Provider at the time of the calls,
+  // as the catalog names it. The Tool may since have left the catalog.
+  string tool = 4;
 }
 // Ended calls for one actor.
 message ActivityCallerCalls {

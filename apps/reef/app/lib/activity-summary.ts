@@ -17,8 +17,13 @@ export type CallOutcome = keyof CallOutcomes
 /** The outcomes a person or a rule stopped. */
 export type StopReason = 'blocked' | 'notAllowed' | 'needsSetup'
 
+/** The tool's resource name, and the Call Path of its latest call. */
+export interface SummaryTool {
+  tool: string
+  callPath: string
+}
 /** One tool's stopped calls, split by who must act. */
-export type StoppedTool = { callPath: string } & Record<StopReason, number>
+export type StoppedTool = SummaryTool & Record<StopReason, number>
 /** One caller's ended calls. */
 export interface CallerCalls {
   key: string
@@ -29,8 +34,7 @@ export interface CallerCalls {
   calls: number
 }
 /** One tool's ended calls. */
-export interface ToolCalls {
-  callPath: string
+export interface ToolCalls extends SummaryTool {
   calls: number
   /** The same calls per caller, busiest first. */
   callers: readonly CallerCalls[]

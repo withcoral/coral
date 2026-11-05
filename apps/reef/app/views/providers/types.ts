@@ -1,3 +1,4 @@
+import type { SelectionKey } from './selection'
 import type { PolicyState } from '@/components/policy-toggle'
 import type { ActionResult, FormContext, WorkspaceView } from '@/views/management/types'
 import type {
@@ -171,6 +172,13 @@ export interface ProviderSettingsPageProps {
   pending?: boolean
 }
 
+/** Your calls and your agents' calls to each tool over the last `days`. */
+export interface ToolCallCounts {
+  days: number
+  /** Calls by provider and Tool Key. A tool with no entry has no calls. */
+  calls: Readonly<Record<SelectionKey, number>>
+}
+
 export interface WorkspaceProvidersPageProps {
   workspace: WorkspaceView
   recipes?: readonly SourceChoice[]
@@ -179,6 +187,8 @@ export interface WorkspaceProvidersPageProps {
   selectedTool: string | null
   /** The prose of `selectedTool`, which `providers` leaves out. */
   selectedToolDetail?: ToolDetailView | null
+  /** Absent when Coral cannot count calls now; the page then shows no counts. */
+  toolCalls?: ToolCallCounts | null
   form: FormContext
   result?: ActionResult
   pending?: boolean

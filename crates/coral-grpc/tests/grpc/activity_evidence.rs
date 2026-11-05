@@ -1773,6 +1773,11 @@ async fn activity_summary_wire_rejects_malformed_and_hidden_windows_and_labels_i
         panic!("one Tool: {:?}", summary.tools)
     };
     assert_eq!(tool.call_path, "coral.providers.evidence.read");
+    // The catalog's name for the Tool: its Provider and its encoded Tool Key, `read`.
+    assert_eq!(
+        tool.tool,
+        format!("{workspace}/providers/{provider}/tools/cmVhZA")
+    );
     let [actor] = summary.actors.as_slice() else {
         panic!("one actor: {:?}", summary.actors)
     };

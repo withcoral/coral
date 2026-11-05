@@ -157,6 +157,8 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
     assert_eq!(
         after.tools,
         [ToolCalls {
+            provider_id: tool.provider_id.clone(),
+            tool_key: ToolKey::parse("getForecast").unwrap(),
             call_path: call_path.into(),
             calls: 4,
             callers: vec![caller.clone()],
@@ -166,6 +168,8 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
     assert_eq!(
         after.stopped,
         [StoppedTool {
+            provider_id: tool.provider_id.clone(),
+            tool_key: ToolKey::parse("getForecast").unwrap(),
             call_path: call_path.into(),
             blocked: 1,
             not_allowed: 1,
@@ -196,6 +200,46 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
         actor_share.bytes
     );
     assert_eq!(after.context_impact_bytes, Some(actor_share.bytes));
+}
+
+/// A Tool is its Provider and Tool Key. Calls made under an earlier Key keep
+/// their own row, though the Tool that holds their Call Path now has another Key.
+#[tokio::test(flavor = "multi_thread")]
+async fn summary_counts_a_reused_call_path_apart_by_tool_key() {
+    let (fixture, tool) = forecast_fixture().await;
+    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+    finish(&fixture, actor, workspace, CALL).await;
+    // That call stands for one made before the upstream renamed the operation.
+    let renamed = fixture
+        .inject_fault(&format!(
+            "UPDATE tool_invocations SET tool_key = 'forecast' WHERE workspace_id = '{workspace}'"
+        ))
+        .await;
+    assert_eq!(renamed, 1);
+    finish(&fixture, actor, workspace, CALL).await;
+    finish(&fixture, actor, workspace, CALL).await;
+
+    let seen = summary(&fixture, actor, workspace).await;
+    let rows: Vec<_> = seen
+        .tools
+        .iter()
+        .map(|row| {
+            (
+                &row.provider_id,
+                row.tool_key.as_str(),
+                row.call_path.as_str(),
+                row.calls,
+            )
+        })
+        .collect();
+    let call_path = tool.call_path.as_str();
+    assert_eq!(
+        rows,
+        [
+            (&tool.provider_id, "getForecast", call_path, 2),
+            (&tool.provider_id, "forecast", call_path, 1),
+        ]
+    );
 }
 
 /// Work outside the caller's attribution adds nothing. Calls name who made them.

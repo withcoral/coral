@@ -7,7 +7,8 @@ import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import { renderRoute } from '@/test-support/route'
 
 import { builtinProvider, provider, workspaceView } from './fixtures'
-import type { ToolDetailView, ToolView, ProviderView, WorkspaceView } from './types'
+import { selectionKey } from './selection'
+import type { ToolCallCounts, ToolDetailView, ToolView, ProviderView, WorkspaceView } from './types'
 import { WorkspaceProvidersPage } from './workspace-providers-page'
 
 // happy-dom lays nothing out, so the virtualizer would mount no tool
@@ -41,6 +42,7 @@ function renderPage({
   recipes = [],
   selectedTool = null,
   selectedToolDetail = null,
+  toolCalls,
   workspace = workspaceView,
 }: {
   action?: Action
@@ -49,6 +51,7 @@ function renderPage({
   recipes?: SourceChoice[]
   selectedTool?: ToolView | null
   selectedToolDetail?: ToolDetailView | null
+  toolCalls?: ToolCallCounts | null
   workspace?: WorkspaceView
 } = {}) {
   const page = (selected: ToolView | null, owner = providerOf(selected, providers)) => (
@@ -59,6 +62,7 @@ function renderPage({
       selectedProvider={owner}
       selectedTool={selected?.relativePath ?? null}
       selectedToolDetail={selectedToolDetail}
+      toolCalls={toolCalls}
       form={{ csrf: 'test-csrf', requestId: 'test-request' }}
     />
   )
@@ -222,6 +226,29 @@ test('lists every provider in one table, and keeps an empty one with its setting
 
 // Catches: the page drawing its own sticky provider and group rows instead of
 // nesting Wax groups, which loses the two-level sticky stack.
+// Catches: a tool's calls shown on another tool's row, a tool with no calls left
+// blank, or a Calls column shown when Coral cannot count calls.
+test.each([
+  [
+    'a count',
+    { days: 7, calls: { [selectionKey(github.id, 'repos.get')]: 1234 } },
+    ['0', '1,234', '0'],
+  ],
+  ['no count', null, []],
+])('shows the calls to each tool under the Calls column, given %s', (_, toolCalls, counts) => {
+  renderPage({ toolCalls })
+  const headers = within(table()).getAllByRole('columnheader')
+  const column = headers.findIndex((header) => header.textContent === 'Calls')
+  const cells =
+    column < 0
+      ? []
+      : ['issues.list', 'repos.get', 'getForecast'].map((name) => {
+          const row = within(table()).getByRole('link', { name }).closest('[role="row"]')!
+          return within(row as HTMLElement).getAllByRole('cell')[column]!.textContent
+        })
+  expect(cells).toEqual(counts)
+})
+
 test('nests each tool group inside its provider group', () => {
   const grouped = provider(github.id, 'GitHub', 'github', [
     ['repos.get', 'repos'],

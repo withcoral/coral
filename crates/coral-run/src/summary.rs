@@ -1,5 +1,7 @@
 //! Windowed totals of the execution history a caller can see in one Workspace.
 use crate::{CoralFailure, Error, InvocationResultKind, RunModule};
+use coral_catalog::ToolKey;
+use coral_provider::ProviderId;
 use coral_workspace::{HistoryAuthority, Principal};
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -13,10 +15,10 @@ const NANOS_PER_DAY: i64 = 86_400 * 1_000_000_000;
 pub struct ActivitySummary {
     /// Invocations that ended in the window, by outcome.
     pub calls: CallOutcomes,
-    /// Call Paths with stopped Invocations, most stopped first. Only a resolved
-    /// Call Path is stored, so the list holds at most one row per Tool.
+    /// Tools with stopped Invocations, most stopped first, one row per Provider
+    /// and Tool Key.
     pub stopped: Vec<StoppedTool>,
-    /// Call Paths with ended Invocations, busiest first, bounded like `stopped`.
+    /// Tools with ended Invocations, busiest first, one row per Provider and Tool Key.
     pub tools: Vec<ToolCalls>,
     /// Approval requests decided in the window.
     pub approvals: ApprovalDecisions,
@@ -51,10 +53,14 @@ pub struct CallOutcomes {
     pub canceled: i64,
 }
 
-/// One Call Path's stopped Invocations, by who must act.
+/// One Tool's stopped Invocations, by who must act.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoppedTool {
-    /// Retained Program Call Path.
+    /// The Tool's Provider.
+    pub provider_id: ProviderId,
+    /// The Tool's Key in that Provider.
+    pub tool_key: ToolKey,
+    /// The Call Path of the Tool's latest stopped Invocation.
     pub call_path: String,
     /// Invocations a rule stopped.
     pub blocked: i64,
@@ -64,10 +70,14 @@ pub struct StoppedTool {
     pub needs_setup: i64,
 }
 
-/// One Call Path's ended Invocations.
+/// One Tool's ended Invocations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCalls {
-    /// Retained Program Call Path.
+    /// The Tool's Provider.
+    pub provider_id: ProviderId,
+    /// The Tool's Key in that Provider.
+    pub tool_key: ToolKey,
+    /// The Call Path of the Tool's latest ended Invocation.
     pub call_path: String,
     /// Ended Invocations.
     pub calls: i64,
@@ -174,7 +184,10 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
 pub(crate) struct OutcomeEvidence {
     pub principal: Principal,
     pub agent_label: Option<String>,
+    pub provider_id: ProviderId,
+    pub tool_key: ToolKey,
     pub call_path: String,
+    pub last_ended_at_unix_nanos: i64,
     pub kind: InvocationResultKind,
     pub failure: Option<CoralFailure>,
     pub calls: i64,
@@ -235,40 +248,92 @@ struct Tally {
     callers: Vec<CallerCalls>,
 }
 
+/// The Call Path a Tool's row shows: the one its latest Invocation called.
+/// A Tool keeps its path while its Key stays active, so they rarely differ.
+#[derive(Default)]
+struct LatestPath {
+    ended_at: Option<(i64, String)>,
+}
+
+impl LatestPath {
+    fn offer(&mut self, group: &OutcomeEvidence) {
+        let candidate = (group.last_ended_at_unix_nanos, group.call_path.clone());
+        if self
+            .ended_at
+            .as_ref()
+            .is_none_or(|latest| candidate > *latest)
+        {
+            self.ended_at = Some(candidate);
+        }
+    }
+
+    fn path(self) -> String {
+        self.ended_at.map(|(_, path)| path).unwrap_or_default()
+    }
+}
+
+type ToolAddress = (ProviderId, ToolKey);
+
 fn tally(evidence: Vec<OutcomeEvidence>) -> Tally {
     let mut calls = CallOutcomes::default();
-    let mut stopped = BTreeMap::<String, StoppedTool>::new();
-    let mut ended = BTreeMap::<String, ToolCalls>::new();
+    let mut stopped = BTreeMap::<ToolAddress, (StoppedTool, LatestPath)>::new();
+    let mut ended = BTreeMap::<ToolAddress, (ToolCalls, LatestPath)>::new();
     let mut callers = Vec::new();
     for group in evidence {
         let outcome = outcome(group.kind, group.failure);
         *calls.total_mut(outcome) += group.calls;
-        let op = stopped
-            .entry(group.call_path.clone())
-            .or_insert_with(|| StoppedTool {
-                call_path: group.call_path.clone(),
-                blocked: 0,
-                not_allowed: 0,
-                needs_setup: 0,
-            });
+        let address = (group.provider_id.clone(), group.tool_key.clone());
+        let (op, path) = stopped.entry(address.clone()).or_insert_with(|| {
+            (
+                StoppedTool {
+                    provider_id: group.provider_id.clone(),
+                    tool_key: group.tool_key.clone(),
+                    call_path: String::new(),
+                    blocked: 0,
+                    not_allowed: 0,
+                    needs_setup: 0,
+                },
+                LatestPath::default(),
+            )
+        });
         if let Some(total) = op.total_mut(outcome) {
             *total += group.calls;
+            path.offer(&group);
         }
-        let tool = ended
-            .entry(group.call_path.clone())
-            .or_insert_with(|| ToolCalls {
-                call_path: group.call_path.clone(),
-                calls: 0,
-                callers: Vec::new(),
-            });
+        let (tool, path) = ended.entry(address).or_insert_with(|| {
+            (
+                ToolCalls {
+                    provider_id: group.provider_id.clone(),
+                    tool_key: group.tool_key.clone(),
+                    call_path: String::new(),
+                    calls: 0,
+                    callers: Vec::new(),
+                },
+                LatestPath::default(),
+            )
+        });
         tool.calls += group.calls;
+        path.offer(&group);
         add_caller(&mut tool.callers, &group);
         add_caller(&mut callers, &group);
     }
-    let mut stopped: Vec<_> = stopped.into_values().filter(|op| op.total() > 0).collect();
-    // Stable sorts keep Call Path order among equal counts.
+    let mut stopped: Vec<_> = stopped
+        .into_values()
+        .filter(|(op, _)| op.total() > 0)
+        .map(|(op, path)| StoppedTool {
+            call_path: path.path(),
+            ..op
+        })
+        .collect();
+    // Stable sorts keep Provider and Tool Key order among equal counts.
     stopped.sort_by_key(|op| Reverse(op.total()));
-    let mut tools: Vec<_> = ended.into_values().collect();
+    let mut tools: Vec<_> = ended
+        .into_values()
+        .map(|(tool, path)| ToolCalls {
+            call_path: path.path(),
+            ..tool
+        })
+        .collect();
     tools.sort_by_key(|op| Reverse(op.calls));
     for tool in &mut tools {
         busiest_first(&mut tool.callers);

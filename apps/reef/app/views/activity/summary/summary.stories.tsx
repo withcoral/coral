@@ -10,6 +10,9 @@ import type {
   ToolCalls,
 } from '@/lib/activity-summary'
 
+/** A tool's stand-in resource name beside its Call Path. */
+const summaryTool = (callPath: string) => ({ tool: `${callPath}#tool`, callPath })
+
 const yourself = { key: 'you', label: 'You' }
 const agent = (key: string, label: string) => ({
   key,
@@ -24,7 +27,7 @@ const digest = agent('digest', 'Daily digest agent')
 function tool(path: string, ...split: [Omit<CallerCalls, 'calls'>, number][]): ToolCalls {
   const callers = split.map(([caller, calls]) => ({ ...caller, calls }))
   return {
-    callPath: `coral.providers.${path}`,
+    ...summaryTool(`coral.providers.${path}`),
     calls: callers.reduce((sum, caller) => sum + caller.calls, 0),
     callers,
   }
@@ -58,15 +61,25 @@ const busy: ActivitySummaryData = {
   calls: { answered: 3781, blocked: 7, notAllowed: 3, needsSetup: 2, failed: 14, canceled: 5 },
   stopped: [
     {
-      callPath: 'coral.providers.github.mergePullRequest',
+      ...summaryTool('coral.providers.github.mergePullRequest'),
       blocked: 4,
       notAllowed: 1,
       needsSetup: 0,
     },
-    { callPath: 'coral.providers.slack.postMessage', blocked: 3, notAllowed: 0, needsSetup: 0 },
-    { callPath: 'coral.providers.gmail.sendMessage', blocked: 0, notAllowed: 2, needsSetup: 0 },
     {
-      callPath: 'coral.providers.salesforce.getAccount',
+      ...summaryTool('coral.providers.slack.postMessage'),
+      blocked: 3,
+      notAllowed: 0,
+      needsSetup: 0,
+    },
+    {
+      ...summaryTool('coral.providers.gmail.sendMessage'),
+      blocked: 0,
+      notAllowed: 2,
+      needsSetup: 0,
+    },
+    {
+      ...summaryTool('coral.providers.salesforce.getAccount'),
       blocked: 0,
       notAllowed: 0,
       needsSetup: 2,
@@ -299,9 +312,14 @@ export const OneOfEach: Story = {
       ...empty,
       calls: { answered: 38, blocked: 0, notAllowed: 1, needsSetup: 1, failed: 0, canceled: 0 },
       stopped: [
-        { callPath: 'coral.providers.gmail.sendMessage', blocked: 0, notAllowed: 1, needsSetup: 0 },
         {
-          callPath: 'coral.providers.salesforce.getAccount',
+          ...summaryTool('coral.providers.gmail.sendMessage'),
+          blocked: 0,
+          notAllowed: 1,
+          needsSetup: 0,
+        },
+        {
+          ...summaryTool('coral.providers.salesforce.getAccount'),
           blocked: 0,
           notAllowed: 0,
           needsSetup: 1,

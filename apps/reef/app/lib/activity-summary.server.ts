@@ -31,12 +31,14 @@ export async function loadActivitySummary(
       canceled: toCount(value.calls?.canceled),
     },
     stopped: value.stopped.map((tool) => ({
+      tool: tool.tool,
       callPath: tool.callPath,
       blocked: toCount(tool.blocked),
       notAllowed: toCount(tool.notAllowed),
       needsSetup: toCount(tool.needsSetup),
     })),
     tools: value.tools.map((tool) => ({
+      tool: tool.tool,
       callPath: tool.callPath,
       calls: toCount(tool.calls),
       callers: tool.callers.map(toCaller),

@@ -39,10 +39,13 @@ struct OutcomeRow {
     principal_id: String,
     principal_kind: String,
     agent_label: Option<String>,
+    provider_id: String,
+    tool_key: String,
     call_path: String,
     result_kind: String,
     failure_code: Option<String>,
     calls: i64,
+    last_ended_at_unix_nanos: i64,
 }
 
 fn principal(id: &str, kind: &str) -> Result<coral_workspace::Principal, Error> {
@@ -52,14 +55,20 @@ fn principal(id: &str, kind: &str) -> Result<coral_workspace::Principal, Error> 
     ))
 }
 
-/// Ended Invocations grouped by invoking Principal, Call Path and native outcome.
+/// Ended Invocations grouped by invoking Principal, Tool, Call Path and native outcome.
 pub(crate) async fn call_outcomes(
     tx: &mut Transaction<'_>,
     authority: &HistoryAuthority,
     since: i64,
 ) -> Result<Vec<OutcomeEvidence>, Error> {
     let runs = ["workspace_id", "principal_id", "principal_kind"];
-    let invocations = ["call_path", "result_kind", "failure_code"];
+    let invocations = [
+        "provider_id",
+        "tool_key",
+        "call_path",
+        "result_kind",
+        "failure_code",
+    ];
     let mut grouped = authorized_runs_with(authority, "tool_invocations", "i");
     grouped
         .columns(runs.map(|name| (Alias::new("r"), Alias::new(name))))
@@ -67,6 +76,10 @@ pub(crate) async fn call_outcomes(
         .expr_as(
             Expr::col((Alias::new("i"), Alias::new("id"))).count(),
             Alias::new("calls"),
+        )
+        .expr_as(
+            Expr::col((Alias::new("i"), Alias::new("ended_at_unix_nanos"))).max(),
+            Alias::new("last_ended_at_unix_nanos"),
         )
         .and_where(ended_since(since))
         .group_by_columns(runs.map(|name| (Alias::new("r"), Alias::new(name))))
@@ -78,10 +91,13 @@ pub(crate) async fn call_outcomes(
             [
                 "principal_id",
                 "principal_kind",
+                "provider_id",
+                "tool_key",
                 "call_path",
                 "result_kind",
                 "failure_code",
                 "calls",
+                "last_ended_at_unix_nanos",
             ]
             .map(|name| (Alias::new("g"), Alias::new(name))),
         )
@@ -99,7 +115,11 @@ pub(crate) async fn call_outcomes(
             Ok(OutcomeEvidence {
                 principal: principal(&row.principal_id, &row.principal_kind)?,
                 agent_label: row.agent_label,
+                provider_id: coral_provider::ProviderId::parse(&row.provider_id)?,
+                tool_key: coral_catalog::ToolKey::parse(&row.tool_key)
+                    .map_err(coral_provider::Error::from)?,
                 call_path: row.call_path,
+                last_ended_at_unix_nanos: row.last_ended_at_unix_nanos,
                 kind: InvocationResultKind::from_storage_str(&row.result_kind)?,
                 // A code this build no longer knows is still an ended failure.
                 failure: row
