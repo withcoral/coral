@@ -595,7 +595,7 @@ function ProvidersTableScreen({
   const tableFilter = useDeferredValue(tableFilterInput)
   const tableQuery = useMemo(() => filterQuery(tableFilter), [tableFilter])
   const [policyFilter, setPolicyFilter] = useState<PolicyFilter | null>(null)
-  // Off, rows sort by name; on, each group's tools and the groups sort by usage.
+  // Off, rows sort by name under their headings; on, every tool ranks in one list.
   const [sortByUsage, setSortByUsage] = useState(false)
   const usageOrder = sortByUsage && toolCalls ? toolCalls : null
   const [selected, setSelected] = useState<Set<SelectionKey>>(new Set())
@@ -661,7 +661,26 @@ function ProvidersTableScreen({
     [selected, visibleTools],
   )
   const allVisibleSelected = visibleTools.length > 0 && visibleSelectedCount === visibleTools.length
-  const { rows, sections } = useMemo(() => {
+  const { rows, sections, ranked } = useMemo(() => {
+    if (usageOrder) {
+      // One list across providers, busiest first. The sort is stable, so equal
+      // usage keeps provider order, then name order.
+      const usageOf = ({ provider, tool }: { provider: ProviderView; tool: ToolView }) =>
+        usageOrder.tools[selectionKey(provider.id, tool.key)]?.calls ?? 0
+      const list = visibleByProvider
+        .flatMap(({ provider, listed }) => listed.map((tool) => ({ provider, tool })))
+        .toSorted((a, b) => usageOf(b) - usageOf(a))
+      return {
+        rows: list.map(({ provider, tool }): TableRowItem => ({
+          kind: 'tool',
+          key: `tool:${provider.id}:${tool.key}`,
+          provider,
+          tool,
+        })),
+        sections: [],
+        ranked: list.map((row, index) => ({ ...row, index })),
+      }
+    }
     const flat: TableRowItem[] = []
     const tree: ProviderSection[] = []
     for (const { provider, matching, listed } of visibleByProvider) {
@@ -713,25 +732,9 @@ function ProvidersTableScreen({
         if (members) members.push(tool)
         else groups.set(label, [tool])
       }
-      // Name order first; a usage sort is stable, so equal usage keeps it.
-      const byName = [...groups.entries()].toSorted(([a], [b]) =>
+      for (const [group, members] of [...groups.entries()].toSorted(([a], [b]) =>
         caseFolded(a).localeCompare(caseFolded(b)),
-      )
-      const usageOf = (tool: ToolView) =>
-        usageOrder?.tools[selectionKey(provider.id, tool.key)]?.calls ?? 0
-      const ordered = usageOrder
-        ? byName
-            .map(([group, members]): [string, ToolView[]] => [
-              group,
-              members.toSorted((a, b) => usageOf(b) - usageOf(a)),
-            ])
-            .toSorted(
-              ([, a], [, b]) =>
-                b.reduce((sum, tool) => sum + usageOf(tool), 0) -
-                a.reduce((sum, tool) => sum + usageOf(tool), 0),
-            )
-        : byName
-      for (const [group, members] of ordered) {
+      )) {
         const groupKey = groupHeadingKey(provider.id, group)
         const groupSection: ProviderSection['groups'][number] = {
           group,
@@ -757,7 +760,7 @@ function ProvidersTableScreen({
         }
       }
     }
-    return { rows: flat, sections: tree }
+    return { rows: flat, sections: tree, ranked: null }
   }, [
     collapsed,
     policyFilter,
@@ -1185,26 +1188,46 @@ function ProvidersTableScreen({
               </span>
             </Table.Row>
           </Table.Head>
-          {sections.length === 0 && <Table.Status>No providers match.</Table.Status>}
-          <TableSections
-            activeKey={activeKey}
-            bulkPending={mutations.bulkPending}
-            canChange={canChange}
-            onToggleCollapsed={toggleCollapsed}
-            drawerOpen={drawerKey !== null}
-            filterByPolicy={filterByPolicy}
-            markRevealed={markRevealed}
-            form={form}
-            policyFilter={policyFilter?.value ?? null}
-            query={tableQuery}
-            virtual={virtual}
-            sections={sections}
-            selected={selected}
-            showSelected={showSelected}
-            toggleTools={toggleTools}
-            toolCalls={toolCalls}
-            maxCalls={maxCalls}
-          />
+          {ranked ? (
+            <RankedRows
+              activeKey={activeKey}
+              bulkPending={mutations.bulkPending}
+              canChange={canChange}
+              drawerOpen={drawerKey !== null}
+              form={form}
+              markRevealed={markRevealed}
+              maxCalls={maxCalls}
+              query={tableQuery}
+              ranked={ranked}
+              selected={selected}
+              toggleTools={toggleTools}
+              toolCalls={toolCalls}
+              virtual={virtual}
+            />
+          ) : (
+            sections.length === 0 && <Table.Status>No providers match.</Table.Status>
+          )}
+          {!ranked && (
+            <TableSections
+              activeKey={activeKey}
+              bulkPending={mutations.bulkPending}
+              canChange={canChange}
+              onToggleCollapsed={toggleCollapsed}
+              drawerOpen={drawerKey !== null}
+              filterByPolicy={filterByPolicy}
+              markRevealed={markRevealed}
+              form={form}
+              policyFilter={policyFilter?.value ?? null}
+              query={tableQuery}
+              virtual={virtual}
+              sections={sections}
+              selected={selected}
+              showSelected={showSelected}
+              toggleTools={toggleTools}
+              toolCalls={toolCalls}
+              maxCalls={maxCalls}
+            />
+          )}
         </Table.Container>
         {selected.size > 0 && (
           <ActionBar.Bar>
@@ -1297,6 +1320,69 @@ function useRevealScroll(
     revealed.current = { provider: providerId, tool: toolName }
   }, [])
 }
+
+/** The tools ranked by usage in one list, each naming its provider. */
+const RankedRows = memo(function RankedRows({
+  activeKey,
+  bulkPending,
+  canChange,
+  drawerOpen,
+  form,
+  markRevealed,
+  maxCalls,
+  query,
+  ranked,
+  selected,
+  toggleTools,
+  toolCalls,
+  virtual,
+}: {
+  activeKey: string | null
+  bulkPending: boolean
+  canChange: boolean
+  drawerOpen: boolean
+  form: FormContext
+  markRevealed: (provider: string, tool: string) => void
+  maxCalls: number
+  query: FilterQuery
+  ranked: { index: number; provider: ProviderView; tool: ToolView }[]
+  selected: Set<SelectionKey>
+  toggleTools: (targets: { provider: ProviderView; tool: ToolView }[], checked: boolean) => void
+  toolCalls: ToolCallCounts | null
+  virtual: Table.VirtualRowsHandle
+}) {
+  if (ranked.length === 0) return <Table.Status>No tools match.</Table.Status>
+  return (
+    <Table.Body>
+      <Table.VirtualRows rows={ranked} virtual={virtual}>
+        {({ index, provider, tool }) => {
+          const key = selectionKey(provider.id, tool.key)
+          return (
+            <ToolRow
+              key={key}
+              active={activeKey === key}
+              drawerOpen={drawerOpen}
+              canChange={canChange}
+              checked={selected.has(key)}
+              disabled={bulkPending}
+              form={form}
+              index={index}
+              provider={provider}
+              measure={virtual.measureRow}
+              tool={tool}
+              usage={toolCalls && (toolCalls.tools[key] ?? unused(toolCalls.days))}
+              maxCalls={maxCalls}
+              namesProvider
+              query={query}
+              onOpen={markRevealed}
+              onCheck={(checked) => toggleTools([{ provider, tool }], checked)}
+            />
+          )
+        }}
+      </Table.VirtualRows>
+    </Table.Body>
+  )
+})
 
 const TableSections = memo(function TableSections({
   activeKey,
@@ -1677,6 +1763,7 @@ const ToolRow = memo(function ToolRow({
   tool,
   usage,
   maxCalls,
+  namesProvider = false,
   query,
   onCheck,
   onOpen,
@@ -1697,6 +1784,8 @@ const ToolRow = memo(function ToolRow({
   usage: ToolUsage | null
   /** The busiest tool's calls, which a full bar stands for. */
   maxCalls: number
+  /** Names the provider before the tool, for a list with no provider headings. */
+  namesProvider?: boolean
   query: FilterQuery
   onCheck: (checked: boolean) => void
   /** Runs before a click opens the tool, which the reader can already see. */
@@ -1736,7 +1825,15 @@ const ToolRow = memo(function ToolRow({
       </span>
       <span role="cell" className={styles.toolNameCell}>
         {/* The row opens the drawer; the name stays a link for the keyboard. */}
-        {/* The provider names the group, so the tool stands alone. */}
+        {/* A provider heading names the group, so the tool stands alone under one. */}
+        {namesProvider && (
+          <span className={styles.rankedProvider}>
+            <Logo name={providerLabel(provider)} icons={provider.icons} size="20" />
+            <Typography.BodySmall as="span" variant="secondary">
+              {providerLabel(provider)}
+            </Typography.BodySmall>
+          </span>
+        )}
         <ToolName className={styles.toolNameFace}>
           <Tooltip content={tool.relativePath} showOnlyWhenTruncated>
             <Link

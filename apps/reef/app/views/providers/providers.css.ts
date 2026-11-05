@@ -653,3 +653,11 @@ export const usageCaller = style({
   gap: 8,
   justifyContent: 'space-between',
 })
+
+// A ranked row's provider, before its tool, where no heading names it.
+export const rankedProvider = style({
+  alignItems: 'center',
+  display: 'inline-flex',
+  flexShrink: 0,
+  gap: 6,
+})

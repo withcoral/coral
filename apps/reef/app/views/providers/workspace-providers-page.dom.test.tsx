@@ -302,24 +302,25 @@ test.each([
   expect(cells).toEqual(counts)
 })
 
-// Catches: a usage sort that leaves a busier tool or group below a quieter one,
-// moves a tool out of its group, keeps no way back to name order, or reports
-// the wrong order to a screen reader.
+// Catches: a usage sort that ranks tools only within their provider or group,
+// leaves a ranked row without its provider's name, keeps no way back to the
+// headings, or reports the wrong order to a screen reader.
 const usage = (calls: number) => ({ calls, daily: [calls], callers: [] })
 
-test('sorts each group by usage, and groups by their total, then back by name', async () => {
+test('ranks every tool by usage in one list, then goes back to the headings', async () => {
   const grouped = provider(github.id, 'GitHub', 'github', [
     ['issues.list', 'issues'],
     ['issues.create', 'issues'],
     ['repos.get', 'repos'],
   ])
   renderPage({
-    providers: [grouped],
+    providers: [grouped, weather],
     toolCalls: {
       days: 30,
       tools: {
         [selectionKey(github.id, 'issues.create')]: usage(5),
         [selectionKey(github.id, 'repos.get')]: usage(9),
+        [selectionKey(weather.id, 'getForecast')]: usage(7),
       },
     },
   })
@@ -327,20 +328,23 @@ test('sorts each group by usage, and groups by their total, then back by name', 
     within(table())
       .getAllByRole('columnheader')
       .find((cell) => cell.textContent?.startsWith(name))!
-  const byName = ['issues.create', 'issues.list', 'repos.get']
+  const sorts = () =>
+    [header('Tool name'), header('Usage')].map((cell) => cell.getAttribute('aria-sort'))
+  const headings = () => within(table()).queryAllByRole('rowgroup', { name: /GitHub|Weather/ })
+  const byName = ['issues.create', 'issues.list', 'repos.get', 'getForecast']
   expect(rowNames()).toEqual(byName)
-  expect(
-    [header('Tool name'), header('Usage')].map((cell) => cell.getAttribute('aria-sort')),
-  ).toEqual(['ascending', 'none'])
+  expect(sorts()).toEqual(['ascending', 'none'])
 
   await user.click(within(table()).getByRole('button', { name: 'Sort by usage' }))
-  expect(rowNames()).toEqual(['repos.get', 'issues.create', 'issues.list'])
-  expect(
-    [header('Tool name'), header('Usage')].map((cell) => cell.getAttribute('aria-sort')),
-  ).toEqual(['none', 'descending'])
+  expect(rowNames()).toEqual(['repos.get', 'getForecast', 'issues.create', 'issues.list'])
+  expect(sorts()).toEqual(['none', 'descending'])
+  expect(headings()).toEqual([])
+  expect(rowOf('getForecast')).toHaveTextContent('Weather')
+  expect(rowOf('repos.get')).toHaveTextContent('GitHub')
 
   await user.click(within(table()).getByRole('button', { name: 'Sort by usage' }))
   expect(rowNames()).toEqual(byName)
+  expect(headings()).toHaveLength(2)
 })
 
 // Catches: a heading count too wide for the policy segment it sits over, or a short
