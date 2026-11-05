@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
-use super::{ConfigurationOutput, GetProviderArguments};
+use super::{ConfigurationOutput, GetProviderArguments, ProviderSourceOutput};
 use crate::builtin::AddProviderArguments;
 use crate::{
     AuthenticationConfiguration as Auth, CredentialSource, HeaderBinding,
@@ -361,6 +361,53 @@ fn a_fact_coral_set_is_rejected_when_sent_back() {
             .map(|problem| (problem.field(), problem.reason()))
             .collect::<Vec<_>>();
         assert_eq!(found, [("authentication", expected)], "{saved:?}");
+    }
+}
+
+// Catches: a key in a source URL's path or query, or an embedded credential,
+// returned to a Program that stores it in Run evidence.
+#[test]
+fn a_source_url_reads_as_its_origin() {
+    for (saved, expected) in [
+        (
+            "https://mcp.example.test/mcp/?tavilyApiKey=sk-canary",
+            "https://mcp.example.test",
+        ),
+        (
+            "https://mcp.example.test/api/mcp/s/sk-canary/mcp",
+            "https://mcp.example.test",
+        ),
+        // A port names the origin too.
+        (
+            "http://127.0.0.1:8080/openapi.json?version=2",
+            "http://127.0.0.1:8080",
+        ),
+        // Coral never saves these, and they never read back.
+        (
+            "https://user:sk-canary@api.example.test/mcp#sk-canary",
+            "https://api.example.test",
+        ),
+    ] {
+        for read in [
+            ProviderSourceOutput::openapi_url(saved),
+            ProviderSourceOutput::mcp_url(saved),
+        ] {
+            let Some(
+                ProviderSourceOutput::OpenapiUrl { url } | ProviderSourceOutput::McpUrl { url },
+            ) = read
+            else {
+                panic!("{saved} reads as a URL")
+            };
+            assert_eq!(url, expected, "{saved}");
+        }
+    }
+    // A value that is not a web URL could hold anything, so none of it reads.
+    for saved in [
+        "sk-canary",
+        "file:///sk-canary",
+        "data:text/plain,sk-canary",
+    ] {
+        assert_eq!(ProviderSourceOutput::mcp_url(saved), None, "{saved}");
     }
 }
 
