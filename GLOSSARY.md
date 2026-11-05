@@ -553,6 +553,20 @@ Tool Availability, allow/ask/deny
 Emissions, Logs and Final Value, minus the bytes of its Invocations' retained Tool Results. Negative means saved. A
 Run that is running or has incomplete Invocation evidence has none. _Avoid_: token savings
 
+**Required Action**: A request of one Program Run that a person must decide before the Run can go on: the invoking
+User for a Run a User invoked, any Workspace Owner for a Run an Agent invoked. Today it is an Approval Request or an
+Account Connection Request; any later kind (a Provider's own question to the User, #2447) keeps the same shape: one
+request with a deadline, decided by the person or role the Run names, and the first answer counts. A Run Update's
+`required_actions` lists the Run's current Required Actions. A Required Action of a Run a User invoked reaches that User
+one way: the observing tool call returns it with the link to the page where the User decides it, an Approval Request's
+own address on the Approvals Page or the person's account page for the Provider for a connection request, the assistant passes the link on,
+and the waiting call shows it to a client that asks for progress or renders it as an MCP App. Reef holds the request
+from the moment it exists, so a page is never a second way in, and the assistant has no path to decide. Coral sends no MCP elicitation for a Required Action, and no notification apart from the waiting call's progress message. An
+Account Connection Request that several Runs wait on is one Required Action in each of their Run Updates: each
+assistant passes it on, and the first answer settles it for all of them. _Avoid_: pending action, human action,
+elicitation, prompt, in-band prompt, notification, per-client route, assistant approval, allow-tool prompt as approval,
+Run preflight
+
 **Run Status Page**: The directly linked detail of one Program Run within Reef's activity interface, at one stable,
 non-secret URL, rather than a required standalone page. Every supported local or hosted deployment provides this
 interface, and its link opens the exact Run independently of the activity list's current filters. Opening it requires
@@ -901,6 +915,12 @@ JavaScript value as already durable, assuming every runtime value has a portable
 
 **Final Value**: The optional Program Value produced when a Coral Program Run succeeds. It is distinct from the Run's
 Emissions and Program Logs. _Avoid_: Transcript, accumulated output
+
+**Run Deadline**: The instant a Program Run was accepted plus its timeout. It is the one clock every wait for a person
+obeys: nothing pauses or extends it, a Run that waits past it ends `TimedOut`, and a decision that arrives later does
+nothing for that Run. An Approval Request has no deadline of its own; an Account Connection Request keeps its own
+expiry across Runs, and the deadline the Run Update shows for it is the earlier of that expiry and the Run Deadline.
+_Avoid_: approval deadline, human-wait limit, paused Run
 
 **Run Update**: An observation of a Coral Program Run containing its current state, a current Principal-filtered
 `required_actions` list, a bounded ordered batch of authored Program Emissions and Program Logs after an opaque cursor,
