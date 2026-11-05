@@ -22,11 +22,12 @@
         margin: 0;
         background: transparent;
         color: var(--fg);
-        font: 14px/1.45 var(--font);
+        font: 14px/20px var(--font);
+        -webkit-font-smoothing: antialiased;
       }
       main {
         display: grid;
-        gap: 10px;
+        gap: 8px;
         padding: 2px;
       }
       main[hidden] {
@@ -34,50 +35,139 @@
       }
       article {
         display: grid;
-        grid-template-columns: 1fr auto;
-        gap: 4px 16px;
+        grid-template-columns: auto 1fr auto;
+        column-gap: 12px;
         align-items: center;
-        padding: 12px 14px;
+        padding: 12px;
         border: 1px solid var(--line);
-        border-radius: 10px;
+        border-radius: 12px;
         background: var(--bg);
       }
-      h1 {
-        grid-column: 1;
-        margin: 0;
-        font-size: 14px;
-        font-weight: 600;
-      }
-      p {
-        grid-column: 1;
-        margin: 0;
-        color: var(--fg-2);
-      }
-      code {
-        font: 13px var(--mono);
+      .icon {
+        display: grid;
+        place-items: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        background: var(--bg-2);
         color: var(--fg);
       }
+      svg {
+        width: 16px;
+        height: 16px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.75;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .text {
+        display: grid;
+        gap: 2px;
+        min-width: 0;
+      }
+      h1 {
+        margin: 0;
+        font-size: 14px;
+        line-height: 20px;
+        font-weight: 600;
+        letter-spacing: -0.005em;
+      }
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 2px 6px;
+        margin: 0;
+        font-size: 12px;
+        line-height: 16px;
+        color: var(--fg-2);
+      }
+      /* The separator ends the previous item, so a wrapped line never starts with it. */
+      .meta > :not(:last-child)::after {
+        content: "·";
+        margin-left: 6px;
+        font-family: var(--font);
+      }
+      code {
+        font: 12px/16px var(--mono);
+        overflow-wrap: anywhere;
+      }
+      time {
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
       button {
-        grid-column: 2;
-        grid-row: 1 / span 3;
-        padding: 8px 14px;
-        border: 0;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 32px;
+        padding: 0 12px;
+        border: 1px solid var(--line);
         border-radius: 8px;
-        background: var(--accent);
-        color: var(--accent-fg);
-        font: 600 14px var(--font);
+        background: var(--bg);
+        color: var(--fg);
+        font: 500 13px/1 var(--font);
+        white-space: nowrap;
         cursor: pointer;
       }
       button:hover {
-        filter: brightness(1.1);
+        background: var(--bg-2);
       }
-      a {
-        color: inherit;
-        overflow-wrap: anywhere;
+      button:focus-visible {
+        outline: 2px solid var(--fg);
+        outline-offset: 2px;
+      }
+      button:disabled {
+        cursor: progress;
+      }
+      button svg {
+        width: 14px;
+        height: 14px;
+        color: var(--fg-2);
+      }
+      button[aria-busy="true"] svg {
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        button[aria-busy="true"] svg {
+          animation: none;
+        }
       }
       .address {
-        grid-column: 1 / span 2;
+        grid-column: 1 / -1;
+        margin: 12px 0 0;
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: var(--bg-2);
+        font-size: 12px;
+        line-height: 16px;
+        color: var(--fg-2);
+      }
+      .address a {
+        display: block;
+        margin-top: 2px;
+        font: 12px/16px var(--mono);
+        color: var(--fg);
+        text-decoration-color: var(--line);
+        text-underline-offset: 2px;
+        overflow-wrap: anywhere;
         user-select: all;
+      }
+      @media (max-width: 400px) {
+        article {
+          grid-template-columns: auto 1fr;
+          row-gap: 12px;
+        }
+        button {
+          grid-column: 1 / -1;
+          justify-content: center;
+        }
       }
     </style>
   </head>
@@ -150,13 +240,48 @@
         if (context.theme) document.documentElement.dataset.theme = context.theme;
       }
 
+      const SVG_NS = "http://www.w3.org/2000/svg";
+      const ICONS = {
+        approval: ["M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z", "M9 12l2 2 4-4"],
+        connection: [
+          "M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5",
+          "M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5",
+        ],
+        open: ["M14 4h6v6", "M20 4l-9 9", "M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"],
+        busy: ["M12 3a9 9 0 1 0 9 9"],
+      };
+
+      function icon(name) {
+        const svg = document.createElementNS(SVG_NS, "svg");
+        svg.setAttribute("viewBox", "0 0 24 24");
+        svg.setAttribute("aria-hidden", "true");
+        for (const d of ICONS[name]) {
+          const path = document.createElementNS(SVG_NS, "path");
+          path.setAttribute("d", d);
+          svg.append(path);
+        }
+        return svg;
+      }
+
+      function element(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
       // The time alone on the same day, with the date otherwise.
       function clock(iso) {
         const date = new Date(iso);
         if (Number.isNaN(date.getTime())) return "";
-        const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
         if (date.toDateString() === new Date().toDateString()) return time;
         return `${date.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+      }
+
+      // The Call Path without the prefix that every Tool shares.
+      function shortTool(path) {
+        return path.replace(/^coral\.providers\./, "");
       }
 
       function render(result) {
@@ -167,39 +292,62 @@
         );
         root.hidden = actions.length === 0;
         for (const action of actions) {
-          const card = document.createElement("article");
-          const title = document.createElement("h1");
-          const what = document.createElement("p");
-          const when = document.createElement("p");
-          const open = document.createElement("button");
           const connection = action.kind === "account_connection";
-          title.textContent = connection ? "Connect your account" : "Approve this call";
+          const provider = action.provider;
+          const card = element("article");
+
+          // The icon shape and the title both name the kind of request.
+          const badge = element("span", "icon");
+          badge.append(icon(connection ? "connection" : "approval"));
+
+          const text = element("div", "text");
+          const title = connection
+            ? provider
+              ? `Connect your ${provider} account`
+              : "Connect your account"
+            : provider
+              ? `Approve a ${provider} call`
+              : "Approve a tool call";
+          text.append(element("h1", "", title));
+
           // Each card names the waiting Tool where one Tool waits.
-          if (connection && !action.tool) {
-            what.textContent = action.provider
-              ? `The run calls ${action.provider} as you.`
-              : "The run calls a provider as you.";
-          } else {
-            const tool = document.createElement("code");
-            tool.textContent = action.tool || "a tool";
-            what.append(tool);
-            if (action.provider) what.append(` on ${action.provider}`);
+          const meta = element("p", "meta");
+          if (action.tool) {
+            const tool = element("code", "", shortTool(action.tool));
+            tool.title = action.tool;
+            meta.append(tool);
           }
           const by = clock(action.deadline_at);
-          when.textContent = by ? `Decide before ${by}. Run ${update.run_id}.` : `Run ${update.run_id}.`;
+          if (by) {
+            const deadline = element("span", "", "Respond by ");
+            const time = element("time", "", by);
+            time.dateTime = action.deadline_at;
+            deadline.append(time);
+            meta.append(deadline);
+          }
+          if (meta.childElementCount) text.append(meta);
+
+          const open = element("button");
           open.type = "button";
-          open.textContent = "Open in Coral";
+          open.append("Open in Coral", icon("open"));
           open.addEventListener("click", () => openLink(action.url, open));
-          card.append(title, what, when, open);
+
+          card.append(badge, text, open);
           root.append(card);
         }
         reportSize();
       }
 
+      function setBusy(button, busy) {
+        button.disabled = busy;
+        button.setAttribute("aria-busy", String(busy));
+        button.lastChild.replaceWith(icon(busy ? "busy" : "open"));
+      }
+
       // The host opens the page in the person's browser. When it declines or
       // never answers, the card shows the address itself, to open or copy.
       async function openLink(url, button) {
-        button.disabled = true;
+        setBusy(button, true);
         try {
           const result = await request("ui/open-link", { url }, 2000);
           console.info("ui/open-link answered", result);
@@ -207,7 +355,7 @@
         } catch (error) {
           console.warn("ui/open-link failed", error);
         } finally {
-          button.disabled = false;
+          setBusy(button, false);
         }
         let opened = null;
         try {
@@ -218,16 +366,15 @@
           console.warn("window.open failed", error);
         }
         if (opened) return;
-        const address = document.createElement("p");
-        address.className = "address";
-        address.append("Open this address in your browser: ");
-        const link = document.createElement("a");
+        const card = button.closest("article");
+        if (card.querySelector(".address")) return;
+        const address = element("p", "address", "Open this address in your browser:");
+        const link = element("a", "", url);
         link.href = url;
         link.target = "_blank";
         link.rel = "noopener";
-        link.textContent = url;
         address.append(link);
-        button.closest("article").append(address);
+        card.append(address);
         reportSize();
       }
 
