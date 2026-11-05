@@ -487,6 +487,9 @@ fn start_program(
     let engine = module.engine.clone();
     let linked_snapshots = accepted.linked_snapshots.clone();
     let limits = accepted.value_limits;
+    let cpu_budget = module
+        .cpu_budget
+        .and_then(|budget| budget.below(accepted.time_limit()));
     let stop = handle.stop();
     let handle = handle.clone();
     let span = phase_span(accepted.trace.as_ref(), &accepted.held_id(), Phase::Execute);
@@ -498,6 +501,7 @@ fn start_program(
             invoker,
             output,
             limits,
+            cpu_budget,
             stop,
         )
         .await;

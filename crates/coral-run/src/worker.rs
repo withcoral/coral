@@ -416,7 +416,9 @@ fn returned_outcome(
             final_value: final_value.clone(),
         },
         ExecutionCompletion::Failed(failure) => RunTerminalOutcome::Failed(failure.clone()),
-        ExecutionCompletion::ProgramHostTerminated | ExecutionCompletion::MemoryLimitExceeded => {
+        ExecutionCompletion::ProgramHostTerminated
+        | ExecutionCompletion::MemoryLimitExceeded
+        | ExecutionCompletion::CpuLimitExceeded => {
             unreachable!("host termination creates durable interruption evidence before completion")
         }
     };
@@ -436,8 +438,8 @@ fn returned_outcome(
 
 /// The termination the terminal write records for a Run with none: the
 /// timeout past its deadline, an interruption when the Program host ended
-/// it or its claim is no longer current, the memory limit; `None` for a
-/// Program that completed on its own.
+/// it or its claim is no longer current, the memory limit, the CPU limit;
+/// `None` for a Program that completed on its own.
 fn termination_for_completion(
     run: &RunRecord,
     completion: &ExecutionCompletion,
@@ -454,6 +456,8 @@ fn termination_for_completion(
         Some(RunTerminationKind::Interrupted)
     } else if *completion == ExecutionCompletion::MemoryLimitExceeded {
         Some(RunTerminationKind::MemoryLimitExceeded)
+    } else if *completion == ExecutionCompletion::CpuLimitExceeded {
+        Some(RunTerminationKind::CpuLimitExceeded)
     } else {
         None
     }

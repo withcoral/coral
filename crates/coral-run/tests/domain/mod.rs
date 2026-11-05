@@ -5,6 +5,8 @@ mod binary;
 mod call_paths;
 mod cancellation;
 mod connections;
+#[cfg(unix)]
+mod cpu;
 mod credentials;
 mod emissions;
 mod enforcement;
