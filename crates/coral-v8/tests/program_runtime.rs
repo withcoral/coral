@@ -1035,6 +1035,50 @@ fn execution_has_no_forbidden_ambient_capability() {
         .expect("execute ambient-capability probe");
 }
 
+/// Names every global of the Program Runtime Surface.
+///
+/// Fails when a global appears or disappears, such as one a V8 upgrade adds:
+/// that release raises the protocol level. The probe and the list live in
+/// `tests/program-runtime-surface/`, so each kind of Run Executor runs the
+/// same check.
+#[test]
+fn program_runtime_surface_has_exactly_its_globals() {
+    let expected: Vec<String> =
+        serde_json::from_str(include_str!("program-runtime-surface/globals.json"))
+            .expect("parse the Program Runtime Surface globals");
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
+        .expect("start compiler")
+        .compile(
+            compilation_deadline(),
+            include_str!("program-runtime-surface/globals-probe.ts"),
+        )
+        .expect("compile the globals probe");
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, Arc::new(RejectingToolHost))
+        .expect("execute the globals probe");
+    let actual: Vec<String> = serde_json::from_str(
+        output
+            .final_value_json()
+            .expect("the probe returns the global names"),
+    )
+    .expect("parse the probe's global names");
+
+    let extra: Vec<&String> = actual
+        .iter()
+        .filter(|name| !expected.contains(name))
+        .collect();
+    let missing: Vec<&String> = expected
+        .iter()
+        .filter(|name| !actual.contains(name))
+        .collect();
+    assert!(
+        extra.is_empty() && missing.is_empty(),
+        "the Program Runtime Surface changed, so the protocol level must rise; \
+         update program-runtime-surface/globals.json. \
+         Extra globals: {extra:?}. Missing globals: {missing:?}."
+    );
+}
+
 #[test]
 fn runtime_also_disables_dynamic_code_for_previously_accepted_packages() {
     let source_map = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
