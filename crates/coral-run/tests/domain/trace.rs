@@ -196,7 +196,7 @@ async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
                 accepted.run_id(),
                 &crate::RunObservation::initial(std::time::Duration::ZERO)
                     .expect("observation")
-                    .by_acceptor(),
+                    .without_trace_link(),
             )
             .await
             .expect("observe the Run");

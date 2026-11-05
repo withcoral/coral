@@ -17,14 +17,16 @@ test('An MCP client on 2026-07-28 is handed the link, decides in Reef, and waits
         async () => {
           waiting = await runWaitingForApproval(page, target, accessToken, owner, '2026-07-28')
           const [action] = waiting.paused.required_actions
-          expect(action.run_status_url).toContain(`/runs/${waiting.paused.run_id}`)
+          expect(action.url).toContain(`/${waiting.approval}`)
+          expect(action.tool).toBe('coral.workspace.addProvider')
+          expect(action.provider).toEqual(expect.any(String))
           expect(await instances.holder(waiting.run)).toBe(owner)
         },
       )
-      await step('Approve the call on the Run Status Page', async () => {
-        await openReview(page, waiting.paused, 'addProvider')
-        await page.getByRole('button', { name: 'Approve', exact: true }).click()
-        await page.getByText('Approved', { exact: true }).waitFor()
+      await step('Approve the call on the Approvals Page', async () => {
+        const review = await openReview(page, waiting.paused, 'addProvider')
+        await review.getByRole('button', { name: 'Approve', exact: true }).click()
+        await review.getByText('Approved', { exact: true }).waitFor()
         expect((await api.activity.inspectApproval({ name: waiting.approval })).state).toBe(
           'approved',
         )

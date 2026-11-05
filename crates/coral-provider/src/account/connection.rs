@@ -450,24 +450,34 @@ pub(super) async fn satisfy_pending(
     Ok(())
 }
 
-/// Reads only a pending request's deadline for the invoking User's Run snapshot,
-/// as recorded: a request past its deadline stays pending until a holder
-/// records its expiry. The Run owner supplies its exact attached request
-/// after checking Run visibility. This facet neither resolves the request
-/// nor grants inspection/decision authority.
+/// A request while it is recorded `pending`: the Provider it connects, whose
+/// account page is where the User connects, and its deadline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingConnection {
+    /// Exact Provider; route changes never retarget it.
+    pub provider_id: ProviderId,
+    /// Independent host deadline in Unix nanoseconds.
+    pub expires_at_unix_nanos: i64,
+}
+
+/// Reads only a pending request's Provider and deadline for the invoking
+/// User's Run snapshot, as recorded: a request past its deadline stays
+/// pending until a holder records its expiry. The Run owner supplies its
+/// exact attached request after checking Run visibility. This facet neither
+/// resolves the request nor grants inspection/decision authority.
 /// # Errors
 /// Returns persistence or invalid canonical Principal failures.
-pub async fn pending_connection_deadline_in_transaction(
+pub async fn pending_connection_in_transaction(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     principal: &Principal,
     request: ConnectionRequestId,
-) -> Result<Option<i64>, Error> {
+) -> Result<Option<PendingConnection>, Error> {
     if principal.kind() != PrincipalKind::User {
         return Ok(None);
     }
     let user = UserId::parse(principal.id().as_str())?;
-    repository::pending_connection_deadline(tx, workspace, &user, request).await
+    repository::pending_connection_by_id(tx, workspace, &user, request).await
 }
 
 /// Transaction result for Invocation-owned selection and durable waiter attachment.

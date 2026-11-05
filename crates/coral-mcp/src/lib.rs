@@ -3,6 +3,7 @@
 //! Coral issues no MCP session, so any Coral Instance serves any request, and
 //! client metadata never grants authority.
 
+mod app;
 mod arguments;
 mod authentication;
 mod http;

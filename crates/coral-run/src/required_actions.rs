@@ -149,8 +149,17 @@ pub struct RequiredAction {
     pub required_actor: RequiredActor,
     /// Request deadline in Unix nanoseconds.
     pub deadline_at_unix_nanos: i64,
-    /// Stable, non-secret root-relative Reef path. Adapters resolve the Reef origin.
-    pub run_status_path: String,
+    /// Stable, non-secret root-relative Reef path of the page where the person
+    /// decides this request: the Approval Request's own address, which opens
+    /// it in review, or the invoking User's account page for the Provider for
+    /// a connection request. Adapters resolve the Reef origin. Kept short: a
+    /// client shows it on one line.
+    pub action_path: String,
+    /// The waiting Tool's Call Path; absent when one shared connection request
+    /// spans Invocations of different Tools.
+    pub call_path: Option<String>,
+    /// The waiting Tool's Provider display label; absent once the Provider is removed.
+    pub provider_label: Option<String>,
 }
 
 /// Non-authorizing keyset position in one Run's current action summaries.
@@ -385,41 +394,90 @@ pub(crate) async fn snapshot(
     {
         return Ok(Vec::new());
     }
-    let path = format!("/workspaces/{}/runs/{}", run.workspace_id, run.id);
     let required_actor = match run.principal.kind() {
         PrincipalKind::User => RequiredActor::InvokingUser,
         PrincipalKind::Agent => RequiredActor::WorkspaceOwner,
     };
     let mut actions = Vec::new();
     for (id, deadline) in approval::pending_for_run(tx, run).await? {
+        let action_path = format!("/workspaces/{}/approvals/{id}", run.workspace_id);
         actions.push(RequiredAction {
             request: RequiredActionRequest::InvocationApproval(id),
             required_actor,
             deadline_at_unix_nanos: deadline,
-            run_status_path: path.clone(),
+            action_path,
+            call_path: None,
+            provider_label: None,
         });
     }
     if observer.kind() == PrincipalKind::User && observer == &run.principal {
         for id in crate::invocation_repository::connection_requests_for_run(tx, run).await? {
-            if let Some(deadline) =
-                coral_provider::account::pending_connection_deadline_in_transaction(
-                    tx,
-                    &run.workspace_id,
-                    observer,
-                    id,
-                )
-                .await?
+            if let Some(pending) = coral_provider::account::pending_connection_in_transaction(
+                tx,
+                &run.workspace_id,
+                observer,
+                id,
+            )
+            .await?
             {
+                // The User connects on their own account page for the Provider.
+                let action_path = format!(
+                    "/workspaces/{}/accounts/{}",
+                    run.workspace_id, pending.provider_id
+                );
                 actions.push(RequiredAction {
                     request: RequiredActionRequest::AccountConnection(id),
                     required_actor: RequiredActor::InvokingUser,
-                    deadline_at_unix_nanos: deadline,
-                    run_status_path: path.clone(),
+                    deadline_at_unix_nanos: pending.expires_at_unix_nanos,
+                    action_path,
+                    call_path: None,
+                    provider_label: None,
                 });
             }
         }
     }
+    name_waiting_tools(tx, run, now, &mut actions).await?;
     Ok(actions)
+}
+
+/// Names each action's waiting Tool and Provider from the Run's Invocation
+/// evidence, so the assistant can say what is asked without the arguments.
+async fn name_waiting_tools(
+    tx: &mut Transaction<'_>,
+    run: &RunRecord,
+    now: i64,
+    actions: &mut [RequiredAction],
+) -> Result<(), Error> {
+    if actions.is_empty() {
+        return Ok(());
+    }
+    let mut after = None;
+    loop {
+        let (evidence, _total, has_more) = crate::required_actions_repository::page(
+            tx,
+            &run.workspace_id,
+            &run.id,
+            after.as_ref(),
+            now,
+            100,
+        )
+        .await?;
+        let last = evidence.last().map(|row| ActionCursor(row.request.clone()));
+        for row in evidence {
+            if let Some(action) = actions
+                .iter_mut()
+                .find(|action| action.request == row.request)
+            {
+                let call_path = row.shared_call_path();
+                action.call_path = (!call_path.is_empty()).then(|| call_path.to_owned());
+                action.provider_label = row.provider_label;
+            }
+        }
+        if !has_more {
+            return Ok(());
+        }
+        after = last;
+    }
 }
 
 pub(crate) fn revision(actions: &[RequiredAction]) -> [u8; 32] {
@@ -439,6 +497,12 @@ pub(crate) fn revision(actions: &[RequiredAction]) -> [u8; 32] {
             RequiredActor::InvokingUser => 0,
             RequiredActor::WorkspaceOwner => 1,
         }]);
+        // What names the entry is part of it too: a renamed Provider wakes a wait.
+        for name in [&action.call_path, &action.provider_label] {
+            let name = name.as_deref().unwrap_or_default();
+            digest.update((name.len() as u64).to_be_bytes());
+            digest.update(name.as_bytes());
+        }
     }
     digest.finalize().into()
 }

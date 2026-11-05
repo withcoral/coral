@@ -7,10 +7,10 @@ use coral_workspace::{TraceId, WorkspaceId};
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
-    ServerConfig,
+    ProgressNotificationParam, ProgressToken, ProtocolVersion, ReadResourceRequestParams,
+    ReadResourceResponse, ServerCapabilities, ServerConfig,
 };
-use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
+use rmcp::service::{MaybeSendFuture, Peer, RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler};
 
 use crate::McpRuntime;
@@ -76,10 +76,11 @@ impl McpServer {
     async fn dispatch(
         &self,
         request: CallToolRequestParams,
+        progress: Option<Progress>,
     ) -> Result<CallToolResponse, DispatchError> {
         // Coral asks a client no in-band question, so no call is a retry that
         // answers one: a Run that waits on a person reports it in the Run
-        // Update, and the person decides on the Run Status Page.
+        // Update, and the person decides on the page its link opens.
         if request.request_state.is_some() || request.input_responses.is_some() {
             return Err(invalid_input_message(
                 "tool does not accept requestState or inputResponses".to_owned(),
@@ -101,7 +102,7 @@ impl McpServer {
             }
             WaitArguments::NAME => {
                 let arguments = arguments::parse::<WaitArguments>(request.arguments)?;
-                return self.wait(arguments).await;
+                return self.wait(arguments, progress).await;
             }
             CancelArguments::NAME => {
                 let arguments = arguments::parse::<CancelArguments>(request.arguments)?;
@@ -217,7 +218,7 @@ impl McpServer {
         // the Run Trace.
         let observation = RunObservation::initial(Duration::from_millis(wait_ms))
             .map_err(invalid_input)?
-            .by_acceptor();
+            .without_trace_link();
         self.observe_update(
             accepted.run_id(),
             &observation,
@@ -226,7 +227,11 @@ impl McpServer {
         .await
     }
 
-    async fn wait(&self, arguments: WaitArguments) -> Result<CallToolResponse, DispatchError> {
+    async fn wait(
+        &self,
+        arguments: WaitArguments,
+        progress: Option<Progress>,
+    ) -> Result<CallToolResponse, DispatchError> {
         let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
         let cursor = arguments
             .cursor
@@ -235,6 +240,21 @@ impl McpServer {
             .transpose()
             .map_err(invalid_input)?;
         let wait_ms = validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_WAIT_MS))?;
+        // A client that asked for progress shows the person what the Run
+        // waits for while this call holds, so the link reaches them even
+        // when the assistant writes nothing between its calls.
+        if let Some(progress) = progress.filter(|_| wait_ms > 0) {
+            // The observation below links this request to the Run Trace.
+            let peek = RunObservation::immediate(cursor.clone(), RUN_EVENT_PAGE_MAX)
+                .map_err(invalid_input)?
+                .without_trace_link();
+            let current = self.observe(&run_id, &peek).await?;
+            if let Some(message) =
+                projection::handoff_progress(&current, &self.runtime.modules.human_interface)
+            {
+                progress.report(message).await;
+            }
+        }
         let observation = RunObservation::immediate(cursor, RUN_EVENT_PAGE_MAX)
             .map_err(invalid_input)?
             .batching_output()
@@ -372,6 +392,7 @@ impl ServerHandler for McpServer {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
+                .enable_extensions_with(crate::app::extensions())
                 .build(),
         )
         .with_protocol_version(fallback_protocol_version())
@@ -410,7 +431,11 @@ impl ServerHandler for McpServer {
             &self.workspace_id,
             &self.runtime.principal,
         );
-        let dispatched = Box::pin(self.dispatch(request));
+        let progress = context.meta.get_progress_token().map(|token| Progress {
+            token,
+            peer: context.peer.clone(),
+        });
+        let dispatched = Box::pin(self.dispatch(request, progress));
         call.run(dispatched).await
     }
 
@@ -440,13 +465,16 @@ impl ServerHandler for McpServer {
 
     fn read_resource(
         &self,
-        _request: ReadResourceRequestParams,
+        request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + MaybeSendFuture + '_ {
-        std::future::ready(Err(ErrorData::resource_not_found(
-            "Resource not found",
-            None,
-        )))
+        // The app that shows a Run's Required Action is the one readable
+        // resource; an embedded output block's URI stays unreadable.
+        std::future::ready(if request.uri == crate::app::RESOURCE_URI {
+            Ok(crate::app::resource().into())
+        } else {
+            Err(ErrorData::resource_not_found("Resource not found", None))
+        })
     }
 
     fn list_resource_templates(
@@ -636,6 +664,26 @@ fn workspace_tool_failure(error: coral_workspace::Error) -> ToolFailure {
 enum ExecTarget {
     Task(coral_task::AttributedCommand),
     Goal(coral_task::NewTaskCommand),
+}
+
+/// The progress the client asked for with this request, if it sent a token.
+struct Progress {
+    token: ProgressToken,
+    peer: Peer<RoleServer>,
+}
+
+impl Progress {
+    /// Sends one progress message on this call's own response stream. A
+    /// client that cannot take it loses nothing the Run Update does not carry.
+    async fn report(self, message: String) {
+        let sent = self
+            .peer
+            .notify_progress(ProgressNotificationParam::new(self.token, 1.0).with_message(message))
+            .await;
+        if sent.is_err() {
+            tracing::debug!("progress notification not delivered");
+        }
+    }
 }
 
 enum DispatchError {

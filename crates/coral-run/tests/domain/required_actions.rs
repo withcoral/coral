@@ -820,7 +820,119 @@ async fn the_queue_counts_each_shared_request_once_across_waiters_runs_and_pages
     );
 }
 
-/// Each action names its exact request, the invoking User and the Run page,
+/// A wait returns when what names an entry changes, as a renamed Provider
+/// does, though the request itself stays the same.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wait_returns_when_the_waiting_tools_provider_is_renamed() {
+    let fixture = TestModules::new(Arc::new(
+        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
+    ))
+    .await;
+    let tool = fixture
+        .user_tool("user:renamed-provider", "Rename while waiting")
+        .await;
+    fixture.require_approval(&tool).await;
+    let (user, scope) = (&tool.principal, &tool.workspace_id);
+    let runs = fixture.runs.clone();
+    let accepted = runs
+        .start(user, scope, submission(WAIT_FOR_ACCOUNT))
+        .await
+        .unwrap();
+    let waiting = wait_for_actions(&runs, user, scope, accepted.run_id(), 1, 1).await;
+    let [before] = waiting.required_actions() else {
+        panic!("one action: {waiting:?}")
+    };
+    let before = before.clone();
+    let observation = RunObservation::immediate(Some(waiting.next_cursor().clone()), 1)
+        .unwrap()
+        .with_wait(Duration::from_secs(20))
+        .unwrap();
+    let wait = tokio::spawn({
+        let (runs, user, scope, run) = (
+            runs.clone(),
+            user.clone(),
+            scope.clone(),
+            accepted.run_id().clone(),
+        );
+        async move { runs.observe(&user, &scope, &run, &observation).await }
+    });
+    let _renamed = fixture
+        .providers
+        .rename_provider(
+            &change(tool.user.clone(), 50, '5'),
+            scope,
+            &tool.provider_id,
+            coral_provider::ProviderDisplayName::parse("Forecasts").unwrap(),
+        )
+        .await
+        .unwrap();
+    let woken = tokio::time::timeout(Duration::from_secs(10), wait)
+        .await
+        .expect("the rename ends the wait before its 20 s")
+        .unwrap()
+        .unwrap();
+    let [after] = woken.required_actions() else {
+        panic!("one action: {woken:?}")
+    };
+    assert_eq!(after.request, before.request, "the same request waits");
+    assert_eq!(after.provider_label.as_deref(), Some("Forecasts"));
+}
+
+/// One connection request that calls to different Tools wait on names no
+/// Tool, but still names its Provider.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connection_request_shared_by_different_tools_names_no_tool() {
+    let fixture = TestModules::new(Arc::new(
+        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
+    ))
+    .await;
+    let tool = fixture
+        .user_tool("user:mixed-tools", "Calls to two Tools")
+        .await;
+    let (_directory, accounts) = configure_user_caller_paths(
+        &fixture,
+        &tool,
+        "https://upstream.example",
+        serde_json::json!({
+            "/forecast": {"get": {"operationId": "getForecast", "responses": {"200": {"description": "Forecast"}}}},
+            "/alerts": {"get": {"operationId": "getAlerts", "responses": {"200": {"description": "Alerts"}}}}
+        }),
+    )
+    .await;
+    let runs = fixture.runs.clone().with_accounts(accounts);
+    let (user, scope) = (&tool.principal, &tool.workspace_id);
+    let accepted = runs
+        .start(user, scope, submission(
+            "await Promise.all([coral.providers.weather.getForecast({}), coral.providers.weather.getAlerts({})]);",
+        ))
+        .await
+        .unwrap();
+    wait_for_actions(&runs, user, scope, accepted.run_id(), 1, 2).await;
+    // The second call joins the request after it starts, so read until both wait on it.
+    let action = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let update = runs
+                .observe(user, scope, accepted.run_id(), &immediate(None, 1))
+                .await
+                .unwrap();
+            if let [action] = update.required_actions()
+                && action.call_path.is_none()
+            {
+                return action.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the shared request names no Tool once both calls wait on it");
+    assert!(matches!(
+        action.request,
+        crate::RequiredActionRequest::AccountConnection(_)
+    ));
+    assert_eq!(action.provider_label.as_deref(), Some("Private weather"));
+}
+
+/// Each action names its exact request, the invoking User and its own page,
 /// and is the same on every Event page. Waiting adds no Run Events.
 #[tokio::test(flavor = "multi_thread")]
 async fn required_actions_name_their_request_and_ignore_event_paging() {
@@ -847,11 +959,34 @@ async fn required_actions_name_their_request_and_ignore_event_paging() {
         connection_action.deadline_at_unix_nanos,
         mixed.request.expires_at_unix_nanos
     );
+    assert_eq!(
+        connection_action.call_path.as_deref(),
+        Some("coral.providers.weather.getForecast"),
+        "a shared connection request of one Tool names it"
+    );
     for action in waiting.required_actions() {
         assert_eq!(action.required_actor, crate::RequiredActor::InvokingUser);
+        let (path, tool, provider) = match &action.request {
+            crate::RequiredActionRequest::InvocationApproval(id) => (
+                format!("/workspaces/{scope}/approvals/{id}"),
+                "coral.providers.public.getForecast",
+                "Public weather",
+            ),
+            crate::RequiredActionRequest::AccountConnection(_) => (
+                format!("/workspaces/{scope}/accounts/{}", mixed.request.provider_id),
+                "coral.providers.weather.getForecast",
+                "Private weather",
+            ),
+        };
         assert_eq!(
-            action.run_status_path,
-            format!("/workspaces/{scope}/runs/{}", mixed.run)
+            action.action_path, path,
+            "an approval links its review, a connection the account page"
+        );
+        assert_eq!(action.call_path.as_deref(), Some(tool), "{action:?}");
+        assert_eq!(
+            action.provider_label.as_deref(),
+            Some(provider),
+            "{action:?}"
         );
     }
     let replay = runs

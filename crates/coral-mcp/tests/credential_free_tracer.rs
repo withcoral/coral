@@ -630,11 +630,58 @@ async fn requests_are_bound_to_host_credential_workspace_and_protocol_window() {
     assert_eq!(structured(&concealed)["code"], "task_not_found");
 }
 
+/// `exec` and `wait` link the MCP App that shows a Run's Required Action, no
+/// other tool does, and the app is the one readable resource.
+async fn the_app_is_linked_and_readable(session: &RawSession, version: &ProtocolVersion) {
+    const APP: &str = "ui://coral/required-actions";
+    let tools = session
+        .result("tools/list", json!({}))
+        .await
+        .expect("tools/list");
+    let tools = tools.get("tools").and_then(Value::as_array).expect("tools");
+    assert!(!tools.is_empty(), "{version}");
+    for tool in tools {
+        let name = tool.get("name").and_then(Value::as_str).expect("tool name");
+        let linked = tool.pointer("/_meta/ui/resourceUri");
+        if name == "exec" || name == "wait" {
+            assert_eq!(linked, Some(&json!(APP)), "{version}: {name} shows the app");
+        } else {
+            assert_eq!(linked, None, "{version}: {name} shows no app");
+        }
+    }
+    let app = session
+        .result("resources/read", json!({"uri": APP}))
+        .await
+        .expect("the app is readable");
+    let content = app.pointer("/contents/0").expect("one content");
+    assert_eq!(content.get("uri"), Some(&json!(APP)), "{version}");
+    assert_eq!(
+        content.get("mimeType"),
+        Some(&json!("text/html;profile=mcp-app")),
+        "{version}"
+    );
+    let html = content
+        .get("text")
+        .and_then(Value::as_str)
+        .expect("the app's HTML");
+    assert!(
+        html.starts_with("<!DOCTYPE html>") && html.contains("ui/open-link"),
+        "{version}: the app opens the entry's link through the host"
+    );
+    assert_eq!(
+        content.pointer("/_meta/ui/prefersBorder"),
+        Some(&json!(false)),
+        "{version}"
+    );
+}
+
 /// Clients add server instructions to the model's context, so they carry the
 /// agent workflow. Embedded output blocks declare the resources capability,
-/// but their URIs are never listed or readable.
+/// but their URIs are never listed or readable; the one readable resource is
+/// the MCP App that shows a Run's Required Action, which `exec` and `wait`
+/// link and the server declares as an extension.
 #[tokio::test(flavor = "multi_thread")]
-async fn handshakes_carry_instructions_and_no_readable_resources_on_every_version() {
+async fn handshakes_carry_instructions_and_only_the_app_is_readable_on_every_version() {
     let tracer = Tracer::start().await;
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = RawSession::open(&tracer.endpoint(), version).await;
@@ -646,13 +693,13 @@ async fn handshakes_carry_instructions_and_no_readable_resources_on_every_versio
         for expected in [
             "`wait`",
             "`next_cursor`",
-            "`run_status_url`",
+            "`url`",
             "complete literal Call Path",
             "`fetch`",
             "`setTimeout`",
             "`coral.ToolError`",
             "`coral.workspace.search`",
-            "`required_actor`",
+            "`invoking_user`",
         ] {
             assert!(
                 instructions.contains(expected),
@@ -666,6 +713,12 @@ async fn handshakes_carry_instructions_and_no_readable_resources_on_every_versio
         assert!(capabilities.get("tools").is_some(), "{version}");
         assert!(capabilities.get("resources").is_some(), "{version}");
         assert!(capabilities.get("tasks").is_none(), "{version}");
+        assert_eq!(
+            capabilities.pointer("/extensions/io.modelcontextprotocol~1ui"),
+            Some(&json!({"mimeTypes": ["text/html;profile=mcp-app"]})),
+            "{version}: the server declares MCP Apps"
+        );
+        the_app_is_linked_and_readable(&session, version).await;
         let listed = session
             .result("resources/list", json!({}))
             .await
@@ -1959,15 +2012,24 @@ async fn check_raw_human_action(endpoint: &str, task: &str, version: &ProtocolVe
         .next()
         .expect("Workspace identity");
     assert_eq!(
-        update.pointer("/required_actions/0/run_status_url"),
+        update.pointer("/required_actions/0/url"),
         Some(&json!(format!(
-            "https://reef.example.test/workspaces/{workspace}/runs/{}",
-            update["run_id"].as_str().expect("Run identity")
+            "https://reef.example.test/workspaces/{workspace}/approvals/{}",
+            update
+                .pointer("/required_actions/0/request_id")
+                .and_then(Value::as_str)
+                .expect("request identity")
         )))
     );
+    let action = actions.first().expect("approval action");
+    assert_eq!(action["kind"], "invocation_approval");
     assert_eq!(
-        actions.first().expect("approval action")["kind"],
-        "invocation_approval"
+        action["tool"], "coral.providers.weather.getForecast",
+        "the entry names the waiting Tool"
+    );
+    assert!(
+        action["provider"].is_string(),
+        "the entry names the Tool's Provider: {action}"
     );
     let observed = session
         .tool(
@@ -2391,6 +2453,7 @@ fn result_definition(method: &str) -> &'static str {
         "tools/list" => "ListToolsResult",
         "tools/call" => "CallToolResult",
         "resources/list" => "ListResourcesResult",
+        "resources/read" => "ReadResourceResult",
         "resources/templates/list" => "ListResourceTemplatesResult",
         other => panic!("no schema definition mapped for {other}"),
     }
@@ -2571,14 +2634,19 @@ impl RawSession {
                 request = request.header("mcp-name", name);
             }
             if id.is_some() {
-                params.as_object_mut().expect("params object").insert(
-                    "_meta".to_owned(),
-                    json!({
-                        "io.modelcontextprotocol/protocolVersion": self.protocol_version,
-                        "io.modelcontextprotocol/clientInfo": {"name":"raw-test", "version":"1"},
-                        "io.modelcontextprotocol/clientCapabilities": self.client_capabilities,
-                    }),
-                );
+                let meta = params
+                    .as_object_mut()
+                    .expect("params object")
+                    .entry("_meta")
+                    .or_insert_with(|| json!({}));
+                let fields = json!({
+                    "io.modelcontextprotocol/protocolVersion": self.protocol_version,
+                    "io.modelcontextprotocol/clientInfo": {"name":"raw-test", "version":"1"},
+                    "io.modelcontextprotocol/clientCapabilities": self.client_capabilities,
+                });
+                meta.as_object_mut()
+                    .expect("_meta object")
+                    .extend(fields.as_object().expect("meta fields").clone());
             }
         }
         let message = match id {
@@ -2691,6 +2759,19 @@ impl RawSession {
         parse_message(request.send().await.expect("raw request")).await
     }
 
+    /// Every JSON-RPC message one `tools/call` streams back, in order: the
+    /// notifications the call sends while it runs, then its answer.
+    async fn tool_messages(&self, params: Value) -> Vec<Value> {
+        let response = self
+            .request("tools/call", params, Some(2))
+            .send()
+            .await
+            .expect("raw request");
+        let status = response.status();
+        let text = response.text().await.expect("response body");
+        parse_messages(status, &text)
+    }
+
     /// Like [`Self::tool`], but `None` for a transient server failure (a 5xx
     /// status or an empty body) so a polling caller can try again.
     async fn try_tool(&self, tool: &str, arguments: Value) -> Option<Value> {
@@ -2756,17 +2837,37 @@ async fn parse_message(response: reqwest::Response) -> Value {
     parse_text(status, &text)
 }
 
+/// The one answer in a JSON body or an SSE stream: the message that carries
+/// the request's `id`, after any notification the call streamed first.
 fn parse_text(status: reqwest::StatusCode, text: &str) -> Value {
-    serde_json::from_str(text)
-        .or_else(|_error| {
-            serde_json::from_str(
-                text.lines()
-                    .filter_map(|line| line.strip_prefix("data: "))
-                    .find(|data| !data.is_empty())
-                    .unwrap_or_else(|| panic!("SSE response; got {status} with body {text:?}")),
-            )
+    let messages = parse_messages(status, text);
+    messages
+        .iter()
+        .find(|message| message.get("id").is_some())
+        .cloned()
+        .unwrap_or_else(|| panic!("an answer; got {status} with messages {messages:?}"))
+}
+
+/// Every JSON-RPC message in a JSON body or an SSE stream, in order.
+fn parse_messages(status: reqwest::StatusCode, text: &str) -> Vec<Value> {
+    if let Ok(message) = serde_json::from_str::<Value>(text) {
+        return vec![message];
+    }
+    let messages = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| !data.is_empty())
+        .map(|data| {
+            serde_json::from_str(data).unwrap_or_else(|error| {
+                panic!("JSON message ({error}); got {status} with body {text:?}")
+            })
         })
-        .unwrap_or_else(|error| panic!("JSON response ({error}); got {status} with body {text:?}"))
+        .collect::<Vec<Value>>();
+    assert!(
+        !messages.is_empty(),
+        "SSE response; got {status} with body {text:?}"
+    );
+    messages
 }
 
 async fn initial_wait_surfaces_approval_promptly(
@@ -2796,10 +2897,10 @@ async fn initial_wait_surfaces_approval_promptly(
     assert_eq!(action["kind"], "invocation_approval");
     assert_eq!(action["required_actor"], "invoking_user");
     assert_eq!(
-        action["run_status_url"],
+        action["url"],
         format!(
-            "https://reef.example.test/workspaces/{workspace}/runs/{}",
-            update["run_id"].as_str().expect("Run identity")
+            "https://reef.example.test/workspaces/{workspace}/approvals/{}",
+            action["request_id"].as_str().expect("request identity")
         )
     );
     assert!(action.get("arguments").is_none());

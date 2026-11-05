@@ -5,10 +5,11 @@ import { managementClients } from '../../../../support/management.ts'
 import { openApiDocument } from '../../../../support/provider-fixtures.ts'
 import {
   observeRun,
+  openReview,
   programRunner,
   publishWorkspaceProvider,
-  type RunUpdate,
   setToolPolicy,
+  type RunUpdate,
 } from '../../../../support/providers.ts'
 
 /** Waits until the provider page shows `name` with `state` chosen. */
@@ -53,15 +54,9 @@ test("An owner's Program changes an added provider's policy once the owner appro
       ])
     })
     await step('Approve the call, and the Program gets each new state', async () => {
-      await page.goto(paused.required_actions[0].run_status_url)
-      await page
-        .getByRole('link', { name: 'Review coral.workspace.updatePolicy', exact: true })
-        .click()
-      await page
-        .getByRole('region', { name: 'Review coral.workspace.updatePolicy', exact: true })
-        .getByRole('button', { name: 'Approve', exact: true })
-        .click()
-      await page.getByText('Approved', { exact: true }).waitFor()
+      const review = await openReview(page, paused, 'updatePolicy')
+      await review.getByRole('button', { name: 'Approve', exact: true }).click()
+      await review.getByText('Approved', { exact: true }).waitFor()
       const { update } = await observeRun(runner, await runner.wait(paused))
       expect(update.final_value).toEqual({
         kind: 'value',

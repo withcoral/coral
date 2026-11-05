@@ -570,9 +570,9 @@ at its deadline, it settles the Invocation with `approval_expired`; decided befo
 Run's stream dispatches the Invocation; declining settles it with `approval_declined`. The first durable terminal decision
 wins. A later decision returns that result without changing it. If policy becomes `disabled`, Coral settles the
 Invocation with `tool_disabled`; if it becomes `enabled`, Coral closes the Request and continues after its other
-checks. A later Invocation can create a new request. The person the Request names decides it on the Run Status Page:
-the invoking User for a Run a User invoked, which the assistant's link opens, or a Workspace Owner for a Run an Agent
-invoked; Reef remains available for every Request. An active browser is not required, and existing Requests
+checks. A later Invocation can create a new request. The person the Request names decides it on the Approvals Page:
+the invoking User for a Run a User invoked, which the assistant's link opens with the Request in review, or a Workspace
+Owner for a Run an Agent invoked; Reef remains available for every Request. An active browser is not required, and existing Requests
 survive a temporary Reef outage. _Avoid_: per-Invocation approval URL, Program pause payload
 
 **Approvals Page**: The Workspace page in Reef where a person decides the Approval Requests waiting on them and reads
@@ -813,7 +813,7 @@ carries an Upstream Outcome. _Avoid_: Program request, connection-scoped executi
 and joined by hyphens, such as `height-word-database-library`. Coral draws the words at random, inserts the Run with
 them as its primary key, and draws again when the name is already in use, so no two Runs in one deployment share one. A
 Run accepted before Coral issued words keeps its UUID text. The identifier names the Run in MCP, in gRPC resource
-names, in the Run Status Page URL and `run_status_url`, and in logs. It grants no authority: a Principal who guesses it
+names, in the Run Status Page URL, and in logs. It grants no authority: a Principal who guesses it
 sees nothing more than for a Run that does not exist. _Avoid_: run id, run key, run handle, run alias, short
 identifier, agent identifier
 
@@ -909,7 +909,9 @@ outcome appears on the final output page; `has_more` means authored records or t
 The required actions are a current snapshot, not a Run state or Program Run Events. Several can exist for
 concurrent Invocations. Each visible Request appears once, even if several Invocations wait on it. Required actions
 identify an account connection or Invocation approval, its required actor, deadline, opaque non-authorizing request
-identifier, and stable non-secret Run Status Page URL. An Account Connection Request appears only to its invoking User.
+identifier, the stable non-secret URL of the page where the person decides it (the Approvals Page with the Request in
+review, or the person's account page for the Provider for a connection request), the waiting Tool's Call Path (absent when one connection
+request is shared by Invocations of different Tools) and its Provider's display name. An Account Connection Request appears only to its invoking User.
 An Agent can see that its own Run requires a Workspace Owner action, but cannot inspect or resolve the request. A
 terminal Run has no required actions. The cursor identifies authored-record delivery progress and the last visible
 required-action revision; internal execution bookkeeping alone is not a meaningful update. Adapters may project a Run
