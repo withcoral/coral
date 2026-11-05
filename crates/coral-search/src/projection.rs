@@ -63,10 +63,8 @@ fn paths_result(lookup: &ExactLookup) -> PathsResult {
 }
 
 /// One Search Hit, cut to what the caller needs to choose and call it. The
-/// Call Path already names the kind and the Provider, the rank already
-/// reflects the evidence, and an exact lookup gives the rest. A flag appears
-/// only when set, a hint only when declared, and a match only where a query
-/// term matched.
+/// Call Path already names the kind and the Provider, and an exact lookup
+/// gives the rest. A flag appears only when set, a hint only when declared.
 fn hit(hit: &SearchHit) -> coral_catalog::SearchHit {
     let tool = hit.tool();
     coral_catalog::SearchHit {
@@ -74,9 +72,6 @@ fn hit(hit: &SearchHit) -> coral_catalog::SearchHit {
         signature_line: hit.signature_line().to_owned(),
         complete: hit.complete(),
         description_snippet: hit.description_snippet().to_owned(),
-        guidance_snippet: hit.guidance_snippet().map(str::to_owned),
-        matched_tags: hit.matched_tags().to_vec(),
-        matched_inputs: matched_inputs(hit).into_iter().map(str::to_owned).collect(),
         hints: tool
             .map(crate::ToolHit::hints)
             .filter(|hints| *hints != ToolHints::default())
@@ -85,30 +80,6 @@ fn hit(hit: &SearchHit) -> coral_catalog::SearchHit {
             .is_some_and(|tool| tool.approval_requirement() == ApprovalRequirement::Required),
         deprecated: tool.is_some_and(crate::ToolHit::deprecated),
     }
-}
-
-/// The top-level arguments a query term matched that the cut signature line
-/// does not show, in name order: a long argument can push the one the agent
-/// needs past the cut. Only the input counts, since the result can show a
-/// member of the same name.
-fn matched_inputs(hit: &SearchHit) -> Vec<&str> {
-    let line = hit.signature_input();
-    let mut names = hit
-        .evidence()
-        .paths()
-        .iter()
-        .filter_map(|path| path.strip_prefix("input."))
-        .filter_map(|rest| rest.split(['.', '[']).next())
-        .filter(|name| {
-            !["{ ", "; "].iter().any(|before| {
-                line.contains(&format!("{before}{name}:"))
-                    || line.contains(&format!("{before}{name}?:"))
-            })
-        })
-        .collect::<Vec<_>>();
-    names.sort_unstable();
-    names.dedup();
-    names
 }
 
 /// The status of a retriever whose results may be missing; `None` for one

@@ -6,12 +6,10 @@
 //! columns.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_functions::SavedFunctionSearchMaterial;
-use coral_telemetry::safe;
 
 use super::plan::QueryPlan;
 use super::repository;
@@ -19,12 +17,11 @@ use super::{
     Answer, EntityRef, EntityRetriever, Hydrated, Listing, QueryError, QueryRequest,
     RequestContext, SavedFunctionRef, WindowEntry, count,
 };
-use crate::evidence::{EvidenceBuilder, EvidenceTerms};
 use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
 use crate::{
     CallPath, EntityKind, Error, ExactAuthoringDescription, ProviderCallRoot, RetrieverCoverage,
-    SavedFunctionAuthoringDescription, SearchEvidence, SearchHit,
+    SavedFunctionAuthoringDescription, SearchHit,
 };
 
 /// Ranks, hydrates, and describes Saved Functions.
@@ -111,11 +108,9 @@ impl EntityRetriever for SavedFunctionRetriever {
         } else {
             repository::Ranking {
                 entities: Vec::new(),
-                near_spellings: Vec::new(),
             }
         };
         let has_more = ranked.entities.len() > request.window;
-        let near_spellings: Arc<[String]> = ranked.near_spellings.into();
         let mut window = Vec::new();
         for function in ranked.entities.into_iter().take(request.window) {
             // A function's delete leaves its row for a later write, so only
@@ -127,7 +122,6 @@ impl EntityRetriever for SavedFunctionRetriever {
                 entity: EntityRef::SavedFunction(SavedFunctionRef {
                     material: material.clone(),
                     call_path: function.call_path,
-                    near_spellings: Arc::clone(&near_spellings),
                 }),
                 strong: strong_function(&plan, &function.matched),
             });
@@ -172,49 +166,12 @@ impl EntityRetriever for SavedFunctionRetriever {
                 leaf: function.call_path.leaf(),
             },
             description: material.description().as_str(),
-            guidance: None,
-            tags: &[],
         };
-        let Some(terms) = context.terms else {
-            return Ok(Hydrated::Hit(Box::new(SearchHit::from_saved_function(
-                function.call_path.clone(),
-                hit_text(&hit_material, None),
-                SearchEvidence::default(),
-            ))));
-        };
-        let terms = EvidenceTerms::new(terms, &function.near_spellings);
-        let mut evidence = EvidenceBuilder::new(&terms);
-        evidence
-            .field("call_path", [function.call_path.as_str()])
-            .field("description", [hit_material.description]);
-        let declaration =
-            coral_functions::saved_function_declaration_search_material_in_transaction(
-                transaction,
-                context.workspace_id,
-                context.actor.principal(),
-                function.material.path(),
-            )
-            .await?;
-        for field in declaration
-            .as_ref()
-            .and_then(coral_functions::SavedFunctionDeclarationSearchMaterial::declaration_fields)
-            .unwrap_or_default()
-        {
-            evidence.path(field.path(), field.text());
-        }
-        let Some(matched) = evidence.build() else {
-            tracing::debug!(
-                coral.saved_function.call_path =
-                    safe::id(&super::RankedCallPath(&function.call_path)),
-                "a ranked Saved Function has no evidence and leaves the page"
-            );
-            return Ok(Hydrated::Dropped);
-        };
-        let text = hit_text(&hit_material, Some((&terms, &matched)));
+        // PROTOTYPE (#2864): no evidence, so a ranked Saved Function never
+        // leaves the page for lack of it.
         Ok(Hydrated::Hit(Box::new(SearchHit::from_saved_function(
             function.call_path.clone(),
-            text,
-            matched.evidence,
+            hit_text(&hit_material),
         ))))
     }
 
@@ -279,6 +236,5 @@ fn function_ref(material: SavedFunctionSearchMaterial) -> Result<EntityRef, Erro
     Ok(EntityRef::SavedFunction(SavedFunctionRef {
         call_path: CallPath::saved_function(material.path().as_str())?,
         material,
-        near_spellings: Arc::new([]),
     }))
 }

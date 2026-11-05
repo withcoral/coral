@@ -230,7 +230,6 @@ impl QueryPlan {
                         })
                         .map(spelling);
                     ScoredWord {
-                        word: stat.word.clone(),
                         spellings: std::iter::once(spelling(stat)).chain(near).collect(),
                     }
                 })
@@ -463,24 +462,8 @@ pub(super) struct ScoringPlan {
     pub(super) avgdl: f64,
 }
 
-impl ScoringPlan {
-    /// The catalog words that query words reach as near-spellings.
-    pub(super) fn near_spellings(&self) -> Vec<String> {
-        self.words
-            .iter()
-            .flat_map(|word| {
-                word.spellings
-                    .iter()
-                    .filter(|spelling| spelling.word != word.word)
-                    .map(|spelling| spelling.word.clone())
-            })
-            .collect()
-    }
-}
-
 /// One query word that scores, and the spellings it scores by.
 pub(super) struct ScoredWord {
-    pub(super) word: String,
     pub(super) spellings: Vec<Spelling>,
 }
 

@@ -339,10 +339,9 @@ pub struct SearchResult {
 }
 
 /// One Search Hit, cut to what the caller needs to choose and call it. The
-/// Call Path already names the kind and the Provider, the rank reflects the
-/// evidence, and an exact lookup gives the rest. A flag appears only when
-/// set, a hint only when declared, and a match only where a query term
-/// matched.
+/// Call Path already names the kind and the Provider, and an exact lookup
+/// gives the rest. A flag appears only when set, a hint only when declared.
+/// PROTOTYPE (#2864): no evidence of why the hit matched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(
     deny_unknown_fields,
@@ -374,28 +373,12 @@ pub struct SearchHit {
                        overload. What the line leaves out of the result does not count."
     )]
     pub complete: bool,
-    /// The description around the first matched term.
+    /// The start of the description.
     #[schemars(
-        description = "At most 512 UTF-8 bytes of the description, around the first \
-                       matched term; `…` marks cut text."
+        description = "At most 512 UTF-8 bytes of the description, from its start; `…` \
+                       marks cut text."
     )]
     pub description_snippet: String,
-    /// The guidance around a matched term.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(description = "Present only when a query term matched the guidance.")]
-    pub guidance_snippet: Option<String>,
-    /// The tags a query term matched.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(description = "The tags a query term matched; absent when none did.")]
-    pub matched_tags: Vec<String>,
-    /// The top-level arguments a query term matched that the signature
-    /// line does not show.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(
-        description = "The arguments a query term matched that the signature line does \
-                       not show; absent when there are none."
-    )]
-    pub matched_inputs: Vec<String>,
     /// The hints the Provider declared, when it declared any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "DeclaredHints", description = "")]
@@ -763,9 +746,6 @@ pub(super) mod tests {
                 .to_owned(),
             complete: true,
             description_snippet: "Get a repository.".to_owned(),
-            guidance_snippet: Some("Pass the owner.".to_owned()),
-            matched_tags: vec!["repos".to_owned()],
-            matched_inputs: vec!["repo".to_owned()],
             hints: Some(DeclaredHints {
                 read_only: Some(true),
                 destructive: None,
@@ -780,9 +760,6 @@ pub(super) mod tests {
             signature_line: "weekly(input: {}): Promise<string>".to_owned(),
             complete: false,
             description_snippet: "The weekly report.".to_owned(),
-            guidance_snippet: None,
-            matched_tags: Vec::new(),
-            matched_inputs: Vec::new(),
             hints: None,
             approval_required: false,
             deprecated: false,

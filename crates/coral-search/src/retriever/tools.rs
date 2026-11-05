@@ -14,7 +14,6 @@ use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_policy::ExactToolRules;
 use coral_provider::{ActiveProvider, ProviderId};
-use coral_telemetry::safe;
 
 use super::plan::QueryPlan;
 use super::repository;
@@ -23,12 +22,11 @@ use super::{
     RequestContext, RetrievalError, ToolRef, WindowEntry, count,
 };
 use crate::eligibility::tool_approval;
-use crate::evidence::{EvidenceBuilder, EvidenceTerms};
 use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
 use crate::{
     CallPath, EntityKind, Error, ExactAuthoringDescription, ProviderCallRoot, RetrieverCoverage,
-    SearchEvidence, SearchHit, ToolAuthoringDescription,
+    SearchHit, ToolAuthoringDescription,
 };
 
 /// Ranks, hydrates, and describes Tools.
@@ -85,7 +83,6 @@ impl EntityRetriever for ToolRetriever {
                     provider: Arc::clone(&provider),
                     tool_key: target.key().clone(),
                     rules: Arc::clone(&rules),
-                    near_spellings: Arc::new([]),
                 }));
             }
         }
@@ -155,7 +152,6 @@ impl EntityRetriever for ToolRetriever {
         let ranked = if searched.is_empty() {
             repository::Ranking {
                 entities: Vec::new(),
-                near_spellings: Vec::new(),
             }
         } else {
             let provider_ids = searched.keys().cloned().collect::<Vec<_>>();
@@ -179,7 +175,6 @@ impl EntityRetriever for ToolRetriever {
             .map_err(QueryError::Retriever)?
         };
         let has_more = ranked.entities.len() > request.window;
-        let near_spellings: Arc<[String]> = ranked.near_spellings.into();
         let mut window = Vec::new();
         for tool in ranked.entities.into_iter().take(request.window) {
             let provider = searched
@@ -194,7 +189,6 @@ impl EntityRetriever for ToolRetriever {
                     tool_key: tool.tool_key,
                     rules: Arc::clone(&rules),
                     call_path: tool.call_path,
-                    near_spellings: Arc::clone(&near_spellings),
                 }),
             });
         }
@@ -246,47 +240,12 @@ impl EntityRetriever for ToolRetriever {
                 leaf: description.call_path().leaf(),
             },
             description: description.description(),
-            guidance: description.guidance(),
-            tags: description.tags(),
         };
-        let Some(terms) = context.terms else {
-            return Ok(Hydrated::Hit(Box::new(SearchHit::from_tool(
-                &description,
-                hit_text(&material, None),
-                SearchEvidence::default(),
-            ))));
-        };
-        let terms = EvidenceTerms::new(terms, &tool.near_spellings);
-        let mut evidence = EvidenceBuilder::new(&terms);
-        evidence
-            .field("call_path", [description.call_path().as_str()])
-            .field(
-                "provider_namespace",
-                [description.provider_call_root().name()],
-            )
-            .field(
-                "provider_display_name",
-                [description.provider_display_name()],
-            )
-            .field("title", description.title())
-            .field("description", [description.description()])
-            .tags(description.tags().iter().map(String::as_str))
-            .field("guidance", description.guidance());
-        for field in hydrated.declaration_fields() {
-            evidence.path(field.path().as_str(), field.text());
-        }
-        let Some(matched) = evidence.build() else {
-            tracing::debug!(
-                coral.tool.call_path = safe::id(&super::RankedCallPath(description.call_path())),
-                "a ranked Tool has no evidence and leaves the page"
-            );
-            return Ok(Hydrated::Dropped);
-        };
-        let text = hit_text(&material, Some((&terms, &matched)));
+        // PROTOTYPE (#2864): no evidence, so a ranked Tool never leaves the
+        // page for lack of it.
         Ok(Hydrated::Hit(Box::new(SearchHit::from_tool(
             &description,
-            text,
-            matched.evidence,
+            hit_text(&material),
         ))))
     }
 

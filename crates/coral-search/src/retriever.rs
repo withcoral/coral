@@ -29,16 +29,14 @@ use crate::{
     SearchHit,
 };
 
-/// The request one retriever call serves: who asks, in which Workspace, the
-/// engine's normalized query terms, if any, and the Generations its hits
-/// have loaded.
+/// The request one retriever call serves: who asks, in which Workspace, and
+/// the Generations its hits have loaded.
 #[derive(Clone, Copy)]
 pub(crate) struct RequestContext<'a> {
     pub(crate) actor: &'a AuthenticatedPrincipal,
     /// The caller's Workspace authority, checked once for this request.
     pub(crate) authority: &'a PrincipalWorkspaceEvidence,
     pub(crate) workspace_id: &'a WorkspaceId,
-    pub(crate) terms: Option<&'a [String]>,
     pub(crate) loaded: &'a LoadedGenerations,
 }
 
@@ -52,37 +50,20 @@ pub(crate) enum EntityRef {
 
 /// A Tool of a Provider's active Generation, with what hydration needs:
 /// the Provider as the visibility step read it, the Tool Key, the
-/// Workspace's exact rules, loaded once per request, and the near-spellings
-/// its ranking matched.
+/// Workspace's exact rules, loaded once per request.
 #[derive(Clone)]
 pub(crate) struct ToolRef {
     provider: Arc<ActiveProvider>,
     tool_key: coral_catalog::ToolKey,
     rules: Arc<ExactToolRules>,
     call_path: CallPath,
-    near_spellings: Arc<[String]>,
 }
 
-/// A Saved Function of the requesting Principal, with the near-spellings its
-/// ranking matched.
+/// A Saved Function of the requesting Principal.
 #[derive(Clone)]
 pub(crate) struct SavedFunctionRef {
     material: SavedFunctionSearchMaterial,
     call_path: CallPath,
-    near_spellings: Arc<[String]>,
-}
-
-/// The Call Path of an entity a retriever ranked, as a span field.
-pub(crate) struct RankedCallPath<'a>(pub(crate) &'a CallPath);
-
-/// The search index holds only the Tools and Saved Functions Coral serves,
-/// so a ranked entity's Call Path names one of them.
-impl coral_telemetry::safe::Identifier for RankedCallPath<'_> {}
-
-impl std::fmt::Display for RankedCallPath<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.0.as_str())
-    }
 }
 
 impl EntityRef {

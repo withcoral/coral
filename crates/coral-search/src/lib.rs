@@ -52,7 +52,6 @@
 mod discovery;
 mod eligibility;
 mod error;
-mod evidence;
 mod hit;
 mod index;
 mod index_state;
@@ -92,12 +91,10 @@ pub use suggestion::SUGGESTIONS_MAX;
 pub use types::{
     ApprovalRequirement, AuthoringDescription, CallPath, EntityKind, ExactAuthoringDescription,
     ExactSavedFunctionDetail, ProviderCallRoot, ProviderId, RetrieverCoverage, RetrieverState,
-    RetrieverStatus, SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX,
-    SEARCH_EVIDENCE_PATH_MAX_BYTES, SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES,
-    SEARCH_QUERY_MAX_BYTES, SEARCH_RESULT_LIMIT_MAX, SavedFunctionAuthoringDescription,
-    SearchEvidence, SearchHit, SearchIndexFailure, SearchIndexState, SearchInput, SearchLimit,
-    SearchPage, SearchQuery, SearchRequest, ToolAuthoringDescription, ToolHit,
-    provider_filter_value,
+    RetrieverStatus, SEARCH_DEFAULT_LIMIT, SEARCH_PAGE_MAX_BYTES, SEARCH_QUERY_MAX_BYTES,
+    SEARCH_RESULT_LIMIT_MAX, SavedFunctionAuthoringDescription, SearchHit, SearchIndexFailure,
+    SearchIndexState, SearchInput, SearchLimit, SearchPage, SearchQuery, SearchRequest,
+    ToolAuthoringDescription, ToolHit, provider_filter_value,
 };
 
 /// How many ranked Search Entities each retriever hands the engine. The
@@ -240,7 +237,6 @@ impl UniversalSearchModule {
             actor,
             authority: &authority,
             workspace_id,
-            terms: terms.as_deref(),
             loaded: &loaded,
         };
         let (ranked, statuses) = match &terms {
@@ -307,7 +303,6 @@ impl UniversalSearchModule {
                 actor,
                 authority: &authority,
                 workspace_id,
-                terms: None,
                 loaded: &LoadedGenerations::default(),
             },
         )
@@ -450,7 +445,6 @@ impl UniversalSearchModule {
             actor,
             authority: &authority,
             workspace_id,
-            terms: None,
             loaded: &loaded,
         };
         for written in paths.paths() {
@@ -555,7 +549,6 @@ impl UniversalSearchModule {
             actor,
             authority: &authority,
             workspace_id,
-            terms: None,
             loaded: &loaded,
         };
         let descriptions =
@@ -578,7 +571,6 @@ impl UniversalSearchModule {
             actor,
             authority,
             workspace_id,
-            terms: None,
             loaded: &loaded,
         };
         for retriever in self.retrievers.iter() {
