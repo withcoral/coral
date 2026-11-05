@@ -181,7 +181,8 @@ impl Fixture {
             database.clone(),
             workspaces.clone(),
             providers.clone(),
-            coral_run::RuntimeLimits::default(),
+            coral_run::RuntimeLimits::default()
+                .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
             coral_run::CoralInstanceId::generate(),
             coral_run::RunInbox::table(database.clone()),
         )
@@ -191,6 +192,7 @@ impl Fixture {
             database.clone(),
             workspaces.clone(),
             coral_functions::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .unwrap();
         // Search notification tests drive the workflow at its owner.

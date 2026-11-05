@@ -1188,6 +1188,11 @@ client_secret = 'test-secret'
                 "runtime.applied_output_cap_bytes:",
             ),
             ("[runtime]\nfan_out = 4", "unknown field `fan_out`"),
+            // The compilation deadline is a fixed Program Authoring Limit.
+            (
+                "[runtime]\ncompilation_timeout_seconds = 30",
+                "unknown field `compilation_timeout_seconds`",
+            ),
         ] {
             let error = load(raw).1.runtime_limits().expect_err(raw);
             assert!(
@@ -1203,6 +1208,15 @@ client_secret = 'test-secret'
                 .fan_out_limit()
                 .invocations(),
             4
+        );
+        assert_eq!(
+            load("")
+                .1
+                .runtime_limits()
+                .expect("default limits")
+                .compilation_timeout(),
+            std::time::Duration::from_secs(2),
+            "production keeps the two-second compilation deadline"
         );
         for (raw, drain) in [
             ("", coral_run::ShutdownDrain::DEFAULT_DURATION),

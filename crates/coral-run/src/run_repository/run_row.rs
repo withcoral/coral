@@ -58,6 +58,7 @@ impl RunFailureCode {
             "invalid_program_value" => Ok(Self::InvalidProgramValue),
             "resource_limit_exceeded" => Ok(Self::ResourceLimitExceeded),
             "memory_limit_exceeded" => Ok(Self::MemoryLimitExceeded),
+            "cpu_limit_exceeded" => Ok(Self::CpuLimitExceeded),
             "program_execution_failed" => Ok(Self::ProgramExecutionFailed),
             "run_authority_lost" => Ok(Self::RunAuthorityLost),
             _ => Err(Error::CorruptData(format!(
@@ -74,6 +75,7 @@ impl RunTerminationKind {
             Self::TimedOut => "timed_out",
             Self::Interrupted => "interrupted",
             Self::MemoryLimitExceeded => "memory_limit_exceeded",
+            Self::CpuLimitExceeded => "cpu_limit_exceeded",
         }
     }
 
@@ -83,6 +85,7 @@ impl RunTerminationKind {
             "timed_out" => Ok(Self::TimedOut),
             "interrupted" => Ok(Self::Interrupted),
             "memory_limit_exceeded" => Ok(Self::MemoryLimitExceeded),
+            "cpu_limit_exceeded" => Ok(Self::CpuLimitExceeded),
             _ => Err(Error::CorruptData(format!(
                 "Run has unrecognized termination kind '{value}'"
             ))),
@@ -343,4 +346,65 @@ fn decode_terminal(
         RunState::Interrupted => RunTerminalOutcome::Interrupted,
     };
     Ok(Some(outcome))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RunFailureCode as C, RunTerminationKind as K};
+    use crate::RunState;
+
+    /// Catches: a code stored under one name and read back as another, or
+    /// a recorded termination that ends the Run in the wrong state.
+    #[test]
+    fn failure_codes_and_termination_kinds_round_trip_through_storage() {
+        for (code, stored) in [
+            (C::ProgramRejected, "program_rejected"),
+            (C::InvalidProgramValue, "invalid_program_value"),
+            (C::ResourceLimitExceeded, "resource_limit_exceeded"),
+            (C::MemoryLimitExceeded, "memory_limit_exceeded"),
+            (C::CpuLimitExceeded, "cpu_limit_exceeded"),
+            (C::ProgramExecutionFailed, "program_execution_failed"),
+            (C::RunAuthorityLost, "run_authority_lost"),
+        ] {
+            assert_eq!(code.as_storage_str(), stored);
+            assert_eq!(C::from_storage_str(stored).unwrap(), code);
+        }
+
+        for (kind, stored, state, failure) in [
+            (K::Canceled, "canceled", RunState::Canceled, None),
+            (
+                K::TimedOut,
+                "timed_out",
+                RunState::TimedOut,
+                Some("timed_out"),
+            ),
+            (
+                K::Interrupted,
+                "interrupted",
+                RunState::Interrupted,
+                Some("interrupted"),
+            ),
+            (
+                K::MemoryLimitExceeded,
+                "memory_limit_exceeded",
+                RunState::Failed,
+                Some("memory_limit_exceeded"),
+            ),
+            (
+                K::CpuLimitExceeded,
+                "cpu_limit_exceeded",
+                RunState::Failed,
+                Some("cpu_limit_exceeded"),
+            ),
+        ] {
+            assert_eq!(kind.as_storage_str(), stored);
+            assert_eq!(K::from_storage_str(stored).unwrap(), kind);
+            let outcome = kind.outcome();
+            assert_eq!(
+                (outcome.state(), outcome.failure_code()),
+                (state, failure),
+                "{stored}"
+            );
+        }
+    }
 }

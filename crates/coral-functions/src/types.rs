@@ -13,6 +13,10 @@ pub const SAVED_FUNCTION_PATH_MAX_BYTES: usize = 256;
 pub const SAVED_FUNCTION_PATH_MAX_SEGMENTS: usize = 16;
 /// Maximum UTF-8 byte length of one explicit Saved Function description.
 pub const SAVED_FUNCTION_DESCRIPTION_MAX_BYTES: usize = 4 * 1024;
+/// The deadline for one save or Run compilation, the Program Authoring Limit
+/// production composes. Each authoring Module receives its own value, so tests
+/// can relax it.
+pub const COMPILATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// Maximum UTF-8 byte length of one current Saved Function source.
 pub const SAVED_FUNCTION_SOURCE_MAX_BYTES: usize = 64 * 1024;
 /// Maximum UTF-8 byte length of one emitted Saved Function declaration.

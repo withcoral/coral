@@ -58,22 +58,31 @@ export async function newUser(
   return user
 }
 
+// Each sign-in redirect crosses Reef, Coral and the identity provider. On a
+// starved runner that chain takes longer than the session's 10 s navigation
+// default, so these navigations get their own budget. `goto` and the identity
+// provider's button need it too: each waits for the navigation it starts, and
+// that follows the HTTP redirects between Reef, Coral and the identity provider.
+const SIGN_IN_REDIRECT = { timeout: 30_000 }
+
 // No cookie signing, token minting, or auth-module imports: drive the normal
 // browser redirects. Reuse only genuine storage state after this flow succeeds.
 export async function signIn(page: Page, user: SyntheticUser, target = authenticatedTarget()) {
-  await page.goto(`${target.baseURL}/`)
+  await page.goto(`${target.baseURL}/`, SIGN_IN_REDIRECT)
   await page.waitForURL(
     (url) =>
       url.origin === target.authentication.oidcURL && url.pathname.startsWith('/interaction/'),
+    SIGN_IN_REDIRECT,
   )
   await page.getByRole('heading', { name: 'Synthetic identity provider', exact: true }).waitFor()
   // Subject is the stable identity; labels may repeat across scenarios.
-  await page.locator(`button[value="${user.subject}"]`).click()
+  await page.locator(`button[value="${user.subject}"]`).click(SIGN_IN_REDIRECT)
   // Home opens the first Workspace's Overview, or stays home when there is none.
   await page.waitForURL(
     (url) =>
       url.origin === target.baseURL &&
       (url.pathname === '/' || /^\/workspaces\/[^/]+$/.test(url.pathname)),
+    SIGN_IN_REDIRECT,
   )
   await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
 }

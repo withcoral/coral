@@ -400,6 +400,7 @@ fn failure_code(code: coral_run::RunFailureCode) -> i32 {
         C::InvalidProgramValue => W::InvalidProgramValue,
         C::ResourceLimitExceeded => W::ResourceLimitExceeded,
         C::MemoryLimitExceeded => W::MemoryLimitExceeded,
+        C::CpuLimitExceeded => W::CpuLimitExceeded,
         C::ProgramExecutionFailed => W::ProgramExecutionFailed,
         C::RunAuthorityLost => W::RunAuthorityLost,
     }
@@ -579,4 +580,34 @@ pub(super) async fn inspect_invocation(
             .map(|request| request_reference(&workspace, request))
             .collect(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{failure_code, wire};
+    use coral_run::RunFailureCode as C;
+
+    /// Catches: a failure code sent as another code's number, or as a number
+    /// a client cannot decode.
+    #[test]
+    fn every_failure_code_reaches_the_wire_under_its_own_name() {
+        for code in [
+            C::ProgramRejected,
+            C::InvalidProgramValue,
+            C::ResourceLimitExceeded,
+            C::MemoryLimitExceeded,
+            C::CpuLimitExceeded,
+            C::ProgramExecutionFailed,
+            C::RunAuthorityLost,
+        ] {
+            let decoded = wire::ActivityRunFailureCode::try_from(failure_code(code)).unwrap();
+            assert_eq!(
+                decoded.as_str_name(),
+                format!(
+                    "ACTIVITY_RUN_FAILURE_CODE_{}",
+                    code.code().to_ascii_uppercase()
+                )
+            );
+        }
+    }
 }

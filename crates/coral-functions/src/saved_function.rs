@@ -1,6 +1,6 @@
 use coral_telemetry::metric::CompilerRole;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use coral_db::{Database, Transaction};
 use coral_telemetry::safe;
@@ -8,12 +8,9 @@ use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, Principal, PrincipalId, PrincipalKind,
     PrincipalWorkspaceEvidence, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
-use tokio::time::{timeout, timeout_at};
+use tokio::time::timeout_at;
 
-use coral_v8::{
-    COMPILATION_TIMEOUT, CallableDeclaration, CompileFailure, CoralDeclarations,
-    SavedFunctionCallPaths,
-};
+use coral_v8::{CallableDeclaration, CompileFailure, CoralDeclarations, SavedFunctionCallPaths};
 
 use crate::repository;
 use crate::tool_typing::{self, ToolDeclarationReader};
@@ -159,10 +156,14 @@ pub struct SavedFunctionModule {
     inspection: SavedFunctionInspection,
     deletion: SavedFunctionDeletion,
     compiler: Arc<dyn SavedFunctionCompiler>,
+    /// The deadline for preparing one save, including typing and queueing.
+    compilation_timeout: Duration,
 }
 
 impl SavedFunctionModule {
     /// Builds the Module with a deployment-selected compiler heap budget.
+    /// `compilation_timeout` bounds each save's preparation; production passes
+    /// [`crate::COMPILATION_TIMEOUT`].
     ///
     /// # Errors
     ///
@@ -171,6 +172,7 @@ impl SavedFunctionModule {
         database: Arc<Database>,
         workspaces: WorkspaceModule,
         isolate_limits: coral_v8::IsolateLimits,
+        compilation_timeout: Duration,
     ) -> Result<Self, Error> {
         Ok(Self {
             inspection: SavedFunctionInspection::new(database.clone(), workspaces.clone()),
@@ -178,6 +180,7 @@ impl SavedFunctionModule {
             database,
             workspaces,
             compiler: Arc::new(V8SavedFunctionCompiler::new(isolate_limits)?),
+            compilation_timeout,
         })
     }
 
@@ -193,6 +196,7 @@ impl SavedFunctionModule {
             database,
             workspaces,
             compiler,
+            compilation_timeout: coral_test_support::TEST_COMPILATION_TIMEOUT,
         }
     }
 
@@ -604,7 +608,7 @@ impl SavedFunctionModule {
         tools: Option<&dyn ToolDeclarationReader>,
     ) -> Result<PreparedSavedFunction, Error> {
         let source_name = format!("Saved Function coral.functions.{}", path.as_str());
-        let deadline = Instant::now() + COMPILATION_TIMEOUT;
+        let deadline = Instant::now() + self.compilation_timeout;
         let preparation = async {
             let declarations = self
                 .declarations(actor, workspace_id, source, tools, deadline)
@@ -632,7 +636,7 @@ impl SavedFunctionModule {
                 }
             })
         };
-        timeout(COMPILATION_TIMEOUT, preparation)
+        timeout_at(deadline.into(), preparation)
             .await
             .map_err(|_elapsed| Error::SavedFunctionCompilationTimedOut)?
     }

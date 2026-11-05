@@ -10,16 +10,15 @@ use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
 use coral_telemetry::safe;
 use coral_v8::CompileFailure;
 use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
-use tokio::time::{timeout, timeout_at};
+use tokio::time::timeout_at;
 use uuid::Uuid;
 
 use crate::engine::{ProgramEngine, ProgramPackage, ProgramReferences, SavedFunctionReference};
 use crate::shutdown::Admitted;
 use crate::types::AcceptedRun;
 use crate::{
-    COMBINED_TYPESCRIPT_MAX_BYTES, COMPILATION_TIMEOUT, Error, LINKED_SAVED_FUNCTION_MAX_COUNT,
-    ProgramSource, RunCursor, RunId, RunModule, RunState, RunSubmission, RunTimeout, RunUpdate,
-    run_repository,
+    COMBINED_TYPESCRIPT_MAX_BYTES, Error, LINKED_SAVED_FUNCTION_MAX_COUNT, ProgramSource,
+    RunCursor, RunId, RunModule, RunState, RunSubmission, RunTimeout, RunUpdate, run_repository,
 };
 
 /// The most candidate Call Paths admission checks, as Saved Function typing
@@ -222,6 +221,7 @@ impl RunModule {
                 submission.source(),
                 &package,
                 &linked,
+                self.compilation_timeout,
             )
             .await?
             {
@@ -290,7 +290,12 @@ impl RunModule {
         use coral_telemetry::metric::{self, CompileOutcome};
         let compilation_started = Instant::now();
         let compiled = self
-            .compile_package(actor, workspace_id, submitted_source, compilation_started)
+            .compile_package(
+                actor,
+                workspace_id,
+                submitted_source,
+                compilation_started + self.compilation_timeout,
+            )
             .await;
         let outcome = match &compiled {
             Ok(_) => CompileOutcome::Ok,
@@ -313,18 +318,18 @@ impl RunModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         submitted_source: &ProgramSource,
-        compilation_started: Instant,
+        compilation_deadline: Instant,
     ) -> Result<(ProgramPackage, Vec<SavedFunctionSelection>), Error> {
         let source = submitted_source.as_str().to_string();
         let named = self
-            .analyze_program(source.clone(), compilation_started)
+            .analyze_program(source.clone(), compilation_deadline)
             .await?;
         if let Some(tools) = &named.tools {
-            self.check_tool_calls(actor, workspace_id, tools, compilation_started)
+            self.check_tool_calls(actor, workspace_id, tools, compilation_deadline)
                 .await?;
         }
         let linked = self
-            .read_source_closure(actor, workspace_id, named.functions, compilation_started)
+            .read_source_closure(actor, workspace_id, named.functions, compilation_deadline)
             .await?;
 
         validate_source_closure(
@@ -334,16 +339,9 @@ impl RunModule {
         let engine = self.engine.clone();
         let compile_linked = linked.clone();
         let compile = tokio::task::spawn_blocking(move || {
-            engine.compile_with_saved_functions(
-                compilation_started + COMPILATION_TIMEOUT,
-                &source,
-                &compile_linked,
-            )
+            engine.compile_with_saved_functions(compilation_deadline, &source, &compile_linked)
         });
-        let remaining_compilation_time = COMPILATION_TIMEOUT
-            .checked_sub(compilation_started.elapsed())
-            .ok_or(Error::CompilationTimedOut)?;
-        let package = match timeout(remaining_compilation_time, compile).await {
+        let package = match timeout_at(compilation_deadline.into(), compile).await {
             Err(_elapsed) => return Err(Error::CompilationTimedOut),
             Ok(Err(_join_error)) => return Err(Error::ProgramWorkerStopped),
             Ok(Ok(Err(failure))) => return Err(domain_error(failure)),
@@ -358,7 +356,7 @@ impl RunModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         roots: Vec<SavedFunctionReference>,
-        compilation_started: Instant,
+        compilation_deadline: Instant,
     ) -> Result<Vec<SavedFunctionSelection>, Error> {
         if roots.is_empty() {
             return Ok(Vec::new());
@@ -400,7 +398,7 @@ impl RunModule {
                 .analyze_saved_function_paths(
                     snapshot.source().as_str().to_string(),
                     path.clone(),
-                    compilation_started,
+                    compilation_deadline,
                 )
                 .await?;
             pending.extend(referenced.iter().cloned().map(|reference| {
@@ -426,9 +424,9 @@ impl RunModule {
     async fn analyze_program(
         &self,
         source: String,
-        compilation_started: Instant,
+        compilation_deadline: Instant,
     ) -> Result<ProgramReferences, Error> {
-        self.analyze(compilation_started, move |engine, deadline| {
+        self.analyze(compilation_deadline, move |engine, deadline| {
             engine.program_references(deadline, &source)
         })
         .await
@@ -452,13 +450,12 @@ impl RunModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         tools: &coral_v8::ToolReferences,
-        compilation_started: Instant,
+        compilation_deadline: Instant,
     ) -> Result<(), Error> {
         let candidates = tools.call_paths();
         if candidates.is_empty() || candidates.len() > TOOL_CHECK_MAX_PATHS {
             return Ok(());
         }
-        let compilation_deadline = compilation_started + COMPILATION_TIMEOUT;
         let now = Instant::now();
         let Some(deadline) = compilation_deadline
             .checked_sub(TOOL_CHECK_COMPILATION_RESERVE)
@@ -573,9 +570,9 @@ impl RunModule {
         &self,
         source: String,
         path: SavedFunctionPath,
-        compilation_started: Instant,
+        compilation_deadline: Instant,
     ) -> Result<Vec<SavedFunctionReference>, Error> {
-        self.analyze(compilation_started, move |engine, deadline| {
+        self.analyze(compilation_deadline, move |engine, deadline| {
             engine.saved_function_dependency_references(deadline, &path, &source)
         })
         .await
@@ -584,17 +581,13 @@ impl RunModule {
     /// Runs one analysis on a blocking worker within the admission deadline.
     async fn analyze<T: Send + 'static>(
         &self,
-        compilation_started: Instant,
+        compilation_deadline: Instant,
         analysis: impl FnOnce(&dyn ProgramEngine, Instant) -> Result<T, CompileFailure> + Send + 'static,
     ) -> Result<T, Error> {
         let engine = self.engine.clone();
-        let analyze = tokio::task::spawn_blocking(move || {
-            analysis(engine.as_ref(), compilation_started + COMPILATION_TIMEOUT)
-        });
-        let remaining_compilation_time = COMPILATION_TIMEOUT
-            .checked_sub(compilation_started.elapsed())
-            .ok_or(Error::CompilationTimedOut)?;
-        match timeout(remaining_compilation_time, analyze).await {
+        let analyze =
+            tokio::task::spawn_blocking(move || analysis(engine.as_ref(), compilation_deadline));
+        match timeout_at(compilation_deadline.into(), analyze).await {
             Err(_elapsed) => Err(Error::CompilationTimedOut),
             Ok(Err(_join_error)) => Err(Error::ProgramWorkerStopped),
             Ok(Ok(Err(failure))) => Err(domain_error(failure)),

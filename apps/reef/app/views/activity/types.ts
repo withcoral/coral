@@ -144,6 +144,7 @@ export type RunFailureCode =
   | 'invalid_program_value'
   | 'resource_limit_exceeded'
   | 'memory_limit_exceeded'
+  | 'cpu_limit_exceeded'
   | 'program_execution_failed'
   | 'run_authority_lost'
   | 'unknown'

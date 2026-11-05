@@ -27,6 +27,7 @@ async fn admission_rejects_a_saved_function_change_during_one_source_closure_rea
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Saved Function compiler");
     let (workspace_id, principal) = fixture
@@ -126,6 +127,7 @@ async fn type_only_saved_function_references_do_not_enter_the_runtime_closure() 
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Saved Function compiler");
     let runs = fixture.live_runs(None);
@@ -176,6 +178,7 @@ async fn program_calls_one_saved_function_repeatedly_after_top_level_initializat
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Saved Function compiler");
     let runs = fixture.live_runs(None);
@@ -238,6 +241,7 @@ async fn program_links_multiple_transitive_saved_functions_into_one_run() {
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Saved Function compiler");
     let runs = fixture.live_runs(None);
@@ -326,6 +330,7 @@ async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomica
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Saved Function compiler");
     let runs = &fixture.runs;
@@ -392,6 +397,7 @@ async fn transitive_source_closure_enforces_the_combined_typescript_limit_withou
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Saved Function compiler");
     let runs = fixture.live_runs(None);
@@ -461,6 +467,7 @@ async fn saved_function_initialization_uses_the_run_surface_once_before_the_prog
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Saved Function compiler");
     let tool = fixture
@@ -545,6 +552,7 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Saved Function compiler");
     let (workspace_id, principal) = fixture
@@ -701,6 +709,7 @@ async fn direct_repeated_calls_follow_a_unicode_saved_function_live_binding() {
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Saved Function compiler");
     let runs = fixture.live_runs(None);
@@ -750,6 +759,7 @@ async fn equivalent_callable_default_export_forms_execute() {
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Saved Function compiler");
     let runs = fixture.live_runs(None);

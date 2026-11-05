@@ -14,6 +14,7 @@ async fn upgrade_renames_the_tool_failures_runs_and_saved_functions_stored() {
         fixture.database.clone(),
         fixture.workspaces.clone(),
         crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Saved Function compiler");
     let runs = fixture.live_runs(None);
