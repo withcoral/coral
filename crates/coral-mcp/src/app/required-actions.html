@@ -72,6 +72,7 @@
         line-height: 20px;
         font-weight: 600;
         letter-spacing: -0.005em;
+        overflow-wrap: anywhere;
       }
       .meta {
         display: flex;
@@ -89,9 +90,9 @@
         margin-left: 6px;
         font-family: var(--font);
       }
+      /* A Call Path wraps only after a dot, so the separator stays on its last line. */
       code {
         font: 12px/16px var(--mono);
-        overflow-wrap: anywhere;
       }
       time {
         font-variant-numeric: tabular-nums;
@@ -279,9 +280,17 @@
         return `${date.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
       }
 
-      // The Call Path without the prefix that every Tool shares.
-      function shortTool(path) {
-        return path.replace(/^coral\.providers\./, "");
+      // The Call Path without the prefix that every Tool shares, with a
+      // break opportunity after each dot.
+      function toolPath(path) {
+        const code = element("code");
+        code.title = path;
+        const segments = path.replace(/^coral\.providers\./, "").split(".");
+        segments.forEach((segment, index) => {
+          if (index > 0) code.append(".", document.createElement("wbr"));
+          code.append(segment);
+        });
+        return code;
       }
 
       function render(result) {
@@ -313,9 +322,7 @@
           // Each card names the waiting Tool where one Tool waits.
           const meta = element("p", "meta");
           if (action.tool) {
-            const tool = element("code", "", shortTool(action.tool));
-            tool.title = action.tool;
-            meta.append(tool);
+            meta.append(toolPath(action.tool));
           }
           const by = clock(action.deadline_at);
           if (by) {
