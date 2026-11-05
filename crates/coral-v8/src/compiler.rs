@@ -1,5 +1,5 @@
 use coral_telemetry::metric::CompilerRole;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Instant;
 
@@ -46,9 +46,11 @@ const SAVED_FUNCTION_FILE_NAME: &str = "saved_function.ts";
 // Leave headroom above the measured ~130 MiB transient authoring working set.
 const COMPILER_RECYCLE_HEAP_BYTES: usize = 256 * 1024 * 1024;
 /// One job on the worker. It returns why it discarded the isolate, if it did,
-/// so the worker rebuilds it before taking the next job.
-type CompilerJob =
-    Box<dyn FnOnce(&mut Option<CompilerIsolate>) -> Option<CompilerBuildReason> + Send>;
+/// and the role of the request that did, so the worker rebuilds it before
+/// taking the next job.
+type CompilerJob = Box<
+    dyn FnOnce(&mut Option<CompilerIsolate>) -> Option<(CompilerRole, CompilerBuildReason)> + Send,
+>;
 
 /// A pinned official TypeScript compiler running on its own V8 thread.
 ///
@@ -58,12 +60,19 @@ type CompilerJob =
 /// only its own work. A request whose JavaScript ends abnormally, or that leaves
 /// the isolate overgrown, has the worker build a replacement after it answers,
 /// before the worker takes the next request. A request queued meanwhile waits
-/// for that build. A rejection leaves the isolate in place.
+/// for that build. A rejection leaves the isolate in place. Handles from
+/// [`Self::with_role`] share the thread and queue, which stop when the last
+/// handle drops.
 pub struct ProgramCompiler {
-    sender: mpsc::SyncSender<Option<CompilerJob>>,
-    worker: Option<thread::JoinHandle<()>>,
-    limits: IsolateLimits,
+    worker: Arc<CompilerWorker>,
     role: CompilerRole,
+}
+
+/// The compiler thread and its bounded queue.
+struct CompilerWorker {
+    sender: mpsc::SyncSender<Option<CompilerJob>>,
+    thread: Option<thread::JoinHandle<()>>,
+    limits: IsolateLimits,
 }
 
 impl ProgramCompiler {
@@ -89,6 +98,8 @@ impl ProgramCompiler {
             .name("coral-typescript-compiler".to_string())
             .spawn(move || {
                 let _dispatch = tracing::dispatcher::set_default(&dispatch);
+                #[cfg(feature = "test-support")]
+                let _counted = crate::testing::CountedThread::start();
                 let mut compiler = match CompilerIsolate::new(isolate_limits) {
                     Ok(compiler) => Some(compiler),
                     Err(error) => {
@@ -102,7 +113,7 @@ impl ProgramCompiler {
                 while let Ok(Some(job)) = receiver.recv() {
                     // The job has answered its caller. Rebuild here, so no
                     // request's deadline pays for it.
-                    if let Some(reason) = job(&mut compiler) {
+                    if let Some((role, reason)) = job(&mut compiler) {
                         compiler = match build_replacement(isolate_limits, role, reason) {
                             Ok(fresh) => Some(fresh),
                             Err(error) => {
@@ -120,9 +131,11 @@ impl ProgramCompiler {
 
         match startup_receiver.recv() {
             Ok(Ok(())) => Ok(Self {
-                sender,
-                worker: Some(worker),
-                limits: isolate_limits,
+                worker: Arc::new(CompilerWorker {
+                    sender,
+                    thread: Some(worker),
+                    limits: isolate_limits,
+                }),
                 role,
             }),
             Ok(Err(error)) => {
@@ -137,6 +150,16 @@ impl ProgramCompiler {
                 }
                 Err(Error::CompilerUnavailable)
             }
+        }
+    }
+
+    /// Another handle on this compiler's thread and queue, which measures its
+    /// requests as `role`.
+    #[must_use]
+    pub fn with_role(&self, role: CompilerRole) -> Self {
+        Self {
+            worker: Arc::clone(&self.worker),
+            role,
         }
     }
 
@@ -356,10 +379,11 @@ impl ProgramCompiler {
         let control = ProgramExecutionControl::new();
         let worker_control = control.clone();
         let (response_sender, response_receiver) = mpsc::sync_channel(1);
-        let limits = self.limits;
+        let limits = self.worker.limits;
         let role = self.role;
         let queued = metric::compiler_queued(role, operation);
-        self.sender
+        self.worker
+            .sender
             .try_send(Some(Box::new(move |compiler| {
                 let active_measurement = queued.dequeued();
                 let mut rebuild = None;
@@ -402,7 +426,7 @@ impl ProgramCompiler {
                 })();
                 active_measurement.finish(compiler_outcome(&result));
                 let _sent = response_sender.send(result);
-                rebuild
+                rebuild.map(|reason| (role, reason))
             })))
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => Error::CompilerBusy,
@@ -454,12 +478,12 @@ fn compiler_outcome<T>(result: &Result<T, Error>) -> CompilerOutcome {
     }
 }
 
-impl Drop for ProgramCompiler {
+impl Drop for CompilerWorker {
     fn drop(&mut self) {
         if self.sender.send(None).is_err() {
             // The worker has already stopped.
         }
-        if let Some(worker) = self.worker.take()
+        if let Some(worker) = self.thread.take()
             && worker.join().is_err()
         {
             // Drop cannot report a compiler-thread panic.
@@ -1001,6 +1025,7 @@ mod tests {
         // Leave the worker as a failed rebuild does: with no isolate.
         let (emptied, receiver) = mpsc::sync_channel(1);
         compiler
+            .worker
             .sender
             .send(Some(Box::new(
                 move |isolate: &mut Option<CompilerIsolate>| {
@@ -1081,6 +1106,7 @@ mod tests {
     fn next_isolate(compiler: &ProgramCompiler) -> NextIsolate {
         let (found, receiver) = mpsc::sync_channel(1);
         compiler
+            .worker
             .sender
             .send(Some(Box::new(
                 move |isolate: &mut Option<CompilerIsolate>| {
@@ -1107,7 +1133,17 @@ mod tests {
     #[test]
     fn only_a_faulted_isolate_is_replaced_and_before_the_next_job() {
         type Outcome = fn(&ProgramCompiler);
-        let cases: [(&str, Outcome, NextIsolate); 4] = [
+        fn terminate(compiler: &ProgramCompiler) {
+            assert!(matches!(
+                compiler.request(
+                    CompilerOperation::Program,
+                    Instant::now() + Duration::from_millis(200),
+                    |compiler| script(compiler, "while (true) {}"),
+                ),
+                Err(Error::CompilationTimedOut)
+            ));
+        }
+        let cases: [(&str, Outcome, NextIsolate, &str); 5] = [
             (
                 "rejected source",
                 |compiler| {
@@ -1117,6 +1153,7 @@ mod tests {
                     ));
                 },
                 NextIsolate::Kept,
+                "run",
             ),
             (
                 "thrown bridge error",
@@ -1135,6 +1172,7 @@ mod tests {
                     ));
                 },
                 NextIsolate::Fresh,
+                "run",
             ),
             (
                 "stack overflow",
@@ -1148,23 +1186,17 @@ mod tests {
                     ));
                 },
                 NextIsolate::Fresh,
+                "run",
             ),
+            ("termination", terminate, NextIsolate::Fresh, "run"),
             (
-                "termination",
-                |compiler| {
-                    assert!(matches!(
-                        compiler.request(
-                            CompilerOperation::Program,
-                            Instant::now() + Duration::from_millis(200),
-                            |compiler| script(compiler, "while (true) {}"),
-                        ),
-                        Err(Error::CompilationTimedOut)
-                    ));
-                },
+                "termination on a handle that shares the thread",
+                |compiler| terminate(&compiler.with_role(CompilerRole::Authoring)),
                 NextIsolate::Fresh,
+                "authoring",
             ),
         ];
-        for (name, outcome, expected) in cases {
+        for (name, outcome, expected, role) in cases {
             let metrics = coral_telemetry::testing::MetricCapture::default();
             let _measured = tracing::subscriber::set_default(metrics.subscriber());
             let compiler = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
@@ -1177,7 +1209,7 @@ mod tests {
                 .named("coral.compiler.isolate.build.duration")
                 .iter()
                 .filter(|point| {
-                    point.attributes.get("compiler.role").map(String::as_str) == Some("run")
+                    point.attributes.get("compiler.role").map(String::as_str) == Some(role)
                         && point.attributes.get("build.reason").map(String::as_str) == Some("fault")
                         && point.attributes.get("outcome").map(String::as_str) == Some("ok")
                 })
@@ -1321,8 +1353,9 @@ mod tests {
             .compile(deadline(), "return 42;")
             .expect("fresh compiler after failure");
         // Exercise the same stop protocol as Drop, then submit to the closed worker.
-        compiler.sender.send(None).unwrap();
-        compiler.worker.take().unwrap().join().unwrap();
+        let worker = Arc::get_mut(&mut compiler.worker).expect("one handle");
+        worker.sender.send(None).unwrap();
+        worker.thread.take().unwrap().join().unwrap();
         assert!(matches!(
             compiler.compile(deadline(), "return 42;"),
             Err(Error::CompilerUnavailable)

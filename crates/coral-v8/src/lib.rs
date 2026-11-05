@@ -22,6 +22,9 @@ mod profile;
 mod program_error;
 mod runtime;
 mod source_map;
+/// Test support: what a test reads about this process's compilers.
+#[cfg(feature = "test-support")]
+pub mod testing;
 mod v8_support;
 
 // `tests/execution_usage.rs` uses `tracing`; the unit tests do not.
