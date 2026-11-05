@@ -12,8 +12,8 @@ credentials and Saved Functions.
 
 An Organization Owner keeps a small governance surface over Workspaces they are not in: list them with their state and
 designated Owners, assign a designated Owner (themselves included), archive and restore, and grant a Secret Store to a
-Workspace (ADR 0032), which shows them nothing inside it. Assigning themselves is the explicit, recorded way in. Rejected: a separate IT admin or auditor role, which self-assignment makes unnecessary for
-now.
+Workspace (ADR 0032), which shows them nothing inside it. Assigning themselves is the explicit, recorded way in.
+Rejected: a separate IT admin or auditor role, which self-assignment makes unnecessary for now.
 
 ## Every Workspace keeps a designated Owner
 

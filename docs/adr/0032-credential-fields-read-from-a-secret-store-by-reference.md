@@ -35,8 +35,8 @@ account email. A reference always reads the latest version, so rotation in the s
 Changing a reference is explicit Account replacement: it gives the Account a new authorization version and stops pending
 work, because an Invocation Approval binds the exact authorization. Rotating a secret in the store is not, because Coral
 cannot see it. Rotation behaves like a routine token refresh under the same authorization, so an approved Invocation
-sends the value current at dispatch. That is a known limit: if the new value belongs to a different upstream account, the
-approval does not catch it.
+sends the value current at dispatch. That is a known limit: if the new value belongs to a different upstream account,
+the approval does not catch it.
 
 ## Static credentials only
 
