@@ -1,3 +1,4 @@
+import type { CallerCalls } from '@/lib/activity-summary'
 import type { SelectionKey } from './selection'
 import type { PolicyState } from '@/components/policy-toggle'
 import type { ActionResult, FormContext, WorkspaceView } from '@/views/management/types'
@@ -172,11 +173,20 @@ export interface ProviderSettingsPageProps {
   pending?: boolean
 }
 
+/** One tool's calls over the window. */
+export interface ToolUsage {
+  calls: number
+  /** The same calls in each day of the window, oldest first. The last day ends now. */
+  daily: readonly number[]
+  /** The same calls per caller, busiest first. */
+  callers: readonly CallerCalls[]
+}
+
 /** Your calls and your agents' calls to each tool over the last `days`. */
 export interface ToolCallCounts {
   days: number
-  /** Calls by provider and Tool Key. A tool with no entry has no calls. */
-  calls: Readonly<Record<SelectionKey, number>>
+  /** Usage by provider and Tool Key. A tool with no entry has no calls. */
+  tools: Readonly<Record<SelectionKey, ToolUsage>>
 }
 
 export interface WorkspaceProvidersPageProps {

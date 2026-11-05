@@ -6505,6 +6505,11 @@ pub struct ActivityToolCalls {
     /// as the catalog names it. The Tool may since have left the catalog.
     #[prost(string, tag = "4")]
     pub tool: ::prost::alloc::string::String,
+    /// The same calls in each day of the window, oldest first: one entry per day.
+    /// A day is 24 hours counted from the window's start, so the last one ends now.
+    /// They add up to calls.
+    #[prost(int64, repeated, tag = "5")]
+    pub daily: ::prost::alloc::vec::Vec<i64>,
 }
 /// Ended calls for one actor.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

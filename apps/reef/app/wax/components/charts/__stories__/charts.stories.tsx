@@ -170,6 +170,50 @@ export const SparklineDefault: StoryObj<typeof Sparkline> = {
   render: (args) => <Sparkline {...args} />,
 }
 
+// Lines share one scale through `max`, from a zero baseline. A hover snaps a
+// crosshair to the nearest point and names it.
+export const SparklineSharedScale: StoryObj<typeof Sparkline> = {
+  render: () => (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {[
+        [2, 4, 3, 8, 12, 9, 14],
+        [0, 1, 0, 0, 2, 1, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+      ].map((data, row) => (
+        <Sparkline
+          key={row}
+          color="neutral"
+          data={data}
+          max={14}
+          describe={(day) => `${data[day]} calls on day ${day + 1}`}
+        />
+      ))}
+    </div>
+  ),
+}
+
+// One bar per point over a baseline; a hover lifts the bar under the pointer.
+export const SparklineBars: StoryObj<typeof Sparkline> = {
+  render: () => (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {[
+        [2, 4, 3, 8, 12, 9, 14],
+        [0, 1, 0, 0, 2, 1, 0],
+        [0, 0, 0, 0, 0, 0, 0],
+      ].map((data, row) => (
+        <Sparkline
+          key={row}
+          color="neutral"
+          variant="bars"
+          data={data}
+          max={14}
+          describe={(day) => `${data[day]} calls on day ${day + 1}`}
+        />
+      ))}
+    </div>
+  ),
+}
+
 export const SparklineColors: StoryObj<typeof Sparkline> = {
   render: () => (
     <div style={{ alignItems: 'center', display: 'flex', gap: 16 }}>

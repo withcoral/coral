@@ -116,6 +116,56 @@ test('the drawer shows the prose of the tool the route names', () => {
   expect(within(drawer).getByText('coral.providers.github.issues.list')).toBeInTheDocument()
 })
 
+// Catches: a drawer that shows another tool's usage, callers left out, or usage
+// shown when Coral cannot count calls.
+test.each([
+  ['a count', true],
+  ['no count', false],
+])("the drawer shows the tool's usage and callers, given %s", (_, counted) => {
+  renderPage({
+    entry: `${github.path}/tools/issues.list`,
+    selectedTool: github.tools[0]!,
+    toolCalls: counted
+      ? {
+          days: 5,
+          tools: {
+            [selectionKey(github.id, 'issues.list')]: {
+              calls: 13,
+              daily: [0, 3, 0, 9, 1],
+              callers: [
+                {
+                  key: 'a',
+                  label: 'Nightly sync',
+                  agentPath: '/workspaces/demo/agents/a',
+                  calls: 9,
+                },
+                { key: 'u', label: 'You', calls: 4 },
+              ],
+            },
+            [selectionKey(github.id, 'repos.get')]: {
+              calls: 99,
+              daily: [99, 0, 0, 0, 0],
+              callers: [],
+            },
+          },
+        }
+      : null,
+  })
+  const drawer = screen.getByRole('dialog')
+  const usage = within(drawer).queryByRole('region', { name: 'Usage' })
+  if (!counted) return expect(usage).toBeNull()
+  expect(within(usage!).getByRole('group', { name: 'Calls in 5 days' })).toHaveTextContent('13')
+  expect(within(usage!).getByRole('link', { name: 'Nightly sync' })).toHaveAttribute(
+    'href',
+    '/workspaces/demo/agents/a',
+  )
+  expect(
+    within(usage!)
+      .getAllByRole('listitem')
+      .map((item) => item.textContent),
+  ).toEqual(['Nightly sync9 calls', 'You4 calls'])
+})
+
 // Catches: the drawer staying scrolled between two providers' tools, as a
 // Tool Key is unique only within its provider.
 test('the drawer starts at the top for a tool with the same key in another provider', async () => {
@@ -229,7 +279,12 @@ test('lists every provider in one table, and keeps an empty one with its setting
 test.each([
   [
     'a count',
-    { days: 30, calls: { [selectionKey(github.id, 'repos.get')]: 1234 } },
+    {
+      days: 30,
+      tools: {
+        [selectionKey(github.id, 'repos.get')]: { calls: 1234, daily: [234, 1000], callers: [] },
+      },
+    },
     ['0 calls', '1,234 calls', '0 calls'],
   ],
   ['no count', null, []],
@@ -247,23 +302,69 @@ test.each([
   expect(cells).toEqual(counts)
 })
 
+// Catches: a usage sort that leaves a busier tool or group below a quieter one,
+// moves a tool out of its group, keeps no way back to name order, or reports
+// the wrong order to a screen reader.
+const usage = (calls: number) => ({ calls, daily: [calls], callers: [] })
+
+test('sorts each group by usage, and groups by their total, then back by name', async () => {
+  const grouped = provider(github.id, 'GitHub', 'github', [
+    ['issues.list', 'issues'],
+    ['issues.create', 'issues'],
+    ['repos.get', 'repos'],
+  ])
+  renderPage({
+    providers: [grouped],
+    toolCalls: {
+      days: 30,
+      tools: {
+        [selectionKey(github.id, 'issues.create')]: usage(5),
+        [selectionKey(github.id, 'repos.get')]: usage(9),
+      },
+    },
+  })
+  const header = (name: string) =>
+    within(table())
+      .getAllByRole('columnheader')
+      .find((cell) => cell.textContent?.startsWith(name))!
+  const byName = ['issues.create', 'issues.list', 'repos.get']
+  expect(rowNames()).toEqual(byName)
+  expect(
+    [header('Tool name'), header('Usage')].map((cell) => cell.getAttribute('aria-sort')),
+  ).toEqual(['ascending', 'none'])
+
+  await user.click(within(table()).getByRole('button', { name: 'Sort by usage' }))
+  expect(rowNames()).toEqual(['repos.get', 'issues.create', 'issues.list'])
+  expect(
+    [header('Tool name'), header('Usage')].map((cell) => cell.getAttribute('aria-sort')),
+  ).toEqual(['none', 'descending'])
+
+  await user.click(within(table()).getByRole('button', { name: 'Sort by usage' }))
+  expect(rowNames()).toEqual(byName)
+})
+
 // Catches: a heading count too wide for the policy segment it sits over, or a short
 // count that hides the exact one from a screen reader.
 test.each([
   [12, '12', '12 Needs approval'],
   [1200, '1.2K', '1,200 Needs approval'],
-])('a heading shows %i tools needing approval as %s', (count, text, name) => {
-  const many = provider(
-    github.id,
-    'GitHub',
-    'github',
-    Array.from({ length: count }, (_, i) => `t${i}`),
-  )
-  renderPage({ providers: [many] })
-  const heading = within(table()).getByRole('rowgroup', { name: 'GitHub' })
-  expect(within(heading).getByRole('button', { name })).toHaveTextContent(text)
-})
-
+])(
+  'a heading shows %i tools needing approval as %s',
+  (count, text, name) => {
+    const many = provider(
+      github.id,
+      'GitHub',
+      'github',
+      Array.from({ length: count }, (_, i) => `t${i}`),
+    )
+    renderPage({ providers: [many] })
+    const heading = within(table()).getByRole('rowgroup', { name: 'GitHub' })
+    expect(within(heading).getByRole('button', { name })).toHaveTextContent(text)
+    // 1,200 tools build the whole catalog. That takes about 3 s here, but longer
+    // than the default 5 s when the full suite shares the runner.
+  },
+  15_000,
+)
 // Catches: the page drawing its own sticky provider and group rows instead of
 // nesting Wax groups, which loses the two-level sticky stack.
 test('nests each tool group inside its provider group', () => {

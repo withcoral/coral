@@ -211,6 +211,7 @@ pub(super) fn summary(
                     .collect(),
                 call_path: op.call_path,
                 calls: op.calls,
+                daily: op.daily,
             })
             .collect(),
         approvals: Some(wire::ActivityApprovalDecisions {

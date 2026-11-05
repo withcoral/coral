@@ -29,6 +29,7 @@ function tool(path: string, ...split: [Omit<CallerCalls, 'calls'>, number][]): T
   return {
     ...summaryTool(`coral.providers.${path}`),
     calls: callers.reduce((sum, caller) => sum + caller.calls, 0),
+    daily: [],
     callers,
   }
 }

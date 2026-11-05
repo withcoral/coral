@@ -6,7 +6,7 @@ import {
   mutationForm,
   privateHeaders,
 } from '@/lib/management.server'
-import { providerView, listAllProviders, toolCallCounts, uuidOr404 } from '@/lib/providers.server'
+import { providerView, listAllProviders, toolUsage, uuidOr404 } from '@/lib/providers.server'
 import type { SummaryDays } from '@/lib/activity-summary'
 import { glimpseActivitySummary } from '@/lib/activity-summary.server'
 import { personalAccountStates } from '@/lib/accounts.server'
@@ -80,7 +80,7 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
       {
         workspace: w,
         providers,
-        toolCalls: summary && { days, calls: toolCallCounts(summary.tools) },
+        toolCalls: summary && { days, tools: toolUsage(summary.tools) },
         recipes: RECIPE_CHOICES,
         selectedProvider,
         selectedTool,

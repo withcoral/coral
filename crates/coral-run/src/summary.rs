@@ -70,6 +70,27 @@ pub struct StoppedTool {
     pub needs_setup: i64,
 }
 
+/// The span a summary covers: whole days that end now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SummaryWindow {
+    since: i64,
+    days: u32,
+}
+
+impl SummaryWindow {
+    /// Unix nanoseconds at the window's start.
+    #[must_use]
+    pub const fn since(&self) -> i64 {
+        self.since
+    }
+
+    /// Days the window covers.
+    #[must_use]
+    pub const fn days(&self) -> u32 {
+        self.days
+    }
+}
+
 /// One Tool's ended Invocations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCalls {
@@ -81,6 +102,9 @@ pub struct ToolCalls {
     pub call_path: String,
     /// Ended Invocations.
     pub calls: i64,
+    /// The same Invocations in each day of the window, oldest first. A day is 24
+    /// hours counted from the window's start, so the last one ends now.
+    pub daily: Vec<i64>,
     /// The same Invocations per invoking Principal, busiest first.
     pub callers: Vec<CallerCalls>,
 }
@@ -177,6 +201,40 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
             | None,
         )
         | (InvocationResultKind::Indeterminate, _) => CallOutcome::Failed,
+    }
+}
+
+/// One Tool's ended Invocations in one day of the window, as the repository returns them.
+pub(crate) struct DailyEvidence {
+    pub provider_id: ProviderId,
+    pub tool_key: ToolKey,
+    /// Whole days from the window's start.
+    pub day: i64,
+    pub calls: i64,
+}
+
+/// Adds each day's Invocations to its Tool's row. A day past the window's last,
+/// from a clock that moved back, counts in the last.
+fn add_days(tools: &mut [ToolCalls], days: u32, evidence: Vec<DailyEvidence>) {
+    let len = usize::try_from(days).unwrap_or(usize::MAX);
+    let mut rows = BTreeMap::new();
+    for (row, tool) in tools.iter_mut().enumerate() {
+        tool.daily = vec![0; len];
+        rows.insert((tool.provider_id.clone(), tool.tool_key.clone()), row);
+    }
+    for day in evidence {
+        let Some(&row) = rows.get(&(day.provider_id, day.tool_key)) else {
+            continue;
+        };
+        let index = usize::try_from(day.day)
+            .unwrap_or_default()
+            .min(len.saturating_sub(1));
+        if let Some(total) = tools
+            .get_mut(row)
+            .and_then(|tool| tool.daily.get_mut(index))
+        {
+            *total += day.calls;
+        }
     }
 }
 
@@ -308,6 +366,7 @@ fn tally(evidence: Vec<OutcomeEvidence>) -> Tally {
                     tool_key: group.tool_key.clone(),
                     call_path: String::new(),
                     calls: 0,
+                    daily: Vec::new(),
                     callers: Vec::new(),
                 },
                 LatestPath::default(),
@@ -349,17 +408,20 @@ fn tally(evidence: Vec<OutcomeEvidence>) -> Tally {
 }
 
 impl RunModule {
-    /// Returns the start of a summary window that ends now and spans `days`.
+    /// Returns the summary window that ends now and spans `days`.
     /// # Errors
     /// Rejects windows outside 1–30 days.
-    pub fn summary_window_start(&self, days: u32) -> Result<i64, Error> {
+    pub fn summary_window(&self, days: u32) -> Result<SummaryWindow, Error> {
         if !(1..=MAX_SUMMARY_DAYS).contains(&days) {
             return Err(Error::InvalidInput("invalid summary window".into()));
         }
-        Ok(self.now()?.saturating_sub(i64::from(days) * NANOS_PER_DAY))
+        Ok(SummaryWindow {
+            since: self.now()?.saturating_sub(i64::from(days) * NANOS_PER_DAY),
+            days,
+        })
     }
 
-    /// Sums the Runs in `authority` that ended at or after `since`. Never loads
+    /// Sums the Runs in `authority` that ended in `window`. Never loads
     /// arguments, results or source. `context` holds the net bytes that work
     /// outside Runs added in the same window; it joins each Principal's Run total.
     /// # Errors
@@ -368,10 +430,13 @@ impl RunModule {
         &self,
         tx: &mut coral_db::Transaction<'_>,
         authority: &HistoryAuthority,
-        since: i64,
+        window: &SummaryWindow,
         context: Vec<ActorContext>,
     ) -> Result<ActivitySummary, Error> {
+        let since = window.since();
         let evidence = crate::summary_repository::call_outcomes(tx, authority, since).await?;
+        let days =
+            crate::summary_repository::daily_calls(tx, authority, since, NANOS_PER_DAY).await?;
         let approvals = crate::summary_repository::approval_decisions(tx, authority, since).await?;
         let mut actors = crate::summary_repository::actor_context(tx, authority, since).await?;
         let context_impact_partial =
@@ -387,9 +452,10 @@ impl RunModule {
         let Tally {
             calls,
             stopped,
-            tools,
+            mut tools,
             callers,
         } = tally(evidence);
+        add_days(&mut tools, window.days(), days);
         Ok(ActivitySummary {
             calls,
             stopped,

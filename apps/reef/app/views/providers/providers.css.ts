@@ -245,6 +245,9 @@ export const callsBar = style({
   justifyContent: 'center',
   width: '100%',
 })
+// The usage tooltip leads with the hovered day, then the window's total.
+export const usageTipDay = style({ display: 'block', ...theme.typography.bodySmallStrong })
+export const usageTipTotal = style({ color: theme.content.secondary, display: 'block' })
 export const callsHeading = style({ alignItems: 'center', display: 'inline-flex', gap: 6 })
 // The heading's counts can make the column wider than its toggles, so the header,
 // the counts and the toggles all start at its left edge.
@@ -626,4 +629,27 @@ export const iconUpload = style({
   flexDirection: 'column',
   gap: 8,
   minWidth: 0,
+})
+
+// The drawer's usage: the total, the days as bars, then who called the tool.
+export const usage = style({ display: 'grid', gap: 12 })
+export const usageChart = style({ display: 'grid', gap: 4 })
+export const usageAxis = style({
+  ...theme.typography.bodySmall,
+  color: theme.content.tertiary,
+  display: 'flex',
+  justifyContent: 'space-between',
+})
+export const usageCallers = style({
+  display: 'grid',
+  gap: 4,
+  listStyle: 'none',
+  margin: 0,
+  padding: 0,
+})
+export const usageCaller = style({
+  ...theme.typography.bodySmall,
+  display: 'flex',
+  gap: 8,
+  justifyContent: 'space-between',
 })

@@ -312,19 +312,43 @@ export const TreeNothingSelected: Story = {
     }
   },
 }
-// The Usage column: a bar per tool, and an empty track for a tool nobody called.
+/** A month of daily calls, oldest first. */
+const usage = (perDay: (day: number) => number) => {
+  const daily = Array.from({ length: 30 }, (_, day) => perDay(day))
+  const calls = daily.reduce((sum, count) => sum + count, 0)
+  const agent = Math.round(calls * 0.7)
+  const callers = [
+    {
+      key: 'agent',
+      label: 'PR review agent',
+      agentPath: '/workspaces/demo/agents/review',
+      calls: agent,
+    },
+    { key: 'you', label: 'You', calls: calls - agent },
+  ].filter((caller) => caller.calls > 0)
+  return { calls, daily, callers }
+}
+const toolUsage = {
+  days: 30,
+  tools: {
+    [selectionKey('prov-github', 'issues.list')]: usage((day) => 300 + ((day * 37) % 160)),
+    [selectionKey('prov-github', 'issues.create')]: usage((day) => (day > 20 ? 30 + day : 2)),
+    [selectionKey('prov-weather', 'getForecast')]: usage((day) => (day % 9 === 0 ? 1 : 0)),
+  },
+}
+// The Usage column: each tool's calls as a bar against the busiest tool's.
 export const TreeToolCalls: Story = {
+  render: () => <WorkspaceProvidersPage {...treeProps} toolCalls={toolUsage} />,
+}
+// The drawer's usage: the total, each day as a bar, and who called it.
+export const TreeToolUsage: Story = {
   render: () => (
     <WorkspaceProvidersPage
       {...treeProps}
-      toolCalls={{
-        days: 30,
-        calls: {
-          [selectionKey('prov-github', 'issues.list')]: 12_480,
-          [selectionKey('prov-github', 'repos.get')]: 316,
-          [selectionKey('prov-weather', 'getForecast')]: 4,
-        },
-      }}
+      selectedProvider="prov-github"
+      selectedTool="issues.create"
+      selectedToolDetail={createIssue}
+      toolCalls={toolUsage}
     />
   ),
 }

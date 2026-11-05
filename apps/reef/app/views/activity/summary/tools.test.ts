@@ -21,7 +21,7 @@ const post = {
 it('joins a stopped tool that is not among the busiest, with its stops as its calls', () => {
   const rows = toolRows(
     {
-      tools: [{ ...getIssue, calls: 9, callers: [] }],
+      tools: [{ ...getIssue, calls: 9, daily: [], callers: [] }],
       stopped: [
         { ...getIssue, blocked: 1, notAllowed: 0, needsSetup: 0 },
         { ...post, blocked: 2, notAllowed: 1, needsSetup: 0 },
@@ -42,8 +42,8 @@ it('keeps two tools that held one Call Path apart', () => {
   const rows = toolRows(
     {
       tools: [
-        { ...getIssue, calls: 4, callers: [] },
-        { ...earlier, calls: 2, callers: [] },
+        { ...getIssue, calls: 4, daily: [], callers: [] },
+        { ...earlier, calls: 2, daily: [], callers: [] },
       ],
       stopped: [{ ...earlier, blocked: 2, notAllowed: 0, needsSetup: 0 }],
     },
@@ -66,7 +66,9 @@ it.each([
 ])(
   'names %s as provider %s, namespace %s and tool %s',
   (callPath, provider, namespace, relativePath, path) => {
-    const tools = [{ tool: 'workspaces/w/providers/p/tools/eA', callPath, calls: 1, callers: [] }]
+    const tools = [
+      { tool: 'workspaces/w/providers/p/tools/eA', callPath, calls: 1, daily: [], callers: [] },
+    ]
     const [row] = toolRows({ tools, stopped: [] }, providers)
     expect(row).toMatchObject({ provider, namespace, relativePath })
     expect(row.pages).toEqual(

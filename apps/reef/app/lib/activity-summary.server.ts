@@ -41,6 +41,7 @@ export async function loadActivitySummary(
       tool: tool.tool,
       callPath: tool.callPath,
       calls: toCount(tool.calls),
+      daily: tool.daily.map(toCount),
       callers: tool.callers.map(toCaller),
     })),
     approvals: {

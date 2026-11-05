@@ -1778,6 +1778,8 @@ async fn activity_summary_wire_rejects_malformed_and_hidden_windows_and_labels_i
         tool.tool,
         format!("{workspace}/providers/{provider}/tools/cmVhZA")
     );
+    // One entry per day of the 7-day window, oldest first; the call ended today.
+    assert_eq!(tool.daily, [0, 0, 0, 0, 0, 0, 1]);
     let [actor] = summary.actors.as_slice() else {
         panic!("one actor: {:?}", summary.actors)
     };

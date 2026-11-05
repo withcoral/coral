@@ -736,6 +736,10 @@ message ActivityToolCalls {
   // {provider}/tools/{encoded Tool Key} of the Provider at the time of the calls,
   // as the catalog names it. The Tool may since have left the catalog.
   string tool = 4;
+  // The same calls in each day of the window, oldest first: one entry per day.
+  // A day is 24 hours counted from the window's start, so the last one ends now.
+  // They add up to calls.
+  repeated int64 daily = 5;
 }
 // Ended calls for one actor.
 message ActivityCallerCalls {

@@ -175,6 +175,7 @@ it('counts calls by provider and Tool Key, and leaves them out when the summary 
         tool: toolName('actions/tool0'),
         callPath: 'coral.providers.github.actions.tool1',
         calls: 5n,
+        daily: [1n, 0n, 4n],
       },
     ],
   })
@@ -183,9 +184,12 @@ it('counts calls by provider and Tool Key, and leaves them out when the summary 
     workspace: `workspaces/${workspace}`,
     days: 30,
   })
-  const calls = (key: string) => tree.toolCalls?.calls[selectionKey(providerId, key)]
+  const usage = (key: string) => tree.toolCalls?.tools[selectionKey(providerId, key)]
   expect(tree.toolCalls?.days).toBe(30)
-  expect([calls('actions/tool0'), calls('actions/tool1')]).toEqual([5, undefined])
+  expect([usage('actions/tool0'), usage('actions/tool1')]).toEqual([
+    { calls: 5, daily: [1, 0, 4], callers: [] },
+    undefined,
+  ])
 
   mocks.summary.mockRejectedValue(new ConnectError('unavailable', Code.Unavailable))
   const unavailable = await loadTree()

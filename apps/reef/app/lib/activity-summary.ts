@@ -36,6 +36,8 @@ export interface CallerCalls {
 /** One tool's ended calls. */
 export interface ToolCalls extends SummaryTool {
   calls: number
+  /** The same calls in each day of the window, oldest first. The last day ends now. */
+  daily: readonly number[]
   /** The same calls per caller, busiest first. */
   callers: readonly CallerCalls[]
 }

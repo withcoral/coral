@@ -1,6 +1,6 @@
 //! Grouped, payload-free history totals. Each query restricts Runs to `authority`,
 //! resolved in the same snapshot, before it groups.
-use crate::summary::{ActorContext, ApprovalDecisions, OutcomeEvidence};
+use crate::summary::{ActorContext, ApprovalDecisions, DailyEvidence, OutcomeEvidence};
 use crate::{CoralFailure, Error, InvocationResultKind};
 use coral_db::{Transaction, col, column};
 use coral_workspace::HistoryAuthority;
@@ -126,6 +126,52 @@ pub(crate) async fn call_outcomes(
                     .failure_code
                     .as_deref()
                     .and_then(CoralFailure::from_code),
+                calls: row.calls,
+            })
+        })
+        .collect()
+}
+
+#[derive(sqlx::FromRow)]
+struct DailyRow {
+    provider_id: String,
+    tool_key: String,
+    day: i64,
+    calls: i64,
+}
+
+/// Ended Invocations grouped by Tool and by the day of the window they ended in,
+/// counted in whole days of `day_nanos` from `since`.
+pub(crate) async fn daily_calls(
+    tx: &mut Transaction<'_>,
+    authority: &HistoryAuthority,
+    since: i64,
+    day_nanos: i64,
+) -> Result<Vec<DailyEvidence>, Error> {
+    let day = col("i", "ended_at_unix_nanos").sub(since).div(day_nanos);
+    let mut grouped = authorized_runs_with(authority, "tool_invocations", "i");
+    grouped
+        .columns(["provider_id", "tool_key"].map(|name| (Alias::new("i"), Alias::new(name))))
+        .expr_as(day, Alias::new("day"))
+        .expr_as(
+            Expr::col((Alias::new("i"), Alias::new("id"))).count(),
+            Alias::new("calls"),
+        )
+        .and_where(ended_since(since))
+        .group_by_columns(
+            ["provider_id", "tool_key"].map(|name| (Alias::new("i"), Alias::new(name))),
+        )
+        // By the output name: Postgres matches no two copies of an expression
+        // whose bound values are separate parameters.
+        .group_by_col(Alias::new("day"));
+    let rows: Vec<DailyRow> = tx.fetch_all(grouped).await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(DailyEvidence {
+                provider_id: coral_provider::ProviderId::parse(&row.provider_id)?,
+                tool_key: coral_catalog::ToolKey::parse(&row.tool_key)
+                    .map_err(coral_provider::Error::from)?,
+                day: row.day,
                 calls: row.calls,
             })
         })

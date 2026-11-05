@@ -208,7 +208,7 @@ pub use required_actions::{
 };
 pub use summary::{
     ActivitySummary, ActorContext, ApprovalDecisions, CallOutcomes, CallerCalls, MAX_SUMMARY_DAYS,
-    StoppedTool, ToolCalls,
+    StoppedTool, SummaryWindow, ToolCalls,
 };
 pub use types::{
     AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, COMBINED_TYPESCRIPT_MAX_BYTES,

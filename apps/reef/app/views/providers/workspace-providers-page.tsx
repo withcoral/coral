@@ -1,6 +1,15 @@
 import classNames from 'classnames'
 import type { MouseEvent, ReactNode, Ref } from 'react'
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
 
 import { ActionBar, Banner, Button, Dialog, Inputs, Menu, Typography } from '@/wax/components'
@@ -14,10 +23,11 @@ import { Markdown } from '@/wax/components/markdown'
 import { PageLayout } from '@/wax/components/page-layout'
 import { Picker } from '@/wax/components/picker'
 import { Pill, type PillColor } from '@/wax/components/pill'
+import { Stat } from '@/wax/components/stat'
 import { StatusDot } from '@/wax/components/status'
 import { InfoTip, Tooltip } from '@/wax/components/tooltip'
 import { SegmentedToggles } from '@/wax/components/segmented-control'
-import { Meter } from '@/wax/components/charts'
+import { Meter, Sparkline } from '@/wax/components/charts'
 import { ToolName } from '@/wax/components/tool-name'
 import * as Table from '@/wax/components/table'
 import { CELL_HEIGHT_PX, groupHeadingHeightPx } from '@/wax/components/table'
@@ -67,6 +77,7 @@ import type {
   ToolView,
   ProviderView,
   ToolCallCounts,
+  ToolUsage,
   WorkspaceProvidersPageProps,
 } from './types'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
@@ -584,6 +595,9 @@ function ProvidersTableScreen({
   const tableFilter = useDeferredValue(tableFilterInput)
   const tableQuery = useMemo(() => filterQuery(tableFilter), [tableFilter])
   const [policyFilter, setPolicyFilter] = useState<PolicyFilter | null>(null)
+  // Off, rows sort by name; on, each group's tools and the groups sort by usage.
+  const [sortByUsage, setSortByUsage] = useState(false)
+  const usageOrder = sortByUsage && toolCalls ? toolCalls : null
   const [selected, setSelected] = useState<Set<SelectionKey>>(new Set())
   // "Show selected" lists the selection as it was when clicked, like a policy
   // filter, so a row the reader unchecks or applies a policy to stays in view.
@@ -594,7 +608,8 @@ function ProvidersTableScreen({
   const tableRef = useRef<HTMLDivElement>(null)
   // Every bar measures against the busiest tool, so bars compare across providers.
   const maxCalls = useMemo(
-    () => Object.values(toolCalls?.calls ?? {}).reduce((max, calls) => Math.max(max, calls), 0),
+    () =>
+      Object.values(toolCalls?.tools ?? {}).reduce((max, usage) => Math.max(max, usage.calls), 0),
     [toolCalls],
   )
   const searchable = useMemo(() => searchableProviders(providers), [providers])
@@ -698,9 +713,25 @@ function ProvidersTableScreen({
         if (members) members.push(tool)
         else groups.set(label, [tool])
       }
-      for (const [group, members] of [...groups.entries()].toSorted(([a], [b]) =>
+      // Name order first; a usage sort is stable, so equal usage keeps it.
+      const byName = [...groups.entries()].toSorted(([a], [b]) =>
         caseFolded(a).localeCompare(caseFolded(b)),
-      )) {
+      )
+      const usageOf = (tool: ToolView) =>
+        usageOrder?.tools[selectionKey(provider.id, tool.key)]?.calls ?? 0
+      const ordered = usageOrder
+        ? byName
+            .map(([group, members]): [string, ToolView[]] => [
+              group,
+              members.toSorted((a, b) => usageOf(b) - usageOf(a)),
+            ])
+            .toSorted(
+              ([, a], [, b]) =>
+                b.reduce((sum, tool) => sum + usageOf(tool), 0) -
+                a.reduce((sum, tool) => sum + usageOf(tool), 0),
+            )
+        : byName
+      for (const [group, members] of ordered) {
         const groupKey = groupHeadingKey(provider.id, group)
         const groupSection: ProviderSection['groups'][number] = {
           group,
@@ -730,6 +761,7 @@ function ProvidersTableScreen({
   }, [
     collapsed,
     policyFilter,
+    usageOrder,
     selectedTool,
     selectedProviderId,
     selectedView,
@@ -1116,6 +1148,7 @@ function ProvidersTableScreen({
               </span>
               <span
                 role="columnheader"
+                aria-sort={toolCalls ? (sortByUsage ? 'none' : 'ascending') : undefined}
                 className={classNames(styles.nameHeader, Table.groupToggleHeading)}
               >
                 <Button.IconButton
@@ -1129,9 +1162,18 @@ function ProvidersTableScreen({
                 Tool name
               </span>
               {toolCalls && (
-                <Table.Heading className={styles.callsColumn}>
+                <Table.Heading
+                  className={styles.callsColumn}
+                  sort={sortByUsage ? 'descending' : 'none'}
+                >
                   <span className={styles.callsHeading}>
-                    Usage
+                    <Table.SortButton
+                      label="Sort by usage"
+                      sort={sortByUsage ? 'descending' : 'none'}
+                      onClick={() => setSortByUsage((on) => !on)}
+                    >
+                      Usage
+                    </Table.SortButton>
                     <InfoTip ariaLabel="About calls">
                       {`Your calls and your agents' calls in the last ${toolCalls.days} days.`}
                     </InfoTip>
@@ -1198,6 +1240,7 @@ function ProvidersTableScreen({
       <ToolDetailsDrawer
         tool={selectedTool}
         detail={selectedToolDetail}
+        toolCalls={toolCalls}
         provider={selectedProvider ?? undefined}
         canChange={canChange}
         form={form}
@@ -1402,8 +1445,10 @@ const TableSections = memo(function TableSections({
                   provider={section.provider}
                   measure={virtual.measureRow}
                   tool={tool}
-                  calls={
-                    toolCalls && (toolCalls.calls[selectionKey(section.provider.id, tool.key)] ?? 0)
+                  usage={
+                    toolCalls &&
+                    (toolCalls.tools[selectionKey(section.provider.id, tool.key)] ??
+                      unused(toolCalls.days))
                   }
                   maxCalls={maxCalls}
                   query={query}
@@ -1630,7 +1675,7 @@ const ToolRow = memo(function ToolRow({
   provider,
   measure,
   tool,
-  calls,
+  usage,
   maxCalls,
   query,
   onCheck,
@@ -1648,8 +1693,8 @@ const ToolRow = memo(function ToolRow({
   provider: ProviderView
   measure: Ref<HTMLDivElement>
   tool: ToolView
-  /** The tool's calls; null while the table has no Calls column. */
-  calls: number | null
+  /** The tool's calls; null while the table has no Usage column. */
+  usage: ToolUsage | null
   /** The busiest tool's calls, which a full bar stands for. */
   maxCalls: number
   query: FilterQuery
@@ -1716,12 +1761,12 @@ const ToolRow = memo(function ToolRow({
           </Tooltip>
         )}
       </span>
-      {calls !== null && (
+      {usage && (
         <Table.Cell className={styles.callsColumn}>
-          <Tooltip content={countLabel(calls, 'call')}>
+          <Tooltip content={countLabel(usage.calls, 'call')}>
             <span className={styles.callsBar}>
-              <Meter value={calls} max={maxCalls} size="small" />
-              <span className={visuallyHidden}>{countLabel(calls, 'call')}</span>
+              <Meter value={usage.calls} max={maxCalls} size="small" />
+              <span className={visuallyHidden}>{countLabel(usage.calls, 'call')}</span>
             </span>
           </Tooltip>
         </Table.Cell>
@@ -2042,6 +2087,88 @@ function PolicySummary({
   )
 }
 
+// A tool with no calls, one shared value per window.
+const noUsage = new Map<number, ToolUsage>()
+function unused(days: number) {
+  let usage = noUsage.get(days)
+  if (!usage) {
+    usage = { calls: 0, daily: Array.from({ length: days }, () => 0), callers: [] }
+    noUsage.set(days, usage)
+  }
+  return usage
+}
+
+/** When a day of the window was, counted back from now. */
+function dayAgo(day: number, days: number) {
+  const ago = days - 1 - day
+  return ago === 0 ? 'in the last 24 hours' : ago === 1 ? '1 day ago' : `${ago} days ago`
+}
+
+/** The hovered day's calls, then the window's total. */
+function usageTip(usage: ToolUsage, day: number) {
+  const days = usage.daily.length
+  return (
+    <>
+      <span className={styles.usageTipDay}>
+        {`${countLabel(usage.daily[day] ?? 0, 'call')} ${dayAgo(day, days)}`}
+      </span>
+      <span className={styles.usageTipTotal}>
+        {`${countLabel(usage.calls, 'call')} in ${days} days`}
+      </span>
+    </>
+  )
+}
+
+/** One tool's calls over the window: the total, each day, and who called it. */
+function ToolUsageSection({ usage }: { usage: ToolUsage }) {
+  const headingId = useId()
+  const days = usage.daily.length
+  return (
+    <section aria-labelledby={headingId} className={styles.usage}>
+      <Typography.BodyStrong as="h3" id={headingId}>
+        Usage
+      </Typography.BodyStrong>
+      <Stat
+        size="small"
+        icon="Activity"
+        label={`Calls in ${days} days`}
+        value={usage.calls.toLocaleString('en-US')}
+      />
+      <div className={styles.usageChart}>
+        <Sparkline
+          color="neutral"
+          variant="bars"
+          data={usage.daily}
+          fill
+          width={352}
+          height={56}
+          describe={(day) => usageTip(usage, day)}
+        />
+        <span className={styles.usageAxis} aria-hidden>
+          <span>{`${days} days ago`}</span>
+          <span>Last 24 hours</span>
+        </span>
+      </div>
+      {usage.callers.length > 0 && (
+        <ul aria-label="Callers" className={styles.usageCallers}>
+          {usage.callers.map((caller) => (
+            <li key={caller.key} className={styles.usageCaller}>
+              {caller.agentPath ? (
+                <Link to={caller.agentPath}>{caller.label}</Link>
+              ) : (
+                <span>{caller.label}</span>
+              )}
+              <Typography.BodySmall as="span" variant="tertiary">
+                {countLabel(caller.calls, 'call')}
+              </Typography.BodySmall>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 // A segment is as wide as a policy toggle, so a count of a thousand or more shortens.
 const shortCount = (count: number) =>
   count < 1000
@@ -2054,6 +2181,7 @@ function ToolDetailsDrawer({
   detail: routedDetail,
   form,
   tool: routed,
+  toolCalls,
   onClose,
   onKeyDown,
 }: {
@@ -2061,6 +2189,8 @@ function ToolDetailsDrawer({
   canChange: boolean
   /** The prose of `tool`, which the table does not load. */
   detail: ToolDetailView | null
+  /** Null shows no usage. */
+  toolCalls: ToolCallCounts | null
   form: FormContext
   tool: ToolView | null
   /** Runs as the close starts, so the URL and the keys follow it at once. */
@@ -2084,6 +2214,10 @@ function ToolDetailsDrawer({
   const summary = detail?.summary.trim() ?? ''
   const description = detail?.description.trim() ?? ''
   const callPath = tool && provider ? toolCallPath(provider.callRoot, tool.relativePath) : ''
+  const usage =
+    toolCalls && tool && provider
+      ? (toolCalls.tools[selectionKey(provider.id, tool.key)] ?? unused(toolCalls.days))
+      : null
   // The drawer stays open from one tool to the next, so only its content
   // changes. The content mounts once per tool, which starts it at the top.
   const popup = useRef<HTMLDivElement>(null)
@@ -2145,6 +2279,7 @@ function ToolDetailsDrawer({
                   {tool.reasons.join(' ') || 'Coral did not provide a reason.'}
                 </Banner>
               )}
+              {usage && <ToolUsageSection usage={usage} />}
             </div>
           )}
           <Dialog.Close />

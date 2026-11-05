@@ -22,6 +22,7 @@ import type {
   AccountLabel,
   ToolDetailView,
   ToolHintsView,
+  ToolUsage,
   ToolView,
   ProviderSettingsView,
   ProviderView,
@@ -50,14 +51,14 @@ export function providerPath(workspacePath: string, name: string) {
 function toolKey(name: string) {
   return Buffer.from(name.split('/').at(-1)!, 'base64url').toString()
 }
-/** Each tool's calls in a summary, by provider and Tool Key. */
-export function toolCallCounts(
-  tools: readonly Pick<ToolCalls, 'tool' | 'calls'>[],
-): Record<SelectionKey, number> {
+/** Each tool's usage in a summary, by provider and Tool Key. */
+export function toolUsage(
+  tools: readonly Pick<ToolCalls, 'tool' | 'calls' | 'daily' | 'callers'>[],
+): Record<SelectionKey, ToolUsage> {
   return Object.fromEntries(
-    tools.flatMap(({ tool, calls }) => {
+    tools.flatMap(({ tool, calls, daily, callers }) => {
       const provider = /\/providers\/([^/]+)\/tools\/[^/]+$/.exec(tool)?.[1]
-      return provider ? [[selectionKey(provider, toolKey(tool)), calls]] : []
+      return provider ? [[selectionKey(provider, toolKey(tool)), { calls, daily, callers }]] : []
     }),
   )
 }

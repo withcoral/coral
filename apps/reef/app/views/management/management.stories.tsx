@@ -241,9 +241,24 @@ export const SummaryOverview: Story = {
               },
             ],
             tools: [
-              { ...summaryTool('coral.providers.github.getIssue'), calls: 81, callers: [] },
-              { ...summaryTool('coral.providers.linear.searchIssues'), calls: 40, callers: [] },
-              { ...summaryTool('coral.providers.gmail.sendMessage'), calls: 16, callers: [] },
+              {
+                ...summaryTool('coral.providers.github.getIssue'),
+                calls: 81,
+                daily: [],
+                callers: [],
+              },
+              {
+                ...summaryTool('coral.providers.linear.searchIssues'),
+                calls: 40,
+                daily: [],
+                callers: [],
+              },
+              {
+                ...summaryTool('coral.providers.gmail.sendMessage'),
+                calls: 16,
+                daily: [],
+                callers: [],
+              },
             ],
             approvals: { approved: 5, declined: 2, medianWaitSeconds: 95 },
             callers: [],
