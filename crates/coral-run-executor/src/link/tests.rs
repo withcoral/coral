@@ -102,6 +102,42 @@ fn the_backoff_doubles_to_five_seconds_skips_a_move_and_resets() {
     assert!(backoff.after(&End::Failed).unwrap() <= FIRST_BACKOFF);
 }
 
+#[test]
+fn an_address_dials_only_http_with_a_host() {
+    for (address, dials) in [
+        ("http://coral:50052", true),
+        ("http://127.0.0.1:50052", true),
+        ("https://coral:50052", false),
+        ("coral:50052", false),
+        ("http:///path", false),
+        ("not a url", false),
+    ] {
+        let parsed = address.parse::<CoralAddress>();
+        assert_eq!(parsed.is_ok(), dials, "{address}");
+        if let Err(error) = parsed {
+            assert!(matches!(error, AddressError), "{address}");
+        }
+    }
+}
+
+#[test]
+fn a_token_is_visible_ascii_up_to_16_kib() {
+    for (token, accepted) in [
+        ("x".repeat(16 * 1024), true),
+        (String::new(), false),
+        ("two words".to_owned(), false),
+        ("line\nbreak".to_owned(), false),
+        ("caf\u{e9}".to_owned(), false),
+        ("x".repeat(16 * 1024 + 1), false),
+    ] {
+        let created = Token::new(token.clone());
+        assert_eq!(created.is_ok(), accepted, "{token:.16}");
+        if let Err(error) = created {
+            assert!(matches!(error, TokenError), "{token:.16}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn readiness_serves_only_while_a_pull_stream_is_linked() {
     let mut coral = ScriptedCoral::start([

@@ -29,6 +29,9 @@ const MAX_RUN_DURATION_SECONDS: u32 = 900;
 /// A PING after 10 s without a frame, and the connection closed when the
 /// PING goes 10 s unanswered: 20 s silent in all.
 const KEEPALIVE: Duration = Duration::from_secs(10);
+/// A dial that opens no connection in 20 s fails, as a silent connection
+/// closes after 20 s.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// The first redial waits about this long, and each next one twice as long.
 const FIRST_BACKOFF: Duration = Duration::from_millis(100);
 /// The longest a redial waits.
@@ -148,6 +151,7 @@ struct Link {
 impl Link {
     fn new(config: RunExecutorConfig, linked: watch::Sender<bool>) -> Self {
         let endpoint = Endpoint::from(config.coral_address.0)
+            .connect_timeout(CONNECT_TIMEOUT)
             .http2_keep_alive_interval(KEEPALIVE)
             .keep_alive_timeout(KEEPALIVE);
         let hello = Hello {
@@ -264,6 +268,7 @@ impl Backoff {
         self.next = (ceiling * 2).min(MAX_BACKOFF);
         let half = ceiling / 2;
         let spread = u64::try_from(half.as_nanos()).unwrap_or(u64::MAX);
+        // A v4 UUID's random bits: the workspace has no random number crate.
         let (random, _) = uuid::Uuid::new_v4().as_u64_pair();
         Some(half + Duration::from_nanos(random % spread.saturating_add(1)))
     }
