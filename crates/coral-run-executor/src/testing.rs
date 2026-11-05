@@ -29,8 +29,8 @@ pub enum Answer {
     /// Welcome at this protocol level, then hold the stream open until
     /// [`ScriptedCoral::release`].
     Welcome(u32),
-    /// Welcome, then end the stream cleanly: the go-away.
-    GoAway,
+    /// Welcome, then end the stream cleanly: the move (the go-away).
+    Move,
     /// End the stream cleanly before any message.
     Close,
     /// End the call with this status before any message.
@@ -129,6 +129,10 @@ impl LinkService for Script {
         request: Request<Streaming<PullRequest>>,
     ) -> Result<Response<Self::PullStream>, Status> {
         let at = Instant::now();
+        // Armed before the call is published, so a release after
+        // `next_call` returns reaches this stream.
+        let mut released = self.released.clone();
+        released.mark_unchanged();
         let peer = request.remote_addr();
         let authorization = request
             .metadata()
@@ -144,7 +148,7 @@ impl LinkService for Script {
         let mut inbound = request.into_inner();
         let hello = match answer {
             Answer::Refuse(_) => None,
-            Answer::Welcome(_) | Answer::GoAway | Answer::Close => match inbound.message().await {
+            Answer::Welcome(_) | Answer::Move | Answer::Close => match inbound.message().await {
                 Ok(Some(PullRequest {
                     message: Some(pull_request::Message::Hello(hello)),
                 })) => Some(hello),
@@ -161,7 +165,7 @@ impl LinkService for Script {
             Answer::Refuse(code) => return Err(Status::new(code, "scripted refusal")),
             Answer::Close => return Ok(Response::new(Box::pin(tokio_stream::empty()))),
             Answer::Welcome(level) => level,
-            Answer::GoAway => PROTOCOL_LEVEL,
+            Answer::Move => PROTOCOL_LEVEL,
         };
         let welcome = PullResponse {
             message: Some(pull_response::Message::Welcome(Welcome {
@@ -170,8 +174,6 @@ impl LinkService for Script {
             })),
         };
         let (outbound, stream) = mpsc::channel(1);
-        let mut released = self.released.clone();
-        released.mark_unchanged();
         tokio::spawn(async move {
             if outbound.send(Ok(welcome)).await.is_err() {
                 return;

@@ -213,7 +213,7 @@ async fn run_executor(args: RunExecutorArgs) -> anyhow::Result<()> {
     };
     let config = coral_run_executor::RunExecutorConfig {
         coral_address,
-        token: coral_run_executor::Token::new(&token)?,
+        token: coral_run_executor::Token::new(token)?,
         max_runs_held,
     };
     let mut retire_failure = None;

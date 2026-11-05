@@ -3,8 +3,10 @@
 
 use std::future::{Future, pending};
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
+use coral_credentials::Secret;
 use coral_telemetry::safe;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
@@ -93,9 +95,9 @@ impl FromStr for CoralAddress {
     }
 }
 
-/// The bearer credential every call carries. Its `Debug` hides it.
-#[derive(Clone)]
-pub struct Token(AsciiMetadataValue);
+/// The bearer credential every call carries, held as a [`Secret`].
+#[derive(Clone, Debug)]
+pub struct Token(Arc<Secret>);
 
 /// A token that no `authorization` header can carry.
 #[derive(Debug, thiserror::Error)]
@@ -108,27 +110,28 @@ impl Token {
     /// # Errors
     ///
     /// Returns [`TokenError`] for an empty token, or one outside visible ASCII.
-    pub fn new(token: &str) -> Result<Self, TokenError> {
-        if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_graphic()) {
+    pub fn new(token: String) -> Result<Self, TokenError> {
+        if !token.bytes().all(|byte| byte.is_ascii_graphic()) {
             return Err(TokenError);
         }
-        let mut bearer = AsciiMetadataValue::try_from(format!("Bearer {token}"))
-            .map_err(|_invalid| TokenError)?;
-        bearer.set_sensitive(true);
-        Ok(Self(bearer))
+        let secret = Secret::new(token).map_err(|_invalid| TokenError)?;
+        Ok(Self(Arc::new(secret)))
     }
-}
 
-impl std::fmt::Debug for Token {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("Token(..)")
+    /// The `authorization` value for one call.
+    fn bearer(&self) -> Result<AsciiMetadataValue, tonic::Status> {
+        let mut bearer = AsciiMetadataValue::try_from(format!("Bearer {}", self.0.expose()))
+            .map_err(|_invalid| tonic::Status::internal("the token is no header value"))?;
+        bearer.set_sensitive(true);
+        Ok(bearer)
     }
 }
 
 /// How a pull stream ended.
 enum End {
-    /// Coral ended its side cleanly: reopen at once.
-    GoAway,
+    /// Coral ended its side cleanly after Welcome, to move the stream (the
+    /// go-away): reopen at once.
+    Moved,
     /// Anything else: redial after the back-off.
     Failed,
 }
@@ -175,8 +178,8 @@ impl Link {
                 // Coral welcomed the stream that ended.
                 backoff.reset();
             }
-            if let End::Failed = end {
-                tokio::time::sleep(backoff.next_delay()).await;
+            if let Some(delay) = backoff.after(&end) {
+                tokio::time::sleep(delay).await;
             }
         }
     }
@@ -186,12 +189,12 @@ impl Link {
         let Ok(channel) = self.endpoint.connect().await else {
             return End::Failed;
         };
-        let bearer = self.token.0.clone();
+        let token = self.token.clone();
         let mut client =
             LinkServiceClient::with_interceptor(channel, move |mut request: tonic::Request<()>| {
                 request
                     .metadata_mut()
-                    .insert("authorization", bearer.clone());
+                    .insert("authorization", token.bearer()?);
                 Ok(request)
             });
         // The Run Executor's side of the stream ends when `outbound` drops,
@@ -211,7 +214,7 @@ impl Link {
         loop {
             let welcomed = *self.linked.borrow();
             match inbound.message().await {
-                Ok(None) if welcomed => return End::GoAway,
+                Ok(None) if welcomed => return End::Moved,
                 Ok(Some(PullResponse {
                     message: Some(pull_response::Message::Welcome(welcome)),
                 })) if !welcomed => {
@@ -228,7 +231,7 @@ impl Link {
                 }
                 // Taken and Compile are not served yet, so they break the
                 // protocol here as any other message does. A clean end
-                // before Welcome is no go-away.
+                // before Welcome is no move.
                 Ok(_) | Err(_) => return End::Failed,
             }
         }
@@ -236,7 +239,7 @@ impl Link {
 }
 
 /// The redial delay: 100 ms doubling to 5 s, each jittered down by up to
-/// half, and reset once Coral welcomes a pull stream.
+/// half, and reset once a pull stream Coral welcomed ends.
 struct Backoff {
     next: Duration,
 }
@@ -250,13 +253,18 @@ impl Default for Backoff {
 }
 
 impl Backoff {
-    fn next_delay(&mut self) -> Duration {
+    /// The wait before the next dial after `end`: none after a move, which
+    /// leaves the back-off where it is.
+    fn after(&mut self, end: &End) -> Option<Duration> {
+        if let End::Moved = end {
+            return None;
+        }
         let ceiling = self.next;
         self.next = (ceiling * 2).min(MAX_BACKOFF);
         let half = ceiling / 2;
         let spread = u64::try_from(half.as_nanos()).unwrap_or(u64::MAX);
         let (random, _) = uuid::Uuid::new_v4().as_u64_pair();
-        half + Duration::from_nanos(random % spread.saturating_add(1))
+        Some(half + Duration::from_nanos(random % spread.saturating_add(1)))
     }
 
     fn reset(&mut self) {

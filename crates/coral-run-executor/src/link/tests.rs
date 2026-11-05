@@ -14,7 +14,7 @@ const TOKEN: &str = "test-run-executor-token";
 fn start(coral: &ScriptedCoral, health: Option<TcpListener>) -> oneshot::Sender<()> {
     let config = RunExecutorConfig {
         coral_address: coral.address().parse().unwrap(),
-        token: Token::new(TOKEN).unwrap(),
+        token: Token::new(TOKEN.to_owned()).unwrap(),
         max_runs_held: 8,
     };
     let (retire, retired) = oneshot::channel::<()>();
@@ -25,21 +25,17 @@ fn start(coral: &ScriptedCoral, health: Option<TcpListener>) -> oneshot::Sender<
 }
 
 #[tokio::test]
-async fn hello_carries_the_token_and_a_go_away_reopens_at_once_on_a_fresh_connection() {
+async fn hello_carries_the_token_and_a_move_reopens_on_a_fresh_connection() {
     let mut coral = ScriptedCoral::start([
-        Answer::GoAway,
-        Answer::GoAway,
-        Answer::GoAway,
+        Answer::Move,
+        Answer::Move,
+        Answer::Move,
         Answer::Welcome(PROTOCOL_LEVEL),
     ])
     .await;
     let _retire = start(&coral, None);
 
     let first = coral.next_call().await;
-    assert_eq!(
-        first.authorization.as_deref(),
-        Some("Bearer test-run-executor-token")
-    );
     let hello = first.hello.clone().unwrap();
     uuid::Uuid::parse_str(&hello.run_executor_id).unwrap();
     let limits = Limits {
@@ -50,17 +46,19 @@ async fn hello_carries_the_token_and_a_go_away_reopens_at_once_on_a_fresh_connec
         (hello.protocol_level, hello.free, hello.limits),
         (1, 8, Some(limits))
     );
-    let mut previous = first.peer;
-    for _ in 0..3 {
-        let call = coral.next_call().await;
+    let mut previous = None;
+    for call in [first, coral.next_call().await, coral.next_call().await] {
         assert_eq!(
-            call.hello, first.hello,
+            call.authorization.as_deref(),
+            Some("Bearer test-run-executor-token")
+        );
+        assert_eq!(
+            call.hello,
+            Some(hello.clone()),
             "each reopen reports the room again"
         );
-        assert_ne!(call.peer, previous, "each go-away dials a fresh connection");
+        assert_ne!(call.peer, previous, "each move dials a fresh connection");
         previous = call.peer;
-        // Three back-off waits after a Welcome take at least 150 ms.
-        assert!(call.at.duration_since(first.at) < Duration::from_millis(150));
     }
 }
 
@@ -86,15 +84,17 @@ async fn every_other_end_redials_with_the_backoff() {
 }
 
 #[test]
-fn the_backoff_doubles_to_five_seconds_and_resets() {
+fn the_backoff_doubles_to_five_seconds_skips_a_move_and_resets() {
     let mut backoff = Backoff::default();
     let ceilings = [100, 200, 400, 800, 1600, 3200, 5000, 5000].map(Duration::from_millis);
     for ceiling in ceilings {
-        let delay = backoff.next_delay();
+        // A move reopens at once and leaves the next wait where it is.
+        assert_eq!(backoff.after(&End::Moved), None);
+        let delay = backoff.after(&End::Failed).unwrap();
         assert!(ceiling / 2 <= delay && delay <= ceiling, "{delay:?}");
     }
     backoff.reset();
-    assert!(backoff.next_delay() <= FIRST_BACKOFF);
+    assert!(backoff.after(&End::Failed).unwrap() <= FIRST_BACKOFF);
 }
 
 #[tokio::test]
