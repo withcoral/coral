@@ -134,3 +134,55 @@ export function SegmentedControl<Value extends string>({
     </div>
   )
 }
+
+export interface SegmentedToggle<Value extends string> {
+  value: Value
+  /** The segment's short visible text, such as a count. */
+  text: string
+  /** The accessible name, which says what the text counts. */
+  label: string
+  tooltip: string
+}
+
+export interface SegmentedTogglesProps<Value extends string> {
+  /** The accessible name of the group. */
+  label: string
+  options: readonly SegmentedToggle<Value>[]
+  /** The pressed segment, or null when none is. */
+  pressed: Value | null
+  onToggle: (value: Value) => void
+  /** `small` fits a compact table row. */
+  size?: 'default' | 'small'
+}
+
+/**
+ * Toggle buttons drawn as a segmented control of icons. Each segment is as wide
+ * as an icon segment, so a row of them lines up over a `SegmentedControl` of
+ * icons, such as totals over the choices they count. At most one is pressed,
+ * and each segment is its own Tab stop.
+ */
+export function SegmentedToggles<Value extends string>({
+  label,
+  options,
+  pressed,
+  onToggle,
+  size = 'default',
+}: SegmentedTogglesProps<Value>) {
+  return (
+    <div role="group" aria-label={label} className={styles.group}>
+      {options.map((option) => (
+        <Tooltip key={option.value} content={option.tooltip}>
+          <button
+            type="button"
+            aria-pressed={option.value === pressed}
+            aria-label={option.label}
+            className={styles.segment({ checked: option.value === pressed, icon: true, size })}
+            onClick={() => onToggle(option.value)}
+          >
+            {option.text}
+          </button>
+        </Tooltip>
+      ))}
+    </div>
+  )
+}

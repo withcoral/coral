@@ -236,7 +236,7 @@ test.each([
 ])('shows the calls to each tool under the Usage column, given %s', (_, toolCalls, counts) => {
   renderPage({ toolCalls })
   const headers = within(table()).getAllByRole('columnheader')
-  const column = headers.findIndex((header) => header.textContent === 'Usage, 30 days')
+  const column = headers.findIndex((header) => header.textContent === 'Usage')
   const cells =
     column < 0
       ? []
@@ -245,6 +245,23 @@ test.each([
           return within(row as HTMLElement).getAllByRole('cell')[column]!.textContent
         })
   expect(cells).toEqual(counts)
+})
+
+// Catches: a heading count too wide for the policy segment it sits over, or a short
+// count that hides the exact one from a screen reader.
+test.each([
+  [12, '12', '12 Needs approval'],
+  [1200, '1.2K', '1,200 Needs approval'],
+])('a heading shows %i tools needing approval as %s', (count, text, name) => {
+  const many = provider(
+    github.id,
+    'GitHub',
+    'github',
+    Array.from({ length: count }, (_, i) => `t${i}`),
+  )
+  renderPage({ providers: [many] })
+  const heading = within(table()).getByRole('rowgroup', { name: 'GitHub' })
+  expect(within(heading).getByRole('button', { name })).toHaveTextContent(text)
 })
 
 // Catches: the page drawing its own sticky provider and group rows instead of

@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 
-import { SegmentedControl } from './segmented-control'
+import { SegmentedControl, SegmentedToggles } from './segmented-control'
 
 const options = [
   { value: 'url', label: 'OpenAPI URL' },
@@ -56,3 +56,28 @@ function IconDemo({ size }: { size?: 'default' | 'small' }) {
 // Icon segments name themselves with their label and show it as a tooltip.
 export const Icons: StoryObj<typeof IconDemo> = { render: () => <IconDemo /> }
 export const SmallIcons: StoryObj<typeof IconDemo> = { render: () => <IconDemo size="small" /> }
+
+function TotalsDemo() {
+  const [pressed, setPressed] = useState<(typeof accessOptions)[number]['value'] | null>(null)
+  const counts = { allow: 22, approve: 9, disable: 0 }
+  return (
+    <div style={{ display: 'grid', gap: 8, justifyItems: 'start' }}>
+      <SegmentedToggles
+        label="Tools by access"
+        size="small"
+        pressed={pressed}
+        onToggle={(value) => setPressed((current) => (current === value ? null : value))}
+        options={accessOptions.map(({ value, label }) => ({
+          value,
+          text: String(counts[value]),
+          label: `${counts[value]} ${label}`,
+          tooltip: `Show only ${label}.`,
+        }))}
+      />
+      <IconDemo size="small" />
+    </div>
+  )
+}
+
+// Totals line up over the icon segments they count; a pressed total is raised.
+export const TogglesOverIcons: StoryObj<typeof TotalsDemo> = { render: () => <TotalsDemo /> }

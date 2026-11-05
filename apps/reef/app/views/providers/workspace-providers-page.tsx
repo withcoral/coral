@@ -16,6 +16,7 @@ import { Picker } from '@/wax/components/picker'
 import { Pill, type PillColor } from '@/wax/components/pill'
 import { StatusDot } from '@/wax/components/status'
 import { InfoTip, Tooltip } from '@/wax/components/tooltip'
+import { SegmentedToggles } from '@/wax/components/segmented-control'
 import { Meter } from '@/wax/components/charts'
 import { ToolName } from '@/wax/components/tool-name'
 import * as Table from '@/wax/components/table'
@@ -1130,7 +1131,7 @@ function ProvidersTableScreen({
               {toolCalls && (
                 <Table.Heading className={styles.callsColumn}>
                   <span className={styles.callsHeading}>
-                    {`Usage, ${toolCalls.days} days`}
+                    Usage
                     <InfoTip ariaLabel="About calls">
                       {`Your calls and your agents' calls in the last ${toolCalls.days} days.`}
                     </InfoTip>
@@ -2023,25 +2024,29 @@ function PolicySummary({
     return tally
   }, [policies, provider])
   return (
-    <>
-      {policyOptions.map(({ value, label, icon }) => (
-        <Tooltip key={value} content={`Show only tools set to ${label}.`}>
-          <Button.Container
-            variant="bare"
-            size="22"
-            className={styles.policySummaryItem}
-            aria-pressed={active === value}
-            onClick={() => onFilter(value, mutations)}
-          >
-            <Icon name={icon} size="14" color="inherit" />
-            <span aria-hidden>{counts.get(value) ?? 0}</span>
-            <span className={visuallyHidden}>{`${counts.get(value) ?? 0} ${label}`}</span>
-          </Button.Container>
-        </Tooltip>
-      ))}
-    </>
+    <SegmentedToggles
+      label={`${providerLabel(provider)} tools by policy`}
+      size="small"
+      pressed={policyOptions.some(({ value }) => value === active) ? (active as PolicyState) : null}
+      onToggle={(value) => onFilter(value, mutations)}
+      options={policyOptions.map(({ value, label }) => {
+        const count = counts.get(value) ?? 0
+        return {
+          value,
+          text: shortCount(count),
+          label: `${count.toLocaleString('en-US')} ${label}`,
+          tooltip: `Show only tools set to ${label}.`,
+        }
+      })}
+    />
   )
 }
+
+// A segment is as wide as a policy toggle, so a count of a thousand or more shortens.
+const shortCount = (count: number) =>
+  count < 1000
+    ? String(count)
+    : new Intl.NumberFormat('en-US', { notation: 'compact' }).format(count)
 
 function ToolDetailsDrawer({
   provider: routedProvider,
