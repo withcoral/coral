@@ -623,7 +623,7 @@ export const failureMessages = {
   invalid_program_value: 'The program returned a value that is not JSON: undefined.',
   resource_limit_exceeded: 'The program made more than 1000 tool calls.',
   memory_limit_exceeded: 'The program used more than 64 MiB of memory.',
-  cpu_limit_exceeded: 'The program used more than 30 seconds of CPU time.',
+  cpu_limit_exceeded: 'The program used more CPU time than its budget.',
   program_execution_failed: 'The program failed while it ran.',
   run_authority_lost: 'The agent that started this run lost access to the workspace.',
   unknown: 'The run failed for a reason this version of Reef does not know.',
