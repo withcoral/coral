@@ -31,8 +31,9 @@
 //! # Invariants
 //!
 //! The current active Provider catalog proves that the exact target exists.
-//! Without an exact rule, a declared read-only Tool and an HTTP Tool
-//! with a safe method are enabled; every other Tool is approval-required.
+//! Without an exact rule, a declared read-only Tool, an HTTP Tool with a
+//! safe method and a Tool its catalog declares `enabled` are enabled; every
+//! other Tool is approval-required.
 //! A policy change and its safe lifecycle Event commit in one transaction.
 //!
 //! The Module reads no process environment. Adapters supply authenticated User,

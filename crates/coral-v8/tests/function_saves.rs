@@ -406,6 +406,12 @@ fn a_save_call_admission_cannot_read_is_refused() {
             "Pass source once".to_string(),
         ),
         (
+            "a spread after source",
+            saving("const f = () => 1;\nconst extra = {};\n", "f, ...extra"),
+            "...extra",
+            "Put source after every spread and computed key, so none replaces it".to_string(),
+        ),
+        (
             "a computed path",
             "const f = () => 1;\nawait coral.workspace[\"saveFunction\"]({ source: f });"
                 .to_string(),
@@ -451,7 +457,10 @@ fn a_save_call_admission_cannot_read_is_refused() {
 fn no_authored_value_reaches_the_tool_as_a_source() {
     // A path admission cannot read reaches the host's encoding, which drops
     // every source but a carrier and refuses an input that is not an object.
-    let body = r#"const name = ["save", "Function"].join("");
+    // A `toJSON` beside a carried source cannot replace it.
+    let body = r#"const f = () => 1;
+await coral.workspace.saveFunction({ path: "t", description: "d", source: f, toJSON() { return { path: "t", description: "d", source: "forged" }; } });
+const name = ["save", "Function"].join("");
 await coral.workspace[name]({ path: "a", description: "d", source: "export default () => 1" });
 await coral.workspace[name]({ path: "b", description: "d", source: { text: "export default () => 1" } });
 const carrierless = typeof globalThis["__coral" + "SavedFunctionSource"];
@@ -474,6 +483,11 @@ return { carrierless, refused };"#;
             .map(|(arguments, _location)| arguments)
             .collect::<Vec<_>>(),
         [
+            serde_json::json!({
+                "path": "t",
+                "description": "d",
+                "source": "const f = () => 1;\n\nexport default f;\n",
+            }),
             serde_json::json!({ "path": "a", "description": "d" }),
             serde_json::json!({ "path": "b", "description": "d" }),
         ]

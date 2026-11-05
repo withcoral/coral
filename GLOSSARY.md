@@ -193,7 +193,7 @@ exist. _Avoid_: task id, task key, task handle, task alias, short identifier, ag
 
 **Task Interaction**: An individually identified, Workspace-owned child record in a Task's history of one authorized
 attempt to use Coral, retaining the participating Principal, separate per-call intent, timing, and attempt outcome. A
-search, save or delete a Program makes is part of that Program's Run, not a separate interaction. Task history keeps
+search, save or delete made by a Program is part of that Program's Run, not a separate interaction. Task history keeps
 the search, describe, save and delete interactions recorded before Programs made them (ADRs 0026 and 0031). A User can inspect that User's
 interactions and a Workspace Owner can inspect Workspace-owned
 Agent interactions, without gaining another User's private work or giving

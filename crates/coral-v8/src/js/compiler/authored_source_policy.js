@@ -356,7 +356,7 @@ function propertyPath(node, checker, sourceFile) {
 }
 
 // The outermost expression that wraps `node` in transparent syntax only:
-// parentheses, type assertions and non-null assertions.
+// parentheses, `as`, `satisfies`, angle-bracket and non-null assertions.
 function outermostTransparentExpression(node) {
   let current = node;
   while (

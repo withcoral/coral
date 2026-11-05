@@ -299,6 +299,20 @@ function savedFunctionExtraction({
     if (sources.length > 1) {
       return refuse('Pass source once', sources[1]);
     }
+    // A later spread or computed key may replace the carried source.
+    const replacing = input.properties
+      .slice(input.properties.indexOf(sources[0]) + 1)
+      .find(
+        (property) =>
+          ts.isSpreadAssignment(property) ||
+          (property.name !== undefined && ts.isComputedPropertyName(property.name)),
+      );
+    if (replacing !== undefined) {
+      return refuse(
+        'Put source after every spread and computed key, so none replaces it',
+        replacing,
+      );
+    }
     return sources.every(extractSource);
   });
   return refusal === undefined

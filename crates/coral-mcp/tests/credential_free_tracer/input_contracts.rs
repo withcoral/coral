@@ -176,8 +176,6 @@ async fn check_feedback(session: &RawSession, tools: &[Value]) {
 /// A Program's byte bound and NUL check are domain-owned, as its schema
 /// leaves them. coral-functions owns a saved source's own rules.
 async fn check_sources(session: &RawSession, task: &str, tools: &[Value]) {
-    use coral_run::ProgramSource;
-
     let program = format!("//{}", "é".repeat(32767));
     assert_eq!(program.len(), 65536);
     let schema = validator(property(tools, "exec", "program"));
@@ -191,7 +189,6 @@ async fn check_sources(session: &RawSession, task: &str, tools: &[Value]) {
             schema.is_valid(&json!(value)),
             "byte and NUL constraints are domain-owned"
         );
-        assert_eq!(ProgramSource::parse(&value).is_ok(), valid);
         let result = session
             .tool(
                 "exec",

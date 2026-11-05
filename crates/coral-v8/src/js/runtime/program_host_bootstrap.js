@@ -61,7 +61,8 @@
     if (typeof input !== 'object' || input === null || isArray(input)) return undefined;
     const encoded = create(null);
     for (const key of keys(input)) {
-      if (key !== 'source') encoded[key] = input[key];
+      // A copied `toJSON` would replace what this encodes, source included.
+      if (key !== 'source' && key !== 'toJSON') encoded[key] = input[key];
     }
     const text = SavedFunctionSource.textOf(input.source);
     if (text !== undefined) encoded.source = text;

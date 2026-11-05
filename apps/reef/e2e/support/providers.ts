@@ -903,12 +903,13 @@ export function programRunner(
   }
   /**
    * Runs `program` in the Task until its Run ends and returns its Final Value, or nothing
-   * when the call or the Run fails. Scenarios count only the calls they make, so these are
-   * left out of `calls`.
+   * when the call or the Run fails; `failed` receives that last result. Scenarios count only
+   * the calls they make, so these are left out of `calls`.
    */
   const runUncounted = async <T>(
     program: string,
     intent = 'Find tools',
+    failed?: (result: ToolResult<RunUpdate>) => void,
   ): Promise<ToolResult<T> | undefined> => {
     await initialize()
     const counted = { ...calls }
@@ -940,8 +941,10 @@ export function programRunner(
       }
       const update = result.structuredContent
       const final = update.final_value as { kind: string; value?: T } | undefined
-      if (result.isError || update.state !== 'succeeded' || final?.kind !== 'value')
+      if (result.isError || update.state !== 'succeeded' || final?.kind !== 'value') {
+        failed?.(result)
         return undefined
+      }
       return { structuredContent: final.value as T }
     } finally {
       for (const name of Object.keys(calls)) delete calls[name]
@@ -976,11 +979,16 @@ export function programRunner(
       name: string,
     ): Promise<ToolResult> {
       const fields = `path: ${JSON.stringify(path)}, description: ${JSON.stringify(description)}`
+      // A failed save keeps its Run's failure, so a scenario can show why.
+      let failure: ToolResult<RunUpdate> | undefined
       const saved = await runUncounted(
         `${declarations}\nreturn (await coral.workspace.saveFunction({ ${fields}, source: ${name} })).data;`,
         'Save a reusable function',
+        (result) => {
+          failure = result
+        },
       )
-      return saved ?? { isError: true, structuredContent: {} }
+      return saved ?? { isError: true, structuredContent: failure?.structuredContent ?? {} }
     },
     async wait(update: RunUpdate): Promise<ToolResult<RunUpdate>> {
       await initialize()

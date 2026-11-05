@@ -1416,8 +1416,10 @@ impl ProviderGenerationFingerprint {
             }
             // Only a Built-in Tool declares a default, so every other
             // package keeps the fingerprint it had before the declaration.
+            // No text frame starts with this length, so the marker cannot be
+            // read as the next Tool's tag.
             if tool.enabled_by_default {
-                fingerprint_text(&mut hasher, "enabled_by_default");
+                hasher.update(usize::MAX.to_be_bytes());
             }
         }
         Self(encode_sha256(hasher.finalize()))

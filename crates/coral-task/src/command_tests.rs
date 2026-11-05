@@ -1170,7 +1170,7 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
 
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Retain the whole goal");
-    // The goal's own Program saved it; expiring the goal keeps it.
+    // A function saved while the goal is open outlives the goal's expiry.
     fixture
         .save_function(&call, "current", "Keep current", "export default () => 42;")
         .await
@@ -1613,7 +1613,7 @@ async fn search_request_validation_happens_after_durable_begin() {
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "the same real lock-wait expiry scenario checks attempt admission and owning Saved Function acceptance"
+    reason = "the same real lock-wait expiry scenario checks attempt admission and Run acceptance"
 )]
 async fn registration_expiry_during_lock_waits_prevents_attempt_and_run_acceptance() {
     for point in [Checkpoint::BeforeBeginLock, Checkpoint::AfterBegin] {

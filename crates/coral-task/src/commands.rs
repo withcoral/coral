@@ -435,8 +435,10 @@ pub enum RetainedChange<'a> {
 impl TaskCommands {
     /// Makes `change` through `functions` as `call`'s Principal and
     /// completes its Attempt, naming the function, in one transaction. A
-    /// failure records the Attempt's rejection, as Coral did. Universal
-    /// Search is not told; a reconcile pass finds the function.
+    /// failure records the Attempt's rejection. Coral refused a delete of an
+    /// absent function before the Attempt began, so this records one that
+    /// Coral did not. Universal Search is not told; a reconcile pass finds
+    /// the function.
     ///
     /// # Errors
     ///

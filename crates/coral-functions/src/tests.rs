@@ -695,6 +695,20 @@ async fn saved_function_paths_cannot_overlap_virtual_namespaces() {
                 .await,
             Err(Error::SavedFunctionPathConflict)
         ));
+        assert!(
+            matches!(
+                fixture
+                    .saved_functions
+                    .get(
+                        &principal,
+                        &workspace_id,
+                        &SavedFunctionPath::parse(path).expect("path"),
+                    )
+                    .await,
+                Err(Error::SavedFunctionNotFound)
+            ),
+            "the refused save of {path} saved nothing"
+        );
     }
     assert!(matches!(
         fixture

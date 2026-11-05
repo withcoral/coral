@@ -86,8 +86,8 @@ body with a module and cannot test the function before it saves it; and `source`
   the caller's own functions. Each retained Generation keeps the declaration beside the Tool's hints, so policy, the
   pending-approval queries and discovery read the same default. An Owner can still require approval for either Tool or
   disable it with an exact rule. Only Coral's own catalog declares a default; a Provider's source cannot.
-- **A Program tests what it saves, then saves it.** It calls its own function before it saves it. It cannot call the
-  saved function by its path in the same Run: admission links Saved Functions before the Program runs and refuses a
+- **A Program can test what it saves, then save it.** It can call its own function before it saves it; admission does
+  not require it. It cannot call the saved version by its path in the same Run: admission links Saved Functions before the Program runs and refuses a
   Program that names one the caller does not have, so the path is callable from the next Program, and a replace or
   delete leaves an accepted Run unchanged.
 - **A save outlives its Run.** A Run that fails, is canceled or times out after a save keeps the save. Coral checks that

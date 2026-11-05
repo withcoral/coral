@@ -480,7 +480,8 @@ fn compiler_outcome<T>(result: &Result<T, Error>) -> CompilerOutcome {
             | Error::InvalidSavedFunction(_)
             | Error::SourceTooDeeplyNested
             | Error::ForbiddenCapability(_)
-            | Error::InvalidSavedFunctionReference { .. },
+            | Error::InvalidSavedFunctionReference { .. }
+            | Error::InvalidFunctionSave(_),
         ) => CompilerOutcome::Rejected,
         Err(_) => CompilerOutcome::Failed,
     }

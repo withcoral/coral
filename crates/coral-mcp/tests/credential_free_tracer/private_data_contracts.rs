@@ -286,6 +286,12 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         )
         .await;
     assert_eq!(refused["code"], "invalid_input", "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|message| !message.contains(CANARY)),
+        "{refused}"
+    );
     let linked = session
         .tool(
             "exec",

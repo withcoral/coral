@@ -454,7 +454,9 @@ pub async fn tool_policy_facts_in_transaction(
     keys: &[ToolKey],
 ) -> Result<std::collections::BTreeMap<ToolKey, ToolPolicyFacts>, Error> {
     if !(1..=100).contains(&keys.len()) {
-        return Err(Error::InvalidInput("invalid Tool hints batch size".into()));
+        return Err(Error::InvalidInput(
+            "invalid Tool policy facts batch size".into(),
+        ));
     }
     repository::load_tool_policy_facts(transaction, generation_id, keys).await
 }

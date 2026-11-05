@@ -159,6 +159,6 @@ await coral.workspace.saveFunction({
 return issues;
 ```
 
-Later programs call it as `coral.functions.triage.staleIssues`. The program that saves it cannot call it by that path.
+Later programs call it as `coral.functions.triage.staleIssues`. The program that saves it cannot call the new version by that path. A program that replaces a saved function calls the version that was current when it started.
 
 A user's saved functions are private to that user.
