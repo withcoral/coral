@@ -365,6 +365,8 @@ pub enum RunFailureCode {
     ResourceLimitExceeded,
     /// The Program exceeded its execution isolate's heap budget.
     MemoryLimitExceeded,
+    /// The Program used more CPU time than its Run CPU Budget.
+    CpuLimitExceeded,
     /// The isolated runtime could not complete execution safely.
     ProgramExecutionFailed,
     /// Current authority disappeared before Program execution started.
@@ -380,6 +382,7 @@ impl RunFailureCode {
             Self::InvalidProgramValue => "invalid_program_value",
             Self::ResourceLimitExceeded => "resource_limit_exceeded",
             Self::MemoryLimitExceeded => "memory_limit_exceeded",
+            Self::CpuLimitExceeded => "cpu_limit_exceeded",
             Self::ProgramExecutionFailed => "program_execution_failed",
             Self::RunAuthorityLost => "run_authority_lost",
         }
