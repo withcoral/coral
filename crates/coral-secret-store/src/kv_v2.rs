@@ -22,8 +22,8 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// The largest answer Coral reads from a store.
 const BODY_LIMIT: usize = 1 << 20;
 
-/// How long reads share a failed login instead of each trying their own.
-const LOGIN_RETRY_AFTER: Duration = Duration::from_secs(5);
+/// How long reads share a failed login or renewal instead of each trying their own.
+const RETRY_AFTER: Duration = Duration::from_secs(5);
 
 const TOKEN_HEADER: &str = "x-vault-token";
 
@@ -115,6 +115,7 @@ pub struct KvV2Store {
 struct TokenState {
     token: Option<Token>,
     login_failure: Option<(Instant, Error)>,
+    renewal_failure: Option<Instant>,
 }
 
 /// A store token and the lease the store gave it.
@@ -140,14 +141,14 @@ impl Token {
     }
 
     /// What to do before this token's next use. It renews past half of its
-    /// lease, and gives up on the lease near the end, in time for a read that
-    /// starts now to finish before it lapses.
+    /// lease, and gives up on the lease near the end, or when a request could
+    /// take longer than what is left, so a read that starts now can finish.
     fn next_step(&self, now: Instant) -> NextStep {
         let Some(lease) = self.lease else {
             return NextStep::Use;
         };
         let held = now.saturating_duration_since(self.obtained);
-        if held >= lease.mul_f64(0.9) {
+        if held >= lease.mul_f64(0.9) || lease.saturating_sub(held) <= REQUEST_TIMEOUT {
             NextStep::Login
         } else if self.renewable && held >= lease / 2 {
             NextStep::Renew
@@ -210,26 +211,38 @@ impl KvV2Store {
             };
             match token.next_step(now) {
                 NextStep::Use => return Ok(held),
-                NextStep::Renew => match self.renew(&held.value, now).await {
-                    Ok(renewed) => {
-                        let value = Arc::clone(&renewed.value);
-                        state.token = Some(renewed);
-                        return Ok(UsableToken {
-                            value,
-                            from_login: false,
-                        });
+                NextStep::Renew => {
+                    if state
+                        .renewal_failure
+                        .is_some_and(|failed| now.saturating_duration_since(failed) < RETRY_AFTER)
+                    {
+                        return Ok(held);
                     }
-                    // The lease still has time to run, and the store may be back
-                    // before it ends.
-                    Err(Error::Unreachable) => return Ok(held),
-                    Err(_) => {}
-                },
+                    match self.renew(&held.value, now).await {
+                        Ok(renewed) => {
+                            let value = Arc::clone(&renewed.value);
+                            state.token = Some(renewed);
+                            state.renewal_failure = None;
+                            return Ok(UsableToken {
+                                value,
+                                from_login: false,
+                            });
+                        }
+                        // The lease still has time to run, and the store may be
+                        // back before it ends.
+                        Err(Error::Unreachable) => {
+                            state.renewal_failure = Some((self.clock)());
+                            return Ok(held);
+                        }
+                        Err(_) => {}
+                    }
+                }
                 NextStep::Login => {}
             }
         }
         state.token = None;
         if let Some((failed, error)) = state.login_failure
-            && now.saturating_duration_since(failed) < LOGIN_RETRY_AFTER
+            && now.saturating_duration_since(failed) < RETRY_AFTER
         {
             return Err(error);
         }
@@ -238,6 +251,7 @@ impl KvV2Store {
                 let value = Arc::clone(&token.value);
                 state.token = Some(token);
                 state.login_failure = None;
+                state.renewal_failure = None;
                 Ok(UsableToken {
                     value,
                     from_login: true,

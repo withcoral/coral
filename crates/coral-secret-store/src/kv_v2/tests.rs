@@ -410,6 +410,15 @@ async fn keeps_its_token_fresh_as_the_lease_passes() {
             0,
         ),
         ("a lease that never ends", 0, true, 1 << 40, &renewed, 1, 0),
+        (
+            "too little lease left for a read",
+            20,
+            true,
+            12,
+            &renewed,
+            2,
+            0,
+        ),
     ] {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -547,8 +556,8 @@ async fn a_revoked_token_recovers_on_the_same_read() {
     assert_eq!(store.read(&reference).await.unwrap().expose(), "after");
 }
 
-/// Reads wait their turn for a login. When the store hangs, each must not then
-/// wait out its own timeout, so they share a failure seconds old.
+/// A failed login is shared by later reads within `RETRY_AFTER`, then retried,
+/// so reads queued behind a hanging store do not each wait out a timeout.
 #[tokio::test]
 async fn reads_share_a_recent_login_failure_then_try_again() {
     let server = MockServer::start().await;
@@ -567,7 +576,7 @@ async fn reads_share_a_recent_login_failure_then_try_again() {
     }
     assert_eq!(logins().await, 1);
 
-    clock.advance(super::LOGIN_RETRY_AFTER);
+    clock.advance(super::RETRY_AFTER);
     assert_eq!(
         store.read(&reference).await.unwrap_err(),
         crate::Error::Unreachable
@@ -614,4 +623,34 @@ async fn a_renewed_token_that_is_revoked_is_replaced() {
 
     let requests = server.received_requests().await.unwrap();
     assert_eq!(count(&requests, LOGIN), 2);
+}
+
+/// While the store is down, reads must not queue behind a renewal each, or a
+/// read that could use its still-valid token waits out timeouts first.
+#[tokio::test]
+async fn reads_share_a_recent_renewal_failure_then_try_again() {
+    let server = MockServer::start().await;
+    answer_login(&server).await;
+    Mock::given(method("POST"))
+        .and(path(RENEW))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(entry(&json!({ "token": "value" })))
+        .mount(&server)
+        .await;
+    let (store, clock) = store_at(&server);
+    let reference = reference("team/jira", Some("token"));
+    let renewals = async || count(&server.received_requests().await.unwrap(), RENEW);
+
+    store.read(&reference).await.unwrap();
+    clock.advance(Duration::from_mins(30));
+    store.read(&reference).await.unwrap();
+    store.read(&reference).await.unwrap();
+    assert_eq!(renewals().await, 1);
+
+    clock.advance(super::RETRY_AFTER);
+    store.read(&reference).await.unwrap();
+    assert_eq!(renewals().await, 2);
 }

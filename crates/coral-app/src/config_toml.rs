@@ -2,7 +2,8 @@
 //!
 //! Operators can put a secret under the wrong key. TOML and serde errors quote
 //! the rejected value or render its source line, so every `config.toml` parser
-//! decodes through [`decode`], which names the key path instead.
+//! decodes through [`decode`] or [`decode_entry`], which name the key path
+//! instead.
 
 use serde::de::DeserializeOwned;
 

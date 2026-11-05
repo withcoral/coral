@@ -8,7 +8,7 @@ export function OrganizationSecretStoresPage({
   stores: { name: string; kind: string }[]
 }) {
   return (
-    <ManagementLayout breadcrumbs={trail([], 'Secret stores')} titled compact>
+    <ManagementLayout breadcrumbs={trail([], 'Secret stores')} compact>
       <Table.Container
         ariaLabel="Secret stores"
         variant="card"

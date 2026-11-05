@@ -61,7 +61,8 @@ mod tests {
                 name.clone(),
                 SecretStoreKind::KvV2,
                 Arc::new(InMemorySecretStore::new()) as _,
-            )]),
+            )])
+            .unwrap(),
         );
 
         assert_eq!(

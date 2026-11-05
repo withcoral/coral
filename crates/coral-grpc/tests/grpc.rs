@@ -1182,7 +1182,8 @@ async fn only_an_organization_owner_lists_the_defined_secret_stores() {
         coral_secret_store::SecretStores::new([
             (named("zeta"), kind, store()),
             (named("alpha"), kind, store()),
-        ]),
+        ])
+        .unwrap(),
     )
     .await;
     let list = |principal, audience| {

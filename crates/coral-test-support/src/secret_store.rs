@@ -64,12 +64,10 @@ impl SecretStore for InMemorySecretStore {
         if let Some(failure) = *self.failure.lock().expect("store lock") {
             return Err(failure);
         }
+        let key = reference.key().ok_or(Error::KeyNotFound)?;
         let entries = self.entries.lock().expect("store lock");
         let entry = entries.get(reference.path()).ok_or(Error::EntryNotFound)?;
-        let value = reference
-            .key()
-            .and_then(|key| entry.get(key))
-            .ok_or(Error::KeyNotFound)?;
+        let value = entry.get(key).ok_or(Error::KeyNotFound)?;
         Secret::new(value.clone()).map_err(|_error| Error::MalformedResponse)
     }
 }
@@ -87,6 +85,11 @@ mod tests {
         let store = InMemorySecretStore::new();
         let token = reference("team/jira", Some("token"));
         assert_eq!(store.read(&token).await.unwrap_err(), Error::EntryNotFound);
+        // Like the adapter, it needs a key before it looks for the entry.
+        assert_eq!(
+            store.read(&reference("missing", None)).await.unwrap_err(),
+            Error::KeyNotFound
+        );
 
         store.set("team/jira", "token", "first");
         assert_eq!(store.read(&token).await.unwrap().expose(), "first");

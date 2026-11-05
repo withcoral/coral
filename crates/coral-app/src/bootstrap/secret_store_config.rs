@@ -143,20 +143,26 @@ pub(super) fn build(
         })?;
     let mut stores = Vec::with_capacity(definitions.len());
     for store in definitions {
+        // The errors do not name the variable: an operator may have pasted the
+        // secret itself into this setting.
         let secret_id = env(&store.secret_id_env)
-            .ok()
-            .flatten()
+            .map_err(|_not_unicode| {
+                invalid(format!(
+                    "{}.auth.secret_id_env: environment variable must contain valid UTF-8",
+                    store.label
+                ))
+            })?
             .ok_or_else(|| {
                 invalid(format!(
-                    "{}.auth.secret_id_env: environment variable `{}` is not set",
-                    store.label, store.secret_id_env
+                    "{}.auth.secret_id_env: environment variable is not set",
+                    store.label
                 ))
             })
             .and_then(|value| {
                 Secret::new(value).map_err(|_error| {
                     invalid(format!(
-                        "{}.auth.secret_id_env: environment variable `{}` is not a usable secret",
-                        store.label, store.secret_id_env
+                        "{}.auth.secret_id_env: environment variable is not a usable secret",
+                        store.label
                     ))
                 })
             })?;
@@ -174,7 +180,7 @@ pub(super) fn build(
         ));
         stores.push((store.name, store.kind, adapter));
     }
-    Ok(SecretStores::new(stores))
+    SecretStores::new(stores).map_err(invalid)
 }
 
 #[cfg(test)]
@@ -300,12 +306,38 @@ mod tests {
             };
             let error = error.to_string();
             assert!(
-                error.contains("secret_stores[0] (team).auth.secret_id_env")
-                    && error.contains("`SECRET_ID`"),
+                error.contains("secret_stores[0] (team).auth.secret_id_env"),
                 "{error}"
             );
             assert!(!error.contains("a\nb"), "{error}");
         }
+    }
+
+    /// A value that is set but unreadable is a different thing to fix.
+    #[test]
+    fn a_secret_id_that_is_not_unicode_says_so() {
+        let (_temp, config) = load(&store("team"));
+        let Err(error) = config.secret_stores_from(DestinationPolicy::default(), &|_name| {
+            Err(std::env::VarError::NotUnicode("x".into()))
+        }) else {
+            panic!("a store needs a readable secret ID");
+        };
+        let error = error.to_string();
+        assert!(
+            error.contains("secret_stores[0] (team).auth.secret_id_env")
+                && error.contains("valid UTF-8"),
+            "{error}"
+        );
+    }
+
+    /// A secret ID pasted in place of the variable's name stays out of the error.
+    #[test]
+    fn a_secret_pasted_as_the_variable_name_is_not_repeated() {
+        let raw = store("team").replace("'SECRET_ID'", &format!("'{SECRET}'"));
+        let Err(error) = build(&raw, None) else {
+            panic!("the variable is not set");
+        };
+        assert!(!error.to_string().contains(SECRET), "{error}");
     }
 
     /// Operators paste secrets under the wrong key.

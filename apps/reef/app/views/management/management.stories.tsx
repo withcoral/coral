@@ -1323,6 +1323,9 @@ export const OrganizationSecretStores: Story = {
     />
   ),
   parameters: { initialEntry: '/organization/secret-stores' },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('heading', { level: 1, name: 'Secret stores' })).toBeVisible()
+  },
 }
 export const OrganizationSecretStoresEmpty: Story = {
   render: () => <OrganizationSecretStoresPage stores={[]} />,

@@ -84,7 +84,7 @@ When the check is on, Coral reads the latest release from `api.github.com` at st
 
 ### `[[secret_stores]]`
 
-A Secret Store is a connection to a secrets system you run, so that Provider credentials can stay there. Coral supports HashiCorp Vault and OpenBao KV version 2, and signs in with AppRole. Add one `[[secret_stores]]` table per store. Organization owners can see each store's name and kind in the account menu, under **Secret stores**.
+Defines a connection to a secrets system you run. Coral supports HashiCorp Vault and OpenBao KV version 2, and signs in with AppRole. Add one `[[secret_stores]]` table per store. Organization owners can see each store's name and kind in the account menu, under **Secret stores**.
 
 ```toml
 [[secret_stores]]
@@ -99,56 +99,21 @@ role_id = "c6f7a0e2-..."
 secret_id_env = "CORAL_PLATFORM_SECRET_ID"
 ```
 
-| Key                  | Description                                                                                                    | Required | Default   |
-| -------------------- | -------------------------------------------------------------------------------------------------------------- | -------- | --------- |
-| `name`               | Stable name for the store: up to 64 lowercase letters, digits, `-` or `_`, starting with a letter or digit     | Yes      | N/A       |
-| `kind`               | The secrets system. Must be `kv-v2`.                                                                           | Yes      | N/A       |
-| `address`            | Origin of the store's API, http or https. May include a port; must not include a path. `[outbound]` decides whether Coral may reach it. | Yes      | N/A       |
-| `mount`              | Where the KV engine is mounted                                                                                 | Yes      | N/A       |
-| `auth.method`        | How Coral signs in. Must be `approle`.                                                                         | Yes      | N/A       |
-| `auth.mount`         | Where the AppRole auth method is mounted                                                                       | No       | `approle` |
-| `auth.role_id`       | The role's ID                                                                                                  | Yes      | N/A       |
-| `auth.secret_id_env` | Name of the environment variable that holds the role's secret ID                                               | Yes      | N/A       |
+| Key                  | Description                                                                                                | Required | Default   |
+| -------------------- | ---------------------------------------------------------------------------------------------------------- | -------- | --------- |
+| `name`               | Stable name for the store: up to 64 lowercase letters, digits, `-` or `_`, starting with a letter or digit | Yes      | N/A       |
+| `kind`               | The secrets system. Must be `kv-v2`.                                                                       | Yes      | N/A       |
+| `address`            | Origin of the store's API, http or https. May include a port; must not include a path.                     | Yes      | N/A       |
+| `mount`              | Where the KV engine is mounted                                                                             | Yes      | N/A       |
+| `auth.method`        | How Coral signs in. Must be `approle`.                                                                     | Yes      | N/A       |
+| `auth.mount`         | Where the AppRole auth method is mounted                                                                   | No       | `approle` |
+| `auth.role_id`       | The role's ID                                                                                              | Yes      | N/A       |
+| `auth.secret_id_env` | Name of the environment variable that holds the role's secret ID                                           | Yes      | N/A       |
 
 Coral reads this section when it starts, and stores no credential for a store in its database.
 
 - A malformed store, or a secret ID variable that is not set, stops Coral from starting. The error names the store and the field.
-- An unreachable store does not stop Coral from starting. Coral first contacts a store when it needs a value.
-- Coral logs in when it first needs a token. When it next needs a value, it renews a token past half of its lease, and logs in again when the token is near its end or cannot renew. A store that is idle for a whole lease therefore costs one more login.
-- Each login uses the role's secret ID, so do not limit the role with `secret_id_num_uses`, or give the secret ID a TTL shorter than you can replace it in.
-
-#### Limit what each store can read
-
-The store's own policy is the security boundary, and Coral adds no check of its own. **A grant of a store to a workspace covers everything that store's role can read.** So give each store its own read-only role, with the least access that works, and use separate stores for workspaces that must not see each other's secrets.
-
-Coral only reads. For KV version 2, a policy like this one is enough:
-
-```hcl
-path "secret/data/coral/platform/*" {
-  capabilities = ["read"]
-}
-```
-
-Coral needs no `list`, `create`, `update` or `delete` access. Also keep Vault's `default` policy on the role, unless you grant `update` on `auth/token/renew-self` and `read` on `auth/token/lookup-self` another way: Coral uses them to renew its token and to tell a revoked token from a denied read.
-
-#### Allow Coral to reach the store
-
-The `[outbound]` policy applies to all store traffic. Without the setting a store needs, Coral reports the store as unreachable.
-
-| Where the store is                                                   | Setting                               |
-| -------------------------------------------------------------------- | ------------------------------------- |
-| Public address, https                                                | None                                  |
-| Private network, https                                               | `private_networks = "https"`          |
-| Private network, http, such as `http://vault:8200` in Docker Compose | `private_networks = "http-and-https"` |
-| This machine, http                                                   | `loopback = "http-and-https"`         |
-
-Coral never reaches a public address over http.
-
-These settings apply to all outbound traffic, so they also let Provider calls reach those networks.
-
-<Warning>
-Over http, Coral sends the role's secret ID, its token and the secret values unencrypted. Use http only for local development, or on a network you trust.
-</Warning>
+- An unreachable store does not stop Coral from starting.
 
 ### `[otel]`
 

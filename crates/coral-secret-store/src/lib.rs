@@ -124,17 +124,21 @@ struct DefinedStore {
 pub struct SecretStores(Arc<BTreeMap<SecretStoreName, DefinedStore>>);
 
 impl SecretStores {
-    /// The registry of the given stores. Bootstrap has already refused duplicates.
-    #[must_use]
+    /// The registry of the given stores.
+    ///
+    /// # Errors
+    /// Returns [`InvalidSetting`] when two stores share a name, so that no read
+    /// can reach the wrong store.
     pub fn new(
         stores: impl IntoIterator<Item = (SecretStoreName, SecretStoreKind, Arc<dyn SecretStore>)>,
-    ) -> Self {
-        Self(Arc::new(
-            stores
-                .into_iter()
-                .map(|(name, kind, store)| (name, DefinedStore { kind, store }))
-                .collect(),
-        ))
+    ) -> Result<Self, InvalidSetting> {
+        let mut defined = BTreeMap::new();
+        for (name, kind, store) in stores {
+            if defined.insert(name, DefinedStore { kind, store }).is_some() {
+                return Err(InvalidSetting("another store has this name"));
+            }
+        }
+        Ok(Self(Arc::new(defined)))
     }
 
     /// Each defined store's name and kind, ordered by name.
@@ -181,7 +185,8 @@ mod tests {
         let stores = SecretStores::new([
             (named("zeta"), SecretStoreKind::KvV2, store()),
             (named("alpha"), SecretStoreKind::KvV2, store()),
-        ]);
+        ])
+        .unwrap();
         let listed: Vec<_> = stores.list().map(|(name, _)| name.as_str()).collect();
         assert_eq!(listed, ["alpha", "zeta"]);
         assert!(stores.get("missing").is_none());
@@ -189,5 +194,14 @@ mod tests {
         let reference = SecretReference::new("zeta".into(), "path".into(), None).unwrap();
         let found = stores.get("zeta").unwrap();
         assert_eq!(found.check(&reference).await, Err(Error::PermissionDenied));
+
+        assert!(
+            SecretStores::new([
+                (named("same"), SecretStoreKind::KvV2, store()),
+                (named("same"), SecretStoreKind::KvV2, store()),
+            ])
+            .is_err(),
+            "a duplicate name must not drop a store"
+        );
     }
 }
