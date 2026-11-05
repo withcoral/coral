@@ -19,7 +19,6 @@ use crate::arguments::{
     SaveFunctionArguments, TaskOutcomeArgument, ToolArguments, WaitArguments,
 };
 use crate::projection::{self, Reporter, ToolFailure};
-use crate::prompts::{Asked, Channel, Prompting};
 
 #[cfg(test)]
 mod tests;
@@ -76,23 +75,17 @@ impl McpServer {
 
     async fn dispatch(
         &self,
-        mut request: CallToolRequestParams,
-        channel: Channel,
+        request: CallToolRequestParams,
     ) -> Result<CallToolResponse, DispatchError> {
-        let prompting = Prompting::from_request(
-            channel,
-            request.request_state.take(),
-            request.input_responses.take(),
-        )
-        .map_err(invalid_input_message)?;
-        let name = request.name.as_ref();
-        if prompting.continued_run().is_some()
-            && !matches!(name, ExecArguments::NAME | WaitArguments::NAME)
-        {
+        // Coral asks a client no in-band question, so no call is a retry that
+        // answers one: a Run that waits on a person reports it in the Run
+        // Update, and the person decides on the Run Status Page.
+        if request.request_state.is_some() || request.input_responses.is_some() {
             return Err(invalid_input_message(
-                "tool does not accept requestState".to_owned(),
+                "tool does not accept requestState or inputResponses".to_owned(),
             ));
         }
+        let name = request.name.as_ref();
         let complete = match name {
             SaveFunctionArguments::NAME => {
                 let arguments = arguments::parse::<SaveFunctionArguments>(request.arguments)?;
@@ -104,11 +97,11 @@ impl McpServer {
             }
             ExecArguments::NAME => {
                 let arguments = arguments::parse::<ExecArguments>(request.arguments)?;
-                return self.exec(arguments, prompting).await;
+                return self.exec(arguments).await;
             }
             WaitArguments::NAME => {
                 let arguments = arguments::parse::<WaitArguments>(request.arguments)?;
-                return self.wait(arguments, prompting).await;
+                return self.wait(arguments).await;
             }
             CancelArguments::NAME => {
                 let arguments = arguments::parse::<CancelArguments>(request.arguments)?;
@@ -165,11 +158,7 @@ impl McpServer {
         .map_err(DispatchError::Tool)
     }
 
-    async fn exec(
-        &self,
-        arguments: ExecArguments,
-        prompting: Prompting,
-    ) -> Result<CallToolResponse, DispatchError> {
+    async fn exec(&self, arguments: ExecArguments) -> Result<CallToolResponse, DispatchError> {
         let target = match (&arguments.task_id, &arguments.goal) {
             (Some(task_id), None) => {
                 ExecTarget::Task(self.attributed_command(task_id, &arguments.intent)?)
@@ -194,26 +183,6 @@ impl McpServer {
             .run_timeout_ms
             .unwrap_or(arguments::DEFAULT_RUN_TIMEOUT_MS);
         let wait_ms = validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_EXEC_WAIT_MS))?;
-        let reread = RunObservation::initial(Duration::ZERO).map_err(invalid_input)?;
-        // A retry answers prompts about the Run this call already started.
-        if let Some(run_id) = prompting.continued_run().cloned() {
-            // The first answer was `input_required`, which had no place for
-            // the Task this call started. Read it before the answers apply,
-            // so a failed read loses none of them.
-            let started = match target {
-                ExecTarget::Task(_) => None,
-                ExecTarget::Goal(_) => self.started_task(&run_id).await?,
-            };
-            return self
-                .observe_prompting(
-                    &run_id,
-                    &reread,
-                    &reread,
-                    prompting,
-                    Reporter::Exec(started.as_ref()),
-                )
-                .await;
-        }
         let (started, accepted) = match target {
             ExecTarget::Task(call) => {
                 let accepted = self
@@ -249,38 +218,15 @@ impl McpServer {
         let observation = RunObservation::initial(Duration::from_millis(wait_ms))
             .map_err(invalid_input)?
             .by_acceptor();
-        self.observe_prompting(
+        self.observe_update(
             accepted.run_id(),
             &observation,
-            &reread.by_acceptor(),
-            prompting,
             Reporter::Exec(started.as_ref()),
         )
         .await
     }
 
-    /// The Task that a first `exec`, now retried, started with `run_id`.
-    /// Coral reads it from the Run rather than from `requestState`, which
-    /// is client input.
-    async fn started_task(&self, run_id: &RunId) -> Result<Option<TaskId>, DispatchError> {
-        let task = self
-            .runtime
-            .modules
-            .tasks
-            .run_task(&self.runtime.principal, &self.workspace_id, run_id)
-            .await
-            .map_err(task_failure)?;
-        Ok(task.map(|task| {
-            tool_call::record_task(task.telemetry_id());
-            task.id().clone()
-        }))
-    }
-
-    async fn wait(
-        &self,
-        arguments: WaitArguments,
-        prompting: Prompting,
-    ) -> Result<CallToolResponse, DispatchError> {
+    async fn wait(&self, arguments: WaitArguments) -> Result<CallToolResponse, DispatchError> {
         let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
         let cursor = arguments
             .cursor
@@ -289,132 +235,28 @@ impl McpServer {
             .transpose()
             .map_err(invalid_input)?;
         let wait_ms = validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_WAIT_MS))?;
-        let reread =
-            RunObservation::immediate(cursor, RUN_EVENT_PAGE_MAX).map_err(invalid_input)?;
-        // A retry has already waited; it answers and observes immediately.
-        let observation = match prompting.continued_run() {
-            Some(continued) if continued != &run_id => {
-                return Err(invalid_input_message(
-                    "requestState belongs to another Run".into(),
-                ));
-            }
-            Some(_) => reread.clone(),
-            None => reread
-                .clone()
-                .batching_output()
-                .with_wait(Duration::from_millis(wait_ms))
-                .map_err(invalid_input)?,
-        };
-        self.observe_prompting(
-            &run_id,
-            &observation,
-            &reread,
-            prompting,
-            Reporter::Observer,
-        )
-        .await
+        let observation = RunObservation::immediate(cursor, RUN_EVENT_PAGE_MAX)
+            .map_err(invalid_input)?
+            .batching_output()
+            .with_wait(Duration::from_millis(wait_ms))
+            .map_err(invalid_input)?;
+        self.observe_update(&run_id, &observation, Reporter::Observer)
+            .await
     }
 
-    /// Observes a Run and asks the client about each current action it can answer.
-    /// Answers go to the Run domain, which decides whether they change anything;
-    /// the returned update is reread after them.
-    async fn observe_prompting(
+    /// Observes a Run and projects what it found. A Run that waits on a
+    /// person reports it in the update's required actions; nothing is asked
+    /// of the client.
+    async fn observe_update(
         &self,
         run_id: &RunId,
         observation: &RunObservation,
-        reread: &RunObservation,
-        mut prompting: Prompting,
         reporter: Reporter<'_>,
     ) -> Result<CallToolResponse, DispatchError> {
-        let trace = &TraceId::current_or_new();
-        self.answer_prompts(run_id, prompting.take_answers(), trace)
-            .await?;
-        let mut update = self.observe(run_id, observation).await?;
-        while prompting.available() && !update.required_actions().is_empty() {
-            let prompts = self
-                .runtime
-                .modules
-                .runs
-                .action_prompts(&self.runtime.principal, &self.workspace_id, run_id)
-                .await
-                .map_err(run_failure)?;
-            let intent = if prompts.is_empty() {
-                None
-            } else {
-                self.runtime
-                    .modules
-                    .tasks
-                    .run_intent(&self.runtime.principal, &self.workspace_id, run_id)
-                    .await
-                    .map_err(task_failure)?
-            };
-            match prompting
-                .ask(
-                    prompts,
-                    run_id,
-                    &self.runtime.modules.human_interface,
-                    intent.as_ref().map(coral_task::TaskIntent::as_str),
-                )
-                .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))?
-            {
-                Asked::Nothing => break,
-                Asked::InputRequired(result) => return Ok(result.into()),
-                Asked::InBand(prompts) => {
-                    for prompt in prompts {
-                        let request = prompt.request().clone();
-                        // Boxed: the watcher holds a whole Run observation.
-                        let withdrawn = Box::pin(self.until_withdrawn(
-                            run_id,
-                            &request,
-                            update.next_cursor().clone(),
-                        ));
-                        // Boxed: it reads the connection through the Account domain.
-                        let connected = Box::pin(self.runtime.modules.runs.connection_connected(
-                            &self.runtime.principal,
-                            &self.workspace_id,
-                            &request,
-                            trace,
-                        ));
-                        let answer = prompt.ask(withdrawn, connected).await;
-                        // Apply each answer at once: a later prompt may stay open.
-                        self.answer_prompts(run_id, vec![answer], trace).await?;
-                    }
-                    update = self.observe(run_id, reread).await?;
-                }
-            }
-        }
+        let update = self.observe(run_id, observation).await?;
         self.run_update(&update, reporter)
             .map(Into::into)
             .map_err(DispatchError::Tool)
-    }
-
-    /// Completes once `request` is no longer a current action of the Run.
-    /// An unreadable Run never withdraws a prompt; its answer is checked anyway.
-    async fn until_withdrawn(
-        &self,
-        run_id: &RunId,
-        request: &coral_run::RequiredActionRequest,
-        mut cursor: RunCursor,
-    ) {
-        loop {
-            let observation = RunObservation::immediate(Some(cursor), RUN_EVENT_PAGE_MAX).and_then(
-                |observation| observation.with_wait(Duration::from_millis(arguments::MAX_WAIT_MS)),
-            );
-            let Ok(observation) = observation else {
-                return std::future::pending().await;
-            };
-            let Ok(update) = self.observe(run_id, &observation).await else {
-                return std::future::pending().await;
-            };
-            if !update
-                .required_actions()
-                .iter()
-                .any(|action| &action.request == request)
-            {
-                return;
-            }
-            cursor = update.next_cursor().clone();
-        }
     }
 
     async fn observe(
@@ -433,41 +275,6 @@ impl McpServer {
             )
             .await
             .map_err(run_failure)
-    }
-
-    async fn answer_prompts(
-        &self,
-        run_id: &RunId,
-        answers: Vec<(coral_run::RequiredActionRequest, coral_run::PromptAnswer)>,
-        trace: &TraceId,
-    ) -> Result<(), DispatchError> {
-        for (request, answer) in answers {
-            match self
-                .runtime
-                .modules
-                .runs
-                .answer_action_prompt(
-                    &self.runtime.principal,
-                    &self.workspace_id,
-                    run_id,
-                    &request,
-                    answer,
-                    trace,
-                )
-                .await
-            {
-                // The action ended or was resolved elsewhere while the User
-                // considered it, or the answer still waits in the Run Inbox
-                // for its Run Owner: the reread update shows what is recorded
-                // so far, which may still be the open action.
-                Ok(())
-                | Err(
-                    coral_run::Error::ApprovalNotFound | coral_run::Error::RunRequestNotYetRecorded,
-                ) => {}
-                Err(error) => return Err(run_failure(error)),
-            }
-        }
-        Ok(())
     }
 
     async fn cancel(&self, arguments: CancelArguments) -> Result<CallToolResult, DispatchError> {
@@ -603,7 +410,7 @@ impl ServerHandler for McpServer {
             &self.workspace_id,
             &self.runtime.principal,
         );
-        let dispatched = Box::pin(self.dispatch(request, Channel::negotiate(&context)));
+        let dispatched = Box::pin(self.dispatch(request));
         call.run(dispatched).await
     }
 

@@ -11,11 +11,9 @@ use coral_run::approval::{ApprovalDecision, ApprovalId};
 use coral_run::{RunId, RunInspection};
 use coral_telemetry::testing::attribute;
 use coral_workspace::{AuthenticatedPrincipal, TraceId};
-use rmcp::model::{ElicitRequestParams, ElicitationAction};
 use serde_json::{Value, json};
 
-use super::prompt_contracts::Session;
-use super::{RawSession, Tracer, capture, protocol_window_ends};
+use super::{RawSession, Tracer, capture};
 
 /// Every planted value holds this text, so one search finds any of them.
 const CANARY: &str = "c0ral-private";
@@ -208,38 +206,6 @@ async fn approve_as_the_run_status_page_does(
     request.id.clone()
 }
 
-/// Approves a Run through an elicitation whose question is the Run's intent.
-async fn approve_through_elicitation(tracer: &Tracer) {
-    let session = Session::open(
-        &tracer.endpoint(),
-        protocol_window_ends().1,
-        vec![Some(ElicitationAction::Accept)],
-        None,
-    )
-    .await;
-    let task = session.start_task().await;
-    let update = session
-        .call(
-            "exec",
-            json!({
-                "task_id": task, "intent": "Release elicitation-c0ral-private",
-                "wait_ms": 5000, "program": PROGRAM,
-            }),
-        )
-        .await;
-    let ended = session.wait_terminal(update).await;
-    assert_eq!(ended["state"], "succeeded", "{ended}");
-    let prompts = session.prompts();
-    let [ElicitRequestParams::FormElicitationParams { message, .. }] = prompts.as_slice() else {
-        panic!("one form elicitation: {prompts:?}");
-    };
-    assert!(
-        message.contains("elicitation-c0ral-private"),
-        "the person who decides sees the intent: {message}"
-    );
-    session.close().await;
-}
-
 /// `text` around where it holds `private`, for a failure message.
 fn around<'a>(text: &'a str, private: &str) -> &'a str {
     let at = text.find(private).unwrap_or(0);
@@ -342,7 +308,6 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
 
     tracer.require_approval_of("getPrivateRecord").await;
     let decided = approve_as_the_run_status_page_does(&tracer, &session, &task).await;
-    approve_through_elicitation(&tracer).await;
 
     let ended = session
         .tool(
@@ -351,7 +316,6 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         )
         .await;
     assert_eq!(ended["structuredContent"]["outcome"], "success", "{ended}");
-    session.close().await;
     tracer.server.shutdown().await.expect("stop MCP server");
 
     let owner = AuthenticatedPrincipal::user(tracer.local_user.clone());

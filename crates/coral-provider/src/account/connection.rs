@@ -470,24 +470,6 @@ pub async fn pending_connection_deadline_in_transaction(
     repository::pending_connection_deadline(tx, workspace, &user, request).await
 }
 
-/// Reads only a pending request's Provider for the invoking User's own prompt.
-/// The Run owner supplies its exact attached request after checking Run visibility.
-/// This facet neither resolves the request nor grants inspection/decision authority.
-/// # Errors
-/// Returns persistence or invalid canonical Principal failures.
-pub async fn pending_connection_provider_in_transaction(
-    tx: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    principal: &Principal,
-    request: ConnectionRequestId,
-) -> Result<Option<ProviderId>, Error> {
-    if principal.kind() != PrincipalKind::User {
-        return Ok(None);
-    }
-    let user = UserId::parse(principal.id().as_str())?;
-    repository::pending_connection_provider(tx, workspace, &user, request).await
-}
-
 /// Transaction result for Invocation-owned selection and durable waiter attachment.
 pub enum ConnectionResolution {
     /// Exact credential selection is ready, or the route needs no credentials.

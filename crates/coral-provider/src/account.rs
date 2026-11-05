@@ -1115,8 +1115,7 @@ mod oauth;
 pub use connection::{
     ConnectionRequest, ConnectionRequestId, ConnectionResolution, ConnectionState,
     connection_pending_until_in_snapshot, pending_connection_deadline_in_transaction,
-    pending_connection_provider_in_transaction, resolve_connection_in_transaction,
-    retained_connection_available_in_transaction,
+    resolve_connection_in_transaction, retained_connection_available_in_transaction,
 };
 pub use oauth::OAuthClient;
 
