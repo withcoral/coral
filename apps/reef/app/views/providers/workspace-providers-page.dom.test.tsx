@@ -225,18 +225,18 @@ test('lists every provider in one table, and keeps an empty one with its setting
 })
 
 // Catches: a tool's calls shown on another tool's row, a bar that leaves a screen
-// reader no count, or a Calls column shown when Coral cannot count calls.
+// reader no count, or a Usage column shown when Coral cannot count calls.
 test.each([
   [
     'a count',
-    { days: 7, calls: { [selectionKey(github.id, 'repos.get')]: 1234 } },
+    { days: 30, calls: { [selectionKey(github.id, 'repos.get')]: 1234 } },
     ['0 calls', '1,234 calls', '0 calls'],
   ],
   ['no count', null, []],
-])('shows the calls to each tool under the Calls column, given %s', (_, toolCalls, counts) => {
+])('shows the calls to each tool under the Usage column, given %s', (_, toolCalls, counts) => {
   renderPage({ toolCalls })
   const headers = within(table()).getAllByRole('columnheader')
-  const column = headers.findIndex((header) => header.textContent === 'Calls')
+  const column = headers.findIndex((header) => header.textContent === 'Usage, 30 days')
   const cells =
     column < 0
       ? []

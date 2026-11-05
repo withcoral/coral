@@ -163,8 +163,8 @@ const loadTree = async () =>
     params: { workspace },
   } as never))!.data
 
-// Catches: a tool's calls credited to the tool that holds its Call Path now, a week
-// other than the one the column names, or a failed summary that blanks the catalog
+// Catches: a tool's calls credited to the tool that holds its Call Path now, a window
+// other than the 30 days the column names, or a failed summary that blanks the catalog
 // or shows zero calls.
 it('counts calls by provider and Tool Key, and leaves them out when the summary is unavailable', async () => {
   toolCount = 2
@@ -181,10 +181,10 @@ it('counts calls by provider and Tool Key, and leaves them out when the summary 
   const tree = await loadTree()
   expect(mocks.summary.mock.lastCall?.[0]).toMatchObject({
     workspace: `workspaces/${workspace}`,
-    days: 7,
+    days: 30,
   })
   const calls = (key: string) => tree.toolCalls?.calls[selectionKey(providerId, key)]
-  expect(tree.toolCalls?.days).toBe(7)
+  expect(tree.toolCalls?.days).toBe(30)
   expect([calls('actions/tool0'), calls('actions/tool1')]).toEqual([5, undefined])
 
   mocks.summary.mockRejectedValue(new ConnectError('unavailable', Code.Unavailable))

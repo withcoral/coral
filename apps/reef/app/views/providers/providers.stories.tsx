@@ -312,13 +312,13 @@ export const TreeNothingSelected: Story = {
     }
   },
 }
-// The Calls column: a count per tool, and a muted zero for a tool nobody called.
+// The Usage column: a bar per tool, and an empty track for a tool nobody called.
 export const TreeToolCalls: Story = {
   render: () => (
     <WorkspaceProvidersPage
       {...treeProps}
       toolCalls={{
-        days: 7,
+        days: 30,
         calls: {
           [selectionKey('prov-github', 'issues.list')]: 12_480,
           [selectionKey('prov-github', 'repos.get')]: 316,

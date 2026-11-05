@@ -167,23 +167,22 @@ export const toolGroupLabel = style({
   gap: 8,
   gridColumn: '2 / -1',
 })
+// The label stops at the policy column, where the provider's counts sit.
 export const providerGroupLabel = style({
   alignItems: 'center',
   display: 'flex',
   gap: 8,
-  gridColumn: '2 / -1',
+  gridColumn: '2 / -2',
   minWidth: 0,
 })
-// The provider's policy counts, at the end of its pinned heading. They sit in
-// the heading's label cell, not the policy column, so the column sizes to the
-// rows' toggles and a changing count moves only the heading.
+// The provider's policy counts, in the policy column over the toggles they count.
+// The column widens to fit them, so a count that gains a digit can widen it.
 export const policySummary = style({
   alignItems: 'center',
   display: 'flex',
-  flexShrink: 0,
   flexWrap: 'nowrap',
   gap: 4,
-  marginInlineStart: 'auto',
+  gridColumn: '-2 / -1',
 })
 // A count is a Wax toggle button; pressed, it reads as the active filter.
 export const policySummaryItem = style({
@@ -247,8 +246,9 @@ export const callsBar = style({
   width: '100%',
 })
 export const callsHeading = style({ alignItems: 'center', display: 'inline-flex', gap: 6 })
-// The column is as wide as its toggles; the header centres over them.
-export const policyHeader = style({ display: 'flex', justifyContent: 'center' })
+// The heading's counts can make the column wider than its toggles, so the header,
+// the counts and the toggles all start at its left edge.
+export const policyHeader = style({ display: 'flex' })
 // One line: a wrapped outcome pill would change the row's height after a save.
 export const policyCell = style({
   alignItems: 'center',

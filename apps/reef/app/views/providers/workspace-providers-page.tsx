@@ -1096,7 +1096,7 @@ function ProvidersTableScreen({
           columns={[
             { width: 44 },
             { width: 'minmax(340px, 1fr)' },
-            ...(toolCalls ? [{ width: 96 }] : []),
+            ...(toolCalls ? [{ width: 'content' } as const] : []),
             { width: 'max-content' },
           ]}
         >
@@ -1130,7 +1130,7 @@ function ProvidersTableScreen({
               {toolCalls && (
                 <Table.Heading className={styles.callsColumn}>
                   <span className={styles.callsHeading}>
-                    Calls
+                    {`Usage, ${toolCalls.days} days`}
                     <InfoTip ariaLabel="About calls">
                       {`Your calls and your agents' calls in the last ${toolCalls.days} days.`}
                     </InfoTip>
@@ -1328,7 +1328,14 @@ const TableSections = memo(function TableSections({
           members={section.tools}
           name={providerLabel(section.provider)}
           provider={section.provider}
-          summary={
+          notices={
+            <ProviderNotices
+              active={policyFilter}
+              onFilter={filterByPolicy}
+              provider={section.provider}
+            />
+          }
+          policy={
             <PolicySummary
               active={policyFilter}
               onFilter={filterByPolicy}
@@ -1451,7 +1458,8 @@ function GroupHeading({
   provider,
   selected,
   toggleTools,
-  summary,
+  notices,
+  policy,
   ...cell
 }: {
   bulkPending: boolean
@@ -1469,8 +1477,10 @@ function GroupHeading({
   provider: ProviderView
   selected: Set<SelectionKey>
   toggleTools: ToggleTools
-  /** Closes the label cell, at the heading's end. */
-  summary?: ReactNode
+  /** Follows the tool count in the label cell. */
+  notices?: ReactNode
+  /** The heading's own cell in the policy column, over the toggles it counts. */
+  policy?: ReactNode
   className: string
 }) {
   // A provider heading stays mounted over all its tools, through every scroll.
@@ -1508,8 +1518,13 @@ function GroupHeading({
             ? countLabel(count, 'tool')
             : `${count.toLocaleString('en-US')} of ${countLabel(total, 'tool')}`}
         </Typography.BodySmall>
-        {summary && <span className={styles.policySummary}>{summary}</span>}
+        {notices}
       </span>
+      {policy && (
+        <span role="cell" className={styles.policySummary}>
+          {policy}
+        </span>
+      )}
     </>
   )
 }
@@ -1932,7 +1947,8 @@ function effectivePolicy(
  * icon with text, so the summary does not depend on color. A count filters
  * the table to its tools across every provider.
  */
-function PolicySummary({
+/** The provider's state beside its name: search indexing, and its unavailable tools. */
+function ProviderNotices({
   active,
   onFilter,
   provider,
@@ -1942,16 +1958,6 @@ function PolicySummary({
   provider: ProviderView
 }) {
   const mutations = usePolicyMutations()
-  const { policies } = mutations
-  // A provider heading stays mounted over all its tools, through every scroll.
-  const counts = useMemo(() => {
-    const tally = new Map<PolicyState, number>()
-    for (const tool of provider.tools) {
-      const policy = effectivePolicy(policies, provider, tool)
-      tally.set(policy, (tally.get(policy) ?? 0) + 1)
-    }
-    return tally
-  }, [policies, provider])
   const unavailable = provider.totalCount - provider.readyCount
   return (
     <>
@@ -1992,6 +1998,32 @@ function PolicySummary({
           </Button.Container>
         </Tooltip>
       )}
+    </>
+  )
+}
+
+function PolicySummary({
+  active,
+  onFilter,
+  provider,
+}: {
+  active: PolicyFilter['value'] | null
+  onFilter: FilterByPolicy
+  provider: ProviderView
+}) {
+  const mutations = usePolicyMutations()
+  const { policies } = mutations
+  // A provider heading stays mounted over all its tools, through every scroll.
+  const counts = useMemo(() => {
+    const tally = new Map<PolicyState, number>()
+    for (const tool of provider.tools) {
+      const policy = effectivePolicy(policies, provider, tool)
+      tally.set(policy, (tally.get(policy) ?? 0) + 1)
+    }
+    return tally
+  }, [policies, provider])
+  return (
+    <>
       {policyOptions.map(({ value, label, icon }) => (
         <Tooltip key={value} content={`Show only tools set to ${label}.`}>
           <Button.Container

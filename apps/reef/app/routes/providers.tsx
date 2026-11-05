@@ -7,7 +7,7 @@ import {
   privateHeaders,
 } from '@/lib/management.server'
 import { providerView, listAllProviders, toolCallCounts, uuidOr404 } from '@/lib/providers.server'
-import { DEFAULT_SUMMARY_DAYS } from '@/lib/activity-summary'
+import type { SummaryDays } from '@/lib/activity-summary'
 import { glimpseActivitySummary } from '@/lib/activity-summary.server'
 import { personalAccountStates } from '@/lib/accounts.server'
 import { applyProviderChange } from '@/lib/provider-changes.server'
@@ -56,7 +56,7 @@ export function shouldRevalidate({
 export async function loader({ context, params, request }: Route.LoaderArgs) {
   try {
     const { api, workspace: w } = await authorizedWorkspace(context, params.workspace)
-    const days = DEFAULT_SUMMARY_DAYS
+    const days: SummaryDays = 30
     const [listed, personalAccounts, summary] = await Promise.all([
       listAllProviders(api, w.name),
       personalAccountStates(api, w.name),
