@@ -83,11 +83,13 @@ pub(crate) struct Recovered {
 pub(crate) enum RecoveryStep {
     /// An Approval Request's deadline passed: it expires.
     Expire(ApprovalId),
-    /// A decision from the Run Inbox: recorded when `record`, else it closes
-    /// its request, the owner accepting no more requests when it applied it.
+    /// A decision from the Run Inbox, applied at `applied_at_unix_nanos`:
+    /// recorded when `record`, else it closes its request, the owner
+    /// accepting no more requests when it applied it.
     Decide {
         request: DecisionRequest,
         record: bool,
+        applied_at_unix_nanos: i64,
     },
 }
 
@@ -143,7 +145,11 @@ impl Recovered {
             RecoveryStep::Expire(request.approval)
         } else {
             let record = self.accepts(limits, now_unix_nanos);
-            RecoveryStep::Decide { request, record }
+            RecoveryStep::Decide {
+                request,
+                record,
+                applied_at_unix_nanos: now_unix_nanos,
+            }
         });
     }
 }
@@ -1016,7 +1022,7 @@ impl OwnerState {
             return Vec::new();
         }
         self.inbox_rows.insert(row.clone());
-        let work = DecideWork::decision(request, decide);
+        let work = DecideWork::decision(request, decide, now_unix_nanos);
         let chunk = self.push(ChunkItem::Work(Box::new(work)), 1, 0);
         chunk.requests.push(key);
         chunk.inbox_rows.push(row);
@@ -1505,12 +1511,17 @@ impl OwnerState {
     /// then the requests waiting in the Run's Run Inbox, in insert order,
     /// then [`Message::Recover`], which writes what it applied and the Run's
     /// end in one chunk. The write's answer, or a stop (the Shutdown Drain is
-    /// out), retires the owner. No Program runs here, and what reaches it
-    /// after the end changes nothing.
+    /// out), retires the owner. So does a clock it cannot read, the one
+    /// rejection a recovered owner receives: no request it applies is dated
+    /// by a sample it did not take, and their rows wait for the next
+    /// recovered owner. No Program runs here, and what reaches it after the
+    /// end changes nothing.
     fn recovering(&mut self, message: Message, now_unix_nanos: i64) -> Vec<Effect> {
         let limits = self.limits;
         match (message, &mut self.recovered) {
-            (Message::Interrupted(_) | Message::Stop, _) => return self.retire(),
+            (Message::Interrupted(_) | Message::Stop | Message::CommitRejected(_), _) => {
+                return self.retire();
+            }
             (Message::Recover, recovered) => {
                 return recovered.take().map(Effect::Recover).into_iter().collect();
             }

@@ -488,24 +488,6 @@ pub(super) async fn run_interaction(
     row.map(|(task, interaction)| Ok((TaskId::parse(&task)?, InteractionId::parse(&interaction)?)))
         .transpose()
 }
-pub(super) async fn run_intent(
-    transaction: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    run: &coral_run::RunId,
-) -> Result<Option<(TaskId, TaskIntent)>, Error> {
-    let row: Option<(String, String)> = transaction
-        .fetch_optional(
-            Query::select()
-                .columns([TaskInteractions::TaskId, TaskInteractions::Intent])
-                .from(TaskInteractions::Table)
-                .and_where(Expr::col(TaskInteractions::WorkspaceId).eq(workspace.to_string()))
-                .and_where(Expr::col(TaskInteractions::RunId).eq(run.to_string()))
-                .to_owned(),
-        )
-        .await?;
-    row.map(|(task, intent)| Ok((TaskId::parse(&task)?, TaskIntent::parse(&intent)?)))
-        .transpose()
-}
 pub(super) async fn run_task(
     transaction: &mut Transaction<'_>,
     workspace: &WorkspaceId,

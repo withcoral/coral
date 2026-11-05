@@ -1,7 +1,7 @@
 //! A Run is addressed only through its own Workspace.
 use super::*;
+use crate::RequiredActionRequest;
 use crate::approval::{ApprovalDecision, ApprovalState};
-use crate::{PromptAnswer, RequiredActionRequest};
 
 /// A User with authority in two Workspaces addresses a Run in one of them
 /// through the other's ID. Every read and command conceals the Run and its
@@ -72,12 +72,6 @@ async fn a_run_is_not_found_through_another_workspace_the_caller_can_access() {
         .await
         .map(drop),
     );
-    approval_not_found(
-        "answer_action_prompt",
-        runs.answer_action_prompt(user, other, run, &request, PromptAnswer::Accept, &trace)
-            .await,
-    );
-
     assert_eq!(
         runs.observe(user, &tool.workspace_id, run, &immediate(None, 100))
             .await

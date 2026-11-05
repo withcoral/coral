@@ -119,29 +119,6 @@ async fn caller_connection_is_shared_and_canceling_one_run_does_not_cancel_anoth
             .state,
         coral_provider::account::ConnectionState::Connected
     );
-    let connection = crate::RequiredActionRequest::AccountConnection(request.id);
-    let trace = coral_workspace::TraceId::current_or_new();
-    assert!(
-        runs.connection_connected(&tool.principal, &tool.workspace_id, &connection, &trace)
-            .await,
-        "an opened connect page completes once the Account connects"
-    );
-    let other = AuthenticatedPrincipal::user(
-        fixture
-            .workspace_user(
-                &tool.workspace_id,
-                &tool.user,
-                "user:connecting-owner",
-                WorkspaceRole::Owner,
-            )
-            .await,
-    );
-    assert!(
-        !runs
-            .connection_connected(&other, &tool.workspace_id, &connection, &trace)
-            .await,
-        "another User never sees the request connect"
-    );
     assert_connection_completion_event(&accounts, &context, &tool.workspace_id, request.id).await;
 }
 

@@ -38,7 +38,8 @@ return {
 Then call it in a later Program by its literal Call Path:
 ```ts
 return (await coral.providers.github.pulls.list({ owner: "acme", repo: "api" })).data.map((pull) => pull.title);
-```"#;
+```
+A non-empty `required_actions` means the Run waits for a person: for an `invoking_user` entry, write its `url` as reply text, then keep calling `wait`, whose description has the steps."#;
 
 // Claude Code 2.1.296 keeps the first 4096 characters of a tool's
 // description. `exec` stays within 2048, the budget the server instructions
@@ -309,14 +310,27 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
             "Delete one Saved Function.",
             mutation_annotations("Delete Function", true, false),
         ),
-        always_loaded(tool::<ExecArguments, crate::projection::ExecResult<'_>>(
+        shown_as_app(always_loaded(tool::<
+            ExecArguments,
+            crate::projection::ExecResult<'_>,
+        >(
             EXEC_TOOL_DESCRIPTION,
             mutation_annotations("Execute Program", true, true),
-        )),
-        always_loaded(tool::<WaitArguments, crate::projection::ObservedRun<'_>>(
-            "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Returns when `required_actions` change, the Run ends, or `wait_ms` runs out, with the output that arrived by then. New output alone does not end the wait. Observing consumes nothing, so an earlier cursor reads the same output again.",
+        ))),
+        shown_as_app(always_loaded(tool::<
+            WaitArguments,
+            crate::projection::ObservedRun<'_>,
+        >(
+            concat!(
+                "Observe one Program Run: its authored Emissions and Logs, current `required_actions`, and `state`. Returns when `required_actions` change, the Run ends, or `wait_ms` runs out, with the output that arrived by then. New output alone does not end the wait. Observing consumes nothing, so an earlier cursor reads the same output again.",
+                // What to do when the Run waits on a person: write the link,
+                // then keep waiting. `exec` returns the same Run Update, but
+                // its description keeps the discovery example within its
+                // budget, so it gives the first step and points here.
+                " Human handoff: a non-empty `required_actions` means the Run waits for a person. For an entry whose `required_actor` is `invoking_user`, write to the user, as reply text before your next tool call, what is asked (`tool`, `provider`, `kind`), the `url` exactly as given, the `run_id` and the `deadline_at`: tool results and your thinking stay hidden from them. Then keep calling `wait` with `wait_ms` 30000 and the latest `next_cursor` until `required_actions` is empty or the Run ends. While it holds, the call can report the link as its progress, and the person's decision on that page resumes the Run on its own, so do not ask them to report back. For any other `required_actor`, keep calling `wait` the same way. You cannot decide an entry and must not say you did. A connection happens on that page, so never ask for a token, password or account in the chat. A decline or a missed `deadline_at` reaches the Program as `coral.ToolError`, and a Run past its own deadline ends `timed_out`: report what happened from the Run's output, and do not start the Program again unless asked. For `account_connection`, ask only when the entry appears."
+            ),
             read_annotations("Wait for Run"),
-        )),
+        ))),
         tool::<CancelArguments, crate::projection::ObservedRun<'_>>(
             "Request cancellation of one Program Run.",
             mutation_annotations("Cancel Run", true, false),
@@ -351,6 +365,14 @@ fn always_loaded(tool: Tool) -> Tool {
     let mut meta = MetaObject::new();
     meta.0
         .insert(ALWAYS_LOAD_META_KEY.into(), Value::Bool(true));
+    tool.with_meta(meta)
+}
+
+/// Links a tool's Run Update to the app that shows its Required Actions, in
+/// a client that renders MCP Apps.
+fn shown_as_app(mut tool: Tool) -> Tool {
+    let mut meta = tool.meta.take().unwrap_or_default();
+    crate::app::link_tool(&mut meta);
     tool.with_meta(meta)
 }
 

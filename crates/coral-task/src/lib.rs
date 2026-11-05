@@ -354,62 +354,6 @@ impl TaskModule {
         Ok(page)
     }
 
-    /// Returns the intent the agent declared when it submitted a Run.
-    /// A Run without a Task, or whose Task the caller cannot see, has none.
-    /// # Errors
-    /// Returns persistence failures.
-    pub async fn run_intent(
-        &self,
-        actor: &AuthenticatedPrincipal,
-        workspace: &WorkspaceId,
-        run: &coral_run::RunId,
-    ) -> Result<Option<TaskIntent>, Error> {
-        let mut transaction = self.database.begin_read_snapshot().await?;
-        let Some((task, intent)) =
-            interaction_repository::run_intent(&mut transaction, workspace, run).await?
-        else {
-            return Ok(None);
-        };
-        match self
-            .visible_in_transaction(&mut transaction, actor, workspace, &task)
-            .await
-        {
-            Ok(_task) => {}
-            Err(Error::TaskNotFound) => return Ok(None),
-            Err(error) => return Err(error),
-        }
-        transaction.commit().await?;
-        Ok(Some(intent))
-    }
-
-    /// Returns the Task a Run was submitted in when the caller is that Task's
-    /// own Principal. An `exec` with `goal` that is retried after answering
-    /// `input_required` reads here the Task its first call started, because
-    /// that first answer carried no Task id.
-    /// A Run without a Task, or in another Principal's Task, has none.
-    /// # Errors
-    /// Returns authority and persistence failures.
-    pub async fn run_task(
-        &self,
-        actor: &AuthenticatedPrincipal,
-        workspace: &WorkspaceId,
-        run: &coral_run::RunId,
-    ) -> Result<Option<Task>, Error> {
-        self.workspaces
-            .check_principal_inspection(actor, workspace, commands::now()?)
-            .await?;
-        let mut transaction = self.database.begin_read_snapshot().await?;
-        let Some(task) = interaction_repository::run_task(&mut transaction, workspace, run).await?
-        else {
-            return Ok(None);
-        };
-        let task =
-            repository::find_attributed(&mut transaction, workspace, &task, actor.principal())
-                .await?;
-        transaction.commit().await?;
-        Ok(task)
-    }
-
     /// Reads exact retained evidence without consulting today's catalog.
     /// # Errors
     /// Conceals inaccessible goals and unavailable interactions.

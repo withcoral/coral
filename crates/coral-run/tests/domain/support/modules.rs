@@ -1046,12 +1046,28 @@ pub(crate) async fn configure_user_caller(
     tool: &ToolFixture,
     server: &str,
 ) -> (tempfile::TempDir, coral_provider::account::AccountModule) {
+    configure_user_caller_paths(
+        fixture,
+        tool,
+        server,
+        serde_json::json!({"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"Forecast"}}}}}),
+    )
+    .await
+}
+
+/// [`configure_user_caller`] with the Provider's OpenAPI `paths`, one Tool per operation.
+pub(crate) async fn configure_user_caller_paths(
+    fixture: &TestModules,
+    tool: &ToolFixture,
+    server: &str,
+    paths: serde_json::Value,
+) -> (tempfile::TempDir, coral_provider::account::AccountModule) {
     let context = change(tool.user.clone(), 40, '4');
     let document = serde_json::json!({
         "openapi":"3.1.0", "info":{"title":"Private weather","version":"1"},
         "servers":[{"url":server}], "security":[{"bearer":[]}],
         "components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}}},
-        "paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"Forecast"}}}}}
+        "paths": paths
     });
     let setup = fixture
         .providers
@@ -1243,9 +1259,8 @@ pub(crate) async fn wait_for_terminal(
     panic!("Run did not become terminal");
 }
 
-/// Every Run-addressed read and command answers `RunNotFound` for `run`, and
-/// no action prompt is offered: the answer an absent Run gets. `case` names
-/// the scenario in the failure message.
+/// Every Run-addressed read and command answers `RunNotFound` for `run`: the
+/// answer an absent Run gets. `case` names the scenario in the failure message.
 pub(crate) async fn assert_run_not_found(
     runs: &RunModule,
     caller: &AuthenticatedPrincipal,
@@ -1295,13 +1310,6 @@ pub(crate) async fn assert_run_not_found(
         runs.cancel(caller, workspace, run, &immediate(None, 100))
             .await
             .map(drop),
-    );
-    assert!(
-        runs.action_prompts(caller, workspace, run)
-            .await
-            .unwrap()
-            .is_empty(),
-        "{case}: no prompt is offered"
     );
 }
 

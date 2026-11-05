@@ -90,15 +90,25 @@ enum State {
     "then" = {"properties":{"required_actor":{"const":"invoking_user"}}}
 ))]
 struct Action {
+    /// What the person must do: approve one Tool call, or connect their account with the Provider.
     kind: ActionKind,
+    /// Identifies the request on the page `url` opens. It grants no authority.
     #[schemars(schema_with = "crate::arguments::uuid_schema")]
     request_id: String,
+    /// Who can act: the user who started the Run, or a workspace owner.
     required_actor: Actor,
+    /// The Call Path of the Tool that waits. Absent when one connection request is shared by calls to different Tools.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool: Option<String>,
+    /// The display name of the Provider whose Tool waits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    /// When the request expires and its waiting call fails; the Run ends `timed_out` at its own deadline if that comes first.
     #[schemars(schema_with = "timestamp_schema")]
     deadline_at: String,
-    /// Absolute URL that opens authenticated human review. It grants no approval or access authority.
+    /// Absolute URL of the page where the person decides this entry, signed in to Coral: the approval request in review, or the person's account page for the Provider for a connection. Pass it on exactly as given. It grants no approval or access authority.
     #[schemars(extend("format" = "uri"))]
-    run_status_url: String,
+    url: String,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -359,6 +369,34 @@ fn project_run_update<Task: Serialize>(
     Ok(result)
 }
 
+/// One line for the person while a call holds: what the Run waits for from
+/// them and where to act. None when nothing waits on the invoking User.
+pub(crate) fn handoff_progress(
+    update: &RunUpdate,
+    human_interface: &crate::HumanInterfaceUrl,
+) -> Option<String> {
+    let action = update
+        .required_actions()
+        .iter()
+        .find(|action| action.required_actor == RequiredActor::InvokingUser)?;
+    let url = human_interface.page_url(&action.action_path);
+    let label = action.provider_label.as_deref();
+    let provider = label.map(|label| format!(" ({label})")).unwrap_or_default();
+    // The link comes first: a client that cuts the line keeps it whole.
+    Some(match (&action.request, action.call_path.as_deref()) {
+        (RequiredActionRequest::InvocationApproval(_), Some(tool)) => {
+            format!("{url} · approve {tool}{provider}")
+        }
+        (RequiredActionRequest::InvocationApproval(_), None) => {
+            format!("{url} · approve a tool call{provider}")
+        }
+        (RequiredActionRequest::AccountConnection(_), _) => match label {
+            Some(label) => format!("{url} · connect your {label} account"),
+            None => format!("{url} · connect your account"),
+        },
+    })
+}
+
 fn required_action(action: &RequiredAction, human_interface: &crate::HumanInterfaceUrl) -> Action {
     let (kind, request_id) = match &action.request {
         RequiredActionRequest::AccountConnection(id) => {
@@ -375,8 +413,10 @@ fn required_action(action: &RequiredAction, human_interface: &crate::HumanInterf
             RequiredActor::InvokingUser => Actor::InvokingUser,
             RequiredActor::WorkspaceOwner => Actor::WorkspaceOwner,
         },
+        tool: action.call_path.clone(),
+        provider: action.provider_label.clone(),
         deadline_at: timestamp(action.deadline_at_unix_nanos),
-        run_status_url: human_interface.page_url(&action.run_status_path),
+        url: human_interface.page_url(&action.action_path),
     }
 }
 

@@ -217,7 +217,7 @@ impl OutputContracts {
             "/required_actions/0/request_id",
             "/required_actions/0/required_actor",
             "/required_actions/0/deadline_at",
-            "/required_actions/0/run_status_url",
+            "/required_actions/0/url",
             "/diagnostics/0/message",
             "/diagnostics/0/line",
             "/failure/error/message",
