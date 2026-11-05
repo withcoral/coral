@@ -33,20 +33,41 @@ pub(crate) fn decode<T: DeserializeOwned>(raw: &str) -> Result<T, ConfigDecodeEr
             .map_or(1, |before| before.matches('\n').count() + 1);
         ConfigDecodeError(format!("line {line}: {}", error.message()))
     })?;
-    serde_path_to_error::deserialize(deserializer).map_err(|error| {
-        let message = error.inner().message();
-        let reason = if VALUE_BEARING_MESSAGES
-            .iter()
-            .any(|prefix| message.starts_with(prefix))
-        {
-            "unsupported value"
-        } else {
-            message
-        };
-        if error.path().iter().next().is_none() {
-            ConfigDecodeError(reason.to_owned())
-        } else {
-            ConfigDecodeError(format!("{}: {reason}", error.path()))
-        }
+    serde_path_to_error::deserialize(deserializer).map_err(|error| rejected(None, &error))
+}
+
+/// Deserializes `T` from one value of a `config.toml` document, for a section
+/// that names each of its entries in its own failures.
+///
+/// # Errors
+///
+/// Returns [`ConfigDecodeError`] naming `label` and the key path below it of a
+/// rejected value.
+pub(crate) fn decode_entry<T: DeserializeOwned>(
+    label: &str,
+    raw: toml::Value,
+) -> Result<T, ConfigDecodeError> {
+    serde_path_to_error::deserialize(raw).map_err(|error| rejected(Some(label), &error))
+}
+
+fn rejected(
+    label: Option<&str>,
+    error: &serde_path_to_error::Error<toml::de::Error>,
+) -> ConfigDecodeError {
+    let message = error.inner().message();
+    let reason = if VALUE_BEARING_MESSAGES
+        .iter()
+        .any(|prefix| message.starts_with(prefix))
+    {
+        "unsupported value"
+    } else {
+        message
+    };
+    let at_root = error.path().iter().next().is_none();
+    ConfigDecodeError(match (label, at_root) {
+        (None, true) => reason.to_owned(),
+        (None, false) => format!("{}: {reason}", error.path()),
+        (Some(label), true) => format!("{label}: {reason}"),
+        (Some(label), false) => format!("{label}.{}: {reason}", error.path()),
     })
 }

@@ -162,13 +162,17 @@ test('collapsed, one archived tile marks every archived workspace and opens the 
 // Catches: a member seeing organization pages they cannot open, or an
 // organization owner losing the way to the workspaces page.
 test.each([
-  ['an organization owner', true, ['/organization/members', '/organization/workspaces']],
+  [
+    'an organization owner',
+    true,
+    ['/organization/members', '/organization/workspaces', '/organization/secret-stores'],
+  ],
   ['an organization member', false, []],
 ])('the account menu links the organization pages for %s only', async (_, owner, hrefs) => {
   render('/workspaces/ops', { organizationOwner: owner })
   await userEvent.click(screen.getByRole('button', { name: /^Open account menu/ }))
   await screen.findByRole('menuitem', { name: 'Appearance' })
-  const items = ['Members', 'Workspaces'].flatMap((name) =>
+  const items = ['Members', 'Workspaces', 'Secret stores'].flatMap((name) =>
     screen.queryAllByRole('menuitem', { name }),
   )
   expect(items.map((item) => item.getAttribute('href'))).toEqual(hrefs)

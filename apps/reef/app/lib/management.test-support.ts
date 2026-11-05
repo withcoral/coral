@@ -15,6 +15,7 @@ import { OrganizationWorkspaceService } from '@/generated/coral/management/v1/or
 import { ToolPolicyService } from '@/generated/coral/management/v1/policy_pb'
 import { ProviderService, ProviderSetupService } from '@/generated/coral/management/v1/provider_pb'
 import { ReleaseService } from '@/generated/coral/management/v1/release_pb'
+import { SecretStoreService } from '@/generated/coral/management/v1/secret_store_pb'
 import { SavedFunctionService } from '@/generated/coral/management/v1/saved_function_pb'
 import { WorkspaceService } from '@/generated/coral/management/v1/workspace_pb'
 
@@ -35,6 +36,7 @@ const services = {
   policies: ToolPolicyService,
   savedFunctions: SavedFunctionService,
   releases: ReleaseService,
+  secretStores: SecretStoreService,
 } satisfies Record<keyof ManagementApi, DescService>
 
 type Services = typeof services

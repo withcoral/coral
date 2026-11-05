@@ -7,6 +7,7 @@ import { AgentSettingsPage } from './agent-settings-page'
 import { AgentsPage } from './agents-page'
 import { ManagementError } from './management-error'
 import { OrganizationMembersPage } from './organization-members-page'
+import { OrganizationSecretStoresPage } from './organization-secret-stores-page'
 import { OrganizationWorkspacesPage } from './organization-workspaces-page'
 import { WorkspaceMembersPage, type WorkspaceMembersPageProps } from './workspace-members-page'
 import { Activity } from '@/views/activity/activity'
@@ -1309,6 +1310,23 @@ export const RemoveSoleOwnerNoCandidate: Story = {
     )
     await expect(dialog.getByRole('button', { name: 'Remove from organization' })).toBeDisabled()
   },
+}
+
+// Organization secret stores
+export const OrganizationSecretStores: Story = {
+  render: () => (
+    <OrganizationSecretStoresPage
+      stores={[
+        { name: 'platform', kind: 'KV v2' },
+        { name: 'research', kind: 'KV v2' },
+      ]}
+    />
+  ),
+  parameters: { initialEntry: '/organization/secret-stores' },
+}
+export const OrganizationSecretStoresEmpty: Story = {
+  render: () => <OrganizationSecretStoresPage stores={[]} />,
+  parameters: { initialEntry: '/organization/secret-stores' },
 }
 
 // Organization workspaces

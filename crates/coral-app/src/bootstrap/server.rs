@@ -385,6 +385,7 @@ impl PreparedServerBuilder {
                     })
             })
             .transpose()?;
+        let secret_stores = deployment_config.secret_stores(policy)?;
         // This start's Coral Instance, recorded on the Runs it claims. The
         // first start in a process also names it in exported telemetry.
         let instance = coral_run::CoralInstanceId::generate();
@@ -405,6 +406,7 @@ impl PreparedServerBuilder {
             runtime_limits,
             reconcile_interval,
             releases,
+            secret_stores,
             readiness,
             state_lock,
             instance,
@@ -750,6 +752,7 @@ pub(crate) async fn start_server(
     runtime_limits: coral_run::RuntimeLimits,
     reconcile_interval: std::time::Duration,
     releases: Option<coral_release::ReleaseCheck>,
+    secret_stores: coral_secret_store::SecretStores,
     readiness: EngineReadiness,
     state_lock: StateLock,
     instance: coral_run::CoralInstanceId,
@@ -852,6 +855,10 @@ pub(crate) async fn start_server(
             saved_function_deletion,
             runs: runs.clone(),
             releases: releases.clone(),
+            secret_stores: coral_administration::SecretStoreInventory::new(
+                coral_workspace::OrganizationModule::new(database.clone()),
+                secret_stores,
+            ),
         },
         coral_grpc::TransportContext {
             authentication,

@@ -615,6 +615,7 @@ dependencies = [
  "coral-outbound",
  "coral-provider",
  "coral-search",
+ "coral-secret-store",
  "coral-telemetry",
  "coral-test-support",
  "coral-workspace",
@@ -651,6 +652,7 @@ dependencies = [
  "coral-run",
  "coral-run-executor",
  "coral-search",
+ "coral-secret-store",
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
@@ -809,6 +811,7 @@ dependencies = [
  "coral-release",
  "coral-run",
  "coral-search",
+ "coral-secret-store",
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
@@ -1052,6 +1055,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "coral-secret-store"
+version = "1.5.0"
+dependencies = [
+ "async-trait",
+ "coral-credentials",
+ "coral-outbound",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "url",
+ "wiremock",
+ "zeroize",
+]
+
+[[package]]
 name = "coral-task"
 version = "1.5.0"
 dependencies = [
@@ -1102,8 +1122,10 @@ dependencies = [
 name = "coral-test-support"
 version = "1.5.0"
 dependencies = [
+ "async-trait",
  "coral-credentials",
  "coral-db",
+ "coral-secret-store",
  "coral-workspace",
  "ring",
  "sqlx",

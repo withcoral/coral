@@ -33,15 +33,20 @@
 //! ends access there and always runs cleanup. Organization removal hands each
 //! Workspace the User solely owns to a transfer target in the same transaction.
 //!
+//! [`SecretStoreInventory`] shows an Organization Owner the Secret Stores the
+//! operator defined.
+//!
 //! This Module depends on Workspace, Provider, Functions, Auth, and the private database
 //! foundation. It never calls Run or Task, deletes retained history, initializes a
 //! compiler, or performs network revocation. Current authority at the commit is
 //! sufficient to block later dispatch at the Policy Enforcement Point; no
 //! post-commit cleanup is required.
 mod providers;
+mod secret_stores;
 mod workspaces;
 
 pub use providers::ProviderWorkflow;
+pub use secret_stores::SecretStoreInventory;
 pub use workspaces::WorkspaceWorkflow;
 
 use coral_db::{Database, Transaction};
