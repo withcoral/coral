@@ -154,7 +154,7 @@ pub(crate) trait InvocationObserver: Send + Sync {
 
     fn run_completion_checked(&self, _has_nonterminal_invocation: bool) {}
 
-    fn builtin_setup_prepared(&self) {}
+    fn builtin_prepared(&self) {}
 }
 
 #[cfg(test)]
@@ -192,6 +192,8 @@ pub(crate) struct ToolInvoker {
     provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
     /// What `coral.workspace.search` discovers through.
     search: coral_search::UniversalSearchModule,
+    /// What `coral.workspace.saveFunction` and `deleteFunction` author through.
+    functions: Option<crate::builtin::SavedFunctions>,
     human_interface: Option<crate::HumanInterfaceUrl>,
     database: Arc<coral_db::Database>,
     workspaces: WorkspaceModule,
@@ -226,6 +228,7 @@ impl ToolInvoker {
         providers: coral_provider::ProviderModule,
         policies: coral_policy::ToolPolicyModule,
         provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
+        functions: Option<crate::builtin::SavedFunctions>,
         human_interface: Option<crate::HumanInterfaceUrl>,
         database: Arc<coral_db::Database>,
         workspaces: WorkspaceModule,
@@ -243,6 +246,7 @@ impl ToolInvoker {
             policies,
             provider_renamer,
             search: coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
+            functions,
             human_interface,
             database,
             workspaces,
@@ -490,8 +494,7 @@ impl ToolInvoker {
         let policy = coral_policy::invocation_decision_in_transaction(
             &mut transaction,
             &enforcement::policy_target(&self.workspace_id, &target),
-            target.tool().hints(),
-            target.tool().http_method(),
+            target.tool().policy_facts(),
             coral_db::RowLock::Shared,
         )
         .await?
@@ -727,6 +730,7 @@ impl ToolInvoker {
             accounts: self.accounts.as_ref(),
             renamer: self.provider_renamer.as_deref(),
             search: &self.search,
+            functions: self.functions.as_ref(),
             actor: &self.actor,
             context: context.as_ref(),
             principal: &self.principal,
@@ -2267,8 +2271,8 @@ impl crate::builtin::InvokingRun for ToolInvoker {
     }
 
     #[cfg(test)]
-    fn setup_prepared(&self) {
-        self.observer.builtin_setup_prepared();
+    fn prepared(&self) {
+        self.observer.builtin_prepared();
     }
 }
 

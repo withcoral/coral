@@ -1,12 +1,9 @@
-use coral_functions::SavedFunctionModule;
-use coral_run::{
-    IsolateLimits, ProgramSource, RunModule, RunSubmission, RunTimeout, RuntimeLimits,
-};
+use coral_run::{ProgramSource, RunModule, RunSubmission, RunTimeout, RuntimeLimits};
 use coral_search::UniversalSearchModule;
 use coral_task::{TaskCommands, TaskModule};
 use coral_test_support::TestDatabase;
 use coral_workspace::{
-    AuthenticatedPrincipal, ChangeContext, OrganizationModule, WorkspaceDisplayName,
+    AuthenticatedPrincipal, ChangeContext, OrganizationModule, TraceId, WorkspaceDisplayName,
     WorkspaceModule, local_organization_owner,
 };
 
@@ -29,15 +26,7 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         .unwrap();
     let actor = AuthenticatedPrincipal::user(user);
     let tasks = TaskModule::new(database.clone(), workspaces.clone());
-    let functions = SavedFunctionModule::new(
-        database.clone(),
-        workspaces.clone(),
-        IsolateLimits::default(),
-        coral_test_support::TEST_COMPILATION_TIMEOUT,
-    )
-    .unwrap();
     let search = UniversalSearchModule::new(database.clone(), workspaces.clone());
-    let index = coral_search::SearchIndex::inert(database.clone());
     let runs = RunModule::new(
         coral_outbound::DestinationPolicy::default(),
         database.clone(),
@@ -72,7 +61,7 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    let commands = TaskCommands::new(tasks.clone(), functions, search, index, runs.clone());
+    let commands = TaskCommands::new(tasks.clone(), search, runs.clone());
     let server = McpServer::new(
         McpRuntime {
             modules: crate::McpModules::new(

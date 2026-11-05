@@ -1,7 +1,7 @@
 //! Indexing a Saved Function through `SearchIndex`.
 //!
 //! Every test saves, deletes, or removes access through the real modules.
-//! The Task command's save notifies the fixture's index; a test awaits the
+//! A save or delete notifies the fixture's index, as a Program's does; a test awaits the
 //! index's writes, or lets a reconcile pass find the function, and observes
 //! the index through a test-only read of the search-owned tables.
 
@@ -22,7 +22,6 @@ async fn one_reconcile_pass_indexes_a_function_a_notification_missed_and_a_secon
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Save a function");
     let saved = fixture
-        .commands
         .save_function(&call, "triage.openIssues", "Find open issues", SOURCE)
         .await
         .unwrap();
@@ -59,7 +58,6 @@ async fn a_pass_reindexes_a_function_whose_fingerprint_differs_from_its_revision
     let call = fixture.call(&goal, "Save a function");
     for revision in 1..=10 {
         fixture
-            .commands
             .save_function(&call, "answer", &format!("Revision {revision}"), SOURCE)
             .await
             .unwrap();
@@ -97,7 +95,6 @@ async fn a_pass_retries_a_failed_function_once_its_retry_is_due() {
         let call = fixture.call(&goal, "Save a function");
         if row_beside_failure {
             let saved = fixture
-                .commands
                 .save_function(&call, "answer", "Answer", SOURCE)
                 .await
                 .unwrap();
@@ -129,7 +126,6 @@ async fn a_pass_retries_a_failed_function_once_its_retry_is_due() {
         } else {
             reject_function_rows(&fixture).await;
             fixture
-                .commands
                 .save_function(&call, "answer", "Answer", SOURCE)
                 .await
                 .expect("a failed index write never fails the save");
@@ -178,7 +174,6 @@ async fn a_function_whose_write_overran_its_limit_waits_for_a_change() {
         let goal = fixture.goal().await;
         let call = fixture.call(&goal, "Save a function");
         let saved = fixture
-            .commands
             .save_function(&call, "answer", "Answer", SOURCE)
             .await
             .unwrap();
@@ -221,13 +216,12 @@ async fn a_function_whose_write_overran_its_limit_waits_for_a_change() {
 }
 
 #[tokio::test]
-async fn the_task_commands_save_indexes_the_function_and_a_save_over_keeps_one_row() {
+async fn a_notified_save_indexes_the_function_and_a_save_over_keeps_one_row() {
     let fixture = Fixture::new().await;
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Save a function");
 
     let first = fixture
-        .commands
         .save_function(&call, "triage.openIssues", "Find open issues", SOURCE)
         .await
         .unwrap();
@@ -277,7 +271,6 @@ async fn the_task_commands_save_indexes_the_function_and_a_save_over_keeps_one_r
     );
 
     let second = fixture
-        .commands
         .save_function(&call, "triage.openIssues", "Find open bugs", SOURCE)
         .await
         .unwrap();
@@ -311,7 +304,6 @@ async fn a_failed_index_write_keeps_the_save_and_leaves_only_a_failed_state_unti
         let path = coral_functions::SavedFunctionPath::parse("answer").unwrap();
         if indexed_before {
             fixture
-                .commands
                 .save_function(&call, path.as_str(), "Answer", SOURCE)
                 .await
                 .unwrap();
@@ -326,7 +318,6 @@ async fn a_failed_index_write_keeps_the_save_and_leaves_only_a_failed_state_unti
                 tracing_subscriber::Registry::default().with(logs.clone()),
             );
             fixture
-                .commands
                 .save_function(&call, path.as_str(), "Answer", SOURCE)
                 .await
         }
@@ -383,7 +374,6 @@ async fn a_failed_index_write_keeps_the_save_and_leaves_only_a_failed_state_unti
 
         allow_function_rows(&fixture).await;
         fixture
-            .commands
             .save_function(&call, path.as_str(), "Answer", SOURCE)
             .await
             .unwrap();
@@ -394,25 +384,20 @@ async fn a_failed_index_write_keeps_the_save_and_leaves_only_a_failed_state_unti
 }
 
 #[tokio::test]
-async fn deleting_a_function_through_the_task_command_removes_its_row() {
+async fn a_notified_delete_removes_the_functions_row() {
     let fixture = Fixture::new().await;
     let index = &fixture.index;
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Save and delete");
     for path in ["answer", "kept"] {
         fixture
-            .commands
             .save_function(&call, path, "Answer", SOURCE)
             .await
             .unwrap();
     }
     index.settled().await;
 
-    fixture
-        .commands
-        .delete_function(&call, "answer")
-        .await
-        .unwrap();
+    fixture.delete_function(&call, "answer").await.unwrap();
     index.settled().await;
 
     assert_eq!(indexed_paths(&fixture).await, ["kept"]);
@@ -425,7 +410,6 @@ async fn a_notification_reads_the_function_as_it_stands() {
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Save and delete");
     let saved = fixture
-        .commands
         .save_function(&call, "answer", "Answer", SOURCE)
         .await
         .unwrap();
@@ -440,11 +424,7 @@ async fn a_notification_reads_the_function_as_it_stands() {
         "a repeat of a current function writes nothing"
     );
 
-    fixture
-        .commands
-        .delete_function(&call, "answer")
-        .await
-        .unwrap();
+    fixture.delete_function(&call, "answer").await.unwrap();
     index.settled().await;
     index.sync_function(saved.workspace_id().clone(), saved.id().clone());
     index.settled().await;
@@ -465,7 +445,6 @@ async fn a_delete_commits_while_an_index_write_holds_the_functions_search_row() 
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Save and delete");
     let saved = fixture
-        .commands
         .save_function(&call, "answer", "Answer", SOURCE)
         .await
         .unwrap();
@@ -482,7 +461,7 @@ async fn a_delete_commits_while_an_index_write_holds_the_functions_search_row() 
 
     let deleted = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        fixture.commands.delete_function(&call, "answer"),
+        fixture.delete_function(&call, "answer"),
     )
     .await
     .expect("the delete does not wait for search")
@@ -540,7 +519,6 @@ async fn a_pass_removes_the_rows_of_the_functions_that_removing_access_deleted()
     ] {
         let call = principal_call(&fixture, actor).await;
         fixture
-            .commands
             .save_function(&call, path, "Private work", SOURCE)
             .await
             .unwrap();
@@ -552,7 +530,6 @@ async fn a_pass_removes_the_rows_of_the_functions_that_removing_access_deleted()
     reject_function_rows(&fixture).await;
     for call in &calls {
         fixture
-            .commands
             .save_function(call, "failing", "Private work", SOURCE)
             .await
             .unwrap();
@@ -613,7 +590,6 @@ async fn a_function_without_projected_declaration_fields_is_indexed_by_path_and_
         write!(fields, "a{field}:0;").expect("write field fixture");
     }
     let saved = fixture
-        .commands
         .save_function(
             &call,
             "largeProjection",
@@ -652,7 +628,6 @@ async fn postgres_statistics_follow_each_function_write() {
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Save a function");
     fixture
-        .commands
         .save_function(&call, "triage.openIssues", "Find open issues", SOURCE)
         .await
         .unwrap();
@@ -662,7 +637,6 @@ async fn postgres_statistics_follow_each_function_write() {
     // A failed attempt removes the row and, with it, the row's terms.
     reject_function_rows(&fixture).await;
     fixture
-        .commands
         .save_function(&call, "triage.openIssues", "Find open bugs", SOURCE)
         .await
         .unwrap();
@@ -738,7 +712,6 @@ async fn principal_call(fixture: &Fixture, actor: AuthenticatedPrincipal) -> Att
         fixture.workspace.clone(),
         goal.id().clone(),
         TaskIntent::parse("Save a function").unwrap(),
-        coral_test_support::trace('1'),
     )
 }
 

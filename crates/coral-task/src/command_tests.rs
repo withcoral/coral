@@ -24,7 +24,7 @@ struct Fixture {
     test_database: TestDatabase,
     tasks: TaskModule,
     commands: TaskCommands,
-    /// The index the Task commands notify.
+    /// The index the fixture's saves and deletes notify.
     index: coral_search::SearchIndex,
     runs: coral_run::RunModule,
     functions: coral_functions::SavedFunctionModule,
@@ -34,9 +34,88 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// Waits until the save commands' notifications reach the search index.
+    /// Waits until the saves' notifications reach the search index.
     async fn converge(&self) {
         self.index.settled().await;
+    }
+
+    /// The ids of the Runs accepted in the fixture Workspace.
+    async fn run_ids(&self) -> Vec<String> {
+        use sea_query::{Alias, Expr, ExprTrait as _, Query};
+        let rows: Vec<(String,)> = self
+            .tasks
+            .database
+            .fetch_all(
+                Query::select()
+                    .column(Alias::new("id"))
+                    .from(Alias::new("program_run_records"))
+                    .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
+                    .to_owned(),
+            )
+            .await
+            .unwrap();
+        rows.into_iter().map(|(id,)| id).collect()
+    }
+
+    /// Saves a function as `call`'s Principal the way a Program's
+    /// `coral.workspace.saveFunction` does: typed from the Tools it can
+    /// discover, then the index is told. No Task Attempt records it.
+    async fn save_function(
+        &self,
+        call: &AttributedCommand,
+        path: &str,
+        description: &str,
+        source: &str,
+    ) -> Result<coral_functions::SavedFunction, Error> {
+        let save = coral_functions::SavedFunctionSave::new(
+            coral_functions::SavedFunctionPath::parse(path)?,
+            coral_functions::SavedFunctionDescription::parse(description)?,
+            coral_functions::SavedFunctionSource::parse(source)?,
+        );
+        let search = coral_search::UniversalSearchModule::new(
+            self.tasks.database.clone(),
+            self.tasks.workspaces.clone(),
+        );
+        let declarations =
+            coral_search::CallerToolDeclarations::new(&search, &call.actor, &call.workspace_id);
+        let prepared = self
+            .functions
+            .prepare_save(
+                &function_context(call),
+                &call.workspace_id,
+                save,
+                Some(&declarations),
+            )
+            .await?;
+        let mut transaction = self.tasks.database.begin().await?;
+        let function = self
+            .functions
+            .save_in_transaction(&mut transaction, prepared)
+            .await?;
+        transaction.commit().await?;
+        self.index
+            .sync_function(call.workspace_id.clone(), function.id().clone());
+        Ok(function)
+    }
+
+    /// Deletes `call`'s Principal's function at `path` the way a Program's
+    /// `coral.workspace.deleteFunction` does, then tells the index.
+    async fn delete_function(
+        &self,
+        call: &AttributedCommand,
+        path: &str,
+    ) -> Result<coral_functions::SavedFunctionId, Error> {
+        let deleted = self
+            .functions
+            .delete(
+                &function_context(call),
+                &call.workspace_id,
+                &coral_functions::SavedFunctionPath::parse(path)?,
+            )
+            .await?;
+        self.index
+            .sync_function(call.workspace_id.clone(), deleted.clone());
+        Ok(deleted)
     }
 
     async fn new() -> Self {
@@ -89,13 +168,7 @@ impl Fixture {
         .unwrap();
         let index = coral_search::SearchIndex::new(database.clone(), RECONCILE_INTERVAL);
         let search = coral_search::UniversalSearchModule::new(database, workspaces);
-        let commands = TaskCommands::new(
-            tasks.clone(),
-            functions.clone(),
-            search,
-            index.clone(),
-            runs.clone(),
-        );
+        let commands = TaskCommands::new(tasks.clone(), search, runs.clone());
         Self {
             test_database: fixture,
             tasks,
@@ -230,7 +303,6 @@ impl Fixture {
             self.workspace.clone(),
             goal.id().clone(),
             TaskIntent::parse(intent).unwrap(),
-            coral_test_support::trace('1'),
         )
     }
 }
@@ -241,7 +313,6 @@ async fn archived_workspace_description_rejection_remains_in_authorized_task_his
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Describe my retained function");
     fixture
-        .commands
         .save_function(&call, "answer", "Answer", "export default () => 42;")
         .await
         .unwrap();
@@ -271,11 +342,7 @@ async fn archived_workspace_description_rejection_remains_in_authorized_task_his
         .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
         .await
         .unwrap();
-    assert_eq!(
-        history.len(),
-        2,
-        "authorized rejection must follow the accepted save"
-    );
+    assert_eq!(history.len(), 1, "the authorized rejection is retained");
     let entry = history
         .iter()
         .find(|entry| entry.kind == AttemptKind::Describe)
@@ -420,7 +487,6 @@ async fn saved_function_descriptions_survive_replacement_and_deletion() {
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Keep this exact description");
     fixture
-        .commands
         .save_function(&call, "answer", "Answer", "export default () => 41;")
         .await
         .unwrap();
@@ -430,15 +496,10 @@ async fn saved_function_descriptions_survive_replacement_and_deletion() {
         .await
         .unwrap();
     fixture
-        .commands
         .save_function(&call, "answer", "Changed", "export default () => 42;")
         .await
         .unwrap();
-    fixture
-        .commands
-        .delete_function(&call, "answer")
-        .await
-        .unwrap();
+    fixture.delete_function(&call, "answer").await.unwrap();
     let history = fixture
         .tasks
         .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
@@ -467,7 +528,11 @@ async fn saved_function_descriptions_survive_replacement_and_deletion() {
     assert_eq!(field("call_path"), Some("coral.functions.answer"));
     assert_eq!(field("description"), Some("Answer"));
     assert_eq!(field("source"), Some("export default () => 41;"));
-    assert_eq!(history.len(), 4);
+    assert_eq!(
+        history.len(),
+        1,
+        "only the description is a Task Interaction"
+    );
     assert_eq!(
         fixture
             .tasks
@@ -487,7 +552,6 @@ async fn a_goal_starts_its_task_with_the_first_run_and_a_refused_program_starts_
         fixture.workspace.clone(),
         TaskIntent::parse("Summarize the forecast").unwrap(),
         TaskIntent::parse("Read the forecast").unwrap(),
-        coral_test_support::trace('1'),
     );
     let tasks = async || {
         fixture
@@ -559,7 +623,6 @@ async fn a_launch_failure_after_commit_still_returns_the_started_task() {
         fixture.workspace.clone(),
         TaskIntent::parse("Summarize the forecast").unwrap(),
         TaskIntent::parse("Read the forecast").unwrap(),
-        coral_test_support::trace('1'),
     );
     fixture.commands.control.arm(Checkpoint::AfterCommit);
     let commands = fixture.commands.clone();
@@ -616,15 +679,6 @@ async fn real_run_acceptance_is_not_goal_success_and_admission_failures_have_no_
     assert!(matches!(
         fixture
             .commands
-            .save_function(&call, "broken", "Rejected", &heavy)
-            .await,
-        Err(Error::Functions(
-            coral_functions::Error::SavedFunctionAdmission(_)
-        ))
-    ));
-    assert!(matches!(
-        fixture
-            .commands
             .submit(&call, &"x".repeat(65 * 1024), 30_000)
             .await,
         Err(Error::Run(coral_run::Error::InvalidInput(_)))
@@ -634,7 +688,7 @@ async fn real_run_acceptance_is_not_goal_success_and_admission_failures_have_no_
         .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
         .await
         .unwrap();
-    assert_eq!(history.len(), 5);
+    assert_eq!(history.len(), 4);
     assert_eq!(
         history
             .iter()
@@ -647,7 +701,7 @@ async fn real_run_acceptance_is_not_goal_success_and_admission_failures_have_no_
             .iter()
             .filter(|entry| entry.outcome == AttemptOutcome::Rejected)
             .count(),
-        4
+        3
     );
     for entry in history
         .iter()
@@ -925,7 +979,7 @@ impl Control {
 }
 
 #[tokio::test]
-async fn real_recording_and_commit_faults_prevent_uncommitted_saves_and_run_acceptance() {
+async fn real_recording_and_commit_faults_prevent_run_acceptance() {
     for point in [
         Checkpoint::Begin,
         Checkpoint::Completion,
@@ -937,32 +991,6 @@ async fn real_recording_and_commit_faults_prevent_uncommitted_saves_and_run_acce
         fixture.commands.control.arm(point);
         fixture
             .commands
-            .save_function(&call, "answer", "Answer", "export default () => 42;")
-            .await
-            .expect_err("failed recording prevents save");
-        fixture
-            .functions
-            .get(
-                &fixture.actor,
-                &fixture.workspace,
-                &coral_functions::SavedFunctionPath::parse("answer").unwrap(),
-            )
-            .await
-            .expect_err("tool must fail");
-        let history = fixture
-            .tasks
-            .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
-            .await
-            .unwrap();
-        assert_eq!(history.len(), usize::from(point != Checkpoint::Begin));
-        assert!(
-            history
-                .iter()
-                .all(|entry| entry.outcome == AttemptOutcome::Unknown)
-        );
-        fixture.commands.control.arm(point);
-        fixture
-            .commands
             .submit(&call, "return 42;", 30_000)
             .await
             .expect_err("failed recording prevents Run acceptance");
@@ -971,6 +999,7 @@ async fn real_recording_and_commit_faults_prevent_uncommitted_saves_and_run_acce
             .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
             .await
             .unwrap();
+        assert_eq!(history.len(), usize::from(point != Checkpoint::Begin));
         assert!(
             history
                 .iter()
@@ -1110,11 +1139,8 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
     let call = fixture.call(&abandoned, "Interrupted preparation");
     fixture.commands.control.arm(Checkpoint::AfterBegin);
     let commands = fixture.commands.clone();
-    let mut request = tokio::spawn(async move {
-        commands
-            .save_function(&call, "abandoned", "Never saved", "export default () => 0;")
-            .await
-    });
+    let mut request =
+        tokio::spawn(async move { commands.submit(&call, "return 0;", 30_000).await });
     fixture.commands.control.reached_by(&mut request).await;
     request.abort();
     assert!(request.await.unwrap_err().is_cancelled());
@@ -1144,8 +1170,8 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
 
     let goal = fixture.goal().await;
     let call = fixture.call(&goal, "Retain the whole goal");
+    // The goal's own Program saved it; expiring the goal keeps it.
     fixture
-        .commands
         .save_function(&call, "current", "Keep current", "export default () => 42;")
         .await
         .unwrap();
@@ -1264,7 +1290,6 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
         fixture.workspace.clone(),
         goal.id().clone(),
         TaskIntent::parse("Private query").unwrap(),
-        coral_test_support::trace('1'),
     );
     fixture
         .commands
@@ -1316,16 +1341,11 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
             .await,
         Err(Error::TaskNotFound)
     ));
-    let wrong_attribution = fixture.call(&goal, "Must not compile");
+    let wrong_attribution = fixture.call(&goal, "Must not run");
     assert!(matches!(
         fixture
             .commands
-            .save_function(
-                &wrong_attribution,
-                "stolen",
-                "No",
-                "export default () => 42;"
-            )
+            .submit(&wrong_attribution, "return 42;", 30_000)
             .await,
         Err(Error::TaskNotFound)
     ));
@@ -1417,7 +1437,6 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
         fixture.workspace.clone(),
         goal.id().clone(),
         TaskIntent::parse("Agent discovery").unwrap(),
-        coral_test_support::trace('1'),
     );
     fixture
         .commands
@@ -1596,7 +1615,7 @@ async fn search_request_validation_happens_after_durable_begin() {
     clippy::too_many_lines,
     reason = "the same real lock-wait expiry scenario checks attempt admission and owning Saved Function acceptance"
 )]
-async fn registration_expiry_during_lock_waits_prevents_attempt_and_function_acceptance() {
+async fn registration_expiry_during_lock_waits_prevents_attempt_and_run_acceptance() {
     for point in [Checkpoint::BeforeBeginLock, Checkpoint::AfterBegin] {
         let fixture = Fixture::new().await;
         let expiry = wall_time() + 1_000_000_000;
@@ -1637,19 +1656,13 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_function_acc
             fixture.workspace.clone(),
             goal.id().clone(),
             TaskIntent::parse("Do not accept stale authority").unwrap(),
-            coral_test_support::trace('1'),
         );
         fixture.commands.control.arm(point);
         let commands = fixture.commands.clone();
         let mut request = tokio::spawn(async move {
             if point == Checkpoint::AfterBegin {
                 commands
-                    .save_function(
-                        &call,
-                        "expired",
-                        "Must not save",
-                        "export default () => 42;",
-                    )
+                    .submit(&call, "return 42;", 30_000)
                     .await
                     .map(|_| ())
             } else {
@@ -1676,20 +1689,24 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_function_acc
         let remaining = u64::try_from((expiry - wall_time()).max(0)).unwrap();
         tokio::time::sleep(std::time::Duration::from_nanos(remaining + 1_000_000)).await;
         blocker.commit().await.unwrap();
-        request
+        let refused = request
             .await
             .unwrap()
             .expect_err("expiry after a lock wait must reject acceptance");
-        fixture
-            .functions
-            .get_agent(
-                &fixture.actor,
-                &fixture.workspace,
-                agent.principal().id(),
-                &coral_functions::SavedFunctionPath::parse("expired").unwrap(),
-            )
-            .await
-            .expect_err("expired authority must not save a function");
+        // A search refuses as its Attempt begins; a Run, as Coral accepts it.
+        let expected = match point {
+            Checkpoint::BeforeBeginLock => matches!(
+                refused,
+                Error::Workspace(coral_workspace::Error::AgentRegistrationExpired)
+            ),
+            _ => matches!(
+                refused,
+                Error::Run(coral_run::Error::Workspace(
+                    coral_workspace::Error::AgentRegistrationExpired
+                ))
+            ),
+        };
+        assert!(expected, "{point:?}: {refused:?}");
         let history = fixture
             .tasks
             .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
@@ -1712,11 +1729,8 @@ async fn cleanup_rechecks_begin_and_completion_winners_under_the_goal_lock() {
         let call = fixture.call(&goal, "Fresh work wins expiry");
         fixture.commands.control.arm(point);
         let commands = fixture.commands.clone();
-        let mut request = tokio::spawn(async move {
-            commands
-                .save_function(&call, "survivor", "Keep", "export default () => 42;")
-                .await
-        });
+        let mut request =
+            tokio::spawn(async move { commands.submit(&call, "return 42;", 30_000).await });
         fixture.commands.control.reached_by(&mut request).await;
         let expiry_time = if point == Checkpoint::CompletionLocked {
             let entries = fixture
@@ -1735,17 +1749,9 @@ async fn cleanup_rechecks_begin_and_completion_winners_under_the_goal_lock() {
             tokio::spawn(async move { tasks.expire_group(&workspace, &id, expiry_time).await });
         tokio::task::yield_now().await;
         fixture.commands.control.release.notify_one();
-        request.await.unwrap().unwrap();
+        let accepted = request.await.unwrap().unwrap();
         assert!(!cleanup.await.unwrap().unwrap());
-        fixture
-            .functions
-            .get(
-                &fixture.actor,
-                &fixture.workspace,
-                &coral_functions::SavedFunctionPath::parse("survivor").unwrap(),
-            )
-            .await
-            .unwrap();
+        assert_eq!(fixture.run_ids().await, [accepted.run_id().to_string()]);
         let history = fixture
             .tasks
             .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
@@ -1767,11 +1773,8 @@ async fn cleanup_winners_prevent_late_begin_or_completion_from_committing() {
             Checkpoint::BeforeBeginLock
         });
         let commands = fixture.commands.clone();
-        let mut request = tokio::spawn(async move {
-            commands
-                .save_function(&call, "expired", "No", "export default () => 42;")
-                .await
-        });
+        let mut request =
+            tokio::spawn(async move { commands.submit(&call, "return 42;", 30_000).await });
         fixture.commands.control.reached_by(&mut request).await;
         let expiry_time = if begun {
             fixture
@@ -1805,15 +1808,7 @@ async fn cleanup_winners_prevent_late_begin_or_completion_from_committing() {
         fixture.tasks.retention_control.release.notify_one();
         assert!(cleanup.await.unwrap().unwrap());
         assert!(matches!(request.await.unwrap(), Err(Error::TaskNotFound)));
-        fixture
-            .functions
-            .get(
-                &fixture.actor,
-                &fixture.workspace,
-                &coral_functions::SavedFunctionPath::parse("expired").unwrap(),
-            )
-            .await
-            .expect_err("no late owning mutation");
+        assert!(fixture.run_ids().await.is_empty(), "no late Run");
     }
 }
 
@@ -1896,7 +1891,6 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
     // Equal names in length, so equal matches tie and follow Call Path order.
     for path in ["alpha", "bravo", "gamma"] {
         fixture
-            .commands
             .save_function(&call, path, "Find an answer", "export default () => 42;")
             .await
             .unwrap();
@@ -1936,7 +1930,6 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
         "coral.functions.bravo"
     );
     fixture
-        .commands
         .save_function(
             &call,
             "alpha",
@@ -1945,11 +1938,7 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
         )
         .await
         .unwrap();
-    fixture
-        .commands
-        .delete_function(&call, "bravo")
-        .await
-        .unwrap();
+    fixture.delete_function(&call, "bravo").await.unwrap();
     let entries = fixture
         .tasks
         .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
@@ -2237,4 +2226,13 @@ impl Fixture {
         assert_eq!(self.runs.sweep_expired_leases().await.expect("sweep"), 1);
         self.wait_for_terminal(run).await
     }
+}
+
+/// `call`'s Principal at the wall clock, as a Saved Function change names it.
+fn function_context(call: &AttributedCommand) -> coral_functions::SavedFunctionChangeContext {
+    coral_functions::SavedFunctionChangeContext::new(
+        call.actor.clone(),
+        wall_time(),
+        coral_test_support::trace('f'),
+    )
 }

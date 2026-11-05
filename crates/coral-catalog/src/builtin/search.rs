@@ -51,6 +51,7 @@ pub(super) fn definition() -> Definition {
         input: derived_schema::<Input>(Contract::Deserialize),
         output: derived_schema::<SearchOutput>(Contract::Serialize),
         declared: Declared::Overloads(OVERLOADS),
+        enabled_by_default: false,
     }
 }
 
@@ -633,12 +634,10 @@ impl Description {
             Self::SavedFunction {
                 detail: Some(detail),
                 ..
-            } => detail.diagnostics.iter().all(|diagnostic| {
-                [Some(diagnostic.code), diagnostic.line, diagnostic.column]
-                    .into_iter()
-                    .flatten()
-                    .all(exact_in_json)
-            }),
+            } => detail
+                .diagnostics
+                .iter()
+                .all(SavedDiagnostic::is_exact_in_json),
         }
     }
 }
@@ -695,6 +694,18 @@ pub struct SavedDiagnostic {
     /// The one-based column, when known.
     #[schemars(description = "", range(max = JSON_SAFE_INTEGER_MAX))]
     pub column: Option<u64>,
+}
+
+impl SavedDiagnostic {
+    /// Whether a JSON reader holds its code, line and column exactly. Only
+    /// corrupt stored data holds one it would round.
+    #[must_use]
+    pub fn is_exact_in_json(&self) -> bool {
+        [Some(self.code), self.line, self.column]
+            .into_iter()
+            .flatten()
+            .all(exact_in_json)
+    }
 }
 
 /// How severe a saved diagnostic is.

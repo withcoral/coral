@@ -49,6 +49,9 @@ async fn activity_observation_wakes_for_task_creation_interactions_and_ending() 
     );
 }
 
+/// A retained `save` Attempt's source.
+const REPORT: &str = "export default () => 42;";
+
 #[tokio::test]
 async fn context_impact_task_total_includes_unloaded_measurements_and_ignores_non_applicable_commands()
  {
@@ -68,15 +71,13 @@ async fn context_impact_task_total_includes_unloaded_measurements_and_ignores_no
         .unwrap();
     f.wait_for_terminal(run.run_id()).await;
     f.commands
-        .save_function(
-            &call,
-            "report",
-            "Save computed work",
-            "export default () => 42;",
-        )
+        .record_retained_save(&f.functions, &call, "report", "Save", REPORT)
         .await
         .unwrap();
-    f.commands.delete_function(&call, "report").await.unwrap();
+    f.commands
+        .record_retained_delete(&f.functions, &call, "report")
+        .await
+        .unwrap();
     f.tasks
         .end(
             &f.actor,
@@ -114,7 +115,7 @@ async fn context_impact_task_total_includes_unloaded_measurements_and_ignores_no
         };
         window = InteractionWindow::After(after);
     }
-    // Searches and the Run's JSON result are measured; function authoring is not.
+    // Searches and the Run's JSON result are measured; retained function authoring is not.
     let [
         Some(first_search),
         Some(second_search),
@@ -202,7 +203,6 @@ async fn activity_summary_counts_context_as_the_task_total_does() {
         f.workspace.clone(),
         agent_goal.id().clone(),
         TaskIntent::parse("Find agent tools").unwrap(),
-        coral_test_support::trace('1'),
     );
     f.commands
         .search(&agent_call, coral_search::SearchInput::default())
@@ -473,7 +473,6 @@ async fn filled_task(f: &Fixture, workspace: &coral_workspace::WorkspaceId, runs
         workspace.clone(),
         goal.id().clone(),
         intent,
-        coral_test_support::trace('1'),
     );
     // The same leading children, so both windows read the same kind of row.
     for _ in 0..WINDOW {
@@ -1037,7 +1036,6 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
         f.workspace.clone(),
         goal.id().clone(),
         TaskIntent::parse("Agent submission").unwrap(),
-        coral_test_support::trace('1'),
     );
     let run = f
         .commands

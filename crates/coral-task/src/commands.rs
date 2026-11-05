@@ -5,11 +5,9 @@ use crate::{
 };
 use crate::{interaction_repository, repository};
 use coral_db::Transaction;
-use coral_functions::SavedFunctionModule;
 use coral_run::RunModule;
-use coral_search::{SearchIndex, SearchPage, SearchRequest, UniversalSearchModule as SearchModule};
+use coral_search::{SearchPage, SearchRequest, UniversalSearchModule as SearchModule};
 use coral_telemetry::safe;
-use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The longest Call Path `describe` accepts. It lives here, not in `CallPath::parse`,
@@ -17,47 +15,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// builds Tool Call Paths through the same type.
 const DESCRIBE_CALL_PATH_MAX_BYTES: usize = 1024;
 
-/// Reads Tool declarations as `describe` would for one caller, so typing
-/// adds nothing the caller cannot already discover.
-struct CallerToolDeclarations<'a> {
-    search: &'a SearchModule,
-    actor: &'a AuthenticatedPrincipal,
-    workspace_id: &'a WorkspaceId,
-}
-
-#[async_trait::async_trait]
-impl coral_functions::ToolDeclarationReader for CallerToolDeclarations<'_> {
-    async fn read(
-        &self,
-        call_paths: &[String],
-    ) -> Result<Vec<coral_functions::ToolDeclaration>, Box<dyn std::error::Error + Send + Sync>>
-    {
-        let call_paths = call_paths
-            .iter()
-            .filter_map(|call_path| coral_search::CallPath::parse(call_path).ok())
-            .collect::<Vec<_>>();
-        Ok(self
-            .search
-            .describe_tools(self.actor, self.workspace_id, &call_paths)
-            .await?
-            .into_iter()
-            .map(|description| {
-                coral_functions::ToolDeclaration::new(
-                    description.call_path().as_str().to_owned(),
-                    description.typescript_declaration().to_owned(),
-                )
-            })
-            .collect())
-    }
-}
-
 /// Task-aware commands above independently usable operation domains.
 #[derive(Clone)]
 pub struct TaskCommands {
     tasks: TaskModule,
-    functions: SavedFunctionModule,
     search: SearchModule,
-    index: SearchIndex,
     runs: RunModule,
     #[cfg(test)]
     pub(crate) control: std::sync::Arc<crate::command_tests::Control>,
@@ -65,18 +27,10 @@ pub struct TaskCommands {
 impl TaskCommands {
     /// Composes real domain modules; no callbacks or generic operation registry.
     #[must_use]
-    pub fn new(
-        tasks: TaskModule,
-        functions: SavedFunctionModule,
-        search: SearchModule,
-        index: SearchIndex,
-        runs: RunModule,
-    ) -> Self {
+    pub fn new(tasks: TaskModule, search: SearchModule, runs: RunModule) -> Self {
         Self {
             tasks,
-            functions,
             search,
-            index,
             runs,
             #[cfg(test)]
             control: std::sync::Arc::default(),
@@ -126,119 +80,6 @@ impl TaskCommands {
             .await?;
         transaction.commit().await?;
         Ok(page)
-    }
-
-    /// Saves one callable and its lifecycle evidence atomically with attempt completion.
-    /// # Errors
-    /// Authorized input and compilation failures are retained; no partial save commits.
-    pub async fn save_function(
-        &self,
-        call: &AttributedCommand,
-        path: &str,
-        description: &str,
-        source: &str,
-    ) -> Result<coral_functions::SavedFunction, Error> {
-        let id = self.begin(call, AttemptKind::Save).await?;
-        let result = async {
-            let save = coral_functions::SavedFunctionSave::new(
-                coral_functions::SavedFunctionPath::parse(path)?,
-                coral_functions::SavedFunctionDescription::parse(description)?,
-                coral_functions::SavedFunctionSource::parse(source)?,
-            );
-            let context = Self::function_context(call)?;
-            let prepared = self
-                .functions
-                .prepare_save(
-                    &context,
-                    &call.workspace_id,
-                    save,
-                    Some(&CallerToolDeclarations {
-                        search: &self.search,
-                        actor: &call.actor,
-                        workspace_id: &call.workspace_id,
-                    }),
-                )
-                .await?;
-            let mut transaction = self.tasks.database.begin().await?;
-            self.hold_attempt(&mut transaction, call).await?;
-            let function = self
-                .functions
-                .save_in_transaction(&mut transaction, prepared)
-                .await?;
-            self.complete(
-                &mut transaction,
-                call,
-                &id,
-                &AttemptEvidence::SavedFunction(function.id().clone()),
-            )
-            .await?;
-            transaction.commit().await?;
-            Ok(function)
-        }
-        .await;
-        let function = match result {
-            Ok(function) => function,
-            Err(error) => return Err(self.reject(call, &id, error).await),
-        };
-        // Outside the rejection path: indexing never undoes or rejects a
-        // committed save.
-        self.index
-            .sync_function(function.workspace_id().clone(), function.id().clone());
-        Ok(function)
-    }
-
-    /// Deletes an exactly visible owned function with atomic attempt completion.
-    /// # Errors
-    /// Unauthorized probes create no attempt; admitted failures never invent a save.
-    pub async fn delete_function(
-        &self,
-        call: &AttributedCommand,
-        path: &str,
-    ) -> Result<coral_functions::SavedFunctionId, Error> {
-        let path = match coral_functions::SavedFunctionPath::parse(path) {
-            Ok(path) => path,
-            Err(error) => {
-                let id = self.begin(call, AttemptKind::Delete).await?;
-                return Err(self.reject(call, &id, error.into()).await);
-            }
-        };
-        self.functions
-            .get(&call.actor, &call.workspace_id, &path)
-            .await?;
-        let id = self.begin(call, AttemptKind::Delete).await?;
-        let result = async {
-            let mut transaction = self.tasks.database.begin().await?;
-            self.hold_attempt(&mut transaction, call).await?;
-            let deleted = self
-                .functions
-                .delete_in_transaction(
-                    &mut transaction,
-                    &Self::function_context(call)?,
-                    &call.workspace_id,
-                    &path,
-                )
-                .await?;
-            self.complete(
-                &mut transaction,
-                call,
-                &id,
-                &AttemptEvidence::SavedFunction(deleted.clone()),
-            )
-            .await?;
-            transaction.commit().await?;
-            Ok(deleted)
-        }
-        .await;
-        match result {
-            Ok(deleted) => {
-                // The delete never touches the search tables. This only
-                // removes the function's rows sooner than a reconcile pass.
-                self.index
-                    .sync_function(call.workspace_id.clone(), deleted.clone());
-                Ok(deleted)
-            }
-            Err(error) => Err(self.reject(call, &id, error).await),
-        }
     }
 
     /// Retains the exact description, including editable source and
@@ -387,7 +228,6 @@ impl TaskCommands {
             call.workspace_id.clone(),
             task.id().clone(),
             call.intent.clone(),
-            call.trace_id.clone(),
         );
         let id = InteractionId::generate();
         interaction_repository::insert(
@@ -416,16 +256,6 @@ impl TaskCommands {
             .await;
         let launched = self.runs.launch(staged).await.map_err(Error::from);
         Ok((task, launched))
-    }
-
-    fn function_context(
-        call: &AttributedCommand,
-    ) -> Result<coral_functions::SavedFunctionChangeContext, Error> {
-        Ok(coral_functions::SavedFunctionChangeContext::new(
-            call.actor.clone(),
-            now()?,
-            call.trace_id.clone(),
-        ))
     }
 
     async fn hold_attempt(
@@ -576,4 +406,103 @@ pub(super) fn now() -> Result<i64, Error> {
         .ok()
         .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
         .ok_or(Error::Clock)
+}
+
+/// Writes the `save` and `delete` Attempts Task history keeps from before
+/// agents saved Saved Functions from Programs (ADR 0031), as Coral wrote
+/// them, so tests can read retained history. No surface records these now.
+#[cfg(any(test, feature = "test-fixtures"))]
+impl TaskCommands {
+    /// Saves an untyped function through `functions` as `call`'s Principal
+    /// and completes a `save` Attempt naming it, in one transaction. A
+    /// failure records the Attempt's rejection, as Coral did. Universal
+    /// Search is not told; a reconcile pass finds the function.
+    ///
+    /// # Errors
+    ///
+    /// Returns an input, authoring, authority or persistence failure.
+    pub async fn record_retained_save(
+        &self,
+        functions: &coral_functions::SavedFunctionModule,
+        call: &AttributedCommand,
+        path: &str,
+        description: &str,
+        source: &str,
+    ) -> Result<coral_functions::SavedFunction, Error> {
+        let id = self.begin(call, AttemptKind::Save).await?;
+        let result = async {
+            let save = coral_functions::SavedFunctionSave::new(
+                coral_functions::SavedFunctionPath::parse(path)?,
+                coral_functions::SavedFunctionDescription::parse(description)?,
+                coral_functions::SavedFunctionSource::parse(source)?,
+            );
+            let prepared = functions
+                .prepare_save(&retained_context(call)?, &call.workspace_id, save, None)
+                .await?;
+            let mut transaction = self.tasks.database.begin().await?;
+            self.hold_attempt(&mut transaction, call).await?;
+            let function = functions
+                .save_in_transaction(&mut transaction, prepared)
+                .await?;
+            let evidence = AttemptEvidence::SavedFunction(function.id().clone());
+            self.complete(&mut transaction, call, &id, &evidence)
+                .await?;
+            transaction.commit().await?;
+            Ok(function)
+        }
+        .await;
+        match result {
+            Ok(function) => Ok(function),
+            Err(error) => Err(self.reject(call, &id, error).await),
+        }
+    }
+
+    /// Deletes `call`'s Principal's function at `path` through `functions`
+    /// and completes a `delete` Attempt naming it, in one transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an input, absent-function, authority or persistence failure.
+    pub async fn record_retained_delete(
+        &self,
+        functions: &coral_functions::SavedFunctionModule,
+        call: &AttributedCommand,
+        path: &str,
+    ) -> Result<coral_functions::SavedFunctionId, Error> {
+        let id = self.begin(call, AttemptKind::Delete).await?;
+        let result = async {
+            let path = coral_functions::SavedFunctionPath::parse(path)?;
+            let mut transaction = self.tasks.database.begin().await?;
+            self.hold_attempt(&mut transaction, call).await?;
+            let deleted = functions
+                .delete_in_transaction(
+                    &mut transaction,
+                    &retained_context(call)?,
+                    &call.workspace_id,
+                    &path,
+                )
+                .await?;
+            let evidence = AttemptEvidence::SavedFunction(deleted.clone());
+            self.complete(&mut transaction, call, &id, &evidence)
+                .await?;
+            transaction.commit().await?;
+            Ok(deleted)
+        }
+        .await;
+        match result {
+            Ok(deleted) => Ok(deleted),
+            Err(error) => Err(self.reject(call, &id, error).await),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-fixtures"))]
+fn retained_context(
+    call: &AttributedCommand,
+) -> Result<coral_functions::SavedFunctionChangeContext, Error> {
+    Ok(coral_functions::SavedFunctionChangeContext::new(
+        call.actor.clone(),
+        now()?,
+        coral_workspace::TraceId::current_or_new(),
+    ))
 }

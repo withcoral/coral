@@ -1,9 +1,3 @@
-// Every UTF-16 code unit except a line terminator becomes a space, so removed
-// export syntax leaves the code after it at its authored line and column.
-function blankedText(text) {
-  return text.replace(/[^\n\r\u2028\u2029]/g, ' ');
-}
-
 // Identifier names as the parser reads them, so an escaped spelling such as
 // `\u005f_x` and the plain `__x` count as one name.
 function identifierNames(sourceFile) {
@@ -16,53 +10,19 @@ function identifierNames(sourceFile) {
   return names;
 }
 
-// Copies the authored source with each edit's span blanked and its private
-// line, if any, on generated lines of its own before the span. Every other
-// generated line holds one authored line, or the rest of one, at its authored
-// columns, so one column-zero mapping per line is exact and TypeScript's own
-// map supplies the column. Private lines and the return stay unmapped.
+// The authored source with `edits` applied and private source after it: the
+// line break ends any trailing comment, and the semicolon ends any
+// unterminated last statement.
 function editedSavedFunctionBody(sourceFile, edits, defaultName) {
-  const source = sourceFile.text;
-  let text = '';
-  let cursor = 0;
-  const insertions = [];
-  for (const edit of edits) {
-    text += source.slice(cursor, edit.start);
-    if (edit.line !== undefined) {
-      const position = sourceFile.getLineAndCharacterOfPosition(edit.start);
-      insertions.push(position);
-      const column = position.character;
-      text += `${column > 0 ? '\n' : ''}${edit.line}\n${' '.repeat(column)}`;
-    }
-    text += blankedText(source.slice(edit.start, edit.end));
-    cursor = edit.end;
-  }
-  // The line break ends any trailing comment, and the semicolon ends any
-  // unterminated last statement.
-  text += `${source.slice(cursor)}\n;return () => ${defaultName};`;
-
-  const lineStarts = ts.computeLineStarts(source);
-  const mappings = [];
-  let generatedLine = 0;
-  let next = 0;
-  // A final line terminator leaves an empty last line that holds no code.
-  for (let line = 0; line < lineStarts.length && lineStarts[line] < source.length; line += 1) {
-    const mapAuthoredLine = () => {
-      mappings.push({ generatedLine, generatedColumn: 0, line, column: 0 });
-    };
-    if (insertions[next]?.line !== line || insertions[next].character > 0) {
-      mapAuthoredLine();
-    }
-    for (; insertions[next]?.line === line; next += 1) {
-      generatedLine += insertions[next].character > 0 ? 2 : 1;
-      mapAuthoredLine();
-    }
-    generatedLine += 1;
-  }
-  return { text, mappings };
+  const edited = editedSource(sourceFile.text, edits);
+  return {
+    text: `${edited.text}\n;return () => ${defaultName};`,
+    mappings: edited.mappings,
+  };
 }
 
-function savedFunctionRuntimeBody(source, target) {
+// `extraEdits` carry the functions the module saves, at module offsets.
+function savedFunctionRuntimeBody(source, target, extraEdits) {
   const sourceFile = ts.createSourceFile(
     'saved_function.ts',
     source,
@@ -183,10 +143,14 @@ function savedFunctionRuntimeBody(source, target) {
   if (defaultName === undefined) {
     throw new Error('Saved Function source has no runtime default export');
   }
+  edits.push(...extraEdits);
+  edits.sort((left, right) => left.start - right.start);
   return editedSavedFunctionBody(sourceFile, edits, defaultName);
 }
 
-function linkedProgramSource(body, savedFunctions, target) {
+// `saves` names the private carrier and holds the edits that carry what the
+// Program body and each module save.
+function linkedProgramSource(body, savedFunctions, target, saves) {
   const pathKeys = new Set();
   for (const savedFunction of savedFunctions) {
     if (
@@ -214,7 +178,7 @@ function linkedProgramSource(body, savedFunctions, target) {
   const modules = savedFunctions.map((savedFunction, index) => ({
     ...savedFunction,
     index,
-    body: savedFunctionRuntimeBody(savedFunction.source, target),
+    body: savedFunctionRuntimeBody(savedFunction.source, target, saves.moduleEdits[index]),
   }));
   const linkedPaths = JSON.stringify(
     savedFunctions.map((savedFunction) => savedFunction.pathSegments),
@@ -230,6 +194,7 @@ function linkedProgramSource(body, savedFunctions, target) {
   }
 
   append(`(async () => {
+    ${savedFunctionCarrierDeclaration(saves.carrier)}
     let __coralFunctions = Object.freeze(Object.create(null));
     const __coralHostDescriptors = Object.getOwnPropertyDescriptors(
       globalThis.coral ?? Object.create(null),
@@ -316,8 +281,11 @@ function linkedProgramSource(body, savedFunctions, target) {
 
   append(`    return await (async () => {\n`);
   const programStart = generatedLine;
-  append(body);
-  authoredMappings.push(...programAuthoredMappings(body, programStart));
+  const programBody = compiledProgramBody(body, saves.programEdits);
+  append(programBody.text);
+  for (const mapping of programBody.mappings) {
+    authoredMappings.push({ ...mapping, generatedLine: programStart + mapping.generatedLine });
+  }
   append(`
     })();
   })();

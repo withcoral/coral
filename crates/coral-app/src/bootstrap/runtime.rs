@@ -495,15 +495,16 @@ fn mcp_modules(
         compiler,
         runtime_limits.compilation_timeout(),
     );
-    // MCP-started Runs link people to Reef; this clone shares the server's Run Owners.
-    let runs = runs.with_human_interface(human_interface.clone());
-    let commands = TaskCommands::new(
-        tasks.clone(),
-        saved_functions,
-        search,
-        search_index,
-        runs.clone(),
-    );
+    // MCP-started Runs link people to Reef and save Saved Functions through
+    // the one module, so every save shares its compiler and deadline. This
+    // clone shares the server's Run Owners; no other clone runs a Program.
+    let runs = runs
+        .with_human_interface(human_interface.clone())
+        .with_saved_functions(coral_run::SavedFunctions::new(
+            saved_functions,
+            search_index,
+        ));
+    let commands = TaskCommands::new(tasks.clone(), search, runs.clone());
     McpModules::new(workspaces, tasks, commands, runs, human_interface)
 }
 

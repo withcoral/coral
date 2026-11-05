@@ -765,6 +765,14 @@ export async function programWorkspace(
 }
 
 /**
+ * The source Coral stores when a Program saves the function `name` that `declarations` declare
+ * and nothing else: they reach no other top-level declaration.
+ */
+export function savedSource(declarations: string, name: string) {
+  return `${declarations}\n\nexport default ${name};\n`
+}
+
+/**
  * One real MCP client. By default, acquire the browser User's genuine
  * Workspace OAuth grant. Supply an Agent Registration bearer to act as an Agent.
  * Local checks use the implicit User. `wait` observes the original Run without replay.
@@ -898,7 +906,10 @@ export function programRunner(
    * when the call or the Run fails. Scenarios count only the calls they make, so these are
    * left out of `calls`.
    */
-  const discover = async <T>(program: string): Promise<ToolResult<T> | undefined> => {
+  const runUncounted = async <T>(
+    program: string,
+    intent = 'Find tools',
+  ): Promise<ToolResult<T> | undefined> => {
     await initialize()
     const counted = { ...calls }
     try {
@@ -908,7 +919,7 @@ export function programRunner(
           name: 'exec',
           arguments: {
             ...(taskId ? { task_id: taskId } : { goal }),
-            intent: 'Find tools',
+            intent,
             program,
             wait_ms: waitMs,
           },
@@ -952,23 +963,24 @@ export function programRunner(
         arguments: { task_id: taskId, outcome, feedback },
       })
     },
+    /**
+     * Saves a function the way an agent does: a Program declares `declarations`, which declare
+     * the function `name` at its top level, and passes it to `coral.workspace.saveFunction`.
+     * Coral stores {@link savedSource} of them. The Program is one more uncounted exec of the
+     * Task; a failed save is an error result.
+     */
     async saveFunction(
       path: string,
       description: string,
-      source: string,
-      intent = 'Prepare current work before offboarding',
+      declarations: string,
+      name: string,
     ): Promise<ToolResult> {
-      await ensureTask()
-      return rpc('tools/call', {
-        name: 'save_function',
-        arguments: {
-          task_id: taskId,
-          intent,
-          path,
-          description,
-          source,
-        },
-      })
+      const fields = `path: ${JSON.stringify(path)}, description: ${JSON.stringify(description)}`
+      const saved = await runUncounted(
+        `${declarations}\nreturn (await coral.workspace.saveFunction({ ${fields}, source: ${name} })).data;`,
+        'Save a reusable function',
+      )
+      return saved ?? { isError: true, structuredContent: {} }
     },
     async wait(update: RunUpdate): Promise<ToolResult<RunUpdate>> {
       await initialize()
@@ -987,7 +999,7 @@ export function programRunner(
      */
     async search(query?: string): Promise<ToolResult<{ hits: { call_path: string }[] }>> {
       const input = JSON.stringify(query === undefined ? {} : { query })
-      const found = await discover<{ hits: { call_path: string }[] }>(
+      const found = await runUncounted<{ hits: { call_path: string }[] }>(
         `return (await coral.workspace.search(${input})).data;`,
       )
       return found ?? { isError: true, structuredContent: { hits: [] } }
@@ -998,7 +1010,7 @@ export function programRunner(
      */
     async describe(path: string): Promise<ToolResult<DescribedPath>> {
       const input = JSON.stringify({ paths: [path] })
-      const found = await discover<DescribedPath>(
+      const found = await runUncounted<DescribedPath>(
         `return (await coral.workspace.search(${input})).data;`,
       )
       if (!found) return { isError: true, structuredContent: { descriptions: [], missing: [] } }

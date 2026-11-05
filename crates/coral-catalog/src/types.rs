@@ -864,6 +864,59 @@ impl ToolHints {
     }
 }
 
+/// What a Tool's catalog fixes about its default Tool Access State: its
+/// declared hints, the method of an HTTP Tool, and whether the catalog
+/// declares it `enabled` when no exact rule matches. Policy owns the rule
+/// that turns these into a default; each retained Generation keeps its own.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ToolPolicyFacts {
+    hints: ToolHints,
+    http_method: Option<crate::HttpMethod>,
+    enabled_by_default: bool,
+}
+
+impl ToolPolicyFacts {
+    /// Facts from a Tool's hints and HTTP method, declaring no default.
+    #[must_use]
+    pub const fn new(hints: ToolHints, http_method: Option<crate::HttpMethod>) -> Self {
+        Self {
+            hints,
+            http_method,
+            enabled_by_default: false,
+        }
+    }
+
+    /// The same facts, with the catalog declaring, or not, that the Tool is
+    /// `enabled` when no exact rule matches. Only Coral's own catalog
+    /// declares it.
+    #[must_use]
+    pub const fn declaring_enabled_by_default(self, enabled: bool) -> Self {
+        Self {
+            enabled_by_default: enabled,
+            ..self
+        }
+    }
+
+    /// Returns the declared effect hints.
+    #[must_use]
+    pub const fn hints(&self) -> ToolHints {
+        self.hints
+    }
+
+    /// Returns the method of an HTTP Tool; `None` for other protocols.
+    #[must_use]
+    pub const fn http_method(&self) -> Option<crate::HttpMethod> {
+        self.http_method
+    }
+
+    /// Returns whether the catalog declares the Tool `enabled` when no exact
+    /// rule matches.
+    #[must_use]
+    pub const fn declares_enabled_by_default(&self) -> bool {
+        self.enabled_by_default
+    }
+}
+
 /// Maximum raw content bytes in one complete Tool Authoring Description.
 pub const TOOL_AUTHORING_DESCRIPTION_MAX_BYTES: usize = 256 * 1024;
 
@@ -988,22 +1041,19 @@ pub(crate) fn tool_description_too_large(
 pub struct CatalogSearchTarget {
     key: ToolKey,
     relative_path: String,
-    hints: ToolHints,
-    http_method: Option<crate::HttpMethod>,
+    policy_facts: ToolPolicyFacts,
 }
 
 impl CatalogSearchTarget {
     pub(crate) const fn new(
         key: ToolKey,
         relative_path: String,
-        hints: ToolHints,
-        http_method: Option<crate::HttpMethod>,
+        policy_facts: ToolPolicyFacts,
     ) -> Self {
         Self {
             key,
             relative_path,
-            hints,
-            http_method,
+            policy_facts,
         }
     }
 
@@ -1019,16 +1069,10 @@ impl CatalogSearchTarget {
         &self.relative_path
     }
 
-    /// Returns the declared effect hints used by exact policy.
+    /// Returns what the Tool's default Tool Access State is decided from.
     #[must_use]
-    pub const fn hints(&self) -> ToolHints {
-        self.hints
-    }
-
-    /// Returns the method of an HTTP Tool; `None` for other protocols.
-    #[must_use]
-    pub const fn http_method(&self) -> Option<crate::HttpMethod> {
-        self.http_method
+    pub const fn policy_facts(&self) -> ToolPolicyFacts {
+        self.policy_facts
     }
 }
 
@@ -1107,6 +1151,7 @@ pub struct MaterializedTool {
     availability: ToolAvailability,
     diagnostics: Vec<CatalogDiagnostic>,
     diagnostics_json: String,
+    enabled_by_default: bool,
 }
 
 impl MaterializedTool {
@@ -1155,7 +1200,16 @@ impl MaterializedTool {
             availability,
             diagnostics,
             diagnostics_json,
+            enabled_by_default: false,
         }
+    }
+
+    /// The same Tool, with its catalog declaring, or not, that it is
+    /// `enabled` when no exact rule matches. Only Coral's own catalog
+    /// declares it, and storage refuses it for any other Tool.
+    pub(crate) const fn declaring_enabled_by_default(mut self, enabled: bool) -> Self {
+        self.enabled_by_default = enabled;
+        self
     }
 
     /// Returns the Tool Key.
@@ -1201,6 +1255,13 @@ impl MaterializedTool {
             ExecutionBinding::Http(binding) => Some(binding.method()),
             ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => None,
         }
+    }
+
+    /// Returns what the Tool's default Tool Access State is decided from.
+    #[must_use]
+    pub const fn policy_facts(&self) -> ToolPolicyFacts {
+        ToolPolicyFacts::new(self.hints, self.http_method())
+            .declaring_enabled_by_default(self.enabled_by_default)
     }
 
     pub(crate) fn binding_json(&self) -> &str {
@@ -1352,6 +1413,11 @@ impl ProviderGenerationFingerprint {
                 tool.diagnostics_json.as_str(),
             ] {
                 fingerprint_text(&mut hasher, value);
+            }
+            // Only a Built-in Tool declares a default, so every other
+            // package keeps the fingerprint it had before the declaration.
+            if tool.enabled_by_default {
+                fingerprint_text(&mut hasher, "enabled_by_default");
             }
         }
         Self(encode_sha256(hasher.finalize()))

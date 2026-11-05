@@ -37,7 +37,7 @@ pub(super) async fn prepare(
         .await
         .map_err(|error| program_setup_error(error, provider_error))?;
     #[cfg(test)]
-    host.run.setup_prepared();
+    host.run.prepared();
     // A Run that ended could no longer hand anyone the link.
     require_current_run(host, &prepared.setup).await?;
     Ok(prepared)

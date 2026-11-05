@@ -47,7 +47,7 @@ mod types;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use coral_catalog::{HttpMethod, ToolHints, ToolKey};
+use coral_catalog::{HttpMethod, ToolKey, ToolPolicyFacts};
 use coral_db::Database;
 use coral_provider::ProviderNamespace;
 use coral_workspace::{
@@ -127,7 +127,7 @@ impl ToolPolicyModule {
             .iter()
             .map(|target| target.tool_key().clone())
             .collect();
-        let hints_and_methods = coral_provider::tool_hints_and_methods_batch_in_transaction(
+        let policy_facts = coral_provider::tool_policy_facts_batch_in_transaction(
             &mut transaction,
             first.workspace_id(),
             first.provider_id(),
@@ -144,13 +144,12 @@ impl ToolPolicyModule {
         let decisions = targets
             .iter()
             .map(|target| {
-                let (hints, http_method) = hints_and_methods
+                let facts = policy_facts
                     .get(target.tool_key())
                     .ok_or(Error::ToolNotFound)?;
                 Ok(resolved_decision(
                     target,
-                    *hints,
-                    *http_method,
+                    *facts,
                     explicit.get(target.tool_key()).copied(),
                 ))
             })
@@ -201,12 +200,8 @@ impl ToolPolicyModule {
             .map(|tool| {
                 let target =
                     ToolPolicyTarget::new(workspace.clone(), provider.clone(), tool.key.clone());
-                let decision = resolved_decision(
-                    &target,
-                    tool.hints,
-                    tool.http_method,
-                    explicit.get(&tool.key).copied(),
-                );
+                let decision =
+                    resolved_decision(&target, tool.policy, explicit.get(&tool.key).copied());
                 (tool, decision)
             })
             .collect())
@@ -467,7 +462,7 @@ async fn require_tool_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     target: &ToolPolicyTarget,
 ) -> Result<(), Error> {
-    coral_provider::tool_hints_and_method_in_transaction(
+    coral_provider::tool_policy_facts_in_transaction(
         transaction,
         target.workspace_id(),
         target.provider_id(),
@@ -480,10 +475,10 @@ async fn require_tool_in_transaction(
 
 /// Reads one exact current Tool decision without holding it.
 ///
-/// The caller owns a coherent read transaction and supplies declared hints and
-/// the HTTP method from current structurally available Provider authoring
-/// material. This facet does not lock or write policy and does not
-/// independently resolve Provider persistence.
+/// The caller owns a coherent read transaction and supplies the policy facts
+/// from current structurally available Provider authoring material. This
+/// facet does not lock or write policy and does not independently resolve
+/// Provider persistence.
 ///
 /// # Errors
 ///
@@ -491,27 +486,20 @@ async fn require_tool_in_transaction(
 pub async fn discovery_decision_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     target: &ToolPolicyTarget,
-    current_hints: ToolHints,
-    current_http_method: Option<HttpMethod>,
+    current: ToolPolicyFacts,
 ) -> Result<ToolPolicyDecision, Error> {
     let explicit =
         repository::access_state_in_transaction(transaction, target, coral_db::RowLock::None)
             .await?;
-    Ok(resolved_decision(
-        target,
-        current_hints,
-        current_http_method,
-        explicit,
-    ))
+    Ok(resolved_decision(target, current, explicit))
 }
 
 /// Reads every exact Tool rule of one Workspace for Universal Search.
 ///
 /// Discovery reads the rules once per request instead of one decision per
 /// Tool. The caller owns a coherent read transaction. It resolves each
-/// Tool with [`ExactToolRules::access_state`], passing the declared
-/// hints and HTTP method from current structurally available Provider
-/// authoring material. This facet does not lock or write policy.
+/// Tool with [`ExactToolRules::access_state`], passing the policy facts
+/// from current structurally available Provider authoring material. This facet does not lock or write policy.
 ///
 /// # Errors
 ///
@@ -527,8 +515,8 @@ pub async fn exact_tool_rules_in_transaction(
 /// the explicit rule as `lock` says.
 ///
 /// The caller owns the transaction that either admits an Invocation or runs
-/// its Policy Enforcement Point and supplies declared hints and the HTTP method
-/// from the exact retained Provider Generation. A shared hold on the explicit
+/// its Policy Enforcement Point and supplies the policy facts from the exact
+/// retained Provider Generation. A shared hold on the explicit
 /// rule lets concurrent decisions read side by side while a policy change,
 /// which writes the rule, waits for them, on both supported persistence
 /// Adapters; a read snapshot holds nothing and only decides whether a held
@@ -540,46 +528,39 @@ pub async fn exact_tool_rules_in_transaction(
 pub async fn invocation_decision_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     target: &ToolPolicyTarget,
-    retained_hints: ToolHints,
-    retained_http_method: Option<HttpMethod>,
+    retained: ToolPolicyFacts,
     lock: coral_db::RowLock,
 ) -> Result<ToolPolicyDecision, Error> {
     let explicit = repository::access_state_in_transaction(transaction, target, lock).await?;
-    Ok(resolved_decision(
-        target,
-        retained_hints,
-        retained_http_method,
-        explicit,
-    ))
+    Ok(resolved_decision(target, retained, explicit))
 }
 
 fn resolved_decision(
     target: &ToolPolicyTarget,
-    hints: ToolHints,
-    http_method: Option<HttpMethod>,
+    facts: ToolPolicyFacts,
     explicit: Option<ToolAccessState>,
 ) -> ToolPolicyDecision {
     ToolPolicyDecision::new(
         target.clone(),
-        explicit.unwrap_or_else(|| default_access_state(hints, http_method)),
+        explicit.unwrap_or_else(|| default_access_state(facts)),
         explicit.is_some(),
     )
 }
 
 /// Whether a Tool only reads provider state: it declares it changes
-/// nothing, or its HTTP method is safe. An undeclared hint is not evidence.
+/// nothing, or its HTTP method is safe. An undeclared hint is not evidence,
+/// and a default the catalog declares says nothing about effects.
 #[must_use]
-pub fn reads_only(hints: ToolHints, http_method: Option<HttpMethod>) -> bool {
-    hints.declares_read_only() || http_method.is_some_and(HttpMethod::is_safe)
+pub fn reads_only(facts: ToolPolicyFacts) -> bool {
+    facts.hints().declares_read_only() || facts.http_method().is_some_and(HttpMethod::is_safe)
 }
 
-/// A Tool runs without approval when it only reads. Any other Tool takes
-/// the cautious default.
-pub(crate) fn default_access_state(
-    hints: ToolHints,
-    http_method: Option<HttpMethod>,
-) -> ToolAccessState {
-    if reads_only(hints, http_method) {
+/// A Tool runs without approval when it only reads, or when its catalog
+/// declares it `enabled`: Coral's own catalog does for the Tools that change
+/// only the caller's own state (ADR 0031). Any other Tool takes the cautious
+/// default.
+pub(crate) fn default_access_state(facts: ToolPolicyFacts) -> ToolAccessState {
+    if facts.declares_enabled_by_default() || reads_only(facts) {
         ToolAccessState::Enabled
     } else {
         ToolAccessState::ApprovalRequired

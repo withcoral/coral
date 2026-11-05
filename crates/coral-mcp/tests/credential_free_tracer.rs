@@ -86,14 +86,7 @@ const RUN_UPDATE_PAGE_BYTES: usize = 4096;
 /// The Program runtime's own bound on one encoded Program error.
 const PROGRAM_ERROR_MAX_BYTES: usize = 8 * 1024;
 
-const TOOL_NAMES: [&str; 6] = [
-    "save_function",
-    "delete_function",
-    "exec",
-    "wait",
-    "cancel",
-    "end_task",
-];
+const TOOL_NAMES: [&str; 4] = ["exec", "wait", "cancel", "end_task"];
 
 #[derive(Clone, Default)]
 struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
@@ -328,6 +321,12 @@ impl Tracer {
         let index = coral_search::SearchIndex::new(db.clone(), std::time::Duration::from_mins(5));
         // The test helper publishes without the workflow, so nothing notified.
         index.reconcile().await;
+        // Programs save through the one module the Task commands use, and
+        // notify the same index.
+        let runs = runs.with_saved_functions(coral_run::SavedFunctions::new(
+            saved_functions.clone(),
+            index.clone(),
+        ));
         let agent = workspaces
             .create_agent(
                 &change(local_user.clone(), 12, '3'),
@@ -337,13 +336,7 @@ impl Tracer {
             )
             .await
             .expect("register tracer Agent");
-        let commands = coral_task::TaskCommands::new(
-            tasks.clone(),
-            saved_functions.clone(),
-            search,
-            index.clone(),
-            runs.clone(),
-        );
+        let commands = coral_task::TaskCommands::new(tasks.clone(), search, runs.clone());
         let modules = McpModules::new(
             workspaces.clone(),
             tasks.clone(),
@@ -486,6 +479,64 @@ async fn program_value(client: &SdkClient, task: &str, program: &str) -> Value {
         .pointer("/final_value/value")
         .cloned()
         .unwrap_or_else(|| panic!("a Final Value: {update}"))
+}
+
+/// Calls the Built-in authoring `tool` with `arguments` from a Program in
+/// `task`, as an agent saves or deletes a Saved Function, and returns the
+/// Tool Result's data or the failure the Program caught.
+async fn authoring_value(client: &SdkClient, task: &str, tool: &str, arguments: &Value) -> Value {
+    program_value(client, task, &authoring_program(tool, arguments)).await
+}
+
+/// Saves the function `name` that `declarations` declare at the top level
+/// of a Program in `task`, as an agent saves a Saved Function, and returns
+/// the Tool Result's data or the failure the Program caught.
+async fn saving_value(client: &SdkClient, task: &str, save: &Save<'_>) -> Value {
+    program_value(client, task, &save.program()).await
+}
+
+/// One save of a function a Program declares.
+struct Save<'a> {
+    path: &'a str,
+    description: &'a str,
+    /// Top-level declarations that declare `name`.
+    declarations: &'a str,
+    name: &'a str,
+}
+
+impl Save<'_> {
+    /// The Program that declares the function and saves it, as
+    /// [`authoring_program`] calls a Tool.
+    fn program(&self) -> String {
+        format!(
+            "{}\n{}",
+            self.declarations,
+            authored_call(
+                "saveFunction",
+                &format!(
+                    "{{ path: {}, description: {}, source: {} }}",
+                    json!(self.path),
+                    json!(self.description),
+                    self.name
+                ),
+            )
+        )
+    }
+}
+
+/// A Program that calls `coral.workspace.<tool>` with `arguments` and
+/// returns the Tool Result's data, or the code and message it caught.
+fn authoring_program(tool: &str, arguments: &Value) -> String {
+    authored_call(tool, &arguments.to_string())
+}
+
+/// [`authoring_program`] with `arguments` as TypeScript source.
+fn authored_call(tool: &str, arguments: &str) -> String {
+    format!(
+        "try {{ return (await coral.workspace.{tool}({arguments})).data; }} \
+         catch (error) {{ if (!(error instanceof coral.ToolError)) throw error; \
+         return {{ code: error.code, message: error.message }}; }}"
+    )
 }
 
 /// Local mode has no sign-in to pick a Workspace with, so `/mcp` needs an
@@ -1205,17 +1256,22 @@ async fn program_failures_are_run_updates_with_existing_error_facts() {
     assert_eq!(escaped.is_error, Some(false));
     assert!(program_error_bytes(&escaped) <= PROGRAM_ERROR_MAX_BYTES);
 
-    let saved_failure = call(
+    let saved_failure = saving_value(
         &client_a,
-        "save_function",
-        json!({
-            "task_id":task_id, "intent":"Locate an authored Saved Function failure",
-            "path":"diagnostics.fail", "description":"Fail with an authored message",
-            "source":"export default function fail() { throw new Error('saved-function-canary'); }"
-        }),
+        &task_id,
+        &Save {
+            path: "diagnostics.fail",
+            description: "Fail with an authored message",
+            declarations: "function fail() { throw new Error('saved-function-canary'); }",
+            name: "fail",
+        },
     )
     .await;
-    assert_ne!(saved_failure.is_error, Some(true));
+    assert_eq!(
+        saved_failure.get("call_path"),
+        Some(&json!("coral.functions.diagnostics.fail")),
+        "{saved_failure}"
+    );
     let linked_failure = call(
         &client_a,
         "exec",
@@ -1342,26 +1398,26 @@ return { found: found.data, read: read.data };"#,
         "{missing}"
     );
 
-    let saved = call(
+    let saved = saving_value(
         &client_a,
-        "save_function",
-        json!({
-            "task_id": task_id,
-            "intent": "Save a reusable weather helper",
-            "path": "weather.currentTemperature",
-            "description": "Return the current temperature in Celsius",
-            "source": r"export default async function currentTemperature(): Promise<number> {
+        &task_id,
+        &Save {
+            path: "weather.currentTemperature",
+            description: "Return the current temperature in Celsius",
+            declarations: r"async function currentTemperature(): Promise<number> {
     const forecast = await coral.providers.weather.getForecast();
     return forecast.data.temperatureC;
-}"
-        }),
+}",
+            name: "currentTemperature",
+        },
     )
     .await;
     assert_eq!(
-        structured(&saved)["call_path"],
-        "coral.functions.weather.currentTemperature"
+        saved.get("call_path"),
+        Some(&json!("coral.functions.weather.currentTemperature")),
+        "{saved}"
     );
-    assert!(structured(&saved)["declaration"].is_string());
+    assert!(saved.get("declaration").is_some_and(Value::is_string));
     // The save notifies search; wait for its write, with no reconcile pass.
     tracer.index.settled().await;
     let searched_function = program_value(
@@ -1428,19 +1484,17 @@ return { found: found.data, read: read.data };"#,
         json!({"kind":"value", "value":18})
     );
 
-    let deleted = call(
+    let deleted = authoring_value(
         &client_a,
-        "delete_function",
-        json!({
-            "task_id": task_id,
-            "intent": "Remove the tracer helper",
-            "path": "weather.currentTemperature"
-        }),
+        &task_id,
+        "deleteFunction",
+        &json!({ "path": "weather.currentTemperature" }),
     )
     .await;
     assert_eq!(
-        structured(&deleted)["call_path"],
-        "coral.functions.weather.currentTemperature"
+        deleted.get("call_path"),
+        Some(&json!("coral.functions.weather.currentTemperature")),
+        "{deleted}"
     );
 
     // coral-task owns how each rejected attempt is recorded; the wire carries its code.
@@ -1448,13 +1502,26 @@ return { found: found.data, read: read.data };"#,
         "task_id": task_id, "intent": "Record a source-limit rejection", "program": "x".repeat(65 * 1024), "wait_ms": 0
     })).await;
     assert_eq!(structured(&oversized)["code"], "invalid_input");
-    let invalid_function = call(&client_a, "save_function", json!({
-        "task_id": task_id, "intent": "Record rejected function authoring", "path": "invalidHelper",
-        "description": "Must not save", "source": "export default function ("
-    })).await;
+    // A function that does not compile fails the Program that saves it.
+    let invalid_function = call(
+        &client_a,
+        "exec",
+        json!({
+            "task_id": task_id, "intent": "Save a function that does not compile", "wait_ms": 0,
+            "program": Save {
+                path: "invalidHelper",
+                description: "Must not save",
+                declarations: "function invalidHelper(",
+                name: "invalidHelper",
+            }
+            .program(),
+        }),
+    )
+    .await;
     assert_eq!(
         structured(&invalid_function)["code"],
-        "saved_function_admission_failed"
+        "program_admission_failed",
+        "{invalid_function:?}"
     );
     for invalid in [" ".to_string(), "bad\0text".to_string(), "🪸".repeat(4097)] {
         let rejected = call(
@@ -1542,23 +1609,21 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
     );
 
     let task_id = start_task(&client, "Check the exec example").await;
-    let saved = call(
+    let saved = saving_value(
         &client,
-        "save_function",
-        json!({
-            "task_id": task_id,
-            "intent": "Type-check the exec example",
-            "path": "example.find",
-            "description": "The exec description's discovery example",
-            "source": format!("export default async function find() {{\n{find}\n}}"),
-        }),
+        &task_id,
+        &Save {
+            path: "example.find",
+            description: "The exec description's discovery example",
+            declarations: &format!("async function find() {{\n{find}\n}}"),
+            name: "find",
+        },
     )
     .await;
-    assert_eq!(saved.is_error, Some(false), "{saved:?}");
     assert_eq!(
-        structured(&saved)["diagnostics"],
-        json!([]),
-        "the example type-checks"
+        saved.get("diagnostics"),
+        Some(&json!([])),
+        "the example type-checks: {saved}"
     );
 
     let found = &program_value(&client, &task_id, find).await;
@@ -2704,6 +2769,17 @@ impl RawSession {
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("the first exec names its Task: {started}"))
             .to_owned()
+    }
+
+    /// [`authoring_value`] over this raw session.
+    async fn authoring_value(&self, task: &str, tool: &str, arguments: &Value) -> Value {
+        self.program_value(task, &authoring_program(tool, arguments))
+            .await
+    }
+
+    /// [`saving_value`] over this raw session.
+    async fn saving_value(&self, task: &str, save: &Save<'_>) -> Value {
+        self.program_value(task, &save.program()).await
     }
 
     /// Runs `program` in `task` and returns its Final Value, as an agent

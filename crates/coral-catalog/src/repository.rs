@@ -57,6 +57,7 @@ enum MaterializedTools {
     InputSchemaId,
     DiagnosticsJson,
     TypeReferencesJson,
+    EnabledByDefault,
 }
 
 const BUILTIN_INPUT_KIND: &str = "builtin";
@@ -200,6 +201,35 @@ impl HintColumns {
     }
 }
 
+/// What a Tool's default Tool Access State is decided from.
+#[derive(Debug, FromRow)]
+struct PolicyColumns {
+    method: Option<String>,
+    #[sqlx(flatten)]
+    hints: HintColumns,
+    enabled_by_default: bool,
+}
+
+/// The columns a [`PolicyColumns`] decodes.
+const POLICY_COLUMNS: [MaterializedTools; 6] = [
+    MaterializedTools::Method,
+    MaterializedTools::ReadOnlyHint,
+    MaterializedTools::DestructiveHint,
+    MaterializedTools::IdempotentHint,
+    MaterializedTools::OpenWorldHint,
+    MaterializedTools::EnabledByDefault,
+];
+
+impl PolicyColumns {
+    fn decode(self) -> Result<crate::ToolPolicyFacts, Error> {
+        Ok(crate::ToolPolicyFacts::new(
+            self.hints.decode(),
+            decode_http_method(self.method.as_deref())?,
+        )
+        .declaring_enabled_by_default(self.enabled_by_default))
+    }
+}
+
 /// Reads a Tool's method column; NULL for a protocol other than HTTP.
 fn decode_http_method(method: Option<&str>) -> Result<Option<HttpMethod>, Error> {
     method
@@ -215,9 +245,8 @@ fn decode_http_method(method: Option<&str>) -> Result<Option<HttpMethod>, Error>
 struct SearchTargetRow {
     tool_key: String,
     relative_path: String,
-    method: Option<String>,
     #[sqlx(flatten)]
-    hints: HintColumns,
+    policy: PolicyColumns,
 }
 
 impl SearchTargetRow {
@@ -233,8 +262,7 @@ impl SearchTargetRow {
         Ok(crate::CatalogSearchTarget::new(
             key,
             self.relative_path,
-            self.hints.decode(),
-            decode_http_method(self.method.as_deref())?,
+            self.policy.decode()?,
         ))
     }
 }
@@ -342,8 +370,7 @@ struct ToolListingRow {
     relative_path: String,
     tags_json: String,
     #[sqlx(flatten)]
-    hints: HintColumns,
-    method: Option<String>,
+    policy: PolicyColumns,
     availability: String,
     diagnostics_json: Option<String>,
 }
@@ -378,8 +405,7 @@ impl ToolListingRow {
             key,
             relative_path: self.relative_path,
             tags,
-            hints: self.hints.decode(),
-            http_method: decode_http_method(self.method.as_deref())?,
+            policy: self.policy.decode()?,
             availability,
             diagnostics,
         })
@@ -411,7 +437,7 @@ impl ToolSummaryRow {
             summary: self.summary,
             description: self.description,
             tags: listing.tags,
-            hints: listing.hints,
+            hints: listing.policy.hints(),
             availability: listing.availability,
             diagnostics: listing.diagnostics,
         })
@@ -444,6 +470,7 @@ struct ToolRow {
     input_schema_id: Option<String>,
     diagnostics_json: Option<String>,
     type_references_json: String,
+    enabled_by_default: bool,
 }
 
 impl ToolRow {
@@ -571,7 +598,8 @@ impl ToolRow {
             type_references,
             diagnostics,
             diagnostics_json,
-        ))
+        )
+        .declaring_enabled_by_default(self.enabled_by_default))
     }
 }
 
@@ -776,6 +804,7 @@ async fn insert_tool(
             MaterializedTools::InputSchemaId,
             MaterializedTools::DiagnosticsJson,
             MaterializedTools::TypeReferencesJson,
+            MaterializedTools::EnabledByDefault,
         ])
         .values_panic([
             Expr::val(generation_id.to_string()),
@@ -819,6 +848,7 @@ async fn insert_tool(
                     Error::CorruptData("Tool type references cannot be encoded".to_string())
                 })?,
             ),
+            Expr::val(tool.policy_facts().declares_enabled_by_default()),
         ])
         .to_owned();
     transaction.execute(statement).await?;
@@ -1063,15 +1093,8 @@ pub(super) async fn available_search_targets(
     let rows: Vec<SearchTargetRow> = transaction
         .fetch_all(
             Query::select()
-                .columns([
-                    MaterializedTools::ToolKey,
-                    MaterializedTools::RelativePath,
-                    MaterializedTools::Method,
-                    MaterializedTools::ReadOnlyHint,
-                    MaterializedTools::DestructiveHint,
-                    MaterializedTools::IdempotentHint,
-                    MaterializedTools::OpenWorldHint,
-                ])
+                .columns([MaterializedTools::ToolKey, MaterializedTools::RelativePath])
+                .columns(POLICY_COLUMNS)
                 .from(MaterializedTools::Table)
                 .and_where(
                     Expr::col(MaterializedTools::ProviderGenerationId)
@@ -1125,7 +1148,7 @@ pub(super) async fn searchable_tools(
 }
 
 /// The columns a [`ToolListingRow`] decodes.
-const TOOL_LISTING_COLUMNS: [MaterializedTools; 10] = [
+const TOOL_LISTING_COLUMNS: [MaterializedTools; 11] = [
     MaterializedTools::ToolKey,
     MaterializedTools::RelativePath,
     MaterializedTools::TagsJson,
@@ -1134,6 +1157,7 @@ const TOOL_LISTING_COLUMNS: [MaterializedTools; 10] = [
     MaterializedTools::IdempotentHint,
     MaterializedTools::OpenWorldHint,
     MaterializedTools::Method,
+    MaterializedTools::EnabledByDefault,
     MaterializedTools::Availability,
     MaterializedTools::DiagnosticsJson,
 ];
@@ -1315,30 +1339,23 @@ pub(super) async fn load_tool(
     .await
 }
 
-pub(super) async fn load_tool_hints_and_methods(
+pub(super) async fn load_tool_policy_facts(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
     keys: &[ToolKey],
-) -> Result<std::collections::BTreeMap<ToolKey, (crate::ToolHints, Option<HttpMethod>)>, Error> {
+) -> Result<std::collections::BTreeMap<ToolKey, crate::ToolPolicyFacts>, Error> {
     #[derive(FromRow)]
     struct Row {
         tool_key: String,
-        method: Option<String>,
         #[sqlx(flatten)]
-        hints: HintColumns,
+        policy: PolicyColumns,
     }
     require_generation(transaction, generation_id).await?;
     let rows: Vec<Row> = transaction
         .fetch_all(
             Query::select()
-                .columns([
-                    MaterializedTools::ToolKey,
-                    MaterializedTools::Method,
-                    MaterializedTools::ReadOnlyHint,
-                    MaterializedTools::DestructiveHint,
-                    MaterializedTools::IdempotentHint,
-                    MaterializedTools::OpenWorldHint,
-                ])
+                .column(MaterializedTools::ToolKey)
+                .columns(POLICY_COLUMNS)
                 .from(MaterializedTools::Table)
                 .and_where(
                     Expr::col(MaterializedTools::ProviderGenerationId)
@@ -1354,8 +1371,7 @@ pub(super) async fn load_tool_hints_and_methods(
         .map(|row| {
             let key = ToolKey::parse(&row.tool_key)
                 .map_err(|_error| Error::CorruptData("Tool hints have an invalid key".into()))?;
-            let method = decode_http_method(row.method.as_deref())?;
-            Ok((key, (row.hints.decode(), method)))
+            Ok((key, row.policy.decode()?))
         })
         .collect()
 }
@@ -1431,7 +1447,7 @@ fn verify_tool_schema_references(
     Ok(())
 }
 
-fn tool_columns() -> [MaterializedTools; 26] {
+fn tool_columns() -> [MaterializedTools; 27] {
     [
         MaterializedTools::ToolKey,
         MaterializedTools::RelativePath,
@@ -1459,5 +1475,6 @@ fn tool_columns() -> [MaterializedTools; 26] {
         MaterializedTools::InputSchemaId,
         MaterializedTools::DiagnosticsJson,
         MaterializedTools::TypeReferencesJson,
+        MaterializedTools::EnabledByDefault,
     ]
 }

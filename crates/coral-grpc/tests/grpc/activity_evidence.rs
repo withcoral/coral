@@ -519,15 +519,7 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
     let goal = f.task(&actor).await;
     let commands = coral_task::TaskCommands::new(
         f.tasks.clone(),
-        coral_functions::SavedFunctionModule::new(
-            f.database.database(),
-            f.workspaces.clone(),
-            coral_functions::IsolateLimits::default(),
-            coral_test_support::TEST_COMPILATION_TIMEOUT,
-        )
-        .unwrap(),
         coral_search::UniversalSearchModule::new(f.database.database(), f.workspaces.clone()),
-        f.search_index.clone(),
         f.runs.clone(),
     );
     let call = coral_task::AttributedCommand::new(
@@ -535,10 +527,17 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
         f.workspace.id().clone(),
         goal.id().clone(),
         coral_task::TaskIntent::parse("Retain exact description").unwrap(),
-        coral_workspace::TraceId::current_or_new(),
     );
+    let functions = coral_functions::SavedFunctionModule::new(
+        f.database.database(),
+        f.workspaces.clone(),
+        coral_functions::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
+    )
+    .unwrap();
     commands
-        .save_function(
+        .record_retained_save(
+            &functions,
             &call,
             "answer",
             "Native historical answer",
@@ -550,7 +549,10 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
         .describe(&call, "coral.functions.answer", &["Answer".to_string()])
         .await
         .unwrap();
-    commands.delete_function(&call, "answer").await.unwrap();
+    commands
+        .record_retained_delete(&functions, &call, "answer")
+        .await
+        .unwrap();
     publish_http(&f, "https://evidence.example").await;
     let provider = "evidence";
     let searched = commands
@@ -766,15 +768,7 @@ async fn action_groups_keep_exec_intent_and_labels_after_selected_run_leaves_que
     let goal = f.task(&actor).await;
     let commands = coral_task::TaskCommands::new(
         f.tasks.clone(),
-        coral_functions::SavedFunctionModule::new(
-            f.database.database(),
-            f.workspaces.clone(),
-            coral_functions::IsolateLimits::default(),
-            coral_test_support::TEST_COMPILATION_TIMEOUT,
-        )
-        .unwrap(),
         coral_search::UniversalSearchModule::new(f.database.database(), f.workspaces.clone()),
-        f.search_index.clone(),
         f.runs.clone(),
     );
     let call = coral_task::AttributedCommand::new(
@@ -782,7 +776,6 @@ async fn action_groups_keep_exec_intent_and_labels_after_selected_run_leaves_que
         f.workspace.id().clone(),
         goal.id().clone(),
         coral_task::TaskIntent::parse("Follow up on the review").unwrap(),
-        coral_workspace::TraceId::current_or_new(),
     );
     let accepted = commands.submit(&call,
         "await Promise.all([coral.providers.evidence.read({body: {private: 'first'}}), coral.providers.evidence.read({body: {private: 'second'}})]);", 60_000).await.unwrap();
@@ -889,15 +882,7 @@ async fn submission_position_is_only_projected_for_activity_browsing_not_exact_e
     let goal = f.task(&actor).await;
     let commands = coral_task::TaskCommands::new(
         f.tasks.clone(),
-        coral_functions::SavedFunctionModule::new(
-            f.database.database(),
-            f.workspaces.clone(),
-            coral_functions::IsolateLimits::default(),
-            coral_test_support::TEST_COMPILATION_TIMEOUT,
-        )
-        .unwrap(),
         coral_search::UniversalSearchModule::new(f.database.database(), f.workspaces.clone()),
-        f.search_index.clone(),
         f.runs.clone(),
     );
     let call = coral_task::AttributedCommand::new(
@@ -905,7 +890,6 @@ async fn submission_position_is_only_projected_for_activity_browsing_not_exact_e
         f.workspace.id().clone(),
         goal.id().clone(),
         coral_task::TaskIntent::parse("Locate the original submission").unwrap(),
-        coral_workspace::TraceId::current_or_new(),
     );
     for _ in 0..3 {
         commands

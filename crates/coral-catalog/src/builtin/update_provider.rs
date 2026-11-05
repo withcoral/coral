@@ -74,6 +74,7 @@ pub(super) fn definition() -> Definition {
         input: derived_schema::<Arguments>(Contract::Deserialize),
         output: derived_schema::<UpdateProviderResult>(Contract::Serialize),
         declared: Declared::Once,
+        enabled_by_default: false,
     }
 }
 

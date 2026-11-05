@@ -35,8 +35,6 @@ pub(super) async fn check(session: &RawSession, tools: &[Value]) {
     check_task_choice(session, task).await;
     check_identities(session, tools).await;
     check_text(session, tools).await;
-    check_authoring_limits(tools);
-    check_paths(session, task, tools).await;
     check_sources(session, task, tools).await;
     check_cursors(session, task, tools).await;
     session
@@ -175,170 +173,43 @@ async fn check_feedback(session: &RawSession, tools: &[Value]) {
     }
 }
 
-fn check_authoring_limits(tools: &[Value]) {
-    for name in ["save_function", "delete_function"] {
-        let schema = property(tools, name, "path");
-        let validator = validator(schema);
-        assert!(validator.is_valid(&json!("éclair.$value")));
-        assert!(!validator.is_valid(&json!("")));
-        for domain_invalid in ["a..b", "a\0b"] {
-            assert!(validator.is_valid(&json!(domain_invalid)));
-        }
-    }
-    let description_schema = validator(property(tools, "save_function", "description"));
-    for invalid in ["a\0b", "line\nbreak", "text\n", "a\u{85}b"] {
-        assert!(
-            description_schema.is_valid(&json!(invalid)),
-            "control characters are domain-validated"
-        );
-    }
-    for value in ["🪸".repeat(1024), "🪸".repeat(1025)] {
-        assert!(
-            description_schema.is_valid(&json!(value)),
-            "byte limits remain domain-owned"
-        );
-    }
-    for (name, field) in [("save_function", "source"), ("exec", "program")] {
-        let schema = property(tools, name, field);
-        assert!(
-            validator(schema).is_valid(&json!("a\0b")),
-            "NUL is domain-validated"
-        );
-    }
-    assert!(validator(property(tools, "exec", "program")).is_valid(&json!("")));
-    assert!(!validator(property(tools, "save_function", "source")).is_valid(&json!("")));
-}
+/// A Program's byte bound and NUL check are domain-owned, as its schema
+/// leaves them. coral-functions owns a saved source's own rules.
+async fn check_sources(session: &RawSession, task: &str, tools: &[Value]) {
+    use coral_run::ProgramSource;
 
-async fn check_paths(session: &RawSession, task: &str, tools: &[Value]) {
-    use coral_functions::SavedFunctionPath;
-
-    for path in [
-        "a/b".to_string(),
-        "a..b".to_string(),
-        "a.1b".to_string(),
-        "a.__proto__".to_string(),
-        "prototype".to_string(),
-        "a.constructor".to_string(),
-        "a.then".to_string(),
-        "a.".repeat(16) + "a",
-        "é".repeat(129),
+    let program = format!("//{}", "é".repeat(32767));
+    assert_eq!(program.len(), 65536);
+    let schema = validator(property(tools, "exec", "program"));
+    assert!(schema.is_valid(&json!("")));
+    for (value, valid) in [
+        (program.clone(), true),
+        (format!("{program}é"), false),
+        ("a\0b".to_string(), false),
     ] {
-        SavedFunctionPath::parse(&path).expect_err("invalid or reserved path");
-        for name in ["save_function", "delete_function"] {
-            let mut arguments =
-                json!({"task_id":task, "intent":"Check rejected function path", "path":path});
-            if name == "save_function" {
-                let arguments = arguments.as_object_mut().expect("arguments");
-                arguments.insert("description".into(), json!("Valid description"));
-                arguments.insert("source".into(), json!("export default () => 1;"));
-            }
-            let rejected = session.tool(name, arguments).await;
+        assert!(
+            schema.is_valid(&json!(value)),
+            "byte and NUL constraints are domain-owned"
+        );
+        assert_eq!(ProgramSource::parse(&value).is_ok(), valid);
+        let result = session
+            .tool(
+                "exec",
+                json!({"task_id":task, "intent":"Check Unicode source bytes", "program":value}),
+            )
+            .await;
+        assert_eq!(
+            result.get("isError") == Some(&json!(true)),
+            !valid,
+            "exec: {result}"
+        );
+        if !valid {
             assert_eq!(
-                rejected.pointer("/structuredContent/code"),
+                result.pointer("/structuredContent/code"),
                 Some(&json!("invalid_input"))
             );
         }
     }
-    // The schema describes, rather than reimplements, Unicode identifier and reserved-word semantics.
-    assert!(validator(property(tools, "save_function", "path")).is_valid(&json!("a.then")));
-    assert!(validator(property(tools, "save_function", "path")).is_valid(&json!("a/b")));
-    for path in [
-        "é".repeat(128),
-        "a.".repeat(15) + "a",
-        "éclair.$value".to_string(),
-    ] {
-        SavedFunctionPath::parse(&path).expect("valid Unicode path at bounds");
-    }
-}
-
-async fn check_sources(session: &RawSession, task: &str, tools: &[Value]) {
-    use coral_functions::{SavedFunctionDescription, SavedFunctionSource};
-    use coral_run::ProgramSource;
-
-    for invalid in [
-        " text ".to_string(),
-        "line\nbreak".to_string(),
-        "a\0b".to_string(),
-        "a\u{85}b".to_string(),
-        "🪸".repeat(1025),
-    ] {
-        SavedFunctionDescription::parse(&invalid).expect_err("invalid description");
-        let rejected = session
-            .tool(
-                "save_function",
-                json!({
-                    "task_id":task, "intent":"Check description rejection", "path":"inputContract",
-                    "description":invalid, "source":"export default () => 1;"
-                }),
-            )
-            .await;
-        assert_eq!(
-            rejected.pointer("/structuredContent/code"),
-            Some(&json!("invalid_input"))
-        );
-    }
-    let source = format!("export default () => 1;/*{}*/", "🪸".repeat(16377));
-    assert_eq!(source.len(), 65535);
-    let source = format!("{source} ");
-    let program = format!("//{}", "é".repeat(32767));
-    assert_eq!(source.len(), 65536);
-    assert_eq!(program.len(), 65536);
-    for (name, field, valid_source) in [
-        ("save_function", "source", source),
-        ("exec", "program", program),
-    ] {
-        let schema = validator(property(tools, name, field));
-        for (value, valid) in [
-            (valid_source.clone(), true),
-            (format!("{valid_source}é"), false),
-            ("a\0b".to_string(), false),
-        ] {
-            assert!(
-                schema.is_valid(&json!(value)),
-                "byte and NUL constraints are domain-owned"
-            );
-            let mut arguments =
-                json!({"task_id":task, "intent":"Check Unicode source bytes", field:value});
-            if name == "save_function" {
-                assert_eq!(SavedFunctionSource::parse(&value).is_ok(), valid);
-                let arguments = arguments.as_object_mut().expect("arguments");
-                arguments.insert("path".into(), json!("éclair.$value"));
-                arguments.insert("description".into(), json!("🪸".repeat(1024)));
-            } else {
-                assert_eq!(ProgramSource::parse(&value).is_ok(), valid);
-            }
-            let result = session.tool(name, arguments).await;
-            assert_eq!(
-                result.get("isError") == Some(&json!(true)),
-                !valid,
-                "{name}: {result}"
-            );
-            if !valid {
-                assert_eq!(
-                    result.pointer("/structuredContent/code"),
-                    Some(&json!("invalid_input"))
-                );
-            }
-        }
-    }
-    let found = session
-        .program_value(
-            task,
-            r#"return (await coral.workspace.search({ paths: ["coral.functions.éclair.$value"] })).data;"#,
-        )
-        .await;
-    assert_eq!(
-        found.pointer("/descriptions/0/call_path"),
-        Some(&json!("coral.functions.éclair.$value")),
-        "{found}"
-    );
-    let deleted = session
-        .tool(
-            "delete_function",
-            json!({"task_id":task, "intent":"Delete valid Unicode path", "path":"éclair.$value"}),
-        )
-        .await;
-    assert_ne!(deleted.get("isError"), Some(&json!(true)));
 }
 
 async fn check_cursors(session: &RawSession, task: &str, tools: &[Value]) {
@@ -424,8 +295,8 @@ async fn check_identities(session: &RawSession, tools: &[Value]) {
         coral_run::RunId::parse(invalid).expect_err("invalid Run id");
         for (name, arguments) in [
             (
-                "delete_function",
-                json!({"task_id": invalid, "intent": "Check Task identity", "path": "absent"}),
+                "end_task",
+                json!({"task_id": invalid, "outcome": "success"}),
             ),
             ("wait", json!({"run_id": invalid})),
             ("cancel", json!({"run_id": invalid})),

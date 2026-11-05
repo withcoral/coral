@@ -519,8 +519,7 @@ pub struct ToolAuthoringMaterial {
     relative_path: String,
     summary: String,
     presentation: coral_catalog::ToolPresentation,
-    hints: coral_catalog::ToolHints,
-    http_method: Option<coral_catalog::HttpMethod>,
+    policy_facts: coral_catalog::ToolPolicyFacts,
     typescript_declaration: String,
 }
 
@@ -541,8 +540,7 @@ impl ToolAuthoringMaterial {
             relative_path: tool.relative_path().to_string(),
             summary: tool.summary().to_string(),
             presentation: tool.presentation().clone(),
-            hints: tool.hints(),
-            http_method: tool.http_method(),
+            policy_facts: tool.policy_facts(),
             typescript_declaration,
         }
     }
@@ -592,13 +590,13 @@ impl ToolAuthoringMaterial {
     /// Returns the declared effect hints.
     #[must_use]
     pub const fn hints(&self) -> coral_catalog::ToolHints {
-        self.hints
+        self.policy_facts.hints()
     }
 
-    /// Returns the method of an HTTP Tool; `None` for other protocols.
+    /// Returns what the Tool's default Tool Access State is decided from.
     #[must_use]
-    pub const fn http_method(&self) -> Option<coral_catalog::HttpMethod> {
-        self.http_method
+    pub const fn policy_facts(&self) -> coral_catalog::ToolPolicyFacts {
+        self.policy_facts
     }
 
     /// Returns the complete self-contained TypeScript declaration.

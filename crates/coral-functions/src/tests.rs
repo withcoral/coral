@@ -693,8 +693,7 @@ async fn saved_function_paths_cannot_overlap_virtual_namespaces() {
                     ),
                 )
                 .await,
-            Err(Error::SavedFunctionAdmission(message))
-                if message.contains("virtual namespace")
+            Err(Error::SavedFunctionPathConflict)
         ));
     }
     assert!(matches!(
@@ -821,7 +820,7 @@ async fn concurrent_first_saves_serialize_virtual_namespace_conflicts() {
     assert_eq!(
         results
             .iter()
-            .filter(|result| matches!(result, Err(Error::SavedFunctionAdmission(message)) if message.contains("virtual namespace")))
+            .filter(|result| matches!(result, Err(Error::SavedFunctionPathConflict)))
             .count(),
         1
     );

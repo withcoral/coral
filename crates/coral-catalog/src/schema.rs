@@ -704,7 +704,15 @@ pub(super) struct ProjectionOptions {
     disambiguation_source_prefix: Option<&'static str>,
     widen_unguarded_reference_cycles: bool,
     use_recursive_map_index_signatures: bool,
+    /// The TypeScript type of each value a schema names with
+    /// [`OPAQUE_TYPE_KEYWORD`]: a value a Program passes that is not JSON,
+    /// such as a function, which Coral encodes before the Tool reads it.
+    opaque_types: &'static [(&'static str, &'static str)],
 }
+
+/// Names the TypeScript type a Program writes for a value whose schema
+/// describes only its encoding.
+pub(super) const OPAQUE_TYPE_KEYWORD: &str = "x-coral-opaque-type";
 
 impl ProjectionOptions {
     pub(super) const fn openapi() -> Self {
@@ -715,6 +723,7 @@ impl ProjectionOptions {
             disambiguation_source_prefix: None,
             widen_unguarded_reference_cycles: true,
             use_recursive_map_index_signatures: true,
+            opaque_types: &[],
         }
     }
 
@@ -727,6 +736,7 @@ impl ProjectionOptions {
             disambiguation_source_prefix: None,
             widen_unguarded_reference_cycles: false,
             use_recursive_map_index_signatures: false,
+            opaque_types: &crate::builtin::OPAQUE_TYPES,
         }
     }
 
@@ -738,6 +748,7 @@ impl ProjectionOptions {
             disambiguation_source_prefix: Some("mcp:tool:"),
             widen_unguarded_reference_cycles: false,
             use_recursive_map_index_signatures: false,
+            opaque_types: &[],
         }
     }
 }
@@ -1031,6 +1042,15 @@ impl<'a> TypeScriptProjector<'a> {
             return Ok(if allowed { "unknown" } else { "never" }.to_string());
         }
         let object = schema.as_object().ok_or_else(invalid_schema)?;
+        if let Some(name) = object.get(OPAQUE_TYPE_KEYWORD).and_then(Value::as_str)
+            && let Some((_name, declared)) = self
+                .options
+                .opaque_types
+                .iter()
+                .find(|(known, _declared)| *known == name)
+        {
+            return Ok((*declared).to_string());
+        }
         if !self.graph.semantics().nullable_applies()
             && declares_nullable(object)
             && !type_admits_null(object)
