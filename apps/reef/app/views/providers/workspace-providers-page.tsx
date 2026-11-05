@@ -681,6 +681,13 @@ function ProvidersTableScreen({
           ).length,
     [selected, visibleTools],
   )
+  // While nothing matches, the filter hides every selected tool in the tab.
+  // Another provider's tab hides the rest.
+  const tabProvider = tab === null ? null : providers.find((provider) => provider.id === tab)
+  const filterHiddenCount = tabProvider
+    ? tabProvider.tools.filter((tool) => selected.has(selectionKey(tabProvider.id, tool.key)))
+        .length
+    : selected.size
   const allVisibleSelected = visibleTools.length > 0 && visibleSelectedCount === visibleTools.length
   const { rows, sections, ranked } = useMemo(() => {
     if (usageOrder) {
@@ -1178,7 +1185,11 @@ function ProvidersTableScreen({
           </Table.Head>
           {filtering && visibleByProvider.length === 0 ? (
             <Table.Status>
-              <NoMatchStatus query={tableQuery.text} hidden={selected.size} onShow={showSelected} />
+              <NoMatchStatus
+                query={tableQuery.text}
+                hidden={filterHiddenCount}
+                onShow={showSelected}
+              />
             </Table.Status>
           ) : ranked ? (
             <RankedRows
@@ -1949,7 +1960,7 @@ function NoMatchStatus({
   onShow,
   query,
 }: {
-  /** The selected tools, in every provider. */
+  /** The selected tools in the tab, which the filter hides. */
   hidden: number
   onShow: () => void
   query: string

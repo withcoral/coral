@@ -782,7 +782,7 @@ test.each([
   {
     by: 'search',
     selects: true,
-    status: 'No tools match “nothing”. The filter hides 1 selected tool.',
+    status: 'No tools match “nothing”. The filter hides 2 selected tools.',
   },
   { by: 'policy', selects: false, status: 'No matching tools.' },
   { by: 'policy', selects: true, status: 'No matching tools. The filter hides 1 selected tool.' },
@@ -790,11 +790,15 @@ test.each([
   const [list, get] = github.tools
   const mixed = { ...github, tools: [{ ...list!, policy: 'enabled' as const }, get!] }
   const { show } = renderPage({ providers: [mixed, weather] })
-  if (selects) await user.click(checkbox('Select repos.get'))
+  if (selects) {
+    await user.click(checkbox('Select repos.get'))
+    await user.click(checkbox('Select getForecast'))
+  }
   if (by === 'search') {
     await filterTools('nothing')
   } else {
-    // Weather lists no tool the Allow filter keeps.
+    // Weather lists no tool the Allow filter keeps. The tab, not the filter,
+    // hides the selected GitHub tool, so the status leaves it out.
     await choosePolicyFilter('Allow')
     await show(null, weather.id)
   }
