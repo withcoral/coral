@@ -74,7 +74,7 @@ export async function connectionRequests(context: TestContext) {
           .getByRole('link', { name: 'Accounts. 1 pending connection request', exact: true })
           .click()
         await page.getByRole('heading', { name: 'Accounts', exact: true, level: 1 }).waitFor()
-        await page.getByText('A connection request is waiting.', { exact: true }).waitFor()
+        await page.getByText(/^Connection request expires in/).waitFor()
         await page.getByText('Not connected', { exact: true }).waitFor()
       },
     )
@@ -87,9 +87,7 @@ export async function connectionRequests(context: TestContext) {
       await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/accounts`)
       await page.getByRole('heading', { name: 'Accounts', exact: true, level: 1 }).waitFor()
       await page.getByText('Connected', { exact: true }).waitFor()
-      expect(
-        await page.getByText('A connection request is waiting.', { exact: true }).count(),
-      ).toBe(0)
+      expect(await page.getByText(/^Connection request expires in/).count()).toBe(0)
       expect(await page.content()).not.toContain('connection-secret-canary')
       accountId = (await inspect()).account!.id
       // A click anywhere in the row, not only on its name, opens your account.

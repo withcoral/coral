@@ -103,18 +103,19 @@ it('declines a waiting request from its row, next to Connect', async () => {
   expect(posted.map((form) => form.name)).toEqual([request])
   // The decision reloads the page, and the settled request leaves the row.
   await waitFor(() =>
-    expect(within(rowOf('Linear')).queryByText('A connection request is waiting.')).toBeNull(),
+    expect(within(rowOf('Linear')).queryByText(/^Connection request expires in/)).toBeNull(),
   )
   expect(within(rowOf('Linear')).queryByRole('button', { name: /^Decline/ })).toBeNull()
 })
 
-it('says why a decline failed, and keeps the request', async () => {
+it('says why a decline failed in place of the deadline, and keeps the request', async () => {
   await renderLive({ view: viewAt('one', [linear]) }, () =>
     data({ error: 'Coral could not apply this change.' }, { status: 503 }),
   )
   await userEvent.click(screen.getByRole('button', { name: 'Decline Linear' }))
   expect(await screen.findByRole('alert')).toHaveTextContent('Coral could not apply this change.')
-  expect(screen.getByText('A connection request is waiting.')).toBeInTheDocument()
+  expect(screen.queryByText(/^Connection request expires in/)).toBeNull()
+  expect(screen.getByRole('button', { name: 'Decline Linear' })).toBeInTheDocument()
 })
 
 // Catches: a refresh that remounts the page, closing your connect dialog and clearing your filter.
@@ -133,9 +134,9 @@ it('refreshes in place when the connection revision changes, and keeps your dial
   await signal(signalOf(counted('two')))
 
   await waitFor(() =>
-    expect(within(rowOf('Ledger')).getByText('A connection request is waiting.')).toBeTruthy(),
+    expect(within(rowOf('Ledger')).getByText(/^Connection request expires in/)).toBeTruthy(),
   )
-  expect(within(rowOf('Linear')).queryByText('A connection request is waiting.')).toBeNull()
+  expect(within(rowOf('Linear')).queryByText(/^Connection request expires in/)).toBeNull()
   expect(screen.getByRole('dialog', { name: 'Reconnect Ledger' })).toBe(dialog)
   expect(screen.getByRole('searchbox', { name: 'Filter accounts', hidden: true })).toHaveValue('l')
 })

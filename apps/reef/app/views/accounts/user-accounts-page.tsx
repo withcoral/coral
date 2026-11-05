@@ -129,11 +129,8 @@ export function UserAccountsPage({
                   </Table.RowLink>
                 </span>
               </Table.Cell>
-              <Table.Cell wrap>
-                <span className={styles.accountStatus}>
-                  <Pill color={states[row.state].color}>{states[row.state].label}</Pill>
-                  {row.connectionRequest && <WaitingRequest request={row.connectionRequest} />}
-                </span>
+              <Table.Cell>
+                <Pill color={states[row.state].color}>{states[row.state].label}</Pill>
               </Table.Cell>
               <Table.Cell>
                 <AccountAction row={row} view={v} pending={pending} />
@@ -146,19 +143,15 @@ export function UserAccountsPage({
   )
 }
 
-/** A waiting connection request, its deadline, and why a decline of it failed. */
+/** A waiting connection request's deadline, or why its decline failed, on one line. */
 function WaitingRequest({ request }: { request: ConnectionRequest }) {
   const failure = useDeclineFailure(request.name)
-  return (
-    <>
-      <span className={styles.actions}>
-        <Typography.BodySmall as="span" variant="secondary">
-          A connection request is waiting.
-        </Typography.BodySmall>
-        <Deadline at={request.expiresAt} variant="secondary" />
-      </span>
-      {failure && <Typography.BodySmall role="alert">{failure}</Typography.BodySmall>}
-    </>
+  return failure ? (
+    <Typography.BodySmall as="span" role="alert">
+      {failure}
+    </Typography.BodySmall>
+  ) : (
+    <Deadline at={request.expiresAt} subject="Connection request" variant="secondary" />
   )
 }
 
@@ -220,16 +213,19 @@ function AccountAction({
       description={audience.onlyYou}
     />
   )
-  // Like an approval: the secondary choice leads, the primary one ends. Connect keeps its
-  // place as a request comes and goes, so an open dialog stays open.
+  // The deadline, or a failed decline, leads. Like an approval, Decline comes next and the primary choice ends.
+  // Connect keeps its place as a request comes and goes, so an open dialog stays open.
   return (
     <span className={styles.rowActions}>
       {waiting && (
-        <DeclineConnection
-          request={waiting.name}
-          ariaLabel={`Decline ${row.name}`}
-          disabled={pending}
-        />
+        <>
+          <WaitingRequest request={waiting} />
+          <DeclineConnection
+            request={waiting.name}
+            ariaLabel={`Decline ${row.name}`}
+            disabled={pending}
+          />
+        </>
       )}
       {connect}
     </span>

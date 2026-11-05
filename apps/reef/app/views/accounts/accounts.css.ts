@@ -49,20 +49,13 @@ export const credentialForm = style({
   gap: '0.75rem',
 })
 export const credentialInputs = style({ flex: '1 1 280px', minWidth: 0 })
-// The state, then a waiting connection request beneath it.
-export const accountStatus = style({
-  alignItems: 'flex-start',
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 4,
-})
-// Decline, then Connect, at the end of a row.
+// A request's deadline, Decline, then Connect, on one line at the end of a row.
 export const rowActions = style({
   alignItems: 'center',
   display: 'flex',
-  flexWrap: 'wrap',
   gap: 8,
   justifyContent: 'flex-end',
+  whiteSpace: 'nowrap',
   paddingBlock: 6,
 })
 // The provider's logo, then its name.
