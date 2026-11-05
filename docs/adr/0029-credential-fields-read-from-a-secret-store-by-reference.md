@@ -39,18 +39,27 @@ Coral's encryption key, or by an OAuth client-credentials method whose client se
 ## Operator-defined stores, granted per Workspace
 
 The operator defines each Secret Store at bootstrap: its address, how Coral authenticates (workload identity such as
-Kubernetes, AppRole or AWS IAM) and a path prefix. Coral stores no credential for a store. An Organization Owner grants
-stores to Workspaces in Reef, and a reference may name only a path under a granted store's prefix, so one Workspace
-cannot read another's secrets through Coral's own access. Several stores allow one deployment to serve units with
-separate Vault namespaces or cloud accounts. Removing a grant or a store makes its Accounts unusable without deleting
-their references; granting it again restores them. Hosted Coral is out of scope: it would need the customer's store open
-to our network and a stored credential for it.
+Kubernetes, AppRole or AWS IAM) and any setting needed to locate secrets, such as a KV mount. Coral stores no credential
+for a store. An Organization Owner grants stores to Workspaces in Reef, and a reference may name only a granted store.
+
+The store's own policy is the security boundary, because the customer's security team must be able to own and understand
+it without auditing Coral's code. Each store is one trust boundary with its own least-privilege identity, so Workspaces
+that must not see each other's secrets use separate stores, and a grant covers everything that store's identity can
+read. Coral cannot detect an identity that is too broad; that stays with the customer's policy.
+
+Rejected: a path prefix that Coral checks on each store. Not every secrets system has hierarchical paths, so the setting
+would not carry across stores, and a string check in Coral looks like a boundary without being one the customer can
+verify. It would add clearer errors and fewer denials in the store's audit log, which is little gain for that illusion.
+
+Several stores also allow one deployment to serve units with separate Vault namespaces or cloud accounts. Removing a
+grant or a store makes its Accounts unusable without deleting their references; granting it again restores them. Hosted
+Coral is out of scope: it would need the customer's store open to our network and a stored credential for it.
 
 ## Only a Workspace Owner, in Reef
 
 A Workspace Owner sets references, on a `fixed` Account or an Agent's `caller` Account. A User's own `caller` Account
 does not take one, because a User could otherwise name a path holding another person's secret and Coral would read it.
-A Program cannot set a reference, so an agent-written Program cannot probe the prefix through the setup check.
+A Program cannot set a reference, so an agent-written Program cannot probe the store through the setup check.
 
 ## Fail closed
 
