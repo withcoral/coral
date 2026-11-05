@@ -1,6 +1,6 @@
 //! Exact policy selection for payload-free pending-approval projections.
 use crate::{ToolAccessState, default_access_state};
-use coral_catalog::{HttpMethod, ToolHints};
+use coral_catalog::{HttpMethod, ToolHints, ToolPolicyFacts};
 use sea_query::{
     Alias, ColumnRef, Expr, ExprTrait as _, Func, Query, SimpleExpr, SubQueryStatement,
 };
@@ -32,18 +32,24 @@ pub fn approval_required(
     );
     let read_only = ToolHints::new(Some(true), None, None, None);
     let undeclared = ToolHints::default();
+    let default = |facts| Expr::val(default_access_state(facts).as_storage_str());
     let fallback: SimpleExpr = Expr::case(
+        coral_catalog::history_repository::declares_enabled_by_default(
+            generation.clone(),
+            tool.clone(),
+        ),
+        default(ToolPolicyFacts::new(undeclared, None).declaring_enabled_by_default(true)),
+    )
+    .case(
         coral_catalog::history_repository::declares_read_only(generation.clone(), tool.clone()),
-        Expr::val(default_access_state(read_only, None).as_storage_str()),
+        default(ToolPolicyFacts::new(read_only, None)),
     )
     // GET stands for every safe method; the default does not tell them apart.
     .case(
         coral_catalog::history_repository::has_safe_http_method(generation, tool),
-        Expr::val(default_access_state(undeclared, Some(HttpMethod::Get)).as_storage_str()),
+        default(ToolPolicyFacts::new(undeclared, Some(HttpMethod::Get))),
     )
-    .finally(Expr::val(
-        default_access_state(undeclared, None).as_storage_str(),
-    ))
+    .finally(default(ToolPolicyFacts::new(undeclared, None)))
     .into();
     Expr::expr(Func::coalesce([explicit, fallback]))
         .eq(ToolAccessState::ApprovalRequired.as_storage_str())

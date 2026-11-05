@@ -69,11 +69,15 @@ pub(super) fn definition() -> Definition {
                     .to_string(),
             ),
         ),
-        // No read-only hint: the default Tool Access State is approval_required.
-        hints: ToolHints::default(),
+        // A sent value replaces the saved one. A call that changes more than
+        // displayName prepares another Setup, and it reads a source outside
+        // Coral. Not read-only, so the default Tool Access State is
+        // approval_required.
+        hints: ToolHints::new(Some(false), Some(true), Some(false), Some(true)),
         input: derived_schema::<Arguments>(Contract::Deserialize),
         output: derived_schema::<UpdateProviderResult>(Contract::Serialize),
         declared: Declared::Once,
+        enabled_by_default: false,
     }
 }
 

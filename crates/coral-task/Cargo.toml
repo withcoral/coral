@@ -9,8 +9,12 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Writes the `save` and `delete` Attempts Task history keeps from before
+# agents saved from Programs, for other crates' tests of retained history.
+test-fixtures = []
+
 [dependencies]
-async-trait.workspace = true
 coral-db.workspace = true
 coral-telemetry.workspace = true
 coral-functions.workspace = true

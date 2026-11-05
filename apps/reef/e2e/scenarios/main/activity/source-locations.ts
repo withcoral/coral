@@ -13,6 +13,7 @@ import {
   enableTool,
   observeRun,
   programRunner,
+  savedSource,
 } from '../../../support/providers.ts'
 import { withOwner } from '../../../support/topology.ts'
 
@@ -33,7 +34,7 @@ const program = [
   "return 'ok'",
 ].join('\n')
 const snapshot = [
-  'export default async () => {',
+  'const notify = async () => {',
   '  await coral.providers.locationFixture.lookup({})',
   "  console.warn('accepted-snapshot-notice')",
   '  return 1',
@@ -41,7 +42,7 @@ const snapshot = [
 ].join('\n')
 // The same path, saved after the Run: different text, and its calls on other lines.
 const replacement = [
-  'export default async () => {',
+  'const notify = async () => {',
   '  // replacement-source-marker',
   '  // moved down',
   "  console.warn('replacement-notice')",
@@ -122,7 +123,8 @@ export async function sourceLocations(context: TestContext) {
       taskIntent: `Locate calls ${crypto.randomUUID()}`,
     })
     expect(
-      (await execute.saveFunction('locations.notify', 'Notify after lookups', snapshot)).isError,
+      (await execute.saveFunction('locations.notify', 'Notify after lookups', snapshot, 'notify'))
+        .isError,
     ).not.toBe(true)
     const observed = await observeRun(execute, await execute.exec(program))
     expect(observed.update.state, JSON.stringify(observed.update.failure)).toBe('succeeded')
@@ -201,12 +203,18 @@ export async function sourceLocations(context: TestContext) {
 
     await step('Change the Saved Function; the Run keeps the snapshot it accepted', async () => {
       expect(
-        (await execute.saveFunction('locations.notify', 'Replaced after the Run', replacement))
-          .isError,
+        (
+          await execute.saveFunction(
+            'locations.notify',
+            'Replaced after the Run',
+            replacement,
+            'notify',
+          )
+        ).isError,
       ).not.toBe(true)
       const accepted = await api.activity.inspectRun({ name: run, pageSize: 1 })
       expect(accepted.linkedFunctions.map(({ path, source }) => ({ path, source }))).toEqual([
-        { path: 'locations.notify', source: snapshot },
+        { path: 'locations.notify', source: savedSource(snapshot, 'notify') },
       ])
     })
     await step('Read the Saved Function’s stored locations back in its snapshot', async () => {

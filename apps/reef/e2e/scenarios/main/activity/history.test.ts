@@ -47,8 +47,8 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
       let task = ''
       let run = ''
       const intent = `Shared activity goal ${crypto.randomUUID()}`
-      const original = 'export default function snapshot() { return "historical-source-249"; }'
-      const replacement = 'export default function snapshot() { return "replacement-source-249"; }'
+      const original = 'function snapshot() { return "historical-source-249"; }'
+      const replacement = 'function snapshot() { return "replacement-source-249"; }'
       await step('Land on Overview and keep workspace administration reachable', async () => {
         first = await createWorkspace(actor.accessToken, firstName)
         await page.goto('/')
@@ -78,8 +78,14 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             taskIntent: intent,
           })
           expect(
-            (await execute.saveFunction('history.snapshot', 'Retained history fixture', original))
-              .isError,
+            (
+              await execute.saveFunction(
+                'history.snapshot',
+                'Retained history fixture',
+                original,
+                'snapshot',
+              )
+            ).isError,
           ).not.toBe(true)
           expect((await execute.describe('coral.functions.history.snapshot')).isError).not.toBe(
             true,
@@ -98,6 +104,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
                 'history.snapshot',
                 'Changed current function',
                 replacement,
+                'snapshot',
               )
             ).isError,
           ).not.toBe(true)

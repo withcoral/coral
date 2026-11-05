@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use coral_catalog::{CatalogSearchTarget, HttpMethod, ToolHints, ToolKey};
+use coral_catalog::{CatalogSearchTarget, ToolKey, ToolPolicyFacts};
 use coral_provider::ProviderId;
 use coral_telemetry::TraceId;
 use coral_workspace::{AuthoritySource, UserId, WorkspaceId};
@@ -115,20 +115,19 @@ impl ExactToolRules {
     }
 
     /// Returns the Workspace decision for one Tool: its exact rule, else
-    /// the default that its declared hints and HTTP method give.
+    /// the default that its policy facts give.
     #[must_use]
     pub fn access_state(
         &self,
         provider_id: &ProviderId,
         tool_key: &ToolKey,
-        hints: ToolHints,
-        http_method: Option<HttpMethod>,
+        facts: ToolPolicyFacts,
     ) -> ToolAccessState {
         self.rules
             .get(provider_id)
             .and_then(|tools| tools.get(tool_key))
             .copied()
-            .unwrap_or_else(|| crate::default_access_state(hints, http_method))
+            .unwrap_or_else(|| crate::default_access_state(facts))
     }
 
     /// Whether the Workspace disables `tool` of `provider_id`, so no
@@ -136,8 +135,7 @@ impl ExactToolRules {
     /// it.
     #[must_use]
     pub fn disables(&self, provider_id: &ProviderId, tool: &CatalogSearchTarget) -> bool {
-        self.access_state(provider_id, tool.key(), tool.hints(), tool.http_method())
-            == ToolAccessState::Disabled
+        self.access_state(provider_id, tool.key(), tool.policy_facts()) == ToolAccessState::Disabled
     }
 
     /// Returns every Tool that an exact rule disables. No default is

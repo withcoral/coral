@@ -49,6 +49,7 @@
 //! page and exact description applies the owners' current visibility rules.
 //! Discovery never starts an interactive authorization or refreshes credentials.
 
+mod caller_declarations;
 mod discovery;
 mod eligibility;
 mod error;
@@ -84,6 +85,7 @@ use retriever::{
     begin_query, count, end_query,
 };
 
+pub use caller_declarations::CallerToolDeclarations;
 pub use discovery::{Discovery, DiscoveryRequest, ExactLookup, ExactPaths, MissingPath};
 pub use error::Error;
 pub use index::SearchIndex;

@@ -23,9 +23,75 @@ function programAuthoredMappings(body, generatedLineOffset = 1) {
   return mappings;
 }
 
+// Every UTF-16 code unit except a line terminator becomes a space, so removed
+// syntax leaves the code after it at its authored line and column.
+function blankedText(text) {
+  return text.replace(/[^\n\r\u2028\u2029]/g, ' ');
+}
+
+// Copies `source` with each edit's span blanked and its private line, if any,
+// on generated lines of its own before the span. Edits are in source order
+// and do not overlap. Every other generated line holds one authored line, or
+// the rest of one, at its authored columns, so one column-zero mapping per
+// line is exact and TypeScript's own map supplies the column. Private lines
+// stay unmapped. A private line must hold no line terminator.
+function editedSource(source, edits) {
+  const lineStarts = ts.computeLineStarts(source);
+  let text = '';
+  let cursor = 0;
+  const insertions = [];
+  for (const edit of edits) {
+    text += source.slice(cursor, edit.start);
+    if (edit.line !== undefined) {
+      const position = ts.computeLineAndCharacterOfPosition(lineStarts, edit.start);
+      insertions.push(position);
+      const column = position.character;
+      text += `${column > 0 ? '\n' : ''}${edit.line}\n${' '.repeat(column)}`;
+    }
+    text += blankedText(source.slice(edit.start, edit.end));
+    cursor = edit.end;
+  }
+  text += source.slice(cursor);
+
+  const mappings = [];
+  let generatedLine = 0;
+  let next = 0;
+  // A final line terminator leaves an empty last line that holds no code.
+  for (let line = 0; line < lineStarts.length && lineStarts[line] < source.length; line += 1) {
+    const mapAuthoredLine = () => {
+      mappings.push({ generatedLine, generatedColumn: 0, line, column: 0 });
+    };
+    if (insertions[next]?.line !== line || insertions[next].character > 0) {
+      mapAuthoredLine();
+    }
+    for (; insertions[next]?.line === line; next += 1) {
+      generatedLine += insertions[next].character > 0 ? 2 : 1;
+      mapAuthoredLine();
+    }
+    generatedLine += 1;
+  }
+  return { text, mappings };
+}
+
+// The authored Program body as it compiles: with `edits`, at body offsets,
+// applied, and one mapping per authored line relative to the body's first
+// generated line.
+function compiledProgramBody(body, edits) {
+  if (edits.length === 0) {
+    return { text: body, mappings: programAuthoredMappings(body, 0) };
+  }
+  const edited = editedSource(body, edits);
+  return {
+    text: edited.text,
+    mappings: edited.mappings.map((mapping) => ({ ...mapping, source: 'Program' })),
+  };
+}
+
+const PROGRAM_WRAPPER_PREFIX = '(async () => {\n';
+
 function wrapProgramBody(body) {
   return {
-    source: `(async () => {\n${body}\n})();\n`,
+    source: `${PROGRAM_WRAPPER_PREFIX}${body}\n})();\n`,
     authoredMappings: programAuthoredMappings(body),
   };
 }

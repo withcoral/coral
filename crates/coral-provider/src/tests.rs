@@ -70,7 +70,7 @@ async fn disabled_provider_remains_a_valid_tool_policy_target() {
         .begin()
         .await
         .expect("begin policy target resolution");
-    let found = crate::tool_hints_and_method_in_transaction(
+    let found = crate::tool_policy_facts_in_transaction(
         &mut transaction,
         workspace.id(),
         provider.id(),
@@ -84,7 +84,10 @@ async fn disabled_provider_remains_a_valid_tool_policy_target() {
         .expect("finish policy target resolution");
     assert_eq!(
         found,
-        Some((ToolHints::default(), Some(coral_catalog::HttpMethod::Get)))
+        Some(coral_catalog::ToolPolicyFacts::new(
+            ToolHints::default(),
+            Some(coral_catalog::HttpMethod::Get)
+        ))
     );
 }
 

@@ -140,6 +140,7 @@ pub use approval_history::{
 };
 mod approval_repository;
 mod builtin;
+pub use builtin::SavedFunctions;
 mod enforcement;
 mod engine;
 mod error;
@@ -243,6 +244,7 @@ pub struct RunModule {
     providers: coral_provider::ProviderModule,
     policies: coral_policy::ToolPolicyModule,
     provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
+    saved_functions: Option<SavedFunctions>,
     human_interface: Option<HumanInterfaceUrl>,
     database: Arc<Database>,
     workspaces: WorkspaceModule,
@@ -327,6 +329,7 @@ impl RunModule {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             provider_renamer: None,
+            saved_functions: None,
             human_interface: None,
             database,
             workspaces,
@@ -368,6 +371,7 @@ impl RunModule {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             provider_renamer: None,
+            saved_functions: None,
             human_interface: None,
             database,
             workspaces,
@@ -416,6 +420,15 @@ impl RunModule {
     #[cfg(test)]
     pub(crate) const fn instance(&self) -> &CoralInstanceId {
         &self.instance
+    }
+
+    /// Lets `coral.workspace.saveFunction` and `deleteFunction` author the
+    /// invoking Principal's Saved Functions. Without it, such a call fails
+    /// with `tool_unavailable`.
+    #[must_use]
+    pub fn with_saved_functions(mut self, functions: SavedFunctions) -> Self {
+        self.saved_functions = Some(functions);
+        self
     }
 
     /// Names the Reef origin that built-in Tool Results link to. Only the

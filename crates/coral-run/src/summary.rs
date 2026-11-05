@@ -198,6 +198,7 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
                 F::ToolNotFound
                 | F::ProviderNotFound
                 | F::ProviderPublicationFailed
+                | F::SavedFunctionNotFound
                 | F::InvalidInput
                 | F::InputTooLarge
                 | F::UpstreamIncomplete
@@ -500,6 +501,7 @@ mod tests {
             (failure(F::ToolUnavailable), O::NeedsSetup),
             (failure(F::ToolNotFound), O::Failed),
             (failure(F::ProviderNotFound), O::Failed),
+            (failure(F::SavedFunctionNotFound), O::Failed),
             (failure(F::ProviderPublicationFailed), O::Failed),
             (failure(F::InvalidInput), O::Failed),
             (failure(F::InputTooLarge), O::Failed),

@@ -59,8 +59,6 @@ struct Fixture {
     tasks: coral_task::TaskModule,
     runs: coral_run::RunModule,
     saved_functions: coral_functions::SavedFunctionModule,
-    /// The no-op index the Provider workflow and the Task commands notify.
-    search_index: coral_search::SearchIndex,
 }
 
 fn change(user: &AuthenticatedUser) -> ChangeContext {
@@ -264,7 +262,6 @@ impl Fixture {
             runs,
             tasks,
             saved_functions,
-            search_index,
         }
     }
 
