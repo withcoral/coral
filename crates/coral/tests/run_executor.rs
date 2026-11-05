@@ -12,13 +12,25 @@ use coral_run_executor::testing::{Answer, ScriptedCoral};
 use tokio::io::AsyncWriteExt as _;
 use tokio::process::{Child, Command};
 
-/// Starts the real binary against `coral`. The environment stays: Windows
-/// needs `SystemRoot` to open a socket.
+/// The variables the Run Executor reads, which the test must not inherit.
+const RUN_EXECUTOR_VARIABLES: [&str; 6] = [
+    "CORAL_RUN_EXECUTOR_CORAL_ADDRESS",
+    "CORAL_RUN_EXECUTOR_TOKEN",
+    "CORAL_RUN_EXECUTOR_TOKEN_STDIN",
+    "CORAL_RUN_EXECUTOR_MAX_RUNS_HELD",
+    "CORAL_RUN_EXECUTOR_COMPILER_HEAP_BYTES",
+    "CORAL_RUN_EXECUTOR_HEALTH_LISTEN",
+];
+
+/// Starts the real binary against `coral`. The rest of the environment
+/// stays: Windows needs `SystemRoot` to open a socket.
 fn spawn(coral: &ScriptedCoral, configure: impl FnOnce(&mut Command)) -> Child {
     let mut command = Command::new(env!("CARGO_BIN_EXE_coral"));
+    for variable in RUN_EXECUTOR_VARIABLES {
+        command.env_remove(variable);
+    }
     command
         .args(["run-executor", "--coral-address", coral.address()])
-        .env_remove("CORAL_RUN_EXECUTOR_TOKEN")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .kill_on_drop(true);

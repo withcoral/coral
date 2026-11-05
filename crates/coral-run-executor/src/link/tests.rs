@@ -47,7 +47,12 @@ async fn hello_carries_the_token_and_a_move_reopens_on_a_fresh_connection() {
         (1, 8, Some(limits))
     );
     let mut previous = None;
-    for call in [first, coral.next_call().await, coral.next_call().await] {
+    // Three moves, then the fourth stream Coral holds.
+    let mut calls = vec![first];
+    for _ in 0..3 {
+        calls.push(coral.next_call().await);
+    }
+    for call in calls {
         assert_eq!(
             call.authorization.as_deref(),
             Some("Bearer test-run-executor-token")

@@ -101,7 +101,7 @@ pub struct Token(Arc<Secret>);
 
 /// A token that no `authorization` header can carry.
 #[derive(Debug, thiserror::Error)]
-#[error("the Run Executor token must be non-empty visible ASCII")]
+#[error("the Run Executor token must be non-empty visible ASCII, at most 16 KiB")]
 pub struct TokenError;
 
 impl Token {
@@ -109,7 +109,8 @@ impl Token {
     ///
     /// # Errors
     ///
-    /// Returns [`TokenError`] for an empty token, or one outside visible ASCII.
+    /// Returns [`TokenError`] for an empty token, one outside visible ASCII,
+    /// or one longer than 16 KiB.
     pub fn new(token: String) -> Result<Self, TokenError> {
         if !token.bytes().all(|byte| byte.is_ascii_graphic()) {
             return Err(TokenError);
