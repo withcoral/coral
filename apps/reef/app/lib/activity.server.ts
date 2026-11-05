@@ -500,6 +500,7 @@ function runTerminalView({ terminal }: InspectRunResponse): RunTerminal {
             invalid_program_value: ActivityRunFailureCode.INVALID_PROGRAM_VALUE,
             resource_limit_exceeded: ActivityRunFailureCode.RESOURCE_LIMIT_EXCEEDED,
             memory_limit_exceeded: ActivityRunFailureCode.MEMORY_LIMIT_EXCEEDED,
+            cpu_limit_exceeded: ActivityRunFailureCode.CPU_LIMIT_EXCEEDED,
             program_execution_failed: ActivityRunFailureCode.PROGRAM_EXECUTION_FAILED,
             run_authority_lost: ActivityRunFailureCode.RUN_AUTHORITY_LOST,
           } satisfies Record<Exclude<RunFailureCode, 'unknown'>, ActivityRunFailureCode>,

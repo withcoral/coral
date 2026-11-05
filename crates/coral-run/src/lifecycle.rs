@@ -168,6 +168,7 @@ pub(crate) enum RunTerminationKind {
     TimedOut,
     Interrupted,
     MemoryLimitExceeded,
+    CpuLimitExceeded,
 }
 
 impl RunTerminationKind {
@@ -179,6 +180,10 @@ impl RunTerminationKind {
             Self::MemoryLimitExceeded => RunTerminalOutcome::Failed(RunFailure::new(
                 RunFailureCode::MemoryLimitExceeded,
                 "Program memory limit exceeded".to_string(),
+            )),
+            Self::CpuLimitExceeded => RunTerminalOutcome::Failed(RunFailure::new(
+                RunFailureCode::CpuLimitExceeded,
+                "Program CPU limit exceeded".to_string(),
             )),
         }
     }

@@ -68,6 +68,7 @@ attribute! {
         TimedOut => "timed_out",
         Interrupted => "interrupted",
         MemoryLimitExceeded => "memory_limit_exceeded",
+        CpuLimitExceeded => "cpu_limit_exceeded",
     }
 }
 

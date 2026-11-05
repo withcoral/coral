@@ -7203,6 +7203,8 @@ pub enum ActivityRunFailureCode {
     ProgramExecutionFailed = 5,
     /// Whoever started the Run lost the access it needed.
     RunAuthorityLost = 6,
+    /// The Program used more CPU time than its budget.
+    CpuLimitExceeded = 7,
 }
 impl ActivityRunFailureCode {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -7226,6 +7228,7 @@ impl ActivityRunFailureCode {
                 "ACTIVITY_RUN_FAILURE_CODE_PROGRAM_EXECUTION_FAILED"
             }
             Self::RunAuthorityLost => "ACTIVITY_RUN_FAILURE_CODE_RUN_AUTHORITY_LOST",
+            Self::CpuLimitExceeded => "ACTIVITY_RUN_FAILURE_CODE_CPU_LIMIT_EXCEEDED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -7247,6 +7250,9 @@ impl ActivityRunFailureCode {
             }
             "ACTIVITY_RUN_FAILURE_CODE_RUN_AUTHORITY_LOST" => {
                 Some(Self::RunAuthorityLost)
+            }
+            "ACTIVITY_RUN_FAILURE_CODE_CPU_LIMIT_EXCEEDED" => {
+                Some(Self::CpuLimitExceeded)
             }
             _ => None,
         }

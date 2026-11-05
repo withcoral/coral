@@ -229,6 +229,7 @@ const fn termination_reason(kind: RunTerminationKind) -> metric::TerminationReas
         RunTerminationKind::TimedOut => metric::TerminationReason::TimedOut,
         RunTerminationKind::Interrupted => metric::TerminationReason::Interrupted,
         RunTerminationKind::MemoryLimitExceeded => metric::TerminationReason::MemoryLimitExceeded,
+        RunTerminationKind::CpuLimitExceeded => metric::TerminationReason::CpuLimitExceeded,
     }
 }
 
