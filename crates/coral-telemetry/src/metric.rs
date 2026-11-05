@@ -27,10 +27,10 @@ mod attribute;
 pub use attribute::{
     AcquisitionOperation, AcquisitionOutcome, ActivitySummaryPhase, ActivitySummaryPhaseOutcome,
     ClaimKind, ClaimOutcome, CompileOutcome, CompilerBuildOutcome, CompilerBuildReason,
-    CompilerOperation, CompilerOutcome, CompilerRole,
-    DbSystem, DropReason, GateKind, Interface, InvocationEnd, OutputKind, PrincipalKind,
-    ProviderProtocol, RecoveryOutcome, RequestOutcome, RunPhase, RunStatus, SignalKind,
-    TerminationReason, ToolEffect, TransactionOutcome, UpstreamOutcome, VisibilityPath,
+    CompilerOperation, CompilerOutcome, CompilerRole, DbSystem, DropReason, GateKind, Interface,
+    InvocationEnd, OutputKind, PrincipalKind, ProviderProtocol, RecoveryOutcome, RequestOutcome,
+    RunPhase, RunStatus, SignalKind, TerminationReason, ToolEffect, TransactionOutcome,
+    UpstreamOutcome, VisibilityPath,
 };
 
 /// Histogram bounds for a duration in seconds, from 5 ms to an hour.
