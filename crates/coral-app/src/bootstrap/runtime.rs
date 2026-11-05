@@ -18,7 +18,6 @@ use coral_workspace::WorkspaceModule;
 use super::error::AppError;
 use super::health::EngineReadiness as ListenerReadiness;
 use super::server::{PreparedServerBuilder, RunningServer as GrpcServer, ServerBuilder};
-use coral_run::RuntimeLimits;
 
 use super::server_config::{LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig};
 use crate::auth::{AuthServerError, CoralAuthorizationServer, RunningCoralAuthorizationServer};
@@ -209,8 +208,6 @@ fn write_shutdown_failure(
 enum McpStartError {
     #[error("MCP authentication configuration is missing or invalid")]
     MissingAuthentication,
-    #[error("failed to initialize MCP domain Modules: {0}")]
-    Runtime(#[source] coral_run::Error),
     #[error(transparent)]
     Http(#[from] McpHttpError),
 }
@@ -370,7 +367,6 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, S
         mcp_config,
         &grpc,
         authentication,
-        settings.runtime_limits(),
         settings.human_interface().clone(),
     )
     .await
@@ -441,7 +437,6 @@ async fn start_mcp_http(
     settings: McpHttpServeConfig,
     grpc: &GrpcServer,
     authentication: Option<crate::WorkspaceAuthentication>,
-    runtime_limits: RuntimeLimits,
     human_interface: coral_mcp::HumanInterfaceUrl,
 ) -> Result<RunningMcpHttpServer, McpStartError> {
     let readiness = grpc.readiness().probe();
@@ -449,10 +444,9 @@ async fn start_mcp_http(
         grpc.database(),
         grpc.search_index(),
         grpc.runs(),
-        runtime_limits,
+        grpc.compiler(),
         human_interface,
-    )
-    .map_err(McpStartError::Runtime)?;
+    );
     let server = match settings {
         McpHttpServeConfig::AuthDisabled { bind_addr } => {
             start_local(McpHttpConfig::new(bind_addr)?, modules, readiness).await?
@@ -477,20 +471,21 @@ async fn start_mcp_http(
 }
 
 /// Composes MCP domain Modules without selecting authentication or Principal.
-/// `search_index` and `runs` are the running server's, so the process has one
-/// index and one set of Run Owners that every surface reaches.
+/// `search_index`, `runs` and `compiler` are the running server's, so the
+/// process has one index, one set of Run Owners and one warm compiler that
+/// every surface reaches.
 fn mcp_modules(
     database: Arc<Database>,
     search_index: SearchIndex,
     runs: RunModule,
-    runtime_limits: RuntimeLimits,
+    compiler: Arc<dyn coral_run_executor::CompilerClient>,
     human_interface: coral_mcp::HumanInterfaceUrl,
-) -> Result<McpModules, coral_run::Error> {
+) -> McpModules {
     let workspaces = WorkspaceModule::new(Arc::clone(&database));
     let tasks = TaskModule::new(Arc::clone(&database), workspaces.clone());
     let search = UniversalSearchModule::new(Arc::clone(&database), workspaces.clone());
     let saved_functions =
-        SavedFunctionModule::new(database, workspaces.clone(), runtime_limits.isolate())?;
+        SavedFunctionModule::with_compiler_client(database, workspaces.clone(), compiler);
     // MCP-started Runs link people to Reef; this clone shares the server's Run Owners.
     let runs = runs.with_human_interface(human_interface.clone());
     let commands = TaskCommands::new(
@@ -500,13 +495,7 @@ fn mcp_modules(
         search_index,
         runs.clone(),
     );
-    Ok(McpModules::new(
-        workspaces,
-        tasks,
-        commands,
-        runs,
-        human_interface,
-    ))
+    McpModules::new(workspaces, tasks, commands, runs, human_interface)
 }
 
 #[cfg(test)]

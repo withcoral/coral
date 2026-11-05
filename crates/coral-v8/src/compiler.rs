@@ -1,5 +1,5 @@
 use coral_telemetry::metric::CompilerRole;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -51,13 +51,21 @@ type CompilerJob = Box<dyn FnOnce(&mut Option<CompilerIsolate>) + Send>;
 ///
 /// Pass the same admission deadline to reference analysis and linked compilation.
 /// Requests include queueing time and are capped by [`COMPILATION_TIMEOUT`]. An
-/// expired request terminates only its own work; the worker replaces failed or
-/// overgrown isolates before serving another request.
+/// expired request terminates only its own work. The worker keeps its warm
+/// isolate after diagnostics, and replaces it after a timeout, the heap limit,
+/// an internal failure or memory growth, before it serves another request.
+/// Handles from [`Self::with_role`] share the thread and queue, which stop
+/// when the last handle drops.
 pub struct ProgramCompiler {
-    sender: mpsc::SyncSender<Option<CompilerJob>>,
-    worker: Option<thread::JoinHandle<()>>,
-    limits: IsolateLimits,
+    worker: Arc<CompilerWorker>,
     role: CompilerRole,
+}
+
+/// The compiler thread and its bounded queue.
+struct CompilerWorker {
+    sender: mpsc::SyncSender<Option<CompilerJob>>,
+    thread: Option<thread::JoinHandle<()>>,
+    limits: IsolateLimits,
 }
 
 impl ProgramCompiler {
@@ -80,6 +88,8 @@ impl ProgramCompiler {
         let worker = thread::Builder::new()
             .name("coral-typescript-compiler".to_string())
             .spawn(move || {
+                #[cfg(feature = "test-support")]
+                let _counted = crate::testing::CountedThread::start();
                 let mut compiler = match CompilerIsolate::new(isolate_limits) {
                     Ok(compiler) => Some(compiler),
                     Err(error) => {
@@ -98,9 +108,11 @@ impl ProgramCompiler {
 
         match startup_receiver.recv() {
             Ok(Ok(())) => Ok(Self {
-                sender,
-                worker: Some(worker),
-                limits: isolate_limits,
+                worker: Arc::new(CompilerWorker {
+                    sender,
+                    thread: Some(worker),
+                    limits: isolate_limits,
+                }),
                 role,
             }),
             Ok(Err(error)) => {
@@ -115,6 +127,16 @@ impl ProgramCompiler {
                 }
                 Err(Error::CompilerUnavailable)
             }
+        }
+    }
+
+    /// Another handle on this compiler's thread and queue, which measures its
+    /// requests as `role`.
+    #[must_use]
+    pub fn with_role(&self, role: CompilerRole) -> Self {
+        Self {
+            worker: Arc::clone(&self.worker),
+            role,
         }
     }
 
@@ -335,9 +357,10 @@ impl ProgramCompiler {
         let control = ProgramExecutionControl::new();
         let worker_control = control.clone();
         let (response_sender, response_receiver) = mpsc::sync_channel(1);
-        let limits = self.limits;
+        let limits = self.worker.limits;
         let queued = metric::compiler_queued(self.role, operation);
-        self.sender
+        self.worker
+            .sender
             .try_send(Some(Box::new(move |compiler| {
                 let active_measurement = queued.dequeued();
                 let result = (|| {
@@ -359,7 +382,7 @@ impl ProgramCompiler {
                     if worker_control.is_requested() || Instant::now() >= deadline {
                         result = Err(Error::CompilationTimedOut);
                     }
-                    if result.is_err()
+                    if !keeps_compiler(&result)
                         || active.heap_requires_recycling(COMPILER_RECYCLE_HEAP_BYTES)
                     {
                         *compiler = None;
@@ -402,12 +425,27 @@ fn compiler_outcome<T>(result: &Result<T, Error>) -> CompilerOutcome {
     }
 }
 
-impl Drop for ProgramCompiler {
+/// Diagnostics are the compiler's answer about the source, so the warm
+/// isolate serves the next request. A thrown or ended compile may leave the
+/// isolate inconsistent, so any other failure replaces it.
+fn keeps_compiler<T>(result: &Result<T, Error>) -> bool {
+    matches!(
+        result,
+        Ok(_)
+            | Err(Error::Compilation { .. }
+                | Error::InvalidProgramBody
+                | Error::InvalidSavedFunction(_)
+                | Error::ForbiddenCapability(_)
+                | Error::InvalidSavedFunctionReference { .. })
+    )
+}
+
+impl Drop for CompilerWorker {
     fn drop(&mut self) {
         if self.sender.send(None).is_err() {
             // The worker has already stopped.
         }
-        if let Some(worker) = self.worker.take()
+        if let Some(worker) = self.thread.take()
             && worker.join().is_err()
         {
             // Drop cannot report a compiler-thread panic.
@@ -926,6 +964,54 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_keep_the_warm_isolate_and_a_timeout_replaces_it() {
+        let compiler =
+            ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
+        let deadline = || Instant::now() + COMPILATION_TIMEOUT;
+        let warm = || {
+            compiler
+                .request(CompilerOperation::Analysis, deadline(), |compiler| {
+                    Ok(script(compiler, "if (!globalThis.__coralWarm) throw 0;").is_ok())
+                })
+                .expect("probe the isolate")
+        };
+        compiler
+            .request(CompilerOperation::Analysis, deadline(), |compiler| {
+                script(compiler, "globalThis.__coralWarm = true;")
+            })
+            .expect("mark the isolate");
+        let authoring = compiler.with_role(CompilerRole::Authoring);
+        for (diagnostics, result) in [
+            ("syntax", compiler.compile(deadline(), "return (").map(drop)),
+            (
+                "export shape",
+                authoring
+                    .prepare_saved_function(deadline(), "export const answer = 42;")
+                    .map(drop),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::Compilation { .. } | Error::InvalidSavedFunction(_))
+                ),
+                "{diagnostics}: {result:?}"
+            );
+            assert!(warm(), "{diagnostics} diagnostics keep the warm isolate");
+        }
+        let result = compiler.request(
+            CompilerOperation::Program,
+            Instant::now() + Duration::from_millis(200),
+            |compiler| script(compiler, "while (true) {}"),
+        );
+        assert!(
+            matches!(result, Err(Error::CompilationTimedOut)),
+            "{result:?}"
+        );
+        assert!(!warm(), "a timeout replaces the isolate");
+    }
+
+    #[test]
     fn expired_requests_never_execute_or_terminate_a_later_request() {
         let compiler =
             ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("compiler");
@@ -1072,8 +1158,9 @@ mod tests {
             .compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;")
             .expect("fresh compiler after failure");
         // Exercise the same stop protocol as Drop, then submit to the closed worker.
-        compiler.sender.send(None).unwrap();
-        compiler.worker.take().unwrap().join().unwrap();
+        let worker = Arc::get_mut(&mut compiler.worker).expect("one handle");
+        worker.sender.send(None).unwrap();
+        worker.thread.take().unwrap().join().unwrap();
         assert!(matches!(
             compiler.compile(Instant::now() + COMPILATION_TIMEOUT, "return 42;"),
             Err(Error::CompilerUnavailable)

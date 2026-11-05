@@ -647,10 +647,12 @@ dependencies = [
  "coral-provider",
  "coral-release",
  "coral-run",
+ "coral-run-executor",
  "coral-search",
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
+ "coral-v8",
  "coral-workspace",
  "etcetera",
  "jsonwebtoken",
@@ -771,6 +773,7 @@ dependencies = [
  "async-trait",
  "coral-catalog",
  "coral-db",
+ "coral-run-executor",
  "coral-telemetry",
  "coral-test-support",
  "coral-v8",
@@ -969,6 +972,7 @@ dependencies = [
  "coral-outbound",
  "coral-policy",
  "coral-provider",
+ "coral-run-executor",
  "coral-search",
  "coral-telemetry",
  "coral-test-support",
@@ -991,6 +995,14 @@ dependencies = [
  "url",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "coral-run-executor"
+version = "1.5.0"
+dependencies = [
+ "coral-telemetry",
+ "coral-v8",
 ]
 
 [[package]]

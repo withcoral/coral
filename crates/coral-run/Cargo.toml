@@ -19,6 +19,7 @@ coral-functions.workspace = true
 coral-identifier.workspace = true
 coral-policy.workspace = true
 coral-provider.workspace = true
+coral-run-executor.workspace = true
 coral-search.workspace = true
 coral-telemetry.workspace = true
 coral-upstream.workspace = true

@@ -512,6 +512,7 @@ pub struct RunningServer {
     providers: coral_provider::ProviderModule,
     accounts: Option<coral_provider::account::AccountModule>,
     runs: coral_run::RunModule,
+    compiler: Arc<dyn coral_run_executor::CompilerClient>,
     readiness: EngineReadiness,
     run_recovery: JoinHandle<()>,
     device_recovery: Option<JoinHandle<()>>,
@@ -682,6 +683,14 @@ impl RunningServer {
         self.runs.clone()
     }
 
+    /// Shares the process's one warm compiler with companion runtime
+    /// composition, so Saved Function save compiles where Program Admission
+    /// does.
+    #[must_use]
+    pub fn compiler(&self) -> Arc<dyn coral_run_executor::CompilerClient> {
+        Arc::clone(&self.compiler)
+    }
+
     /// Publishes the canonical MCP origin after the companion listener binds.
     /// Bootstrap supplies the validated public origin or actual local listener address.
     /// # Panics
@@ -789,13 +798,20 @@ pub(crate) async fn start_server(
         .map_err(|error| {
             AppError::FailedPrecondition(format!("Built-in Provider update failed: {error}"))
         })?;
+    // Program Admission and Saved Function save share one warm compiler.
+    let compiler: Arc<dyn coral_run_executor::CompilerClient> = Arc::new(
+        coral_run_executor::InProcessCompiler::new(runtime_limits.isolate()).map_err(|error| {
+            AppError::FailedPrecondition(format!("Program runtime is unavailable: {error}"))
+        })?,
+    );
     // updateProvider renames through the same workflow as Reef.
-    let mut runs = coral_run::RunModule::new(
+    let mut runs = coral_run::RunModule::with_compiler_client(
         policy,
         database.clone(),
         workspaces.clone(),
         providers.clone(),
         runtime_limits,
+        compiler.clone(),
         instance,
         coral_run::RunInbox::table(database.clone()),
     )
@@ -904,6 +920,7 @@ pub(crate) async fn start_server(
         release_check,
         accounts,
         runs,
+        compiler,
         mcp_origin,
         endpoint_uri,
         local_addr,

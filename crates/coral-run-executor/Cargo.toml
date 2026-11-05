@@ -1,0 +1,14 @@
+[package]
+name = "coral-run-executor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+coral-telemetry.workspace = true
+coral-v8.workspace = true

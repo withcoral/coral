@@ -280,7 +280,9 @@ impl RunModule {
     /// Built-in Tools prepare Setups through `providers`, the bootstrap's
     /// Provider Module. `instance` is the Coral Instance the process runs as,
     /// which every Run it claims records; `inbox` is where outside Run
-    /// Requests wait for their Run Owner.
+    /// Requests wait for their Run Owner. The runtime starts a warm compiler
+    /// of its own; a composed process shares its one compiler through
+    /// [`Self::with_compiler_client`] instead.
     /// # Errors
     /// Returns an initialization error when the runtime or HTTP client cannot start.
     pub fn new(
@@ -292,6 +294,38 @@ impl RunModule {
         instance: CoralInstanceId,
         inbox: RunInbox,
     ) -> Result<Self, Error> {
+        let compiler = coral_run_executor::InProcessCompiler::new(limits.isolate())
+            .map_err(|error| Error::ProgramRuntimeUnavailable(error.to_string()))?;
+        Self::with_compiler_client(
+            policy,
+            database,
+            workspaces,
+            providers,
+            limits,
+            Arc::new(compiler),
+            instance,
+            inbox,
+        )
+    }
+
+    /// Builds the runtime as [`Self::new`] does, except that Program
+    /// Admission compiles through `compiler`, the process's one warm compiler.
+    /// # Errors
+    /// Returns an initialization error when the HTTP client cannot start.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "bootstrap passes each shared process component"
+    )]
+    pub fn with_compiler_client(
+        policy: coral_outbound::DestinationPolicy,
+        database: Arc<Database>,
+        workspaces: WorkspaceModule,
+        providers: coral_provider::ProviderModule,
+        limits: RuntimeLimits,
+        compiler: Arc<dyn coral_run_executor::CompilerClient>,
+        instance: CoralInstanceId,
+        inbox: RunInbox,
+    ) -> Result<Self, Error> {
         Ok(Self {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
@@ -300,7 +334,7 @@ impl RunModule {
             database,
             workspaces,
             accounts: None,
-            engine: Arc::new(V8ProgramEngine::new(limits.isolate())?),
+            engine: Arc::new(V8ProgramEngine::with_compiler(compiler, limits.isolate())),
             upstream: Arc::new(ProductionUpstream::new(policy)?),
             clock: Arc::new(SystemClock),
             execution_policy: ExecutionPolicy::production(),
