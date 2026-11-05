@@ -408,87 +408,88 @@ const PINNED_HEADING_STATES = [
 ] as const
 
 /**
- * Pinned record headings in every state, in both themes. Rows scroll under a
+ * Pinned record headings in every state, in one theme. Rows scroll under a
  * pinned heading, so it paints the same whatever row lies under it, under the
- * pointer too.
+ * pointer too. Each theme has its own story, so each play stays well inside the
+ * story runner's per-test timeout.
  */
-export const PinnedHeadingsHideTheirRows: Story = {
-  render: () => (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {[darkTheme, lightTheme].map((themeClass) => (
-        <div
-          key={themeClass}
-          className={themeClass}
-          style={{ display: 'flex', gap: 8, backgroundColor: theme.surface.mainContent }}
-        >
-          {PINNED_HEADING_STATES.map(({ state, ...props }) => (
-            <PinnedRecordHeadings key={state} {...props} />
-          ))}
-        </div>
-      ))}
-    </div>
-  ),
-  // Catches: a hover colour that replaces a pinned heading's opaque fill, so the
-  // rows under it show through.
-  play: async ({ canvasElement }) => {
-    const tables = within(canvasElement).getAllByRole('table', { name: 'Records' })
-    await expect(tables).toHaveLength(2 * PINNED_HEADING_STATES.length)
-    const labels = ['Task', 'Run']
-    const pointers = [null, ...labels]
-    // Every case, so a failure names all the states that show rows through.
-    const changes = []
-    for (const [index, table] of tables.entries()) {
-      const scheme = index < PINNED_HEADING_STATES.length ? 'dark' : 'light'
-      const { state } = PINNED_HEADING_STATES[index % PINNED_HEADING_STATES.length]!
-      const heading = (label: string) =>
-        within(table)
-          .getAllByRole('row')
-          .find((row) => within(row).queryByText(label, { exact: true }))!
-      if (state === 'cursor') table.focus()
-      // The headings' cells, not their rows: the scroll area's own scrollbar shows
-      // over a row's end under the pointer, and moves as the rows scroll.
-      const cells = (label: string) => within(heading(label)).getAllByRole('cell')
-      const paint = async () => {
-        await Promise.all(table.getAnimations({ subtree: true }).map(({ finished }) => finished))
-        return paintedPixels(table, labels.flatMap(cells))
-      }
-      for (const pointer of pointers) {
-        // Both headings pin, the run's under the task's, with rows under each.
-        table.scrollTop = 200
-        await waitFor(() =>
-          expect(heading('Run').getBoundingClientRect().top).toBe(
-            heading('Task').getBoundingClientRect().bottom,
-          ),
-        )
-        if (pointer && !(await hover(heading(pointer)))) return
-        const before = await paint()
-        // Rows scroll by less than one row's height, so other text lies under it.
-        const from = table.scrollTop
-        table.scrollTop += 13
-        await waitFor(() => expect(table.scrollTop).toBeGreaterThan(from))
-        if (pointer) await expect(heading(pointer).matches(':hover')).toBe(true)
-        const after = await paint()
-        if (pointer) await unhover(heading(pointer))
-        if (!before || !after) return
-        // Each painted cell's heading, in the order `paint` measured them.
-        const owners = labels.flatMap((label) => cells(label).map(() => label))
-        for (const label of labels) {
-          const changed = owners.reduce(
-            (sum, owner, at) =>
-              owner === label
-                ? sum + before[at]!.filter((byte, offset) => byte !== after[at]![offset]).length
-                : sum,
-            0,
-          )
-          changes.push({ scheme, state, pointer, heading: label, changed })
+function pinnedHeadingsHideTheirRows(themeClass: string): Story {
+  return {
+    render: () => (
+      <div
+        className={themeClass}
+        style={{ display: 'flex', gap: 8, backgroundColor: theme.surface.mainContent }}
+      >
+        {PINNED_HEADING_STATES.map(({ state, ...props }) => (
+          <PinnedRecordHeadings key={state} {...props} />
+        ))}
+      </div>
+    ),
+    // Catches: a hover colour that replaces a pinned heading's opaque fill, so the
+    // rows under it show through.
+    play: async ({ canvasElement }) => {
+      const tables = within(canvasElement).getAllByRole('table', { name: 'Records' })
+      await expect(tables).toHaveLength(PINNED_HEADING_STATES.length)
+      const labels = ['Task', 'Run']
+      const pointers = [null, ...labels]
+      // Every case, so a failure names all the states that show rows through.
+      const changes = []
+      for (const [index, table] of tables.entries()) {
+        const { state } = PINNED_HEADING_STATES[index]!
+        const heading = (label: string) =>
+          within(table)
+            .getAllByRole('row')
+            .find((row) => within(row).queryByText(label, { exact: true }))!
+        if (state === 'cursor') table.focus()
+        // The headings' cells, not their rows: the scroll area's own scrollbar shows
+        // over a row's end under the pointer, and moves as the rows scroll.
+        const cells = (label: string) => within(heading(label)).getAllByRole('cell')
+        const paint = async () => {
+          await Promise.all(table.getAnimations({ subtree: true }).map(({ finished }) => finished))
+          return paintedPixels(table, labels.flatMap(cells))
         }
+        for (const pointer of pointers) {
+          // Both headings pin, the run's under the task's, with rows under each.
+          table.scrollTop = 200
+          await waitFor(() =>
+            expect(heading('Run').getBoundingClientRect().top).toBe(
+              heading('Task').getBoundingClientRect().bottom,
+            ),
+          )
+          if (pointer && !(await hover(heading(pointer)))) return
+          const before = await paint()
+          // Rows scroll by less than one row's height, so other text lies under it.
+          const from = table.scrollTop
+          table.scrollTop += 13
+          await waitFor(() => expect(table.scrollTop).toBeGreaterThan(from))
+          if (pointer) await expect(heading(pointer).matches(':hover')).toBe(true)
+          const after = await paint()
+          if (pointer) await unhover(heading(pointer))
+          if (!before || !after) return
+          // Each painted cell's heading, in the order `paint` measured them.
+          const owners = labels.flatMap((label) => cells(label).map(() => label))
+          for (const label of labels) {
+            const changed = owners.reduce(
+              (sum, owner, at) =>
+                owner === label
+                  ? sum + before[at]!.filter((byte, offset) => byte !== after[at]![offset]).length
+                  : sum,
+              0,
+            )
+            changes.push({ state, pointer, heading: label, changed })
+          }
+        }
+        if (state === 'cursor') await expect(table).toHaveFocus()
       }
-      if (state === 'cursor') await expect(table).toHaveFocus()
-    }
-    await expect(changes).toHaveLength(tables.length * pointers.length * labels.length)
-    await expect(changes.filter(({ changed }) => changed)).toEqual([])
-  },
+      await expect(changes).toHaveLength(tables.length * pointers.length * labels.length)
+      await expect(changes.filter(({ changed }) => changed)).toEqual([])
+    },
+  }
 }
+
+export const PinnedHeadingsHideTheirRowsDark = pinnedHeadingsHideTheirRows(darkTheme)
+
+export const PinnedHeadingsHideTheirRowsLight = pinnedHeadingsHideTheirRows(lightTheme)
 
 /**
  * A group heading built from several cells in a fragment. Only its first cell
