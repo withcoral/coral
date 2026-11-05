@@ -171,54 +171,55 @@ export function CatalogRailItem({
   )
 }
 
-// Room the filter's input keeps beside leading controls before they move down,
+// Room the filter's input keeps beside a picker before the picker moves down,
 // and the row's gap between items.
 const FILTER_ROOM = 200
 const TOOLBAR_GAP = 12
 
 /**
- * Whether leading controls fit on the title's line beside the filter's input and
- * the action, measured as the toolbar resizes. Their own width is measured from
- * their content, so moving them below does not change the answer.
+ * Whether a picker fits on the title's line beside the filter's input and the
+ * action, measured as the toolbar resizes. Its width is measured from its
+ * content, so moving it below does not change the answer.
  */
-function useLeadingPlacement(enabled: boolean) {
+function usePickerPlacement(enabled: boolean) {
   const toolbar = useRef<HTMLDivElement>(null)
   const titleItem = useRef<HTMLDivElement>(null)
-  const leadingItem = useRef<HTMLDivElement>(null)
+  const pickerItem = useRef<HTMLDivElement>(null)
   const actionItem = useRef<HTMLDivElement>(null)
-  const [leadingBelow, setLeadingBelow] = useState(false)
+  const [pickerBelow, setPickerBelow] = useState(false)
   useEffect(() => {
     const row = toolbar.current
-    const lead = leadingItem.current
-    if (!enabled || !row || !lead || typeof ResizeObserver === 'undefined') return
+    if (!enabled || !row || typeof ResizeObserver === 'undefined') return
     const place = () => {
-      const content = lead.firstElementChild?.scrollWidth ?? lead.scrollWidth
+      const picker = pickerItem.current
+      if (!picker) return
       const needed =
         (titleItem.current?.scrollWidth ?? 0) +
-        content +
+        (picker.firstElementChild?.scrollWidth ?? picker.scrollWidth) +
         FILTER_ROOM +
         (actionItem.current?.offsetWidth ?? 0) +
         3 * TOOLBAR_GAP
-      setLeadingBelow(needed > row.clientWidth)
+      setPickerBelow(needed > row.clientWidth)
     }
     place()
     const observer = new ResizeObserver(place)
     observer.observe(row)
-    if (lead.firstElementChild) observer.observe(lead.firstElementChild)
     return () => observer.disconnect()
   }, [enabled])
-  return { toolbar, titleItem, leadingItem, actionItem, leadingBelow }
+  return { toolbar, titleItem, pickerItem, actionItem, pickerBelow }
 }
 
 /**
- * The one row above the table: the title, `leading` controls, then any other
- * controls, the filter's input, and the page's `action` at the end.
+ * The one row above the table: `leading` controls at the start, then any
+ * other controls, a `picker`, the filter's input, and the page's `action` at
+ * the end.
  */
 export function CatalogToolbar({
   title,
   titleInfo,
   filter,
   leading,
+  picker,
   children,
   action,
 }: {
@@ -235,12 +236,14 @@ export function CatalogToolbar({
     /** Takes the rest of the row, for a toolbar in a narrow column such as a card. */
     fill?: boolean
   }
-  /**
-   * Controls at the start of the row, beside the title, such as a filter. When
-   * the row has no room for them, the filter's input and the action, they take
-   * a line of their own below, and the rest stays on the title's line.
-   */
+  /** Controls at the start of the row, such as actions on the selection. */
   leading?: ReactNode
+  /**
+   * A wide control beside the filter's input, such as a segmented filter. When
+   * the row has no room for it, it takes a line of its own below, at the end,
+   * and the rest stays on the title's line.
+   */
+  picker?: ReactNode
   children?: ReactNode
   /**
    * The page's main action, such as "Add provider", last in the row. Give it
@@ -251,8 +254,8 @@ export function CatalogToolbar({
 }) {
   const { shortcut, fill, ...field } = filter
   const input = useRef<HTMLInputElement>(null)
-  const { toolbar, titleItem, leadingItem, actionItem, leadingBelow } = useLeadingPlacement(
-    Boolean(leading),
+  const { toolbar, titleItem, pickerItem, actionItem, pickerBelow } = usePickerPlacement(
+    Boolean(picker),
   )
   const focusFilter = useCallback((event: KeyboardEvent) => {
     event.preventDefault()
@@ -271,32 +274,36 @@ export function CatalogToolbar({
       {shortcut && <KeyboardShortcut shortcut={shortcut} handler={focusFilter} />}
     </div>
   )
+  const pickerSlot = picker && (
+    <div
+      ref={pickerItem}
+      className={classNames(styles.toolbarPicker, pickerBelow && styles.toolbarPickerBelow)}
+    >
+      {picker}
+    </div>
+  )
   return (
     <div
       ref={toolbar}
       className={classNames(styles.toolbar, Boolean(action) && styles.toolbarWithAction)}
     >
       {/* An empty group would still take a gap, and push the controls off the table's edge. */}
-      {title && (
+      {(title || leading) && (
         <div className={styles.toolbarGroup}>
-          <div ref={titleItem} className={styles.toolbarTitle}>
-            <Typography.HeadingLarge as="h1" truncate>
-              {title}
-            </Typography.HeadingLarge>
-            {titleInfo}
-          </div>
-        </div>
-      )}
-      {leading && (
-        <div
-          ref={leadingItem}
-          className={classNames(styles.toolbarLeading, leadingBelow && styles.toolbarLeadingBelow)}
-        >
+          {title && (
+            <div ref={titleItem} className={styles.toolbarTitle}>
+              <Typography.HeadingLarge as="h1" truncate>
+                {title}
+              </Typography.HeadingLarge>
+              {titleInfo}
+            </div>
+          )}
           {leading}
         </div>
       )}
       <div className={classNames(styles.toolbarGroup, styles.toolbarControls)}>
         {children}
+        {!pickerBelow && pickerSlot}
         {action ? (
           // One unit, so a wrapping row never leaves the action on a line alone.
           <div
@@ -311,6 +318,7 @@ export function CatalogToolbar({
           filterField
         )}
       </div>
+      {pickerBelow && pickerSlot}
     </div>
   )
 }

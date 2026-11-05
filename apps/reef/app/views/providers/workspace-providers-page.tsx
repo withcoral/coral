@@ -1096,8 +1096,8 @@ function ProvidersTableScreen({
         title="Providers"
         titleInfo={titleInfo}
         action={addButton}
-        // Beside the title while the row has room; on its own line when not.
-        leading={
+        // Beside the search while the row has room; on its own line below it when not.
+        picker={
           <PolicyFilterBar
             value={policyFilter?.value ?? null}
             counts={filterCounts}
@@ -1163,6 +1163,7 @@ function ProvidersTableScreen({
               </span>
               {toolCalls && (
                 <Table.Heading
+                  align="center"
                   className={styles.callsColumn}
                   sort={sortByUsage ? 'descending' : 'none'}
                 >
@@ -1450,7 +1451,6 @@ const TableSections = memo(function TableSections({
           name={providerLabel(section.provider)}
           provider={section.provider}
           notices={<ProviderNotices provider={section.provider} />}
-          policy={<PolicyOverrides provider={section.provider} />}
           selected={selected}
           toggleTools={toggleTools}
         />
@@ -1566,7 +1566,6 @@ function GroupHeading({
   selected,
   toggleTools,
   notices,
-  policy,
   ...cell
 }: {
   bulkPending: boolean
@@ -1586,8 +1585,6 @@ function GroupHeading({
   toggleTools: ToggleTools
   /** Follows the tool count in the label cell. */
   notices?: ReactNode
-  /** The heading's own cell in the policy column: the provider's policy status. */
-  policy?: ReactNode
   className: string
 }) {
   // A provider heading stays mounted over all its tools, through every scroll.
@@ -1627,11 +1624,6 @@ function GroupHeading({
         </Typography.BodySmall>
         {notices}
       </span>
-      {policy && (
-        <span role="cell" className={styles.policyStatus}>
-          {policy}
-        </span>
-      )}
     </>
   )
 }
@@ -2100,34 +2092,6 @@ function ProviderNotices({ provider }: { provider: ProviderView }) {
         </Tooltip>
       )}
     </>
-  )
-}
-
-/**
- * How many of the provider's tools have a policy an owner set. The others use
- * the default for what they do, so a changed default reaches only those.
- */
-function PolicyOverrides({ provider }: { provider: ProviderView }) {
-  const { policies } = usePolicyMutations()
-  // A saved change stays in `policies` until the catalog reloads with it.
-  const set = useMemo(
-    () =>
-      provider.tools.filter(
-        (tool) => tool.explicit || policies.has(selectionKey(provider.id, tool.key)),
-      ).length,
-    [policies, provider],
-  )
-  if (set === 0) return null
-  return (
-    <Tooltip
-      content={`An owner set the policy of ${countLabel(set, 'tool')}. The other tools use their default policy.`}
-    >
-      <span className={styles.inlineTooltipTarget} tabIndex={0}>
-        <Typography.BodySmall as="span" variant="tertiary">
-          {countLabel(set, 'override')}
-        </Typography.BodySmall>
-      </span>
-    </Tooltip>
   )
 }
 

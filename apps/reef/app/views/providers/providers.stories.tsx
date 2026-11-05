@@ -49,7 +49,6 @@ function op(
     // read-only is enabled, anything else needs approval.
     hints: {},
     policy: readOnly ? 'enabled' : 'approval_required',
-    explicit: false,
     available: true,
     reasons: [],
     group,
@@ -117,7 +116,6 @@ const weather: ProviderView = {
       relativePath: 'getForecast',
       hints: {},
       policy: 'approval_required',
-      explicit: false,
       available: true,
       reasons: [],
       group: '',
@@ -354,8 +352,8 @@ export const TreeToolUsage: Story = {
     />
   ),
 }
-// A provider heading's status: its unavailable tools, a destructive tool that
-// runs without approval, and how many tools an owner set.
+// A provider heading's status: its unavailable tools, and a destructive tool
+// that runs without approval.
 export const TreeProviderStatus: Story = {
   render: () => (
     <WorkspaceProvidersPage
@@ -365,9 +363,9 @@ export const TreeProviderStatus: Story = {
           ...github,
           tools: github.tools.map((tool) =>
             tool.relativePath === 'issues.close'
-              ? { ...tool, available: true, policy: 'enabled', explicit: true }
+              ? { ...tool, available: true, policy: 'enabled' }
               : tool.relativePath === 'repos.get'
-                ? { ...tool, policy: 'disabled', explicit: true }
+                ? { ...tool, policy: 'disabled' }
                 : tool,
           ),
         },

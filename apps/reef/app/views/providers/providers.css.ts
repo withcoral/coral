@@ -167,19 +167,12 @@ export const toolGroupLabel = style({
   gap: 8,
   gridColumn: '2 / -1',
 })
-// The label stops at the policy column, where the provider's counts sit.
 export const providerGroupLabel = style({
   alignItems: 'center',
   display: 'flex',
   gap: 8,
-  gridColumn: '2 / -2',
+  gridColumn: '2 / -1',
   minWidth: 0,
-})
-// The provider's policy status, in the policy column: how many tools an owner set.
-export const policyStatus = style({
-  alignItems: 'center',
-  display: 'flex',
-  gridColumn: '-2 / -1',
 })
 // A checked row is filled, so the selection reads down the table at a glance.
 export const checkedRow = style({
@@ -238,9 +231,8 @@ export const callsBar = style({
 export const usageTipDay = style({ display: 'block', ...theme.typography.bodySmallStrong })
 export const usageTipTotal = style({ color: theme.content.secondary, display: 'block' })
 export const callsHeading = style({ alignItems: 'center', display: 'inline-flex', gap: 6 })
-// The heading's counts can make the column wider than its toggles, so the header,
-// the counts and the toggles all start at its left edge.
-export const policyHeader = style({ display: 'flex' })
+// The column is as wide as its toggles; the header centres over them.
+export const policyHeader = style({ display: 'flex', justifyContent: 'center' })
 // One line: a wrapped outcome pill would change the row's height after a save.
 export const policyCell = style({
   alignItems: 'center',

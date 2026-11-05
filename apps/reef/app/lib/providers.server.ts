@@ -275,7 +275,6 @@ export function toolView(o: ToolAccess): ToolView {
     relativePath: o.relativePath,
     hints: toolHints(o.hints),
     policy: accessState(o.accessState),
-    explicit: o.explicit,
     available: o.available,
     reasons: o.diagnostics.map((d) => d.message),
     group: toolGroup(o),

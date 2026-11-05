@@ -362,13 +362,7 @@ test('the toolbar filter counts each policy in the tab and the search', async ()
   const mixed = { ...github, tools: [{ ...list!, policy: 'enabled' as const }, get!] }
   const blocked = { ...weather, tools: weather.tools.map((o) => ({ ...o, available: false })) }
   const { show } = renderPage({ providers: [mixed, blocked] })
-  expect(filterChoices()).toEqual([
-    'All 3',
-    'Allow 1',
-    'Ask 2',
-    'Block 0 (off)',
-    'Unavailable 1',
-  ])
+  expect(filterChoices()).toEqual(['All 3', 'Allow 1', 'Ask 2', 'Block 0 (off)', 'Unavailable 1'])
   await filterTools('get')
   expect(filterChoices()).toEqual([
     'All 2',
@@ -382,16 +376,16 @@ test('the toolbar filter counts each policy in the tab and the search', async ()
   expect(filterChoices()).toEqual(['All 2', 'Allow 1', 'Ask 1', 'Block 0 (off)'])
 })
 
-// Catches: an unavailable count that still filters from the heading, a
-// destructive tool that runs without approval and no warning, or an owner's
-// rules left uncounted, as saved or while a change is in flight.
-test('a provider heading shows its unavailable tools, destructive risk and overrides', async () => {
+// Catches: an unavailable count that still filters from the heading, or a
+// destructive tool that runs without approval and no warning, as saved or while
+// a change is in flight.
+test('a provider heading shows its unavailable tools and destructive risk', async () => {
   const [list, get] = github.tools
   const risky = {
     ...github,
     readyCount: 1,
     tools: [
-      { ...list!, hints: { destructive: true }, policy: 'enabled' as const, explicit: true },
+      { ...list!, hints: { destructive: true }, policy: 'enabled' as const },
       { ...get!, available: false },
     ],
   }
@@ -399,10 +393,7 @@ test('a provider heading shows its unavailable tools, destructive risk and overr
   expect(githubHeading()).toHaveTextContent('1 unavailable')
   expect(within(githubHeading()).queryByRole('button', { name: /unavailable/ })).toBeNull()
   expect(githubHeading()).toHaveTextContent('1 destructive tool allowed')
-  expect(githubHeading()).toHaveTextContent('1 override')
 
-  await choosePolicy('repos.get', 'Block')
-  expect(githubHeading()).toHaveTextContent('2 overrides')
   await choosePolicy('issues.list', 'Ask')
   expect(githubHeading()).not.toHaveTextContent('destructive')
 })

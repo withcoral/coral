@@ -215,13 +215,13 @@ export const toolbarFilter = style({
 // In a narrow column the filter takes the rest of the row, so it stays beside its picker.
 export const toolbarFilterFill = style({ flex: '1 1 160px', minWidth: 0 })
 
-// Leading controls keep their full width beside the title. When the row has no
-// room for them, they take a line of their own after the other controls; only a
-// line narrower than them scrolls them.
-export const toolbarLeading = style({
+// A picker keeps its full width beside the filter's input. When the row has no
+// room for it, it takes a line of its own after the controls, at the end; only
+// a line narrower than it scrolls it.
+export const toolbarPicker = style({
   display: 'flex',
   flex: '0 0 auto',
   maxWidth: '100%',
   minWidth: 0,
 })
-export const toolbarLeadingBelow = style({ flexBasis: '100%', order: 1 })
+export const toolbarPickerBelow = style({ flexBasis: '100%', justifyContent: 'flex-end' })

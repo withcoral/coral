@@ -68,8 +68,6 @@ export interface ToolView extends Omit<ToolNodeView, 'summary' | 'path'> {
   key: string
   hints: ToolHintsView
   policy: PolicyState
-  /** An owner set the policy; false while the tool uses the default for what it does. */
-  explicit: boolean
 }
 
 /** The prose of the one Tool the drawer shows. */
