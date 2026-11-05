@@ -1035,7 +1035,7 @@ fn execution_has_no_forbidden_ambient_capability() {
         .expect("execute ambient-capability probe");
 }
 
-/// Names every global of the Program Runtime Surface (ADR 0027, Versions).
+/// Names every global of the Program Runtime Surface.
 ///
 /// Fails when a global appears or disappears, such as one a V8 upgrade adds:
 /// that release raises the protocol level. The probe and the list live in
@@ -1073,8 +1073,8 @@ fn program_runtime_surface_has_exactly_its_globals() {
         .collect();
     assert!(
         extra.is_empty() && missing.is_empty(),
-        "the Program Runtime Surface changed, so the protocol level must rise \
-         (ADR 0027, Versions); update program-runtime-surface/globals.json. \
+        "the Program Runtime Surface changed, so the protocol level must rise; \
+         update program-runtime-surface/globals.json. \
          Extra globals: {extra:?}. Missing globals: {missing:?}."
     );
 }
