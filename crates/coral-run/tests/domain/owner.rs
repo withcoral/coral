@@ -2761,8 +2761,21 @@ fn a_recovered_owner_applies_its_run_inbox_requests_in_insert_order() {
                     assert_eq!(*expired, approval);
                     Step::Expire
                 }
-                RecoveryStep::Decide { record: true, .. } => Step::Record,
-                RecoveryStep::Decide { record: false, .. } => Step::Close,
+                RecoveryStep::Decide {
+                    record,
+                    applied_at_unix_nanos,
+                    ..
+                } => {
+                    // A decision is dated when the owner applied it.
+                    assert!(
+                        delivered
+                            .iter()
+                            .any(|&(sent, at)| matches!(sent, Sent::Decision)
+                                && at == *applied_at_unix_nanos),
+                        "{delivered:?}: {step:?}"
+                    );
+                    if *record { Step::Record } else { Step::Close }
+                }
             })
             .chain(recovered.termination.iter().map(|intent| {
                 assert_eq!(intent.requester, Some(requester()));
@@ -2842,4 +2855,23 @@ fn a_recovered_owner_writes_its_queued_expiries_in_one_chunk_and_retires() {
         );
         assert_eq!(state.phase(), Phase::Retired);
     }
+    // A clock the host cannot read rejects before the message it dequeued:
+    // the owner retires, and a decision applied then records nothing, its
+    // row left for the next recovered owner.
+    let mut state = OwnerState::recovered(LIMITS, 1);
+    let effects = apply_without_tick(
+        &mut state,
+        Message::CommitRejected(CommitRejection::Failed),
+        1,
+    );
+    assert!(
+        matches!(effects.as_slice(), [Effect::Retire]),
+        "{effects:?}"
+    );
+    assert!(decide(&mut state, &approval_id(), "row", 1).is_empty());
+    assert!(
+        apply_without_tick(&mut state, Message::Recover, 2).is_empty(),
+        "no chunk writes the decision or deletes its row"
+    );
+    assert_eq!(state.phase(), Phase::Retired);
 }

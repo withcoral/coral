@@ -1511,12 +1511,17 @@ impl OwnerState {
     /// then the requests waiting in the Run's Run Inbox, in insert order,
     /// then [`Message::Recover`], which writes what it applied and the Run's
     /// end in one chunk. The write's answer, or a stop (the Shutdown Drain is
-    /// out), retires the owner. No Program runs here, and what reaches it
-    /// after the end changes nothing.
+    /// out), retires the owner. So does a clock it cannot read, the one
+    /// rejection a recovered owner receives: no request it applies is dated
+    /// by a sample it did not take, and their rows wait for the next
+    /// recovered owner. No Program runs here, and what reaches it after the
+    /// end changes nothing.
     fn recovering(&mut self, message: Message, now_unix_nanos: i64) -> Vec<Effect> {
         let limits = self.limits;
         match (message, &mut self.recovered) {
-            (Message::Interrupted(_) | Message::Stop, _) => return self.retire(),
+            (Message::Interrupted(_) | Message::Stop | Message::CommitRejected(_), _) => {
+                return self.retire();
+            }
             (Message::Recover, recovered) => {
                 return recovered.take().map(Effect::Recover).into_iter().collect();
             }
