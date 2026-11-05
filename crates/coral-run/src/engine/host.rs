@@ -13,6 +13,10 @@ use crate::{CoralFailure, ProgramLogLevel, SourceDocument, SourceLocation, Value
 
 use super::{ExecutionCompletion, ProgramEngine, ProgramPackage};
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is one part of the Run that the Program's host serves"
+)]
 pub(crate) async fn execute(
     engine: Arc<dyn ProgramEngine>,
     package: ProgramPackage,
@@ -20,6 +24,7 @@ pub(crate) async fn execute(
     invoker: ToolInvoker,
     output: ProgramOutputWriter,
     value_limits: ValueLimits,
+    cpu_budget: Option<std::time::Duration>,
     stop: Arc<ExecutionStop>,
 ) -> ExecutionCompletion {
     let host = Arc::new(RunProgramHost {
@@ -27,6 +32,7 @@ pub(crate) async fn execute(
         span: tracing::Span::current(),
         trace_id: invoker.trace_id(),
         value_limits,
+        cpu_budget,
         stop: stop.clone(),
         linked_snapshots,
         invoker,
@@ -54,6 +60,9 @@ struct RunProgramHost {
     /// The Run Trace identifier each Coral Failure names to the Program.
     trace_id: Option<String>,
     value_limits: ValueLimits,
+    /// The Run's CPU budget, below its time limit; `None` leaves the Program
+    /// to its deadline.
+    cpu_budget: Option<std::time::Duration>,
     stop: Arc<ExecutionStop>,
     /// Linked Saved Function path to the identity of the Run's snapshot.
     linked_snapshots: HashMap<String, String>,
@@ -98,6 +107,10 @@ impl Drop for StopPanickingInvocation {
 impl coral_v8::ProgramHost for RunProgramHost {
     fn value_limits(&self) -> ValueLimits {
         self.value_limits
+    }
+
+    fn cpu_budget(&self) -> Option<std::time::Duration> {
+        self.cpu_budget
     }
 
     fn trace_id(&self) -> Option<String> {

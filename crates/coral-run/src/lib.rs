@@ -221,9 +221,9 @@ pub use types::{
     COMPILATION_TIMEOUT, EMITTED_JAVASCRIPT_MAX_BYTES, FanOutLimit, FinalValue, InvocationId,
     InvocationResultKind, LINKED_SAVED_FUNCTION_MAX_COUNT, PROGRAM_LOG_MESSAGE_MAX_BYTES,
     PROGRAM_SOURCE_MAX_BYTES, ProgramLogLevel, ProgramSource, ProgramValue, RUN_EVENT_PAGE_MAX,
-    RUN_TIMEOUT_MAX_MS, RunCursor, RunEvent, RunEventKind, RunFailure, RunFailureCode, RunId,
-    RunObservation, RunState, RunSubmission, RunTerminalOutcome, RunTimeout, RunUpdate,
-    RuntimeLimits, SOURCE_MAP_MAX_BYTES, ShutdownDrain, SourceDocument, SourceLocation,
+    RUN_TIMEOUT_MAX_MS, RunCpuBudget, RunCursor, RunEvent, RunEventKind, RunFailure,
+    RunFailureCode, RunId, RunObservation, RunState, RunSubmission, RunTerminalOutcome, RunTimeout,
+    RunUpdate, RuntimeLimits, SOURCE_MAP_MAX_BYTES, ShutdownDrain, SourceDocument, SourceLocation,
 };
 
 #[cfg(test)]
@@ -260,6 +260,7 @@ pub struct RunModule {
     applied_output_cap: AppliedOutputCap,
     fan_out_limit: FanOutLimit,
     shutdown_drain: ShutdownDrain,
+    cpu_budget: Option<RunCpuBudget>,
     /// The deadline for one Program compilation, from admission's start.
     compilation_timeout: std::time::Duration,
     /// The Coral Instance this module runs in; a Run row it claims records it.
@@ -310,6 +311,7 @@ impl RunModule {
             applied_output_cap: limits.applied_output_cap(),
             fan_out_limit: limits.fan_out_limit(),
             shutdown_drain: limits.shutdown_drain(),
+            cpu_budget: limits.cpu_budget(),
             compilation_timeout: limits.compilation_timeout(),
             instance,
             inbox,
@@ -350,6 +352,7 @@ impl RunModule {
             applied_output_cap: AppliedOutputCap::default(),
             fan_out_limit: FanOutLimit::default(),
             shutdown_drain: ShutdownDrain::default(),
+            cpu_budget: None,
             compilation_timeout: coral_test_support::TEST_COMPILATION_TIMEOUT,
             instance: CoralInstanceId::generate(),
             inbox,
@@ -426,6 +429,13 @@ impl RunModule {
     #[cfg(test)]
     pub(crate) const fn with_fan_out_limit(mut self, limit: FanOutLimit) -> Self {
         self.fan_out_limit = limit;
+        self
+    }
+
+    /// Replaces the Run CPU Budget on a built module.
+    #[cfg(all(test, unix))]
+    pub(crate) const fn with_cpu_budget(mut self, budget: RunCpuBudget) -> Self {
+        self.cpu_budget = Some(budget);
         self
     }
 

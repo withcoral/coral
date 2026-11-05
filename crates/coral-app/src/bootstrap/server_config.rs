@@ -392,6 +392,10 @@ struct RuntimeSettings {
     /// Runs end on their own before it interrupts the rest. 0 interrupts at
     /// once; 30 by default.
     shutdown_drain_seconds: u64,
+    /// The Run CPU Budget: CPU seconds one Run's Program may use. A Run's
+    /// budget is the lower of it and the Run's time limit. Unset by default;
+    /// refused on Windows.
+    execution_cpu_seconds: Option<u64>,
 }
 
 impl Default for RuntimeSettings {
@@ -403,6 +407,7 @@ impl Default for RuntimeSettings {
             applied_output_cap: coral_run::AppliedOutputCap::DEFAULT_BYTES,
             fan_out_limit: coral_run::FanOutLimit::DEFAULT_INVOCATIONS,
             shutdown_drain_seconds: coral_run::ShutdownDrain::DEFAULT_DURATION.as_secs(),
+            execution_cpu_seconds: None,
         }
     }
 }
@@ -419,14 +424,22 @@ impl RuntimeSettings {
         let fan_out_limit = coral_run::FanOutLimit::new(self.fan_out_limit).map_err(|error| {
             AppError::FailedPrecondition(format!("runtime.fan_out_limit: {error}"))
         })?;
-        Ok(coral_run::RuntimeLimits::new(
+        let limits = coral_run::RuntimeLimits::new(
             isolate_limits,
             applied_output_cap,
             fan_out_limit,
             coral_run::ShutdownDrain::new(std::time::Duration::from_secs(
                 self.shutdown_drain_seconds,
             )),
-        ))
+        );
+        let Some(seconds) = self.execution_cpu_seconds else {
+            return Ok(limits);
+        };
+        let budget = coral_run::RunCpuBudget::new(std::time::Duration::from_secs(seconds))
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!("runtime.execution_cpu_seconds: {error}"))
+            })?;
+        Ok(limits.with_cpu_budget(budget))
     }
 }
 
@@ -1188,6 +1201,10 @@ client_secret = 'test-secret'
                 "runtime.applied_output_cap_bytes:",
             ),
             ("[runtime]\nfan_out = 4", "unknown field `fan_out`"),
+            (
+                "[runtime]\nexecution_cpu_seconds = 0",
+                "runtime.execution_cpu_seconds:",
+            ),
             // The compilation deadline is a fixed Program Authoring Limit.
             (
                 "[runtime]\ncompilation_timeout_seconds = 30",
@@ -1238,6 +1255,33 @@ client_secret = 'test-secret'
                     .duration(),
                 drain,
                 "{raw:?}"
+            );
+        }
+    }
+
+    /// Catches: a default budget that ends Runs, a set budget that is lost,
+    /// or one that Windows accepts without a way to measure it.
+    #[test]
+    fn execution_cpu_seconds_sets_the_run_cpu_budget() {
+        let budget = |raw| {
+            load(raw)
+                .1
+                .runtime_limits()
+                .map(|limits| limits.cpu_budget().map(coral_run::RunCpuBudget::cpu))
+        };
+        assert_eq!(budget("").expect("default limits"), None);
+        let set = budget("[runtime]\nexecution_cpu_seconds = 5\n");
+        if cfg!(windows) {
+            assert!(
+                matches!(&set, Err(AppError::FailedPrecondition(message))
+                    if message.contains("runtime.execution_cpu_seconds:")
+                        && message.contains("Windows")),
+                "{set:?}"
+            );
+        } else {
+            assert_eq!(
+                set.expect("a budget"),
+                Some(std::time::Duration::from_secs(5))
             );
         }
     }
