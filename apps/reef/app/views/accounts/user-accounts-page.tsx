@@ -1,5 +1,5 @@
 import { useDeferredValue, useState } from 'react'
-import { Button, Table, Typography } from '@/wax/components'
+import { Button, Table } from '@/wax/components'
 import type { IconName } from '@/wax/components/icon'
 import { Deadline } from '@/wax/components/deadline'
 import { Logo } from '@/wax/components/logo'
@@ -22,7 +22,7 @@ import { DisconnectAccount } from './disconnect-account'
 import * as styles from './accounts.css'
 import { filterQuery } from '@/utils/filter-query'
 import { useFollowRequiredActions } from '@/lib/use-action-signal'
-import { DeclineConnection, useDeclineFailure } from '@/views/actions/decline-connection'
+import { DeclineConnection } from '@/views/actions/decline-connection'
 
 const states: Record<
   PersonalAccountState,
@@ -149,27 +149,18 @@ export function UserAccountsPage({
 }
 
 /**
- * A waiting connection request's deadline, or why its decline failed, on one line.
- * A narrower row drops the subject, and a phone-width row drops the deadline.
+ * A waiting connection request's deadline. A narrower row drops the subject, and a
+ * phone-width row drops the deadline.
  */
 function WaitingRequest({ request }: { request: ConnectionRequest }) {
-  const failure = useDeclineFailure(request.name)
   return (
     <span className={styles.requestNote}>
-      {failure ? (
-        <Typography.BodySmall as="span" role="alert">
-          {failure}
-        </Typography.BodySmall>
-      ) : (
-        <>
-          <span className={styles.wideNote}>
-            <Deadline at={request.expiresAt} subject="Connection request" variant="secondary" />
-          </span>
-          <span className={styles.narrowNote}>
-            <Deadline at={request.expiresAt} variant="secondary" />
-          </span>
-        </>
-      )}
+      <span className={styles.wideNote}>
+        <Deadline at={request.expiresAt} subject="Connection request" variant="secondary" />
+      </span>
+      <span className={styles.narrowNote}>
+        <Deadline at={request.expiresAt} variant="secondary" />
+      </span>
     </span>
   )
 }
@@ -232,7 +223,7 @@ function AccountAction({
       description={audience.onlyYou}
     />
   )
-  // The deadline, or a failed decline, leads. Like an approval, Decline comes next and the primary choice ends.
+  // The deadline leads. Like an approval, Decline comes next and the primary choice ends.
   // Connect keeps its place as a request comes and goes, so an open dialog stays open.
   return (
     <span className={styles.rowActions}>

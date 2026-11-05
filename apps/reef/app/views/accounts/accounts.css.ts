@@ -62,7 +62,7 @@ export const rowActions = style({
   paddingBlock: 6,
 })
 globalStyle(`${rowActions} > *`, { flexShrink: 0 })
-// A request's deadline or failed decline: it truncates first, so the buttons stay whole.
+// A request's deadline: it truncates first, so the buttons stay whole.
 // A row too narrow for the short deadline shows only the buttons.
 export const requestNote = style({
   selectors: { [`${rowActions} > &`]: { flexShrink: 1 } },

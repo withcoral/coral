@@ -2,13 +2,17 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { data, useLoaderData, type ActionFunctionArgs } from 'react-router'
-import { expect, it } from 'vitest'
+import { beforeEach, expect, it, vi } from 'vitest'
 import type { ActionCount } from '@/lib/activity-live-types'
 import type { ActionSignal } from '@/lib/use-action-signal'
 import { renderRoute, shellSignal } from '@/test-support/route'
 import { workspaceView } from '@/views/providers/fixtures'
 import type { UserAccountRow, UserAccountsView } from './types'
 import { UserAccountsPage } from './user-accounts-page'
+
+vi.mock('@/wax/components/toast', () => ({ addToast: vi.fn() }))
+const { addToast } = await import('@/wax/components/toast')
+beforeEach(() => vi.mocked(addToast).mockClear())
 
 const path = workspaceView.path
 const request = `${workspaceView.name}/accountConnectionRequests/linear`
@@ -108,14 +112,18 @@ it('declines a waiting request from its row, next to Connect', async () => {
   expect(within(rowOf('Linear')).queryByRole('button', { name: /^Decline/ })).toBeNull()
 })
 
-it('says why a decline failed in place of the deadline, and keeps the request', async () => {
+it('says why a decline failed in a toast, and keeps the request', async () => {
   await renderLive({ view: viewAt('one', [linear]) }, () =>
     data({ error: 'Coral could not apply this change.' }, { status: 503 }),
   )
   await userEvent.click(screen.getByRole('button', { name: 'Decline Linear' }))
-  expect(await screen.findByRole('alert')).toHaveTextContent('Coral could not apply this change.')
-  expect(rowOf('Linear').querySelector('time')).toBeNull()
-  expect(screen.getByRole('button', { name: 'Decline Linear' })).toBeInTheDocument()
+  await waitFor(() =>
+    expect(vi.mocked(addToast)).toHaveBeenCalledExactlyOnceWith('error', {
+      title: 'Coral could not apply this change.',
+    }),
+  )
+  expect(rowOf('Linear').querySelector('time')).not.toBeNull()
+  expect(screen.getByRole('button', { name: 'Decline Linear' })).toBeEnabled()
 })
 
 // Catches: a refresh that remounts the page, closing your connect dialog and clearing your filter.
