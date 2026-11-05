@@ -224,13 +224,13 @@ test('lists every provider in one table, and keeps an empty one with its setting
   expect(screen.getByLabelText('Empty API settings')).toBeInTheDocument()
 })
 
-// Catches: a tool's calls shown on another tool's row, a tool with no calls left
-// blank, or a Calls column shown when Coral cannot count calls.
+// Catches: a tool's calls shown on another tool's row, a bar that leaves a screen
+// reader no count, or a Calls column shown when Coral cannot count calls.
 test.each([
   [
     'a count',
     { days: 7, calls: { [selectionKey(github.id, 'repos.get')]: 1234 } },
-    ['0', '1,234', '0'],
+    ['0 calls', '1,234 calls', '0 calls'],
   ],
   ['no count', null, []],
 ])('shows the calls to each tool under the Calls column, given %s', (_, toolCalls, counts) => {

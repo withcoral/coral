@@ -235,9 +235,17 @@ export const toolDescriptionText = style({
 export const inlineTooltipTarget = style({ display: 'inline-flex' })
 // The collapse-all toggle starts the column, above the headings' own toggles.
 export const nameHeader = style({ alignItems: 'center', display: 'flex', gap: 8 })
-// The counts keep clear of the policy toggles beside them; the heading's label
+// The bars keep clear of the policy toggles beside them; the heading's label
 // and its info tip sit on one line, as the header's own text does.
 export const callsColumn = style({ marginInlineEnd: 16 })
+// A hover anywhere in a 24px band shows the count, not only on the thin bar.
+export const callsBar = style({
+  display: 'flex',
+  flexDirection: 'column',
+  height: 24,
+  justifyContent: 'center',
+  width: '100%',
+})
 export const callsHeading = style({ alignItems: 'center', display: 'inline-flex', gap: 6 })
 // The column is as wide as its toggles; the header centres over them.
 export const policyHeader = style({ display: 'flex', justifyContent: 'center' })

@@ -16,6 +16,7 @@ import { Picker } from '@/wax/components/picker'
 import { Pill, type PillColor } from '@/wax/components/pill'
 import { StatusDot } from '@/wax/components/status'
 import { InfoTip, Tooltip } from '@/wax/components/tooltip'
+import { Meter } from '@/wax/components/charts'
 import { ToolName } from '@/wax/components/tool-name'
 import * as Table from '@/wax/components/table'
 import { CELL_HEIGHT_PX, groupHeadingHeightPx } from '@/wax/components/table'
@@ -590,6 +591,11 @@ function ProvidersTableScreen({
   // leaves them collapsed; their headings still count the matches.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const tableRef = useRef<HTMLDivElement>(null)
+  // Every bar measures against the busiest tool, so bars compare across providers.
+  const maxCalls = useMemo(
+    () => Object.values(toolCalls?.calls ?? {}).reduce((max, calls) => Math.max(max, calls), 0),
+    [toolCalls],
+  )
   const searchable = useMemo(() => searchableProviders(providers), [providers])
   const selectedProviderId = selectedProvider?.id ?? null
   const selectedToolKey = selectedTool?.key ?? null
@@ -1090,7 +1096,7 @@ function ProvidersTableScreen({
           columns={[
             { width: 44 },
             { width: 'minmax(340px, 1fr)' },
-            ...(toolCalls ? [{ width: 'content', align: 'right' } as const] : []),
+            ...(toolCalls ? [{ width: 96 }] : []),
             { width: 'max-content' },
           ]}
         >
@@ -1154,6 +1160,7 @@ function ProvidersTableScreen({
             showSelected={showSelected}
             toggleTools={toggleTools}
             toolCalls={toolCalls}
+            maxCalls={maxCalls}
           />
         </Table.Container>
         {selected.size > 0 && (
@@ -1263,6 +1270,7 @@ const TableSections = memo(function TableSections({
   showSelected,
   toggleTools,
   toolCalls,
+  maxCalls,
   virtual,
 }: {
   /** The keyboard cursor's tool, or the drawer's while one is open. */
@@ -1284,6 +1292,8 @@ const TableSections = memo(function TableSections({
   showSelected: () => void
   toggleTools: (targets: { provider: ProviderView; tool: ToolView }[], checked: boolean) => void
   toolCalls: ToolCallCounts | null
+  /** The busiest tool's calls, which a full bar stands for. */
+  maxCalls: number
   virtual: Table.VirtualRowsHandle
 }) {
   return sections.map((section) => (
@@ -1387,6 +1397,7 @@ const TableSections = memo(function TableSections({
                   calls={
                     toolCalls && (toolCalls.calls[selectionKey(section.provider.id, tool.key)] ?? 0)
                   }
+                  maxCalls={maxCalls}
                   query={query}
                   onOpen={markRevealed}
                   onCheck={(checked) =>
@@ -1604,6 +1615,7 @@ const ToolRow = memo(function ToolRow({
   measure,
   tool,
   calls,
+  maxCalls,
   query,
   onCheck,
   onOpen,
@@ -1622,6 +1634,8 @@ const ToolRow = memo(function ToolRow({
   tool: ToolView
   /** The tool's calls; null while the table has no Calls column. */
   calls: number | null
+  /** The busiest tool's calls, which a full bar stands for. */
+  maxCalls: number
   query: FilterQuery
   onCheck: (checked: boolean) => void
   /** Runs before a click opens the tool, which the reader can already see. */
@@ -1688,9 +1702,12 @@ const ToolRow = memo(function ToolRow({
       </span>
       {calls !== null && (
         <Table.Cell className={styles.callsColumn}>
-          <Typography.BodySmall as="span" variant={calls === 0 ? 'tertiary' : 'secondary'}>
-            {calls.toLocaleString('en-US')}
-          </Typography.BodySmall>
+          <Tooltip content={countLabel(calls, 'call')}>
+            <span className={styles.callsBar}>
+              <Meter value={calls} max={maxCalls} size="small" />
+              <span className={visuallyHidden}>{countLabel(calls, 'call')}</span>
+            </span>
+          </Tooltip>
         </Table.Cell>
       )}
       <span role="cell" className={styles.policyCell}>
