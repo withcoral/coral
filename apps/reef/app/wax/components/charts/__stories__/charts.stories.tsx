@@ -89,6 +89,26 @@ export const LineWithLabels: StoryObj<typeof LineChart> = {
   render: (args) => <LineChart {...args} />,
 }
 
+/** No values yet: the grid runs to `emptyMax`, with no line. */
+export const LineEmpty: StoryObj<typeof LineChart> = {
+  args: {
+    ariaLabel: 'CPU use by day',
+    emptyMax: 4,
+    labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+    series: [],
+  },
+  play: async ({ canvas }) => {
+    const chart = canvas.getByRole('img', { name: 'CPU use by day' })
+    const text = within(chart as unknown as HTMLElement)
+    for (const tick of ['0', '1', '2', '3', '4']) await expect(text.getByText(tick)).toBeVisible()
+    for (const day of ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']) {
+      await expect(text.getByText(day)).toBeVisible()
+    }
+    await expect(chart.querySelector('polyline')).toBeNull()
+  },
+  render: (args) => <LineChart {...args} />,
+}
+
 /** A dense series with missing samples: the line breaks at each null. */
 export const LineWithGaps: StoryObj<typeof LineChart> = {
   args: {
