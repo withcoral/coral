@@ -1317,8 +1317,8 @@ export const OrganizationSecretStores: Story = {
   render: () => (
     <OrganizationSecretStoresPage
       stores={[
-        { name: 'platform', kind: 'KV v2' },
-        { name: 'research', kind: 'KV v2' },
+        { name: 'platform', kind: 'Vault / OpenBao KV v2' },
+        { name: 'research', kind: 'Vault / OpenBao KV v2' },
       ]}
     />
   ),

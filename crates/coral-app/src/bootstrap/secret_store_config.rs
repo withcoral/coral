@@ -232,7 +232,7 @@ mod tests {
                 "secret_stores[0] (team).kind: unsupported value",
             ),
             (
-                good.replace("https://store.example.test:8200", "http://store.internal"),
+                good.replace("https://store.example.test:8200", "ftp://store.internal"),
                 "secret_stores[0] (team).address: must be",
             ),
             (
@@ -278,6 +278,14 @@ mod tests {
                 "{raw}: {error}"
             );
         }
+    }
+
+    /// A Docker Compose store is plain HTTP on a private name. Whether Coral may
+    /// reach it is the `[outbound]` policy's call, not a reason to refuse to start.
+    #[test]
+    fn a_plain_http_address_is_left_to_the_outbound_policy() {
+        let raw = store("team").replace("https://store.example.test:8200", "http://vault:8200");
+        load(&raw).1.validate().expect("valid settings");
     }
 
     /// Validation reads no environment, so deploy checks work without secrets,

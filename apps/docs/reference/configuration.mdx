@@ -103,7 +103,7 @@ secret_id_env = "CORAL_PLATFORM_SECRET_ID"
 | -------------------- | -------------------------------------------------------------------------------------------------------------- | -------- | --------- |
 | `name`               | Stable name for the store: up to 64 lowercase letters, digits, `-` or `_`, starting with a letter or digit     | Yes      | N/A       |
 | `kind`               | The secrets system. Must be `kv-v2`.                                                                           | Yes      | N/A       |
-| `address`            | Origin of the store's API. Must be https or loopback http. May include a port; must not include a path.        | Yes      | N/A       |
+| `address`            | Origin of the store's API, http or https. May include a port; must not include a path. `[outbound]` decides whether Coral may reach it. | Yes      | N/A       |
 | `mount`              | Where the KV engine is mounted                                                                                 | Yes      | N/A       |
 | `auth.method`        | How Coral signs in. Must be `approle`.                                                                         | Yes      | N/A       |
 | `auth.mount`         | Where the AppRole auth method is mounted                                                                       | No       | `approle` |
@@ -133,7 +133,22 @@ Coral needs no `list`, `create`, `update` or `delete` access. Also keep Vault's 
 
 #### Allow Coral to reach the store
 
-The `[outbound]` policy applies to all store traffic. A store on a private network needs `private_networks = "https"`, or Coral reports it as unreachable. That setting applies to all outbound traffic, so it also lets Provider calls reach your private networks.
+The `[outbound]` policy applies to all store traffic. Without the setting a store needs, Coral reports the store as unreachable.
+
+| Where the store is                                                   | Setting                               |
+| -------------------------------------------------------------------- | ------------------------------------- |
+| Public address, https                                                | None                                  |
+| Private network, https                                               | `private_networks = "https"`          |
+| Private network, http, such as `http://vault:8200` in Docker Compose | `private_networks = "http-and-https"` |
+| This machine, http                                                   | `loopback = "http-and-https"`         |
+
+Coral never reaches a public address over http.
+
+These settings apply to all outbound traffic, so they also let Provider calls reach those networks.
+
+<Warning>
+Over http, Coral sends the role's secret ID, its token and the secret values unencrypted. Use http only for local development, or on a network you trust.
+</Warning>
 
 ### `[otel]`
 

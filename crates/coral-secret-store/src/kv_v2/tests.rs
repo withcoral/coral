@@ -238,6 +238,29 @@ async fn a_destination_the_policy_rejects_is_unreachable_and_sends_nothing() {
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
+/// Plain HTTP carries a token, so only the operator's outbound policy admits it.
+#[tokio::test]
+async fn plain_http_needs_the_outbound_policy_to_allow_it() {
+    for access in [NetworkAccess::Deny, NetworkAccess::Https] {
+        let server = MockServer::start().await;
+        let client = coral_outbound::Client::new(
+            DestinationPolicy::new(access, NetworkAccess::Deny),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let store = KvV2Store::new(client, settings(&server.uri()));
+        assert_eq!(
+            store
+                .read(&reference("team/jira", Some("token")))
+                .await
+                .unwrap_err(),
+            crate::Error::Unreachable,
+            "{access:?}"
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+}
+
 /// A reference is a Workspace Owner's text. It cannot climb out of the KV mount
 /// to reach the store's other APIs, and it sends nothing when it tries.
 #[tokio::test]
@@ -285,18 +308,24 @@ async fn a_path_is_percent_encoded_segment_by_segment() {
 }
 
 #[test]
-fn settings_refuse_what_coral_should_not_send_a_token_to() {
+fn settings_accept_an_origin_and_a_clean_mount() {
     for address in [
-        "http://vault.internal:8200",
         "ftp://localhost",
         "https://user:pass@vault.example.test",
+        "http://user@vault:8200",
         "https://vault.example.test/prefix",
         "https://vault.example.test?x=1",
+        "https://vault.example.test#x",
         "not a url",
     ] {
         assert!(StoreAddress::parse(address).is_err(), "{address}");
     }
-    for address in ["https://vault.example.test:8200/", "http://127.0.0.1:8200"] {
+    // Which of these Coral may reach is the destination policy's call.
+    for address in [
+        "https://vault.example.test:8200/",
+        "http://127.0.0.1:8200",
+        "http://vault:8200",
+    ] {
         assert!(StoreAddress::parse(address).is_ok(), "{address}");
     }
     for mount in ["", "/", "a/", "/a", "a//b", "..", "a/../b"] {

@@ -6,7 +6,8 @@ import { OrganizationSecretStoresPage } from '@/views/management/organization-se
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
-const kindLabel = (kind: SecretStoreKind) => (kind === SecretStoreKind.KV_V2 ? 'KV v2' : 'Unknown')
+const kindLabel = (kind: SecretStoreKind) =>
+  kind === SecretStoreKind.KV_V2 ? 'Vault / OpenBao KV v2' : 'Unknown'
 
 /** Only an organization owner can list the secret stores; Coral denies anyone else. */
 export async function loader({ context }: Route.LoaderArgs) {

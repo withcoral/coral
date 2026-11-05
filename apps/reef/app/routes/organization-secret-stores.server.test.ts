@@ -35,7 +35,7 @@ beforeEach(() => {
 it('shows each store by name and kind', async () => {
   const result = await load()
   expect(result?.data.stores).toEqual([
-    { name: 'platform', kind: 'KV v2' },
+    { name: 'platform', kind: 'Vault / OpenBao KV v2' },
     { name: 'newer', kind: 'Unknown' },
   ])
 })

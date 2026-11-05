@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use coral_outbound::{Configured, EndpointUrl, OutboundUrlPolicyError};
+use coral_outbound::OutboundUrlPolicyError;
 use reqwest::StatusCode;
 use reqwest::header::HeaderValue;
 use serde::{Deserialize, Serialize};
@@ -50,23 +50,29 @@ pub struct AppRole {
     pub secret_id: Secret,
 }
 
-/// A store's origin: HTTPS, or HTTP on an explicit loopback address.
-pub struct StoreAddress(EndpointUrl<Configured>);
+/// A store's origin. This checks its shape only: the destination policy decides
+/// whether Coral may reach it, and over which scheme, for every request.
+pub struct StoreAddress(Url);
 
 impl StoreAddress {
     /// # Errors
-    /// Returns [`InvalidSetting`] for anything but an origin Coral may send a token to.
+    /// Returns [`InvalidSetting`] for anything but an http or https origin.
     pub fn parse(value: &str) -> Result<Self, InvalidSetting> {
-        let address = EndpointUrl::<Configured>::parse(value)
+        Url::parse(value)
             .ok()
-            .filter(|address| {
-                let url = address.as_url();
-                url.path() == "/" && url.query().is_none()
+            .filter(|url| {
+                matches!(url.scheme(), "http" | "https")
+                    && url.host().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.path() == "/"
+                    && url.query().is_none()
+                    && url.fragment().is_none()
             })
+            .map(Self)
             .ok_or(InvalidSetting(
-                "must be an https or loopback http origin, without a path, query or credentials",
-            ))?;
-        Ok(Self(address))
+                "must be an http or https origin, without a path, query or credentials",
+            ))
     }
 }
 
@@ -174,7 +180,7 @@ impl KvV2Store {
     fn with_clock(client: coral_outbound::Client, settings: KvV2Settings, clock: Clock) -> Self {
         Self {
             client,
-            origin: settings.address.0.into_url(),
+            origin: settings.address.0,
             mount: settings.mount.0,
             auth: settings.auth,
             clock,
