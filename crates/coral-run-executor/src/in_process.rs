@@ -124,15 +124,20 @@ fn compile_error(error: coral_v8::Error) -> CompileError {
             line,
             column,
         }),
-        other => match CompileFailure::from(other) {
-            CompileFailure::Rejected(message) => {
-                CompileError::Diagnostics(Diagnostics::Message(message))
+        other => {
+            let kind = other.code();
+            match CompileFailure::from(other) {
+                CompileFailure::Rejected(message) => {
+                    CompileError::Diagnostics(Diagnostics::Message { kind, message })
+                }
+                CompileFailure::TimedOut => CompileError::TimedOut,
+                CompileFailure::Busy => CompileError::Unavailable(Unavailable::Busy),
+                CompileFailure::Stopped => CompileError::Unavailable(Unavailable::Stopped),
+                CompileFailure::Failed(failed) => {
+                    CompileError::Unavailable(Unavailable::Failed(failed))
+                }
             }
-            CompileFailure::TimedOut => CompileError::TimedOut,
-            CompileFailure::Busy => CompileError::Unavailable(Unavailable::Busy),
-            CompileFailure::Stopped => CompileError::Unavailable(Unavailable::Stopped),
-            CompileFailure::Failed(kind) => CompileError::Unavailable(Unavailable::Failed(kind)),
-        },
+        }
     }
 }
 
@@ -143,28 +148,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn errors_keep_the_failure_each_caller_reported_before() {
-        let errors: [fn() -> coral_v8::Error; 12] = [
-            || coral_v8::Error::CompilerBusy,
-            || coral_v8::Error::CompilationTimedOut,
-            || coral_v8::Error::CompilerUnavailable,
-            || coral_v8::Error::CompilerThread(std::io::Error::other("no thread")),
-            || coral_v8::Error::InvalidProgramBody,
-            || coral_v8::Error::InvalidSavedFunction("no default export".into()),
-            || coral_v8::Error::SourceTooDeeplyNested,
-            || coral_v8::Error::ForbiddenCapability("eval".into()),
-            || coral_v8::Error::InvalidSavedFunctionReference {
-                message: "computed access".into(),
-                line: 2,
-                column: 7,
-            },
-            || coral_v8::Error::MemoryLimitExceeded,
-            || coral_v8::Error::Engine("private".into()),
-            || coral_v8::Error::CompilerProtocol("private".into()),
+    fn errors_keep_the_failure_and_kind_each_caller_reported_before() {
+        type Case = (fn() -> coral_v8::Error, &'static str);
+        let errors: [Case; 14] = [
+            (|| coral_v8::Error::CompilerBusy, "compiler_busy"),
+            (
+                || coral_v8::Error::CompilationTimedOut,
+                "compilation_timed_out",
+            ),
+            (
+                || coral_v8::Error::CompilerUnavailable,
+                "compiler_unavailable",
+            ),
+            // Only starting a compiler fails this way, never a call, so the
+            // client reports it as stopped rather than as `compiler_thread`.
+            (
+                || coral_v8::Error::CompilerThread(std::io::Error::other("no thread")),
+                "compiler_unavailable",
+            ),
+            (
+                || coral_v8::Error::Compilation {
+                    diagnostics: Vec::new(),
+                },
+                "compilation",
+            ),
+            (
+                || coral_v8::Error::InvalidProgramBody,
+                "invalid_program_body",
+            ),
+            (
+                || coral_v8::Error::InvalidSavedFunction("no default export".into()),
+                "invalid_saved_function",
+            ),
+            (
+                || coral_v8::Error::SourceTooDeeplyNested,
+                "source_too_deeply_nested",
+            ),
+            (
+                || coral_v8::Error::ForbiddenCapability("eval".into()),
+                "forbidden_capability",
+            ),
+            (
+                || coral_v8::Error::InvalidSavedFunctionReference {
+                    message: "computed access".into(),
+                    line: 2,
+                    column: 7,
+                },
+                "invalid_saved_function_reference",
+            ),
+            (
+                || coral_v8::Error::MemoryLimitExceeded,
+                "memory_limit_exceeded",
+            ),
+            (|| coral_v8::Error::Engine("private".into()), "engine"),
+            (
+                || coral_v8::Error::CompilerProtocol("private".into()),
+                "compiler_protocol",
+            ),
+            (
+                || coral_v8::Error::InvalidSourceMap("private".into()),
+                "invalid_source_map",
+            ),
         ];
-        for error in errors {
+        for (error, kind) in errors {
+            let client = compile_error(error());
+            assert_eq!(client.code(), kind, "{:?}", error());
             assert_eq!(
-                CompileFailure::from(compile_error(error())),
+                CompileFailure::from(client),
                 CompileFailure::from(error()),
                 "{:?}",
                 error()

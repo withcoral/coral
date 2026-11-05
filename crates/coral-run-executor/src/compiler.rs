@@ -125,7 +125,12 @@ pub enum Diagnostics {
         column: u64,
     },
     /// Any other rejection, as one bounded message.
-    Message(String),
+    Message {
+        /// The rejection's stable kind, for an event's `error.type`.
+        kind: &'static str,
+        /// The bounded message.
+        message: String,
+    },
 }
 
 /// Why no compiler answered a call.
@@ -146,11 +151,12 @@ impl CompileError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::TimedOut => "compilation_timed_out",
-            Self::Diagnostics(_) => "diagnostics",
+            Self::Diagnostics(Diagnostics::Reference { .. }) => "invalid_saved_function_reference",
             Self::MemoryLimit => "memory_limit_exceeded",
             Self::Unavailable(Unavailable::Busy) => "compiler_busy",
             Self::Unavailable(Unavailable::Stopped) => "compiler_unavailable",
-            Self::Unavailable(Unavailable::Failed(kind)) => kind,
+            Self::Diagnostics(Diagnostics::Message { kind, .. })
+            | Self::Unavailable(Unavailable::Failed(kind)) => kind,
         }
     }
 }
@@ -160,7 +166,9 @@ impl From<CompileError> for CompileFailure {
     fn from(error: CompileError) -> Self {
         match error {
             CompileError::TimedOut => Self::TimedOut,
-            CompileError::Diagnostics(Diagnostics::Message(message)) => Self::Rejected(message),
+            CompileError::Diagnostics(Diagnostics::Message { message, .. }) => {
+                Self::Rejected(message)
+            }
             CompileError::Diagnostics(Diagnostics::Reference {
                 message,
                 line,
