@@ -47,6 +47,7 @@ pub fn search_result(page: &SearchPage) -> SearchResult {
 #[must_use]
 pub fn catalog(hits: &[SearchHit]) -> coral_catalog::CatalogResult {
     coral_catalog::CatalogResult {
+        providers: catalog_providers(hits),
         tools: hits
             .iter()
             .map(|hit| coral_catalog::CatalogEntry {
@@ -61,6 +62,41 @@ pub fn catalog(hits: &[SearchHit]) -> coral_catalog::CatalogResult {
             })
             .collect(),
     }
+}
+
+/// One summary per Call Root, in Call Path order: its entry count, and the
+/// entry count under each next segment that holds more than one level.
+fn catalog_providers(hits: &[SearchHit]) -> Vec<coral_catalog::CatalogProvider> {
+    let mut providers = std::collections::BTreeMap::<String, coral_catalog::CatalogProvider>::new();
+    for hit in hits {
+        let segments: Vec<&str> = hit.call_path().as_str().split('.').collect();
+        // coral.providers.<namespace>, or coral.workspace / coral.functions.
+        let root_len = if segments.get(1) == Some(&"providers") {
+            3
+        } else {
+            2
+        };
+        let Some(root) = segments.get(..root_len) else {
+            continue;
+        };
+        let call_root = root.join(".");
+        let provider =
+            providers
+                .entry(call_root.clone())
+                .or_insert_with(|| coral_catalog::CatalogProvider {
+                    call_root,
+                    tools: 0,
+                    groups: std::collections::BTreeMap::new(),
+                });
+        provider.tools += 1;
+        if let Some(rest) = segments.get(root_len..)
+            && rest.len() >= 2
+            && let Some(group) = rest.first()
+        {
+            *provider.groups.entry((*group).to_owned()).or_insert(0) += 1;
+        }
+    }
+    providers.into_values().collect()
 }
 
 /// The first sentence of `text`, cut at a character boundary to at most

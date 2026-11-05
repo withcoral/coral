@@ -24,17 +24,18 @@ pub(super) fn definition() -> Definition {
         presentation: ToolPresentation::new(
             Some("Catalog".to_string()),
             "Return every provider tool and Saved Function you can call, in Call Path order, \
-             as compact entries. Filter them in your Program with a regex or any other code, \
-             and return only the entries you need."
+             as compact entries, with a summary of each Call Root: its tool count and groups. \
+             Filter the entries in your Program with a regex or any other code, and return \
+             only the entries you need."
                 .to_string(),
             false,
             vec!["discovery".to_string()],
             Some(
-                "Filter in the Program, for example \
-                 tools.filter((t) => /pull/i.test(t.callPath + ' ' + t.description)). Never \
-                 return the whole catalog. Call an entry by its complete literal callPath. When \
-                 complete is false, read its declaration with coral.workspace.search({ paths }) \
-                 first."
+                "Return providers to see what is there. Filter tools in the Program, for \
+                 example tools.filter((t) => /pull/i.test(t.callPath + ' ' + t.description)). \
+                 Never return tools or a slice of it unfiltered. Call an entry by its complete \
+                 literal callPath. When complete is false, read its declaration with \
+                 coral.workspace.search({ paths }) first."
                     .to_string(),
             ),
         ),
@@ -82,6 +83,13 @@ impl CatalogArguments {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields, description = "")]
 pub struct CatalogResult {
+    /// What each Call Root holds, so a Program sees what is there without
+    /// returning `tools`.
+    #[schemars(
+        description = "One summary per Call Root, in Call Path order: what is there, so you \
+                       can choose a regex without returning tools."
+    )]
+    pub providers: Vec<CatalogProvider>,
     /// Every entry, in Call Path order.
     #[schemars(
         description = "Every provider tool and Saved Function you can call, in Call \
@@ -96,6 +104,28 @@ impl CatalogResult {
     pub fn into_tool_result(self) -> Value {
         tool_result(&self)
     }
+}
+
+/// What one Call Root holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "CatalogProvider", deny_unknown_fields, description = "")]
+pub struct CatalogProvider {
+    /// The Call Root.
+    #[schemars(description = "coral.providers.<namespace>, coral.workspace, or \
+                              coral.functions.")]
+    pub call_root: String,
+    /// How many entries it holds.
+    #[schemars(description = "How many entries of tools are under it.")]
+    pub tools: u32,
+    /// The entry count under each next segment that has children.
+    #[schemars(
+        description = "The entry count under each next path segment that holds \
+                              more than one level, such as { pulls: 27 } for \
+                              coral.providers.github.pulls.*. Entries directly under the Call \
+                              Root count only in tools."
+    )]
+    pub groups: std::collections::BTreeMap<String, u32>,
 }
 
 /// One compact catalog entry.

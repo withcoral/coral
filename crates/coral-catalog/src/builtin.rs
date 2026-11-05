@@ -43,7 +43,7 @@ mod update_policy;
 mod update_provider;
 
 pub use add_provider::{AddProviderArguments, AddProviderResult};
-pub use catalog::{CatalogArguments, CatalogEntry, CatalogResult};
+pub use catalog::{CatalogArguments, CatalogEntry, CatalogProvider, CatalogResult};
 pub use get_policy::{GetPolicyArguments, GetPolicyResult};
 pub use get_provider::{
     ConfigurationOutput, GetProviderArguments, GetProviderResult, ProviderSourceOutput,
