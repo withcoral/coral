@@ -175,22 +175,11 @@ export const providerGroupLabel = style({
   gridColumn: '2 / -2',
   minWidth: 0,
 })
-// The provider's policy counts, in the policy column over the toggles they count.
-// The column widens to fit them, so a count that gains a digit can widen it.
-export const policySummary = style({
+// The provider's policy status, in the policy column: how many tools an owner set.
+export const policyStatus = style({
   alignItems: 'center',
   display: 'flex',
-  flexWrap: 'nowrap',
-  gap: 4,
   gridColumn: '-2 / -1',
-})
-// A count is a Wax toggle button; pressed, it reads as the active filter.
-export const policySummaryItem = style({
-  color: theme.content.secondary,
-  ...theme.typography.bodySmall,
-  selectors: {
-    '&:hover, &[aria-pressed="true"]': { color: theme.content.primary },
-  },
 })
 // A checked row is filled, so the selection reads down the table at a glance.
 export const checkedRow = style({

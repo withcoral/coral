@@ -437,11 +437,7 @@ export async function chooseAccount(page: Page, outcome: AccountOutcome) {
  * itself, so the helper waits for the new radio to stay checked and for the
  * request to release the row.
  */
-export async function setToolPolicy(
-  page: Page,
-  name: string,
-  to: 'Always allow' | 'Needs approval' | 'Disabled',
-) {
+export async function setToolPolicy(page: Page, name: string, to: 'Allow' | 'Ask' | 'Block') {
   const row = page.getByRole('row').filter({
     has: page.getByRole('checkbox', { name: `Select ${name}`, exact: true }),
   })
@@ -454,7 +450,7 @@ export async function setToolPolicy(
 
 /** Enables one tool that still has the default approval policy. */
 export async function enableTool(page: Page, name: string) {
-  await setToolPolicy(page, name, 'Always allow')
+  await setToolPolicy(page, name, 'Allow')
 }
 
 /** The tools an update lists under `group`, such as New or Removed. An open group's

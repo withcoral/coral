@@ -10,16 +10,16 @@ export const policyOptions: readonly {
   icon: IconName
   description?: string
 }[] = [
-  { value: 'enabled', label: 'Always allow', icon: 'CircleCheck' },
+  { value: 'enabled', label: 'Allow', icon: 'CircleCheck' },
   {
     value: 'approval_required',
-    label: 'Needs approval',
+    label: 'Ask',
     icon: 'Hand',
     description: 'Coral asks before each use.',
   },
   {
     value: 'disabled',
-    label: 'Disabled',
+    label: 'Block',
     icon: 'Ban',
     description: 'Coral blocks every call. Search results do not show this tool.',
   },

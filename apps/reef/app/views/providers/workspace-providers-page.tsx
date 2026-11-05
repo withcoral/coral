@@ -12,10 +12,10 @@ import {
 } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
 
-import { ActionBar, Banner, Button, Dialog, Inputs, Menu, Typography } from '@/wax/components'
+import { ActionBar, Banner, Button, Dialog, Inputs, Typography } from '@/wax/components'
 import { animations } from '@/wax/animations'
 import { CodeChip } from '@/wax/components/code-chip'
-import { Icon, type IconName } from '@/wax/components/icon'
+import { Icon } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { HighlightedMatches } from '@/wax/components/highlighted-matches'
 import { Logo } from '@/wax/components/logo'
@@ -26,7 +26,7 @@ import { Pill, type PillColor } from '@/wax/components/pill'
 import { Stat } from '@/wax/components/stat'
 import { StatusDot } from '@/wax/components/status'
 import { InfoTip, Tooltip } from '@/wax/components/tooltip'
-import { SegmentedToggles } from '@/wax/components/segmented-control'
+import { SegmentedControl } from '@/wax/components/segmented-control'
 import { Meter, Sparkline } from '@/wax/components/charts'
 import { ToolName } from '@/wax/components/tool-name'
 import * as Table from '@/wax/components/table'
@@ -41,12 +41,7 @@ import {
 } from '@/components/catalog'
 import { filterQuery, type FilterQuery } from '@/utils/filter-query'
 import { EmptyPage } from '@/components/empty-page'
-import {
-  PolicyToggle,
-  policyLabels,
-  policyOptions,
-  type PolicyState,
-} from '@/components/policy-toggle'
+import { PolicyToggle, policyOptions, type PolicyState } from '@/components/policy-toggle'
 import {
   byService,
   sourceButtonLabel,
@@ -440,15 +435,6 @@ function searchableProviders(providers: ProviderView[]): SearchableProvider[] {
  */
 type PolicyFilter = { value: PolicyState | 'unavailable'; keys: ReadonlySet<SelectionKey> }
 
-type FilterByPolicy = (
-  value: PolicyFilter['value'],
-  inFlight: ReturnType<typeof usePolicyMutations>,
-) => void
-
-function policyFilterLabel(value: PolicyFilter['value']) {
-  return value === 'unavailable' ? 'Unavailable' : policyLabels[value]
-}
-
 function matchingTools(
   { provider, sorted }: SearchableProvider,
   tableFilter: FilterQuery,
@@ -625,6 +611,27 @@ function ProvidersTableScreen({
   const routeTab = keepsTab ? undefined : selectedProviderId
   if (routeTab !== undefined && routeTab !== lastTab) setLastTab(routeTab)
   const tab = routeTab === undefined ? lastTab : routeTab
+  // The toolbar filter counts the tab and the search, not what the filter keeps.
+  const { policies } = mutations
+  const filterCounts = useMemo(() => {
+    const counts: FilterCounts = {
+      all: 0,
+      enabled: 0,
+      approval_required: 0,
+      disabled: 0,
+      unavailable: 0,
+    }
+    for (const { provider, sorted } of searchable) {
+      if (tab !== null && provider.id !== tab) continue
+      for (const tool of sorted) {
+        if (!tableQuery.matches(tool.relativePath)) continue
+        counts.all += 1
+        counts[effectivePolicy(policies, provider, tool)] += 1
+        if (!tool.available) counts.unavailable += 1
+      }
+    }
+    return counts
+  }, [policies, searchable, tab, tableQuery])
   const visibleByProvider = useMemo(() => {
     const entries = searchable
       .filter((entry) => tab === null || entry.provider.id === tab)
@@ -859,17 +866,6 @@ function ProvidersTableScreen({
     },
     [providers],
   )
-  // A heading count toggles its filter; the toolbar menu sets one.
-  // A summary count, like the menu, leaves the selected view.
-  const filterByPolicy: FilterByPolicy = useCallback(
-    (value, inFlight) => {
-      setSelectedView(null)
-      setPolicyFilter((current) =>
-        current?.value === value ? null : policyFilterFor(value, inFlight),
-      )
-    },
-    [policyFilterFor],
-  )
 
   // The selected view clears the searches and opens every provider's tab, so
   // it shows the whole selection.
@@ -1100,6 +1096,17 @@ function ProvidersTableScreen({
         title="Providers"
         titleInfo={titleInfo}
         action={addButton}
+        // Beside the title while the row has room; on its own line when not.
+        leading={
+          <PolicyFilterBar
+            value={policyFilter?.value ?? null}
+            counts={filterCounts}
+            onChange={(value) => {
+              setSelectedView(null)
+              setPolicyFilter(value ? policyFilterFor(value, mutations) : null)
+            }}
+          />
+        }
         filter={{
           id: TOOL_FILTER_ID,
           label: 'Filter tools',
@@ -1107,17 +1114,7 @@ function ProvidersTableScreen({
           value: tableFilterInput,
           onChange: setTableFilterInput,
         }}
-      >
-        <PolicyFilterMenu
-          value={selectedView ? 'selected' : (policyFilter?.value ?? null)}
-          selectedCount={selected.size}
-          onChange={(value) => {
-            if (value === 'selected') return showSelected()
-            setSelectedView(null)
-            setPolicyFilter(value ? policyFilterFor(value, mutations) : null)
-          }}
-        />
-      </CatalogToolbar>
+      />
       {!canChange && (
         <Banner variant="info">Only owners can change policy in an active workspace.</Banner>
       )}
@@ -1214,10 +1211,8 @@ function ProvidersTableScreen({
               canChange={canChange}
               onToggleCollapsed={toggleCollapsed}
               drawerOpen={drawerKey !== null}
-              filterByPolicy={filterByPolicy}
               markRevealed={markRevealed}
               form={form}
-              policyFilter={policyFilter?.value ?? null}
               query={tableQuery}
               virtual={virtual}
               sections={sections}
@@ -1389,11 +1384,9 @@ const TableSections = memo(function TableSections({
   bulkPending,
   canChange,
   drawerOpen,
-  filterByPolicy,
   form,
   markRevealed,
   onToggleCollapsed,
-  policyFilter,
   query,
   sections,
   selected,
@@ -1408,13 +1401,11 @@ const TableSections = memo(function TableSections({
   bulkPending: boolean
   canChange: boolean
   drawerOpen: boolean
-  filterByPolicy: FilterByPolicy
   form: FormContext
   /** Records a tool the reader opened in place, so its route does not scroll the table. */
   markRevealed: (provider: string, tool: string) => void
   /** Collapses or expands the heading with this key, at this row index and depth. */
   onToggleCollapsed: (key: string, index: number, depth: number) => void
-  policyFilter: PolicyFilter['value'] | null
   /** The tool filter, bolded where it matches a name. */
   query: FilterQuery
   sections: ProviderSection[]
@@ -1458,20 +1449,8 @@ const TableSections = memo(function TableSections({
           members={section.tools}
           name={providerLabel(section.provider)}
           provider={section.provider}
-          notices={
-            <ProviderNotices
-              active={policyFilter}
-              onFilter={filterByPolicy}
-              provider={section.provider}
-            />
-          }
-          policy={
-            <PolicySummary
-              active={policyFilter}
-              onFilter={filterByPolicy}
-              provider={section.provider}
-            />
-          }
+          notices={<ProviderNotices provider={section.provider} />}
+          policy={<PolicyOverrides provider={section.provider} />}
           selected={selected}
           toggleTools={toggleTools}
         />
@@ -1607,7 +1586,7 @@ function GroupHeading({
   toggleTools: ToggleTools
   /** Follows the tool count in the label cell. */
   notices?: ReactNode
-  /** The heading's own cell in the policy column, over the toggles it counts. */
+  /** The heading's own cell in the policy column: the provider's policy status. */
   policy?: ReactNode
   className: string
 }) {
@@ -1649,7 +1628,7 @@ function GroupHeading({
         {notices}
       </span>
       {policy && (
-        <span role="cell" className={styles.policySummary}>
+        <span role="cell" className={styles.policyStatus}>
           {policy}
         </span>
       )}
@@ -1983,11 +1962,6 @@ const PolicySelect = memo(function PolicySelect({
   )
 })
 
-const policyFilterOptions: { value: PolicyFilter['value']; label: string; icon: IconName }[] = [
-  ...policyOptions.map(({ value, label, icon }) => ({ value, label, icon })),
-  { value: 'unavailable', label: policyFilterLabel('unavailable'), icon: 'CircleAlert' },
-]
-
 /** A provider's no-match status. It counts the selected tools the filter
  * hides there and offers to show them, and says nothing more while none are.
  * It shows only when the provider lists no rows, so each of them is hidden. */
@@ -2020,55 +1994,45 @@ function NoMatchStatus({
   )
 }
 
-type TableFilterValue = PolicyFilter['value'] | 'selected'
+type FilterCounts = Record<PolicyState | 'all' | 'unavailable', number>
 
-/** Narrows the table to the tools one policy covers. It sits beside the search. */
-function PolicyFilterMenu({
+/**
+ * Narrows the table to the tools one policy covers, or the unavailable ones. It
+ * counts each choice's tools in the tab and the search, and a choice with none
+ * is disabled unless it applies.
+ */
+function PolicyFilterBar({
   value,
-  selectedCount,
+  counts,
   onChange,
 }: {
-  value: TableFilterValue | null
-  selectedCount: number
-  onChange: (value: TableFilterValue | null) => void
+  value: PolicyFilter['value'] | null
+  counts: FilterCounts
+  onChange: (value: PolicyFilter['value'] | null) => void
 }) {
-  const active =
-    value === 'selected'
-      ? { icon: 'ListChecks' as const, label: 'Selected' }
-      : policyFilterOptions.find((option) => option.value === value)
+  const choices = [
+    ...policyOptions,
+    ...(counts.unavailable > 0 || value === 'unavailable'
+      ? [{ value: 'unavailable' as const, label: 'Unavailable', icon: 'CircleAlert' as const }]
+      : []),
+  ]
   return (
-    <Menu.Container>
-      <Menu.Trigger render={<Button.Container variant="secondary" ariaLabel="Filter tools by" />}>
-        <Button.Icon name={active?.icon ?? 'ListFilter'} />
-        <Button.Text>{active?.label ?? 'All policies'}</Button.Text>
-        <Button.Icon name="ChevronDown" />
-      </Menu.Trigger>
-      <Menu.Content>
-        <Menu.RadioGroup
-          value={value ?? 'all'}
-          onValueChange={(next: string) =>
-            onChange(next === 'all' ? null : (next as TableFilterValue))
-          }
-        >
-          <Menu.RadioItem value="all" iconName="ListFilter">
-            All policies
-          </Menu.RadioItem>
-          {policyFilterOptions.map((option) => (
-            <Menu.RadioItem key={option.value} value={option.value} iconName={option.icon}>
-              {option.label}
-            </Menu.RadioItem>
-          ))}
-          <Menu.Separator />
-          <Menu.RadioItem
-            value="selected"
-            iconName="ListChecks"
-            disabled={selectedCount === 0 && value !== 'selected'}
-          >
-            {`Selected (${selectedCount})`}
-          </Menu.RadioItem>
-        </Menu.RadioGroup>
-      </Menu.Content>
-    </Menu.Container>
+    <SegmentedControl<PolicyFilter['value'] | 'all'>
+      label="Filter tools by policy"
+      value={value ?? 'all'}
+      onChange={(next) => onChange(next === 'all' ? null : next)}
+      options={[
+        { value: 'all', label: 'All', count: counts.all },
+        ...choices.map(({ value: choice, label, icon }) => ({
+          value: choice,
+          label,
+          icon,
+          withLabel: true,
+          count: counts[choice],
+          disabled: counts[choice] === 0 && value !== choice,
+        })),
+      ]}
+    />
   )
 }
 
@@ -2081,20 +2045,21 @@ function effectivePolicy(
 }
 
 /**
- * The provider's state beside its name: search indexing, and its unavailable
- * tools. The unavailable count filters the table to those tools.
+ * The provider's state beside its name: search indexing, its unavailable tools,
+ * and its destructive tools that run without approval. Each pairs an icon or
+ * words with its color.
  */
-function ProviderNotices({
-  active,
-  onFilter,
-  provider,
-}: {
-  active: PolicyFilter['value'] | null
-  onFilter: FilterByPolicy
-  provider: ProviderView
-}) {
-  const mutations = usePolicyMutations()
+function ProviderNotices({ provider }: { provider: ProviderView }) {
+  const { policies } = usePolicyMutations()
   const unavailable = provider.totalCount - provider.readyCount
+  // A provider heading stays mounted over all its tools, through every scroll.
+  const destructive = useMemo(
+    () =>
+      provider.tools.filter(
+        (tool) => tool.hints.destructive && effectivePolicy(policies, provider, tool) === 'enabled',
+      ).length,
+    [policies, provider],
+  )
   return (
     <>
       {provider.searchIndex?.state === 'pending' && (
@@ -2120,18 +2085,18 @@ function ProviderNotices({
         </Tooltip>
       )}
       {unavailable > 0 && (
-        <Tooltip content="Show only unavailable tools.">
-          <Button.Container
-            variant="bare"
-            size="22"
-            className={styles.policySummaryItem}
-            aria-pressed={active === 'unavailable'}
-            onClick={() => onFilter('unavailable', mutations)}
-          >
+        <Pill size="small" color="amber">
+          {`${unavailable} unavailable`}
+        </Pill>
+      )}
+      {destructive > 0 && (
+        <Tooltip content="These tools can delete or change data. They run without approval.">
+          <span className={styles.inlineTooltipTarget} tabIndex={0}>
             <Pill size="small" color="amber">
-              {`${unavailable} unavailable`}
+              <Icon name="TriangleAlert" size="14" color="inherit" />
+              {`${countLabel(destructive, 'destructive tool')} allowed`}
             </Pill>
-          </Button.Container>
+          </span>
         </Tooltip>
       )}
     </>
@@ -2139,49 +2104,30 @@ function ProviderNotices({
 }
 
 /**
- * How many of a provider's tools each policy covers, with the policy changes
- * still in flight. Each count sits over the toggle it counts, and its tooltip
- * and accessible name say which policy it is, so it does not depend on color.
- * While the provider is collapsed, no toggles show, so only the tooltip and the
- * name tell the counts apart. A count filters the table to its tools across
- * every provider.
+ * How many of the provider's tools have a policy an owner set. The others use
+ * the default for what they do, so a changed default reaches only those.
  */
-function PolicySummary({
-  active,
-  onFilter,
-  provider,
-}: {
-  active: PolicyFilter['value'] | null
-  onFilter: FilterByPolicy
-  provider: ProviderView
-}) {
-  const mutations = usePolicyMutations()
-  const { policies } = mutations
-  // A provider heading stays mounted over all its tools, through every scroll.
-  const counts = useMemo(() => {
-    const tally = new Map<PolicyState, number>()
-    for (const tool of provider.tools) {
-      const policy = effectivePolicy(policies, provider, tool)
-      tally.set(policy, (tally.get(policy) ?? 0) + 1)
-    }
-    return tally
-  }, [policies, provider])
+function PolicyOverrides({ provider }: { provider: ProviderView }) {
+  const { policies } = usePolicyMutations()
+  // A saved change stays in `policies` until the catalog reloads with it.
+  const set = useMemo(
+    () =>
+      provider.tools.filter(
+        (tool) => tool.explicit || policies.has(selectionKey(provider.id, tool.key)),
+      ).length,
+    [policies, provider],
+  )
+  if (set === 0) return null
   return (
-    <SegmentedToggles
-      label={`${providerLabel(provider)} tools by policy`}
-      size="small"
-      pressed={policyOptions.some(({ value }) => value === active) ? (active as PolicyState) : null}
-      onToggle={(value) => onFilter(value, mutations)}
-      options={policyOptions.map(({ value, label }) => {
-        const count = counts.get(value) ?? 0
-        return {
-          value,
-          text: shortCount(count),
-          label: `${count.toLocaleString('en-US')} ${label}`,
-          tooltip: `Show only tools set to ${label}.`,
-        }
-      })}
-    />
+    <Tooltip
+      content={`An owner set the policy of ${countLabel(set, 'tool')}. The other tools use their default policy.`}
+    >
+      <span className={styles.inlineTooltipTarget} tabIndex={0}>
+        <Typography.BodySmall as="span" variant="tertiary">
+          {countLabel(set, 'override')}
+        </Typography.BodySmall>
+      </span>
+    </Tooltip>
   )
 }
 
@@ -2272,12 +2218,6 @@ function ToolUsageSection({ usage }: { usage: ToolUsage }) {
     </section>
   )
 }
-
-// A segment is as wide as a policy toggle, so a count of a thousand or more shortens.
-const shortCount = (count: number) =>
-  count < 1000
-    ? String(count)
-    : new Intl.NumberFormat('en-US', { notation: 'compact' }).format(count)
 
 function ToolDetailsDrawer({
   provider: routedProvider,

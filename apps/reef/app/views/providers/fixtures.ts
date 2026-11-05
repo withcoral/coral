@@ -24,6 +24,7 @@ export function tool(owner: ProviderView, relativePath: string, group = ''): Too
     relativePath,
     hints: {},
     policy: 'approval_required',
+    explicit: false,
     available: true,
     reasons: [],
     group,

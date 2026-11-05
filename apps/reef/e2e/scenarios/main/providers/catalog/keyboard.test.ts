@@ -83,32 +83,29 @@ test('The keyboard drives the tools table, its drawer, and its policy', async (c
       await filter.blur()
       await page.keyboard.press('ArrowLeft')
       await row(page, 'op146')
-        .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
+        .getByRole('radio', { name: 'Allow', exact: true, checked: true })
         .waitFor()
       await expect.poll(() => row(page, 'op146').getAttribute('aria-busy')).toBe('false')
       await page.reload()
       await table.waitFor()
       await filter.fill('op146')
       await row(page, 'op146')
-        .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
+        .getByRole('radio', { name: 'Allow', exact: true, checked: true })
         .waitFor()
       await filter.fill('')
     })
-    await step('A summary count filters every provider until it is cleared', async () => {
-      const count = heading('Keys').getByRole('button', { name: '1 Always allow', exact: true })
-      await count.click()
-      expect(await count.getAttribute('aria-pressed')).toBe('true')
-      // Coral's own provider has read-only tools that start as Always allow.
+    await step('A toolbar filter narrows every provider until it is cleared', async () => {
+      const policies = page.getByRole('radiogroup', { name: 'Filter tools by policy', exact: true })
+      const allow = policies.getByRole('radio', { name: /^Allow \d/ })
+      await allow.click()
+      expect(await allow.getAttribute('aria-checked')).toBe('true')
+      // Coral's own provider has read-only tools that start as Allow.
       await expect
         .poll(() => heading('Keys').locator('a[href*="/tools/"]').allTextContents())
         .toEqual(['op146'])
       await heading('Keys').getByText('1 of 150 tools', { exact: true }).waitFor()
       await heading('Aside').getByText('No matching tools.', { exact: true }).waitFor()
-      await page
-        .getByRole('button', { name: 'Filter tools by', exact: true })
-        .getByText('Always allow', { exact: true })
-        .waitFor()
-      await count.click()
+      await policies.getByRole('radio', { name: /^All \d/ }).click()
       await heading('Aside').getByRole('link', { name: 'other', exact: true }).waitFor()
       // The pinned heading repeats the count.
       await heading('Keys').getByText('150 tools', { exact: true }).first().waitFor()

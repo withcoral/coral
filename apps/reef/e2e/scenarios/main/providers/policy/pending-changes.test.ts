@@ -29,15 +29,11 @@ test('Drawer policy shares optimistic state and locks with the table', async (co
           .locator('form[aria-busy]')
           .evaluate((element) => element.getBoundingClientRect().height)
       const before = await policyHeight()
-      await drawer.getByRole('radio', { name: 'Always allow', exact: true }).click()
-      await drawer
-        .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
-        .waitFor()
+      await drawer.getByRole('radio', { name: 'Allow', exact: true }).click()
+      await drawer.getByRole('radio', { name: 'Allow', exact: true, checked: true }).waitFor()
       expect(await policyHeight()).toBe(before)
       expect(
-        await drawer
-          .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
-          .isDisabled(),
+        await drawer.getByRole('radio', { name: 'Allow', exact: true, checked: true }).isDisabled(),
       ).toBe(true)
       const opened = new URL(page.url()).pathname
       await drawer.getByRole('button', { name: 'Close', exact: true }).click()
@@ -46,7 +42,7 @@ test('Drawer policy shares optimistic state and locks with the table', async (co
       await page.waitForURL((url) => url.pathname !== opened)
       await expect.poll(() => row(page, 'first').getAttribute('aria-busy')).toBe('true')
       await row(page, 'first')
-        .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
+        .getByRole('radio', { name: 'Allow', exact: true, checked: true })
         .waitFor()
       // Selection survives the change; the bulk action is what waits.
       expect(await row(page, 'first').getByRole('checkbox').isChecked()).toBe(true)
@@ -54,26 +50,20 @@ test('Drawer policy shares optimistic state and locks with the table', async (co
       expect(await applyTo(page, 1).isDisabled()).toBe(true)
       expect(
         await row(page, 'first')
-          .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
+          .getByRole('radio', { name: 'Allow', exact: true, checked: true })
           .isDisabled(),
       ).toBe(true)
       await row(page, 'first').getByRole('link', { name: 'first', exact: true }).click()
-      await drawer
-        .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
-        .waitFor()
+      await drawer.getByRole('radio', { name: 'Allow', exact: true, checked: true }).waitFor()
       await expect.poll(() => held.submitted.length).toBe(1)
       held.release()
-      await drawer
-        .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
-        .waitFor()
+      await drawer.getByRole('radio', { name: 'Allow', exact: true, checked: true }).waitFor()
       expect(await policyHeight()).toBe(before)
       await page.reload()
-      await drawer
-        .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
-        .waitFor()
+      await drawer.getByRole('radio', { name: 'Allow', exact: true, checked: true }).waitFor()
       await drawer.getByRole('button', { name: 'Close', exact: true }).click()
       await row(page, 'first')
-        .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
+        .getByRole('radio', { name: 'Allow', exact: true, checked: true })
         .waitFor()
     } finally {
       held.release()
@@ -134,10 +124,10 @@ test('Inline pending policy survives filtering, blocks overlaps, and allows unre
     const held = await holdPolicies(page)
     try {
       await step('Show the submitted policy as saving, not saved', async () => {
-        await row(page, 'first').getByRole('radio', { name: 'Always allow', exact: true }).click()
+        await row(page, 'first').getByRole('radio', { name: 'Allow', exact: true }).click()
         await expect.poll(() => row(page, 'first').getAttribute('aria-busy')).toBe('true')
         await row(page, 'first')
-          .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
+          .getByRole('radio', { name: 'Allow', exact: true, checked: true })
           .waitFor()
         expect(await row(page, 'first').getAttribute('aria-busy')).toBe('true')
         await page.emulateMedia({ reducedMotion: 'no-preference' })
@@ -160,7 +150,7 @@ test('Inline pending policy survives filtering, blocks overlaps, and allows unre
         await expect.poll(() => row(page, 'first').getAttribute('aria-busy')).toBe('true')
         expect(
           await row(page, 'first')
-            .getByRole('radio', { name: 'Needs approval', exact: true })
+            .getByRole('radio', { name: 'Ask', exact: true })
             .isDisabled(),
         ).toBe(true)
         expect(await row(page, 'first').getByRole('checkbox').isDisabled()).toBe(false)
@@ -177,15 +167,15 @@ test('Inline pending policy survives filtering, blocks overlaps, and allows unre
         await page.getByRole('checkbox', { name: 'Select Other tools', exact: true }).uncheck()
       })
       await step('Submit a disjoint inline mutation while the first is pending', async () => {
-        await row(page, 'second').getByRole('radio', { name: 'Disabled', exact: true }).click()
+        await row(page, 'second').getByRole('radio', { name: 'Block', exact: true }).click()
         await expect.poll(() => row(page, 'second').getAttribute('aria-busy')).toBe('true')
         await row(page, 'second')
-          .getByRole('radio', { name: 'Disabled', exact: true, checked: true })
+          .getByRole('radio', { name: 'Block', exact: true, checked: true })
           .waitFor()
         expect(await row(page, 'third').getAttribute('aria-busy')).toBe('false')
         expect(
           await row(page, 'third')
-            .getByRole('radio', { name: 'Needs approval', exact: true, checked: true })
+            .getByRole('radio', { name: 'Ask', exact: true, checked: true })
             .isEnabled(),
         ).toBe(true)
         await expect.poll(() => held.submitted.length).toBe(2)
@@ -194,10 +184,10 @@ test('Inline pending policy survives filtering, blocks overlaps, and allows unre
         await expect.poll(() => row(page, 'second').getAttribute('aria-busy')).toBe('false')
         await page.reload()
         await row(page, 'first')
-          .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
+          .getByRole('radio', { name: 'Allow', exact: true, checked: true })
           .waitFor()
         await row(page, 'second')
-          .getByRole('radio', { name: 'Disabled', exact: true, checked: true })
+          .getByRole('radio', { name: 'Block', exact: true, checked: true })
           .waitFor()
       })
     } finally {
@@ -215,8 +205,8 @@ test('Bulk pending policy survives toolbar unmount and rolls back a rejection ou
         await page.getByRole('checkbox', { name: 'Select first', exact: true }).check()
         await page.getByRole('checkbox', { name: 'Select second', exact: true }).check()
         const bulk = page.getByRole('form', { name: 'Bulk policy', exact: true })
-        await bulk.getByRole('button', { name: 'Needs approval', exact: true }).click()
-        await page.getByRole('menuitemradio', { name: 'Always allow', exact: true }).click()
+        await bulk.getByRole('button', { name: 'Ask', exact: true }).click()
+        await page.getByRole('menuitemradio', { name: 'Allow', exact: true }).click()
         await applyTo(page, 2).click()
         // The selection stays but holds still: a bulk save locks every
         // selection control until Coral answers.
@@ -226,13 +216,11 @@ test('Bulk pending policy survives toolbar unmount and rolls back a rejection ou
           expect(await row(page, name).getByRole('checkbox').isDisabled()).toBe(true)
           await expect.poll(() => row(page, name).getAttribute('aria-busy')).toBe('true')
           await row(page, name)
-            .getByRole('radio', { name: 'Always allow', exact: true, checked: true })
+            .getByRole('radio', { name: 'Allow', exact: true, checked: true })
             .waitFor()
           expect(await row(page, name).getAttribute('aria-busy')).toBe('true')
           expect(
-            await row(page, name)
-              .getByRole('radio', { name: 'Needs approval', exact: true })
-              .isDisabled(),
+            await row(page, name).getByRole('radio', { name: 'Ask', exact: true }).isDisabled(),
           ).toBe(true)
         }
         expect(await row(page, 'third').getAttribute('aria-busy')).toBe('false')
@@ -260,14 +248,14 @@ test('Bulk pending policy survives toolbar unmount and rolls back a rejection ou
         await page.getByRole('searchbox', { name: 'Filter tools' }).fill('')
         for (const name of ['first', 'second']) {
           await row(page, name)
-            .getByRole('radio', { name: 'Needs approval', exact: true, checked: true })
+            .getByRole('radio', { name: 'Ask', exact: true, checked: true })
             .waitFor()
           expect(await row(page, name).getAttribute('aria-busy')).toBe('false')
         }
         await page.reload()
         for (const name of ['first', 'second'])
           await row(page, name)
-            .getByRole('radio', { name: 'Needs approval', exact: true, checked: true })
+            .getByRole('radio', { name: 'Ask', exact: true, checked: true })
             .waitFor()
       })
     } finally {

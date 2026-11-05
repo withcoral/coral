@@ -555,6 +555,7 @@ stale an exact rule in v1. A changed Tool Key does. Policy for one Provider does
 A Principal that needs a different Tool set belongs in a different Workspace.
 _Avoid_: Principal policy, Agent policy, Account-specific policy, Credential Route policy, Provider permission,
 Tool Availability, allow/ask/deny
+_In Reef_: "policy"; the states are "Allow", "Ask" and "Block"
 
 **Context Impact**: The net payload bytes one ended Program Run adds to its caller's context: the bytes of its
 Emissions, Logs and Final Value, minus the bytes of its Invocations' retained Tool Results. Negative means saved. A

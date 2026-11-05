@@ -1,5 +1,5 @@
 import classNames from 'classnames'
-import { useCallback, useRef, type MouseEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
 
 import { Button, Inputs, Menu, ScrollArea, Typography } from '@/wax/components'
@@ -171,9 +171,48 @@ export function CatalogRailItem({
   )
 }
 
+// Room the filter's input keeps beside leading controls before they move down,
+// and the row's gap between items.
+const FILTER_ROOM = 200
+const TOOLBAR_GAP = 12
+
 /**
- * The one row above the table: `leading` controls at the start, then any
- * other controls, the filter's input, and the page's `action` at the end.
+ * Whether leading controls fit on the title's line beside the filter's input and
+ * the action, measured as the toolbar resizes. Their own width is measured from
+ * their content, so moving them below does not change the answer.
+ */
+function useLeadingPlacement(enabled: boolean) {
+  const toolbar = useRef<HTMLDivElement>(null)
+  const titleItem = useRef<HTMLDivElement>(null)
+  const leadingItem = useRef<HTMLDivElement>(null)
+  const actionItem = useRef<HTMLDivElement>(null)
+  const [leadingBelow, setLeadingBelow] = useState(false)
+  useEffect(() => {
+    const row = toolbar.current
+    const lead = leadingItem.current
+    if (!enabled || !row || !lead || typeof ResizeObserver === 'undefined') return
+    const place = () => {
+      const content = lead.firstElementChild?.scrollWidth ?? lead.scrollWidth
+      const needed =
+        (titleItem.current?.scrollWidth ?? 0) +
+        content +
+        FILTER_ROOM +
+        (actionItem.current?.offsetWidth ?? 0) +
+        3 * TOOLBAR_GAP
+      setLeadingBelow(needed > row.clientWidth)
+    }
+    place()
+    const observer = new ResizeObserver(place)
+    observer.observe(row)
+    if (lead.firstElementChild) observer.observe(lead.firstElementChild)
+    return () => observer.disconnect()
+  }, [enabled])
+  return { toolbar, titleItem, leadingItem, actionItem, leadingBelow }
+}
+
+/**
+ * The one row above the table: the title, `leading` controls, then any other
+ * controls, the filter's input, and the page's `action` at the end.
  */
 export function CatalogToolbar({
   title,
@@ -196,7 +235,11 @@ export function CatalogToolbar({
     /** Takes the rest of the row, for a toolbar in a narrow column such as a card. */
     fill?: boolean
   }
-  /** Controls at the start of the row, such as actions on the selection. */
+  /**
+   * Controls at the start of the row, beside the title, such as a filter. When
+   * the row has no room for them, the filter's input and the action, they take
+   * a line of their own below, and the rest stays on the title's line.
+   */
   leading?: ReactNode
   children?: ReactNode
   /**
@@ -208,6 +251,9 @@ export function CatalogToolbar({
 }) {
   const { shortcut, fill, ...field } = filter
   const input = useRef<HTMLInputElement>(null)
+  const { toolbar, titleItem, leadingItem, actionItem, leadingBelow } = useLeadingPlacement(
+    Boolean(leading),
+  )
   const focusFilter = useCallback((event: KeyboardEvent) => {
     event.preventDefault()
     input.current?.focus()
@@ -226,18 +272,26 @@ export function CatalogToolbar({
     </div>
   )
   return (
-    <div className={classNames(styles.toolbar, Boolean(action) && styles.toolbarWithAction)}>
+    <div
+      ref={toolbar}
+      className={classNames(styles.toolbar, Boolean(action) && styles.toolbarWithAction)}
+    >
       {/* An empty group would still take a gap, and push the controls off the table's edge. */}
-      {(title || leading) && (
+      {title && (
         <div className={styles.toolbarGroup}>
-          {title && (
-            <div className={styles.toolbarTitle}>
-              <Typography.HeadingLarge as="h1" truncate>
-                {title}
-              </Typography.HeadingLarge>
-              {titleInfo}
-            </div>
-          )}
+          <div ref={titleItem} className={styles.toolbarTitle}>
+            <Typography.HeadingLarge as="h1" truncate>
+              {title}
+            </Typography.HeadingLarge>
+            {titleInfo}
+          </div>
+        </div>
+      )}
+      {leading && (
+        <div
+          ref={leadingItem}
+          className={classNames(styles.toolbarLeading, leadingBelow && styles.toolbarLeadingBelow)}
+        >
           {leading}
         </div>
       )}
@@ -249,7 +303,9 @@ export function CatalogToolbar({
             className={classNames(styles.toolbarFilterAndAction, fill && styles.toolbarFilterFill)}
           >
             {filterField}
-            <div className={styles.toolbarAction}>{action}</div>
+            <div ref={actionItem} className={styles.toolbarAction}>
+              {action}
+            </div>
           </div>
         ) : (
           filterField

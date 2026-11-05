@@ -49,6 +49,7 @@ function op(
     // read-only is enabled, anything else needs approval.
     hints: {},
     policy: readOnly ? 'enabled' : 'approval_required',
+    explicit: false,
     available: true,
     reasons: [],
     group,
@@ -116,6 +117,7 @@ const weather: ProviderView = {
       relativePath: 'getForecast',
       hints: {},
       policy: 'approval_required',
+      explicit: false,
       available: true,
       reasons: [],
       group: '',
@@ -349,6 +351,29 @@ export const TreeToolUsage: Story = {
       selectedTool="issues.create"
       selectedToolDetail={createIssue}
       toolCalls={toolUsage}
+    />
+  ),
+}
+// A provider heading's status: its unavailable tools, a destructive tool that
+// runs without approval, and how many tools an owner set.
+export const TreeProviderStatus: Story = {
+  render: () => (
+    <WorkspaceProvidersPage
+      {...treeProps}
+      providers={[
+        {
+          ...github,
+          tools: github.tools.map((tool) =>
+            tool.relativePath === 'issues.close'
+              ? { ...tool, available: true, policy: 'enabled', explicit: true }
+              : tool.relativePath === 'repos.get'
+                ? { ...tool, policy: 'disabled', explicit: true }
+                : tool,
+          ),
+        },
+        weather,
+        blocked,
+      ]}
     />
   ),
 }
@@ -1036,7 +1061,7 @@ export const TreePolicyRefused: Story = {
     // Both fixture providers list repos.get; use the first provider's row.
     const [select] = canvas.getAllByRole('checkbox', { name: 'Select repos.get' })
     const row = within(select!.closest<HTMLElement>('[role="row"]')!)
-    await userEvent.click(row.getByRole('radio', { name: 'Disabled' }))
+    await userEvent.click(row.getByRole('radio', { name: 'Block' }))
     await expect(await row.findByText('Not saved')).toBeVisible()
   },
 }
@@ -1051,10 +1076,10 @@ export const TreeBulkPending: Story = {
     await userEvent.click(canvas.getByRole('checkbox', { name: 'Select GitHub tools' }))
     // The "Bulk policy" form names the group; the trigger reads as its value.
     const bulk = canvas.getByRole('form', { name: 'Bulk policy' })
-    await userEvent.click(within(bulk).getByRole('button', { name: 'Needs approval' }))
+    await userEvent.click(within(bulk).getByRole('button', { name: 'Ask' }))
     // The menu renders in a portal outside the canvas.
     const body = within(canvasElement.ownerDocument.body)
-    await userEvent.click(await body.findByRole('menuitemradio', { name: 'Disabled' }))
+    await userEvent.click(await body.findByRole('menuitemradio', { name: 'Block' }))
     await userEvent.click(within(bulk).getByRole('button', { name: 'Apply' }))
     await expect(canvas.getByRole('checkbox', { name: 'Select GitHub tools' })).toBeDisabled()
   },

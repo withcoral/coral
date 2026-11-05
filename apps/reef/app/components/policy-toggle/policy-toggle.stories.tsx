@@ -26,10 +26,10 @@ type Story = StoryObj<typeof meta>
 export const NeedsApproval: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await expect(canvas.getByRole('radio', { name: 'Needs approval' })).toHaveAccessibleDescription(
+    await expect(canvas.getByRole('radio', { name: 'Ask' })).toHaveAccessibleDescription(
       'Coral asks before each use.',
     )
-    await expect(canvas.getByRole('radio', { name: 'Disabled' })).toHaveAccessibleDescription(
+    await expect(canvas.getByRole('radio', { name: 'Block' })).toHaveAccessibleDescription(
       'Coral blocks every call. Search results do not show this tool.',
     )
   },

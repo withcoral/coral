@@ -245,11 +245,19 @@ const providerGroups = () =>
     .filter(Boolean)
 
 const bulkForm = (hidden = false) => screen.getByRole('form', { name: 'Bulk policy', hidden })
-const policyFilterMenu = () => screen.getByRole('button', { name: 'Filter tools by' })
-const choosePolicyFilter = async (name: string) => {
-  await user.click(policyFilterMenu())
-  await user.click(await screen.findByRole('menuitemradio', { name }))
-}
+const policyFilter = () => screen.getByRole('radiogroup', { name: 'Filter tools by policy' })
+/** The toolbar choice whose label starts its name, before its count. */
+const policyChoice = (label: string) =>
+  within(policyFilter()).getByRole('radio', { name: new RegExp(`^${label} \\d`) })
+const choosePolicyFilter = (label: string) => user.click(policyChoice(label))
+/** Each toolbar choice's label and count, marked when it is disabled. */
+const filterChoices = () =>
+  within(policyFilter())
+    .getAllByRole('radio')
+    .map((radio) => `${radio.textContent}${radio.hasAttribute('disabled') ? ' (off)' : ''}`)
+const githubHeading = () => within(table()).getByRole('rowgroup', { name: 'GitHub' })
+/** The bulk form's selection count, which opens and leaves the selected view. */
+const bulkCount = () => within(bulkForm()).getByRole('button', { name: /selected$/ })
 
 // The bulk form counts the selection, hidden rows included.
 const selectionCount = (hidden = false) =>
@@ -347,28 +355,58 @@ test('ranks every tool by usage in one list, then goes back to the headings', as
   expect(headings()).toHaveLength(2)
 })
 
-// Catches: a heading count too wide for the policy segment it sits over, or a short
-// count that hides the exact one from a screen reader.
-test.each([
-  [12, '12', '12 Needs approval'],
-  [1200, '1.2K', '1,200 Needs approval'],
-])(
-  'a heading shows %i tools needing approval as %s',
-  (count, text, name) => {
-    const many = provider(
-      github.id,
-      'GitHub',
-      'github',
-      Array.from({ length: count }, (_, i) => `t${i}`),
-    )
-    renderPage({ providers: [many] })
-    const heading = within(table()).getByRole('rowgroup', { name: 'GitHub' })
-    expect(within(heading).getByRole('button', { name })).toHaveTextContent(text)
-    // 1,200 tools build the whole catalog. That takes about 3 s here, but longer
-    // than the default 5 s when the full suite shares the runner.
-  },
-  15_000,
-)
+// Catches: toolbar counts that ignore the tab or the search, a choice with no
+// tools left choosable, or an Unavailable choice shown when nothing is.
+test('the toolbar filter counts each policy in the tab and the search', async () => {
+  const [list, get] = github.tools
+  const mixed = { ...github, tools: [{ ...list!, policy: 'enabled' as const }, get!] }
+  const blocked = { ...weather, tools: weather.tools.map((o) => ({ ...o, available: false })) }
+  const { show } = renderPage({ providers: [mixed, blocked] })
+  expect(filterChoices()).toEqual([
+    'All 3',
+    'Allow 1',
+    'Ask 2',
+    'Block 0 (off)',
+    'Unavailable 1',
+  ])
+  await filterTools('get')
+  expect(filterChoices()).toEqual([
+    'All 2',
+    'Allow 0 (off)',
+    'Ask 2',
+    'Block 0 (off)',
+    'Unavailable 1',
+  ])
+  await filterTools('')
+  await show(null, mixed.id)
+  expect(filterChoices()).toEqual(['All 2', 'Allow 1', 'Ask 1', 'Block 0 (off)'])
+})
+
+// Catches: an unavailable count that still filters from the heading, a
+// destructive tool that runs without approval and no warning, or an owner's
+// rules left uncounted, as saved or while a change is in flight.
+test('a provider heading shows its unavailable tools, destructive risk and overrides', async () => {
+  const [list, get] = github.tools
+  const risky = {
+    ...github,
+    readyCount: 1,
+    tools: [
+      { ...list!, hints: { destructive: true }, policy: 'enabled' as const, explicit: true },
+      { ...get!, available: false },
+    ],
+  }
+  renderPage({ providers: [risky], action: () => new Promise(() => {}) })
+  expect(githubHeading()).toHaveTextContent('1 unavailable')
+  expect(within(githubHeading()).queryByRole('button', { name: /unavailable/ })).toBeNull()
+  expect(githubHeading()).toHaveTextContent('1 destructive tool allowed')
+  expect(githubHeading()).toHaveTextContent('1 override')
+
+  await choosePolicy('repos.get', 'Block')
+  expect(githubHeading()).toHaveTextContent('2 overrides')
+  await choosePolicy('issues.list', 'Ask')
+  expect(githubHeading()).not.toHaveTextContent('destructive')
+})
+
 // Catches: the page drawing its own sticky provider and group rows instead of
 // nesting Wax groups, which loses the two-level sticky stack.
 test('nests each tool group inside its provider group', () => {
@@ -687,9 +725,9 @@ test('selection survives filtering', async () => {
 
 // Catches: a later filter dropping what an earlier one selected, a provider's
 // no-match row not naming the query or the selection it hides, or the
-// selected view, from the menu or the bulk form, missing a selection the
+// selected view, from a no-match row or the bulk form, missing a selection the
 // searches hide.
-test('selection builds up across filters and the menu shows all of it', async () => {
+test('selection builds up across filters and the selected view shows all of it', async () => {
   renderPage()
   const all = () => checkbox('Select all matching tools')
   await filterTools('get')
@@ -701,7 +739,7 @@ test('selection builds up across filters and the menu shows all of it', async ()
 
   await filterProviders('Weather')
   await user.click(within(table()).getByRole('button', { name: 'Show all selected tools' }))
-  expect(policyFilterMenu()).toHaveTextContent('Selected')
+  expect(bulkCount()).toHaveAttribute('aria-pressed', 'true')
   expect(screen.getByLabelText('Filter tools')).toHaveValue('')
   expect(screen.getByLabelText('Filter providers')).toHaveValue('')
   expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
@@ -710,28 +748,17 @@ test('selection builds up across filters and the menu shows all of it', async ()
   await user.click(checkbox('Select repos.get'))
   expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
 
-  await choosePolicyFilter('All policies')
+  await user.click(bulkCount())
   expect(selectionCount()).toBe('2 selected')
-  await choosePolicyFilter('Selected (2)')
-  expect(rowNames()).toEqual(['issues.list', 'getForecast'])
 
-  // The menu opens the same view from under any search.
-  await choosePolicyFilter('All policies')
+  // The bulk form's count opens the same view from under any search, and leaves it.
   await filterTools('nothing matches')
-  await choosePolicyFilter('Selected (2)')
+  await user.click(bulkCount())
+  expect(bulkCount()).toHaveAttribute('aria-pressed', 'true')
   expect(screen.getByLabelText('Filter tools')).toHaveValue('')
   expect(rowNames()).toEqual(['issues.list', 'getForecast'])
-
-  // The bulk form's count opens and leaves the same view.
-  await choosePolicyFilter('All policies')
-  await filterTools('nothing matches')
-  const count = within(bulkForm()).getByRole('button', { name: '2 selected' })
-  await user.click(count)
-  expect(count).toHaveAttribute('aria-pressed', 'true')
-  expect(policyFilterMenu()).toHaveTextContent('Selected')
-  expect(rowNames()).toEqual(['issues.list', 'getForecast'])
-  await user.click(count)
-  expect(count).toHaveAttribute('aria-pressed', 'false')
+  await user.click(bulkCount())
+  expect(bulkCount()).toHaveAttribute('aria-pressed', 'false')
   expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
   // It types four filters and renders the whole catalog after each. That takes
   // under 1 s here, but longer than the default 5 s on a starved CI runner.
@@ -869,7 +896,7 @@ test('a selected row change in flight holds the bulk form', async () => {
     },
   })
   await user.click(checkbox('Select repos.get'))
-  await choosePolicy('repos.get', 'Disabled')
+  await choosePolicy('repos.get', 'Block')
   const apply = within(bulkForm()).getByRole('button', { name: 'Apply' })
   expect(apply).toBeDisabled()
 
@@ -888,8 +915,8 @@ test('a second change made before the page re-renders is not sent', async () => 
       return { error: null, message: 'ok' }
     },
   })
-  const disable = within(rowOf('repos.get')).getByRole('radio', { name: 'Disabled' })
-  const enable = within(rowOf('repos.get')).getByRole('radio', { name: 'Always allow' })
+  const disable = within(rowOf('repos.get')).getByRole('radio', { name: 'Block' })
+  const enable = within(rowOf('repos.get')).getByRole('radio', { name: 'Allow' })
   // Both clicks land in one batch, so the second sees the toggle still enabled.
   act(() => {
     disable.click()
@@ -903,7 +930,7 @@ test('a second change made before the page re-renders is not sent', async () => 
 // may or may not have been saved.
 test('a change whose response is lost says the policy is not confirmed', async () => {
   renderPage({ action: async () => undefined })
-  await choosePolicy('repos.get', 'Disabled')
+  await choosePolicy('repos.get', 'Block')
   await settle()
   expect(rowOf('repos.get')).toHaveTextContent('Not confirmed')
 })
@@ -913,20 +940,20 @@ test('a change whose response is lost says the policy is not confirmed', async (
 test('changing a refused tool again clears its refusal', async () => {
   let answer = mixedOutcome
   renderPage({ action: (request) => answer(request) })
-  await choosePolicy('getForecast', 'Disabled')
+  await choosePolicy('getForecast', 'Block')
   await settle()
   expect(rowOf('getForecast')).toHaveTextContent('Not saved')
 
   answer = async () => ({ error: null, message: 'ok' })
-  await choosePolicy('getForecast', 'Disabled')
+  await choosePolicy('getForecast', 'Block')
   await settle()
   expect(rowOf('getForecast')).not.toHaveTextContent('Not saved')
 })
 
-// Catches: a summary count that does not filter every provider, a selection
+// Catches: a toolbar filter that does not reach every provider, a selection
 // that reaches past the filter, a row that vanishes while its own change is in
-// flight, or a filter the reader cannot see and clear.
-test('a summary count filters the table to its tools until cleared', async () => {
+// flight, a filter the reader cannot clear, or one that keeps the selected view.
+test('a toolbar filter narrows every provider to its tools until cleared', async () => {
   const [list, get] = github.tools
   const mixed = { ...github, tools: [{ ...list!, policy: 'enabled' as const }, get!] }
   const blocked = {
@@ -936,10 +963,8 @@ test('a summary count filters the table to its tools until cleared', async () =>
   }
   // The policy change stays in flight, so only the page's own state moves.
   renderPage({ providers: [mixed, blocked], action: () => new Promise(() => {}) })
-  const summary = (owner: string, name: string) =>
-    within(within(table()).getByRole('rowgroup', { name: owner })).getByRole('button', { name })
 
-  await user.click(summary('GitHub', '1 Always allow'))
+  await choosePolicyFilter('Allow')
   expect(rowNames()).toEqual(['issues.list'])
   expect(within(table()).getByRole('rowgroup', { name: 'Weather' })).toHaveTextContent(
     'No matching tools.',
@@ -955,38 +980,37 @@ test('a summary count filters the table to its tools until cleared', async () =>
   expect(selectionCount()).toBe('1 selected')
   await user.click(within(bulkForm()).getByRole('button', { name: 'Clear selection' }))
 
-  await choosePolicy('issues.list', 'Disabled')
-  expect(summary('GitHub', '0 Always allow')).toBeInTheDocument()
+  // The changed row stays, and its choice stays choosable while it applies.
+  await choosePolicy('issues.list', 'Block')
   expect(rowNames()).toEqual(['issues.list'])
+  expect(policyChoice('Allow')).toHaveTextContent('Allow 0')
+  expect(policyChoice('Allow')).toBeEnabled()
 
-  await choosePolicyFilter('All policies')
+  await choosePolicyFilter('All')
   expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
-
-  await user.click(summary('Weather', '1 unavailable'))
-  expect(summary('Weather', '1 unavailable')).toHaveAttribute('aria-pressed', 'true')
+  await choosePolicyFilter('Unavailable')
   expect(rowNames()).toEqual(['getForecast'])
-  expect(policyFilterMenu()).toHaveTextContent('Unavailable')
 
-  // A count leaves the selected view, so the menu names the filter that applies.
-  await choosePolicyFilter('All policies')
+  // A filter leaves the selected view.
+  await choosePolicyFilter('All')
   await user.click(checkbox('Select issues.list'))
   await user.click(checkbox('Select repos.get'))
-  await choosePolicyFilter('Selected (2)')
-  await user.click(summary('GitHub', '1 Disabled'))
+  await user.click(within(bulkForm()).getByRole('button', { name: '2 selected' }))
+  await choosePolicyFilter('Block')
   expect(rowNames()).toEqual(['issues.list'])
-  expect(policyFilterMenu()).toHaveTextContent('Disabled')
-  await choosePolicyFilter('All policies')
-  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
+  expect(within(bulkForm()).getByRole('button', { name: '2 selected' })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  )
 })
 
-// Catches: a menu choice that misses a provider, or an "All" that keeps a filter.
+// Catches: a choice that misses a provider, or an "All" that keeps a filter.
 test.each([
-  ['Always allow', ['issues.list']],
-  ['Needs approval', ['repos.get', 'getForecast']],
-  ['Disabled', []],
+  ['Allow', ['issues.list']],
+  ['Ask', ['repos.get', 'getForecast']],
   ['Unavailable', ['getForecast']],
-  ['All policies', ['issues.list', 'repos.get', 'getForecast']],
-])('the policy menu shows only %s tools', async (choice, names) => {
+  ['All', ['issues.list', 'repos.get', 'getForecast']],
+])('the toolbar filter shows only %s tools', async (choice, names) => {
   const [list, get] = github.tools
   const mixed = { ...github, tools: [{ ...list!, policy: 'enabled' as const }, get!] }
   const blocked = {
@@ -997,7 +1021,7 @@ test.each([
   renderPage({ providers: [mixed, blocked] })
   await choosePolicyFilter(choice)
   expect(rowNames()).toEqual(names)
-  expect(policyFilterMenu()).toHaveTextContent(choice)
+  expect(policyChoice(choice)).toBeChecked()
 })
 
 // Catches: a row that does not open its drawer, a control click that does, or
@@ -1018,7 +1042,7 @@ test('clicking a row opens its tool, but its controls do not', async () => {
   await act(async () => router.navigate(-1))
   expect(router.state.location.pathname).toBe('/workspaces/demo/providers')
   await user.click(checkbox('Select issues.list'))
-  await choosePolicy('issues.list', 'Disabled')
+  await choosePolicy('issues.list', 'Block')
   expect(router.state.location.pathname).not.toMatch(/issues/)
   await user.click(within(rowOf('issues.list')).getAllByRole('cell')[1]!)
   expect(router.state.location.pathname).toBe(pathOf(github.tools[0]!))
@@ -1079,7 +1103,7 @@ test('arrow keys move a cursor through the listed tools', async () => {
 
   // A policy toggle keeps its own arrow keys.
   await filterTools('')
-  await user.click(within(rowOf('repos.get')).getByRole('radio', { name: 'Needs approval' }))
+  await user.click(within(rowOf('repos.get')).getByRole('radio', { name: 'Ask' }))
   await user.keyboard('{ArrowDown}')
   expect(cursorName()).toBe('repos.get')
 })
@@ -1209,9 +1233,9 @@ test('the cursor row takes focus, so Enter and Space reach it', async () => {
 test('Enter on a focused button activates it, not the cursor tool', async () => {
   const { router } = renderPage()
   await user.keyboard('{ArrowDown}')
-  policyFilterMenu().focus()
+  within(table()).getByRole('button', { name: 'Collapse all' }).focus()
   await user.keyboard('{Enter}')
-  expect(await screen.findByRole('menuitemradio', { name: 'All policies' })).toBeInTheDocument()
+  expect(rowNames()).toEqual([])
   expect(router.state.location.pathname).not.toMatch(/\/tools\//)
 })
 
@@ -1234,7 +1258,7 @@ test('keys act on the cursor tool while the table has focus', async () => {
   expect(sent).toEqual(['enabled'])
 })
 
-const disabledRadio = () => within(rowOf('only')).getByRole('radio', { name: 'Disabled' })
+const disabledRadio = () => within(rowOf('only')).getByRole('radio', { name: 'Block' })
 
 // Catches: a saved policy that a catalog no longer reloading would snap back
 // on, or a provider whose last tool went disabled keeping its old status.
@@ -1257,7 +1281,7 @@ test('a saved policy stays, and its blockers apply, without a catalog reload', a
       }
     },
   })
-  await choosePolicy('only', 'Disabled')
+  await choosePolicy('only', 'Block')
   await settle()
   expect(disabledRadio()).toBeChecked()
   expect(screen.getByRole('img', { name: 'No tools ready' })).toBeInTheDocument()
@@ -1287,9 +1311,9 @@ test('a rejected policy change falls back to the saved policy, not the loaded on
         : { error: 'Coral refused.', credential: null }
     },
   })
-  await choosePolicy('only', 'Disabled')
+  await choosePolicy('only', 'Block')
   await settle()
-  await choosePolicy('only', 'Always allow')
+  await choosePolicy('only', 'Allow')
   await settle()
   expect(disabledRadio()).toBeChecked()
   expect(rowOf('only')).toHaveTextContent('Not saved')
@@ -1317,9 +1341,9 @@ test('blockers from an older policy change do not replace a later one', async ()
       }
     },
   })
-  await choosePolicy('one', 'Disabled')
+  await choosePolicy('one', 'Block')
   await settle()
-  await choosePolicy('two', 'Disabled')
+  await choosePolicy('two', 'Block')
   await settle()
   answers.get('two')!(['No tools ready'])
   await settle()
