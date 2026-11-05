@@ -1,4 +1,4 @@
-//! The Run Executor link (ADR 0027), from both of its sides.
+//! The Run Executor link, from both of its sides.
 //!
 //! On Coral's side it holds the compiler client that Program Admission and
 //! Saved Function save share. [`CompilerClient`] is the one interface.

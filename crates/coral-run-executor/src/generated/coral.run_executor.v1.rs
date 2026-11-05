@@ -142,8 +142,8 @@ pub mod link_service_client {
     )]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
-    /// The link between a Run Executor and Coral (ADR 0027). Coral serves it, and
-    /// the Run Executor dials it; the Run Executor serves nothing.
+    /// The link between a Run Executor and Coral. Coral serves it, and the Run
+    /// Executor dials it; the Run Executor serves nothing.
     #[derive(Debug, Clone)]
     pub struct LinkServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -279,8 +279,8 @@ pub(crate) mod link_service_server {
             request: tonic::Request<tonic::Streaming<super::PullRequest>>,
         ) -> std::result::Result<tonic::Response<Self::PullStream>, tonic::Status>;
     }
-    /// The link between a Run Executor and Coral (ADR 0027). Coral serves it, and
-    /// the Run Executor dials it; the Run Executor serves nothing.
+    /// The link between a Run Executor and Coral. Coral serves it, and the Run
+    /// Executor dials it; the Run Executor serves nothing.
     #[derive(Debug)]
     pub struct LinkServiceServer<T> {
         inner: Arc<T>,

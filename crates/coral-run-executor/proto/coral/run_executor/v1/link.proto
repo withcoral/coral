@@ -2,8 +2,8 @@ syntax = "proto3";
 
 package coral.run_executor.v1;
 
-// The link between a Run Executor and Coral (ADR 0027). Coral serves it, and
-// the Run Executor dials it; the Run Executor serves nothing.
+// The link between a Run Executor and Coral. Coral serves it, and the Run
+// Executor dials it; the Run Executor serves nothing.
 service LinkService {
   // The pull stream: one per Run Executor, the first stream on every
   // connection. The Run Executor opens it with Hello.
