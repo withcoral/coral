@@ -73,7 +73,10 @@ pub(crate) enum ApprovalFact {
     Pending {
         deadline_at_unix_nanos: i64,
     },
+    /// Approved at `decided_at_unix_nanos`. The approval counts if that is no
+    /// later than the request's deadline, whenever the dispatch comes.
     Approved {
+        decided_at_unix_nanos: i64,
         deadline_at_unix_nanos: i64,
     },
     Declined,
@@ -302,6 +305,9 @@ pub(crate) struct Checked {
 /// Decides one Invocation against the facts at one instant: the Run, then
 /// the shared facts, then the wait it may still be in, then its approval
 /// under the policy, then whether its credentials must be renewed first.
+/// An approved request is judged by its two recorded times, never by the
+/// instant: the Run's own deadline bounds a dispatch that comes after the
+/// request's.
 pub(crate) fn decide(
     shared: &SharedFacts,
     run: &RunFacts<'_>,
@@ -320,8 +326,9 @@ pub(crate) fn decide(
     if checked.policy == ToolAccessState::ApprovalRequired {
         match invocation.approval {
             ApprovalFact::Approved {
+                decided_at_unix_nanos,
                 deadline_at_unix_nanos,
-            } if now_unix_nanos < deadline_at_unix_nanos => {}
+            } if decided_at_unix_nanos <= deadline_at_unix_nanos => {}
             ApprovalFact::Pending {
                 deadline_at_unix_nanos,
             } if now_unix_nanos < deadline_at_unix_nanos => {
