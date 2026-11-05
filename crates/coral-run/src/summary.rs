@@ -252,23 +252,24 @@ struct Tally {
 /// A Tool keeps its path while its Key stays active, so they rarely differ.
 #[derive(Default)]
 struct LatestPath {
-    ended_at: Option<(i64, String)>,
+    /// The latest end time seen, and the Call Path called then.
+    latest: Option<(i64, String)>,
 }
 
 impl LatestPath {
     fn offer(&mut self, group: &OutcomeEvidence) {
         let candidate = (group.last_ended_at_unix_nanos, group.call_path.clone());
         if self
-            .ended_at
+            .latest
             .as_ref()
             .is_none_or(|latest| candidate > *latest)
         {
-            self.ended_at = Some(candidate);
+            self.latest = Some(candidate);
         }
     }
 
     fn path(self) -> String {
-        self.ended_at.map(|(_, path)| path).unwrap_or_default()
+        self.latest.map(|(_, path)| path).unwrap_or_default()
     }
 }
 

@@ -1122,11 +1122,13 @@ function ProvidersTableScreen({
                 Tool name
               </span>
               {toolCalls && (
-                <Table.Heading>
-                  Calls
-                  <InfoTip ariaLabel="About calls">
-                    {`Your calls and your agents' calls in the last ${toolCalls.days} days.`}
-                  </InfoTip>
+                <Table.Heading className={styles.callsColumn}>
+                  <span className={styles.callsHeading}>
+                    Calls
+                    <InfoTip ariaLabel="About calls">
+                      {`Your calls and your agents' calls in the last ${toolCalls.days} days.`}
+                    </InfoTip>
+                  </span>
                 </Table.Heading>
               )}
               <span role="columnheader" className={styles.policyHeader}>
@@ -1685,7 +1687,7 @@ const ToolRow = memo(function ToolRow({
         )}
       </span>
       {calls !== null && (
-        <Table.Cell>
+        <Table.Cell className={styles.callsColumn}>
           <Typography.BodySmall as="span" variant={calls === 0 ? 'tertiary' : 'secondary'}>
             {calls.toLocaleString('en-US')}
           </Typography.BodySmall>

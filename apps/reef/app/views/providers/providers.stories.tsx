@@ -11,6 +11,7 @@ import { StepperPage } from './stepper-page'
 import type { ProviderView, ToolDetailView, ToolView, ReviewToolView, SetupView } from './types'
 import { UpdatePage } from './update-page'
 import { EditConfigurationPage } from './edit-configuration-page'
+import { selectionKey } from './selection'
 import { WorkspaceProvidersPage } from './workspace-providers-page'
 
 const form = { csrf: 'storybook-csrf', requestId: 'storybook-request' }
@@ -310,6 +311,22 @@ export const TreeNothingSelected: Story = {
       await expect(hit?.closest('label')).toBe(box.closest('label'))
     }
   },
+}
+// The Calls column: a count per tool, and a muted zero for a tool nobody called.
+export const TreeToolCalls: Story = {
+  render: () => (
+    <WorkspaceProvidersPage
+      {...treeProps}
+      toolCalls={{
+        days: 7,
+        calls: {
+          [selectionKey('prov-github', 'issues.list')]: 12_480,
+          [selectionKey('prov-github', 'repos.get')]: 316,
+          [selectionKey('prov-weather', 'getForecast')]: 4,
+        },
+      }}
+    />
+  ),
 }
 export const TreeCollapsedProvider: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} />,

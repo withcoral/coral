@@ -235,6 +235,10 @@ export const toolDescriptionText = style({
 export const inlineTooltipTarget = style({ display: 'inline-flex' })
 // The collapse-all toggle starts the column, above the headings' own toggles.
 export const nameHeader = style({ alignItems: 'center', display: 'flex', gap: 8 })
+// The counts keep clear of the policy toggles beside them; the heading's label
+// and its info tip sit on one line, as the header's own text does.
+export const callsColumn = style({ marginInlineEnd: 16 })
+export const callsHeading = style({ alignItems: 'center', display: 'inline-flex', gap: 6 })
 // The column is as wide as its toggles; the header centres over them.
 export const policyHeader = style({ display: 'flex', justifyContent: 'center' })
 // One line: a wrapped outcome pill would change the row's height after a save.

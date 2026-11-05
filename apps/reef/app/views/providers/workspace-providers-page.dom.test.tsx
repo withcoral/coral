@@ -224,8 +224,6 @@ test('lists every provider in one table, and keeps an empty one with its setting
   expect(screen.getByLabelText('Empty API settings')).toBeInTheDocument()
 })
 
-// Catches: the page drawing its own sticky provider and group rows instead of
-// nesting Wax groups, which loses the two-level sticky stack.
 // Catches: a tool's calls shown on another tool's row, a tool with no calls left
 // blank, or a Calls column shown when Coral cannot count calls.
 test.each([
@@ -249,6 +247,8 @@ test.each([
   expect(cells).toEqual(counts)
 })
 
+// Catches: the page drawing its own sticky provider and group rows instead of
+// nesting Wax groups, which loses the two-level sticky stack.
 test('nests each tool group inside its provider group', () => {
   const grouped = provider(github.id, 'GitHub', 'github', [
     ['repos.get', 'repos'],
