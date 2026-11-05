@@ -81,8 +81,8 @@
   the owner's own writes read the
   clock only for their own sample (the start mark, the terminal write and a
   recovered owner's one chunk date a timeout they find passed; the Policy
-  Enforcement Point judges an approved
-  request's deadline at dispatch, contract line 3, and records no expiry),
+  Enforcement Point compares an approved request's decision time with its
+  deadline, reads no clock for it, and records no expiry),
   and no chunk commit is predicated on the clock (contract line 5). Nothing
   outside the owner compares `now` with those deadlines to write TimedOut
   or Expired: readers show the recorded state beside the deadline. A

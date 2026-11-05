@@ -1607,14 +1607,37 @@ impl InvocationObserver for ApprovalEnforcementExpiry {
     }
 }
 
-/// An approved Invocation cannot dispatch once its approval expires, whether
-/// the approval expired before the held gate read it or, with the deadline
-/// the gate recorded in owner memory, while the enforcement point loaded its
-/// final checks. The approval itself stays approved.
+/// The enforcement point counts an approval by its decision time, not the
+/// clock. An approval decided before its deadline dispatches although the
+/// deadline passed before the held gate read it, or while the enforcement
+/// point loaded its final checks. One recorded after its deadline, as by a
+/// decider whose clock ran ahead, is denied `approval_expired`. The approval
+/// itself stays approved either way.
 #[tokio::test]
-async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of deadline placements, each driven through the gate and the enforcement point"
+)]
+async fn an_approval_counts_by_its_decision_time_whenever_the_dispatch_comes() {
+    /// Where the request's deadline lies against its recorded decision.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Deadline {
+        /// After the decision; it passes before the held gate reads it.
+        PassesBeforeTheGate,
+        /// After the decision; it passes while the enforcement point loads
+        /// its final checks.
+        PassesDuringFinalChecks,
+        /// Before the decision time the decider recorded.
+        BeforeTheDecision,
+    }
     const APPROVAL_DEADLINE: i64 = 1_000_000;
-    for during_final_checks in [false, true] {
+    let cases = [
+        (Deadline::PassesBeforeTheGate, true),
+        (Deadline::PassesDuringFinalChecks, true),
+        (Deadline::BeforeTheDecision, false),
+    ];
+    for (deadline, dispatches) in cases {
+        let during_final_checks = deadline == Deadline::PassesDuringFinalChecks;
         let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
         let mut fixture = TestModules::with_upstream(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
@@ -1634,7 +1657,7 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
             .await;
         fixture.require_approval(&tool).await;
         let approvals = fixture.approvals();
-        let run = fixture.runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; } return 'unexpected dispatch';")).await.unwrap();
+        let run = fixture.runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; } return 'dispatched';")).await.unwrap();
         let request = wait_for_approval(
             &approvals,
             &tool.principal,
@@ -1643,11 +1666,10 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
         )
         .await;
         wait_until(|| wait.entered()).await;
-        // Isolate approval expiry from the longer Run and worker-claim deadlines.
-        // While the enforcement point loads its checks, the deadline the gate
-        // records is the one the enforcement point's clock sample passes;
-        // before the gate, the deadline has already passed when the gate reads
-        // the approval.
+        // Isolate the request's deadline from the longer Run and worker-claim
+        // deadlines. During final checks, the enforcement point's clock
+        // sample reaches the deadline the gate read; before the gate, every
+        // later clock read is at or past the deadline.
         if during_final_checks {
             crate::approval_repository::set_approval_deadline(
                 &fixture.database,
@@ -1658,7 +1680,7 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
             .await
             .unwrap();
         }
-        approvals
+        let decided_at = approvals
             .decide(
                 &tool.principal,
                 &tool.workspace_id,
@@ -1668,13 +1690,20 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
                 &TraceId::parse(&"a".repeat(32)).unwrap(),
             )
             .await
+            .unwrap()
+            .decided_at_unix_nanos
             .unwrap();
-        if !during_final_checks {
+        let moved_deadline = match deadline {
+            Deadline::PassesBeforeTheGate => Some(fixture.clock.next.load(Ordering::SeqCst)),
+            Deadline::PassesDuringFinalChecks => None,
+            Deadline::BeforeTheDecision => Some(decided_at - 1),
+        };
+        if let Some(moved_deadline) = moved_deadline {
             crate::approval_repository::set_approval_deadline(
                 &fixture.database,
                 &tool.workspace_id,
                 &request.id,
-                fixture.clock.next.load(Ordering::SeqCst),
+                moved_deadline,
             )
             .await
             .unwrap();
@@ -1691,9 +1720,22 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
             run.run_id(),
         )
         .await;
-        enforcement.enforcement_checks.assert_no_dispatch();
-        assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
-        assert_final_code(&terminal, "approval_expired");
+        assert_final_code(
+            &terminal,
+            if dispatches {
+                "dispatched"
+            } else {
+                "approval_expired"
+            },
+        );
+        assert_eq!(
+            upstream.sends.load(Ordering::SeqCst),
+            usize::from(dispatches),
+            "{deadline:?}"
+        );
+        if !dispatches {
+            enforcement.enforcement_checks.assert_no_dispatch();
+        }
         assert_eq!(
             approvals
                 .get(&tool.principal, &tool.workspace_id, &request.id)
@@ -1701,7 +1743,7 @@ async fn an_approval_that_expires_before_dispatch_cannot_dispatch() {
                 .unwrap()
                 .state,
             ApprovalState::Approved,
-            "during final checks: {during_final_checks}"
+            "{deadline:?}"
         );
     }
 }

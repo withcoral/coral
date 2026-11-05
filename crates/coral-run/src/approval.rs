@@ -582,7 +582,8 @@ pub(crate) enum Gate {
 // this settles appends its `invocation.ended` to `events`. A request this
 // creates waits at most `approval_wait_nanos`, bounded by the Run deadline.
 // The gate never judges a deadline: the owner's timer expires a pending
-// request, and the enforcement point judges an approved one at dispatch.
+// request, and the enforcement point judges an approved one by its decision
+// time.
 pub(super) async fn gate(
     tx: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,
@@ -635,7 +636,7 @@ pub(super) async fn gate(
             id: row.id,
             deadline_at_unix_nanos: row.deadline_at_unix_nanos,
         }),
-        ApprovalState::Approved => Ok(Gate::Ready(approval_fact(&row))),
+        ApprovalState::Approved => Ok(Gate::Ready(approval_fact(&row)?)),
         ApprovalState::Closed if !required => Ok(Gate::Ready(ApprovalFact::NotRequested)),
         ApprovalState::Declined => Err(Error::InvocationRejected(
             CoralFailure::ApprovalDeclined.into(),
@@ -650,18 +651,21 @@ pub(super) async fn gate(
 }
 
 /// The request's recorded decision as the enforcement point decides on it.
-fn approval_fact(row: &StoredApproval) -> ApprovalFact {
-    match row.state {
+fn approval_fact(row: &StoredApproval) -> Result<ApprovalFact, Error> {
+    Ok(match row.state {
         ApprovalState::Pending => ApprovalFact::Pending {
             deadline_at_unix_nanos: row.deadline_at_unix_nanos,
         },
         ApprovalState::Approved => ApprovalFact::Approved {
+            decided_at_unix_nanos: row.decided_at_unix_nanos.ok_or_else(|| {
+                Error::CorruptData("approved request without a decision time".into())
+            })?,
             deadline_at_unix_nanos: row.deadline_at_unix_nanos,
         },
         ApprovalState::Declined => ApprovalFact::Declined,
         ApprovalState::Expired => ApprovalFact::Expired,
         ApprovalState::Closed => ApprovalFact::Closed,
-    }
+    })
 }
 
 /// A failure an outside writer recorded on the Invocation that prevents its
