@@ -12,7 +12,7 @@ use crate::{
     Error, LifecycleAction, LifecycleOutcome, ProviderId, repository as provider_repository,
 };
 use coral_catalog::AuthenticationConfiguration;
-use coral_credentials::{CredentialValues, Secret};
+use coral_credentials::{CredentialField, CredentialValues, Secret};
 use coral_db::Transaction;
 use zeroize::Zeroizing;
 
@@ -28,6 +28,46 @@ struct PendingRefresh {
 enum CredentialResolution {
     Ready(CredentialValues),
     Refreshing(PendingRefresh),
+}
+
+/// A typed-in Account's Credential Fields: its sealed record, plus the
+/// references stored beside it. A reference that does not parse, or a field
+/// with both a value and a reference, leaves no usable Account.
+fn stored_fields(
+    row: &LoadedAccount,
+    plaintext: &str,
+) -> Result<std::collections::BTreeMap<String, CredentialField>, Error> {
+    let mut fields: std::collections::BTreeMap<_, _> = repository::decode_sealed_fields(plaintext)?
+        .into_iter()
+        .map(|(name, secret)| (name, CredentialField::Value(secret)))
+        .collect();
+    let Some(references) = &row.secret_references else {
+        return Ok(fields);
+    };
+    let references =
+        repository::decode_references(references).map_err(|_invalid| Error::AccountRequired)?;
+    for (name, reference) in references {
+        if fields
+            .insert(name, CredentialField::Reference(reference))
+            .is_some()
+        {
+            return Err(Error::AccountRequired);
+        }
+    }
+    Ok(fields)
+}
+
+/// The values to send for a typed-in Account. Coral cannot read a Secret Store
+/// yet, so a field held there leaves no usable Account.
+fn field_values(row: &LoadedAccount, plaintext: &str) -> Result<CredentialValues, Error> {
+    let values = stored_fields(row, plaintext)?
+        .into_iter()
+        .map(|(name, field)| match field {
+            CredentialField::Value(secret) => Ok((name, secret)),
+            CredentialField::Reference(_) => Err(Error::AccountRequired),
+        })
+        .collect::<Result<_, _>>()?;
+    CredentialValues::new(values).map_err(|_invalid| Error::AccountInput)
 }
 
 impl AccountModule {
@@ -115,7 +155,7 @@ impl AccountModule {
             AuthenticationConfiguration::OAuthAuthorizationCode { .. }
                 | AuthenticationConfiguration::OAuthDeviceCode { .. }
         ) {
-            return repository::decode_values(&plaintext).map(Some);
+            return field_values(&row, &plaintext).map(Some);
         }
         let token = repository::decode_token(&plaintext)?;
         if row.refresh_attempt_id.is_some()
@@ -177,7 +217,7 @@ impl AccountModule {
             } => (token_url, scopes, resource.as_deref()),
             _ => {
                 tx.commit().await?;
-                return repository::decode_values(&plaintext).map(CredentialResolution::Ready);
+                return field_values(&row, &plaintext).map(CredentialResolution::Ready);
             }
         };
         let token = repository::decode_token(&plaintext)?;

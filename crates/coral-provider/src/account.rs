@@ -347,6 +347,9 @@ struct LoadedAccount {
     authorization_version: String,
     contract: ProviderCredentialContract,
     encrypted_credentials: String,
+    /// The fields a Secret Store holds, as stored. Decoded only for a dispatch,
+    /// so a bad value leaves that Account unusable and every other read intact.
+    secret_references: Option<String>,
     user_id: Option<coral_workspace::UserId>,
     agent_id: Option<coral_workspace::PrincipalId>,
     requires_authorization: bool,
@@ -1096,6 +1099,8 @@ mod reconnect;
 mod refresh;
 #[cfg(test)]
 mod scoped_account_tests;
+#[cfg(test)]
+mod secret_reference_tests;
 use intent::AuthorizationTarget;
 
 mod access_removal;

@@ -6,8 +6,8 @@ mod encoding;
 mod intent;
 pub(super) use accounts::{ensure_account, scoped_account, scoped_account_locked};
 pub(super) use encoding::{
-    decode_device, decode_flow, decode_token, decode_values, encode_device, encode_flow,
-    encode_token, encode_values,
+    decode_device, decode_flow, decode_references, decode_sealed_fields, decode_token,
+    decode_values, encode_device, encode_flow, encode_token, encode_values,
 };
 
 use super::connection::{LoadedConnection, PendingConnection};
@@ -96,6 +96,7 @@ enum ProviderAccounts {
     RefreshDeadline,
     RequiresAuthorization,
     Retired,
+    SecretReferences,
     TokenExpiresAtUnixNanos,
     UserId,
     WorkspaceId,
@@ -294,6 +295,10 @@ pub(super) async fn retire_access_account(
                 (ProviderAccounts::Retired, Expr::val(1_i64)),
                 (ProviderAccounts::EncryptedCredentials, Expr::val("")),
                 (
+                    ProviderAccounts::SecretReferences,
+                    Expr::val(Option::<String>::None),
+                ),
+                (
                     ProviderAccounts::TokenExpiresAtUnixNanos,
                     Expr::val(Option::<i64>::None),
                 ),
@@ -331,7 +336,7 @@ fn current_accounts() -> sea_query::SelectStatement {
         .to_owned()
 }
 
-const ACCOUNT_COLUMNS: [ProviderAccounts; 15] = [
+const ACCOUNT_COLUMNS: [ProviderAccounts; 16] = [
     ProviderAccounts::Id,
     ProviderAccounts::ProviderId,
     ProviderAccounts::WorkspaceId,
@@ -339,6 +344,7 @@ const ACCOUNT_COLUMNS: [ProviderAccounts; 15] = [
     ProviderAccounts::AuthorizationVersion,
     ProviderAccounts::Contract,
     ProviderAccounts::EncryptedCredentials,
+    ProviderAccounts::SecretReferences,
     ProviderAccounts::UserId,
     ProviderAccounts::AgentId,
     ProviderAccounts::RequiresAuthorization,
@@ -921,6 +927,10 @@ pub(super) async fn disconnect_account(
             .values([
                 (ProviderAccounts::EncryptedCredentials, Expr::val("")),
                 (
+                    ProviderAccounts::SecretReferences,
+                    Expr::val(Option::<String>::None),
+                ),
+                (
                     ProviderAccounts::TokenExpiresAtUnixNanos,
                     Expr::val(Option::<i64>::None),
                 ),
@@ -1012,6 +1022,10 @@ pub(super) async fn connect_account(
                     (
                         ProviderAccounts::EncryptedCredentials,
                         Expr::val(authorized.ciphertext),
+                    ),
+                    (
+                        ProviderAccounts::SecretReferences,
+                        Expr::val(Option::<String>::None),
                     ),
                     (
                         ProviderAccounts::TokenExpiresAtUnixNanos,
@@ -1503,6 +1517,7 @@ struct AccountRow {
     authorization_version: String,
     contract: String,
     encrypted_credentials: String,
+    secret_references: Option<String>,
     user_id: Option<String>,
     agent_id: Option<String>,
     requires_authorization: i64,
@@ -1524,6 +1539,7 @@ impl AccountRow {
             contract: ProviderCredentialContract::from_storage(&self.contract)?,
             disconnected: self.encrypted_credentials.is_empty(),
             encrypted_credentials: self.encrypted_credentials,
+            secret_references: self.secret_references,
             user_id: self
                 .user_id
                 .as_deref()
