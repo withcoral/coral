@@ -104,7 +104,8 @@ test('The keyboard drives the tools table, its drawer, and its policy', async (c
         .poll(() => heading('Keys').locator('a[href*="/tools/"]').allTextContents())
         .toEqual(['op146'])
       await heading('Keys').getByText('1 of 150 tools', { exact: true }).waitFor()
-      await heading('Aside').getByText('No matching tools.', { exact: true }).waitFor()
+      // A provider with no match leaves the table until the filter is cleared.
+      await heading('Aside').waitFor({ state: 'detached' })
       await policies.getByRole('radio', { name: /^All \d/ }).click()
       await heading('Aside').getByRole('link', { name: 'other', exact: true }).waitFor()
       // The pinned heading repeats the count.

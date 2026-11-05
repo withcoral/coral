@@ -1046,10 +1046,8 @@ const catalogViewports = { chromatic: { viewports: [390, 1440] } }
 async function showEmptyCatalogFilter(canvasElement: HTMLElement, label: string) {
   const canvas = within(canvasElement)
   await userEvent.type(canvas.getByRole('searchbox', { name: label }), 'no match')
-  // Each provider section says it has no match.
-  for (const status of canvas.getAllByText('No tools match “no match”.')) {
-    await expect(status).toBeVisible()
-  }
+  // Every provider leaves the table, and one status says nothing matches.
+  await expect(canvas.getByText('No tools match “no match”.')).toBeVisible()
 }
 
 // Coral refuses a row's policy change: the row keeps its policy and says why.

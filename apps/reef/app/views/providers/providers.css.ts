@@ -146,7 +146,7 @@ export const providersTable = style({
 // The policy column ends a step in from the table's edge.
 globalStyle(`${providersTable} [role="row"] > :last-child`, { paddingInlineEnd: 24 })
 // A no-match status runs its copy and its button on one centred line.
-export const sectionStatus = style({
+export const noMatchStatus = style({
   alignItems: 'center',
   columnGap: 6,
   display: 'inline-flex',

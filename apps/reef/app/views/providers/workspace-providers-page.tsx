@@ -494,8 +494,6 @@ type ProviderSection = {
   tools: ToolView[]
   status: string | null
   statusIndex: number | null
-  /** The filter matched none of the provider's tools. */
-  noMatch: boolean
   groups: {
     group: string
     index: number
@@ -641,6 +639,7 @@ function ProvidersTableScreen({
     }
     return counts
   }, [policies, searchable, tab, tableQuery])
+  const filtering = Boolean(tableQuery.text || policyFilter || selectedView)
   const visibleByProvider = useMemo(() => {
     const entries = searchable
       .filter((entry) => tab === null || entry.provider.id === tab)
@@ -653,12 +652,18 @@ function ProvidersTableScreen({
           listed: listedTools(entry, matching, linked),
         }
       })
-    // The selected view lists only the providers it covers.
-    if (!selectedView) return entries
-    return entries.filter(({ provider }) =>
-      provider.tools.some((o) => selectedView.has(selectionKey(provider.id, o.key))),
-    )
-  }, [policyFilter, searchable, selectedTool, selectedProvider?.id, selectedView, tab, tableQuery])
+    // A filter, a search or the selected view lists only the providers it leaves a tool in.
+    return filtering ? entries.filter(({ listed }) => listed.length > 0) : entries
+  }, [
+    filtering,
+    policyFilter,
+    searchable,
+    selectedTool,
+    selectedProvider?.id,
+    selectedView,
+    tab,
+    tableQuery,
+  ])
   // A scroll re-renders the screen, so these hold still until the rows change.
   const visibleTools = useMemo(
     () =>
@@ -711,7 +716,6 @@ function ProvidersTableScreen({
         tools: matching,
         status: null,
         statusIndex: null,
-        noMatch: false,
         groups: [],
       }
       tree.push(section)
@@ -723,19 +727,6 @@ function ProvidersTableScreen({
         flat.push({
           kind: 'status',
           key: `empty:${provider.id}`,
-          provider,
-          message: section.status,
-        })
-        continue
-      }
-      if ((tableFilter.trim() || policyFilter || selectedView) && listed.length === 0) {
-        const query = tableFilter.trim()
-        section.status = query ? `No tools match “${query}”.` : 'No matching tools.'
-        section.noMatch = true
-        section.statusIndex = flat.length
-        flat.push({
-          kind: 'status',
-          key: `nomatch:${provider.id}`,
           provider,
           message: section.status,
         })
@@ -777,16 +768,7 @@ function ProvidersTableScreen({
       }
     }
     return { rows: flat, sections: tree, ranked: null }
-  }, [
-    collapsed,
-    policyFilter,
-    usageOrder,
-    selectedTool,
-    selectedProviderId,
-    selectedView,
-    tableFilter,
-    visibleByProvider,
-  ])
+  }, [collapsed, usageOrder, selectedTool, selectedProviderId, visibleByProvider])
   const toolIndexes = useMemo(() => {
     const indexes = new Map<string, number>()
     rows.forEach((row, index) => {
@@ -1194,7 +1176,11 @@ function ProvidersTableScreen({
               </span>
             </Table.Row>
           </Table.Head>
-          {ranked ? (
+          {filtering && visibleByProvider.length === 0 ? (
+            <Table.Status>
+              <NoMatchStatus query={tableQuery.text} hidden={selected.size} onShow={showSelected} />
+            </Table.Status>
+          ) : ranked ? (
             <RankedRows
               activeKey={activeKey}
               bulkPending={mutations.bulkPending}
@@ -1226,7 +1212,6 @@ function ProvidersTableScreen({
               virtual={virtual}
               sections={sections}
               selected={selected}
-              showSelected={showSelected}
               toggleTools={toggleTools}
               toolCalls={toolCalls}
               maxCalls={maxCalls}
@@ -1399,7 +1384,6 @@ const TableSections = memo(function TableSections({
   query,
   sections,
   selected,
-  showSelected,
   toggleTools,
   toolCalls,
   maxCalls,
@@ -1419,7 +1403,6 @@ const TableSections = memo(function TableSections({
   query: FilterQuery
   sections: ProviderSection[]
   selected: Set<SelectionKey>
-  showSelected: () => void
   toggleTools: (targets: { provider: ProviderView; tool: ToolView }[], checked: boolean) => void
   toolCalls: ToolCallCounts | null
   /** The busiest tool's calls, which a full bar stands for. */
@@ -1470,11 +1453,7 @@ const TableSections = memo(function TableSections({
           ref={virtual.measureRow}
           data-index={section.statusIndex ?? undefined}
         >
-          {section.noMatch ? (
-            <NoMatchStatus section={section} selected={selected} onShow={showSelected} />
-          ) : (
-            section.status
-          )}
+          {section.status}
         </Table.Status>
       )}
       <Table.VirtualGroups groups={section.groups} virtual={virtual}>
@@ -1962,29 +1941,27 @@ const PolicySelect = memo(function PolicySelect({
   )
 })
 
-/** A provider's no-match status. It counts the selected tools the filter
- * hides there and offers to show them, and says nothing more while none are.
- * It shows only when the provider lists no rows, so each of them is hidden. */
+/** The table's status when the filter leaves no provider. It counts the
+ * selected tools, which are all hidden then, and offers to show them. It says
+ * nothing more while none are selected. */
 function NoMatchStatus({
+  hidden,
   onShow,
-  section,
-  selected,
+  query,
 }: {
+  /** The selected tools, in every provider. */
+  hidden: number
   onShow: () => void
-  section: ProviderSection
-  selected: Set<SelectionKey>
+  query: string
 }) {
-  const { provider } = section
-  const hidden = provider.tools.filter((tool) =>
-    selected.has(selectionKey(provider.id, tool.key)),
-  ).length
-  if (hidden === 0) return section.status
+  const status = query ? `No tools match “${query}”.` : 'No matching tools.'
+  if (hidden === 0) return status
   // The copy stays one text run, so its sentences keep their space; the gap
   // only sets the button apart.
   return (
-    <span className={styles.sectionStatus}>
+    <span className={styles.noMatchStatus}>
       <span>
-        {`${section.status} ${hidden} selected ${hidden === 1 ? 'tool is' : 'tools are'} hidden.`}
+        {`${status} ${hidden} selected ${hidden === 1 ? 'tool is' : 'tools are'} hidden.`}
       </span>
       <Button.Container type="button" variant="secondary" size="22" onClick={onShow}>
         <Button.Icon name="ListFilter" />
