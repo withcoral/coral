@@ -1961,7 +1961,7 @@ function NoMatchStatus({
   return (
     <span className={styles.noMatchStatus}>
       <span>
-        {`${status} ${hidden} selected ${hidden === 1 ? 'tool is' : 'tools are'} hidden.`}
+        {`${status} The filter hides ${hidden} selected ${hidden === 1 ? 'tool' : 'tools'}.`}
       </span>
       <Button.Container type="button" variant="secondary" size="22" onClick={onShow}>
         <Button.Icon name="ListFilter" />

@@ -746,7 +746,7 @@ test('selection builds up across filters and the selected view shows all of it',
 
   await filterTools('nothing matches')
   expect(table()).toHaveTextContent(
-    'No tools match “nothing matches”. 3 selected tools are hidden.',
+    'No tools match “nothing matches”. The filter hides 3 selected tools.',
   )
   await filterProviders('Weather')
   await user.click(within(table()).getByRole('button', { name: 'Show all selected tools' }))
@@ -779,9 +779,13 @@ test('selection builds up across filters and the selected view shows all of it',
 // that drops the query, or one that offers a hidden selection when none is.
 test.each([
   { by: 'search', selects: false, status: 'No tools match “nothing”.' },
-  { by: 'search', selects: true, status: 'No tools match “nothing”. 1 selected tool is hidden.' },
+  {
+    by: 'search',
+    selects: true,
+    status: 'No tools match “nothing”. The filter hides 1 selected tool.',
+  },
   { by: 'policy', selects: false, status: 'No matching tools.' },
-  { by: 'policy', selects: true, status: 'No matching tools. 1 selected tool is hidden.' },
+  { by: 'policy', selects: true, status: 'No matching tools. The filter hides 1 selected tool.' },
 ])('a $by that leaves no provider says so once', async ({ by, selects, status }) => {
   const [list, get] = github.tools
   const mixed = { ...github, tools: [{ ...list!, policy: 'enabled' as const }, get!] }
@@ -796,7 +800,12 @@ test.each([
   }
   for (const name of ['GitHub', 'Weather'])
     expect(within(table()).queryByRole('rowgroup', { name })).toBeNull()
-  expect(table()).toHaveTextContent(status)
+  // One row says so, in place of every provider's.
+  expect(
+    within(table())
+      .getAllByRole('row')
+      .filter((row) => row.textContent?.startsWith(status)),
+  ).toHaveLength(1)
   expect(within(table()).queryByRole('button', { name: 'Show all selected tools' }) !== null).toBe(
     selects,
   )
