@@ -11,7 +11,7 @@ An Invocation that is denied never touches the store. Each secrets system's adap
 
 Rejected: Coral writing secrets to the customer's store (the customer still would not own the secret, and Coral would
 need write access), and the customer holding Coral's encryption key in their KMS as the answer to this request (Coral
-would still store every secret). The second remains the planned answer for OAuth (below).
+would still store every secret). A customer-held key still suits OAuth (below).
 
 Write access fails hardest on Users' own credentials. A customer who wants every credential at rest under their control
 would need Coral to write each User's OAuth tokens to the store too, and the store's sharing rules decide who else can
@@ -50,7 +50,8 @@ User's own tokens.
 
 The operator defines each Secret Store at bootstrap: its address, how Coral authenticates (workload identity such as
 Kubernetes, AppRole or AWS IAM) and any setting needed to locate secrets, such as a KV mount. Coral stores no credential
-for a store. An Organization Owner grants stores to Workspaces in Reef, and a reference may name only a granted store.
+for a store. An Organization Owner grants stores to Workspaces in Reef and revokes those grants, and a reference may name
+only a granted store.
 Granting shows the Organization Owner nothing inside the Workspace, so it sits with their governance surface in ADR
 0015. Rejected: Workspace authority for the grant, which would let a Workspace Owner grant themselves any store.
 

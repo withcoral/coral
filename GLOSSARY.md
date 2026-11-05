@@ -10,7 +10,7 @@ Services.
 Isolating multiple Organizations means running separate deployments, so the cross-Organization boundary is physical
 rather than an in-query filter within one deployment. An Organization Owner governs Workspaces without authority inside
 them: the Owner can list every Workspace with its name, state, and designated Owners, assign a designated Owner,
-archive or restore a Workspace, and grant a Secret Store to it. Everything else in a Workspace needs a Workspace Membership there. A local deployment
+archive or restore a Workspace, and grant a Secret Store to it or revoke that grant. Everything else in a Workspace needs a Workspace Membership there. A local deployment
 has one implicit Organization whose implicit local User is its Organization Owner. _Avoid_: Mutable Organization
 resource, inherited Workspace authority, Organization-wide access to another User's private work
 
@@ -161,12 +161,12 @@ policy. _Avoid_: MCP clientInfo, Program identity, secret URL, recoverable crede
 **Administrative Lifecycle Event**: An immutable, non-secret record of an accepted control-plane or authoring change
 that can affect future authority, configuration, or code. It covers Organization Membership, Workspace and Workspace
 Membership changes, Agents and Agent Registrations, Provider setup, publication, Credential Route and lifecycle changes,
-Provider Account authorization, connection and disconnection, Tool policy, approval decisions, and Saved Function
-saves and deletions. It records an actor that is either the accountable Principal or Coral itself, together with the
+Provider Account authorization, connection and disconnection, Secret Store grants and revocations, Tool policy, approval
+decisions, and Saved Function saves and deletions. It records an actor that is either the accountable Principal or Coral itself, together with the
 action, safe target, outcome, changed field paths, timestamp, and trace identifier, without copying credentials,
 before-and-after values, or Invocation arguments. It also records whether a Workspace Membership or Organization Owner
 governance authorized the change. Organization Owners can inspect Organization Membership events and the events for
-their own governance actions: Owner assignment, archive, and restore. A Workspace Owner can inspect that Workspace's
+their own governance actions: Owner assignment, archive, restore, and Secret Store grants and revocations. A Workspace Owner can inspect that Workspace's
 Workspace, Membership, Agent, Agent Saved Function, Provider, Credential Route, policy, and shared or Agent Provider
 Account events. A User can inspect events for their own Provider Accounts, Membership, and Saved Functions. Ownership
 does not expose another User's private work, and Agents cannot browse these events. Each event belongs to the domain
@@ -356,7 +356,8 @@ _Avoid_: Provider Account, credential material, scope compatibility check
 **Provider Account Authorization**: A durable host-owned process that obtains credentials through secret entry, Secret References or OAuth
 for temporary Provider Setup use, an initial Provider Account, or explicit replacement of one exact Account. Its safe
 progress and completion metadata contain no credentials, and completion cannot silently retarget another caller,
-account setting, or changed authentication requirement.
+account setting, or changed authentication requirement. Secret References apply only to a shared Account or an Agent's
+Account, so temporary Provider Setup use takes secret entry or OAuth.
 _Avoid_: Account Connection Request, request-bound OAuth stream, credential response
 
 **Provider Account**: The durable, Provider-local authorization record and protected credentials for its shared account
