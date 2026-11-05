@@ -408,43 +408,95 @@ pub(super) fn now() -> Result<i64, Error> {
         .ok_or(Error::Clock)
 }
 
-/// Writes the `save` and `delete` Attempts Task history keeps from before
-/// agents saved Saved Functions from Programs (ADR 0031), as Coral wrote
-/// them, so tests can read retained history. No surface records these now.
+/// One retained authoring Attempt: a `save` or `delete` that Task history
+/// keeps from before agents saved Saved Functions from Programs (ADR 0031).
+#[cfg(any(test, feature = "test-fixtures"))]
+#[derive(Debug, Clone, Copy)]
+pub enum RetainedChange<'a> {
+    /// Saves an untyped function.
+    Save {
+        /// The path relative to `coral.functions`.
+        path: &'a str,
+        /// The description search shows.
+        description: &'a str,
+        /// The TypeScript module source.
+        source: &'a str,
+    },
+    /// Deletes the function at `path`.
+    Delete {
+        /// The path relative to `coral.functions`.
+        path: &'a str,
+    },
+}
+
+/// Writes the Attempts of [`RetainedChange`] as Coral wrote them, so tests
+/// can read retained history. No surface records these now.
 #[cfg(any(test, feature = "test-fixtures"))]
 impl TaskCommands {
-    /// Saves an untyped function through `functions` as `call`'s Principal
-    /// and completes a `save` Attempt naming it, in one transaction. A
+    /// Makes `change` through `functions` as `call`'s Principal and
+    /// completes its Attempt, naming the function, in one transaction. A
     /// failure records the Attempt's rejection, as Coral did. Universal
     /// Search is not told; a reconcile pass finds the function.
     ///
     /// # Errors
     ///
-    /// Returns an input, authoring, authority or persistence failure.
-    pub async fn record_retained_save(
+    /// Returns an input, authoring, absent-function, authority or
+    /// persistence failure.
+    pub async fn record_retained(
         &self,
         functions: &coral_functions::SavedFunctionModule,
         call: &AttributedCommand,
-        path: &str,
-        description: &str,
-        source: &str,
-    ) -> Result<coral_functions::SavedFunction, Error> {
-        let id = self.begin(call, AttemptKind::Save).await?;
+        change: RetainedChange<'_>,
+    ) -> Result<coral_functions::SavedFunctionId, Error> {
+        let kind = match change {
+            RetainedChange::Save { .. } => AttemptKind::Save,
+            RetainedChange::Delete { .. } => AttemptKind::Delete,
+        };
+        let id = self.begin(call, kind).await?;
         let result = async {
-            let save = coral_functions::SavedFunctionSave::new(
-                coral_functions::SavedFunctionPath::parse(path)?,
-                coral_functions::SavedFunctionDescription::parse(description)?,
-                coral_functions::SavedFunctionSource::parse(source)?,
-            );
-            let prepared = functions
-                .prepare_save(&retained_context(call)?, &call.workspace_id, save, None)
-                .await?;
+            let context = retained_context(call)?;
+            // A save compiles before the transaction, as Coral did.
+            let ready = match change {
+                RetainedChange::Save {
+                    path,
+                    description,
+                    source,
+                } => {
+                    let save = coral_functions::SavedFunctionSave::new(
+                        coral_functions::SavedFunctionPath::parse(path)?,
+                        coral_functions::SavedFunctionDescription::parse(description)?,
+                        coral_functions::SavedFunctionSource::parse(source)?,
+                    );
+                    RetainedReady::Save(Box::new(
+                        functions
+                            .prepare_save(&context, &call.workspace_id, save, None)
+                            .await?,
+                    ))
+                }
+                RetainedChange::Delete { path } => {
+                    RetainedReady::Delete(coral_functions::SavedFunctionPath::parse(path)?)
+                }
+            };
             let mut transaction = self.tasks.database.begin().await?;
             self.hold_attempt(&mut transaction, call).await?;
-            let function = functions
-                .save_in_transaction(&mut transaction, prepared)
-                .await?;
-            let evidence = AttemptEvidence::SavedFunction(function.id().clone());
+            let function = match ready {
+                RetainedReady::Save(prepared) => functions
+                    .save_in_transaction(&mut transaction, *prepared)
+                    .await?
+                    .id()
+                    .clone(),
+                RetainedReady::Delete(path) => {
+                    functions
+                        .delete_in_transaction(
+                            &mut transaction,
+                            &context,
+                            &call.workspace_id,
+                            &path,
+                        )
+                        .await?
+                }
+            };
+            let evidence = AttemptEvidence::SavedFunction(function.clone());
             self.complete(&mut transaction, call, &id, &evidence)
                 .await?;
             transaction.commit().await?;
@@ -456,44 +508,13 @@ impl TaskCommands {
             Err(error) => Err(self.reject(call, &id, error).await),
         }
     }
+}
 
-    /// Deletes `call`'s Principal's function at `path` through `functions`
-    /// and completes a `delete` Attempt naming it, in one transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an input, absent-function, authority or persistence failure.
-    pub async fn record_retained_delete(
-        &self,
-        functions: &coral_functions::SavedFunctionModule,
-        call: &AttributedCommand,
-        path: &str,
-    ) -> Result<coral_functions::SavedFunctionId, Error> {
-        let id = self.begin(call, AttemptKind::Delete).await?;
-        let result = async {
-            let path = coral_functions::SavedFunctionPath::parse(path)?;
-            let mut transaction = self.tasks.database.begin().await?;
-            self.hold_attempt(&mut transaction, call).await?;
-            let deleted = functions
-                .delete_in_transaction(
-                    &mut transaction,
-                    &retained_context(call)?,
-                    &call.workspace_id,
-                    &path,
-                )
-                .await?;
-            let evidence = AttemptEvidence::SavedFunction(deleted.clone());
-            self.complete(&mut transaction, call, &id, &evidence)
-                .await?;
-            transaction.commit().await?;
-            Ok(deleted)
-        }
-        .await;
-        match result {
-            Ok(deleted) => Ok(deleted),
-            Err(error) => Err(self.reject(call, &id, error).await),
-        }
-    }
+/// A [`RetainedChange`] ready to write: a save compiled, or a delete's path.
+#[cfg(any(test, feature = "test-fixtures"))]
+enum RetainedReady {
+    Save(Box<coral_functions::PreparedSave>),
+    Delete(coral_functions::SavedFunctionPath),
 }
 
 #[cfg(any(test, feature = "test-fixtures"))]

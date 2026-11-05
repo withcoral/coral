@@ -70,14 +70,17 @@ async fn context_impact_task_total_includes_unloaded_measurements_and_ignores_no
         .await
         .unwrap();
     f.wait_for_terminal(run.run_id()).await;
-    f.commands
-        .record_retained_save(&f.functions, &call, "report", "Save", REPORT)
-        .await
-        .unwrap();
-    f.commands
-        .record_retained_delete(&f.functions, &call, "report")
-        .await
-        .unwrap();
+    let save = crate::RetainedChange::Save {
+        path: "report",
+        description: "Save",
+        source: REPORT,
+    };
+    for change in [save, crate::RetainedChange::Delete { path: "report" }] {
+        f.commands
+            .record_retained(&f.functions, &call, change)
+            .await
+            .unwrap();
+    }
     f.tasks
         .end(
             &f.actor,

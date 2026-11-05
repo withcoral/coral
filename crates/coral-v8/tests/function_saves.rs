@@ -210,6 +210,12 @@ await coral.workspace.saveFunction({ path: "a.b", description: "d", source });"#
             "  function helper() { return 1; }\n\nexport default helper;\n",
         ),
         (
+            "a const whose function a type assertion wraps",
+            r#"const next = ((value: number) => value + 1) satisfies (value: number) => number;
+await coral.workspace.saveFunction({ path: "a.b", description: "d", source: next });"#,
+            "const next = ((value: number) => value + 1) satisfies (value: number) => number;\n\nexport default next;\n",
+        ),
+        (
             "overloads",
             r#"function pick(value: string): string;
 function pick(value: number): number;
@@ -365,6 +371,17 @@ fn a_source_that_names_no_top_level_function_is_refused_at_admission() {
             declared("F"),
         ),
         (
+            "a dependency declared in a top-level block",
+            saving(
+                "{ var hidden = 3; }\nfunction f() { return hidden; }\n",
+                "f",
+            ),
+            "hidden; }",
+            "hidden is not declared at the top level of this Program; declare it there, \
+             outside any block or loop"
+                .to_string(),
+        ),
+        (
             "an undeclared name",
             saving("", "missing"),
             "missing",
@@ -381,6 +398,12 @@ fn a_save_call_admission_cannot_read_is_refused() {
             r#"await coral.workspace.saveFunction({ path: "a", description: "d" });"#.to_string(),
             "coral.workspace",
             "Pass coral.workspace.saveFunction one object literal with source".to_string(),
+        ),
+        (
+            "two sources",
+            saving("const f = () => 1;\nconst g = () => 2;\n", "f, source: g"),
+            "source: g",
+            "Pass source once".to_string(),
         ),
         (
             "a computed path",

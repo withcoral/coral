@@ -56,7 +56,7 @@ function topLevelStatement(node, container) {
 
 function isFunctionInitializer(initializer) {
   if (initializer === undefined) return false;
-  const value = unwrapParentheses(initializer);
+  const value = unwrapTransparentExpression(initializer);
   return ts.isArrowFunction(value) || ts.isFunctionExpression(value);
 }
 
@@ -99,31 +99,35 @@ function referencedSymbol(node, checker) {
 }
 
 // `roots` and every top-level declaration statement they reach through any
-// reference, runtime or type, in source order.
+// reference, runtime or type, in source order. A reference that reaches a
+// name declared inside another kind of top-level statement, such as a `var`
+// in a block, is returned instead: copying that statement would run it.
 function declarationClosure(roots, sourceFile, container, checker) {
   const included = new Set(roots);
   const pending = [...roots];
+  let unreachable;
   while (pending.length > 0) {
     const visit = (node) => {
+      if (unreachable !== undefined) return;
       if (ts.isIdentifier(node) && identifierIsReference(node)) {
         for (const declaration of referencedSymbol(node, checker)?.declarations ?? []) {
           if (declaration.getSourceFile() !== sourceFile) continue;
           const statement = topLevelStatement(declaration, container);
-          if (
-            statement !== undefined &&
-            isDeclarationStatement(statement) &&
-            !included.has(statement)
-          ) {
-            included.add(statement);
-            pending.push(statement);
+          if (statement === undefined || included.has(statement)) continue;
+          if (!isDeclarationStatement(statement)) {
+            unreachable = node;
+            return;
           }
+          included.add(statement);
+          pending.push(statement);
         }
       }
       ts.forEachChild(node, visit);
     };
     visit(pending.pop());
+    if (unreachable !== undefined) return { unreachable };
   }
-  return [...included].toSorted((left, right) => left.pos - right.pos);
+  return { statements: [...included].toSorted((left, right) => left.pos - right.pos) };
 }
 
 function isLineTerminator(character) {
@@ -252,10 +256,17 @@ function savedFunctionExtraction({
         name,
       );
     }
+    const closure = declarationClosure(statements, sourceFile, container, checker);
+    if (closure.unreachable !== undefined) {
+      return refuse(
+        `${closure.unreachable.text} is not declared at the top level of ${scope}; declare it there, outside any block or loop`,
+        closure.unreachable,
+      );
+    }
     carry(
       property,
       ts.isShorthandPropertyAssignment(property) ? property.name : property.initializer,
-      declarationClosure(statements, sourceFile, container, checker),
+      closure.statements,
       name.text,
     );
     return true;
@@ -284,6 +295,9 @@ function savedFunctionExtraction({
         : [];
     if (sources.length === 0) {
       return refuse('Pass coral.workspace.saveFunction one object literal with source', call);
+    }
+    if (sources.length > 1) {
+      return refuse('Pass source once', sources[1]);
     }
     return sources.every(extractSource);
   });

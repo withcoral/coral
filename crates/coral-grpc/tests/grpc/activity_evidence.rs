@@ -536,12 +536,14 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
     )
     .unwrap();
     commands
-        .record_retained_save(
+        .record_retained(
             &functions,
             &call,
-            "answer",
-            "Native historical answer",
-            "type Answer = { value: string };\nexport default function answer(): Answer { return { value: 'private old source' }; }",
+            coral_task::RetainedChange::Save {
+                path: "answer",
+                description: "Native historical answer",
+                source: "type Answer = { value: string };\nexport default function answer(): Answer { return { value: 'private old source' }; }",
+            },
         )
         .await
         .unwrap();
@@ -550,7 +552,11 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
         .await
         .unwrap();
     commands
-        .record_retained_delete(&functions, &call, "answer")
+        .record_retained(
+            &functions,
+            &call,
+            coral_task::RetainedChange::Delete { path: "answer" },
+        )
         .await
         .unwrap();
     publish_http(&f, "https://evidence.example").await;

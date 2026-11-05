@@ -23,12 +23,13 @@ a `const`, `let` or `var` with any initializer, including `await` and Tool calls
 interface or an enum. A top-level statement that declares nothing is not saved. Coral applies no effect analysis, as for
 any Saved Function: top-level initialization runs once in each Run that links the module. That module is the source the
 save receives, records and stores; the save-time compile is unchanged. Admission refuses, with an authored location, a
-literal call that does not pass one object literal whose `source` names such a function, and a `saveFunction` named
-through a literal computed key or not called. A call admission cannot read, such as one through a path the Program
-computes, reaches the Tool with no source and fails there. Programs are not type-checked: type errors in the saved
-function stay advisory in the save result's `diagnostics` (ADR 0020). The Program host passes the Tool only the module
-admission saved, so no value a Program writes reaches the Tool as a source. The host is that rule's only guard: the Tool
-cannot tell that module from other text.
+literal call that does not pass one object literal with one `source` that names such a function, a function that reaches
+a name declared inside a top-level block or loop, and a `saveFunction` named through a literal computed key or not
+called. Admission follows only the literal path from `coral`. A call it cannot read, such as one through a variable that
+holds `coral.workspace` or a path the Program computes, reaches the Tool with no source and fails there. Programs are
+not type-checked: type errors in the saved function stay advisory in the save result's `diagnostics` (ADR 0020). The
+Program host passes the Tool only the module admission saved, so no value a Program writes reaches the Tool as a source.
+The host is that rule's only guard: the Tool cannot tell that module from other text.
 
 We ship this for one fewer contract and one surface where agents discover and author, not for a measured gain. On 4
 Nov 2026, Duel (run `20261104T142828Z-2bfb73`) compared three arms on the 17 challenges frozen from the ADR 0026
