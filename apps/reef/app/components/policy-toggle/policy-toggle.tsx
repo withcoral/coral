@@ -10,7 +10,12 @@ export const policyOptions: readonly {
   icon: IconName
   description?: string
 }[] = [
-  { value: 'enabled', label: 'Allow', icon: 'CircleCheck' },
+  {
+    value: 'enabled',
+    label: 'Allow',
+    icon: 'CircleCheck',
+    description: 'Coral runs each call without asking.',
+  },
   {
     value: 'approval_required',
     label: 'Ask',

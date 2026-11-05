@@ -22,10 +22,13 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-// Each restrictive policy says what it does, for sighted and screen reader users.
+// Each policy says what it does, for sighted and screen reader users.
 export const NeedsApproval: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
+    await expect(canvas.getByRole('radio', { name: 'Allow' })).toHaveAccessibleDescription(
+      'Coral runs each call without asking.',
+    )
     await expect(canvas.getByRole('radio', { name: 'Ask' })).toHaveAccessibleDescription(
       'Coral asks before each use.',
     )
