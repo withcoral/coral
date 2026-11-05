@@ -1069,6 +1069,87 @@ async fn a_decision_at_the_request_deadline_expires() {
     );
 }
 
+/// An approval the owner applies before the request's deadline, whose chunk
+/// commits after the deadline passed, is dated when the owner applied it,
+/// so it still counts and the Invocation dispatches.
+#[tokio::test]
+async fn an_approval_applied_before_its_deadline_counts_when_its_chunk_commits_after_it() {
+    let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
+    let (mut fixture, tool, approvals, probe) = quiet_approval_fixture(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        upstream.clone(),
+        "late-commit",
+    )
+    .await;
+    // Isolate the request's deadline from the Run's: its timer (30 s on the
+    // host clock) does not fire within this test.
+    fixture.runs.execution_policy =
+        crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(30));
+    let run = fixture.runs.start(&tool.principal, &tool.workspace_id, RunSubmission::new(
+        ProgramSource::parse("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; } return 'dispatched';").unwrap(),
+        RunTimeout::from_millis(900_000).unwrap())).await.unwrap();
+    let request = wait_for_approval(
+        &approvals,
+        &tool.principal,
+        &tool.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    let release = probe.hold_next_commit();
+    let decided = {
+        let approvals = approvals.clone();
+        let actor = tool.principal.clone();
+        let workspace = tool.workspace_id.clone();
+        let id = request.id.clone();
+        tokio::spawn(async move {
+            approvals
+                .decide(
+                    &actor,
+                    &workspace,
+                    &id,
+                    ApprovalDecision::Approve,
+                    None,
+                    &TraceId::parse(&"c".repeat(32)).unwrap(),
+                )
+                .await
+        })
+    };
+    // The owner applied the decision before the deadline; its chunk is held
+    // until the clock has passed it.
+    wait_until(|| probe.held()).await;
+    assert_eq!(
+        approvals
+            .get(&tool.principal, &tool.workspace_id, &request.id)
+            .await
+            .unwrap()
+            .state,
+        ApprovalState::Pending,
+        "the held chunk is the decision's"
+    );
+    fixture
+        .clock
+        .next
+        .store(request.deadline_at_unix_nanos + 1, Ordering::SeqCst);
+    release.send(()).expect("release the decision chunk");
+    let decided = decided.await.expect("join").expect("the decision");
+    assert_eq!(decided.state, ApprovalState::Approved);
+    assert!(
+        decided
+            .decided_at_unix_nanos
+            .is_some_and(|at| at < request.deadline_at_unix_nanos),
+        "dated when the owner applied it: {decided:?}"
+    );
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &tool.principal,
+        &tool.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    assert_final_code(&terminal, "dispatched");
+    assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,

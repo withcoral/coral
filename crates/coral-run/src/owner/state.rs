@@ -83,11 +83,13 @@ pub(crate) struct Recovered {
 pub(crate) enum RecoveryStep {
     /// An Approval Request's deadline passed: it expires.
     Expire(ApprovalId),
-    /// A decision from the Run Inbox: recorded when `record`, else it closes
-    /// its request, the owner accepting no more requests when it applied it.
+    /// A decision from the Run Inbox, applied at `applied_at_unix_nanos`:
+    /// recorded when `record`, else it closes its request, the owner
+    /// accepting no more requests when it applied it.
     Decide {
         request: DecisionRequest,
         record: bool,
+        applied_at_unix_nanos: i64,
     },
 }
 
@@ -143,7 +145,11 @@ impl Recovered {
             RecoveryStep::Expire(request.approval)
         } else {
             let record = self.accepts(limits, now_unix_nanos);
-            RecoveryStep::Decide { request, record }
+            RecoveryStep::Decide {
+                request,
+                record,
+                applied_at_unix_nanos: now_unix_nanos,
+            }
         });
     }
 }
@@ -1016,7 +1022,7 @@ impl OwnerState {
             return Vec::new();
         }
         self.inbox_rows.insert(row.clone());
-        let work = DecideWork::decision(request, decide);
+        let work = DecideWork::decision(request, decide, now_unix_nanos);
         let chunk = self.push(ChunkItem::Work(Box::new(work)), 1, 0);
         chunk.requests.push(key);
         chunk.inbox_rows.push(row);
