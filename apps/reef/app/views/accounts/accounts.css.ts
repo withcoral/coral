@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css'
+import { globalStyle, style } from '@vanilla-extract/css'
 
 export const stack = style({
   display: 'flex',
@@ -57,6 +57,14 @@ export const rowActions = style({
   justifyContent: 'flex-end',
   whiteSpace: 'nowrap',
   paddingBlock: 6,
+})
+globalStyle(`${rowActions} > *`, { flexShrink: 0 })
+// A request's deadline or failed decline: it truncates first, so the buttons stay whole.
+export const requestNote = style({
+  selectors: { [`${rowActions} > &`]: { flexShrink: 1 } },
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
 })
 // The provider's logo, then its name.
 export const provider = style({
