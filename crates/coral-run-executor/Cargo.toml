@@ -9,9 +9,22 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# A scripted Coral that serves the pull stream, for tests of the Run Executor.
+test-support = []
+
 [dependencies]
 coral-telemetry.workspace = true
 coral-v8.workspace = true
+prost.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+tonic-health.workspace = true
+tonic-prost.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 coral-test-support.workspace = true

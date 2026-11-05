@@ -1,4 +1,5 @@
-//! The `coral` executable: starts the runtime or reports its version.
+//! The `coral` executable: starts the runtime, runs a Run Executor, or
+//! reports its version.
 //!
 //! Application composition belongs to `coral-app`. This process parses its
 //! arguments, reports where the runtime listens, and maps signals and errors
@@ -21,8 +22,10 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::process::ExitCode;
 
+use anyhow::{Context as _, bail};
 use clap::Parser;
 use coral_app::bootstrap::is_loopback_ip;
+use tokio::sync::oneshot;
 
 /// This binary's version and the commit it was built from.
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("CORAL_GIT_SHA"));
@@ -30,7 +33,46 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("CORAL_GIT_SH
 #[derive(Debug, Parser)]
 #[command(name = "coral", version = VERSION)]
 /// Starts the Coral runtime process.
-struct ProcessArgs {}
+struct ProcessArgs {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum Command {
+    /// Runs a Run Executor, which dials Coral and holds its pull stream.
+    RunExecutor(RunExecutorArgs),
+}
+
+/// A Run Executor's flags. It keeps no config file and no state.
+#[derive(Debug, clap::Args)]
+struct RunExecutorArgs {
+    /// Coral's one address, such as `http://coral:50052`.
+    #[arg(long, env = "CORAL_RUN_EXECUTOR_CORAL_ADDRESS")]
+    coral_address: coral_run_executor::CoralAddress,
+    /// Read the token from stdin up to its first newline, and retire when
+    /// stdin closes. Without it, set `CORAL_RUN_EXECUTOR_TOKEN`.
+    #[arg(long, env = "CORAL_RUN_EXECUTOR_TOKEN_STDIN")]
+    token_stdin: bool,
+    /// The most Runs it holds at once.
+    #[arg(
+        long,
+        env = "CORAL_RUN_EXECUTOR_MAX_RUNS_HELD",
+        default_value_t = 128,
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    max_runs_held: u32,
+    /// The Program Compiler's heap limit, in bytes.
+    #[arg(long, env = "CORAL_RUN_EXECUTOR_COMPILER_HEAP_BYTES", default_value_t = 512 << 20)]
+    compiler_heap_bytes: u64,
+    /// Serve the gRPC health service on this `host:port`.
+    #[arg(long, env = "CORAL_RUN_EXECUTOR_HEALTH_LISTEN")]
+    health_listen: Option<String>,
+}
+
+/// The environment variable that holds a dialing Run Executor's token. No
+/// flag carries the token, so it never shows in a process listing.
+const RUN_EXECUTOR_TOKEN_ENV: &str = "CORAL_RUN_EXECUTOR_TOKEN";
 
 /// Error surfaced by process startup.
 #[derive(Debug, thiserror::Error)]
@@ -75,7 +117,16 @@ impl coral_app::RunErrorTelemetry for ProcessError {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let ProcessArgs {} = ProcessArgs::parse();
+    let ProcessArgs { command } = ProcessArgs::parse();
+    if let Some(Command::RunExecutor(args)) = command {
+        return match run_executor(args).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Error: {error:?}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let context = coral_app::RunContext::from_env();
     let result = coral_app::run_with_context(&context, Box::pin(run_runtime())).await;
     let _shutdown_result = tokio::task::spawn_blocking(coral_app::shutdown_tracing).await;
@@ -126,6 +177,93 @@ async fn run_runtime() -> Result<(), ProcessError> {
     Ok(())
 }
 
+/// Runs a Run Executor until it retires: on a termination signal or, when its
+/// token came down stdin, when stdin closes.
+async fn run_executor(args: RunExecutorArgs) -> anyhow::Result<()> {
+    let RunExecutorArgs {
+        coral_address,
+        token_stdin,
+        max_runs_held,
+        // The Run Executor's compiler arrives with the Compile message.
+        compiler_heap_bytes: _,
+        health_listen,
+    } = args;
+    // The Run Executor's own warnings, such as a refused protocol level.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(tracing_subscriber::filter::LevelFilter::WARN)
+        .init();
+    let token = match (token_stdin, run_executor_token_env()?) {
+        (true, None) => read_stdin_token()?
+            .await
+            .context("stdin closed before the token's newline")?,
+        (false, Some(token)) => token,
+        (true, Some(_)) => {
+            bail!("pass the token on stdin or in {RUN_EXECUTOR_TOKEN_ENV}, not both")
+        }
+        (false, None) => bail!("pass --token-stdin or set {RUN_EXECUTOR_TOKEN_ENV}"),
+    };
+    let health = match health_listen {
+        Some(address) => Some(
+            tokio::net::TcpListener::bind(&address)
+                .await
+                .with_context(|| format!("bind the health listener on {address}"))?,
+        ),
+        None => None,
+    };
+    let config = coral_run_executor::RunExecutorConfig {
+        coral_address,
+        token: coral_run_executor::Token::new(&token)?,
+        max_runs_held,
+    };
+    let mut retire_failure = None;
+    let retire = async {
+        if let Err(error) = wait_for_shutdown_request(token_stdin).await {
+            retire_failure = Some(error);
+        }
+    };
+    coral_run_executor::run(config, health, retire).await?;
+    match retire_failure {
+        Some(error) => Err(error).context("wait for the order to retire"),
+        None => Ok(()),
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "process bootstrap reads the Run Executor's token once"
+)]
+fn run_executor_token_env() -> anyhow::Result<Option<String>> {
+    match std::env::var(RUN_EXECUTOR_TOKEN_ENV) {
+        Ok(token) => Ok(Some(token)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            bail!("{RUN_EXECUTOR_TOKEN_ENV} must be valid UTF-8")
+        }
+    }
+}
+
+/// Reads stdin's first line, without its newline, on a detached thread. The
+/// bytes after it stay buffered in stdin, which stays open.
+fn read_stdin_token() -> std::io::Result<oneshot::Receiver<String>> {
+    use std::io::BufRead as _;
+
+    let (token_tx, token_rx) = oneshot::channel();
+    std::thread::Builder::new()
+        .name("coral-stdin-token".to_owned())
+        .spawn(move || {
+            let mut stdin = std::io::stdin().lock();
+            let mut line = String::new();
+            if stdin.read_line(&mut line).is_ok()
+                && let Some(token) = line.strip_suffix('\n')
+            {
+                let token = token.strip_suffix('\r').unwrap_or(token);
+                drop(token_tx.send(token.to_owned()));
+            }
+        })?;
+    Ok(token_rx)
+}
+
 async fn wait_for_shutdown_signal_or_server_exit(
     server_exit: impl Future<Output = ()>,
     shutdown_signal: impl Future<Output = Result<(), std::io::Error>>,
@@ -172,7 +310,7 @@ async fn wait_for_shutdown_request(stop_on_stdin_close: bool) -> Result<(), std:
 async fn wait_for_stdin_close() -> Result<(), std::io::Error> {
     use std::io::Read as _;
 
-    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<()>();
+    let (closed_tx, closed_rx) = oneshot::channel::<()>();
     std::thread::Builder::new()
         .name("coral-stdin-close".to_owned())
         .spawn(move || {

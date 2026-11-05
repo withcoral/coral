@@ -594,10 +594,12 @@ dependencies = [
  "clap",
  "coral-app",
  "coral-mcp",
+ "coral-run-executor",
  "reqwest",
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1003,6 +1005,15 @@ dependencies = [
  "coral-telemetry",
  "coral-test-support",
  "coral-v8",
+ "prost",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-health",
+ "tonic-prost",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package coral.run_executor.v1;
+
+// The link between a Run Executor and Coral (ADR 0027). Coral serves it, and
+// the Run Executor dials it; the Run Executor serves nothing.
+service LinkService {
+  // The pull stream: one per Run Executor, the first stream on every
+  // connection. The Run Executor opens it with Hello.
+  rpc Pull(stream PullRequest) returns (stream PullResponse);
+}
+
+// A message the Run Executor sends on its pull stream.
+message PullRequest {
+  // The message.
+  oneof message {
+    // The first message on every pull stream.
+    Hello hello = 1;
+    // A new count of free room.
+    Room room = 2;
+    // The answer to one Compile.
+    Compiled compiled = 3;
+  }
+}
+
+// A message Coral sends on a pull stream.
+message PullResponse {
+  // The message.
+  oneof message {
+    // The answer to Hello.
+    Welcome welcome = 1;
+    // Runs taken for this Run Executor.
+    Taken taken = 2;
+    // One compile, which holds one unit of room until Compiled answers it.
+    Compile compile = 3;
+  }
+}
+
+// What a Run Executor declares when it opens its pull stream.
+message Hello {
+  // A random id generated at each start, for operators only.
+  string run_executor_id = 1;
+  // The Run Executor's protocol level.
+  uint32 protocol_level = 2;
+  // The units of room free: Runs and compiles it is willing to hold.
+  uint32 free = 3;
+  // The limits it applies to each Run.
+  Limits limits = 4;
+}
+
+// The limits a Run Executor applies to each Run it holds.
+message Limits {
+  // The longest a Run may run here, in seconds.
+  uint32 max_run_duration_seconds = 1;
+  // Limits it cannot lower below Coral's own. Unset: none.
+  FixedLimits fixed = 2;
+}
+
+// Per-Run limits a runtime keeps whatever Coral asks.
+message FixedLimits {
+  // The heap each Run has, in bytes.
+  uint64 heap_bytes = 1;
+}
+
+// Coral's answer to Hello.
+message Welcome {
+  // Coral's protocol level.
+  uint32 protocol_level = 1;
+  // The id of the Coral Instance that holds this pull stream.
+  string coral_instance_id = 2;
+}
+
+// The Run Executor's count of free units, which replaces the last one.
+message Room {
+  // The units of room free.
+  uint32 free = 1;
+}
+
+// Runs a Coral Instance claimed for this Run Executor, one unit each.
+message Taken {
+  // The Runs taken.
+  repeated TakenRun runs = 1;
+}
+
+// One Run taken for this Run Executor.
+message TakenRun {
+  // The Run's id.
+  string run_id = 1;
+  // The execution claim the Run's stream presents.
+  string claim_id = 2;
+}
+
+// One compile call. Coral sends none yet: each call's input comes with the
+// compiler that serves it.
+message Compile {
+  // This call's number on this pull stream, which Compiled repeats.
+  uint64 number = 1;
+  // The time left until the caller's compilation deadline, in milliseconds.
+  uint32 time_left_ms = 2;
+}
+
+// The answer to one Compile. The package and the typed error come with the
+// compiler.
+message Compiled {
+  // The number of the Compile it answers.
+  uint64 number = 1;
+}

@@ -60,6 +60,10 @@ const CORAL: &[&str] = &[
     "coral.saved_function.call_path",
     // The public failure code of an MCP tool call.
     "coral.mcp.failure.code",
+    // A Run Executor's protocol level and its peer's, when a link refuses
+    // them.
+    "coral.run_executor.protocol_level",
+    "coral.run_executor.peer_protocol_level",
     // A search index write: the Provider Generation it covers, what started
     // it, why it was skipped, how long it waited for the writer and took, in
     // milliseconds, how many rows a statistics refresh wrote, and the code of
