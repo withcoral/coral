@@ -27,6 +27,12 @@ fn authorized_runs_with(authority: &HistoryAuthority, table: &str, alias: &str) 
     select
 }
 
+fn ended_since(since: i64) -> sea_query::SimpleExpr {
+    col("i", "state")
+        .eq("ended")
+        .and(col("i", "ended_at_unix_nanos").gte(since))
+}
+
 fn big_sum(expr: sea_query::SimpleExpr) -> sea_query::SimpleExpr {
     // Postgres sums BIGINT as NUMERIC; both backends then decode one i64.
     Func::cast_as(Func::sum(expr), Alias::new("bigint")).into()
