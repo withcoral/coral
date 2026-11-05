@@ -58,10 +58,19 @@ test('An account connected through one Coral Instance continues a Run that the o
             await page.getByText('Connected', { exact: true }).waitFor()
           }),
         )
-        const grpc = sent.filter(({ front }) => front === 'grpc')
-        expect(grpc.length).toBeGreaterThan(0)
-        expect(new Set(grpc.map(({ instance }) => instance))).toEqual(
-          new Set([instances.other(owner)]),
+        // Reef's activity stream also calls Coral when the Run moves, and `during` counts
+        // calls just before and after the pin, so check only the calls the connect makes.
+        const service = '/coral.management.v1.ProviderAccountService'
+        const connect = [
+          `${service}/StartProviderAccountAuthorization`,
+          `${service}/SubmitProviderAccountSecret`,
+        ]
+        expect(
+          sent
+            .filter(({ path }) => connect.includes(path))
+            .map(({ path, instance, grpcStatus }) => ({ path, instance, grpcStatus })),
+        ).toEqual(
+          connect.map((path) => ({ path, instance: instances.other(owner), grpcStatus: '0' })),
         )
       })
       await step('The waiting call continues to its approval on the owner', async () => {
