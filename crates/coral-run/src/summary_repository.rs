@@ -1,6 +1,8 @@
 //! Grouped, payload-free history totals. Each query restricts Runs to `authority`,
 //! resolved in the same snapshot, before it groups.
-use crate::summary::{ActorContext, ApprovalDecisions, DailyEvidence, OutcomeEvidence};
+use crate::summary::{
+    ActorContext, ApprovalDecisions, DailyEvidence, OutcomeEvidence, ToolAddress,
+};
 use crate::{CoralFailure, Error, InvocationResultKind};
 use coral_db::{Transaction, col, column};
 use coral_workspace::HistoryAuthority;
@@ -46,6 +48,13 @@ struct OutcomeRow {
     failure_code: Option<String>,
     calls: i64,
     last_ended_at_unix_nanos: i64,
+}
+
+fn tool_address(provider_id: &str, tool_key: &str) -> Result<ToolAddress, Error> {
+    Ok(ToolAddress {
+        provider_id: coral_provider::ProviderId::parse(provider_id)?,
+        tool_key: coral_catalog::ToolKey::parse(tool_key).map_err(coral_provider::Error::from)?,
+    })
 }
 
 fn principal(id: &str, kind: &str) -> Result<coral_workspace::Principal, Error> {
@@ -115,9 +124,7 @@ pub(crate) async fn call_outcomes(
             Ok(OutcomeEvidence {
                 principal: principal(&row.principal_id, &row.principal_kind)?,
                 agent_label: row.agent_label,
-                provider_id: coral_provider::ProviderId::parse(&row.provider_id)?,
-                tool_key: coral_catalog::ToolKey::parse(&row.tool_key)
-                    .map_err(coral_provider::Error::from)?,
+                tool: tool_address(&row.provider_id, &row.tool_key)?,
                 call_path: row.call_path,
                 last_ended_at_unix_nanos: row.last_ended_at_unix_nanos,
                 kind: InvocationResultKind::from_storage_str(&row.result_kind)?,
@@ -168,10 +175,10 @@ pub(crate) async fn daily_calls(
     rows.into_iter()
         .map(|row| {
             Ok(DailyEvidence {
-                provider_id: coral_provider::ProviderId::parse(&row.provider_id)?,
-                tool_key: coral_catalog::ToolKey::parse(&row.tool_key)
-                    .map_err(coral_provider::Error::from)?,
-                day: row.day,
+                tool: tool_address(&row.provider_id, &row.tool_key)?,
+                // Only calls that ended in the window are selected, so a day is
+                // never negative.
+                day: u32::try_from(row.day).unwrap_or_default(),
                 calls: row.calls,
             })
         })

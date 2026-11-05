@@ -323,7 +323,7 @@ Operation Key, Tool revision, public Call Path, independent management id
 
 **Tool-relative Path**: The part of a Tool Call Path after its Provider Call Root, such as `issues.get`. Provider
 Publication assigns it from the Tool Key and carries it forward while that Key stays active. It names a Tool within one
-Provider but does not identify it: a removed path can later name another Tool. _Avoid_: relative path alone, Tool Key
+Provider but does not identify it: a removed path can later name another Tool. _Avoid_: Tool Key
 _In Reef_: "tool name"
 
 **Tool Call Path**: The collision-free JavaScript path for one Provider Tool in Coral Programs and

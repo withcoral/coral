@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, within } from 'storybook/test'
+import { expect, fireEvent, userEvent, waitFor, within } from 'storybook/test'
 
 import { BarChart } from '../bar-chart'
 import { LineChart } from '../line-chart'
@@ -170,28 +170,6 @@ export const SparklineDefault: StoryObj<typeof Sparkline> = {
   render: (args) => <Sparkline {...args} />,
 }
 
-// Lines share one scale through `max`, from a zero baseline. A hover snaps a
-// crosshair to the nearest point and names it.
-export const SparklineSharedScale: StoryObj<typeof Sparkline> = {
-  render: () => (
-    <div style={{ display: 'grid', gap: 8 }}>
-      {[
-        [2, 4, 3, 8, 12, 9, 14],
-        [0, 1, 0, 0, 2, 1, 0],
-        [0, 0, 0, 0, 0, 0, 0],
-      ].map((data, row) => (
-        <Sparkline
-          key={row}
-          color="neutral"
-          data={data}
-          max={14}
-          describe={(day) => `${data[day]} calls on day ${day + 1}`}
-        />
-      ))}
-    </div>
-  ),
-}
-
 // One bar per point over a baseline; a hover lifts the bar under the pointer.
 export const SparklineBars: StoryObj<typeof Sparkline> = {
   render: () => (
@@ -206,12 +184,24 @@ export const SparklineBars: StoryObj<typeof Sparkline> = {
           color="neutral"
           variant="bars"
           data={data}
-          max={14}
           describe={(day) => `${data[day]} calls on day ${day + 1}`}
         />
       ))}
     </div>
   ),
+  // Catches: a hover that names a neighbour of the bar under the pointer.
+  play: async ({ canvasElement }) => {
+    const chart = canvasElement.querySelector('svg')!
+    const box = chart.getBoundingClientRect()
+    await userEvent.hover(chart)
+    // The middle of the fourth of seven slots.
+    fireEvent.pointerMove(chart, {
+      clientX: box.left + (box.width * 3.5) / 7,
+      clientY: box.top + box.height / 2,
+    })
+    const tip = await within(document.body).findByText('8 calls on day 4')
+    await waitFor(() => expect(tip).toBeVisible())
+  },
 }
 
 export const SparklineColors: StoryObj<typeof Sparkline> = {

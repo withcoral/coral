@@ -665,11 +665,11 @@ function ProvidersTableScreen({
     if (usageOrder) {
       // One list across providers, busiest first. The sort is stable, so equal
       // usage keeps provider order, then name order.
-      const usageOf = ({ provider, tool }: { provider: ProviderView; tool: ToolView }) =>
-        usageOrder.tools[selectionKey(provider.id, tool.key)]?.calls ?? 0
+      const callsOf = ({ provider, tool }: { provider: ProviderView; tool: ToolView }) =>
+        usageOf(usageOrder, provider, tool)?.calls ?? 0
       const list = visibleByProvider
         .flatMap(({ provider, listed }) => listed.map((tool) => ({ provider, tool })))
-        .toSorted((a, b) => usageOf(b) - usageOf(a))
+        .toSorted((a, b) => callsOf(b) - callsOf(a))
       return {
         rows: list.map(({ provider, tool }): TableRowItem => ({
           kind: 'tool',
@@ -1177,7 +1177,7 @@ function ProvidersTableScreen({
                     >
                       Usage
                     </Table.SortButton>
-                    <InfoTip ariaLabel="About calls">
+                    <InfoTip ariaLabel="About usage">
                       {`Your calls and your agents' calls in the last ${toolCalls.days} days.`}
                     </InfoTip>
                   </span>
@@ -1370,7 +1370,7 @@ const RankedRows = memo(function RankedRows({
               provider={provider}
               measure={virtual.measureRow}
               tool={tool}
-              usage={toolCalls && (toolCalls.tools[key] ?? unused(toolCalls.days))}
+              usage={usageOf(toolCalls, provider, tool)}
               maxCalls={maxCalls}
               namesProvider
               query={query}
@@ -1531,11 +1531,7 @@ const TableSections = memo(function TableSections({
                   provider={section.provider}
                   measure={virtual.measureRow}
                   tool={tool}
-                  usage={
-                    toolCalls &&
-                    (toolCalls.tools[selectionKey(section.provider.id, tool.key)] ??
-                      unused(toolCalls.days))
-                  }
+                  usage={usageOf(toolCalls, section.provider, tool)}
                   maxCalls={maxCalls}
                   query={query}
                   onOpen={markRevealed}
@@ -2085,12 +2081,9 @@ function effectivePolicy(
 }
 
 /**
- * How many of a provider's tools each policy covers, and how many are
- * unavailable, with the policy changes still in flight. Each count pairs its
- * icon with text, so the summary does not depend on color. A count filters
- * the table to its tools across every provider.
+ * The provider's state beside its name: search indexing, and its unavailable
+ * tools. The unavailable count filters the table to those tools.
  */
-/** The provider's state beside its name: search indexing, and its unavailable tools. */
 function ProviderNotices({
   active,
   onFilter,
@@ -2145,6 +2138,14 @@ function ProviderNotices({
   )
 }
 
+/**
+ * How many of a provider's tools each policy covers, with the policy changes
+ * still in flight. Each count sits over the toggle it counts, and its tooltip
+ * and accessible name say which policy it is, so it does not depend on color.
+ * While the provider is collapsed, no toggles show, so only the tooltip and the
+ * name tell the counts apart. A count filters the table to its tools across
+ * every provider.
+ */
 function PolicySummary({
   active,
   onFilter,
@@ -2184,7 +2185,7 @@ function PolicySummary({
   )
 }
 
-// A tool with no calls, one shared value per window.
+// A tool with no calls, one shared value per window, so a memoized row keeps it.
 const noUsage = new Map<number, ToolUsage>()
 function unused(days: number) {
   let usage = noUsage.get(days)
@@ -2193,6 +2194,12 @@ function unused(days: number) {
     noUsage.set(days, usage)
   }
   return usage
+}
+
+/** A tool's usage over the window; null while Coral cannot count calls. */
+function usageOf(toolCalls: ToolCallCounts | null, provider: ProviderView, tool: ToolView) {
+  if (!toolCalls) return null
+  return toolCalls.tools[selectionKey(provider.id, tool.key)] ?? unused(toolCalls.days)
 }
 
 /** When a day of the window was, counted back from now. */
@@ -2311,10 +2318,7 @@ function ToolDetailsDrawer({
   const summary = detail?.summary.trim() ?? ''
   const description = detail?.description.trim() ?? ''
   const callPath = tool && provider ? toolCallPath(provider.callRoot, tool.relativePath) : ''
-  const usage =
-    toolCalls && tool && provider
-      ? (toolCalls.tools[selectionKey(provider.id, tool.key)] ?? unused(toolCalls.days))
-      : null
+  const usage = tool && provider ? usageOf(toolCalls, provider, tool) : null
   // The drawer stays open from one tool to the next, so only its content
   // changes. The content mounts once per tool, which starts it at the top.
   const popup = useRef<HTMLDivElement>(null)

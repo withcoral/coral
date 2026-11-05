@@ -1,7 +1,8 @@
 use super::*;
 use crate::approval::ApprovalDecision;
 use crate::{
-    ActivitySummary, ApprovalDecisions, CallOutcomes, CallerCalls, StoppedTool, ToolCalls,
+    ActivitySummary, ApprovalDecisions, CallOutcomes, CallerCalls, StoppedTool, ToolAddress,
+    ToolCalls,
 };
 
 const DAY: i64 = 86_400 * 1_000_000_000;
@@ -158,6 +159,10 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
         }
     );
     let call_path = "coral.providers.weather.getForecast";
+    let forecast = ToolAddress {
+        provider_id: tool.provider_id.clone(),
+        tool_key: ToolKey::parse("getForecast").unwrap(),
+    };
     let caller = CallerCalls {
         principal: actor.principal().clone(),
         agent_label: None,
@@ -166,8 +171,7 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
     assert_eq!(
         after.tools,
         [ToolCalls {
-            provider_id: tool.provider_id.clone(),
-            tool_key: ToolKey::parse("getForecast").unwrap(),
+            tool: forecast.clone(),
             call_path: call_path.into(),
             calls: 4,
             daily: vec![4],
@@ -178,8 +182,7 @@ async fn summary_counts_each_ended_call_once_and_splits_who_stopped_it() {
     assert_eq!(
         after.stopped,
         [StoppedTool {
-            provider_id: tool.provider_id.clone(),
-            tool_key: ToolKey::parse("getForecast").unwrap(),
+            tool: forecast.clone(),
             call_path: call_path.into(),
             blocked: 1,
             not_allowed: 1,
@@ -254,8 +257,8 @@ async fn summary_counts_a_reused_call_path_apart_by_tool_key() {
         .iter()
         .map(|row| {
             (
-                &row.provider_id,
-                row.tool_key.as_str(),
+                &row.tool.provider_id,
+                row.tool.tool_key.as_str(),
                 row.call_path.as_str(),
                 row.calls,
             )

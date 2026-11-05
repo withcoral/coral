@@ -53,13 +53,22 @@ pub struct CallOutcomes {
     pub canceled: i64,
 }
 
-/// One Tool's stopped Invocations, by who must act.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StoppedTool {
+/// The Provider-plus-Key address of one Tool. It names the same Tool across
+/// Provider Generations while the Key stays the same, so activity counts by it
+/// and keeps the Call Path only as a label.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ToolAddress {
     /// The Tool's Provider.
     pub provider_id: ProviderId,
     /// The Tool's Key in that Provider.
     pub tool_key: ToolKey,
+}
+
+/// One Tool's stopped Invocations, by who must act.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoppedTool {
+    /// The Tool the Invocations called.
+    pub tool: ToolAddress,
     /// The Call Path of the Tool's latest stopped Invocation.
     pub call_path: String,
     /// Invocations a rule stopped.
@@ -94,10 +103,8 @@ impl SummaryWindow {
 /// One Tool's ended Invocations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCalls {
-    /// The Tool's Provider.
-    pub provider_id: ProviderId,
-    /// The Tool's Key in that Provider.
-    pub tool_key: ToolKey,
+    /// The Tool the Invocations called.
+    pub tool: ToolAddress,
     /// The Call Path of the Tool's latest ended Invocation.
     pub call_path: String,
     /// Ended Invocations.
@@ -206,10 +213,9 @@ const fn outcome(kind: InvocationResultKind, failure: Option<CoralFailure>) -> C
 
 /// One Tool's ended Invocations in one day of the window, as the repository returns them.
 pub(crate) struct DailyEvidence {
-    pub provider_id: ProviderId,
-    pub tool_key: ToolKey,
+    pub tool: ToolAddress,
     /// Whole days from the window's start.
-    pub day: i64,
+    pub day: u32,
     pub calls: i64,
 }
 
@@ -220,14 +226,14 @@ fn add_days(tools: &mut [ToolCalls], days: u32, evidence: Vec<DailyEvidence>) {
     let mut rows = BTreeMap::new();
     for (row, tool) in tools.iter_mut().enumerate() {
         tool.daily = vec![0; len];
-        rows.insert((tool.provider_id.clone(), tool.tool_key.clone()), row);
+        rows.insert(tool.tool.clone(), row);
     }
     for day in evidence {
-        let Some(&row) = rows.get(&(day.provider_id, day.tool_key)) else {
+        let Some(&row) = rows.get(&day.tool) else {
             continue;
         };
         let index = usize::try_from(day.day)
-            .unwrap_or_default()
+            .unwrap_or(usize::MAX)
             .min(len.saturating_sub(1));
         if let Some(total) = tools
             .get_mut(row)
@@ -242,8 +248,7 @@ fn add_days(tools: &mut [ToolCalls], days: u32, evidence: Vec<DailyEvidence>) {
 pub(crate) struct OutcomeEvidence {
     pub principal: Principal,
     pub agent_label: Option<String>,
-    pub provider_id: ProviderId,
-    pub tool_key: ToolKey,
+    pub tool: ToolAddress,
     pub call_path: String,
     pub last_ended_at_unix_nanos: i64,
     pub kind: InvocationResultKind,
@@ -331,8 +336,6 @@ impl LatestPath {
     }
 }
 
-type ToolAddress = (ProviderId, ToolKey);
-
 fn tally(evidence: Vec<OutcomeEvidence>) -> Tally {
     let mut calls = CallOutcomes::default();
     let mut stopped = BTreeMap::<ToolAddress, (StoppedTool, LatestPath)>::new();
@@ -341,12 +344,10 @@ fn tally(evidence: Vec<OutcomeEvidence>) -> Tally {
     for group in evidence {
         let outcome = outcome(group.kind, group.failure);
         *calls.total_mut(outcome) += group.calls;
-        let address = (group.provider_id.clone(), group.tool_key.clone());
-        let (op, path) = stopped.entry(address.clone()).or_insert_with(|| {
+        let (op, path) = stopped.entry(group.tool.clone()).or_insert_with(|| {
             (
                 StoppedTool {
-                    provider_id: group.provider_id.clone(),
-                    tool_key: group.tool_key.clone(),
+                    tool: group.tool.clone(),
                     call_path: String::new(),
                     blocked: 0,
                     not_allowed: 0,
@@ -359,11 +360,10 @@ fn tally(evidence: Vec<OutcomeEvidence>) -> Tally {
             *total += group.calls;
             path.offer(&group);
         }
-        let (tool, path) = ended.entry(address).or_insert_with(|| {
+        let (tool, path) = ended.entry(group.tool.clone()).or_insert_with(|| {
             (
                 ToolCalls {
-                    provider_id: group.provider_id.clone(),
-                    tool_key: group.tool_key.clone(),
+                    tool: group.tool.clone(),
                     call_path: String::new(),
                     calls: 0,
                     daily: Vec::new(),

@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
+import { expect, userEvent } from 'storybook/test'
 
 import { SegmentedControl, SegmentedToggles } from './segmented-control'
 
@@ -80,4 +81,15 @@ function TotalsDemo() {
 }
 
 // Totals line up over the icon segments they count; a pressed total is raised.
-export const TogglesOverIcons: StoryObj<typeof TotalsDemo> = { render: () => <TotalsDemo /> }
+export const TogglesOverIcons: StoryObj<typeof TotalsDemo> = {
+  render: () => <TotalsDemo />,
+  // Catches: a segment that does not report being pressed, or stays pressed.
+  play: async ({ canvas }) => {
+    const toggle = canvas.getByRole('button', { name: '9 Needs approval' })
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    await userEvent.click(toggle)
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    await userEvent.click(toggle)
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  },
+}
