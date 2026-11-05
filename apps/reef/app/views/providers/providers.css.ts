@@ -633,7 +633,11 @@ export const usageCaller = style({
   display: 'flex',
   gap: 8,
   justifyContent: 'space-between',
+  minWidth: 0,
 })
+// A long caller name wraps rather than push its count out of the drawer.
+export const usageCallerName = style({ minWidth: 0, overflowWrap: 'anywhere' })
+export const usageCallerCalls = style({ flexShrink: 0 })
 
 // A ranked row's provider, before its tool, where no heading names it.
 export const rankedProvider = style({

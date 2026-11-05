@@ -93,8 +93,14 @@ export function SegmentedControl<Value extends string>({
             type="button"
             role="radio"
             aria-checked={checked}
-            aria-label={iconOnly ? option.label : undefined}
-            aria-description={iconOnly ? option.description : undefined}
+            aria-label={
+              iconOnly
+                ? option.count === undefined
+                  ? option.label
+                  : `${option.label} ${option.count.toLocaleString('en-US')}`
+                : undefined
+            }
+            aria-description={option.description}
             tabIndex={checked ? 0 : -1}
             disabled={disabled || option.disabled}
             className={styles.segment({ checked, icon: iconOnly, size })}
@@ -120,7 +126,8 @@ export function SegmentedControl<Value extends string>({
             )}
           </button>
         )
-        return iconOnly ? (
+        // A labelled segment needs a tooltip only to say what it does.
+        return iconOnly || option.description ? (
           <Tooltip
             key={option.value}
             maxWidth={260}

@@ -593,10 +593,19 @@ function ProvidersTableScreen({
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const tableRef = useRef<HTMLDivElement>(null)
   // Every bar measures against the busiest tool, so bars compare across providers.
+  // Only the catalog's tools count: a removed tool's calls stay in the summary
+  // but have no row, so they must not set the scale.
   const maxCalls = useMemo(
     () =>
-      Object.values(toolCalls?.tools ?? {}).reduce((max, usage) => Math.max(max, usage.calls), 0),
-    [toolCalls],
+      providers.reduce(
+        (max, provider) =>
+          provider.tools.reduce(
+            (most, tool) => Math.max(most, usageOf(toolCalls, provider, tool)?.calls ?? 0),
+            max,
+          ),
+        0,
+      ),
+    [providers, toolCalls],
   )
   const searchable = useMemo(() => searchableProviders(providers), [providers])
   const selectedProviderId = selectedProvider?.id ?? null
@@ -2162,17 +2171,32 @@ function ToolUsageSection({ usage }: { usage: ToolUsage }) {
           <span>{`${days} days ago`}</span>
           <span>Last 24 hours</span>
         </span>
+        {/* The bars are hidden from assistive technology and name a day only on
+            hover, so each day with calls is also read out here. */}
+        <ul aria-label="Calls by day" className={visuallyHidden}>
+          {usage.daily.flatMap((calls, day) =>
+            calls > 0
+              ? [<li key={day}>{`${countLabel(calls, 'call')} ${dayAgo(day, days)}`}</li>]
+              : [],
+          )}
+        </ul>
       </div>
       {usage.callers.length > 0 && (
         <ul aria-label="Callers" className={styles.usageCallers}>
           {usage.callers.map((caller) => (
             <li key={caller.key} className={styles.usageCaller}>
               {caller.agentPath ? (
-                <Link to={caller.agentPath}>{caller.label}</Link>
+                <Link to={caller.agentPath} className={styles.usageCallerName}>
+                  {caller.label}
+                </Link>
               ) : (
-                <span>{caller.label}</span>
+                <span className={styles.usageCallerName}>{caller.label}</span>
               )}
-              <Typography.BodySmall as="span" variant="tertiary">
+              <Typography.BodySmall
+                as="span"
+                variant="tertiary"
+                className={styles.usageCallerCalls}
+              >
                 {countLabel(caller.calls, 'call')}
               </Typography.BodySmall>
             </li>

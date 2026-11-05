@@ -95,6 +95,8 @@ export const count = style({
   fontVariantNumeric: 'tabular-nums',
   marginInlineStart: 2,
 })
+// A disabled segment greys its count with its label.
+globalStyle(`.${segment.classNames.base}:disabled ${count}`, { color: 'inherit' })
 
 export const tooltipLabel = style({
   color: theme.content.primary,

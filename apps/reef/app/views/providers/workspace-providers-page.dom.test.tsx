@@ -159,11 +159,19 @@ test.each([
     'href',
     '/workspaces/demo/agents/a',
   )
+  const callers = within(usage!).getByRole('list', { name: 'Callers' })
   expect(
-    within(usage!)
+    within(callers)
       .getAllByRole('listitem')
       .map((item) => item.textContent),
   ).toEqual(['Nightly sync9 calls', 'You4 calls'])
+  // The bars are hidden from assistive technology, so each day with calls is read out.
+  const days = within(usage!).getByRole('list', { name: 'Calls by day' })
+  expect(
+    within(days)
+      .getAllByRole('listitem')
+      .map((item) => item.textContent),
+  ).toEqual(['3 calls 3 days ago', '9 calls 1 day ago', '1 call in the last 24 hours'])
 })
 
 // Catches: the drawer staying scrolled between two providers' tools, as a
@@ -283,7 +291,8 @@ test('lists every provider in one table, and keeps an empty one with its setting
 })
 
 // Catches: a tool's calls shown on another tool's row, a bar that leaves a screen
-// reader no count, or a Usage column shown when Coral cannot count calls.
+// reader no count, a removed tool that sets the bars' scale, or a Usage column
+// shown when Coral cannot count calls.
 test.each([
   [
     'a count',
@@ -291,6 +300,8 @@ test.each([
       days: 30,
       tools: {
         [selectionKey(github.id, 'repos.get')]: { calls: 1234, daily: [234, 1000], callers: [] },
+        // A removed tool keeps its calls in the summary, but has no row to scale.
+        [selectionKey(github.id, 'removed')]: { calls: 99_999, daily: [99_999], callers: [] },
       },
     },
     ['0 calls', '1,234 calls', '0 calls'],
@@ -308,6 +319,12 @@ test.each([
           return within(row as HTMLElement).getAllByRole('cell')[column]!.textContent
         })
   expect(cells).toEqual(counts)
+  // The busiest tool in the catalog fills its bar, whatever a removed tool called.
+  if (column >= 0) {
+    const row = within(table()).getByRole('link', { name: 'repos.get' }).closest('[role="row"]')!
+    const cell = within(row as HTMLElement).getAllByRole('cell')[column]!
+    expect(cell.querySelector('[style]')).toHaveStyle({ width: '100%' })
+  }
 })
 
 // Catches: a usage sort that ranks tools only within their provider or group,

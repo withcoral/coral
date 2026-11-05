@@ -187,25 +187,31 @@ function usePickerPlacement(enabled: boolean) {
   const pickerItem = useRef<HTMLDivElement>(null)
   const actionItem = useRef<HTMLDivElement>(null)
   const [pickerBelow, setPickerBelow] = useState(false)
+  const place = useCallback(() => {
+    const row = toolbar.current
+    const picker = pickerItem.current
+    if (!row || !picker) return
+    const needed =
+      (titleItem.current?.scrollWidth ?? 0) +
+      (picker.firstElementChild?.scrollWidth ?? picker.scrollWidth) +
+      FILTER_ROOM +
+      (actionItem.current?.offsetWidth ?? 0) +
+      3 * TOOLBAR_GAP
+    setPickerBelow(needed > row.clientWidth)
+  }, [])
   useEffect(() => {
     const row = toolbar.current
     if (!enabled || !row || typeof ResizeObserver === 'undefined') return
-    const place = () => {
-      const picker = pickerItem.current
-      if (!picker) return
-      const needed =
-        (titleItem.current?.scrollWidth ?? 0) +
-        (picker.firstElementChild?.scrollWidth ?? picker.scrollWidth) +
-        FILTER_ROOM +
-        (actionItem.current?.offsetWidth ?? 0) +
-        3 * TOOLBAR_GAP
-      setPickerBelow(needed > row.clientWidth)
-    }
-    place()
     const observer = new ResizeObserver(place)
     observer.observe(row)
     return () => observer.disconnect()
-  }, [enabled])
+  }, [enabled, place])
+  // The picker's own width changes with what it shows, such as a count that gains
+  // a digit, without the toolbar resizing, so each render measures it again. An
+  // unchanged answer does not render again.
+  useEffect(() => {
+    if (enabled) place()
+  })
   return { toolbar, titleItem, pickerItem, actionItem, pickerBelow }
 }
 

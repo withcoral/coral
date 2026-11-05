@@ -352,8 +352,8 @@ export const TreeToolUsage: Story = {
     />
   ),
 }
-// A provider heading's status: its unavailable tools, and a destructive tool
-// that runs without approval.
+// A provider heading's status: a destructive tool that runs without approval on
+// GitHub, and unavailable tools on HR system.
 export const TreeProviderStatus: Story = {
   render: () => (
     <WorkspaceProvidersPage
@@ -361,6 +361,8 @@ export const TreeProviderStatus: Story = {
       providers={[
         {
           ...github,
+          // issues.close becomes available below, so every GitHub tool is ready.
+          readyCount: 4,
           tools: github.tools.map((tool) =>
             tool.relativePath === 'issues.close'
               ? { ...tool, available: true, policy: 'enabled' }

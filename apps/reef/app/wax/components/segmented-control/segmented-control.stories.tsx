@@ -85,6 +85,7 @@ function FilterDemo() {
           withLabel: true,
           count: counts[option.value],
           disabled: counts[option.value] === 0,
+          ...(option.value === 'approve' && { description: 'Asks before each use.' }),
         })),
       ]}
     />
@@ -99,7 +100,29 @@ export const LabelledIconsWithCounts: StoryObj<typeof FilterDemo> = {
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('radio', { name: 'Ask 12' })).toBeEnabled()
     await expect(canvas.getByRole('radio', { name: 'Block 0' })).toBeDisabled()
+    // A labelled segment keeps its description, for screen readers and its tooltip.
+    await expect(canvas.getByRole('radio', { name: 'Ask 12' })).toHaveAccessibleDescription(
+      'Asks before each use.',
+    )
     await userEvent.click(canvas.getByRole('radio', { name: 'Allow 26' }))
     await expect(canvas.getByRole('radio', { name: 'Allow 26' })).toBeChecked()
+  },
+}
+
+// An icon alone names its segment, so a count joins that name.
+export const IconsWithCounts: StoryObj = {
+  render: () => (
+    <SegmentedControl
+      label="Access"
+      size="small"
+      value="allow"
+      onChange={() => {}}
+      options={accessOptions.map((option, i) => ({ ...option, count: [26, 12, 0][i] }))}
+    />
+  ),
+  // Catches: a count a screen reader cannot hear because the icon's label hides it.
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('radio', { name: 'Allow 26' })).toBeChecked()
+    await expect(canvas.getByRole('radio', { name: 'Ask 12' })).toBeInTheDocument()
   },
 }

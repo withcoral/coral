@@ -149,9 +149,7 @@ test('Inline pending policy survives filtering, blocks overlaps, and allows unre
         await page.getByRole('searchbox', { name: 'Filter tools' }).fill('')
         await expect.poll(() => row(page, 'first').getAttribute('aria-busy')).toBe('true')
         expect(
-          await row(page, 'first')
-            .getByRole('radio', { name: 'Ask', exact: true })
-            .isDisabled(),
+          await row(page, 'first').getByRole('radio', { name: 'Ask', exact: true }).isDisabled(),
         ).toBe(true)
         expect(await row(page, 'first').getByRole('checkbox').isDisabled()).toBe(false)
         // Group and header selection include the pending row; only Apply waits.
