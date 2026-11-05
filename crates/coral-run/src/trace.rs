@@ -420,3 +420,24 @@ pub(crate) fn link_request(trace: Option<&RunTrace>) {
         trace.link(&tracing::Span::current());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::termination_reason;
+    use crate::lifecycle::RunTerminationKind as K;
+
+    /// Catches: a termination counted under a reason other than the kind the
+    /// Run records.
+    #[test]
+    fn a_termination_is_counted_under_the_kind_it_records() {
+        for kind in [
+            K::Canceled,
+            K::TimedOut,
+            K::Interrupted,
+            K::MemoryLimitExceeded,
+            K::CpuLimitExceeded,
+        ] {
+            assert_eq!(termination_reason(kind).as_str(), kind.as_storage_str());
+        }
+    }
+}
