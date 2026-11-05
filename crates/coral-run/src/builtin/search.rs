@@ -132,7 +132,7 @@ fn rejection(field: &str, reason: String) -> Rejection {
 }
 
 /// A failure the Program can read and correct, or a host error.
-fn failure(error: coral_search::Error) -> Error {
+pub(super) fn failure(error: coral_search::Error) -> Error {
     match error {
         coral_search::Error::Workspace(error) if crate::enforcement::loses_authority(&error) => {
             Error::InvocationRejected(CoralFailure::AuthorityLost.into())

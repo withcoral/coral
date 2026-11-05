@@ -33,6 +33,7 @@ use crate::{
 };
 
 mod add_provider;
+mod catalog;
 mod get_policy;
 mod get_provider;
 mod list_providers;
@@ -42,6 +43,7 @@ mod update_policy;
 mod update_provider;
 
 pub use add_provider::{AddProviderArguments, AddProviderResult};
+pub use catalog::{CatalogArguments, CatalogEntry, CatalogResult};
 pub use get_policy::{GetPolicyArguments, GetPolicyResult};
 pub use get_provider::{
     ConfigurationOutput, GetProviderArguments, GetProviderResult, ProviderSourceOutput,
@@ -127,10 +129,13 @@ pub enum BuiltinTool {
     /// Finds the Tools and Saved Functions the caller can call, ranked by a
     /// query, or reads the exact descriptions of named Call Paths.
     Search,
+    /// PROTOTYPE: every Tool and Saved Function the caller can call, for
+    /// the Program to filter itself.
+    Catalog,
 }
 
 impl BuiltinTool {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::AddProvider,
         Self::ListProviders,
         Self::GetProvider,
@@ -138,6 +143,7 @@ impl BuiltinTool {
         Self::UpdatePolicy,
         Self::UpdateProvider,
         Self::Search,
+        Self::Catalog,
     ];
 
     /// Returns the Tool Key, which is also its relative path.
@@ -151,6 +157,7 @@ impl BuiltinTool {
             Self::UpdatePolicy => "updatePolicy",
             Self::UpdateProvider => "updateProvider",
             Self::Search => "search",
+            Self::Catalog => "catalog",
         }
     }
 
@@ -173,6 +180,7 @@ impl BuiltinTool {
             Self::UpdatePolicy => update_policy::NEEDS,
             Self::UpdateProvider => update_provider::NEEDS,
             Self::Search => search::NEEDS,
+            Self::Catalog => catalog::NEEDS,
         }
     }
 }
@@ -322,6 +330,8 @@ pub enum BuiltinArguments {
     UpdateProvider(Box<UpdateProviderArguments>),
     /// `search`'s arguments.
     Search(SearchArguments),
+    /// `catalog`'s arguments.
+    Catalog(CatalogArguments),
 }
 
 impl BuiltinArguments {
@@ -348,6 +358,7 @@ impl BuiltinArguments {
             BuiltinTool::UpdateProvider => UpdateProviderArguments::parse(arguments)
                 .map(|arguments| Self::UpdateProvider(Box::new(arguments))),
             BuiltinTool::Search => SearchArguments::parse(arguments).map(Self::Search),
+            BuiltinTool::Catalog => CatalogArguments::parse(arguments).map(Self::Catalog),
         }
     }
 }
@@ -635,6 +646,7 @@ fn definition(tool: BuiltinTool) -> Definition {
         BuiltinTool::UpdatePolicy => update_policy::definition(),
         BuiltinTool::UpdateProvider => update_provider::definition(),
         BuiltinTool::Search => search::definition(),
+        BuiltinTool::Catalog => catalog::definition(),
     }
 }
 
@@ -665,9 +677,18 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
     for (definition, binding) in drafts {
         let key = binding.tool_key().clone();
         let relative_path = definition.key.to_string();
+        // PROTOTYPE (regex-search): an input that requires nothing may be
+        // left out, so a Program writes `coral.workspace.catalog()`.
+        let optional_input = matches!(definition.declared, Declared::Once)
+            && definition
+                .input
+                .get("required")
+                .and_then(Value::as_array)
+                .is_none_or(Vec::is_empty);
         let (declaration, type_references) = project(
             &binding,
             definition.declared,
+            optional_input,
             &schema_graph,
             &type_names,
             &mut shared_types,
@@ -721,6 +742,7 @@ pub(crate) fn typescript_names(graph: &SchemaGraph) -> TypeScriptNames {
 fn project(
     binding: &BuiltinExecutionBinding,
     declared: Declared,
+    optional_input: bool,
     graph: &SchemaGraph,
     type_names: &TypeScriptNames,
     shared: &mut SharedTypes,
@@ -764,7 +786,11 @@ fn project(
         .iter()
         .map(|(input, output)| {
             render_callable_declaration(
-                &format!("input: {input}"),
+                &if optional_input {
+                    format!("input?: {input}")
+                } else {
+                    format!("input: {input}")
+                },
                 &format!("Promise<{{ data: {output}; metadata: {{ kind: \"builtin\" }} }}>"),
             )
         })

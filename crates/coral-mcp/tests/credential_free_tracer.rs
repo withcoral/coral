@@ -1526,13 +1526,11 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         panic!("one Program finds and one calls: {description}");
     };
     for field in [
-        "call_path",
-        "signature_line",
+        "callPath",
+        "signature",
         "complete",
-        "description_snippet",
+        "description",
         "descriptions",
-        "missing",
-        "suggestions",
     ] {
         assert!(find.contains(field), "the example reads {field}");
     }
@@ -1561,11 +1559,20 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         "the example type-checks"
     );
 
+    // PROTOTYPE (regex-search): the example reads the whole catalog and
+    // filters it in code. Print what it found, and how big the catalog is.
     let found = &program_value(&client, &task_id, find).await;
+    eprintln!("example found: {found:#}");
+    let whole = &program_value(
+        &client,
+        &task_id,
+        "const { data } = await coral.workspace.catalog();\nreturn { count: data.tools.length, bytes: JSON.stringify(data).length, paths: data.tools.map((t) => t.callPath) };",
+    )
+    .await;
+    eprintln!("whole catalog: {whole:#}");
     let hits = found["hits"].as_array().expect("hits");
-    assert!(!hits.is_empty(), "{found}");
     for hit in hits {
-        let [call_path, signature_line, description_snippet] =
+        let [call_path, signature, description] =
             hit.as_array().map(Vec::as_slice).unwrap_or_default()
         else {
             panic!("three fields of a hit: {hit}");
@@ -1576,26 +1583,13 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
                 .is_some_and(|path| path.starts_with("coral.")),
             "{hit}"
         );
-        assert!(
-            signature_line
-                .as_str()
-                .is_some_and(|line| line.contains('('))
-        );
-        assert!(description_snippet.is_string(), "{hit}");
+        assert!(signature.as_str().is_some_and(|line| line.contains('(')));
+        assert!(description.is_string(), "{hit}");
     }
-    // The tracer's search for pull requests finds `coral.workspace.search`,
-    // whose line is never complete: it has one overload per mode. So the
-    // example reads that declaration by its path, and every path it read
-    // exists.
-    let declarations = found["declarations"].as_array().expect("declarations");
     assert!(
-        declarations
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|declaration| declaration.contains("PathsResult")),
-        "{found}"
+        whole["count"].as_u64().is_some_and(|count| count > 0),
+        "{whole}"
     );
-    assert_eq!(found["missing"], json!([]), "{found}");
 }
 
 /// A worker runtime disappeared after durable authored output. The

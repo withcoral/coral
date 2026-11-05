@@ -11,14 +11,14 @@ Coral runs TypeScript Programs that call the user's connected providers.
 
 ## Workflow
 1. Pass `goal` to the first `exec` of a unit of work, then its `task_id` to later calls.
-2. Find provider tools and Saved Functions with `coral.workspace.search` in a Program; `exec` shows how.
+2. Find provider tools and Saved Functions with `coral.workspace.catalog()` in a Program; `exec` shows how.
 3. Call `exec` with one TypeScript async-function body. Each `exec` starts a new Run and can repeat external effects.
 4. While `state` is `running` or `has_more` is true, call `wait` with the same `run_id` and the latest `next_cursor`. The last page carries the Final Value or failure.
 5. After the answering Run succeeds, call `save_function` unless its Program made one provider tool call. Use the request's values as inputs, a path like `github.pulls.listStale`, and search words in the description. Tell the user its path.
 6. When the work is done or cannot continue, call `end_task` once with the outcome.
 
 ## Program rules
-- Write each call as the complete literal Call Path that search returns, such as `coral.providers.github.getRepo(...)`. Keep `coral` and its sub-paths out of variables.
+- Write each call as the complete literal Call Path the catalog returns, such as `coral.providers.github.getRepo(...)`. Keep `coral` and its sub-paths out of variables.
 - Only provider tools reach the network; `fetch`, `setTimeout` and other ambient APIs are absent.
 - Keep credentials and account choice out of Program source; Coral supplies both.
 - Publish interim output with `await coral.emit(value)`. The Program's return value is the Final Value.

@@ -27,6 +27,7 @@ use crate::{
 };
 
 mod add_provider;
+mod catalog;
 mod get_policy;
 mod get_provider;
 mod list_providers;
@@ -45,6 +46,7 @@ pub(crate) enum BuiltinCall {
     UpdatePolicy(update_policy::UpdatePolicy),
     UpdateProvider(Box<update_provider::UpdateProvider>),
     Search(Box<search::Search>),
+    Catalog(Box<catalog::Catalog>),
 }
 
 impl BuiltinCall {
@@ -86,6 +88,9 @@ impl BuiltinCall {
                     BuiltinArguments::Search(arguments) => {
                         search::Search::new(arguments).map(|call| Self::Search(Box::new(call)))
                     }
+                    BuiltinArguments::Catalog(arguments) => {
+                        catalog::Catalog::new(arguments).map(|call| Self::Catalog(Box::new(call)))
+                    }
                 }),
         )
     }
@@ -100,6 +105,7 @@ impl BuiltinCall {
             Self::UpdatePolicy(call) => call.perform(host).await,
             Self::UpdateProvider(call) => call.perform(host).await,
             Self::Search(call) => call.perform(host).await,
+            Self::Catalog(call) => call.perform(host).await,
         }
     }
 }
@@ -137,7 +143,8 @@ pub(crate) async fn recover(
             | BuiltinTool::GetProvider
             | BuiltinTool::GetPolicy
             | BuiltinTool::UpdatePolicy
-            | BuiltinTool::Search,
+            | BuiltinTool::Search
+            | BuiltinTool::Catalog,
         )
         | None => Ok(None),
     }

@@ -24,6 +24,7 @@ fn valid_arguments(tool: BuiltinTool) -> Vec<Value> {
         BuiltinTool::UpdatePolicy => super::update_policy::valid_arguments(),
         BuiltinTool::UpdateProvider => super::update_provider::tests::valid_arguments(),
         BuiltinTool::Search => super::search::tests::valid_arguments(),
+        BuiltinTool::Catalog => vec![json!({}), json!({ "provider": "github" })],
     }
 }
 

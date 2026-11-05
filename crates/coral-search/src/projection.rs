@@ -42,6 +42,46 @@ pub fn search_result(page: &SearchPage) -> SearchResult {
     }
 }
 
+/// PROTOTYPE (regex-search): the compact entries `coral.workspace.catalog`
+/// returns.
+#[must_use]
+pub fn catalog(hits: &[SearchHit]) -> coral_catalog::CatalogResult {
+    coral_catalog::CatalogResult {
+        tools: hits
+            .iter()
+            .map(|hit| coral_catalog::CatalogEntry {
+                call_path: hit.call_path().as_str().to_owned(),
+                title: hit
+                    .tool()
+                    .and_then(crate::ToolHit::title)
+                    .map(str::to_owned),
+                signature: hit.signature_line().to_owned(),
+                complete: hit.complete(),
+                description: first_sentence(hit.description_snippet(), 200),
+            })
+            .collect(),
+    }
+}
+
+/// The first sentence of `text`, cut at a character boundary to at most
+/// `max` bytes.
+fn first_sentence(text: &str, max: usize) -> String {
+    let text = text.trim();
+    let sentence = text
+        .split_once(". ")
+        .map_or(text, |(first, _rest)| first)
+        .trim_end();
+    if sentence.len() <= max {
+        return sentence.to_owned();
+    }
+    let cut: String = sentence
+        .char_indices()
+        .take_while(|(index, character)| index + character.len_utf8() <= max)
+        .map(|(_index, character)| character)
+        .collect();
+    format!("{cut}…")
+}
+
 /// [`search_result`] as the JSON Task history retains.
 #[must_use]
 pub fn search(page: &SearchPage) -> Value {

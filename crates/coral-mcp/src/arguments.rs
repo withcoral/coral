@@ -20,19 +20,19 @@ const FUNCTION_PATH_DESCRIPTION: &str =
     "Dotted path under coral.functions, without that prefix, such as reports.summarize.";
 const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
 /// `exec`'s description, with the one example of discovery an agent reads.
-/// A test runs its first Program against a real `coral.workspace.search` and
+/// A test runs its first Program against a real `coral.workspace.catalog` and
 /// saves it as a Saved Function to type-check it, so keep that Program whole.
 pub(crate) const EXEC_TOOL_DESCRIPTION: &str = r#"Start a new Program Run from one TypeScript async-function body. Observe it with `wait`. Return only the values the answer needs: select fields and filter items inside the Program, and do not return or emit a whole provider tool result. Log diagnostics with `console.log`. A thrown `coral.ToolError` means the call produced no declared success. When Coral rejects the upstream's response, it carries `data` and `metadata`, plus `status` for HTTP, so catch it to treat a 404 as an answer. Without `data`, it carries only a Coral failure code, and the call may or may not have taken effect.
 
-Find provider tools and Saved Functions with `coral.workspace.search`. A `query` returns `hits`. Call a read from a hit when it is `complete`. Otherwise, and before a write, pass its `call_path` in `paths` to read its declaration. A path that names nothing comes back in `missing`, with `suggestions`.
+Find provider tools and Saved Functions with `coral.workspace.catalog()`: every one you can call, as `tools` with `callPath`, `title`, `signature`, `complete` and `description`. Filter them in code, such as with a regex, and return only the matches. `provider` narrows it to one namespace. Call a read from an entry when it is `complete`. Otherwise, and before a write, pass its `callPath` in `coral.workspace.search({ paths })` to read its declaration. When no pattern finds it, `coral.workspace.search({ query })` ranks by keywords.
 ```ts
-const { data } = await coral.workspace.search({ query: "list pull requests", limit: 5 });
-const paths = data.hits.filter((hit) => !hit.complete).map((hit) => hit.call_path);
+const { data } = await coral.workspace.catalog();
+const hits = data.tools.filter((t) => /pull/i.test(t.callPath) && /list/i.test(t.callPath + t.description));
+const paths = hits.filter((t) => !t.complete).slice(0, 10).map((t) => t.callPath);
 const read = paths.length ? (await coral.workspace.search({ paths })).data : undefined;
 return {
-  hits: data.hits.map((hit) => [hit.call_path, hit.signature_line, hit.description_snippet]),
-  declarations: read?.descriptions.map((description) => description.typescript_declaration),
-  missing: read?.missing.map((path) => [path.call_path, path.suggestions]),
+  hits: hits.slice(0, 20).map((t) => [t.callPath, t.signature, t.description]),
+  declarations: read?.descriptions.map((d) => d.typescript_declaration),
 };
 ```
 Then call it in a later Program by its literal Call Path:

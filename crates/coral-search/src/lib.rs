@@ -276,6 +276,58 @@ impl UniversalSearchModule {
         Ok(page)
     }
 
+    /// PROTOTYPE (regex-search): every Entity the caller can call, hydrated,
+    /// in Call Path order, from one read snapshot. The listing of
+    /// [`Self::search`] without a query, with no page limit. Reads no index.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::search`].
+    pub async fn catalog(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        request: &SearchRequest,
+    ) -> Result<Vec<SearchHit>, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let authority = self
+            .authorize(&mut transaction, actor, workspace_id)
+            .await?;
+        let loaded = LoadedGenerations::default();
+        let context = RequestContext {
+            actor,
+            authority: &authority,
+            workspace_id,
+            terms: None,
+            loaded: &loaded,
+        };
+        let (listed, statuses) = self
+            .list_in_transaction(&mut transaction, context, request.provider())
+            .await?;
+        let mut hits = Vec::with_capacity(listed.len());
+        let mut start = 0usize;
+        let limit = SearchLimit::parse(SEARCH_RESULT_LIMIT_MAX)?;
+        loop {
+            let page = hydrate_page_in_transaction(
+                &mut transaction,
+                context,
+                &self.retrievers,
+                &listed,
+                start,
+                limit,
+                statuses.clone(),
+            )
+            .await?;
+            hits.extend(page.hits().iter().cloned());
+            match page.next_offset() {
+                Some(next) => start = next as usize,
+                None => break,
+            }
+        }
+        transaction.commit().await?;
+        Ok(hits)
+    }
+
     /// The Call Roots of the Providers the caller can search now, in order:
     /// the values a search's Provider filter accepts. Reads no index.
     ///
