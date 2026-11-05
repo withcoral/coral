@@ -20,18 +20,19 @@ Coral runs TypeScript Programs that call the user's connected providers.
 ## Program rules
 - Write each call as the complete literal Call Path that search returns, such as `coral.providers.github.getRepo(...)`. Keep `coral` and its sub-paths out of variables.
 - Only provider tools reach the network; `fetch`, `setTimeout` and other ambient APIs are absent.
-- Keep credentials and account choice out of Program source; Coral supplies both.
+- Keep credentials and account choice out of Program source.
 - Publish interim output with `await coral.emit(value)`. The Program's return value is the Final Value.
 - Error responses throw `coral.ToolError` with their `data`. Coral never pages or retries: follow continuation data.
+- `coral.workspace.getRunResult({ runId })` reads an earlier Run's Final Value and Tool Results: return a small summary, then slice the full data there without calling providers.
 
 ## Results
-- `isError: true` means Coral rejected the call. Fix what `code` and `message` name, then call again.
+- `isError: true` means Coral rejected the call. Fix what `code` and `message` name.
 - Report a failed, canceled, timed-out or interrupted Run to the user as its outcome.
 
 ## Human handoff
 A non-empty `required_actions` means the Run waits for a person.
-- For `invoking_user`, write the full `url` as reply text, then keep calling `wait`: it can report the link as progress while it holds, and the decision resumes the Run.
-- Never ask for a token, password or account in the chat: a connection happens on that page.
+- For `invoking_user`, write the full `url` as reply text, then keep calling `wait`.
+- Never ask for a token, password or account in the chat.
 ";
 
 // Clients add instructions to every turn; Claude Code drops what follows 2048.

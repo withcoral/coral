@@ -601,6 +601,98 @@ pub(super) async fn received_results(
     Ok((received, unread))
 }
 
+/// One Tool Result an earlier Run's Program received, with its arguments.
+pub(crate) struct RetainedResult {
+    pub(crate) call_path: String,
+    pub(crate) arguments: serde_json::Value,
+    pub(crate) tool_result: serde_json::Value,
+}
+
+/// The Run's retained Tool Results, oldest first, except calls to
+/// `excluded` Call Paths. It reads each whose retained bytes fit what
+/// `max_bytes` has left, and says whether it left any out.
+pub(crate) async fn retained_results(
+    transaction: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    run: &RunId,
+    excluded: &[&str],
+    max_bytes: u64,
+) -> Result<(Vec<RetainedResult>, bool), Error> {
+    let mut received = Query::select()
+        .from(ToolInvocations::Table)
+        .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace.to_string()))
+        .and_where(Expr::col(ToolInvocations::RunId).eq(run.to_string()))
+        .and_where(
+            Expr::col(ToolInvocations::ResultKind)
+                .eq(InvocationResultKind::UpstreamOutcome.as_storage_str()),
+        )
+        .to_owned();
+    if !excluded.is_empty() {
+        received
+            .and_where(Expr::col(ToolInvocations::CallPath).is_not_in(excluded.iter().copied()));
+    }
+    let sizes: Vec<(String, i64)> = transaction
+        .fetch_all(
+            received
+                .clone()
+                .columns([ToolInvocations::Id, ToolInvocations::ResultBytes])
+                .order_by(ToolInvocations::AdmittedAtUnixNanos, Order::Asc)
+                .order_by(ToolInvocations::Id, Order::Asc)
+                .to_owned(),
+        )
+        .await?;
+    let mut left = max_bytes;
+    let mut chosen = Vec::new();
+    let mut truncated = false;
+    for (id, bytes) in sizes {
+        let bytes = u64::try_from(bytes)
+            .map_err(|_negative| Error::CorruptData("invalid Tool Result size".into()))?;
+        if let Some(rest) = left.checked_sub(bytes) {
+            left = rest;
+            chosen.push(id);
+        } else {
+            truncated = true;
+        }
+    }
+    if chosen.is_empty() {
+        return Ok((Vec::new(), truncated));
+    }
+    let rows: Vec<(String, String, Option<String>)> = transaction
+        .fetch_all(
+            received
+                .columns([
+                    ToolInvocations::CallPath,
+                    ToolInvocations::ArgumentsJson,
+                    ToolInvocations::ResultJson,
+                ])
+                .and_where(Expr::col(ToolInvocations::Id).is_in(chosen.iter().map(String::as_str)))
+                .order_by(ToolInvocations::AdmittedAtUnixNanos, Order::Asc)
+                .order_by(ToolInvocations::Id, Order::Asc)
+                .to_owned(),
+        )
+        .await?;
+    let results = rows
+        .into_iter()
+        .map(|(call_path, arguments_json, result_json)| {
+            let arguments = serde_json::from_str(&arguments_json).map_err(|_invalid| {
+                Error::CorruptData("Invocation has invalid arguments JSON".into())
+            })?;
+            let tool_result = serde_json::from_str(
+                result_json
+                    .as_deref()
+                    .ok_or_else(|| Error::CorruptData("missing upstream result".into()))?,
+            )
+            .map_err(|_invalid| Error::CorruptData("invalid retained Tool Result".into()))?;
+            Ok(RetainedResult {
+                call_path,
+                arguments,
+                tool_result,
+            })
+        })
+        .collect::<Result<_, Error>>()?;
+    Ok((results, truncated))
+}
+
 /// The arguments the Invocation was admitted with.
 pub(super) async fn arguments(
     transaction: &mut Transaction<'_>,

@@ -24,6 +24,7 @@ fn valid_arguments(tool: BuiltinTool) -> Vec<Value> {
         BuiltinTool::UpdatePolicy => super::update_policy::valid_arguments(),
         BuiltinTool::UpdateProvider => super::update_provider::tests::valid_arguments(),
         BuiltinTool::Search => super::search::tests::valid_arguments(),
+        BuiltinTool::GetRunResult => super::get_run_result::valid_arguments(),
     }
 }
 
@@ -312,6 +313,40 @@ fn policies() -> impl Iterator<Item = (BuiltinTool, Value)> {
 }
 
 // Catches: a result that tells a typed Program something its declaration does not.
+fn run_results() -> Vec<(BuiltinTool, Value)> {
+    [
+        (Some(json!({ "rows": [1, 2] })), None),
+        (
+            None,
+            Some(super::RunResultFailure {
+                code: "program_rejected".to_owned(),
+                message: "boom".to_owned(),
+            }),
+        ),
+        (None, None),
+    ]
+    .into_iter()
+    .map(|(final_value, failure)| {
+        (
+            BuiltinTool::GetRunResult,
+            super::GetRunResultResult {
+                run_id: "brave-quiet-river-lamp".to_owned(),
+                state: "succeeded".to_owned(),
+                final_value,
+                failure,
+                tool_results: vec![super::RunToolResult {
+                    call_path: "coral.providers.github.repos.get".to_owned(),
+                    arguments: json!({ "owner": "acme" }),
+                    data: json!({ "id": 1 }),
+                }],
+                truncated: false,
+            }
+            .into_tool_result(),
+        )
+    })
+    .collect()
+}
+
 #[test]
 fn each_result_meets_its_output_schema() {
     let mut results = setup_tool_results();
@@ -376,6 +411,7 @@ fn each_result_meets_its_output_schema() {
         configured_providers().map(|saved| (BuiltinTool::GetProvider, saved.into_tool_result())),
     );
     results.extend(policies());
+    results.extend(run_results());
     results.extend(
         super::search::tests::results()
             .into_iter()

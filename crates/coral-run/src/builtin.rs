@@ -29,6 +29,8 @@ use crate::{
 mod add_provider;
 mod get_policy;
 mod get_provider;
+mod get_run_result;
+mod get_run_result_repository;
 mod list_providers;
 mod search;
 mod setup_tool;
@@ -45,6 +47,7 @@ pub(crate) enum BuiltinCall {
     UpdatePolicy(update_policy::UpdatePolicy),
     UpdateProvider(Box<update_provider::UpdateProvider>),
     Search(Box<search::Search>),
+    GetRunResult(get_run_result::GetRunResult),
 }
 
 impl BuiltinCall {
@@ -86,6 +89,9 @@ impl BuiltinCall {
                     BuiltinArguments::Search(arguments) => {
                         search::Search::new(arguments).map(|call| Self::Search(Box::new(call)))
                     }
+                    BuiltinArguments::GetRunResult(arguments) => {
+                        get_run_result::GetRunResult::new(&arguments).map(Self::GetRunResult)
+                    }
                 }),
         )
     }
@@ -100,6 +106,7 @@ impl BuiltinCall {
             Self::UpdatePolicy(call) => call.perform(host).await,
             Self::UpdateProvider(call) => call.perform(host).await,
             Self::Search(call) => call.perform(host).await,
+            Self::GetRunResult(call) => call.perform(host).await,
         }
     }
 }
@@ -137,7 +144,8 @@ pub(crate) async fn recover(
             | BuiltinTool::GetProvider
             | BuiltinTool::GetPolicy
             | BuiltinTool::UpdatePolicy
-            | BuiltinTool::Search,
+            | BuiltinTool::Search
+            | BuiltinTool::GetRunResult,
         )
         | None => Ok(None),
     }
@@ -178,6 +186,8 @@ pub(crate) struct BuiltinHost<'a> {
     pub(crate) context: Option<&'a ChangeContext>,
     pub(crate) principal: &'a Principal,
     pub(crate) workspace_id: &'a WorkspaceId,
+    /// The invoking Run, whose Task scopes `getRunResult`.
+    pub(crate) run_id: &'a crate::RunId,
     pub(crate) human_interface: &'a HumanInterfaceUrl,
     pub(crate) run: &'a dyn InvokingRun,
 }

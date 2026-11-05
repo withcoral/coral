@@ -731,6 +731,7 @@ impl ToolInvoker {
             context: context.as_ref(),
             principal: &self.principal,
             workspace_id: &self.workspace_id,
+            run_id: &self.run_id,
             human_interface,
             run: self,
         };

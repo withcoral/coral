@@ -117,6 +117,17 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             ][..],
         ),
         (
+            BuiltinTool::GetRunResult,
+            // Read-only, so the default Tool Access State is enabled.
+            ToolHints::new(Some(true), None, Some(true), None),
+            &[
+                r#"export default function (input: { "runId": string })"#,
+                r#""toolResults": Array<RunToolResult>"#,
+                r#""truncated": boolean"#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
+        (
             BuiltinTool::UpdatePolicy,
             // Idempotent only, so the default Tool Access State is approval_required.
             ToolHints::new(None, None, Some(true), None),
@@ -181,6 +192,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             "addProvider",
             "getPolicy",
             "getProvider",
+            "getRunResult",
             "listProviders",
             "search",
             "updatePolicy",

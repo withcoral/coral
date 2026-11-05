@@ -35,6 +35,7 @@ use crate::{
 mod add_provider;
 mod get_policy;
 mod get_provider;
+mod get_run_result;
 mod list_providers;
 mod provider_input;
 mod search;
@@ -45,6 +46,9 @@ pub use add_provider::{AddProviderArguments, AddProviderResult};
 pub use get_policy::{GetPolicyArguments, GetPolicyResult};
 pub use get_provider::{
     ConfigurationOutput, GetProviderArguments, GetProviderResult, ProviderSourceOutput,
+};
+pub use get_run_result::{
+    GetRunResultArguments, GetRunResultResult, RunResultFailure, RunToolResult,
 };
 pub use list_providers::{
     ListProvidersResult, ListedProvider, ListedProviderState, ListedSetup, ListedSetupState,
@@ -127,10 +131,13 @@ pub enum BuiltinTool {
     /// Finds the Tools and Saved Functions the caller can call, ranked by a
     /// query, or reads the exact descriptions of named Call Paths.
     Search,
+    /// Reads an earlier Run's state, Final Value and retained Tool Results,
+    /// so a later Program slices data without calling Providers again.
+    GetRunResult,
 }
 
 impl BuiltinTool {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::AddProvider,
         Self::ListProviders,
         Self::GetProvider,
@@ -138,6 +145,7 @@ impl BuiltinTool {
         Self::UpdatePolicy,
         Self::UpdateProvider,
         Self::Search,
+        Self::GetRunResult,
     ];
 
     /// Returns the Tool Key, which is also its relative path.
@@ -151,6 +159,7 @@ impl BuiltinTool {
             Self::UpdatePolicy => "updatePolicy",
             Self::UpdateProvider => "updateProvider",
             Self::Search => "search",
+            Self::GetRunResult => "getRunResult",
         }
     }
 
@@ -173,6 +182,7 @@ impl BuiltinTool {
             Self::UpdatePolicy => update_policy::NEEDS,
             Self::UpdateProvider => update_provider::NEEDS,
             Self::Search => search::NEEDS,
+            Self::GetRunResult => get_run_result::NEEDS,
         }
     }
 }
@@ -322,6 +332,8 @@ pub enum BuiltinArguments {
     UpdateProvider(Box<UpdateProviderArguments>),
     /// `search`'s arguments.
     Search(SearchArguments),
+    /// `getRunResult`'s arguments.
+    GetRunResult(GetRunResultArguments),
 }
 
 impl BuiltinArguments {
@@ -348,6 +360,9 @@ impl BuiltinArguments {
             BuiltinTool::UpdateProvider => UpdateProviderArguments::parse(arguments)
                 .map(|arguments| Self::UpdateProvider(Box::new(arguments))),
             BuiltinTool::Search => SearchArguments::parse(arguments).map(Self::Search),
+            BuiltinTool::GetRunResult => {
+                GetRunResultArguments::parse(arguments).map(Self::GetRunResult)
+            }
         }
     }
 }
@@ -635,6 +650,7 @@ fn definition(tool: BuiltinTool) -> Definition {
         BuiltinTool::UpdatePolicy => update_policy::definition(),
         BuiltinTool::UpdateProvider => update_provider::definition(),
         BuiltinTool::Search => search::definition(),
+        BuiltinTool::GetRunResult => get_run_result::definition(),
     }
 }
 
