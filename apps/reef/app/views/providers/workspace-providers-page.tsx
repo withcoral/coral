@@ -1157,7 +1157,6 @@ function ProvidersTableScreen({
               </span>
               <span
                 role="columnheader"
-                aria-sort={toolCalls ? (sortByUsage ? 'none' : 'ascending') : undefined}
                 className={classNames(styles.nameHeader, Table.groupToggleHeading)}
               >
                 <Button.IconButton

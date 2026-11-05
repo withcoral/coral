@@ -353,16 +353,17 @@ test('ranks every tool by usage in one list, then goes back to the headings', as
     within(table())
       .getAllByRole('columnheader')
       .find((cell) => cell.textContent?.startsWith(name))!
+  // Grouped rows are not in one name order, so only Usage reports a sort.
   const sorts = () =>
     [header('Tool name'), header('Usage')].map((cell) => cell.getAttribute('aria-sort'))
   const headings = () => within(table()).queryAllByRole('rowgroup', { name: /GitHub|Weather/ })
   const byName = ['issues.create', 'issues.list', 'repos.get', 'getForecast']
   expect(rowNames()).toEqual(byName)
-  expect(sorts()).toEqual(['ascending', 'none'])
+  expect(sorts()).toEqual([null, 'none'])
 
   await user.click(within(table()).getByRole('button', { name: 'Sort by usage' }))
   expect(rowNames()).toEqual(['repos.get', 'getForecast', 'issues.create', 'issues.list'])
-  expect(sorts()).toEqual(['none', 'descending'])
+  expect(sorts()).toEqual([null, 'descending'])
   expect(headings()).toEqual([])
   expect(rowOf('getForecast')).toHaveTextContent('Weather')
   expect(rowOf('repos.get')).toHaveTextContent('GitHub')
