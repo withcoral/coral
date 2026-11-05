@@ -582,7 +582,8 @@ pub(crate) enum Gate {
 // this settles appends its `invocation.ended` to `events`. A request this
 // creates waits at most `approval_wait_nanos`, bounded by the Run deadline.
 // The gate never judges a deadline: the owner's timer expires a pending
-// request, and the enforcement point judges an approved one at dispatch.
+// request, and the enforcement point judges an approved one by its decision
+// time.
 pub(super) async fn gate(
     tx: &mut Transaction<'_>,
     admitted: &AdmittedInvocation,
@@ -632,7 +633,7 @@ pub(super) async fn gate(
             id: row.id,
             deadline_at_unix_nanos: row.deadline_at_unix_nanos,
         }),
-        ApprovalState::Approved => Ok(Gate::Ready(approval_fact(&row))),
+        ApprovalState::Approved => Ok(Gate::Ready(approval_fact(&row)?)),
         ApprovalState::Closed if !required => Ok(Gate::Ready(ApprovalFact::NotRequested)),
         ApprovalState::Declined => Err(Error::InvocationRejected(
             CoralFailure::ApprovalDeclined.into(),
@@ -647,18 +648,21 @@ pub(super) async fn gate(
 }
 
 /// The request's recorded decision as the enforcement point decides on it.
-fn approval_fact(row: &StoredApproval) -> ApprovalFact {
-    match row.state {
+fn approval_fact(row: &StoredApproval) -> Result<ApprovalFact, Error> {
+    Ok(match row.state {
         ApprovalState::Pending => ApprovalFact::Pending {
             deadline_at_unix_nanos: row.deadline_at_unix_nanos,
         },
         ApprovalState::Approved => ApprovalFact::Approved {
+            decided_at_unix_nanos: row.decided_at_unix_nanos.ok_or_else(|| {
+                Error::CorruptData("approved request without a decision time".into())
+            })?,
             deadline_at_unix_nanos: row.deadline_at_unix_nanos,
         },
         ApprovalState::Declined => ApprovalFact::Declined,
         ApprovalState::Expired => ApprovalFact::Expired,
         ApprovalState::Closed => ApprovalFact::Closed,
-    }
+    })
 }
 
 /// A failure an outside writer recorded on the Invocation that prevents its
@@ -746,10 +750,15 @@ pub(super) async fn expire_for_timeout(
 /// What the Run Owner decided for one Approval Request, as the pure `apply`
 /// decided it in mailbox order.
 enum Decided {
-    /// A human's decision, recorded as made.
-    Decision(DecisionRequest),
+    /// A human's decision, recorded as made, dated when the owner applied
+    /// it.
+    Decision {
+        request: DecisionRequest,
+        applied_at_unix_nanos: i64,
+    },
     /// The request is closed: the Run no longer accepted actions when the
-    /// decision was applied.
+    /// decision was applied. No deadline judges a closed request, so it is
+    /// dated when its chunk commits.
     Close(DecisionRequest),
     /// The request's deadline passed (its timer fired): it expires, and its
     /// Invocation ends.
@@ -764,20 +773,30 @@ enum Decided {
 /// request can have; a write that still fails with a definite answer fails
 /// the chunk, as any row work's does. Nothing here compares the clock with
 /// the request's deadline: the owner applied the expiry when its timer
-/// fired, or a decision came first.
+/// fired, or a decision came first. A decision is dated when the owner
+/// applied it, not when its chunk commits, so a decision that came first
+/// stays decided before the deadline.
 pub(crate) struct DecideWork {
     approval: ApprovalId,
     decided: Decided,
 }
 
 impl DecideWork {
-    /// A human's decision; `decide: false` closes the request instead, the
-    /// Run no longer accepting actions when the owner applied it.
-    pub(crate) fn decision(request: DecisionRequest, decide: bool) -> Self {
+    /// A human's decision, which the owner applied at
+    /// `applied_at_unix_nanos`; `decide: false` closes the request instead,
+    /// the Run no longer accepting actions when the owner applied it.
+    pub(crate) fn decision(
+        request: DecisionRequest,
+        decide: bool,
+        applied_at_unix_nanos: i64,
+    ) -> Self {
         Self {
             approval: request.approval.clone(),
             decided: if decide {
-                Decided::Decision(request)
+                Decided::Decision {
+                    request,
+                    applied_at_unix_nanos,
+                }
             } else {
                 Decided::Close(request)
             },
@@ -808,9 +827,12 @@ impl DecideWork {
             return Ok(Vec::new());
         }
         let (state, decided_at, human, trace) = match &self.decided {
-            Decided::Decision(request) => (
+            Decided::Decision {
+                request,
+                applied_at_unix_nanos,
+            } => (
                 request.decision.state(),
-                now,
+                (*applied_at_unix_nanos).max(run.accepted_at_unix_nanos),
                 Some((&request.actor, request.comment.as_deref())),
                 request.trace.clone(),
             ),
@@ -847,7 +869,7 @@ impl std::fmt::Debug for DecideWork {
         work.field("approval", &self.approval);
         // The request's comment is never printed.
         match &self.decided {
-            Decided::Decision(request) => work.field("decision", &request.decision),
+            Decided::Decision { request, .. } => work.field("decision", &request.decision),
             Decided::Close(_) => work.field("decided", &"close"),
             Decided::Expire => work.field("decided", &"expire"),
         };

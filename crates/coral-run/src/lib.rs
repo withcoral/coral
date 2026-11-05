@@ -51,10 +51,6 @@
 //!   [`RunModule::sweep_interval`]. Coral never resumes a Run.
 //! - [`RunModule::shutdown`] refuses new Runs, lets the live ones end for the
 //!   Shutdown Drain, then interrupts the rest within the commit grace.
-//! - [`RunModule::action_prompts`] and [`RunModule::answer_action_prompt`] let an
-//!   interactive client ask the invoking User about each current action of their
-//!   own Run. An approval answer decides through the same Approval rules as Reef;
-//!   a connection answer changes nothing. Prompts keep no state.
 //! - [`approval::ApprovalModule`] exposes human-only exact Invocation decisions;
 //!   request validity and lifecycle evidence stay behind that separate Interface.
 //!
@@ -130,11 +126,9 @@
 //! Runs, while an Agent can address only that same Agent's Run in its fixed
 //! Workspace. Run identifiers and cursors grant no authority.
 
-mod action_prompts;
 mod activity;
 mod activity_observation;
 mod admission;
-pub use action_prompts::{ActionPrompt, PromptAnswer};
 pub use activity::{RunEntries, RunEntry, RunEntryAnchor, RunEntryWindow};
 pub use activity_observation::{ActivityObservation, ActivityWake};
 pub use admission::{PreparedRun, StagedRun};

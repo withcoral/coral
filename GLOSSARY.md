@@ -562,17 +562,6 @@ human actions for the Run and receives Run, approval, and account-connection cha
 Authorized Workspace Owners find Agent approval actions on the Approvals Page. _Avoid_: Per-Invocation action URL,
 bearer URL, MCP session state
 
-**Action Prompt**: A negotiated MCP elicitation that asks the invoking User about one current Approval Request or
-Account Connection Request of their own Run, while an observation of that Run is in progress. Each observing tool call
-asks about each current request at most once; a later call asks again while the request is still pending. An approval
-prompt is a form: accepting it approves that exact Invocation and declining it declines the Invocation, with the same
-first-wins rules as Reef. A connection prompt is a URL elicitation to the User's Reef page for that Provider Account, sent
-only to clients that support URL mode; declining it declines the request, and accepting it only opens the page. Dismissing a
-prompt without an answer decides nothing. An in-band prompt whose request no longer needs an answer is withdrawn; a
-later answer to an obsolete prompt decides nothing. The prompt keeps no durable state and grants no authority beyond the
-authenticated User's own. Agent bearer sessions, other Users, and Owners observing Agent Runs are never prompted.
-_Avoid_: one prompt per Run, form connection prompt
-
 **Approval Request**: A durable host-owned request for a human decision on one pending Tool Invocation. Reef is
 the v1 human resolution interface that every Request can use, in local and remote deployments; a deployment without its
 local or hosted Reef interface is not ready. Coral creates a Request whenever an Invocation requires approval. It records the exact logical
@@ -581,8 +570,9 @@ at its deadline, it settles the Invocation with `approval_expired`; decided befo
 Run's stream dispatches the Invocation; declining settles it with `approval_declined`. The first durable terminal decision
 wins. A later decision returns that result without changing it. If policy becomes `disabled`, Coral settles the
 Invocation with `tool_disabled`; if it becomes `enabled`, Coral closes the Request and continues after its other
-checks. A later Invocation can create a new request. The invoking User can also decide it through an Action Prompt in
-their MCP client; Reef remains available for every Request. An active browser is not required, and existing Requests
+checks. A later Invocation can create a new request. The person the Request names decides it on the Approvals Page:
+the invoking User for a Run a User invoked, which the assistant's link opens with the Request in review, or a Workspace
+Owner for a Run an Agent invoked; Reef remains available for every Request. An active browser is not required, and existing Requests
 survive a temporary Reef outage. _Avoid_: per-Invocation approval URL, Program pause payload
 
 **Approvals Page**: The Workspace page in Reef where a person decides the Approval Requests waiting on them and reads
@@ -823,7 +813,7 @@ carries an Upstream Outcome. _Avoid_: Program request, connection-scoped executi
 and joined by hyphens, such as `height-word-database-library`. Coral draws the words at random, inserts the Run with
 them as its primary key, and draws again when the name is already in use, so no two Runs in one deployment share one. A
 Run accepted before Coral issued words keeps its UUID text. The identifier names the Run in MCP, in gRPC resource
-names, in the Run Status Page URL and `run_status_url`, and in logs. It grants no authority: a Principal who guesses it
+names, in the Run Status Page URL, and in logs. It grants no authority: a Principal who guesses it
 sees nothing more than for a Run that does not exist. _Avoid_: run id, run key, run handle, run alias, short
 identifier, agent identifier
 
@@ -835,7 +825,8 @@ checkpoints. _Avoid_: Administrative Lifecycle Event, stream chunk, workflow che
 **Coral Instance**: One running Coral server process, identified by a random id it generates each time it starts. Any
 Coral Instance admits Run Executors, takes waiting Runs for them, serves a Run's stream and commits its chunks, and
 receives an outside Run Request for any Run. The Run row records the Coral Instance that holds the Run's stream, so a
-wake-up for the Run reaches it. _Avoid_: replica, node, worker, pod, process
+wake-up for the Run reaches it. Any Coral Instance also serves any MCP request, since Coral keeps no MCP session.
+_Avoid_: replica, node, worker, pod, process
 
 **Run Executor**: The runtime outside the Coral process that executes accepted Coral Program packages, each in a fresh
 V8 isolate, and compiles Programs with the Program Compiler. It dials Coral at one address and presents a credential:
@@ -918,7 +909,9 @@ outcome appears on the final output page; `has_more` means authored records or t
 The required actions are a current snapshot, not a Run state or Program Run Events. Several can exist for
 concurrent Invocations. Each visible Request appears once, even if several Invocations wait on it. Required actions
 identify an account connection or Invocation approval, its required actor, deadline, opaque non-authorizing request
-identifier, and stable non-secret Run Status Page URL. An Account Connection Request appears only to its invoking User.
+identifier, the stable non-secret URL of the page where the person decides it (the Approvals Page with the Request in
+review, or the person's account page for the Provider for a connection request), the waiting Tool's Call Path (absent when one connection
+request is shared by Invocations of different Tools) and its Provider's display name. An Account Connection Request appears only to its invoking User.
 An Agent can see that its own Run requires a Workspace Owner action, but cannot inspect or resolve the request. A
 terminal Run has no required actions. The cursor identifies authored-record delivery progress and the last visible
 required-action revision; internal execution bookkeeping alone is not a meaningful update. Adapters may project a Run

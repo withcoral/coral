@@ -239,9 +239,14 @@ impl RunModule {
                         events.extend(expiry.run(&mut transaction, &run, now).await?);
                     }
                 }
-                RecoveryStep::Decide { request, record } => {
+                RecoveryStep::Decide {
+                    request,
+                    record,
+                    applied_at_unix_nanos,
+                } => {
                     let record = *record && run.termination.is_none();
-                    let mut decision = DecideWork::decision(request.clone(), record);
+                    let mut decision =
+                        DecideWork::decision(request.clone(), record, *applied_at_unix_nanos);
                     events.extend(decision.run(&mut transaction, &run, now).await?);
                 }
             }
