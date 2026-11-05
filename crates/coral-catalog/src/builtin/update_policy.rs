@@ -47,8 +47,10 @@ pub(super) fn definition() -> Definition {
                     .to_string(),
             ),
         ),
-        // Idempotent only: the default Tool Access State is approval_required.
-        hints: ToolHints::new(None, None, Some(true), None),
+        // A sent state replaces the previous one; sending it again changes
+        // nothing more. It reaches nothing outside Coral. Not read-only, so the
+        // default Tool Access State is approval_required.
+        hints: ToolHints::new(Some(false), Some(true), Some(true), Some(false)),
         input: derived_schema::<Arguments>(Contract::Deserialize),
         output: derived_schema::<UpdatePolicyResult>(Contract::Serialize),
         declared: Declared::Once,

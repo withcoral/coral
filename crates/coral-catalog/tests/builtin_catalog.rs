@@ -48,8 +48,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     for (tool_key, hints, declared) in [
         (
             BuiltinTool::AddProvider,
-            // No read-only hint, so the default Tool Access State is approval_required.
-            ToolHints::default(),
+            // Not read-only, so the default Tool Access State is approval_required.
+            ToolHints::new(Some(false), Some(false), Some(false), Some(true)),
             &[
                 "type ProviderSourceInput =",
                 "\"openapi_document\"",
@@ -95,8 +95,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         ),
         (
             BuiltinTool::UpdateProvider,
-            // No read-only hint, so its default Tool Access State requires approval.
-            ToolHints::default(),
+            // Not read-only, so its default Tool Access State requires approval.
+            ToolHints::new(Some(false), Some(true), Some(false), Some(true)),
             &[
                 r#""namespace": string"#,
                 r#""refresh"?: true"#,
@@ -118,8 +118,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         ),
         (
             BuiltinTool::UpdatePolicy,
-            // Idempotent only, so the default Tool Access State is approval_required.
-            ToolHints::new(None, None, Some(true), None),
+            // Not read-only, so the default Tool Access State is approval_required.
+            ToolHints::new(Some(false), Some(true), Some(true), Some(false)),
             &[
                 r#""namespace": string"#,
                 r#""tools": ({} & Record<string, "enabled" | "approval_required" | "disabled">)"#,
