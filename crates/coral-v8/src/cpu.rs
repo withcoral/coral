@@ -3,7 +3,9 @@
 //! One watchdog thread asks each budgeted isolate for a V8 interrupt every
 //! 100 ms. The interrupt runs on the Program's thread, reads that
 //! thread's CPU clock, and terminates the isolate once the budget is spent.
-//! A thread that waits for a Tool parks, so waiting spends none of it.
+//! A Program that reaches its budget between two checks fails when it
+//! returns. A thread that waits for a Tool parks, so waiting spends none of
+//! it.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -42,10 +44,14 @@ impl Budgeted {
         }
     }
 
+    /// Whether the current thread has used the whole budget.
+    fn spent(&self) -> bool {
+        thread_cpu_time().is_some_and(|now| now.saturating_sub(self.started) >= self.budget)
+    }
+
     fn check(&self) {
         self.asked.store(false, Ordering::SeqCst);
-        let used = thread_cpu_time().map(|now| now.saturating_sub(self.started));
-        if used.is_some_and(|used| used >= self.budget) {
+        if self.spent() {
             self.exceeded.store(true, Ordering::SeqCst);
             let _terminated = self.handle.terminate_execution();
         }
@@ -136,7 +142,9 @@ impl Drop for ActiveBudget {
 
 /// Runs `work` under `budget` of the current thread's CPU time, counted from
 /// `started`. Over it, the isolate is terminated, which Program JavaScript
-/// cannot catch, and the result is [`Error::CpuLimitExceeded`]. `None` for
+/// cannot catch, and the result is [`Error::CpuLimitExceeded`]; a Program
+/// that reaches the budget and returns before a check fails the same way.
+/// `None` for
 /// either runs `work` unbudgeted, as on a platform without
 /// [`cpu_budget_supported`].
 pub(crate) fn with_cpu_budget<T>(
@@ -159,7 +167,8 @@ pub(crate) fn with_cpu_budget<T>(
     let active = ActiveBudget::install(entry.clone());
     let result = work(isolate);
     drop(active);
-    if entry.exceeded.load(Ordering::SeqCst) {
+    // A Program that crosses its budget between two checks has spent it too.
+    if entry.exceeded.load(Ordering::SeqCst) || entry.spent() {
         Err(Error::CpuLimitExceeded)
     } else {
         result

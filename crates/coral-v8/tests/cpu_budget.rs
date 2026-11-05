@@ -20,8 +20,8 @@ mod on_unix {
     use coral_telemetry::metric::CompilerRole;
     use coral_telemetry::testing::MetricCapture;
     use coral_v8::{
-        AuthoredLocation, ConsoleLevel, Error, IsolateLimits, ProgramCompiler, ProgramExecutor,
-        ProgramHost, ProgramOutputHostError, ToolFuture,
+        AuthoredLocation, ConsoleLevel, Error, IsolateLimits, ProgramCompiler,
+        ProgramExecutionControl, ProgramExecutor, ProgramHost, ProgramOutputHostError, ToolFuture,
     };
     use std::sync::{Arc, Mutex};
     use std::task::{Poll, Waker};
@@ -31,12 +31,13 @@ mod on_unix {
 
     /// A host with a CPU budget whose one Tool answers after `tool_wait`.
     struct BudgetedHost {
+        budget: Duration,
         tool_wait: Duration,
     }
 
     impl ProgramHost for BudgetedHost {
         fn cpu_budget(&self) -> Option<Duration> {
-            Some(BUDGET)
+            Some(self.budget)
         }
 
         fn invoke(
@@ -108,17 +109,28 @@ mod on_unix {
             executor.execute_with_host(
                 &waiting,
                 Arc::new(BudgetedHost {
+                    budget: BUDGET,
                     tool_wait: BUDGET + Duration::from_millis(500),
                 }),
             )
         });
+        // Bounds the busy Program, so a budget that never ends it fails the
+        // assertion below instead of hanging the test.
+        let bound = ProgramExecutionControl::new();
+        let stop = bound.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(10));
+            let _stopped = stop.terminate();
+        });
         let capture = MetricCapture::default();
         let busy = tracing::subscriber::with_default(capture.subscriber(), || {
-            executor.execute_with_host(
+            executor.execute_with_host_control(
                 &busy,
                 Arc::new(BudgetedHost {
+                    budget: BUDGET,
                     tool_wait: Duration::ZERO,
                 }),
+                &bound,
             )
         });
 
@@ -138,5 +150,26 @@ mod on_unix {
                 .final_value_json(),
             Some("42")
         );
+    }
+
+    /// Catches: a Program that spends its budget and returns before the
+    /// watchdog's next check keeps its result.
+    #[test]
+    fn a_program_that_returns_over_its_budget_fails() {
+        let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
+            .expect("compiler")
+            .compile(
+                std::time::Instant::now() + coral_test_support::TEST_COMPILATION_TIMEOUT,
+                "return 42;",
+            )
+            .expect("compile");
+        let result = ProgramExecutor::new(IsolateLimits::default()).execute_with_host(
+            &program,
+            Arc::new(BudgetedHost {
+                budget: Duration::from_nanos(1),
+                tool_wait: Duration::ZERO,
+            }),
+        );
+        assert!(matches!(result, Err(Error::CpuLimitExceeded)), "{result:?}");
     }
 }
