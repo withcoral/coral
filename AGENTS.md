@@ -217,6 +217,9 @@
 - Extend the nearest shared helper (`coral-test-support` or the crate's test
   harness) and write near-duplicate cases as one table test. After a TDD loop,
   fold the tracer tests into that table before you open the PR.
+- A test that compiles TypeScript but is not about the compilation deadline
+  uses `coral_test_support::TEST_COMPILATION_TIMEOUT`. The production deadline
+  fails such tests on a starved runner.
 - Inject faults through the owning crate's API or
   `TestDatabase::execute_fixture_sql`, so the test runs on both databases.
   Production `#[cfg(test)]` hooks only synchronize timing; every tested path is

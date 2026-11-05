@@ -254,6 +254,8 @@ pub struct RunModule {
     applied_output_cap: AppliedOutputCap,
     fan_out_limit: FanOutLimit,
     shutdown_drain: ShutdownDrain,
+    /// The deadline for one Program compilation, from admission's start.
+    compilation_timeout: std::time::Duration,
     /// The Coral Instance this module runs in; a Run row it claims records it.
     instance: CoralInstanceId,
     /// Where outside Run Requests wait for the Run Owner of their Run.
@@ -302,6 +304,7 @@ impl RunModule {
             applied_output_cap: limits.applied_output_cap(),
             fan_out_limit: limits.fan_out_limit(),
             shutdown_drain: limits.shutdown_drain(),
+            compilation_timeout: limits.compilation_timeout(),
             instance,
             inbox,
             owners: Owners::default(),
@@ -341,6 +344,7 @@ impl RunModule {
             applied_output_cap: AppliedOutputCap::default(),
             fan_out_limit: FanOutLimit::default(),
             shutdown_drain: ShutdownDrain::default(),
+            compilation_timeout: coral_test_support::TEST_COMPILATION_TIMEOUT,
             instance: CoralInstanceId::generate(),
             inbox,
             owners: Owners::default(),

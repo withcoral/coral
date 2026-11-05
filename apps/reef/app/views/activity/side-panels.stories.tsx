@@ -1589,6 +1589,7 @@ const failures = {
   invalid_program_value: failed('invalid_program_value'),
   resource_limit_exceeded: failed('resource_limit_exceeded'),
   memory_limit_exceeded: failed('memory_limit_exceeded'),
+  cpu_limit_exceeded: failed('cpu_limit_exceeded'),
   program_execution_failed: failed('program_execution_failed', groupedError),
   run_authority_lost: failed('run_authority_lost'),
   unknown: failed('unknown'),
@@ -1597,6 +1598,7 @@ export const RunFailedProgramRejected = failures.program_rejected
 export const RunFailedInvalidProgramValue = failures.invalid_program_value
 export const RunFailedResourceLimit = failures.resource_limit_exceeded
 export const RunFailedMemoryLimit = failures.memory_limit_exceeded
+export const RunFailedCpuLimit = failures.cpu_limit_exceeded
 export const RunFailedGroupedProgramError = failures.program_execution_failed
 export const RunFailedAuthorityLost = failures.run_authority_lost
 export const RunFailedUnknownCode = failures.unknown

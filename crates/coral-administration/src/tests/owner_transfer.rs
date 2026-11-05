@@ -51,6 +51,7 @@ impl Departure {
             database.clone(),
             workspaces.clone(),
             coral_functions::IsolateLimits::default(),
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
         .unwrap();
         let author = AuthenticatedPrincipal::user(departing.clone());

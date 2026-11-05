@@ -54,3 +54,23 @@ fn javascript_preserves_required_action_nanoseconds_through_json() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// Catches: an MCP failure code that differs from the stable code Coral
+/// stores and exports for the same failure.
+#[test]
+fn every_failure_code_reaches_mcp_as_its_stable_code() {
+    for code in [
+        RunFailureCode::ProgramRejected,
+        RunFailureCode::InvalidProgramValue,
+        RunFailureCode::ResourceLimitExceeded,
+        RunFailureCode::MemoryLimitExceeded,
+        RunFailureCode::CpuLimitExceeded,
+        RunFailureCode::ProgramExecutionFailed,
+        RunFailureCode::RunAuthorityLost,
+    ] {
+        assert_eq!(
+            serde_json::to_value(FailureCode::from(code)).unwrap(),
+            json!(code.code())
+        );
+    }
+}

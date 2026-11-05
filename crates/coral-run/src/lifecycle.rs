@@ -108,8 +108,8 @@ impl RunRecord {
     }
 
     /// A termination intent no Principal asked for: the deadline, an
-    /// interruption, or the memory limit. A cancellation's intent is the Run
-    /// Owner's to apply.
+    /// interruption, the memory limit, or the CPU limit. A cancellation's
+    /// intent is the Run Owner's to apply.
     pub(crate) fn request_termination(
         &self,
         kind: RunTerminationKind,
@@ -168,6 +168,7 @@ pub(crate) enum RunTerminationKind {
     TimedOut,
     Interrupted,
     MemoryLimitExceeded,
+    CpuLimitExceeded,
 }
 
 impl RunTerminationKind {
@@ -179,6 +180,10 @@ impl RunTerminationKind {
             Self::MemoryLimitExceeded => RunTerminalOutcome::Failed(RunFailure::new(
                 RunFailureCode::MemoryLimitExceeded,
                 "Program memory limit exceeded".to_string(),
+            )),
+            Self::CpuLimitExceeded => RunTerminalOutcome::Failed(RunFailure::new(
+                RunFailureCode::CpuLimitExceeded,
+                "Program CPU limit exceeded".to_string(),
             )),
         }
     }

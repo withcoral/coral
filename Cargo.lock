@@ -1125,6 +1125,7 @@ name = "coral-v8"
 version = "1.5.0"
 dependencies = [
  "coral-telemetry",
+ "coral-test-support",
  "coral-value",
  "deno_core_icudata",
  "rustix 1.1.6",

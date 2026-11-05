@@ -41,6 +41,12 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         &["compiler.role", "operation", "outcome"],
     ),
     (
+        "coral.compiler.isolate.build.duration",
+        "histogram",
+        "s",
+        &["build.reason", "compiler.role", "outcome"],
+    ),
+    (
         "coral.compiler.queue.depth",
         "gauge",
         "{request}",
@@ -226,6 +232,12 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
         CompilerOperation::Program,
         CompilerOutcome::Ok,
         Duration::from_millis(5),
+    );
+    compiler_isolate_built(
+        CompilerRole::Run,
+        CompilerBuildReason::Fault,
+        CompilerBuildOutcome::Ok,
+        Duration::from_millis(300),
     );
     metrics.request_cpu(
         Interface::Grpc,

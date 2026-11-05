@@ -574,6 +574,10 @@ struct Fixture {
     server: coral_mcp::RunningMcpHttpServer,
 }
 impl Fixture {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fixture composes the authenticated MCP stack"
+    )]
     async fn new() -> Self {
         let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
             .await
@@ -627,7 +631,8 @@ impl Fixture {
                 workspaces.clone(),
                 coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
             ),
-            coral_run::RuntimeLimits::default(),
+            coral_run::RuntimeLimits::default()
+                .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
             coral_run::CoralInstanceId::generate(),
             coral_run::RunInbox::table(database.clone()),
         )
@@ -638,6 +643,7 @@ impl Fixture {
                 database.clone(),
                 workspaces.clone(),
                 coral_run::IsolateLimits::default(),
+                coral_test_support::TEST_COMPILATION_TIMEOUT,
             )
             .unwrap(),
             coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
