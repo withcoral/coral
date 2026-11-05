@@ -23,9 +23,7 @@ Coral now serves every MCP request on its own. No session id is issued and no MC
 request's credential and endpoint name its Principal and Workspace (a Workspace MCP Endpoint fixes the Workspace in its
 URL, the Organization MCP Endpoint takes it from the credential, and a credential-free request to a local Workspace
 endpoint acts as the implicit local User, as before). The protocol made the same move: revision 2026-07-28 removed
-sessions and server-initiated requests (SEP-2567 and SEP-2322); the research behind that, which harnesses negotiate
-which revision and how each handles elicitation, is in
-[docs/research/2026-10-28-mcp-client-protocol-versions.md](../research/2026-10-28-mcp-client-protocol-versions.md).
+sessions and server-initiated requests (SEP-2567 and SEP-2322).
 
 With the session goes the prompt. Coral calls a request that a Run waits on a **Required Action**, and every Required
 Action of a Run that a User invoked reaches that User one way, through the assistant's link: the tool call that observes
