@@ -118,9 +118,7 @@ impl RunModule {
                 request: action.request,
                 run_status_path: action.run_status_path,
                 // A shared connection request can outlive this Run's wait.
-                deadline_at_unix_nanos: action
-                    .deadline_at_unix_nanos
-                    .min(run.deadline_at_unix_nanos),
+                deadline_at_unix_nanos: run.bounded_by_deadline(action.deadline_at_unix_nanos),
                 call_path: summary
                     .map(|summary| summary.shared_call_path().to_owned())
                     .unwrap_or_default(),

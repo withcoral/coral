@@ -378,9 +378,10 @@ fn deliver(effects: Vec<Effect>) -> Vec<Effect> {
         .collect()
 }
 
-/// An owner launched at 1 and started at 2: the launch arms the Run
-/// deadline and the idle tick (the owner's liveness is judged from the
-/// start mark on), the start mark arms the idle tick again.
+/// An owner launched at 1 and started at 2 with the deadline `limits`
+/// names: the launch arms the idle tick (the owner's liveness is judged from
+/// the start mark on) and no deadline, which the start mark records; the
+/// start mark arms the Run deadline and the idle tick again.
 fn started(limits: OwnerLimits) -> OwnerState {
     let mut state = OwnerState::new(limits, 1);
     assert!(matches!(
@@ -388,32 +389,36 @@ fn started(limits: OwnerLimits) -> OwnerState {
         [
             Effect::Start,
             Effect::ArmTimer {
-                timer: Timer::RunDeadline,
-                after_nanos,
-            },
-            Effect::ArmTimer {
                 timer: Timer::IdleTick,
                 after_nanos: tick,
             }
-        ] if *after_nanos == limits.deadline_at_unix_nanos - 1 && *tick == limits.idle_tick_nanos
+        ] if *tick == limits.idle_tick_nanos
     ));
+    let deadline = limits.deadline_at_unix_nanos;
     assert!(matches!(
         crate::owner::apply(
             &mut state,
             Message::Started(Ok(Some(StartedExecution {
                 package: ProgramPackage::scripted("x"),
                 head: 1,
+                deadline_at_unix_nanos: deadline,
             }))),
             2
         )
         .as_slice(),
         [
             Effect::ArmTimer {
+                timer: Timer::RunDeadline,
+                after_nanos: until_deadline,
+            },
+            Effect::ArmTimer {
                 timer: Timer::IdleTick,
                 after_nanos,
             },
-            Effect::StartProgram(_)
-        ] if *after_nanos == limits.idle_tick_nanos
+            Effect::StartProgram { deadline_at_unix_nanos, .. }
+        ] if *until_deadline == deadline - 2
+            && *after_nanos == limits.idle_tick_nanos
+            && *deadline_at_unix_nanos == deadline
     ));
     assert_eq!(state.phase(), Phase::Running);
     assert_eq!(state.head(), 1);
@@ -1896,6 +1901,31 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
         );
     }
 
+    // A Run has no deadline before its start mark: a cancel past what its
+    // time limit would be from acceptance is a cancellation, never a timeout.
+    {
+        let limits = OwnerLimits {
+            deadline_at_unix_nanos: 100,
+            ..LIMITS
+        };
+        let mut state = OwnerState::new(limits, 1);
+        deliver(apply_without_tick(&mut state, Message::Launch, 1));
+        assert!(stops(&deliver(cancel(&mut state, "waiting", 200))));
+        let chunk = committed_chunk(apply_without_tick(
+            &mut state,
+            Message::Started(Ok(Some(StartedExecution {
+                package: ProgramPackage::scripted("x"),
+                head: 1,
+                deadline_at_unix_nanos: 300,
+            }))),
+            201,
+        ));
+        assert_eq!(
+            chunk.termination.map(|intent| intent.termination.kind),
+            Some(RunTerminationKind::Canceled)
+        );
+    }
+
     // A cancel past the deadline times the Run out: the Program is
     // terminated, and the timeout rides the next chunk with the deletion of
     // the cancel's row, a repeat of the timeout.
@@ -2013,6 +2043,7 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
             Message::Started(Ok(Some(StartedExecution {
                 package: ProgramPackage::scripted("x"),
                 head: 1,
+                deadline_at_unix_nanos: LIMITS.deadline_at_unix_nanos,
             }))),
             3,
         ));

@@ -2,7 +2,7 @@
 use super::*;
 
 #[tokio::test]
-async fn run_deadline_is_measured_from_durable_acceptance() {
+async fn run_deadline_is_measured_from_the_start_mark() {
     let (engine, release) = BlockingEngine::new();
     let fixture = TestModules::new(Arc::new(engine.clone())).await;
     let (workspace_id, principal) = fixture.user_scope("user:deadline", "Deadline").await;
@@ -19,15 +19,15 @@ async fn run_deadline_is_measured_from_durable_acceptance() {
         .await
         .expect("accept deadline Program");
     wait_until(|| engine.started.load(Ordering::SeqCst)).await;
-    let accepted_at = retained_events(&fixture.runs, &principal, &workspace_id, accepted.run_id())
+    let started_at = fixture
+        .run_record(&workspace_id, accepted.run_id())
         .await
-        .first()
-        .expect("run.started")
-        .occurred_at_unix_nanos();
+        .execution_started_at_unix_nanos
+        .expect("the start mark");
     fixture
         .clock
         .next
-        .store(accepted_at + 5_000_000_001, Ordering::SeqCst);
+        .store(started_at + 5_000_000_001, Ordering::SeqCst);
     release
         .send(ExecutionCompletion::Succeeded(FinalValue::Absent))
         .expect("release execution after deadline");
@@ -364,19 +364,24 @@ async fn queued_user_and_agent_cancellation_record_intent_without_starting_javas
     }
 }
 
+/// A Run waiting for its start mark has no deadline, so the wait never times
+/// it out: the time limit counts from the start.
 #[tokio::test]
-async fn queued_deadline_expires_without_starting_javascript() {
+async fn a_queued_run_never_times_out_before_its_start() {
     let engine = Arc::new(ImmediateEngine::default());
     let claim_gate = Arc::new(ClaimGate::default());
-    let fixture = TestModules::with_execution_adapters(
+    let mut fixture = TestModules::with_execution_adapters(
         engine.clone(),
         Arc::new(RejectingUpstream),
         Arc::new(NoopInvocationObserver),
         claim_gate.clone(),
     )
     .await;
+    // A lease longer than the wait, so the wait does not lose the Run.
+    fixture.runs.execution_policy =
+        crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_mins(15));
     let (workspace_id, principal) = fixture
-        .user_scope("user:queued-timeout", "Time out queued Run")
+        .user_scope("user:queued-timeout", "Wait longer than the time limit")
         .await;
     let accepted = fixture
         .runs
@@ -385,21 +390,23 @@ async fn queued_deadline_expires_without_starting_javascript() {
             &workspace_id,
             RunSubmission::new(
                 ProgramSource::parse("queued-timeout").expect("Program source"),
-                RunTimeout::from_millis(25).expect("Run timeout"),
+                RunTimeout::from_millis(1_000).expect("Run timeout"),
             ),
         )
         .await
         .expect("accept queued Program");
     wait_until(|| claim_gate.entered.load(Ordering::SeqCst)).await;
-    // The deadline reaches the owner's mailbox before its start mark lands:
-    // the Program never starts, and the timeout is recorded.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Twice the time limit passes before the start mark.
+    fixture
+        .clock
+        .next
+        .fetch_add(2_000_000_000, Ordering::SeqCst);
     claim_gate.release.store(true, Ordering::SeqCst);
 
     let terminal =
         wait_for_terminal(&fixture.runs, &principal, &workspace_id, accepted.run_id()).await;
-    assert_eq!(terminal.state(), RunState::TimedOut);
-    assert_eq!(engine.executions.load(Ordering::SeqCst), 0);
+    assert_eq!(terminal.state(), RunState::Succeeded);
+    assert_eq!(engine.executions.load(Ordering::SeqCst), 1);
     wait_until(|| claim_gate.finished.load(Ordering::SeqCst) == 1).await;
 }
 
@@ -1496,10 +1503,12 @@ async fn the_sweep_ends_an_abandoned_run_after_its_passed_timers_and_waiting_req
                     .next
                     .store(request.deadline_at_unix_nanos, Ordering::SeqCst);
             }
-            Abandoned::RunDeadline | Abandoned::WaitingCancelPastRunDeadline => fixture
-                .clock
-                .next
-                .store(handed.deadline_at_unix_nanos, Ordering::SeqCst),
+            Abandoned::RunDeadline | Abandoned::WaitingCancelPastRunDeadline => {
+                fixture.clock.next.store(
+                    handed.deadline_at_unix_nanos.expect("started"),
+                    Ordering::SeqCst,
+                );
+            }
             Abandoned::RecordedCancel | Abandoned::WaitingCancelAfterRecordedCancel => {
                 fixture
                     .inject_fault(&format!(
@@ -1859,11 +1868,11 @@ async fn a_recovered_owner_leaves_a_lease_renewed_since_the_sweep_read_it() {
     );
 }
 
-/// A `running` Run is another process's while its lease lives: one with no
-/// claim (as the previous release left one between acceptance and its claim)
-/// for one lease after acceptance, one another process holds until its lease
-/// ends. The sweep leaves it alone, then interrupts it, unstarted, in one
-/// chunk once the lease lapsed.
+/// The sweep takes a `running` Run only once its lease lapsed. A Run with no
+/// lease (as the previous release's recovery left one unstarted) is never
+/// one, however long ago it was accepted. A Run another process holds is
+/// left alone until its lease ends, then interrupted, unstarted, in one
+/// chunk: it has no deadline, so it never times out.
 #[tokio::test]
 async fn the_sweep_leaves_a_run_alone_until_its_lease_lapses() {
     for foreign in [false, true] {
@@ -1884,10 +1893,12 @@ async fn the_sweep_leaves_a_run_alone_until_its_lease_lapses() {
             let held = fixture
                 .hand_to(&workspace_id, &run_id, "foreign-process", Some(lease_until))
                 .await;
-            (held, lease_until)
+            // Past the lease, and past acceptance plus the 60 s time limit.
+            let lapsed_at = std::cmp::max(lease_until, accepted_at + 60_000_000_000) + 1;
+            (held, lapsed_at)
         } else {
             let unclaimed = fixture.release_worker_claim(&workspace_id, &run_id).await;
-            let lapsed_at = unclaimed.accepted_at_unix_nanos + lease + 1;
+            let lapsed_at = unclaimed.accepted_at_unix_nanos + 60 * lease;
             (unclaimed, lapsed_at)
         };
 
@@ -1899,23 +1910,21 @@ async fn the_sweep_leaves_a_run_alone_until_its_lease_lapses() {
         );
 
         fixture.clock.next.store(lapsed_at, Ordering::SeqCst);
-        assert_eq!(
-            fixture.next_process().sweep_expired_leases().await.unwrap(),
-            1
-        );
+        let swept = fixture.next_process().sweep_expired_leases().await.unwrap();
+        if !foreign {
+            assert_eq!(swept, 0, "the sweep ignores a Run with no lease");
+            assert_eq!(fixture.run_record(&workspace_id, &run_id).await, held);
+            continue;
+        }
+        assert_eq!(swept, 1);
         let ended = fixture.terminal_record(&workspace_id, &run_id).await;
-        assert_eq!(ended.state, RunState::Interrupted, "foreign {foreign}");
+        assert_eq!(ended.state, RunState::Interrupted, "never timed out");
         assert_eq!(ended.chunk_sequence, held.chunk_sequence + 1, "one chunk");
         assert_eq!(ended.execution_started_at_unix_nanos, None, "never started");
-        let holder = if foreign {
-            "foreign-process".to_string()
-        } else {
-            fixture.runs.instance().to_string()
-        };
         assert_eq!(
             ended.holder_instance_id.as_ref().map(ToString::to_string),
-            Some(holder),
-            "foreign {foreign}: a Run that never started records no new claim, so it keeps its holder"
+            Some("foreign-process".to_string()),
+            "a Run that never started records no new claim, so it keeps its holder"
         );
         assert!(matches!(
             fixture

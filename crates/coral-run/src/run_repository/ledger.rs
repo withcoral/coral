@@ -1,8 +1,8 @@
 //! The Run Ledger head and the one chunk-commit write path (ADR 0018).
 //!
 //! A chunk is everything one Run write carries: its Events, the Run Output
-//! Budget total after them, and, for the Run Owner's chunks, the worker lease
-//! renewal.
+//! Budget total after them, its commit time, and, for the Run Owner's chunks,
+//! the worker lease renewal.
 //! [`commit_chunk`] writes it in the caller's transaction under one
 //! predicate, the execution claim id and the head the chunk was built on, and
 //! moves the head by one. The Run-scoped rows a chunk carries (Invocation
@@ -36,6 +36,9 @@ pub(crate) struct Chunk<'a> {
     execution_claim_id: Option<&'a str>,
     /// The Run Ledger head the chunk was built on.
     head: u64,
+    /// The writer's own time for this commit, which the row records so a
+    /// reader can show how long the Run has been silent.
+    committed_at_unix_nanos: i64,
     events: Vec<ChunkEvent<'a>>,
     /// The Run Output Budget total after this chunk, written as a plain value.
     output_bytes: usize,
@@ -50,13 +53,18 @@ pub(crate) struct Chunk<'a> {
 impl<'a> Chunk<'a> {
     /// Starts a chunk on `run` as the writer read it under its hold, predicated
     /// on `execution_claim_id`: the worker's own claim, or the claim on the row
-    /// for writers outside the worker.
-    pub(crate) fn new(run: &'a RunRecord, execution_claim_id: Option<&'a str>) -> Self {
+    /// for writers outside the worker. It commits at `committed_at_unix_nanos`.
+    pub(crate) fn new(
+        run: &'a RunRecord,
+        execution_claim_id: Option<&'a str>,
+        committed_at_unix_nanos: i64,
+    ) -> Self {
         Self {
             workspace_id: &run.workspace_id,
             run_id: &run.id,
             execution_claim_id,
             head: run.chunk_sequence,
+            committed_at_unix_nanos,
             events: Vec::new(),
             output_bytes: run.accumulated_output_bytes,
             lease_until_unix_nanos: None,
@@ -121,9 +129,9 @@ impl<'a> Chunk<'a> {
 }
 
 /// Commits `chunk` in `transaction`: asserts the claim, the head and a running
-/// Run, moves the head by one, writes the output total, the termination intent
-/// the chunk carries and the lease renewal, and appends the Events after the
-/// Run's last one. The caller commits the transaction.
+/// Run, moves the head by one, writes the output total, the commit time, the
+/// termination intent the chunk carries and the lease renewal, and appends the
+/// Events after the Run's last one. The caller commits the transaction.
 ///
 /// The update also advances `next_event_sequence` by the chunk's Event count.
 /// This release never reads it, but the previous release numbers its Events
@@ -176,6 +184,10 @@ pub(super) async fn commit_chunk_with(
             (
                 ProgramRunRecords::NextEventSequence,
                 Expr::col(ProgramRunRecords::NextEventSequence).add(event_count),
+            ),
+            (
+                ProgramRunRecords::LastCommitAtUnixNanos,
+                Expr::val(chunk.committed_at_unix_nanos),
             ),
         ])
         .values(run_values)

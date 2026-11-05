@@ -1365,7 +1365,7 @@ async fn the_precheck_and_the_enforcement_point_reach_the_same_decision_on_the_s
     let record = fixture.run_record(&tool.workspace_id, run.run_id()).await;
     let admitted = admitted_invocation(&fixture, &tool, run.run_id()).await;
     let invoker = test_invoker(&fixture, &tool, &record);
-    let deadline = record.deadline_at_unix_nanos;
+    let deadline = record.deadline_at_unix_nanos.expect("started");
     let context = change(tool.user.clone(), 100, 'a');
     let cases: [(&str, ToolAccessState, ApprovalFact, Decision); 5] = [
         (

@@ -155,8 +155,11 @@ pub(crate) enum Effect {
     Reply(Reply, Result<(), Error>),
     /// Commit the owner's first chunk: the execution-start mark.
     Start,
-    /// Execute the accepted package.
-    StartProgram(ProgramPackage),
+    /// Execute the accepted package, bound by the deadline its start recorded.
+    StartProgram {
+        package: ProgramPackage,
+        deadline_at_unix_nanos: i64,
+    },
     /// Commit one chunk, built on the head it carries; `output_total` is the
     /// Run Output Budget total it records.
     Commit {
@@ -215,6 +218,10 @@ pub(crate) enum Effect {
     Retire,
 }
 
+/// The deadline of a Run that has none: it never passes, so the owner never
+/// times such a Run out.
+pub(crate) const NO_DEADLINE: i64 = i64::MAX;
+
 /// The limits one owner decides against.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OwnerLimits {
@@ -222,6 +229,9 @@ pub(crate) struct OwnerLimits {
     pub(crate) applied_cap_bytes: usize,
     /// The Fan-out Limit: Invocations of the Run `dispatching` at once at most.
     pub(crate) fan_out_invocations: usize,
+    /// The Run deadline: the one the Run row records for a recovered owner,
+    /// and [`NO_DEADLINE`] for a Program owner until its start mark records
+    /// one.
     pub(crate) deadline_at_unix_nanos: i64,
     /// The shutdown grace a termination intent the owner applies gives the
     /// Run's dispatches in flight.
@@ -391,7 +401,10 @@ impl OwnerState {
     pub(crate) fn new(limits: OwnerLimits, accepted_at_unix_nanos: i64) -> Self {
         Self {
             phase: Phase::Starting,
-            limits,
+            limits: OwnerLimits {
+                deadline_at_unix_nanos: NO_DEADLINE,
+                ..limits
+            },
             stop_requested: false,
             settling: false,
             shutdown: None,
@@ -424,6 +437,7 @@ impl OwnerState {
         Self {
             phase: Phase::Recovering,
             recovered: Some(Recovered::default()),
+            limits,
             ..Self::new(limits, accepted_at_unix_nanos)
         }
     }
@@ -1378,8 +1392,11 @@ impl OwnerState {
     /// The owner's first chunk landed: the head it left is the owner's. A
     /// stop or a termination that reached the owner meanwhile means the
     /// Program never starts; the Run ends as the terminal write finds it.
+    /// The start mark landed with the Run deadline: the deadline timer is
+    /// armed from it, never before.
     fn started(&mut self, started: StartedExecution, now_unix_nanos: i64) -> Vec<Effect> {
         self.head = started.head;
+        self.limits.deadline_at_unix_nanos = started.deadline_at_unix_nanos;
         self.commit_succeeded(now_unix_nanos);
         if self.stop_requested {
             self.phase = Phase::Ending;
@@ -1387,7 +1404,18 @@ impl OwnerState {
             return self.advance_ending();
         }
         self.phase = Phase::Running;
-        vec![self.arm_idle_tick(), Effect::StartProgram(started.package)]
+        vec![
+            arm_at(
+                Timer::RunDeadline,
+                started.deadline_at_unix_nanos,
+                now_unix_nanos,
+            ),
+            self.arm_idle_tick(),
+            Effect::StartProgram {
+                package: started.package,
+                deadline_at_unix_nanos: started.deadline_at_unix_nanos,
+            },
+        ]
     }
 
     /// The idle tick, half a lease from now.
@@ -1562,19 +1590,11 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
     match message {
         // The idle tick is armed from the launch, not the start mark: a
         // start mark the database keeps not answering is judged by the
-        // owner's liveness like any other write, and the Run deadline alone
-        // does not end an owner still starting.
+        // owner's liveness like any other write. The Run has no deadline
+        // until its start mark records one.
         Message::Launch => {
             state.phase = Phase::Starting;
-            vec![
-                Effect::Start,
-                arm_at(
-                    Timer::RunDeadline,
-                    state.limits.deadline_at_unix_nanos,
-                    now_unix_nanos,
-                ),
-                state.arm_idle_tick(),
-            ]
+            vec![Effect::Start, state.arm_idle_tick()]
         }
         // While the owner interrupts its Run, the chunk and the start mark
         // still in flight may answer and the Program may end: none of it

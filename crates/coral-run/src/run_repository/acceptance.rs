@@ -63,7 +63,8 @@ impl PackageRow {
     }
 }
 
-/// Inserts the Run row, claimed by `holder`, and its package. `false` means a
+/// Inserts the Run row, claimed by `holder` and with no deadline (its start
+/// records one), and its package. `false` means a
 /// Run with this identifier already exists and nothing was written: the
 /// caller draws a new identifier.
 pub(crate) async fn insert_acceptance(
@@ -159,7 +160,6 @@ async fn insert_record(
             ProgramRunRecords::PrincipalKind,
             ProgramRunRecords::State,
             ProgramRunRecords::AcceptedAtUnixNanos,
-            ProgramRunRecords::DeadlineAtUnixNanos,
             ProgramRunRecords::ShutdownGraceNanos,
             ProgramRunRecords::WorkerClaimId,
             ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
@@ -177,7 +177,6 @@ async fn insert_record(
             Expr::val(run.principal.kind().as_storage_str()),
             Expr::val(RunState::Running.as_storage_str()),
             Expr::val(run.accepted_at_unix_nanos),
-            Expr::val(run.deadline_at_unix_nanos),
             Expr::val(run.shutdown_grace_nanos),
             // The Run Owner's worker claim: written with acceptance, so no
             // running Run is ever unclaimed, and renewed by every chunk.

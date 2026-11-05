@@ -1051,14 +1051,13 @@ impl RunUpdate {
     }
 }
 
-/// Exact immutable attribution, deadline and claim retained by a durable Run.
+/// Exact immutable attribution, limits and claim retained by a durable Run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AcceptedRun {
     pub(crate) id: RunId,
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) principal: Principal,
     pub(crate) accepted_at_unix_nanos: i64,
-    pub(crate) deadline_at_unix_nanos: i64,
     pub(crate) shutdown_grace_nanos: i64,
     pub(crate) value_limits: coral_value::ValueLimits,
     /// The Run Owner's claim, written as the worker claim by acceptance.

@@ -10,7 +10,9 @@ pub(crate) struct RunRecord {
     pub(crate) principal: Principal,
     pub(crate) state: RunState,
     pub(crate) accepted_at_unix_nanos: i64,
-    pub(crate) deadline_at_unix_nanos: i64,
+    /// The start mark's instant plus the Run's time limit; `None` before the
+    /// Run starts, and a Run with none never times out.
+    pub(crate) deadline_at_unix_nanos: Option<i64>,
     pub(crate) worker_claim_id: Option<String>,
     pub(crate) worker_claim_expires_at_unix_nanos: Option<i64>,
     /// The Coral Instance that minted the claim the row records: at
@@ -92,7 +94,21 @@ impl RunRecord {
             && self.termination.is_none()
             && self.execution_claim_id.as_deref() == Some(claim_id)
             && self.worker_claim_id.as_deref() == Some(claim_id)
-            && now_unix_nanos < self.deadline_at_unix_nanos
+            && !self.deadline_passed(now_unix_nanos)
+    }
+
+    /// Whether the recorded Run deadline passed at `now_unix_nanos`; never
+    /// for a Run with no deadline.
+    pub(crate) fn deadline_passed(&self, now_unix_nanos: i64) -> bool {
+        self.deadline_at_unix_nanos
+            .is_some_and(|deadline| now_unix_nanos >= deadline)
+    }
+
+    /// The earlier of `at_unix_nanos` and the Run deadline: `at_unix_nanos`
+    /// for a Run with no deadline.
+    pub(crate) fn bounded_by_deadline(&self, at_unix_nanos: i64) -> i64 {
+        self.deadline_at_unix_nanos
+            .map_or(at_unix_nanos, |deadline| deadline.min(at_unix_nanos))
     }
 
     pub(crate) const fn execution_started(&self) -> bool {

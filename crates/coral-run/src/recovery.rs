@@ -1,7 +1,6 @@
 //! The expired-lease sweep (ADR 0018, Recovery): the worker lease is
 //! ownership, so a `running` Run whose lease lapsed with no owner in this
-//! process, or one with no claim accepted more than one lease ago, has no
-//! process that owns it. The sweep recreates its Run Owner with the mailbox
+//! process has no process that owns it. The sweep recreates its Run Owner with the mailbox
 //! already queued (every Approval Request timer that passed, in deadline
 //! order, then the requests waiting in the Run's Run Inbox, in insert order,
 //! then the end) and that owner writes one chunk: the expiries and the
@@ -50,8 +49,7 @@ impl RunModule {
 
     /// One pass of the expired-lease sweep: reads, in one snapshot ordered by
     /// acceptance, every `running` Run with no owner in this process whose
-    /// lease lapsed, or with no claim and accepted more than one lease ago,
-    /// and recreates its Run Owner. Returns once those owners exist, with how
+    /// lease lapsed, and recreates its Run Owner. Returns once those owners exist, with how
     /// many it recreated; each ends its Run in one chunk of its own, after
     /// the requests the snapshot found waiting in the Run's Run Inbox. A
     /// request inserted after the snapshot waits until that chunk lands; once
@@ -72,12 +70,7 @@ impl RunModule {
         }
         let now = self.now()?;
         let mut transaction = self.database.begin_read_snapshot().await?;
-        let lapsed = run_repository::lapsed_leases(
-            &mut transaction,
-            now,
-            self.execution_policy.claim_lease_nanos(),
-        )
-        .await?;
+        let lapsed = run_repository::lapsed_leases(&mut transaction, now).await?;
         let mut recoveries = Vec::new();
         for run in lapsed {
             if self.owners.contains(&run.id) {
@@ -132,7 +125,6 @@ impl RunModule {
             workspace_id: run.workspace_id.clone(),
             principal: run.principal.clone(),
             accepted_at_unix_nanos: run.accepted_at_unix_nanos,
-            deadline_at_unix_nanos: run.deadline_at_unix_nanos,
             shutdown_grace_nanos: run.shutdown_grace_nanos,
             value_limits: run.value_limits,
             claim_id,
@@ -149,6 +141,7 @@ impl RunModule {
             OwnerStart::Recovery {
                 taken: run.held_claim().map(str::to_owned),
                 lease_until: run.worker_claim_expires_at_unix_nanos,
+                deadline: run.deadline_at_unix_nanos,
             },
             handle,
             mailbox,

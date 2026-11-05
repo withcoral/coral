@@ -876,7 +876,7 @@ fn unstarted_run() -> crate::lifecycle::RunRecord {
         ),
         state: RunState::Running,
         accepted_at_unix_nanos: 0,
-        deadline_at_unix_nanos: 1,
+        deadline_at_unix_nanos: Some(1),
         worker_claim_id: None,
         worker_claim_expires_at_unix_nanos: None,
         holder_instance_id: None,

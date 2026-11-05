@@ -132,7 +132,7 @@ pub(crate) struct ExecArguments {
     #[schemars(
         range(min = 1, max = RUN_TIMEOUT_MAX_MS),
         extend("default" = DEFAULT_RUN_TIMEOUT_MS),
-        description = format!("Run timeout in milliseconds. Default and maximum {DEFAULT_RUN_TIMEOUT_MS} (15 minutes). Waiting and human action do not extend it.")
+        description = format!("Run timeout in milliseconds, counted from when the Program starts. Default and maximum {DEFAULT_RUN_TIMEOUT_MS} (15 minutes). Waiting and human action do not extend it.")
     )]
     pub(crate) run_timeout_ms: Option<u64>,
     #[schemars(
