@@ -156,7 +156,10 @@ fn load(
         tracing::warn!("the package's source map is invalid; closing the Run stream");
         return None;
     }
-    let value_limits = value_limits(package.value_limits.as_ref()?)?;
+    let Some(value_limits) = package.value_limits.as_ref().and_then(value_limits) else {
+        tracing::warn!("the package's value limits are missing or invalid; closing the Run stream");
+        return None;
+    };
     let linked = package
         .linked_snapshots
         .into_iter()

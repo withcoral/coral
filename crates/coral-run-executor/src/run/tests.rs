@@ -4,30 +4,22 @@ use coral_test_support::TEST_COMPILATION_TIMEOUT;
 use tokio::sync::oneshot;
 
 use super::*;
-use crate::testing::{Answer, RunCall, ScriptedCoral, package};
+use crate::testing::{Answer, RunCall, ScriptedCoral, package, start_run_executor};
 use crate::wire::v1::{
     Committed, Emit, Ended, Finish, FinishEnd, Invoke, Loaded, Location, Log, LogLevel, Rejection,
     Request, RunEnd, Started, Terminate, TerminateReason, ToolResult, finish, request, tool_result,
 };
-use crate::{CompilerClient as _, InProcessCompiler, RunExecutorConfig, Token};
+use crate::{CompilerClient as _, InProcessCompiler};
 
 /// A scripted Coral and a Run Executor that holds two Runs, linked. The Run
 /// Executor retires when the sender drops.
 async fn linked(applied_cap_bytes: usize) -> (ScriptedCoral, oneshot::Sender<()>) {
     let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
-    let config = RunExecutorConfig {
-        coral_address: coral.address().parse().unwrap(),
-        token: Token::new("test-run-executor-token".to_owned()).unwrap(),
-        max_runs_held: 2,
-        run_limits: RunLimits {
-            applied_cap_bytes,
-            ..RunLimits::default()
-        },
+    let limits = RunLimits {
+        applied_cap_bytes,
+        ..RunLimits::default()
     };
-    let (retire, retired) = oneshot::channel::<()>();
-    tokio::spawn(crate::run(config, None, async {
-        drop(retired.await);
-    }));
+    let retire = start_run_executor(&coral, 2, limits, None);
     coral.next_call().await;
     (coral, retire)
 }
@@ -227,6 +219,27 @@ return "kept";"#;
     assert_eq!(next_request(&mut run).await, (3, end));
 }
 
+/// Catches: a Final Value left out of the Run Output Budget, or one counted a
+/// byte short.
+#[tokio::test]
+async fn a_final_value_counts_against_the_run_output_budget() {
+    let program = compiled("await coral.emit(\"12345\");\nreturn \"1234567\";");
+    let value = finish(finish::Completion::ValueJson(r#""1234567""#.to_owned()));
+    // The Emission's 7 bytes and the Final Value's 9 fill 16 exactly.
+    for (budget, expected) in [(16, value), (15, finish_end(FinishEnd::OutputBudget))] {
+        let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
+        let mut package = program.clone();
+        package.value_limits.as_mut().unwrap().run_output_bytes = budget;
+        let mut run = started(&mut coral, package, None).await;
+        assert_eq!(next_request(&mut run).await, (1, emit(r#""12345""#, 1)));
+        assert_eq!(
+            next_request(&mut run).await,
+            (2, expected),
+            "budget {budget}"
+        );
+    }
+}
+
 /// Catches: a Program that sends past the Applied cap, or one that a
 /// Committed never releases.
 #[tokio::test]
@@ -281,21 +294,40 @@ try { console.info("held"); } finally { await coral.emit("finally"); }"#,
     }
 }
 
-/// Catches: a package loaded although it is not the one Coral hashed.
+/// How a case breaks a loadable package.
+type Breaks = fn(&mut Package);
+
+/// Catches: a package loaded although it breaks the protocol, or a closed
+/// stream that keeps its unit.
 #[tokio::test]
-async fn a_package_whose_digest_does_not_match_closes_the_stream() {
+async fn a_package_that_breaks_the_protocol_closes_the_stream() {
     let (mut coral, _retire) = linked(APPLIED_CAP_BYTES).await;
-    let mut package = compiled("return 1;");
-    package.script = "globalThis.changed = true; ".to_owned() + &package.script;
-    coral.take("run-1", "claim-1");
-    let mut run = coral.next_run().await;
-    run.send(run_response::Message::Package(package)).await;
-    assert_eq!(run.next().await, None, "nothing loads");
-    assert_eq!(
-        coral.next_room().await,
-        2,
-        "the closed stream frees the unit"
-    );
+    let loadable = compiled("return 1;");
+    let cases: [(&str, Breaks); 5] = [
+        ("a digest that is not the package's", |package| {
+            package.script.insert_str(0, "globalThis.changed = true; ");
+        }),
+        ("a source map the isolate cannot read", |package| {
+            package.source_map = "not a source map".to_owned();
+            package.sha256 = package_digest(&package.script, &package.source_map);
+        }),
+        ("no value limits", |package| package.value_limits = None),
+        ("a value limit of zero", |package| {
+            package.value_limits.as_mut().unwrap().host_bytes = 0;
+        }),
+        ("a level two apart", |package| {
+            package.protocol_level = PROTOCOL_LEVEL + 2;
+        }),
+    ];
+    for (run_id, (case, breaks)) in cases.into_iter().enumerate() {
+        let mut package = loadable.clone();
+        breaks(&mut package);
+        coral.take(&format!("run-{run_id}"), "claim-1");
+        let mut run = coral.next_run().await;
+        run.send(run_response::Message::Package(package)).await;
+        assert_eq!(run.next().await, None, "{case}: nothing loads");
+        assert_eq!(coral.next_room().await, 2, "{case}: the unit frees");
+    }
 }
 
 /// Catches: a Program over its Run CPU Budget that ends any other way.

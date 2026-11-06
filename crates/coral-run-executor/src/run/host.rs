@@ -86,9 +86,12 @@ impl RunHost {
     ) -> std::io::Result<oneshot::Receiver<()>> {
         let host = self.clone();
         let (exiting, exited) = oneshot::channel();
+        // The thread records where its creator does.
+        let dispatch = tracing::dispatcher::get_default(Clone::clone);
         std::thread::Builder::new()
             .name("coral-run".to_owned())
             .spawn(move || {
+                let _dispatch = tracing::dispatcher::set_default(&dispatch);
                 let _exiting = exiting;
                 let executor = coral_v8::ProgramExecutor::new(isolate);
                 let result =
@@ -118,8 +121,8 @@ impl RunHost {
             return state.stopped;
         };
         let bytes = usize::try_from(result.bytes).unwrap_or(usize::MAX);
+        let over_budget = !self.fits(&state, bytes);
         state.output = state.output.saturating_add(bytes);
-        let over_budget = state.output > self.value_limits.run_output_bytes();
         state.over_budget |= over_budget;
         drop(state);
         let settled = match outcome {
@@ -193,7 +196,7 @@ impl RunHost {
         if state.stopped {
             return false;
         }
-        if state.output.saturating_add(bytes) > self.value_limits.run_output_bytes() {
+        if !self.fits(&state, bytes) {
             state.over_budget = true;
             drop(state);
             self.stop();
@@ -211,9 +214,22 @@ impl RunHost {
         true
     }
 
-    /// Numbers and sends `Finish`, which goes at once.
+    /// Whether `bytes` more output fit in the Run Output Budget.
+    fn fits(&self, state: &State, bytes: usize) -> bool {
+        state.output.saturating_add(bytes) <= self.value_limits.run_output_bytes()
+    }
+
+    /// Numbers and sends `Finish`, which goes at once. A Final Value counts
+    /// against the Run Output Budget too: one that does not fit ends the Run
+    /// with the output-budget end. Nothing is counted after it.
     fn finish(&self, completion: finish::Completion) {
         let mut state = self.state();
+        let completion = match completion {
+            finish::Completion::ValueJson(json) if !self.fits(&state, json.len()) => {
+                finish::Completion::End(FinishEnd::OutputBudget.into())
+            }
+            completion => completion,
+        };
         state.last = state.last.saturating_add(1);
         let finish = Finish {
             completion: Some(completion),

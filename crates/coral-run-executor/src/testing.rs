@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::server::TcpIncoming;
@@ -24,7 +24,7 @@ use crate::wire::v1::{
     Hello, Open, Package, PullRequest, PullResponse, RunRequest, RunResponse, Taken, TakenRun,
     Welcome, pull_request, pull_response, run_request, run_response,
 };
-use crate::{PROTOCOL_LEVEL, package_digest};
+use crate::{PROTOCOL_LEVEL, RunExecutorConfig, RunLimits, Token, package_digest};
 
 /// How the scripted Coral answers one pull stream.
 #[derive(Clone, Copy, Debug)]
@@ -96,6 +96,35 @@ impl RunCall {
             .flatten()
             .and_then(|request| request.message)
     }
+}
+
+/// The token [`start_run_executor`] dials with.
+pub const RUN_EXECUTOR_TOKEN: &str = "test-run-executor-token";
+
+/// Starts a Run Executor that dials `coral` with room for `max_runs_held`
+/// Runs within `run_limits`, and serves health on `health`. It retires when
+/// the sender drops.
+#[must_use]
+pub fn start_run_executor(
+    coral: &ScriptedCoral,
+    max_runs_held: u32,
+    run_limits: RunLimits,
+    health: Option<TcpListener>,
+) -> oneshot::Sender<()> {
+    let config = RunExecutorConfig {
+        coral_address: coral
+            .address()
+            .parse()
+            .expect("the scripted Coral's address"),
+        token: Token::new(RUN_EXECUTOR_TOKEN.to_owned()).expect("a valid token"),
+        max_runs_held,
+        run_limits,
+    };
+    let (retire, retired) = oneshot::channel::<()>();
+    tokio::spawn(crate::run(config, health, async {
+        drop(retired.await);
+    }));
+    retire
 }
 
 /// The package of `script` and `source_map` with the default value limits.
