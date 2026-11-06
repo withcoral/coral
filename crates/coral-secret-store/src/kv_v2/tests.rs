@@ -85,7 +85,7 @@ async fn logs_in_once_then_reads_the_latest_version_and_selects_the_key() {
     let reference = reference("team/jira", Some("token"));
 
     assert_eq!(store.read(&reference).await.unwrap().expose(), "value");
-    store.check(&reference).await.unwrap();
+    assert_eq!(store.read(&reference).await.unwrap().expose(), "value");
 
     let requests = server.received_requests().await.unwrap();
     assert!(

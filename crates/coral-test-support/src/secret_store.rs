@@ -95,7 +95,6 @@ mod tests {
         assert_eq!(store.read(&token).await.unwrap().expose(), "first");
         store.set("team/jira", "token", "rotated");
         assert_eq!(store.read(&token).await.unwrap().expose(), "rotated");
-        store.check(&token).await.unwrap();
         for missing in [Some("other"), None] {
             assert_eq!(
                 store
@@ -108,7 +107,7 @@ mod tests {
 
         store.fail_with(Some(Error::PermissionDenied));
         assert_eq!(
-            store.check(&token).await.unwrap_err(),
+            store.read(&token).await.unwrap_err(),
             Error::PermissionDenied
         );
         store.fail_with(None);

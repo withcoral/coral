@@ -51,14 +51,6 @@ pub trait SecretStore: Send + Sync {
     /// # Errors
     /// Returns why the store gave up no value.
     async fn read(&self, reference: &SecretReference) -> Result<Secret, Error>;
-
-    /// Checks a reference for setup: the same read, with the value discarded.
-    ///
-    /// # Errors
-    /// Returns why the store would give up no value.
-    async fn check(&self, reference: &SecretReference) -> Result<(), Error> {
-        self.read(reference).await.map(drop)
-    }
 }
 
 /// Which secrets system a store connects to.
@@ -193,7 +185,10 @@ mod tests {
 
         let reference = SecretReference::new("zeta".into(), "path".into(), None).unwrap();
         let found = stores.get("zeta").unwrap();
-        assert_eq!(found.check(&reference).await, Err(Error::PermissionDenied));
+        assert_eq!(
+            found.read(&reference).await.unwrap_err(),
+            Error::PermissionDenied
+        );
 
         assert!(
             SecretStores::new([
