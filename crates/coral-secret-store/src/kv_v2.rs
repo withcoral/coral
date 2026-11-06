@@ -140,15 +140,21 @@ impl Token {
         })
     }
 
+    /// How much of a lease to leave unused, so a read that starts now can
+    /// finish: a tenth of it, or one request's timeout if that is more. A lease
+    /// too short for that keeps half, so a new token is not replaced on every read.
+    fn margin(lease: Duration) -> Duration {
+        (lease / 10).max(REQUEST_TIMEOUT).min(lease / 2)
+    }
+
     /// What to do before this token's next use. It renews past half of its
-    /// lease, and gives up on the lease near the end, or when a request could
-    /// take longer than what is left, so a read that starts now can finish.
+    /// lease, and logs in again once only the margin is left.
     fn next_step(&self, now: Instant) -> NextStep {
         let Some(lease) = self.lease else {
             return NextStep::Use;
         };
         let held = now.saturating_duration_since(self.obtained);
-        if held >= lease.mul_f64(0.9) || lease.saturating_sub(held) <= REQUEST_TIMEOUT {
+        if held >= lease.saturating_sub(Self::margin(lease)) {
             NextStep::Login
         } else if self.renewable && held >= lease / 2 {
             NextStep::Renew

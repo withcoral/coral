@@ -419,6 +419,9 @@ async fn keeps_its_token_fresh_as_the_lease_passes() {
             2,
             0,
         ),
+        ("a very short lease, new", 10, true, 0, &renewed, 1, 0),
+        ("a very short lease, early", 10, true, 4, &renewed, 1, 0),
+        ("a very short lease, half gone", 10, true, 5, &renewed, 2, 0),
     ] {
         let server = MockServer::start().await;
         Mock::given(method("POST"))

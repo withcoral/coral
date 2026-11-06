@@ -1325,6 +1325,8 @@ export const OrganizationSecretStores: Story = {
   parameters: { initialEntry: '/organization/secret-stores' },
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('heading', { level: 1, name: 'Secret stores' })).toBeVisible()
+    const row = within(canvas.getByRole('row', { name: /platform/ }))
+    await expect(row.getByText('Vault / OpenBao KV v2')).toBeVisible()
   },
 }
 export const OrganizationSecretStoresEmpty: Story = {

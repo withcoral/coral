@@ -110,6 +110,8 @@ secret_id_env = "CORAL_PLATFORM_SECRET_ID"
 | `auth.role_id`       | The role's ID                                                                                              | Yes      | N/A       |
 | `auth.secret_id_env` | Name of the environment variable that holds the role's secret ID                                           | Yes      | N/A       |
 
+A store's name stands for one trust boundary. To move the same store to a new host, change its `address`. To point at a different store, add a new store under a new name.
+
 Coral reads this section when it starts, and stores no credential for a store in its database.
 
 - A malformed store, or a secret ID variable that is not set, stops Coral from starting. The error names the store and the field.
