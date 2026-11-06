@@ -1121,3 +1121,47 @@ async fn standalone_acceptance_can_commit_before_launch_without_a_goal() {
     let terminal = wait_for_terminal(&fixture.runs, &actor, workspace.id(), &id).await;
     assert_eq!(terminal.state(), RunState::Succeeded);
 }
+
+/// Acceptance records no deadline. The start mark records it as the start
+/// plus the time limit, so time spent waiting to start does not count.
+#[tokio::test]
+async fn the_deadline_counts_the_time_limit_from_the_start() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let (workspace_id, principal) = fixture
+        .user_scope("user:start-deadline", "Count the deadline from the start")
+        .await;
+    let prepared = fixture
+        .runs
+        .prepare(&principal, &workspace_id, submission("null"))
+        .await
+        .unwrap();
+    let mut transaction = fixture.database.begin().await.unwrap();
+    let staged = fixture
+        .runs
+        .accept_in_transaction(&mut transaction, prepared)
+        .await
+        .unwrap();
+    let run_id = staged.run_id().clone();
+    transaction.commit().await.unwrap();
+    let accepted = fixture.run_record(&workspace_id, &run_id).await;
+    assert_eq!(
+        accepted.deadline_at_unix_nanos, None,
+        "acceptance records none"
+    );
+
+    // Less than the lease, which a Run that waits longer has lost.
+    let waited = fixture.runs.execution_policy.claim_lease_nanos() / 2;
+    fixture.clock.next.fetch_add(waited, Ordering::SeqCst);
+    fixture.runs.launch(staged).await.unwrap();
+    wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await;
+    let ended = fixture.run_record(&workspace_id, &run_id).await;
+    let started_at = ended
+        .execution_started_at_unix_nanos
+        .expect("the Run started");
+    assert!(started_at > accepted.accepted_at_unix_nanos + waited);
+    assert_eq!(
+        ended.deadline_at_unix_nanos,
+        Some(started_at + 60_000_000_000),
+        "the start plus the 60 s time limit"
+    );
+}

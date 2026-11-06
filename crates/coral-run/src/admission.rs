@@ -18,7 +18,7 @@ use crate::shutdown::Admitted;
 use crate::types::AcceptedRun;
 use crate::{
     COMBINED_TYPESCRIPT_MAX_BYTES, Error, LINKED_SAVED_FUNCTION_MAX_COUNT, ProgramSource,
-    RunCursor, RunId, RunModule, RunState, RunSubmission, RunUpdate, run_repository,
+    RunCursor, RunId, RunModule, RunState, RunSubmission, RunTimeout, RunUpdate, run_repository,
 };
 
 /// The most candidate Call Paths admission checks, as Saved Function typing
@@ -56,6 +56,8 @@ pub struct PreparedRun {
 pub struct StagedRun {
     run: AcceptedRun,
     actor: AuthenticatedPrincipal,
+    /// The Run's time limit, which its deadline counts from its start.
+    time_limit: RunTimeout,
     /// The `coral.run.accept` span, which ends once the Run is launched.
     accept: tracing::Span,
     /// Holds the admission until `launch` registers the Run's owner, or the
@@ -184,11 +186,6 @@ impl RunModule {
         }
         let accepted_at_unix_nanos = self.now()?;
         authority.require_current_at(accepted_at_unix_nanos)?;
-        let deadline_at_unix_nanos = accepted_at_unix_nanos
-            .checked_add(submission.timeout().nanoseconds())
-            .ok_or_else(|| {
-                Error::InvalidInput("Run deadline exceeds durable time range".to_string())
-            })?;
         // The Run Owner's claim is written with acceptance, so no running Run
         // is ever unclaimed; the owner renews the lease with every chunk.
         let worker_claim_expires_at_unix_nanos =
@@ -202,7 +199,6 @@ impl RunModule {
                 workspace_id: workspace_id.clone(),
                 principal: actor.principal().clone(),
                 accepted_at_unix_nanos,
-                deadline_at_unix_nanos,
                 shutdown_grace_nanos: self.execution_policy.shutdown_grace_nanos(),
                 value_limits: self.value_limits,
                 claim_id: Uuid::new_v4().hyphenated().to_string(),
@@ -242,6 +238,7 @@ impl RunModule {
         Ok(StagedRun {
             run,
             actor: actor.clone(),
+            time_limit: submission.timeout(),
             accept,
             admitted,
         })
@@ -270,12 +267,13 @@ impl RunModule {
         let StagedRun {
             run,
             actor,
+            time_limit,
             accept,
             admitted,
         } = staged;
         drop(accept);
         crate::trace::record_run_accepted(actor.principal());
-        self.schedule_execution(run, actor);
+        self.schedule_execution(run, actor, time_limit);
         // The owner is registered: shutdown counts it from here.
         drop(admitted);
         Ok(update)

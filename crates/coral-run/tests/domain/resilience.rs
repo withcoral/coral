@@ -549,10 +549,10 @@ async fn a_takeover_after_the_run_deadline_records_timed_out() {
     wait_until(|| engine.started.load(Ordering::SeqCst)).await;
 
     // The deadline passes before the owner's task ends.
-    fixture
-        .clock
-        .next
-        .store(before.deadline_at_unix_nanos + 1, Ordering::SeqCst);
+    fixture.clock.next.store(
+        before.deadline_at_unix_nanos.expect("started") + 1,
+        Ordering::SeqCst,
+    );
     probe.panic_on_next_message();
     gates.go.send(()).expect("start the burst");
     wait_until_async_within(Duration::from_secs(10), async || {

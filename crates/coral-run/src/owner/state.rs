@@ -161,8 +161,11 @@ pub(crate) enum Effect {
     Reply(Reply, Result<(), Error>),
     /// Commit the owner's first chunk: the execution-start mark.
     Start,
-    /// Execute the accepted package.
-    StartProgram(ProgramPackage),
+    /// Execute the accepted package, bound by the deadline its start recorded.
+    StartProgram {
+        package: ProgramPackage,
+        deadline_at_unix_nanos: i64,
+    },
     /// Commit one chunk, built on the head it carries; `output_total` is the
     /// Run Output Budget total it records.
     Commit {
@@ -221,6 +224,10 @@ pub(crate) enum Effect {
     Retire,
 }
 
+/// The deadline of a Run that has none: it never passes, so the owner never
+/// times such a Run out.
+pub(crate) const NO_DEADLINE: i64 = i64::MAX;
+
 /// The limits one owner decides against.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OwnerLimits {
@@ -228,6 +235,9 @@ pub(crate) struct OwnerLimits {
     pub(crate) applied_cap_bytes: usize,
     /// The Fan-out Limit: Invocations of the Run `dispatching` at once at most.
     pub(crate) fan_out_invocations: usize,
+    /// The Run deadline: the one the Run row records for a recovered owner,
+    /// and [`NO_DEADLINE`] for a Program owner until its start mark records
+    /// one.
     pub(crate) deadline_at_unix_nanos: i64,
     /// The shutdown grace a termination intent the owner applies gives the
     /// Run's dispatches in flight.
@@ -351,8 +361,8 @@ pub(crate) struct OwnerState {
     /// Outside requests whose chunk is recorded: a repeat records nothing,
     /// and only its row rides the next chunk.
     recorded_requests: HashSet<RequestKey>,
-    /// Cancellations waiting to be applied again once the terminal write
-    /// has answered.
+    /// Cancellations waiting to be applied once the start mark or the
+    /// terminal write has answered.
     parked: Vec<Message>,
     /// The Run Inbox rows the owner applied, each riding a chunk that deletes
     /// it. The reader delivers a row again until that chunk lands, and may
@@ -397,7 +407,10 @@ impl OwnerState {
     pub(crate) fn new(limits: OwnerLimits, accepted_at_unix_nanos: i64) -> Self {
         Self {
             phase: Phase::Starting,
-            limits,
+            limits: OwnerLimits {
+                deadline_at_unix_nanos: NO_DEADLINE,
+                ..limits
+            },
             stop_requested: false,
             settling: false,
             shutdown: None,
@@ -430,6 +443,7 @@ impl OwnerState {
         Self {
             phase: Phase::Recovering,
             recovered: Some(Recovered::default()),
+            limits,
             ..Self::new(limits, accepted_at_unix_nanos)
         }
     }
@@ -1080,46 +1094,67 @@ impl OwnerState {
     /// termination is applied (the Program is terminated, the intent rides
     /// the next chunk with the row's deletion), a repeat otherwise, whose
     /// row the next chunk deletes; past the Run deadline the Run times out
-    /// instead, as its timer would have decided first. During the terminal
-    /// write it waits for that write's answer. An owner that commits nothing
+    /// instead, as its timer would have decided first. Before the start mark
+    /// answers, the owner stops at once and the cancellation waits for the
+    /// deadline the mark records; during the terminal write, it waits for that
+    /// write's answer. An owner that commits nothing
     /// more leaves the row to be delivered again.
     fn cancel(&mut self, requester: Principal, row: InboxRow, now_unix_nanos: i64) -> Vec<Effect> {
         if self.inbox_rows.contains(&row) {
             return Vec::new();
         }
         let mut effects = Vec::new();
+        let parked = self.parked.iter().any(
+            |message| matches!(message, Message::Cancel { row: waiting, .. } if *waiting == row),
+        );
         match self.phase {
             // Once per row: the reader delivers it again while it waits.
             Phase::Completing => {
-                let parked = self.parked.iter().any(
-                    |message| matches!(message, Message::Cancel { row: waiting, .. } if *waiting == row),
-                );
                 if !parked {
                     self.parked.push(Message::Cancel { requester, row });
                 }
             }
-            Phase::Starting | Phase::Running | Phase::Ending if self.termination.is_none() => {
-                if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
-                    effects = self.deadline(now_unix_nanos);
+            // The Program never starts, and the kind waits for the deadline.
+            Phase::Starting => {
+                if !parked {
+                    self.parked.push(Message::Cancel { requester, row });
                 }
-                if self.termination.is_none() {
-                    effects.extend(self.terminate(
-                        RunTerminationKind::Canceled,
-                        Some(requester),
-                        Some(row),
-                        now_unix_nanos,
-                    ));
-                } else {
-                    self.acknowledge(row);
-                }
+                effects = self.stop();
+            }
+            Phase::Running | Phase::Ending if self.termination.is_none() => {
+                effects = self.apply_cancel(requester, row, now_unix_nanos);
             }
             // A termination is applied, or recorded and settling: a repeat.
-            Phase::Starting | Phase::Running | Phase::Ending | Phase::Settling => {
+            Phase::Running | Phase::Ending | Phase::Settling => {
                 self.acknowledge(row);
             }
             // Nothing the owner applies commits any more; a recovered owner
             // applies its requests in `recovering`.
             Phase::Stopped(_) | Phase::Interrupting | Phase::Recovering | Phase::Retired => {}
+        }
+        effects
+    }
+
+    /// Applies a cancellation, or the timeout when the Run deadline passed.
+    fn apply_cancel(
+        &mut self,
+        requester: Principal,
+        row: InboxRow,
+        now_unix_nanos: i64,
+    ) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
+            effects = self.deadline(now_unix_nanos);
+        }
+        if self.termination.is_none() {
+            effects.extend(self.terminate(
+                RunTerminationKind::Canceled,
+                Some(requester),
+                Some(row),
+                now_unix_nanos,
+            ));
+        } else {
+            self.acknowledge(row);
         }
         effects
     }
@@ -1381,19 +1416,41 @@ impl OwnerState {
         self.termination.clone()
     }
 
-    /// The owner's first chunk landed: the head it left is the owner's. A
-    /// stop or a termination that reached the owner meanwhile means the
-    /// Program never starts; the Run ends as the terminal write finds it.
+    /// The owner's first chunk landed: the head it left is the owner's. The
+    /// start mark landed with the Run deadline: the deadline timer is armed
+    /// from it, never before, and a cancellation that waited for it is
+    /// applied against it. A stop or a termination that reached the owner
+    /// meanwhile means the Program never starts; the Run ends as the
+    /// terminal write finds it.
     fn started(&mut self, started: StartedExecution, now_unix_nanos: i64) -> Vec<Effect> {
         self.head = started.head;
+        self.limits.deadline_at_unix_nanos = started.deadline_at_unix_nanos;
         self.commit_succeeded(now_unix_nanos);
+        let mut effects = Vec::new();
+        for message in std::mem::take(&mut self.parked) {
+            if let Message::Cancel { requester, row } = message {
+                effects.extend(self.apply_cancel(requester, row, now_unix_nanos));
+            }
+        }
         if self.stop_requested {
             self.phase = Phase::Ending;
             self.completion = Some(ExecutionCompletion::ProgramHostTerminated);
-            return self.advance_ending();
+            effects.extend(self.advance_ending());
+            return effects;
         }
         self.phase = Phase::Running;
-        vec![self.arm_idle_tick(), Effect::StartProgram(started.package)]
+        vec![
+            arm_at(
+                Timer::RunDeadline,
+                started.deadline_at_unix_nanos,
+                now_unix_nanos,
+            ),
+            self.arm_idle_tick(),
+            Effect::StartProgram {
+                package: started.package,
+                deadline_at_unix_nanos: started.deadline_at_unix_nanos,
+            },
+        ]
     }
 
     /// The idle tick, half a lease from now.
@@ -1573,19 +1630,11 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
     match message {
         // The idle tick is armed from the launch, not the start mark: a
         // start mark the database keeps not answering is judged by the
-        // owner's liveness like any other write, and the Run deadline alone
-        // does not end an owner still starting.
+        // owner's liveness like any other write. The Run has no deadline
+        // until its start mark records one.
         Message::Launch => {
             state.phase = Phase::Starting;
-            vec![
-                Effect::Start,
-                arm_at(
-                    Timer::RunDeadline,
-                    state.limits.deadline_at_unix_nanos,
-                    now_unix_nanos,
-                ),
-                state.arm_idle_tick(),
-            ]
+            vec![Effect::Start, state.arm_idle_tick()]
         }
         // While the owner interrupts its Run, the chunk and the start mark
         // still in flight may answer and the Program may end: none of it

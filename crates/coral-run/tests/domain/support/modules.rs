@@ -1514,18 +1514,18 @@ pub(crate) fn test_invoker(
         .clone()
         .or_else(|| run.worker_claim_id.clone())
         .expect("a claimed Run");
+    let deadline = run.deadline_at_unix_nanos.expect("a started Run");
     let accepted = crate::types::AcceptedRun {
         id: run.id.clone(),
         workspace_id: run.workspace_id.clone(),
         principal: run.principal.clone(),
         accepted_at_unix_nanos: run.accepted_at_unix_nanos,
-        deadline_at_unix_nanos: run.deadline_at_unix_nanos,
         shutdown_grace_nanos: run.shutdown_grace_nanos,
         value_limits: run.value_limits,
         claim_id: claim_id.clone(),
         worker_claim_expires_at_unix_nanos: run
             .worker_claim_expires_at_unix_nanos
-            .unwrap_or(run.deadline_at_unix_nanos),
+            .unwrap_or(deadline),
         linked_snapshots: std::collections::HashMap::new(),
         trace: run.trace.clone(),
     };
@@ -1541,6 +1541,7 @@ pub(crate) fn test_invoker(
         fixture.workspaces.clone(),
         tool.principal.clone(),
         &accepted,
+        deadline,
         fixture.runs.execution_policy.approval_wait_nanos(),
         owner,
         fixture.upstream.clone(),

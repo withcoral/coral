@@ -22,17 +22,23 @@ use crate::trace::RunEnd;
 use crate::types::AcceptedRun;
 use crate::{
     Error, FinalValue, RunFailure, RunFailureCode, RunModule, RunState, RunTerminalOutcome,
-    invocation_repository, run_repository,
+    RunTimeout, invocation_repository, run_repository,
 };
 
 impl RunModule {
     /// Creates the Run Owner for a durably accepted Run. The owner is
     /// registered before its task starts, so a stop that arrives first still
-    /// finds it; the Run deadline is the owner's own timer. An owner that
-    /// retires without ending its Run (a write it could not land, a claim it
-    /// lost) renews nothing more, and the expired-lease sweep ends the Run
-    /// once its lease lapses, unless another process took it.
-    pub(crate) fn schedule_execution(&self, run: AcceptedRun, actor: AuthenticatedPrincipal) {
+    /// finds it; the Run deadline, `time_limit` from its start, is the
+    /// owner's own timer. An owner that retires without ending its Run (a
+    /// write it could not land, a claim it lost) renews nothing more, and the
+    /// expired-lease sweep ends the Run once its lease lapses, unless another
+    /// process took it.
+    pub(crate) fn schedule_execution(
+        &self,
+        run: AcceptedRun,
+        actor: AuthenticatedPrincipal,
+        time_limit: RunTimeout,
+    ) {
         let (handle, mailbox) = OwnerHandle::new(run.held_id(), run.claim_id.clone());
         let registration = self.owners.register(handle.clone());
         self.inbox.owner_registered(
@@ -45,7 +51,7 @@ impl RunModule {
         let owner_task = tokio::spawn(owner::host(
             self.clone(),
             run,
-            OwnerStart::Program(actor),
+            OwnerStart::Program { actor, time_limit },
             handle,
             mailbox,
             registration,
@@ -116,17 +122,19 @@ impl RunModule {
     }
 
     /// The owner's first chunk: rechecks the Run and the Principal's current
-    /// authority, then writes the execution-start mark and returns the
-    /// package to execute with the head the mark left. `None` when there is
-    /// nothing to run: the Run ended or was terminated first, its deadline
-    /// passed (recorded here), its lease lapsed, or authority was lost (the
-    /// Run fails here). Run again after an attempt the database did not
-    /// answer, it returns the package when that attempt's start mark landed,
-    /// so the Program starts exactly once.
+    /// authority, then writes the execution-start mark with the Run deadline,
+    /// `time_limit` from the mark, and returns the package to execute with
+    /// the head and the deadline the mark left. `None` when there is nothing
+    /// to run: the Run ended or was terminated first, its lease lapsed, or
+    /// authority was lost (the Run fails here). Run again after an attempt
+    /// the database did not answer, it returns the package when that
+    /// attempt's start mark landed, so the Program starts exactly once, or
+    /// records the timeout when the deadline that mark recorded passed.
     pub(crate) async fn start_execution(
         &self,
         accepted: &AcceptedRun,
         actor: &AuthenticatedPrincipal,
+        time_limit: RunTimeout,
     ) -> Result<Option<StartedExecution>, Error> {
         let claim_id = accepted.claim_id.as_str();
         let mut transaction = self.database.begin().await?;
@@ -180,8 +188,8 @@ impl RunModule {
         )
         .await?
         .ok_or_else(|| Error::CorruptData("accepted Run has no Program package".to_string()))?;
-        // The start mark is predicated on the lease and the deadline at its own
-        // instant, after the authority and package reads under the hold.
+        // The start mark is predicated on the lease at its own instant, after
+        // the authority and package reads under the hold.
         let started_at = self.now()?.max(run.accepted_at_unix_nanos);
         if run
             .worker_claim_expires_at_unix_nanos
@@ -190,11 +198,6 @@ impl RunModule {
             transaction.commit().await?;
             metric::run_claimed(ClaimKind::Start, ClaimOutcome::Lost);
             return Ok(None);
-        }
-        if started_at >= run.deadline_at_unix_nanos {
-            return self
-                .time_out_before_start(transaction, &run, started_at)
-                .await;
         }
         if let Err(error) = authority.and_then(|evidence| {
             evidence.require_current_at(started_at)?;
@@ -216,21 +219,32 @@ impl RunModule {
             return Ok(None);
         }
 
+        let deadline_at_unix_nanos = started_at
+            .checked_add(time_limit.nanoseconds())
+            .ok_or_else(|| Error::Clock("Run deadline overflowed".to_string()))?;
         let lease_until = self.execution_policy.lease_until(started_at)?;
-        run_repository::start_execution(&mut transaction, &run, claim_id, started_at, lease_until)
-            .await?;
+        run_repository::start_execution(
+            &mut transaction,
+            &run,
+            claim_id,
+            started_at,
+            deadline_at_unix_nanos,
+            lease_until,
+        )
+        .await?;
         transaction.commit().await?;
         metric::run_claimed(ClaimKind::Start, ClaimOutcome::Won);
         Ok(Some(StartedExecution {
             package,
             head: run.chunk_sequence + 1,
+            deadline_at_unix_nanos,
         }))
     }
 
     /// The package of a Run whose start mark this owner's earlier attempt
     /// landed without an answer: the Program has not started yet, and this
-    /// is its one start. A deadline that passed meanwhile is recorded here
-    /// instead, as the first attempt would have.
+    /// is its one start. When the deadline that mark recorded passed
+    /// meanwhile, the timeout is recorded here instead.
     async fn resume_start(
         &self,
         mut transaction: coral_db::Transaction<'_>,
@@ -238,7 +252,10 @@ impl RunModule {
         accepted: &AcceptedRun,
     ) -> Result<Option<StartedExecution>, Error> {
         let now = self.now()?.max(run.accepted_at_unix_nanos);
-        if now >= run.deadline_at_unix_nanos {
+        let deadline_at_unix_nanos = run
+            .deadline_at_unix_nanos
+            .ok_or_else(|| Error::CorruptData("started Run has no deadline".to_string()))?;
+        if run.deadline_passed(now) {
             return self.time_out_before_start(transaction, run, now).await;
         }
         let package = run_repository::load_package_in_transaction(
@@ -253,6 +270,7 @@ impl RunModule {
         Ok(Some(StartedExecution {
             package,
             head: run.chunk_sequence,
+            deadline_at_unix_nanos,
         }))
     }
 
@@ -363,10 +381,9 @@ impl RunModule {
             ));
         }
         let completed_at = self.now()?.max(run.accepted_at_unix_nanos);
-        if completed_at >= run.deadline_at_unix_nanos
-            || !run.program_work_is_current(claim_id, completed_at)
+        if run.deadline_passed(completed_at) || !run.program_work_is_current(claim_id, completed_at)
         {
-            let kind = if completed_at >= run.deadline_at_unix_nanos {
+            let kind = if run.deadline_passed(completed_at) {
                 RunTerminationKind::TimedOut
             } else {
                 RunTerminationKind::Interrupted
@@ -448,7 +465,7 @@ fn termination_for_completion(
 ) -> Option<RunTerminationKind> {
     if run.termination.is_some() {
         None
-    } else if now_unix_nanos >= run.deadline_at_unix_nanos {
+    } else if run.deadline_passed(now_unix_nanos) {
         Some(RunTerminationKind::TimedOut)
     } else if *completion == ExecutionCompletion::ProgramHostTerminated
         || !run.program_work_is_current(claim_id, now_unix_nanos)

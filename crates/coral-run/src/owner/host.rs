@@ -36,12 +36,13 @@ use crate::execution::{Backoff, until_answered};
 use crate::invocation::{EnforcementBatch, PrecheckBatch, ToolInvoker};
 use crate::lifecycle::RunRecord;
 use crate::owner::ChunkWork as _;
+use crate::owner::NO_DEADLINE;
 use crate::program_output::ProgramOutputWriter;
 use crate::recovery::RecoveryWrite;
 use crate::run_repository::{self, Chunk, OwnedEvent};
 use crate::trace::{Phase, TimedSpan, phase_span};
 use crate::types::AcceptedRun;
-use crate::{Error, RunModule, engine, nanos_duration};
+use crate::{Error, RunModule, RunTimeout, engine, nanos_duration};
 
 use super::chunk::{ChunkBuild, ChunkItem};
 use super::handle::{CommitRejection, Mailbox, Message, OwnerHandle, OwnerRegistration, Timer};
@@ -53,16 +54,21 @@ const SETTLE_RETRY: Duration = Duration::from_millis(10);
 
 /// How an owner begins.
 pub(crate) enum OwnerStart {
-    /// The owner of a Run this process accepted: it commits the start mark
-    /// and runs the Program as `actor`.
-    Program(AuthenticatedPrincipal),
+    /// The owner of a Run this process accepted: it commits the start mark,
+    /// with the deadline `time_limit` from it, and runs the Program as
+    /// `actor`.
+    Program {
+        actor: AuthenticatedPrincipal,
+        time_limit: RunTimeout,
+    },
     /// The owner the expired-lease sweep recreated, its mailbox queued: it
     /// takes the Run over from the claim `taken` and the lease ending at
     /// `lease_until` the Run row held when the sweep read it (`None`: none),
-    /// and ends it.
+    /// and ends it. `deadline` is the one the row recorded, if any.
     Recovery {
         taken: Option<String>,
         lease_until: Option<i64>,
+        deadline: Option<i64>,
     },
 }
 
@@ -127,7 +133,10 @@ pub(crate) async fn host(
                     spawn_settle(&module, &accepted, &handle, shutdown, again, deadline, span);
                 }
                 Effect::Recover(recovered) => {
-                    if let OwnerStart::Recovery { taken, lease_until } = &start {
+                    if let OwnerStart::Recovery {
+                        taken, lease_until, ..
+                    } = &start
+                    {
                         let swept = (taken.clone(), *lease_until);
                         spawn_recovery(&module, &accepted, &handle, swept, recovered);
                     }
@@ -191,7 +200,11 @@ fn begin(
         run_output_bytes: accepted.value_limits.run_output_bytes(),
         applied_cap_bytes: module.applied_output_cap.bytes(),
         fan_out_invocations: module.fan_out_limit.invocations(),
-        deadline_at_unix_nanos: accepted.deadline_at_unix_nanos,
+        // A Program owner's start records the deadline.
+        deadline_at_unix_nanos: match start {
+            OwnerStart::Program { .. } => NO_DEADLINE,
+            OwnerStart::Recovery { deadline, .. } => deadline.unwrap_or(NO_DEADLINE),
+        },
         shutdown_grace_nanos: accepted.shutdown_grace_nanos,
         idle_tick_nanos: module.execution_policy.idle_tick_nanos(),
         suspect_after_nanos: module.execution_policy.suspect_after_nanos(),
@@ -200,7 +213,7 @@ fn begin(
         wake_gap_nanos: module.execution_policy.wake_gap_nanos(),
     };
     match start {
-        OwnerStart::Program(_) => {
+        OwnerStart::Program { .. } => {
             let mut state = OwnerState::new(limits, accepted.accepted_at_unix_nanos);
             let effects = apply(&mut state, Message::Launch, launched_at(module, accepted));
             (state, effects)
@@ -305,8 +318,8 @@ fn unarmed() -> Instant {
 }
 
 /// The clock sample the launch is applied at, like every message, so the
-/// Run deadline is armed for the rest of the Run from now, not from
-/// acceptance; a clock that fails reads as acceptance.
+/// idle tick is armed from now, not from acceptance; a clock that fails reads
+/// as acceptance.
 fn launched_at(module: &RunModule, accepted: &AcceptedRun) -> i64 {
     module.now().map_or(accepted.accepted_at_unix_nanos, |now| {
         now.max(accepted.accepted_at_unix_nanos)
@@ -386,12 +399,13 @@ fn run_effect(
             module.execution_observer.clone(),
         ),
         Effect::Start => {
-            let OwnerStart::Program(actor) = start else {
+            let OwnerStart::Program { actor, time_limit } = start else {
                 return;
             };
             let module = module.clone();
             let accepted = accepted.clone();
             let actor = actor.clone();
+            let time_limit = *time_limit;
             let handle = handle.clone();
             let span = phase_span(accepted.trace.as_ref(), &accepted.held_id(), Phase::Start);
             // The Run waits for its start mark.
@@ -406,16 +420,26 @@ fn run_effect(
                     &accepted.held_id(),
                     "execution start",
                     || !handle.is_retired(),
-                    || module.start_execution(&accepted, &actor),
+                    || module.start_execution(&accepted, &actor, time_limit),
                 )
                 .await;
                 drop(queued);
                 handle.send(Message::Started(started));
             }));
         }
-        Effect::StartProgram(package) => {
-            if let OwnerStart::Program(actor) = start {
-                start_program(module, accepted, actor, handle, package);
+        Effect::StartProgram {
+            package,
+            deadline_at_unix_nanos,
+        } => {
+            if let OwnerStart::Program { actor, .. } = start {
+                start_program(
+                    module,
+                    accepted,
+                    actor,
+                    handle,
+                    package,
+                    deadline_at_unix_nanos,
+                );
             }
         }
         Effect::TerminateProgram => handle.stop().request(),
@@ -457,14 +481,15 @@ fn run_effect(
     }
 }
 
-/// Executes the accepted package with the Run's invoker and output, and
-/// reports its end into the mailbox.
+/// Executes the accepted package with the Run's invoker and output, bound by
+/// the deadline its start recorded, and reports its end into the mailbox.
 fn start_program(
     module: &RunModule,
     accepted: &AcceptedRun,
     actor: &AuthenticatedPrincipal,
     handle: &OwnerHandle,
     package: engine::ProgramPackage,
+    deadline_at_unix_nanos: i64,
 ) {
     let invoker = ToolInvoker::new(
         module.accounts.clone(),
@@ -477,6 +502,7 @@ fn start_program(
         module.workspaces.clone(),
         actor.clone(),
         accepted,
+        deadline_at_unix_nanos,
         module.execution_policy.approval_wait_nanos(),
         handle.clone(),
         module.upstream.clone(),
@@ -970,7 +996,7 @@ async fn commit_once(
         written.lease_until_unix_nanos = Some(lease_until);
         run_repository::commit_chunk(
             &mut transaction,
-            Chunk::new(&run, Some(claim_id))
+            Chunk::new(&run, Some(claim_id), now)
                 .owned_events(events)
                 .output_bytes(records.output_total)
                 .renew_lease(lease_until)

@@ -368,7 +368,7 @@ pub(crate) async fn end_in_one_chunk(
             }));
             cancellation
         }
-        (None, None) if now_unix_nanos >= run.deadline_at_unix_nanos => {
+        (None, None) if run.deadline_passed(now_unix_nanos) => {
             run.request_termination(RunTerminationKind::TimedOut, now_unix_nanos)?
         }
         (None, None) => run.request_termination(RunTerminationKind::Interrupted, now_unix_nanos)?,

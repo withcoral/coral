@@ -44,8 +44,8 @@
 //!   and historical request references. These reads never renew retention. Retained
 //!   Account references survive active waiter detachment and grant no request authority.
 //! - [`RunModule::sweep_expired_leases`] is one pass of the expired-lease sweep:
-//!   every `running` Run that no process owns (its lease lapsed, or it has no
-//!   claim and was accepted more than a lease ago) gets its Run Owner back,
+//!   every `running` Run that no process owns (its lease lapsed) gets its
+//!   Run Owner back,
 //!   which records the timers that passed and the Run's end in one chunk.
 //!   Bootstrap runs it before any listener binds and then every
 //!   [`RunModule::sweep_interval`]. Coral never resumes a Run.
@@ -66,7 +66,7 @@
 //! Admission resolves one consistent, bounded transitive
 //! source closure, initializes each linked module once before the submitted body,
 //! and creates no separate Saved Function execution record. Admission failure creates
-//! no Run and starts no execution. The deadline begins at durable acceptance.
+//! no Run and starts no execution. The deadline begins at the execution-start mark.
 //! Exact submitted and linked source, emitted JavaScript, source map, compiler
 //! provenance, limits, Run, and `run.started` evidence commit together.
 //! Execution code is always reloaded from that durable package. Acceptance

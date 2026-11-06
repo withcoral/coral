@@ -72,6 +72,7 @@ enum ProgramRunRecords {
     NextEventSequence,
     AccumulatedOutputBytes,
     ChunkSequence,
+    LastCommitAtUnixNanos,
 }
 
 /// Reads the Run row in one statement, outside any transaction and without
@@ -98,34 +99,22 @@ pub(crate) async fn find_exact_in_transaction(
     row.map(RunRow::decode).transpose()
 }
 
-/// Every `running` Run no process owns at `now_unix_nanos`, as the
-/// expired-lease sweep reads them in one snapshot, in acceptance order: its
-/// lease lapsed, or it has no claim and was accepted more than `lease_nanos`
-/// ago. An earlier release claimed a moment after acceptance and released
-/// the claim on an interruption, so a fresh Run with no claim belongs to the
-/// process that accepted it and is not abandoned.
+/// Every `running` Run whose lease lapsed at `now_unix_nanos`, as the
+/// expired-lease sweep reads them in one snapshot, in acceptance order. A Run
+/// with no lease is never one: a waiting Run has none until it is taken.
 pub(crate) async fn lapsed_leases(
     transaction: &mut Transaction<'_>,
     now_unix_nanos: i64,
-    lease_nanos: i64,
 ) -> Result<Vec<RunRecord>, Error> {
-    let lapsed = Condition::any()
-        .add(Expr::col(ProgramRunRecords::WorkerClaimExpiresAtUnixNanos).lte(now_unix_nanos))
-        .add(
-            Condition::all()
-                .add(Expr::col(ProgramRunRecords::WorkerClaimExpiresAtUnixNanos).is_null())
-                .add(
-                    Expr::col(ProgramRunRecords::AcceptedAtUnixNanos)
-                        .lt(now_unix_nanos.saturating_sub(lease_nanos)),
-                ),
-        );
     let rows: Vec<RunRow> = transaction
         .fetch_all(
             base_run_select()
                 .and_where(
                     Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()),
                 )
-                .cond_where(lapsed)
+                .and_where(
+                    Expr::col(ProgramRunRecords::WorkerClaimExpiresAtUnixNanos).lte(now_unix_nanos),
+                )
                 .order_by(ProgramRunRecords::AcceptedAtUnixNanos, Order::Asc)
                 .order_by(ProgramRunRecords::Id, Order::Asc)
                 .to_owned(),
@@ -169,6 +158,27 @@ pub(crate) async fn next_event_sequence(
         .await?
         .ok_or(Error::RunNotFound)?;
     Ok(counter)
+}
+
+/// The time of the Run's last chunk commit, `None` before its first.
+#[cfg(test)]
+pub(crate) async fn last_commit_at(
+    database: &Database,
+    workspace_id: &WorkspaceId,
+    run_id: &RunId,
+) -> Result<Option<i64>, Error> {
+    let (committed_at,): (Option<i64>,) = database
+        .fetch_optional(
+            Query::select()
+                .column(ProgramRunRecords::LastCommitAtUnixNanos)
+                .from(ProgramRunRecords::Table)
+                .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(workspace_id.to_string()))
+                .and_where(Expr::col(ProgramRunRecords::Id).eq(run_id.to_string()))
+                .to_owned(),
+        )
+        .await?
+        .ok_or(Error::RunNotFound)?;
+    Ok(committed_at)
 }
 
 #[cfg(test)]

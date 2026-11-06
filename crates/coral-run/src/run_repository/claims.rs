@@ -18,26 +18,31 @@ use crate::Error;
 use crate::RunState;
 use crate::lifecycle::RunRecord;
 
-/// The Run Owner's first chunk: the execution-start mark under the claim the
-/// acceptance transaction wrote, with the worker lease renewed. Built before
-/// any execution claim exists, so it is predicated on the claim column being
-/// unset, the worker claim still held (a recovered owner's chunk releases
-/// it), the head, and a running Run.
+/// The Run Owner's first chunk: the execution-start mark and the Run deadline
+/// under the claim the acceptance transaction wrote, with the worker lease
+/// renewed. Built before any execution claim exists, so it is predicated on
+/// the claim column being unset, the worker claim still held (a recovered
+/// owner's chunk releases it), the head, and a running Run.
 pub(crate) async fn start_execution(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     claim_id: &str,
     started_at_unix_nanos: i64,
+    deadline_at_unix_nanos: i64,
     lease_until_unix_nanos: i64,
 ) -> Result<(), Error> {
     commit_chunk_with(
         transaction,
-        Chunk::new(run, None).held_by_worker(claim_id),
+        Chunk::new(run, None, started_at_unix_nanos).held_by_worker(claim_id),
         vec![
             (ProgramRunRecords::ExecutionClaimId, Expr::val(claim_id)),
             (
                 ProgramRunRecords::ExecutionStartedAtUnixNanos,
                 Expr::val(started_at_unix_nanos),
+            ),
+            (
+                ProgramRunRecords::DeadlineAtUnixNanos,
+                Expr::val(deadline_at_unix_nanos),
             ),
             (
                 ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
