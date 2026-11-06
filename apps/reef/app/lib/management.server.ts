@@ -182,6 +182,7 @@ export function failureReason(
       'This person is the only owner of a workspace. Choose a person to take over their workspaces.',
     OWNER_TARGET_NOT_ENABLED:
       'This person does not have an enabled organization membership. Choose another person.',
+    SECRET_STORE_NOT_DEFINED: 'Coral has no secret store with this name. Refresh this page.',
     REQUEST_ALREADY_APPLIED:
       'Coral already applied this request. Check the current list before you start another action.',
   }

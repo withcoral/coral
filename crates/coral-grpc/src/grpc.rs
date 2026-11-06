@@ -50,8 +50,8 @@ pub struct Dependencies {
     pub access_lifecycle: coral_administration::AccessLifecycleModule,
     /// The newest published release; absent when the operator turned the check off.
     pub releases: Option<coral_release::ReleaseCheck>,
-    /// The Secret Stores the operator defined, for an Organization Owner.
-    pub secret_stores: coral_administration::SecretStoreInventory,
+    /// The Secret Stores the operator defined and their grants to Workspaces.
+    pub secret_stores: coral_administration::SecretStoreAdministration,
 }
 
 /// Resolved transport context supplied by application composition.
@@ -181,7 +181,7 @@ struct GrpcServices {
     runs: coral_run::RunModule,
     access_lifecycle: coral_administration::AccessLifecycleModule,
     releases: Option<coral_release::ReleaseCheck>,
-    secret_stores: coral_administration::SecretStoreInventory,
+    secret_stores: coral_administration::SecretStoreAdministration,
 }
 
 impl GrpcServices {

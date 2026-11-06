@@ -1,7 +1,48 @@
-use super::workspaces::error;
+use super::workspaces::{administration_error, change, error, invalid, state, workspace_id};
 use super::{GrpcServices, management as wire};
-use coral_secret_store::SecretStoreKind;
+use coral_administration::GrantedSecretStore;
+use coral_secret_store::{SecretStoreKind, SecretStoreName};
+use coral_workspace::ChangeContext;
 use tonic::{Request, Response, Status};
+
+fn name(store: &str) -> String {
+    format!("secretStores/{store}")
+}
+
+fn kind(kind: SecretStoreKind) -> wire::SecretStoreKind {
+    match kind {
+        SecretStoreKind::KvV2 => wire::SecretStoreKind::KvV2,
+    }
+}
+
+fn store_name(name: &str) -> Result<SecretStoreName, Status> {
+    name.strip_prefix("secretStores/")
+        .and_then(|store| SecretStoreName::parse(store).ok())
+        .ok_or_else(|| invalid("secret store name is invalid"))
+}
+
+fn granted(store: &GrantedSecretStore) -> wire::GrantedSecretStore {
+    wire::GrantedSecretStore {
+        name: name(&store.name),
+        kind: store
+            .kind
+            .map_or(wire::SecretStoreKind::Unspecified, kind)
+            .into(),
+        available: store.kind.is_some(),
+    }
+}
+
+impl GrpcServices {
+    async fn request_change<T>(
+        &self,
+        request: &Request<T>,
+        request_id: &str,
+    ) -> Result<ChangeContext, Status> {
+        change(self.management_user(request).await?)?
+            .with_request_id(request_id)
+            .map_err(error)
+    }
+}
 
 #[tonic::async_trait]
 impl wire::secret_store_service_server::SecretStoreService for GrpcServices {
@@ -17,16 +58,97 @@ impl wire::secret_store_service_server::SecretStoreService for GrpcServices {
             .await
             .map_err(error)?
             .into_iter()
-            .map(|(name, kind)| wire::SecretStore {
-                name: format!("secretStores/{}", name.as_str()),
-                kind: match kind {
-                    SecretStoreKind::KvV2 => wire::SecretStoreKind::KvV2,
-                }
-                .into(),
+            .map(|(store, store_kind)| wire::SecretStore {
+                name: name(store.as_str()),
+                kind: kind(store_kind).into(),
             })
             .collect();
         Ok(Response::new(wire::ListSecretStoresResponse {
             secret_stores,
         }))
+    }
+
+    #[tracing::instrument(skip_all, name = "coral.private.list_secret_store_grants")]
+    async fn list_secret_store_grants(
+        &self,
+        request: Request<wire::ListSecretStoreGrantsRequest>,
+    ) -> Result<Response<wire::ListSecretStoreGrantsResponse>, Status> {
+        let actor = self.management_user(&request).await?;
+        let grants = self
+            .secret_stores
+            .list_grants(&actor)
+            .await
+            .map_err(error)?
+            .into_iter()
+            .map(|grant| wire::SecretStoreGrant {
+                workspace: format!("workspaces/{}", grant.workspace.id()),
+                workspace_display_name: grant.workspace.display_name().as_str().into(),
+                workspace_state: state(grant.workspace.state()).into(),
+                secret_store: Some(granted(&grant.store)),
+            })
+            .collect();
+        Ok(Response::new(wire::ListSecretStoreGrantsResponse {
+            grants,
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "coral.private.list_workspace_secret_stores")]
+    async fn list_workspace_secret_stores(
+        &self,
+        request: Request<wire::ListWorkspaceSecretStoresRequest>,
+    ) -> Result<Response<wire::ListWorkspaceSecretStoresResponse>, Status> {
+        let actor = self.management_user(&request).await?;
+        let workspace = workspace_id(&request.get_ref().parent)?;
+        let secret_stores = self
+            .secret_stores
+            .list_for_workspace(&actor, &workspace)
+            .await
+            .map_err(error)?
+            .iter()
+            .map(granted)
+            .collect();
+        Ok(Response::new(wire::ListWorkspaceSecretStoresResponse {
+            secret_stores,
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "coral.private.grant_secret_store")]
+    async fn grant_secret_store(
+        &self,
+        request: Request<wire::GrantSecretStoreRequest>,
+    ) -> Result<Response<wire::GrantSecretStoreResponse>, Status> {
+        let context = self
+            .request_change(&request, &request.get_ref().request_id)
+            .await?;
+        let input = request.into_inner();
+        self.secret_stores
+            .grant(
+                &context,
+                &workspace_id(&input.workspace)?,
+                &store_name(&input.secret_store)?,
+            )
+            .await
+            .map_err(administration_error)?;
+        Ok(Response::new(wire::GrantSecretStoreResponse {}))
+    }
+
+    #[tracing::instrument(skip_all, name = "coral.private.revoke_secret_store")]
+    async fn revoke_secret_store(
+        &self,
+        request: Request<wire::RevokeSecretStoreRequest>,
+    ) -> Result<Response<wire::RevokeSecretStoreResponse>, Status> {
+        let context = self
+            .request_change(&request, &request.get_ref().request_id)
+            .await?;
+        let input = request.into_inner();
+        self.secret_stores
+            .revoke(
+                &context,
+                &workspace_id(&input.workspace)?,
+                &store_name(&input.secret_store)?,
+            )
+            .await
+            .map_err(administration_error)?;
+        Ok(Response::new(wire::RevokeSecretStoreResponse {}))
     }
 }

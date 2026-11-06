@@ -2,7 +2,7 @@ import { useRef, useState, type ReactNode } from 'react'
 import { useNavigation } from 'react-router'
 import { Button, Card, Typography } from '@/wax/components'
 import { Logo } from '@/wax/components/logo'
-import { StatusDot } from '@/wax/components/status'
+import { Status, StatusDot } from '@/wax/components/status'
 import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import type { ProviderLogo } from '@/views/providers/types'
 import { AddProviderLauncher } from '@/views/providers/add-provider'
@@ -37,6 +37,8 @@ export interface WorkspaceOverviewProps {
   workspace: WorkspaceView
   /** At most `GLIMPSE_FETCH` agents: the card needs no more to choose its rows. */
   agents: AgentView[]
+  /** The secret stores an organization owner granted to this workspace. Empty for a member. */
+  secretStores: { name: string; available: boolean }[]
   providers: ProviderSummary[]
   /** Null in a local deployment, which has no other people to show. */
   owners: OwnerView[] | null
@@ -57,6 +59,7 @@ export interface WorkspaceOverviewProps {
 export function WorkspaceOverview({
   workspace: w,
   agents,
+  secretStores,
   providers,
   owners,
   ownMembership,
@@ -218,6 +221,21 @@ export function WorkspaceOverview({
                 )}
               />
             )}
+          </Card.Container>
+        )}
+        {secretStores.length > 0 && (
+          <Card.Container className={styles.panel}>
+            <div className={styles.sectionHeading}>
+              <Typography.HeadingSmall as="h2">Secret stores</Typography.HeadingSmall>
+            </div>
+            <ul className={styles.plainList}>
+              {secretStores.map((store) => (
+                <li key={store.name} className={styles.listRow}>
+                  {store.name}
+                  <Status blockers={store.available ? [] : ['Unavailable']} ready="Available" />
+                </li>
+              ))}
+            </ul>
           </Card.Container>
         )}
         {members && (

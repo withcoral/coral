@@ -52,8 +52,9 @@
 //!   projections through the same authority rules.
 //! - [`WorkspaceModule::list_organization_workspaces`] and
 //!   [`WorkspaceModule::assign_owner`] are the Organization Owner's governance
-//!   surface, and [`WorkspaceModule::list_governance_events`] reads its Events; with archive and restore they are the only actions that need no
-//!   Workspace Membership.
+//!   surface, and [`WorkspaceModule::list_governance_events`] reads its Events; with archive, restore,
+//!   [`WorkspaceModule::grant_secret_store`] and [`WorkspaceModule::revoke_secret_store`] they are the
+//!   only actions that need no Workspace Membership.
 //!
 //! # Invariants
 //!
@@ -106,6 +107,9 @@ mod organization_tests;
 mod principal;
 mod principal_authority;
 mod repository;
+mod secret_store_grant_repository;
+mod secret_store_grants;
+pub use secret_store_grants::SecretStoreGrant;
 mod types;
 
 use std::sync::Arc;
