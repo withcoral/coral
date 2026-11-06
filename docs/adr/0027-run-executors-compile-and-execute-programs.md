@@ -23,14 +23,15 @@ load harness, kept the Run Owner's burst performance before the owner was remove
 
 | Deployment | Run Executor | Memory | CPU |
 | --- | --- | --- | --- |
-| Desktop (macOS, Linux, Windows), one container | Child processes of `coral`, started on demand up to a limit | V8 heap limits only | A lower OS priority than Coral |
-| Docker Compose, Kubernetes | Its own container, dialing Coral at one address | The orchestrator's limit, sized above the heap limits it holds | A lower CPU weight than Coral, never a quota |
+| Desktop (macOS, Linux, Windows), one container, and every deployment by default | Child processes of `coral`, started on demand up to a limit | V8 heap limits only; in a container, Coral's limit sized for the children's heaps | A lower OS priority than Coral |
+| Docker Compose, Kubernetes, to scale or to isolate access | Its own container, dialing Coral at one address, with the children turned off | The orchestrator's limit, sized above the heap limits it holds | A lower CPU weight than Coral, never a quota |
 | A remote runtime | Behind a bridge: a Run Executor in its own container that drives the runtime | The lower of Coral's limit and the runtime's | The lower of the Run CPU Budget and the runtime's |
 
-Every Run Executor dials Coral. A Coral Instance starts local children only where the operator turns them on: Desktop
-turns them on in the config it writes at launch, and the server guides leave them off. It starts at most a small number
-of them, a count the operator can change, and past it work waits. It admits Run Executors it did not start on every
-deployment. A local child runs as Coral's OS user with an empty environment, so
+Every Run Executor dials Coral. A Coral Instance starts local children unless the operator turns them off, on every
+deployment and in the Docker image, so an installation that upgrades keeps running Programs with no new configuration.
+It starts at most a small number of them, a count the operator can change, and past it work waits. It admits Run
+Executors it did not start on every deployment, and an operator who runs Run Executors in their own container turns
+the children off. A local child runs as Coral's OS user with an empty environment, so
 it isolates resource use and failures, not access. A Run Executor in its own container also isolates access: it has no
 ingress, no volume, no secret but its credential, and no egress except to Coral and DNS. A bridge also reaches its
 runtime.
@@ -338,10 +339,11 @@ Coral exports and amends this ADR.
   exceed their budgets while every Run transaction is short.
 - **Migrations are expand-only across one release**, because a new process migrates at boot while the old one still
   serves.
-- **A local child shares Coral's OS user and, in one container, its memory limit.** Children are off unless turned on
-  and bounded by a count, so a full fleet on a server means waiting, never a child in Coral's own container. The guides
-  run Run Executors in their own container on Docker Compose and Kubernetes, with a stop timeout as long as the longest
-  Run.
+- **A local child shares Coral's OS user and, in one container, its memory limit.** Children are on by default and
+  bounded by a count, so a container sized for Coral alone can be killed for memory with its children's Runs; the
+  guides size Coral's container for Coral and the children's heaps. To scale or to isolate access, the guides run Run
+  Executors in their own container on Docker Compose and Kubernetes, with the children turned off and a stop timeout
+  as long as the longest Run.
 - **The same Program can pass on one Run Executor and fail on another** whose limits are lower.
 - **On Windows, an operator cannot lower the Run CPU Budget.**
 
@@ -372,8 +374,10 @@ Coral exports and amends this ADR.
   credential per Run Executor waits for a hosted fleet.
 - **The same build on both sides of a link.** A rolling update would split capacity by build.
 - **Measuring memory to place Runs.** A count is simpler, and the guides size memory for it.
-- **Local children without a limit, or on by default on a server.** A child shares Coral's container limit, and an
-  orchestrator's out-of-memory kill takes Coral with it.
+- **Local children without a limit.** A child shares Coral's container limit, and an orchestrator's out-of-memory kill
+  takes Coral with it.
+- **Local children off by default on a server.** An installation that upgrades would run no Program until the operator
+  configured a Run Executor, and the guides would carry a step every install must take.
 - **Not ready without a Run Executor.** An outage would also take down Reef, sign-in and MCP.
 - **The compiler in the Coral process, or in its own container beside each Coral Instance.** The Coral process starts
   no V8 isolate, and a compiler container would add a service to every guide.
