@@ -39,6 +39,21 @@ You can override the location of the config folder with the `CORAL_CONFIG_DIR` e
 | ------------ | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------- | ------- |
 | `public_url` | Public URL of the coral-web UI. Must be https or loopback http. May include a port; must not include a path. | Not if `CORAL_LOCAL_WEB_URL` is provided | N/A     |
 
+### `[listeners.run_executor]`
+
+| Key         | Description                                                                                                                                                                                                   | Required                                 | Default       |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- | ------------- |
+| `bind`      | Bind address and port for the listener that Run Executors dial, over plaintext HTTP/2                                                                                                                         | No                                       | `127.0.0.1:0` |
+| `token_env` | Name of the environment variable that holds the token Run Executors present, or a list of two names during a rotation. Each token must be at least 32 characters. Generate one with `openssl rand -base64 32` | Yes, if `bind` is not a loopback address | N/A           |
+
+To rotate the token, list both variables, move each Run Executor to the new token, then remove the old variable.
+
+Coral does not start when:
+
+- A variable that `token_env` names is unset, or its value is under 32 characters or is not visible ASCII.
+- `bind` is not a loopback address and `[auth]` is absent.
+- `bind` is not a loopback address and `token_env` is absent.
+
 ### `[credentials]`
 
 | Key       | Description                                                                                                                         | Required                                                                                    | Default |
