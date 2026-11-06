@@ -34,6 +34,9 @@ pub(crate) const CONNECTION_AGE: Duration = Duration::from_mins(5);
 pub(crate) const LEASE: Duration = Duration::from_secs(60);
 /// How often the holder of a pull stream renews its Run Executor's lease.
 pub(crate) const RENEWAL: Duration = Duration::from_secs(20);
+/// HTTP/2 `SETTINGS_MAX_HEADER_LIST_SIZE`, as Coral's private listener sets
+/// it: room for a token as long as [`Token`] admits.
+const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 128 * 1024;
 
 /// The link's periods: [`CONNECTION_AGE`], [`LEASE`] and [`RENEWAL`] by
 /// default.
@@ -372,6 +375,7 @@ impl LinkServer {
             .max_connection_age(connection_age)
             .http2_keepalive_interval(Some(KEEPALIVE))
             .http2_keepalive_timeout(Some(KEEPALIVE))
+            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_service(LinkServiceServer::new(service))
             .serve_with_incoming_shutdown(
                 TcpIncoming::from(listener).with_nodelay(Some(true)),

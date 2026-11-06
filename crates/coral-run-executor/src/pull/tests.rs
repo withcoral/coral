@@ -3,6 +3,7 @@ use std::sync::atomic::AtomicUsize;
 
 use coral_test_support::TestDatabase;
 use hyper_util::rt::TokioIo;
+use sea_query::ExprTrait as _;
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use tokio_stream::wrappers::ReceiverStream;
@@ -183,13 +184,14 @@ impl Link {
     async fn lease(&self, id: &str) -> Option<(String, i64)> {
         let database = self.database.database();
         let mut transaction = database.begin_read_snapshot().await.unwrap();
-        let sql = format!("SELECT kind, lease_until FROM run_executors WHERE id = '{id}'");
-        let rows = transaction
-            .fetch_all_sql::<(String, i64)>(&sql, sea_query::Values(Vec::new()))
-            .await
-            .unwrap();
+        let select = sea_query::Query::select()
+            .columns(["kind", "lease_until"].map(sea_query::Alias::new))
+            .from(sea_query::Alias::new("run_executors"))
+            .and_where(sea_query::Expr::col(sea_query::Alias::new("id")).eq(id))
+            .to_owned();
+        let row = transaction.fetch_optional(select).await.unwrap();
         transaction.commit().await.unwrap();
-        rows.into_iter().next()
+        row
     }
 }
 
@@ -224,12 +226,18 @@ async fn the_credential_admits_both_operator_tokens_and_a_live_local_child_by_ki
     let local = link
         .credentials
         .admit_local(&Token::new(LOCAL.to_owned()).unwrap());
+    // As long as a token may be.
+    let long = "t".repeat(16 * 1024);
+    let _long = link
+        .credentials
+        .admit_local(&Token::new(long.clone()).unwrap());
     let unknown = "an-unknown-token-of-at-least-32-characters";
     for (authorization, kind) in [
         (bearer(TOKEN), Some((Kind::Dialed, "dialed"))),
         // The scheme's name ignores case.
         (format!("bearer {ROTATED}"), Some((Kind::Dialed, "dialed"))),
         (bearer(LOCAL), Some((Kind::Local, "local"))),
+        (bearer(&long), Some((Kind::Local, "local"))),
         (bearer(unknown), None),
         (format!("Basic {TOKEN}"), None),
     ] {
@@ -441,9 +449,13 @@ async fn a_protocol_violation_ends_its_stream_and_not_the_connection() {
 }
 
 #[tokio::test]
-async fn at_the_connection_age_or_shutdown_the_stream_ends_cleanly_after_its_compiles() {
+async fn at_the_connection_age_or_shutdown_the_stream_ends_cleanly_once_its_compiles_are_answered_or_due()
+ {
     let connection_age = Duration::from_millis(300);
-    for at_age in [true, false] {
+    // Whether the connection age, not shutdown, ends the stream, and whether
+    // the Run Executor answers its compile.
+    for (at_age, answered) in [(true, true), (false, true), (true, false)] {
+        let label = format!("at age: {at_age}, answered: {answered}");
         let mut link = start(Timing {
             connection_age: if at_age {
                 connection_age
@@ -460,8 +472,9 @@ async fn at_the_connection_age_or_shutdown_the_stream_ends_cleanly_after_its_com
         let stream = link.held(&id, |_| true).await.stream;
         let compile = Compile {
             number: 0,
-            time_left_ms: 10_000,
+            time_left_ms: if answered { 10_000 } else { 600 },
         };
+        let due = Instant::now() + Duration::from_millis(compile.time_left_ms.into());
         let answer = link.streams.compile(stream, compile).unwrap();
         let Some(Down::Compile(Compile { number, .. })) = pull.next().await.unwrap() else {
             panic!("a Compile");
@@ -477,11 +490,23 @@ async fn at_the_connection_age_or_shutdown_the_stream_ends_cleanly_after_its_com
         };
         timeout(Duration::from_secs(5), closing).await.unwrap();
         let refused = link.streams.take(stream, vec![run(1)]);
-        assert_eq!(refused, Err(Refused::Closed), "at age: {at_age}");
-        pull.send(Up::Compiled(Compiled { number })).await;
-        let answered = timeout(Duration::from_secs(5), answer).await.unwrap();
-        assert_eq!(answered.unwrap(), Compiled { number }, "at age: {at_age}");
-        assert_eq!(pull.next().await.unwrap(), None, "a clean end, the move");
+        assert_eq!(refused, Err(Refused::Closed), "{label}");
+        if answered {
+            pull.send(Up::Compiled(Compiled { number })).await;
+        }
+        let reply = timeout(Duration::from_secs(5), answer).await.unwrap();
+        if answered {
+            assert_eq!(reply.unwrap(), Compiled { number }, "{label}");
+        } else {
+            // The compile held the stream until its deadline, unanswered.
+            assert!(reply.is_err(), "{label}");
+            assert!(Instant::now() >= due, "{label}");
+        }
+        assert_eq!(
+            pull.next().await.unwrap(),
+            None,
+            "a clean end, the move: {label}"
+        );
         if at_age {
             // The GOAWAY closed the connection: the next stream dials anew.
             let _next = link
