@@ -254,7 +254,12 @@ impl LinkService for Script {
         let mut released = self.released.clone();
         released.mark_unchanged();
         let (queue, mut taken) = mpsc::unbounded_channel();
-        self.takers.lock().expect("the takers").push(queue);
+        {
+            let mut takers = self.takers.lock().expect("the takers");
+            // A stream that ended dropped its receiver; its queue goes here.
+            takers.retain(|taker| !taker.is_closed());
+            takers.push(queue);
+        }
         let rooms = self.rooms.clone();
         let peer = request.remote_addr();
         let authorization = request
