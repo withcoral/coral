@@ -22,6 +22,7 @@ use {
 use std::num::NonZeroUsize;
 
 use coral_run::RunModule;
+use coral_search::UniversalSearchModule;
 use coral_task::{TaskCommands, TaskModule};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceModule};
 
@@ -50,6 +51,8 @@ pub struct McpModules {
     pub(crate) tasks: TaskModule,
     pub(crate) commands: TaskCommands,
     pub(crate) runs: RunModule,
+    /// Lists the namespaces `exec`'s description names for each caller.
+    pub(crate) search: UniversalSearchModule,
     pub(crate) human_interface: HumanInterfaceUrl,
     pub(crate) run_update_page_bytes: NonZeroUsize,
 }
@@ -61,6 +64,7 @@ impl McpModules {
         tasks: TaskModule,
         commands: TaskCommands,
         runs: RunModule,
+        search: UniversalSearchModule,
         human_interface: HumanInterfaceUrl,
     ) -> Self {
         Self {
@@ -68,6 +72,7 @@ impl McpModules {
             tasks,
             commands,
             runs,
+            search,
             human_interface,
             run_update_page_bytes: RUN_UPDATE_PAGE_BYTES,
         }

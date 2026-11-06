@@ -504,8 +504,8 @@ fn mcp_modules(
             saved_functions,
             search_index,
         ));
-    let commands = TaskCommands::new(tasks.clone(), search, runs.clone());
-    McpModules::new(workspaces, tasks, commands, runs, human_interface)
+    let commands = TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
+    McpModules::new(workspaces, tasks, commands, runs, search, human_interface)
 }
 
 #[cfg(test)]

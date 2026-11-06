@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use coral_catalog::{ToolHints, ToolPresentation};
+use coral_catalog::{SEARCH_PROVIDERS_MAX, ToolHints, ToolPresentation};
 pub use coral_provider::ProviderId;
 pub use coral_provider::access::ProviderCallRoot;
 use coral_provider::access::ProviderNamespace;
@@ -91,11 +91,111 @@ impl Default for SearchLimit {
     }
 }
 
+/// The `provider` filter: namespaces as the caller wrote them, such as
+/// `github`, or `coral.workspace` for the Built-in Provider. Each value is
+/// compared with the namespaces the caller can search, so a value that names
+/// none of them, such as a complete Call Root, is refused with that list.
+/// An empty filter leaves every Provider.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProviderFilter(Vec<String>);
+
+impl ProviderFilter {
+    /// Bounds one caller-written filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] for more than [`SEARCH_PROVIDERS_MAX`]
+    /// values.
+    pub fn new(values: Vec<String>) -> Result<Self, Error> {
+        if values.len() > SEARCH_PROVIDERS_MAX {
+            return Err(Error::InvalidInput(format!(
+                "provider names at most {SEARCH_PROVIDERS_MAX} namespaces"
+            )));
+        }
+        Ok(Self(values))
+    }
+
+    /// The filter that leaves only the Provider at this Call Root.
+    #[must_use]
+    pub fn one(call_root: &ProviderCallRoot) -> Self {
+        Self(vec![provider_filter_value(call_root).to_owned()])
+    }
+
+    /// The values in the order the caller wrote them.
+    #[must_use]
+    pub fn values(&self) -> &[String] {
+        &self.0
+    }
+
+    /// Whether the filter leaves the Provider at this Call Root.
+    pub(crate) fn admits(&self, call_root: &ProviderCallRoot) -> bool {
+        self.0.is_empty()
+            || self
+                .0
+                .iter()
+                .any(|value| value == provider_filter_value(call_root))
+    }
+
+    /// The positions of the values that name none of these Call Roots.
+    pub(crate) fn unmatched(&self, call_roots: &[&ProviderCallRoot]) -> Vec<usize> {
+        self.0
+            .iter()
+            .enumerate()
+            .filter(|(_position, value)| {
+                !call_roots
+                    .iter()
+                    .any(|call_root| *value == provider_filter_value(call_root))
+            })
+            .map(|(position, _value)| position)
+            .collect()
+    }
+}
+
+/// One Provider the caller can search: the `provider` filter value that
+/// names it and its display name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchableProvider {
+    call_root: ProviderCallRoot,
+    display_name: String,
+}
+
+impl SearchableProvider {
+    /// One Provider the caller can search, by its Call Root and display
+    /// name.
+    #[must_use]
+    pub const fn new(call_root: ProviderCallRoot, display_name: String) -> Self {
+        Self {
+            call_root,
+            display_name,
+        }
+    }
+
+    /// The Provider's Call Root.
+    #[must_use]
+    pub const fn call_root(&self) -> &ProviderCallRoot {
+        &self.call_root
+    }
+
+    /// The value a `provider` filter names it by: its namespace, or
+    /// `coral.workspace` for the Built-in Provider.
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        provider_filter_value(&self.call_root)
+    }
+
+    /// The display name a person gave the Provider. It is text a Workspace
+    /// member wrote.
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+}
+
 /// One bounded Universal Search request.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchRequest {
     query: Option<SearchQuery>,
-    provider: Option<ProviderCallRoot>,
+    provider: ProviderFilter,
     limit: SearchLimit,
     offset: u32,
 }
@@ -106,8 +206,9 @@ pub struct SearchRequest {
 pub struct SearchInput {
     /// Optional caller query, preserved exactly when accepted.
     pub query: Option<String>,
-    /// Optional Provider filter: a namespace, such as `github`, or `coral.workspace`.
-    pub provider: Option<String>,
+    /// Provider filter: namespaces, such as `github`, or `coral.workspace`.
+    /// Empty leaves every Provider.
+    pub provider: Vec<String>,
     /// Optional requested page size.
     pub limit: Option<u16>,
     /// Optional count of ranked results to skip: the `next_offset` of an
@@ -122,9 +223,7 @@ impl TryFrom<SearchInput> for SearchRequest {
             Some(query) => Self::query(SearchQuery::parse(&query)?),
             None => Self::list(),
         };
-        if let Some(provider) = input.provider {
-            request = request.with_provider(provider_filter(&provider)?);
-        }
+        request = request.with_providers(ProviderFilter::new(input.provider)?);
         if let Some(limit) = input.limit {
             request = request.with_limit(SearchLimit::parse(limit)?);
         }
@@ -132,22 +231,6 @@ impl TryFrom<SearchInput> for SearchRequest {
             request = request.with_offset(offset);
         }
         Ok(request)
-    }
-}
-
-/// Parses the `provider` filter: a Provider Namespace, such as `github`, or
-/// `coral.workspace` for the Built-in Provider. A complete `coral.providers` Call
-/// Root is rejected with the namespace to use instead.
-fn provider_filter(value: &str) -> Result<ProviderCallRoot, Error> {
-    match ProviderCallRoot::parse(value) {
-        Ok(ProviderCallRoot::Builtin) => Ok(ProviderCallRoot::Builtin),
-        Ok(ProviderCallRoot::Owner(namespace)) => Err(Error::InvalidInput(format!(
-            "provider must be a Provider namespace, such as `{}`",
-            namespace.as_str()
-        ))),
-        Err(_not_a_call_root) => ProviderNamespace::parse(value)
-            .map(ProviderCallRoot::Owner)
-            .map_err(|_invalid_namespace| Error::InvalidInput("invalid Provider namespace".into())),
     }
 }
 
@@ -179,8 +262,15 @@ impl SearchRequest {
 
     /// Restricts results to the Tools of the Provider with this Call Root.
     #[must_use]
-    pub fn with_provider(mut self, provider: ProviderCallRoot) -> Self {
-        self.provider = Some(provider);
+    pub fn with_provider(mut self, provider: &ProviderCallRoot) -> Self {
+        self.provider = ProviderFilter::one(provider);
+        self
+    }
+
+    /// Restricts results to the Tools of the Providers the filter names.
+    #[must_use]
+    pub fn with_providers(mut self, provider: ProviderFilter) -> Self {
+        self.provider = provider;
         self
     }
 
@@ -205,10 +295,10 @@ impl SearchRequest {
         self.query.as_ref()
     }
 
-    /// Returns the optional Provider Call Root filter.
+    /// Returns the Provider filter, empty when it leaves every Provider.
     #[must_use]
-    pub const fn provider(&self) -> Option<&ProviderCallRoot> {
-        self.provider.as_ref()
+    pub const fn provider(&self) -> &ProviderFilter {
+        &self.provider
     }
 
     /// Returns the page's hit count limit.

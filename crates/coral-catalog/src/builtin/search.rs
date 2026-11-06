@@ -27,6 +27,8 @@ pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Inspect;
 pub const SEARCH_PATHS_MAX: usize = 10;
 /// The longest Call Path an exact lookup accepts, in UTF-8 bytes.
 pub const SEARCH_PATH_MAX_BYTES: usize = 1024;
+/// The most namespaces one `provider` filter names.
+pub const SEARCH_PROVIDERS_MAX: usize = 32;
 
 pub(super) fn definition() -> Definition {
     Definition {
@@ -96,10 +98,12 @@ struct QueryInput {
     query: Option<String>,
     #[serde(default)]
     #[schemars(
-        with = "String",
-        description = "A namespace from coral.providers.<namespace>, or coral.workspace for \
-                       Coral's own tools. It narrows provider tools to one Provider; Saved \
-                       Functions stay. Omit it unless you know which service holds the data."
+        schema_with = "provider_schema",
+        description = "When the user names a service, all its namespaces from \
+                       coral.providers.<namespace>, or coral.workspace for Coral's own tools. \
+                       Otherwise leave it out. It narrows provider tools to those Providers; \
+                       Saved Functions stay. A namespace that no Provider you can search has \
+                       is refused with the full list."
     )]
     provider: Option<String>,
     #[serde(default)]
@@ -156,6 +160,22 @@ struct TypesInput {
     types: Vec<String>,
 }
 
+/// One namespace, or 1 to [`SEARCH_PROVIDERS_MAX`] of them, which
+/// TypeScript reads as `string | string[]`.
+fn provider_schema(_generator: &mut SchemaGenerator) -> Schema {
+    schemars::json_schema!({
+        "anyOf": [
+            { "type": "string" },
+            {
+                "type": "array",
+                "items": { "type": "string" },
+                "minItems": 1,
+                "maxItems": SEARCH_PROVIDERS_MAX,
+            },
+        ],
+    })
+}
+
 /// Exactly one Call Path, which TypeScript reads as `[string]`.
 fn one_path_schema(_generator: &mut SchemaGenerator) -> Schema {
     schemars::json_schema!({
@@ -175,7 +195,7 @@ struct Arguments {
     #[serde(default, deserialize_with = "super::present")]
     query: Option<String>,
     #[serde(default, deserialize_with = "super::present")]
-    provider: Option<String>,
+    provider: Option<Value>,
     #[serde(default, deserialize_with = "super::present")]
     limit: Option<u16>,
     #[serde(default, deserialize_with = "super::present")]
@@ -195,7 +215,7 @@ pub enum SearchArguments {
         /// Keywords, or `None` to list.
         query: Option<String>,
         /// The Provider filter.
-        provider: Option<String>,
+        provider: Option<ProviderArgument>,
         /// The page size.
         limit: Option<u16>,
         /// How many ranked results to skip: the `next_offset` of an earlier
@@ -229,7 +249,11 @@ impl SearchArguments {
             }
             return Ok(Self::Query {
                 query: arguments.query,
-                provider: arguments.provider,
+                provider: arguments
+                    .provider
+                    .map(ProviderArgument::read)
+                    .transpose()
+                    .map_err(|problem| vec![problem])?,
                 limit: arguments.limit,
                 offset: arguments.offset,
             });
@@ -265,6 +289,60 @@ impl SearchArguments {
             return Err(problems);
         }
         Ok(Self::Paths { paths, types })
+    }
+}
+
+/// The `provider` argument as the Program wrote it: one namespace, or an
+/// array of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderArgument {
+    /// One namespace.
+    One(String),
+    /// 1 to [`SEARCH_PROVIDERS_MAX`] namespaces, in the Program's order.
+    Many(Vec<String>),
+}
+
+impl ProviderArgument {
+    /// Reads a string, or an array of 1 to [`SEARCH_PROVIDERS_MAX`]
+    /// strings. Universal Search checks the namespaces themselves.
+    fn read(value: Value) -> Result<Self, ArgumentProblem> {
+        let reason = || {
+            ArgumentProblem::new(
+                "provider",
+                format!("pass a namespace or an array of 1 to {SEARCH_PROVIDERS_MAX} namespaces"),
+            )
+        };
+        match value {
+            Value::String(namespace) => Ok(Self::One(namespace)),
+            Value::Array(values) if (1..=SEARCH_PROVIDERS_MAX).contains(&values.len()) => values
+                .into_iter()
+                .map(|value| match value {
+                    Value::String(namespace) => Ok(namespace),
+                    _ => Err(reason()),
+                })
+                .collect::<Result<_, _>>()
+                .map(Self::Many),
+            _ => Err(reason()),
+        }
+    }
+
+    /// The namespaces, in the Program's order.
+    #[must_use]
+    pub fn values(&self) -> Vec<String> {
+        match self {
+            Self::One(namespace) => vec![namespace.clone()],
+            Self::Many(namespaces) => namespaces.clone(),
+        }
+    }
+
+    /// The argument path of the namespace at this position: `provider` for
+    /// one namespace, `provider[1]` for the second of an array.
+    #[must_use]
+    pub fn field(&self, position: usize) -> String {
+        match self {
+            Self::One(_) => "provider".to_owned(),
+            Self::Many(_) => format!("provider[{position}]"),
+        }
     }
 }
 

@@ -61,7 +61,7 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    let commands = TaskCommands::new(tasks.clone(), search, runs.clone());
+    let commands = TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
     let server = McpServer::new(
         McpRuntime {
             modules: crate::McpModules::new(
@@ -69,6 +69,7 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
                 tasks,
                 commands,
                 runs,
+                search,
                 crate::HumanInterfaceUrl::parse("https://reef.example.test").unwrap(),
             ),
             principal: actor,

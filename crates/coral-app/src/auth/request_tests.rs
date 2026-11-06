@@ -633,16 +633,14 @@ impl Fixture {
             coral_run::RunInbox::table(database.clone()),
         )
         .unwrap();
-        let commands = coral_task::TaskCommands::new(
-            tasks.clone(),
-            coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
-            runs.clone(),
-        );
+        let search = coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone());
+        let commands = coral_task::TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
         let modules = McpModules::new(
             workspaces.clone(),
             tasks.clone(),
             commands,
             runs,
+            search,
             coral_mcp::HumanInterfaceUrl::parse("https://reef.example.test").unwrap(),
         );
         let server = coral_mcp::start_authenticated(

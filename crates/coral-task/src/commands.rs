@@ -54,6 +54,18 @@ impl TaskCommands {
             Ok(request) => request,
             Err(error) => return Err(self.reject(call, &id, error.into()).await),
         };
+        // The retained record names one Provider, as the MCP `search` tool
+        // took it.
+        let provider = match request.provider().values() {
+            [] => None,
+            [provider] => Some(provider.clone()),
+            _ => {
+                let error = coral_search::Error::InvalidInput(
+                    "a Task search names at most one provider".to_owned(),
+                );
+                return Err(self.reject(call, &id, error.into()).await);
+            }
+        };
         let page = match self
             .search
             .search(&call.actor, &call.workspace_id, &request)
@@ -67,9 +79,7 @@ impl TaskCommands {
                 query: request
                     .search_query()
                     .map(|query| query.as_str().to_owned()),
-                provider: request
-                    .provider()
-                    .map(|provider| coral_search::provider_filter_value(provider).to_owned()),
+                provider,
                 limit: request.limit().value(),
                 offset: request.offset(),
             },
