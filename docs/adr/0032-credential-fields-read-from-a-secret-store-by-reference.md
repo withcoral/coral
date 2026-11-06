@@ -64,6 +64,13 @@ Rejected: a path prefix that Coral checks on each store. Not every secrets syste
 would not carry across stores, and a string check in Coral looks like a boundary without being one the customer can
 verify. It would add clearer errors and fewer denials in the store's audit log, which is little gain for that illusion.
 
+A store's name stands for one trust boundary. An operator may change a store's address, for example to move the same
+store to a new host, and Coral neither detects that nor stops pending work: approved work reads from the new address. To
+point at a different store, an operator defines a new store under a new name. Like rotation, this stays outside what an
+approval binds, and the operator already controls Coral. Rejected: pinning a store's settings. Coral would keep
+deployment config in its database and refuse to start on a routine move, and it still could not see repointed DNS or
+changed contents in the store.
+
 Several stores also allow one deployment to serve units with separate Vault namespaces or cloud accounts. Removing a
 grant or a store makes its Accounts unusable without deleting their references; granting it again restores them. Hosted
 Coral is out of scope: it would need the customer's store open to our network and a stored credential for it.
@@ -77,7 +84,7 @@ setup check.
 
 ## Fail closed
 
-Saving a reference reads it once to check it exists, then discards the value. At dispatch, an unreachable store, a
+A reference must resolve when it is saved. At dispatch, an unreachable store, a
 missing entry or a missing key fails the Invocation as an unusable Account, with an error that does not name the path;
 Coral never falls back to another credential. Deleting an Account, or removing its Member or Agent, deletes its typed
 values and references; Coral never changes the store.

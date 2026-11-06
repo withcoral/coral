@@ -378,14 +378,11 @@ Coral or named by a Secret Reference.
 _Avoid_: credential input, secret (a field need not be sensitive), credential parameter
 
 **Secret Store**: An operator-defined connection to a secrets system outside Coral, such as HashiCorp Vault, with its own
-identity there. That system's policy decides what the store can read. An Organization Owner grants it to Workspaces;
-Coral holds no credential for it.
+identity there. That system's policy decides what the store can read.
 _Avoid_: vault, credential vault, external credential store
 
 **Secret Reference**: The address of one Credential Field's value in a Secret Store granted to the Account's Workspace:
-the store, a path, and a key where the store has keys. Only a Workspace Owner sets one, on a shared
-Account or an Agent's Account, and changing one replaces the Account. The value stays in the store and Coral never
-stores a copy.
+the store, a path, and a key where the store has keys. The value stays in the store and Coral never stores a copy.
 _Avoid_: vault path, secret pointer, linked secret
 
 **Credential Route**: The Provider setting that determines whether Invocations use no credentials (`none`), its single
