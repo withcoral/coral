@@ -78,7 +78,14 @@ export function AccountStep({
   const authorization = setup.authorization
   const opening = accountStep(attempt, setup)
   // Giving up a sign-in in hand is a choice someone makes, not one a reload makes.
-  const [plan, setPlan] = useState<AccountPlan>(opening.plan)
+  // So is giving one up after a refused credential: the answer stays on connecting.
+  const [plan, setPlan] = useState<AccountPlan>(
+    result?.connecting === 'fixed'
+      ? 'shared-connect'
+      : result?.connecting === 'caller'
+        ? 'own-connect'
+        : opening.plan,
+  )
   // A device sign-in finishes in another tab while this page revalidates, so
   // the new account arrives without a reload. Keep it, as a reload would.
   const [seenGrant, setSeenGrant] = useState(held ? grant : undefined)

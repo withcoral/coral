@@ -226,7 +226,6 @@ export interface CredentialFieldPresentation {
   sensitive: boolean
 }
 
-/** One Credential Field a person enters when connecting an account. */
 /** The address of a Credential Field's value in a secret store. Never the value. */
 export interface SavedReferenceView {
   store: string
@@ -234,6 +233,7 @@ export interface SavedReferenceView {
   key: string
 }
 
+/** One Credential Field a person enters when connecting an account. */
 export interface CredentialFieldView extends CredentialFieldPresentation {
   name: string
 }
@@ -441,6 +441,8 @@ export interface StepperResult extends ActionResult {
   }
   /** The attempt finished with a failure Coral recorded. */
   failed?: string
+  /** The account a refused credential was for, so the step keeps that answer. */
+  connecting?: AccountChoice
 }
 
 export interface StepperPageProps {

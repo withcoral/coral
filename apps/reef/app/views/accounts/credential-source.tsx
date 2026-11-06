@@ -30,6 +30,9 @@ export function CredentialSource({
 }) {
   const [source, setSource] = useState<(typeof SOURCES)[number]['value']>(saved ? 'store' : 'value')
   const [store, setStore] = useState(saved?.store ?? stores[0])
+  // A saved store stays on offer after it loses its grant, so saving says why, and
+  // the reference never moves to another store on its own.
+  const choices = saved && !stores.includes(saved.store) ? [...stores, saved.store] : stores
   const pathId = useId()
   const keyId = useId()
   return (
@@ -50,7 +53,7 @@ export function CredentialSource({
             <input type="hidden" name={referenceInputName(field, 'store')} value={store} />
             <Picker
               ariaLabel="Secret store"
-              options={stores.map((name) => ({ value: name, label: name }))}
+              options={choices.map((name) => ({ value: name, label: name }))}
               value={store}
               onChange={setStore}
             />

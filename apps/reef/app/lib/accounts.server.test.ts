@@ -848,6 +848,22 @@ const submit = (form: FormData) =>
     form,
   )
 
+const connected = (state: ProviderAccountState) => ({
+  requestedScopes: [],
+  credentialFields: {
+    email: { label: 'Email', description: '', sensitive: false },
+    token: { label: 'Token', description: '', sensitive: true },
+  },
+  account: {
+    id: 'a',
+    state,
+    secretReferences: {
+      gone: { secretStore: 'secretStores/platform', path: 'old', key: 'k' },
+      token: { secretStore: 'secretStores/platform', path: 'team/forecast', key: 'token' },
+    },
+  },
+})
+
 describe('secret references on a shared account', () => {
   const loadPending = (target: object, search = '') => {
     mocks.getProviderAccountAuthorization.mockResolvedValue({
@@ -880,9 +896,9 @@ describe('secret references on a shared account', () => {
     expect(view.secretStores).toEqual(['platform'])
   })
 
-  // Catches: Reconnect asking for saved references again, or one moved to another
-  // store on its own because it lost its grant.
-  it('opens with the saved references, and keeps their store on offer', async () => {
+  // Catches: Reconnect asking for saved references again, or a store that lost its
+  // grant offered as a choice for other fields.
+  it('opens with the saved references, and offers only stores it can use', async () => {
     mocks.getProviderAccount.mockResolvedValue({
       account: {
         secretReferences: {
@@ -894,7 +910,19 @@ describe('secret references on a shared account', () => {
     expect(view.savedReferences).toEqual({
       token: { store: 'removed', path: 'team/forecast', key: 'token' },
     })
-    expect(view.secretStores).toEqual(['platform', 'removed'])
+    expect(view.secretStores).toEqual(['platform'])
+  })
+
+  // Catches: a disconnected account described as holding a value, a reference shown
+  // for a field the method no longer has, or a typed field shown as a reference.
+  it('says where each connected field lives', async () => {
+    mocks.getProviderAccount.mockResolvedValue(connected(ProviderAccountState.READY))
+    expect((await load('scope=shared')).credentialSources).toEqual([
+      { label: 'Email', reference: undefined },
+      { label: 'Token', reference: { store: 'platform', path: 'team/forecast', key: 'token' } },
+    ])
+    mocks.getProviderAccount.mockResolvedValue(connected(ProviderAccountState.DISCONNECTED))
+    expect((await load('scope=shared')).credentialSources).toEqual([])
   })
 
   // Catches: a User offered a reference that Coral refuses.

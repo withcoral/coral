@@ -265,6 +265,24 @@ export const SecretEntryWithSecretStore: Story = {
     await expect(canvas.getByRole('button', { name: 'Secret store' })).toHaveTextContent('platform')
   },
 }
+// Catches: a reference moved to another store on its own after it lost its grant.
+export const ReconnectAfterGrantRevoked: Story = {
+  render: () => (
+    <AuthorizationPage
+      view={{
+        ...sharedSecretEntry,
+        secretStores: [],
+        savedReferences: {
+          token: { store: 'removed', path: 'team/forecast', key: 'token' },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('radio', { name: 'Use a secret store' })).toBeChecked()
+    await expect(canvas.getByRole('button', { name: 'Secret store' })).toHaveTextContent('removed')
+  },
+}
 // Catches: Reconnect asking for a reference again, or a typed field filled in.
 export const ReconnectWithSavedReference: Story = {
   render: () => (

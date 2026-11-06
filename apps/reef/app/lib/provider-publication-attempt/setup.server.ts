@@ -1127,7 +1127,11 @@ export async function setupAction<Published = never>(
         'Coral could not use your existing account. Authorize this update separately. ',
       cancel: 'Coral could not start over. ',
     }
-    return providerFailure(error, failures[intent])
+    const failure = providerFailure(error, failures[intent])
+    // A refused credential keeps the account question's answer, which only a saved one records.
+    return intent === 'secret' && submittedAccount
+      ? data({ ...failure.data, connecting: submittedAccount }, failure.init ?? undefined)
+      : failure
   }
 }
 

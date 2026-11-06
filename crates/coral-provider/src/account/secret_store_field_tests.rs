@@ -1032,6 +1032,16 @@ async fn setup_refuses_a_reference_from_a_member_and_on_oauth() {
         Err(Error::AccountInput)
     ));
     assert_eq!(f.store.reads(), reads);
+    for (setup, actor) in [(&setup, f.owner.actor()), (oauth.id(), f.owner.actor())] {
+        assert!(
+            !f.providers
+                .setup_authentication(actor, &f.workspace, setup, 11)
+                .await
+                .unwrap()
+                .authorized,
+            "a refusal saves nothing"
+        );
+    }
 }
 
 // Catches: discovery taking a reference, which would let a Setup with no account

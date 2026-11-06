@@ -138,10 +138,18 @@ impl AccountModule {
         configuration_revision: i64,
         references: &BTreeMap<String, SecretReference>,
     ) -> Result<ProviderCredentialContract, Error> {
-        let mut tx = self.providers.database.begin().await?;
-        self.providers
-            .check_owner_configuration_in_transaction(&mut tx, context.actor(), owner)
+        let mut tx = self.providers.database.begin_read_snapshot().await?;
+        let evidence = self
+            .providers
+            .workspaces
+            .check_in_transaction(
+                &mut tx,
+                context.actor(),
+                owner,
+                coral_workspace::WorkspaceAction::Configure,
+            )
             .await?;
+        crate::require_owner(&evidence)?;
         let loaded = crate::started_setup(&mut tx, context.actor(), owner, id).await?;
         if loaded.setup.state() == crate::ProviderSetupState::AwaitingAuthorization
             && loaded.setup.input_kind() == coral_catalog::ProviderSetupInputKind::Mcp

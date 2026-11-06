@@ -680,7 +680,10 @@ describe('secret entry', () => {
     const result = await submit(reference('fixed'))
 
     expect(result).toMatchObject({
-      data: { error: 'The secret store has no entry at this path. Check the path.' },
+      data: {
+        error: 'The secret store has no entry at this path. Check the path.',
+        connecting: 'fixed',
+      },
     })
   })
 

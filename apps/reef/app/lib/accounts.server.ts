@@ -226,11 +226,7 @@ export async function loadAuthorization(
       : {}
   return {
     ...accountNavigation(returnTo, path, workspaceName(params.workspace)),
-    // A saved store stays on offer after it loses its grant, so saving says why, and
-    // the reference never moves to another store on its own.
-    secretStores: [
-      ...new Set([...offered, ...Object.values(savedReferences).map(({ store }) => store)]),
-    ],
+    secretStores: offered,
     savedReferences,
     secretStoreProblem:
       problem && Object.hasOwn(SECRET_STORE_PROBLEMS, problem)
