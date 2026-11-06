@@ -195,7 +195,6 @@ async fn plant_caller_text(f: &Fixture, text: &str) {
                 f.workspace.clone(),
                 agent_goal.id().clone(),
                 TaskIntent::parse(text).unwrap(),
-                coral_test_support::trace('1'),
             ),
             coral_search::SearchInput::default(),
         )
