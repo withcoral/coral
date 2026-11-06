@@ -91,7 +91,7 @@ async fn content_only_clients_read_results_and_actionable_rejections() {
             )
             .await;
         assert_eq!(
-            saved["call_path"], "coral.functions.linear.inbox",
+            saved["call_path"], "coral.private.linear.inbox",
             "{version}: {saved}"
         );
 
@@ -112,14 +112,14 @@ async fn content_only_clients_read_results_and_actionable_rejections() {
                 "Program:1:15: Coral namespace aliases are not supported",
             ),
             (
-                "const f = coral.functions;\nreturn (await f.linear.inbox()).total;",
+                "const f = coral.private;\nreturn (await f.linear.inbox()).total;",
                 "program_admission_failed",
                 "Program:1:11: Saved Function namespace aliases are not supported",
             ),
             // The Program from the 2026-09-28 report. Admission owns the
             // wording; the text must carry the code and authored location.
             (
-                "const f = coral.functions.linear;\nreturn (await f.inbox()).total;",
+                "const f = coral.private.linear;\nreturn (await f.inbox()).total;",
                 "program_admission_failed",
                 "Program:1:11",
             ),
@@ -316,7 +316,7 @@ async fn check_concealed_descriptions(
     let read = session
         .program_value(
             task.as_str().expect("Task id"),
-            r#"return (await coral.workspace.search({
+            r#"return (await coral.search({
   paths: ["coral.providers.gmail.send_message", "coral.providers.weather.lostWorker"],
 })).data;"#,
         )

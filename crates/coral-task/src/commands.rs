@@ -39,7 +39,7 @@ impl TaskCommands {
 
     /// Retains exactly one requested search page before returning it.
     ///
-    /// No MCP tool calls this: agents discover with `coral.workspace.search`
+    /// No MCP tool calls this: agents discover with `coral.search`
     /// inside a Run. It still writes the `search` record that Task history
     /// keeps from before, so tests of retained history make one as Coral did.
     /// # Errors
@@ -425,7 +425,7 @@ pub(super) fn now() -> Result<i64, Error> {
 pub enum RetainedChange<'a> {
     /// Saves an untyped function.
     Save {
-        /// The path relative to `coral.functions`.
+        /// The path relative to `coral.private`.
         path: &'a str,
         /// The description search shows.
         description: &'a str,
@@ -434,7 +434,7 @@ pub enum RetainedChange<'a> {
     },
     /// Deletes the function at `path`.
     Delete {
-        /// The path relative to `coral.functions`.
+        /// The path relative to `coral.private`.
         path: &'a str,
     },
 }

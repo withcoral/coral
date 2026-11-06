@@ -68,7 +68,7 @@ impl fmt::Display for SavedFunctionId {
 /// no text.
 impl coral_telemetry::safe::Identifier for SavedFunctionId {}
 
-/// Principal-owned dotted JavaScript path relative to `coral.functions`.
+/// Principal-owned dotted JavaScript path relative to `coral.private`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SavedFunctionPath(String);
 
@@ -93,7 +93,7 @@ impl SavedFunctionPath {
         Ok(Self(value.to_string()))
     }
 
-    /// Returns the complete dotted path relative to `coral.functions`.
+    /// Returns the complete dotted path relative to `coral.private`.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -744,7 +744,7 @@ impl SavedFunctionEntry {
         &self.principal
     }
 
-    /// Returns the path below `coral.functions`, the rest of the Call Path.
+    /// Returns the path below `coral.private`, the rest of the Call Path.
     #[must_use]
     pub const fn path(&self) -> &SavedFunctionPath {
         &self.path
@@ -802,7 +802,7 @@ impl SavedFunctionAuthoringMaterial {
         }
     }
 
-    /// Returns the path relative to `coral.functions`.
+    /// Returns the path relative to `coral.private`.
     #[must_use]
     pub const fn path(&self) -> &SavedFunctionPath {
         &self.path
@@ -847,7 +847,7 @@ impl SavedFunctionSummary {
         }
     }
 
-    /// Returns the path relative to `coral.functions`.
+    /// Returns the path relative to `coral.private`.
     #[must_use]
     pub const fn path(&self) -> &SavedFunctionPath {
         &self.path
@@ -927,7 +927,7 @@ impl SavedFunctionSearchMaterial {
         &self.id
     }
 
-    /// Returns the path relative to `coral.functions`.
+    /// Returns the path relative to `coral.private`.
     #[must_use]
     pub const fn path(&self) -> &SavedFunctionPath {
         &self.path
@@ -958,7 +958,7 @@ impl SavedFunctionDeclarationSearchMaterial {
         }
     }
 
-    /// Returns the path relative to `coral.functions`.
+    /// Returns the path relative to `coral.private`.
     #[must_use]
     pub const fn path(&self) -> &SavedFunctionPath {
         &self.path

@@ -156,7 +156,7 @@ const coral: ProviderView = {
   id: 'prov-coral',
   displayName: 'Coral',
   namespace: '',
-  callRoot: 'coral.workspace',
+  callRoot: 'coral',
   builtin: true,
   icons: CORAL_ICONS,
   path: '/workspaces/demo/providers/prov-coral',

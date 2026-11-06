@@ -8,9 +8,9 @@ import { Activity } from './activity'
 import { ProviderMarksContext } from './call-tool'
 import { ActionReviewSession } from '../actions/review'
 import { stored } from './discovery/fixtures'
-import { discoveryView, functionTarget } from './discovery/response'
+import { discoveryView } from './discovery/response'
 import { programAt } from './side-panel-fixtures'
-import { toolOwner } from '@/lib/call-root'
+import { privateToolPath, toolOwner } from '@/lib/call-root'
 import { freezeStoryClock, minutesAfterStoryNow } from './story-clock'
 import type {
   ActivityPage,
@@ -1317,7 +1317,7 @@ function discovery(context: DiscoveryContext, response: string): Story['args'] {
     view.kind === 'search' ? view.page.hits : view.kind === 'describe' ? [view.description] : []
   for (const target of targets) {
     const owner = toolOwner(target.callPath, [{ id: 'github', callRoot: 'coral.providers.github' }])
-    const path = functionTarget(target.callPath)
+    const path = privateToolPath(target.callPath)
     if (owner && target.title === target.callPath) target.title = owner.relativePath
     target.currentHref = owner
       ? `/${workspace}/providers/${owner.provider.id}/tools/${owner.relativePath}`

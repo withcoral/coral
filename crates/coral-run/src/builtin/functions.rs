@@ -1,4 +1,4 @@
-//! Performs `coral.workspace.saveFunction` and `deleteFunction`: Saved
+//! Performs `coral.saveFunction` and `deleteFunction`: Saved
 //! Function authoring as the invoking Principal, in its own namespace. Each
 //! call is this Invocation of this Run, recorded like any other, not a
 //! separate Task Interaction. The source a save receives is the module
@@ -185,7 +185,7 @@ fn authoring<'a>(host: &BuiltinHost<'a>) -> Result<&'a SavedFunctions, Error> {
 }
 
 fn call_path(path: &SavedFunctionPath) -> String {
-    format!("coral.functions.{}", path.as_str())
+    format!("coral.private.{}", path.as_str())
 }
 
 /// The invoking Principal, at the Run's clock. The trace id is the

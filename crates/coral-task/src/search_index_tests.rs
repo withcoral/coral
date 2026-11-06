@@ -36,7 +36,7 @@ async fn one_reconcile_pass_indexes_a_function_a_notification_missed_and_a_secon
             .into_iter()
             .map(|row| (row.doc_id, row.fingerprint))
             .collect::<Vec<_>>(),
-        [(saved.id().to_string(), "1.1".to_string())]
+        [(saved.id().to_string(), "1.2".to_string())]
     );
     let stamps = indexed_at(&fixture).await;
     index.reconcile().await;
@@ -79,7 +79,7 @@ async fn a_pass_reindexes_a_function_whose_fingerprint_differs_from_its_revision
             .into_iter()
             .map(|row| (row.description, row.fingerprint))
             .collect::<Vec<_>>(),
-        [("Revision 10".to_string(), "10.1".to_string())]
+        [("Revision 10".to_string(), "10.2".to_string())]
     );
 }
 
@@ -239,14 +239,14 @@ async fn a_notified_save_indexes_the_function_and_a_save_over_keeps_one_row() {
             saved_function_id: first.id().to_string(),
             principal_id: user.clone(),
             principal_kind: "user".to_string(),
-            call_path: "coral.functions.triage.openIssues".to_string(),
+            call_path: "coral.private.triage.openIssues".to_string(),
             qualified_name: "triage.openIssues".to_string(),
             title: String::new(),
             description: "Find open issues".to_string(),
             provider_name: String::new(),
             searchable_text: "input label string result find number triageopenissues".to_string(),
             deprecated: false,
-            fingerprint: "1.1".to_string(),
+            fingerprint: "1.2".to_string(),
         }]
     );
     let found = fixture
@@ -266,7 +266,7 @@ async fn a_notified_save_indexes_the_function_and_a_save_over_keeps_one_row() {
             .iter()
             .map(|hit| hit.call_path().as_str())
             .collect::<Vec<_>>(),
-        ["coral.functions.triage.openIssues"],
+        ["coral.private.triage.openIssues"],
         "search finds the save with no reconcile pass"
     );
 
@@ -285,7 +285,7 @@ async fn a_notified_save_indexes_the_function_and_a_save_over_keeps_one_row() {
         [(
             first.id().to_string(),
             "Find open bugs".to_string(),
-            "2.1".to_string()
+            "2.2".to_string()
         )]
     );
 }

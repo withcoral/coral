@@ -56,7 +56,7 @@ async fn admission_rejects_a_saved_function_change_during_one_source_closure_rea
                 root_path.clone(),
                 SavedFunctionDescription::parse("Closure root").expect("description"),
                 SavedFunctionSource::parse(
-                    "const marker = 'root-v1'; export default () => marker + coral.functions.closure.dependency();",
+                    "const marker = 'root-v1'; export default () => marker + coral.private.closure.dependency();",
                 )
                 .expect("source"),
             ),
@@ -72,7 +72,7 @@ async fn admission_rejects_a_saved_function_change_during_one_source_closure_rea
             .start(
                 &starting_principal,
                 &starting_workspace,
-                submission("return coral.functions.closure.root();"),
+                submission("return coral.private.closure.root();"),
             )
             .await
     });
@@ -86,7 +86,7 @@ async fn admission_rejects_a_saved_function_change_during_one_source_closure_rea
                 root_path,
                 SavedFunctionDescription::parse("Changed closure root").expect("description"),
                 SavedFunctionSource::parse(
-                    "const marker = 'root-v2'; export default () => marker + coral.functions.closure.dependency();",
+                    "const marker = 'root-v2'; export default () => marker + coral.private.closure.dependency();",
                 )
                 .expect("source"),
             ),
@@ -145,7 +145,7 @@ async fn type_only_saved_function_references_do_not_enter_the_runtime_closure() 
                 SavedFunctionPath::parse("types.answer").expect("path"),
                 SavedFunctionDescription::parse("Return an answer").expect("description"),
                 SavedFunctionSource::parse(
-                    "export default function answer(): number { type Missing = typeof coral.functions.never.loaded; const value: number = 42; return value; }",
+                    "export default function answer(): number { type Missing = typeof coral.private.never.loaded; const value: number = 42; return value; }",
                 )
                 .expect("source"),
             ),
@@ -157,7 +157,7 @@ async fn type_only_saved_function_references_do_not_enter_the_runtime_closure() 
         .start(
             &principal,
             &workspace_id,
-            submission("return coral.functions.types.answer();"),
+            submission("return coral.private.types.answer();"),
         )
         .await
         .expect("accept only the runtime source closure");
@@ -215,8 +215,8 @@ async fn program_calls_one_saved_function_repeatedly_after_top_level_initializat
             &workspace_id,
             submission(
                 r"
-                    const first = coral.functions.math.factorial(4);
-                    const second = coral.functions.math.factorial(3);
+                    const first = coral.private.math.factorial(4);
+                    const second = coral.private.math.factorial(3);
                     return { first, second };
                 ",
             ),
@@ -258,7 +258,7 @@ async fn program_links_multiple_transitive_saved_functions_into_one_run() {
         (
             "math.incrementTwice",
             "Increment one number twice",
-            "const incremented = coral.functions.math.increment(40); export default function incrementTwice(): number { return coral.functions.math.increment(incremented); }",
+            "const incremented = coral.private.math.increment(40); export default function incrementTwice(): number { return coral.private.math.increment(incremented); }",
         ),
         (
             "math.triple",
@@ -284,7 +284,7 @@ async fn program_links_multiple_transitive_saved_functions_into_one_run() {
         .start(
             &principal,
             &workspace_id,
-            submission("const triple = coral.functions.math.triple; return [coral.functions.math.incrementTwice(), triple(14)];",
+            submission("const triple = coral.private.math.triple; return [coral.private.math.incrementTwice(), triple(14)];",
             ),
         )
         .await
@@ -311,12 +311,12 @@ async fn program_links_multiple_transitive_saved_functions_into_one_run() {
         runs.start(
             &principal,
             &workspace_id,
-            submission("const triple = coral.functions.math.triple; return [coral.functions.math.incrementTwice(), triple(14)];",
+            submission("const triple = coral.private.math.triple; return [coral.private.math.incrementTwice(), triple(14)];",
             ),
         )
         .await,
         Err(Error::ProgramAdmission(message))
-            if message == "Saved Function coral.functions.math.incrementTwice:1:21 references missing Saved Function coral.functions.math.increment"
+            if message == "Saved Function coral.private.math.incrementTwice:1:21 references missing Saved Function coral.private.math.increment"
     ));
     assert_eq!(runs.count_runs().await.expect("count Runs"), 1);
 }
@@ -343,7 +343,7 @@ async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomica
             "export default function end(): number { return 1; }".to_string()
         } else {
             format!(
-                "export default function next(): number {{ return coral.functions.limit.function{:02}(); }}",
+                "export default function next(): number {{ return coral.private.limit.function{:02}(); }}",
                 index + 1
             )
         };
@@ -365,7 +365,7 @@ async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomica
         .start(
             &principal,
             &workspace_id,
-            submission("return coral.functions.limit.function01();"),
+            submission("return coral.private.limit.function01();"),
         )
         .await
         .expect("accept exactly 64 linked Saved Functions");
@@ -381,7 +381,7 @@ async fn linked_function_limit_accepts_the_boundary_and_rejects_overflow_atomica
         runs.start(
             &principal,
             &workspace_id,
-            submission("return coral.functions.limit.function00();"),
+            submission("return coral.private.limit.function00();"),
         )
         .await,
         Err(Error::ProgramAdmission(message))
@@ -411,7 +411,7 @@ async fn transitive_source_closure_enforces_the_combined_typescript_limit_withou
             "export default function end(): number { return 1; }".to_string()
         } else {
             format!(
-                "export default function next(): number {{ return coral.functions.bytes.function{:02}(); }}",
+                "export default function next(): number {{ return coral.private.bytes.function{:02}(); }}",
                 index + 1
             )
         };
@@ -437,7 +437,7 @@ async fn transitive_source_closure_enforces_the_combined_typescript_limit_withou
         runs.start(
             &principal,
             &workspace_id,
-            submission("return coral.functions.bytes.function00();"),
+            submission("return coral.private.bytes.function00();"),
         )
         .await,
         Err(Error::PackageTooLarge {
@@ -506,8 +506,8 @@ async fn saved_function_initialization_uses_the_run_surface_once_before_the_prog
             &tool.workspace_id,
             submission(
                 r#"
-                    const first = coral.functions.weather.initializedTemperature();
-                    const second = coral.functions.weather.initializedTemperature();
+                    const first = coral.private.weather.initializedTemperature();
+                    const second = coral.private.weather.initializedTemperature();
                     await coral.emit({ phase: "body" });
                     console.log("Program body");
                     return [first, second];
@@ -578,7 +578,7 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
         .start(
             &principal,
             &workspace_id,
-            submission("return coral.functions.snapshots.value();"),
+            submission("return coral.private.snapshots.value();"),
         )
         .await
         .expect("accept Run with original source");
@@ -619,7 +619,7 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
         .expect("inspect retained source");
     assert_eq!(
         detail.submitted_source,
-        "return coral.functions.snapshots.value();"
+        "return coral.private.snapshots.value();"
     );
     assert_eq!(detail.linked_functions.len(), 1);
     let snapshot = detail.linked_functions.first().unwrap();
@@ -641,11 +641,11 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
             .start(
                 &principal,
                 &workspace_id,
-                submission("return coral.functions.snapshots.value();"),
+                submission("return coral.private.snapshots.value();"),
             )
             .await,
         Err(Error::ProgramAdmission(message))
-            if message == "Program:1:1 references missing Saved Function coral.functions.snapshots.value"
+            if message == "Program:1:1 references missing Saved Function coral.private.snapshots.value"
     ));
     assert_eq!(fixture.runs.count_runs().await.expect("count Runs"), 1);
 }
@@ -663,20 +663,20 @@ async fn admission_rejects_missing_or_computed_saved_function_paths_without_a_ru
         .start(
             &principal,
             &workspace_id,
-            submission("\nreturn coral.functions.missing.call();"),
+            submission("\nreturn coral.private.missing.call();"),
         )
         .await;
     assert!(matches!(
         missing,
         Err(Error::ProgramAdmission(message))
-            if message == "Program:2:8 references missing Saved Function coral.functions.missing.call"
+            if message == "Program:2:8 references missing Saved Function coral.private.missing.call"
     ));
 
     let computed = runs
         .start(
             &principal,
             &workspace_id,
-            submission("const name = 'call';\nreturn coral.functions.missing[name]();"),
+            submission("const name = 'call';\nreturn coral.private.missing[name]();"),
         )
         .await;
     assert!(matches!(
@@ -686,10 +686,10 @@ async fn admission_rejects_missing_or_computed_saved_function_paths_without_a_ru
     ));
 
     for source in [
-        "return coral.functions[\"computed\"]();",
-        "const name = 'call'; return (coral.functions.missing as any)[name]();",
-        "const functions = coral.functions; return functions.missing();",
-        "const pick = (root: any, key: string) => root[key]; return pick(coral.functions, 'missing')();",
+        "return coral.private[\"computed\"]();",
+        "const name = 'call'; return (coral.private.missing as any)[name]();",
+        "const functions = coral.private; return functions.missing();",
+        "const pick = (root: any, key: string) => root[key]; return pick(coral.private, 'missing')();",
         "return fetch('https://example.test');",
     ] {
         assert!(matches!(
@@ -737,7 +737,7 @@ async fn direct_repeated_calls_follow_a_unicode_saved_function_live_binding() {
         .start(
             &principal,
             &workspace_id,
-            submission("const first = coral.functions.café.calculer(); const second = coral.functions.café.calculer(); return [first, second];",
+            submission("const first = coral.private.café.calculer(); const second = coral.private.café.calculer(); return [first, second];",
             ),
         )
         .await
@@ -799,7 +799,7 @@ async fn equivalent_callable_default_export_forms_execute() {
             .start(
                 &principal,
                 &workspace_id,
-                submission("return await coral.functions.forms.answer(42);"),
+                submission("return await coral.private.forms.answer(42);"),
             )
             .await
             .expect("accept linked export form");

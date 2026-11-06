@@ -18,7 +18,7 @@ pub trait CompilerClient: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Rejects computed or aliased `coral.functions` access and malformed
+    /// Rejects computed or aliased `coral.private` access and malformed
     /// wrapper escapes.
     fn program_references(
         &self,
@@ -69,7 +69,7 @@ pub trait CompilerClient: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Rejects computed or aliased `coral.functions` access and malformed
+    /// Rejects computed or aliased `coral.private` access and malformed
     /// module source.
     fn call_paths(
         &self,
@@ -114,7 +114,7 @@ pub enum CompileError {
 /// Safe diagnostics for a rejected source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Diagnostics {
-    /// A `coral.functions` access that names no supported Saved Function
+    /// A `coral.private` access that names no supported Saved Function
     /// path, at its authored location.
     Reference {
         /// The safe reason.

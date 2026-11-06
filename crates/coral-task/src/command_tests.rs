@@ -58,7 +58,7 @@ impl Fixture {
     }
 
     /// Saves a function as `call`'s Principal the way a Program's
-    /// `coral.workspace.saveFunction` does: typed from the Tools it can
+    /// `coral.saveFunction` does: typed from the Tools it can
     /// discover, then the index is told. No Task Attempt records it.
     async fn save_function(
         &self,
@@ -99,7 +99,7 @@ impl Fixture {
     }
 
     /// Deletes `call`'s Principal's function at `path` the way a Program's
-    /// `coral.workspace.deleteFunction` does, then tells the index.
+    /// `coral.deleteFunction` does, then tells the index.
     async fn delete_function(
         &self,
         call: &AttributedCommand,
@@ -331,7 +331,7 @@ async fn archived_workspace_description_rejection_remains_in_authorized_task_his
     assert!(matches!(
         fixture
             .commands
-            .describe(&call, "coral.functions.answer", &[])
+            .describe(&call, "coral.private.answer", &[])
             .await,
         Err(Error::Search(coral_search::Error::Workspace(
             coral_workspace::Error::WorkspaceArchived
@@ -463,7 +463,7 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
         .await
         .unwrap();
 
-    for path in ["coral.functions.absent", "coral.functions.privateAnswer"] {
+    for path in ["coral.private.absent", "coral.private.privateAnswer"] {
         assert!(matches!(
             fixture.commands.describe(&call, path, &[]).await,
             Err(Error::Search(
@@ -492,7 +492,7 @@ async fn saved_function_descriptions_survive_replacement_and_deletion() {
         .unwrap();
     fixture
         .commands
-        .describe(&call, "coral.functions.answer", &[])
+        .describe(&call, "coral.private.answer", &[])
         .await
         .unwrap();
     fixture
@@ -520,12 +520,12 @@ async fn saved_function_descriptions_survive_replacement_and_deletion() {
     assert_eq!(
         context,
         DiscoveryContext::Describe {
-            call_path: "coral.functions.answer".into(),
+            call_path: "coral.private.answer".into(),
             types: Vec::new(),
         }
     );
     let field = |name: &str| response.get(name).and_then(serde_json::Value::as_str);
-    assert_eq!(field("call_path"), Some("coral.functions.answer"));
+    assert_eq!(field("call_path"), Some("coral.private.answer"));
     assert_eq!(field("description"), Some("Answer"));
     assert_eq!(field("source"), Some("export default () => 41;"));
     assert_eq!(
@@ -1931,11 +1931,11 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
         .unwrap();
     assert_eq!(
         first.hits().first().unwrap().call_path().as_str(),
-        "coral.functions.alpha"
+        "coral.private.alpha"
     );
     assert_eq!(
         second.hits().first().unwrap().call_path().as_str(),
-        "coral.functions.bravo"
+        "coral.private.bravo"
     );
     fixture
         .save_function(
@@ -1957,10 +1957,10 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
         .filter(|entry| entry.kind == AttemptKind::Search)
         .collect::<Vec<_>>();
     assert_eq!(pages.len(), 2, "the unrequested third page is not captured");
-    for (entry, (expected_path, offset, next_offset)) in pages.into_iter().zip([
-        ("coral.functions.alpha", 0, 1),
-        ("coral.functions.bravo", 1, 2),
-    ]) {
+    for (entry, (expected_path, offset, next_offset)) in pages
+        .into_iter()
+        .zip([("coral.private.alpha", 0, 1), ("coral.private.bravo", 1, 2)])
+    {
         let detail = fixture
             .tasks
             .interaction(&fixture.actor, &fixture.workspace, goal.id(), &entry.id)

@@ -42,14 +42,14 @@ async fn search_defaults_return_ten_visible_descriptions(
         );
     }
     index.reconcile().await;
-    // Discovery runs in a Program, so these defaults are coral.workspace.search's.
+    // Discovery runs in a Program, so these defaults are coral.search's.
     let found = session
         .program_value(
             task,
-            r#"const exact = await coral.workspace.search({ paths: ["coral.functions.optionalDefaults.item0"] });
+            r#"const exact = await coral.search({ paths: ["coral.private.optionalDefaults.item0"] });
 const pages = [];
 for (const limit of [undefined, 3, 12]) {
-  pages.push((await coral.workspace.search({ query: "optionalDefaults", limit })).data);
+  pages.push((await coral.search({ query: "optionalDefaults", limit })).data);
 }
 return { exact: exact.data.descriptions[0], pages };"#,
         )

@@ -350,7 +350,7 @@ pub(crate) fn unknown_call_path_message(call_path: &str, suggestions: &[String])
         }
     }
     if suggestions.is_empty() {
-        format!("{written} names no Tool that you can call. Find one with coral.workspace.search.")
+        format!("{written} names no Tool that you can call. Find one with coral.search.")
     } else {
         format!(
             "{written} names no Tool that you can call. Nearest: {}.",
@@ -717,7 +717,7 @@ mod tests {
         assert_eq!(
             super::Rejection::tool_not_found("coral.providers.a\tb", Vec::new()).message(),
             "coral.providers.a\\tb names no Tool that you can call. Find one with \
-             coral.workspace.search."
+             coral.search."
         );
     }
 

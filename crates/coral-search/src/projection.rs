@@ -1,5 +1,5 @@
 //! Safe discovery responses: what discovery found, as the result types
-//! coral-catalog declares for `coral.workspace.search`. The `search` and
+//! coral-catalog declares for `coral.search`. The `search` and
 //! `describe` records Task history retains hold the same types as JSON, so
 //! no surface can show a field another does not.
 use crate::{

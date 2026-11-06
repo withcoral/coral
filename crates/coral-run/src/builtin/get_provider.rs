@@ -1,4 +1,4 @@
-//! Performs `coral.workspace.getProvider`.
+//! Performs `coral.getProvider`.
 
 use coral_catalog::{
     ConfigurationOutput, GetProviderArguments, GetProviderResult, ProviderSetupInputKind,

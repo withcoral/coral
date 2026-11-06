@@ -197,9 +197,9 @@ async fn a_mixed_query_fuses_strong_matches_first_then_by_position() {
         paths(&page),
         [
             "coral.providers.github.issues.list",
-            "coral.functions.triage.openIssues",
+            "coral.private.triage.openIssues",
             "coral.providers.github.pulls.list",
-            "coral.functions.reports.weekly",
+            "coral.private.reports.weekly",
         ],
         "each kind keeps its own order, every Entity here is a strong match, \
          and at equal position the Tool comes first"
@@ -226,8 +226,8 @@ async fn a_mixed_query_fuses_strong_matches_first_then_by_position() {
         .search(SearchRequest::list().with_provider(&github))
         .await;
     for function in [
-        "coral.functions.reports.weekly",
-        "coral.functions.triage.openIssues",
+        "coral.private.reports.weekly",
+        "coral.private.triage.openIssues",
     ] {
         assert!(paths(&listed).contains(&function), "{function}");
     }
@@ -374,8 +374,8 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
         paths(&page),
         [
             "coral.providers.github.pulls.list",
-            "coral.functions.triage.openIssues",
-            "coral.functions.reports.weekly",
+            "coral.private.triage.openIssues",
+            "coral.private.reports.weekly",
         ],
         "neither a disabled Tool nor another Principal's Saved Function ranks"
     );
@@ -572,8 +572,8 @@ async fn a_retriever_that_cannot_rank_keeps_the_others_results() {
     assert_eq!(
         paths(&page),
         [
-            "coral.functions.triage.openIssues",
-            "coral.functions.reports.weekly",
+            "coral.private.triage.openIssues",
+            "coral.private.reports.weekly",
         ]
     );
     assert_eq!(
@@ -736,7 +736,7 @@ async fn evidence_explains_a_match_by_the_words_of_a_dotted_term() {
     let weekly = page
         .hits()
         .iter()
-        .find(|item| item.call_path().as_str() == "coral.functions.reports.weekly")
+        .find(|item| item.call_path().as_str() == "coral.private.reports.weekly")
         .expect("a match by words keeps its hit");
     assert_eq!(weekly.evidence().fields(), ["call_path", "description"]);
 }

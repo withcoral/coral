@@ -225,8 +225,7 @@ impl EntityRetriever for SavedFunctionRetriever {
         call_path: &CallPath,
     ) -> Result<Option<ExactAuthoringDescription>, Error> {
         let Some(path) = call_path
-            .as_str()
-            .strip_prefix("coral.functions.")
+            .private_tool_path()
             .and_then(|relative| coral_functions::SavedFunctionPath::parse(relative).ok())
         else {
             return Ok(None);

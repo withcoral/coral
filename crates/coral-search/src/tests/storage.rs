@@ -677,7 +677,7 @@ fn saved_function_row(
             Some(doc.to_string()).into(),
             Some(USER.to_string()).into(),
             principal_kind.map(str::to_string).into(),
-            "coral.functions.internal.formatForecast".into(),
+            "coral.private.internal.formatForecast".into(),
             "internal.formatForecast".into(),
             "".into(),
             "Format one weather forecast".into(),

@@ -16,7 +16,9 @@ pub(crate) use repository::{exact_in_transaction, provider_id_in_transaction};
 mod tests;
 
 /// Immutable, Workspace-unique JavaScript path under which one Provider's
-/// Tools are called. No Call Root is a prefix of another, so at most one
+/// Tools are called. The Built-in Call Root `coral` holds every other one,
+/// but it owns only a single segment that no other member of `coral` takes
+/// (see [`coral_catalog::NON_TOOL_ROOT_MEMBERS`]), so at most one Call Root
 /// owns a Call Path.
 ///
 /// Each kind of Provider is one variant. A rule that depends on the kind
@@ -25,7 +27,8 @@ mod tests;
 pub enum ProviderCallRoot {
     /// `coral.providers.<namespace>`: a Provider an Owner adds.
     Owner(ProviderNamespace),
-    /// `coral.workspace`: the Workspace's Built-in Provider, which Coral defines.
+    /// `coral`: the Workspace's Built-in Provider, which Coral defines. Its
+    /// Tools sit directly on `coral`, beside `emit` and `ToolError`.
     Builtin,
 }
 
@@ -37,10 +40,10 @@ pub struct ProviderNamespace {
     call_root: String,
 }
 
+/// The Call Root of every Workspace's Built-in Provider.
+const BUILTIN_ROOT: &str = "coral";
 /// The prefix of every Owner-added Provider's Call Root.
 const OWNER_ROOT_PREFIX: &str = "coral.providers.";
-/// The Call Root of every Workspace's Built-in Provider.
-const BUILTIN_ROOT: &str = "coral.workspace";
 
 impl ProviderNamespace {
     /// Validates one Provider Namespace.
@@ -70,7 +73,7 @@ impl ProviderNamespace {
 }
 
 impl ProviderCallRoot {
-    /// Validates one Call Root: `coral.providers.<namespace>` or `coral.workspace`.
+    /// Validates one Call Root: `coral.providers.<namespace>` or `coral`.
     ///
     /// # Errors
     ///
@@ -85,7 +88,7 @@ impl ProviderCallRoot {
             .map(Self::Owner)
             .ok_or_else(|| {
                 Error::InvalidInput(
-                    "Provider Call Root must be coral.providers.<namespace>, with a non-reserved safe ASCII JavaScript identifier of at most 128 bytes, or coral.workspace"
+                    "Provider Call Root must be coral.providers.<namespace>, with a non-reserved safe ASCII JavaScript identifier of at most 128 bytes, or coral"
                         .to_string(),
                 )
             })
@@ -95,14 +98,16 @@ impl ProviderCallRoot {
     /// Tool-relative path under that root, if a valid root owns it.
     #[must_use]
     pub fn split_call_path(call_path: &str) -> Option<(Self, &str)> {
-        call_path
-            .match_indices('.')
-            .take(3)
-            .filter_map(|(end, _)| call_path.get(..end).and_then(|root| Self::parse(root).ok()))
-            .find_map(|root| {
-                root.relative_path(call_path)
-                    .map(|relative| (root, relative))
-            })
+        let members = call_path.strip_prefix(BUILTIN_ROOT)?.strip_prefix('.')?;
+        if let Some(owned) = members.strip_prefix("providers.") {
+            let (namespace, relative) = owned.split_once('.')?;
+            let namespace = ProviderNamespace::parse(namespace).ok()?;
+            return relative_path_is_valid(relative).then_some((Self::Owner(namespace), relative));
+        }
+        let builtin = relative_path_is_valid(members)
+            && !members.contains('.')
+            && !coral_catalog::NON_TOOL_ROOT_MEMBERS.contains(&members);
+        builtin.then_some((Self::Builtin, members))
     }
 
     /// Returns the complete Call Root.
@@ -124,22 +129,20 @@ impl ProviderCallRoot {
         }
     }
 
-    /// Returns the Call Root's last segment, such as `github` or `workspace`, for
+    /// Returns the Call Root's last segment, such as `github` or `coral`, for
     /// search text and labels. No rule reads it.
     #[must_use]
     pub fn name(&self) -> &str {
         let root = self.as_str();
         root.rsplit('.').next().unwrap_or(root)
     }
+}
 
-    /// Returns the Tool-relative path of a Call Path under this root, or
-    /// `None` when the path belongs elsewhere or has an empty or control segment.
-    fn relative_path<'a>(&self, call_path: &'a str) -> Option<&'a str> {
-        let relative = call_path.strip_prefix(self.as_str())?.strip_prefix('.')?;
-        let valid = !relative.chars().any(char::is_control)
-            && relative.split('.').all(|segment| !segment.is_empty());
-        valid.then_some(relative)
-    }
+/// Whether `relative` can be a Tool-relative path: no empty or control
+/// segment.
+fn relative_path_is_valid(relative: &str) -> bool {
+    !relative.chars().any(char::is_control)
+        && relative.split('.').all(|segment| !segment.is_empty())
 }
 
 /// Credential selection configured for one Provider.

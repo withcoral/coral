@@ -204,7 +204,7 @@ pub enum AuthoredSource {
     /// The submitted Program body.
     Program,
     /// One Saved Function linked into the package, by its path relative to
-    /// `coral.functions`.
+    /// `coral.private`.
     SavedFunction {
         /// Dotted path, such as `debug.fetch`.
         path: String,
@@ -446,7 +446,7 @@ pub struct SavedFunctionReference {
 }
 
 impl SavedFunctionReference {
-    /// Returns the dotted path relative to `coral.functions`.
+    /// Returns the dotted path relative to `coral.private`.
     #[must_use]
     pub fn path(&self) -> &str {
         &self.path
@@ -493,20 +493,20 @@ pub struct SavedFunctionCallPaths {
 }
 
 impl SavedFunctionCallPaths {
-    /// Returns the directly named `coral.functions` paths.
+    /// Returns the directly named `coral.private` paths.
     #[must_use]
     pub fn functions(&self) -> &[SavedFunctionReference] {
         &self.functions
     }
 
-    /// Returns the literal `coral.providers` and `coral.workspace` chains.
+    /// Returns the literal Tool chains under `coral`.
     #[must_use]
     pub const fn tools(&self) -> &ToolReferences {
         &self.tools
     }
 }
 
-/// The literal `coral.providers` and `coral.workspace` chains one source
+/// The literal Tool chains under `coral` one source
 /// names. Aliased roots are not followed.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -542,7 +542,7 @@ struct ToolChain {
     column: u64,
 }
 
-/// A called literal `coral.providers` or `coral.workspace` chain that names
+/// A called literal Tool chain under `coral` that names
 /// no Tool the caller can call, and where the source names it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -573,8 +573,8 @@ impl UnknownToolCall {
     }
 }
 
-/// One declaration that types a Call Path under `coral.providers`,
-/// `coral.workspace` or `coral.functions`.
+/// One declaration that types a Call Path under `coral`: a Tool or a
+/// Saved Function at `coral.private`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallableDeclaration {
@@ -585,7 +585,7 @@ pub struct CallableDeclaration {
 impl CallableDeclaration {
     /// Builds one declaration for its path segments: relative to `coral` for
     /// a Tool, such as `providers.github.repos.get`, and to
-    /// `coral.functions` for a Saved Function.
+    /// `coral.private` for a Saved Function.
     ///
     /// The declaration is self-contained TypeScript with one
     /// `export default` callable, as describe and Saved Function save emit it.
@@ -629,7 +629,7 @@ impl CoralDeclarations {
         }
     }
 
-    /// Types `coral.providers` and `coral.workspace` from the Tools the
+    /// Types `coral.providers` and the Built-in Tools on `coral` from the Tools the
     /// caller can call. `references` are what
     /// [`ProgramCompiler::saved_function_call_paths`] found in the same
     /// source.
@@ -646,7 +646,7 @@ impl CoralDeclarations {
         self
     }
 
-    /// Types `coral.functions` from stored Saved Function declarations.
+    /// Types `coral.private` from stored Saved Function declarations.
     #[must_use]
     pub fn with_functions(mut self, functions: Vec<CallableDeclaration>) -> Self {
         self.functions = Some(functions);
@@ -756,7 +756,7 @@ pub enum Error {
         /// One-based authored source column.
         column: u64,
     },
-    /// A literal `coral.workspace.saveFunction` call did not name a function
+    /// A literal `coral.saveFunction` call did not name a function
     /// its source declares at the top level. The message starts with the
     /// authored source and location.
     #[error("{0}")]

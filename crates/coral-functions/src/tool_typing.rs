@@ -75,7 +75,7 @@ pub(crate) fn typing_deadline(compilation_deadline: Instant) -> Option<Instant> 
     (deadline > now).then_some(deadline)
 }
 
-/// The declarations that type `coral.providers` and `coral.workspace`, or
+/// The declarations that type `coral.providers` and the Built-in Tools on `coral`, or
 /// `None` to leave them untyped: without literal paths (the source reaches
 /// them only through aliases, if at all), above
 /// [`TOOL_DECLARATION_MAX_COUNT`] paths or

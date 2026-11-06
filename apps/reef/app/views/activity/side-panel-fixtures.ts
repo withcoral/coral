@@ -5,7 +5,8 @@
 
 import type { ConnectionState } from '../accounts/types'
 import { stored } from './discovery/fixtures'
-import { discoveryView, functionTarget } from './discovery/response'
+import { discoveryView } from './discovery/response'
+import { privateToolPath } from '@/lib/call-root'
 import type {
   ActivityPage,
   ActivityRow,
@@ -488,7 +489,7 @@ export function discovery(
     // The loader names an untitled tool by its path inside its provider.
     if (tool && target.title === target.callPath) target.title = tool.relativePath
     if (options.gone) continue
-    const path = functionTarget(target.callPath)
+    const path = privateToolPath(target.callPath)
     target.currentHref = tool
       ? `/${workspace}/providers/${tool.namespace}/tools/${tool.relativePath}`
       : `/${workspace}/functions/${path}`

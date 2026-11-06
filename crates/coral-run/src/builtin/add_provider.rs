@@ -1,4 +1,4 @@
-//! Performs `coral.workspace.addProvider`.
+//! Performs `coral.addProvider`.
 
 use coral_catalog::{AddProviderArguments, AddProviderResult, ConfigurationChoices};
 use coral_provider::access::{CredentialRoute, ProviderNamespace};

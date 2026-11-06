@@ -32,7 +32,7 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
         .start(
             &agent,
             &workspace,
-            submission("return coral.functions.snapshots.value();"),
+            submission("return coral.private.snapshots.value();"),
         )
         .await
         .unwrap();

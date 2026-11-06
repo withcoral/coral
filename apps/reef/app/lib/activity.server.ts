@@ -66,7 +66,7 @@ import {
 } from './management.server'
 import { savedFunctionHref } from './management-views.server'
 import { listAllTools, listAllProviders, providerPath } from './providers.server'
-import { toolOwner } from './call-root'
+import { privateToolPath, toolOwner } from './call-root'
 import { connectionState } from './accounts.server'
 import { liveScopeOf, MAX_EXPANDED_RECORDS, type RunRow } from '@/views/activity/types'
 import {
@@ -77,7 +77,7 @@ import {
   type TaskRecord,
 } from '@/views/activity/navigation'
 import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
-import { discoveryView, functionTarget } from '@/views/activity/discovery/response'
+import { discoveryView } from '@/views/activity/discovery/response'
 import {
   ACTIVITY_CHILD_WINDOW,
   retainRows,
@@ -241,7 +241,7 @@ async function linkCurrentTargets(
       }),
     )
     for (const target of targets) {
-      const path = target.kind === 'saved_function' ? functionTarget(target.callPath) : null
+      const path = target.kind === 'saved_function' ? privateToolPath(target.callPath) : null
       if (path && paths.has(path))
         target.currentHref = savedFunctionHref(resourcePath(workspace), path)
     }

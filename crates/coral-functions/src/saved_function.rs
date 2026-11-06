@@ -220,7 +220,7 @@ impl SavedFunctionModule {
     /// This save does not notify Universal Search: coral-search depends on
     /// this crate, so the call would be a cycle. A production caller notifies
     /// `SearchIndex::sync_function` after its commit, as
-    /// `coral.workspace.saveFunction` does. Until then, the reconcile task indexes the function.
+    /// `coral.saveFunction` does. Until then, the reconcile task indexes the function.
     ///
     /// # Errors
     ///
@@ -244,7 +244,7 @@ impl SavedFunctionModule {
     /// The source is typed against the current declarations of the Saved
     /// Functions it names and, through `tools`, of the Tools it names
     /// that the caller can discover. Without `tools`, `coral.providers`
-    /// and `coral.workspace` stay untyped. A source that cannot be analyzed is
+    /// and the Built-in Tools stay untyped. A source that cannot be analyzed is
     /// prepared untyped, so preparation reports its own failure. Type
     /// diagnostics are advisory.
     ///
@@ -613,7 +613,7 @@ impl SavedFunctionModule {
         source: &str,
         tools: Option<&dyn ToolDeclarationReader>,
     ) -> Result<PreparedSavedFunction, Error> {
-        let source_name = format!("Saved Function coral.functions.{}", path.as_str());
+        let source_name = format!("Saved Function coral.private.{}", path.as_str());
         let deadline = Instant::now() + self.compilation_timeout;
         let preparation = async {
             let declarations = self
@@ -783,7 +783,7 @@ fn missing_saved_function_dependency(
     reference: &SavedFunctionReference,
 ) -> Error {
     Error::SavedFunctionAdmission(format!(
-        "Saved Function coral.functions.{}:{}:{} references missing Saved Function coral.functions.{}",
+        "Saved Function coral.private.{}:{}:{} references missing Saved Function coral.private.{}",
         source_path.as_str(),
         reference.line,
         reference.column,

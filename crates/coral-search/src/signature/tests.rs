@@ -627,7 +627,7 @@ fn only_the_input_decides_whether_a_line_is_complete() {
 
 #[test]
 fn a_line_that_shows_one_of_several_overloads_is_not_complete() {
-    // Shaped like coral.workspace.search: one overload per mode. The line
+    // Shaped like coral.search: one overload per mode. The line
     // shows the first, so it hides the inputs of the others.
     let overloads = "type Page = { hits: Array<string> };\n\
          type Paths = { descriptions: Array<string> };\n\

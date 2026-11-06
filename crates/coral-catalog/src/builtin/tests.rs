@@ -319,7 +319,7 @@ fn function_results() -> [(BuiltinTool, Value); 2] {
         (
             BuiltinTool::SaveFunction,
             super::SaveFunctionResult {
-                call_path: "coral.functions.github.pulls.listStale".to_owned(),
+                call_path: "coral.private.github.pulls.listStale".to_owned(),
                 description: "List stale pull requests.".to_owned(),
                 declaration: "export default function (): Promise<string[]>;".to_owned(),
                 diagnostics: vec![crate::SavedDiagnostic {
@@ -336,7 +336,7 @@ fn function_results() -> [(BuiltinTool, Value); 2] {
         (
             BuiltinTool::DeleteFunction,
             super::DeleteFunctionResult {
-                call_path: "coral.functions.github.pulls.listStale".to_owned(),
+                call_path: "coral.private.github.pulls.listStale".to_owned(),
             }
             .into_tool_result(),
         ),
@@ -357,7 +357,7 @@ fn each_result_meets_its_output_schema() {
                     let namespace = (index != 0).then(|| format!("provider{index}"));
                     ListedProvider {
                         call_root: namespace.as_ref().map_or_else(
-                            || "coral.workspace".to_owned(),
+                            || "coral".to_owned(),
                             |namespace| format!("coral.providers.{namespace}"),
                         ),
                         namespace,
@@ -473,9 +473,27 @@ fn a_save_without_an_extracted_source_is_refused_naming_source() {
             [(
                 "source",
                 "pass a function declared at the top level, through a literal \
-                 coral.workspace.saveFunction call"
+                 coral.saveFunction call"
             )],
             "{arguments}"
+        );
+    }
+}
+
+// Catches: a Built-in Tool that a Program cannot call as `coral.<key>`,
+// because its key has more than one segment or names another member of
+// `coral`.
+#[test]
+fn each_tool_key_is_one_segment_on_coral_that_no_other_member_takes() {
+    for tool in BuiltinTool::ALL {
+        let key = tool.key();
+        assert!(
+            crate::provider_namespace_is_valid(key),
+            "{key} is not one safe identifier"
+        );
+        assert!(
+            !super::NON_TOOL_ROOT_MEMBERS.contains(&key),
+            "{key} is another member of coral"
         );
     }
 }

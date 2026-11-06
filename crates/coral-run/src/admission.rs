@@ -435,7 +435,7 @@ impl RunModule {
     }
 
     /// Refuses a Program whose literal `coral.providers` or
-    /// `coral.workspace` call names no Tool the caller can call, naming
+    /// Built-in Tool call names no Tool the caller can call, naming
     /// each such path and the nearest ones it can discover. A computed path
     /// is checked only when called.
     ///
@@ -672,11 +672,11 @@ fn missing_saved_function(pending: &PendingSavedFunctionReference) -> Error {
     let source_name = match &pending.source {
         SavedFunctionReferenceSource::SubmittedProgram => "Program".to_string(),
         SavedFunctionReferenceSource::SavedFunction(path) => {
-            format!("Saved Function coral.functions.{}", path.as_str())
+            format!("Saved Function coral.private.{}", path.as_str())
         }
     };
     Error::ProgramAdmission(format!(
-        "{source_name}:{}:{} references missing Saved Function coral.functions.{}",
+        "{source_name}:{}:{} references missing Saved Function coral.private.{}",
         pending.reference.line,
         pending.reference.column,
         pending.reference.path.as_str()

@@ -57,7 +57,7 @@ struct TracerScope {
 
 impl TracerScope {
     const TOOL: &str = "coral.providers.weather.getForecast";
-    const FUNCTION: &str = "coral.functions.internal.formatForecast";
+    const FUNCTION: &str = "coral.private.internal.formatForecast";
 
     async fn new(fixture: &TestModules) -> Self {
         let upstream = MockServer::start().await;
@@ -1837,7 +1837,7 @@ async fn ordinary_saved_function_search_never_loads_source() {
             .describe(
                 &principal,
                 &workspace_id,
-                &CallPath::parse("coral.functions.internal.formatForecast").expect("Call Path"),
+                &CallPath::parse("coral.private.internal.formatForecast").expect("Call Path"),
                 &[],
             )
             .await,
@@ -1897,7 +1897,7 @@ async fn saved_function_projection_bounds_do_not_become_authoring_limits() {
     assert_eq!(metadata.hits().len(), 1);
     assert_eq!(
         metadata.hits()[0].call_path().as_str(),
-        "coral.functions.largeProjection"
+        "coral.private.largeProjection"
     );
     let declaration = fixture
         .search
@@ -1992,7 +1992,7 @@ async fn response_bytes_bound_pages_that_continue_without_repeats() {
             )
             .await
             .expect("save wide function");
-        expected.insert(format!("coral.functions.paged.function{index:02}"));
+        expected.insert(format!("coral.private.paged.function{index:02}"));
     }
     fixture.converge().await;
 
@@ -2077,7 +2077,7 @@ async fn provider_filter_selects_one_provider_and_keeps_saved_functions() {
             .map(|item| item.call_path().as_str())
             .collect::<Vec<_>>(),
         [
-            "coral.functions.internal.formatForecast",
+            "coral.private.internal.formatForecast",
             "coral.providers.weather.getForecast",
         ]
     );
@@ -2135,7 +2135,7 @@ async fn pages_current_results_by_offset_and_reapplies_visibility_on_each_page()
     assert_eq!(
         paths(&filtered),
         [
-            "coral.functions.internal.formatForecast",
+            "coral.private.internal.formatForecast",
             "coral.providers.weather.getForecast",
         ]
     );
@@ -2193,24 +2193,39 @@ async fn any_offset_pages_and_an_offset_past_the_end_is_an_empty_final_page() {
 fn describe_requires_one_complete_safe_call_path() {
     for invalid in [
         "weather.getForecast",
-        "coral.weather",
-        "coral.functions",
+        "coral.weather.getForecast",
+        "coral.workspace.search.paths",
+        "coral.private",
         "coral.providers.weather",
         "coral.emit.value",
         "coral.providers.weather.bad-segment",
-        "coral.functions.internal.bad-segment",
+        "coral.private.internal.bad-segment",
     ] {
         assert!(CallPath::parse(invalid).is_err(), "accepted {invalid:?}");
     }
     for valid in [
         "coral.providers.weather.getForecast",
-        "coral.workspace.addProvider",
-        "coral.functions.internal.formatForecast",
-        "coral.functions.天気.予報",
+        "coral.addProvider",
+        "coral.weather",
+        "coral.private.internal.formatForecast",
+        "coral.private.天気.予報",
     ] {
         assert_eq!(
             CallPath::parse(valid).expect("valid Call Path").as_str(),
             valid
+        );
+    }
+    // Callers name the old roots until they migrate.
+    for (old, current) in [
+        ("coral.workspace.addProvider", "coral.addProvider"),
+        (
+            "coral.functions.internal.formatForecast",
+            "coral.private.internal.formatForecast",
+        ),
+    ] {
+        assert_eq!(
+            CallPath::parse(old).expect("valid Call Path").as_str(),
+            current
         );
     }
 }
@@ -2812,7 +2827,7 @@ async fn user_caller_discovery_exposes_no_account_evidence_and_starts_no_connect
             &AuthenticatedPrincipal::user(route.owner.clone()),
             workspace,
             &[CallerRoute::CALL_PATH],
-            &["coral.functions.internal.formatForecast"],
+            &["coral.private.internal.formatForecast"],
         )
         .await;
 }

@@ -1,4 +1,4 @@
-//! The Built-in Provider: one per Workspace at `coral.workspace`. Each of its
+//! The Built-in Provider: one per Workspace at `coral`. Each of its
 //! Tools is discoverable and callable by the Principals whose authority
 //! permits the Workspace action it declares.
 use coral_workspace::{
@@ -85,7 +85,7 @@ async fn each_builtin_tool_reaches_the_principals_its_workspace_action_permits()
                 &mut transaction,
                 workspace,
                 crate::InvocationCaller::new(&arranged.workspaces, &principal, 13),
-                &format!("coral.workspace.{key}"),
+                &format!("coral.{key}"),
             )
             .await
             .unwrap();
@@ -122,7 +122,7 @@ async fn a_workspace_has_one_builtin_provider_beside_an_owner_provider_named_wor
         CredentialRoute::None,
     )
     .await;
-    assert_eq!(builtin.call_root().as_str(), "coral.workspace");
+    assert_eq!(builtin.call_root().as_str(), "coral");
     assert_eq!(namesake.call_root().as_str(), "coral.providers.workspace");
 
     let mut transaction = database.begin().await.unwrap();
@@ -141,7 +141,7 @@ async fn a_workspace_has_one_builtin_provider_beside_an_owner_provider_named_wor
         .map(|provider| provider.provider().call_root().as_str().to_string())
         .collect::<Vec<_>>();
     roots.sort_unstable();
-    assert_eq!(roots, ["coral.providers.workspace", "coral.workspace"]);
+    assert_eq!(roots, ["coral", "coral.providers.workspace"]);
     transaction.rollback().await.unwrap();
 }
 
@@ -760,7 +760,7 @@ async fn published_providers_lists_every_provider_in_creation_order() {
             .collect::<Vec<_>>(),
         [
             (
-                "coral.workspace",
+                "coral",
                 ProviderState::Active,
                 AuthenticationKind::None,
                 arranged.keys().await.len(),
@@ -808,7 +808,7 @@ async fn management_reads_show_each_principal_the_builtin_tools_it_reaches() {
     .await;
     let member = arranged.member("user:member").await;
     let agent = arranged.agent(16).await;
-    let listed = ["coral.workspace", "coral.providers.added"];
+    let listed = ["coral", "coral.providers.added"];
     let roots = |providers: Vec<&crate::Provider>| {
         providers
             .into_iter()

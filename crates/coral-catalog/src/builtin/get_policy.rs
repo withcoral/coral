@@ -1,4 +1,4 @@
-//! `coral.workspace.getPolicy`: the schemas a Program is typed from, the
+//! `coral.getPolicy`: the schemas a Program is typed from, the
 //! arguments Coral reads against the input schema, and the result it writes
 //! against the output schema. The result holds the exact rules a Workspace
 //! Owner set for one Provider, keyed by Call Path, so a Program can find an

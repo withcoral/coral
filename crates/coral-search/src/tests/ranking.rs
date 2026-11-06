@@ -143,7 +143,7 @@ async fn each_query_ranks_its_most_relevant_entity_first() {
         ),
         (
             "channel messages",
-            "coral.functions.digest.weekly",
+            "coral.private.digest.weekly",
             0,
             "a Saved Function whose description holds the whole query outranks \
              Tools that hold its words apart",
@@ -173,7 +173,7 @@ async fn a_weak_saved_function_follows_every_strong_tool() {
     let cases = [
         (
             "search slack messages",
-            "coral.functions.digest.weekly",
+            "coral.private.digest.weekly",
             &[
                 "coral.providers.slack.conversations.history",
                 "coral.providers.slack.users.list",
@@ -182,7 +182,7 @@ async fn a_weak_saved_function_follows_every_strong_tool() {
         ),
         (
             "slack list",
-            "coral.functions.standup.notes",
+            "coral.private.standup.notes",
             &[
                 "coral.providers.slack.users.list",
                 "coral.providers.slack.conversations.history",
@@ -259,7 +259,7 @@ async fn a_saved_function_between_two_tools_follows_both_when_it_is_weak() {
         [
             "coral.providers.ops.deployments.listStatuses",
             "coral.providers.ops.status.get",
-            "coral.functions.alerts.notify",
+            "coral.private.alerts.notify",
         ],
         "both Tools are strong by the Tool rule and keep their statement's \
          order; the Saved Function's path starts no query word, so it is weak \

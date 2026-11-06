@@ -1,4 +1,4 @@
-//! `coral.workspace.updateProvider`: the schemas a Program is typed from, the
+//! `coral.updateProvider`: the schemas a Program is typed from, the
 //! arguments Coral reads against the input schema, and the result it writes
 //! against the output schema. A call sends the namespace and only the fields
 //! it changes. A sent value replaces its saved value. A sent map changes only

@@ -1,4 +1,4 @@
-//! `coral.workspace.getProvider`: the schemas a Program is typed from, the
+//! `coral.getProvider`: the schemas a Program is typed from, the
 //! arguments Coral reads against the input schema, and the result it writes
 //! against the output schema. The result spells a Provider's Provider
 //! Configuration in the shapes `addProvider` takes, so a Program can read

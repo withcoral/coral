@@ -1,4 +1,4 @@
-//! `coral.workspace.saveFunction` and `deleteFunction` author the invoking
+//! `coral.saveFunction` and `deleteFunction` author the invoking
 //! Principal's Saved Functions from inside a Program, over the real V8
 //! engine. Authoring rules are tested at their owner, coral-functions, and
 //! the default Access State at coral-policy.
@@ -59,7 +59,7 @@ fn save(path: &str, declarations: &str) -> RunSubmission {
     submission(&format!(
         "{declarations}
 try {{
-    return await coral.workspace.saveFunction({{ path: {path}, description: 'Greet one person by name.', source: saved }});
+    return await coral.saveFunction({{ path: {path}, description: 'Greet one person by name.', source: saved }});
 }} catch (error) {{
     if (!(error instanceof coral.ToolError)) throw error;
     return {{ code: error.code, message: error.message }};
@@ -73,7 +73,7 @@ fn delete(path: &str) -> RunSubmission {
 }
 
 fn greet() -> RunSubmission {
-    submission("return coral.functions.people.greet('Ada');")
+    submission("return coral.private.people.greet('Ada');")
 }
 
 /// Runs `run` as `actor` and returns its Final Value.
@@ -153,7 +153,7 @@ async fn each_principal_saves_and_deletes_its_own_function_with_no_rule() {
         let saved = final_value(&scope.terminal(principal, &run).await);
         assert_eq!(
             saved.pointer("/data/call_path"),
-            Some(&json!("coral.functions.people.greet")),
+            Some(&json!("coral.private.people.greet")),
             "{principal:?}: {saved}"
         );
         assert!(
@@ -188,7 +188,7 @@ async fn each_principal_saves_and_deletes_its_own_function_with_no_rule() {
         let deleted = outcome(&scope, principal, delete("people.greet")).await;
         assert_eq!(
             deleted.pointer("/data/call_path"),
-            Some(&json!("coral.functions.people.greet")),
+            Some(&json!("coral.private.people.greet")),
             "{deleted}"
         );
         assert!(admission_refuses(&scope, principal, greet()).await);
@@ -256,7 +256,7 @@ async fn type_errors_are_advisory_and_invalid_functions_save_nothing() {
             admission_refuses(
                 &scope,
                 &scope.owner,
-                submission(&format!("return coral.functions.{path}();")),
+                submission(&format!("return coral.private.{path}();")),
             )
             .await,
             "{path}: nothing was saved"
@@ -270,10 +270,7 @@ async fn type_errors_are_advisory_and_invalid_functions_save_nothing() {
 async fn an_approved_save_compiles_and_commits() {
     let (scope, _index) = authoring_scope("user:functions-rules").await;
     scope
-        .set_access_to(
-            "coral.workspace.saveFunction",
-            ToolAccessState::ApprovalRequired,
-        )
+        .set_access_to("coral.saveFunction", ToolAccessState::ApprovalRequired)
         .await;
     let run = scope
         .start(&scope.owner, save("people.greet", SOURCE))
@@ -282,7 +279,7 @@ async fn an_approved_save_compiles_and_commits() {
     let saved = final_value(&scope.terminal(&scope.owner, &run).await);
     assert_eq!(
         saved.pointer("/data/call_path"),
-        Some(&json!("coral.functions.people.greet")),
+        Some(&json!("coral.private.people.greet")),
         "{saved}"
     );
     assert_eq!(
@@ -300,7 +297,7 @@ async fn a_save_outlives_its_failed_run_and_search_finds_it() {
         .start(
             &scope.owner,
             submission(&format!(
-                "{SOURCE}\nawait coral.workspace.saveFunction({{ path: 'people.greet', \
+                "{SOURCE}\nawait coral.saveFunction({{ path: 'people.greet', \
                  description: 'Greet one person by name.', source: saved }});\n\
                  throw new Error('after the save');"
             )),
@@ -330,9 +327,9 @@ async fn a_save_outlives_its_failed_run_and_search_finds_it() {
         found
             .pointer("/data/hits")
             .and_then(Value::as_array)
-            .is_some_and(|hits| hits.iter().any(|hit| {
-                hit.get("call_path") == Some(&json!("coral.functions.people.greet"))
-            })),
+            .is_some_and(|hits| hits
+                .iter()
+                .any(|hit| { hit.get("call_path") == Some(&json!("coral.private.people.greet")) })),
         "{found}"
     );
 }
@@ -363,9 +360,9 @@ async fn a_run_that_ends_while_its_save_compiles_saves_nothing() {
 async fn a_program_calls_its_function_then_saves_it_in_one_run() {
     let (scope, _index) = authoring_scope("user:functions-same-run").await;
     let by_path = format!(
-        "{SOURCE}\nawait coral.workspace.saveFunction({{ path: 'people.greet', \
+        "{SOURCE}\nawait coral.saveFunction({{ path: 'people.greet', \
          description: 'Greet one person by name.', source: saved }});\n\
-         return coral.functions.people.greet('Ada');"
+         return coral.private.people.greet('Ada');"
     );
     assert!(admission_refuses(&scope, &scope.owner, submission(&by_path)).await);
     assert!(
@@ -375,7 +372,7 @@ async fn a_program_calls_its_function_then_saves_it_in_one_run() {
 
     let tested = format!(
         "{SOURCE}\nconst greeting = saved('Ada');\n\
-         await coral.workspace.saveFunction({{ path: 'people.greet', \
+         await coral.saveFunction({{ path: 'people.greet', \
          description: 'Greet one person by name.', source: saved }});\n\
          return greeting;"
     );
@@ -397,13 +394,13 @@ async fn a_saved_function_saves_and_deletes_functions() {
     let tools = format!(
         "{SOURCE}
 async function saver() {{
-    return coral.workspace.saveFunction({{ path: 'people.greet', description: 'Greet one person by name.', source: saved }});
+    return coral.saveFunction({{ path: 'people.greet', description: 'Greet one person by name.', source: saved }});
 }}
 async function remover() {{
-    return coral.workspace.deleteFunction({{ path: 'people.greet' }});
+    return coral.deleteFunction({{ path: 'people.greet' }});
 }}
-const saving = await coral.workspace.saveFunction({{ path: 'tools.saver', description: 'Save the greeting.', source: saver }});
-const removing = await coral.workspace.saveFunction({{ path: 'tools.remover', description: 'Delete the greeting.', source: remover }});
+const saving = await coral.saveFunction({{ path: 'tools.saver', description: 'Save the greeting.', source: saver }});
+const removing = await coral.saveFunction({{ path: 'tools.remover', description: 'Delete the greeting.', source: remover }});
 return [saving.data.diagnostics, removing.data.diagnostics];"
     );
     // A function is the type `source` takes, so neither save has a type error.
@@ -416,12 +413,12 @@ return [saving.data.diagnostics, removing.data.diagnostics];"
     let saved = outcome(
         &scope,
         &scope.owner,
-        submission("return await coral.functions.tools.saver();"),
+        submission("return await coral.private.tools.saver();"),
     )
     .await;
     assert_eq!(
         saved.pointer("/data/call_path"),
-        Some(&json!("coral.functions.people.greet")),
+        Some(&json!("coral.private.people.greet")),
         "{saved}"
     );
     assert_eq!(
@@ -432,7 +429,7 @@ return [saving.data.diagnostics, removing.data.diagnostics];"
     outcome(
         &scope,
         &scope.owner,
-        submission("return await coral.functions.tools.remover();"),
+        submission("return await coral.private.tools.remover();"),
     )
     .await;
     assert!(admission_refuses(&scope, &scope.owner, greet()).await);
@@ -448,6 +445,59 @@ async fn without_saved_functions_the_tools_are_unavailable() {
             refused.get("code"),
             Some(&json!("tool_unavailable")),
             "{refused}"
+        );
+    }
+}
+
+// Catches: a Built-in Tool or Private Tool that only its old root reaches,
+// an old root that stops working before call sites migrate, or a result or
+// description that reports a Call Path under an old root.
+#[tokio::test]
+async fn the_new_and_old_roots_reach_the_same_tools() {
+    let (scope, _index) = authoring_scope("user:functions-roots").await;
+    for (name, builtin_root, private_root) in [
+        ("new roots", "coral", "coral.private"),
+        ("old roots", "coral.workspace", "coral.functions"),
+    ] {
+        let save_tool = format!("{builtin_root}.saveFunction");
+        let saved = outcome(
+            &scope,
+            &scope.owner,
+            submission(&format!(
+                "{SOURCE}\nreturn await {save_tool}({{ path: 'people.greet', \
+                 description: 'Greet one person by name.', source: saved }});"
+            )),
+        )
+        .await;
+        assert_eq!(
+            saved.pointer("/data/call_path"),
+            Some(&json!("coral.private.people.greet")),
+            "{name}: {saved}"
+        );
+        assert_eq!(
+            outcome(
+                &scope,
+                &scope.owner,
+                submission(&format!("return {private_root}.people.greet('Ada');")),
+            )
+            .await,
+            json!("hello Ada"),
+            "{name}"
+        );
+        let described = outcome(
+            &scope,
+            &scope.owner,
+            submission(&format!(
+                "const {{ data }} = await {builtin_root}.search({{ paths: \
+                 ['{builtin_root}.search', '{private_root}.people.greet'] }});\n\
+                 return data.descriptions.map((description) => description.call_path);"
+            )),
+        )
+        .await;
+        assert_eq!(
+            described,
+            json!(["coral.search", "coral.private.people.greet"]),
+            "{name}"
         );
     }
 }

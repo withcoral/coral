@@ -3,16 +3,18 @@ use coral_catalog::SEARCH_PROVIDERS_MAX;
 
 use crate::Error;
 
-// Catches: a bare `workspace` selecting the Built-in Provider instead of an
-// Owner's Provider named `workspace`, a complete Call Root such as
-// `coral.providers.github` selecting its Provider instead of being refused
-// with the namespaces to use, or a filter past the bound.
+// Catches: an agent that filters by a complete Call Root, such as
+// `coral.providers.github`, getting a rejection that does not name the
+// namespace to use, a bare `workspace` selecting the Built-in Provider instead
+// of an Owner's Provider named `workspace`, or the Built-in Provider's old Call
+// Root no longer selecting it before callers migrate.
 #[test]
-fn the_provider_filter_takes_namespaces_or_coral_workspace() {
-    let github = ProviderCallRoot::parse("coral.providers.github").unwrap();
-    let workspace = ProviderCallRoot::parse("coral.providers.workspace").unwrap();
-    let roots = [&ProviderCallRoot::Builtin, &github, &workspace];
-    for (values, admitted, unmatched) in [
+fn the_provider_filter_takes_a_namespace_or_coral() {
+    for (provider, expected) in [
+        ("github", Ok("coral.providers.github")),
+        ("workspace", Ok("coral.providers.workspace")),
+        ("coral", Ok("coral")),
+        ("coral.workspace", Ok("coral")),
         (
             &[][..],
             &[

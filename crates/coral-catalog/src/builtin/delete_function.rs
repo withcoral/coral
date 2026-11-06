@@ -1,4 +1,4 @@
-//! `coral.workspace.deleteFunction`: the schemas a Program is typed from, the
+//! `coral.deleteFunction`: the schemas a Program is typed from, the
 //! arguments Coral reads against the input schema, and the result it writes
 //! against the output schema. It deletes one of the caller's own Saved
 //! Functions.
@@ -62,7 +62,7 @@ pub struct DeleteFunctionArguments {
 }
 
 impl DeleteFunctionArguments {
-    /// The path relative to `coral.functions`.
+    /// The path relative to `coral.private`.
     #[must_use]
     pub fn path(&self) -> &str {
         &self.path

@@ -1,4 +1,4 @@
-//! `coral.workspace.search` discovers from inside a Program, over the real V8
+//! `coral.search` discovers from inside a Program, over the real V8
 //! engine. A listing and exact paths read the catalog, not the index, so
 //! these Programs need no indexing pass. Ranking and visibility are tested at
 //! their owner, coral-search.
@@ -43,32 +43,26 @@ async fn every_principal_searches_without_approval_and_sees_only_what_it_reaches
         registered_agent(&scope.fixture.workspaces, &scope.owner, &scope.workspace_id).await;
     let paths = json!({
         "paths": [
-            "coral.workspace.updatePolicy",
+            "coral.updatePolicy",
             "coral.providers.absent.tool",
-            "coral.workspace.search",
+            "coral.search",
         ],
     });
     for (principal, described, missing) in [
         (
             scope.owner.clone(),
-            &["coral.workspace.updatePolicy", "coral.workspace.search"][..],
+            &["coral.updatePolicy", "coral.search"][..],
             &["coral.providers.absent.tool"][..],
         ),
         (
             AuthenticatedPrincipal::user(member),
-            &["coral.workspace.search"][..],
-            &[
-                "coral.workspace.updatePolicy",
-                "coral.providers.absent.tool",
-            ][..],
+            &["coral.search"][..],
+            &["coral.updatePolicy", "coral.providers.absent.tool"][..],
         ),
         (
             agent,
-            &["coral.workspace.search"][..],
-            &[
-                "coral.workspace.updatePolicy",
-                "coral.providers.absent.tool",
-            ][..],
+            &["coral.search"][..],
+            &["coral.updatePolicy", "coral.providers.absent.tool"][..],
         ),
     ] {
         let run = scope
@@ -93,21 +87,15 @@ async fn every_principal_searches_without_approval_and_sees_only_what_it_reaches
         let run = scope
             .start(
                 &principal,
-                workspace_call(
-                    "search",
-                    r#"{ "provider": "coral.workspace", "limit": 50 }"#,
-                ),
+                workspace_call("search", r#"{ "provider": "coral", "limit": 50 }"#),
             )
             .await;
         let listed = final_value(&scope.terminal(&principal, &run).await);
         let reached = call_paths(&listed, "hits");
-        assert!(
-            reached.contains(&"coral.workspace.search".to_owned()),
-            "{listed}"
-        );
+        assert!(reached.contains(&"coral.search".to_owned()), "{listed}");
         assert_eq!(
-            reached.contains(&"coral.workspace.updatePolicy".to_owned()),
-            described.contains(&"coral.workspace.updatePolicy"),
+            reached.contains(&"coral.updatePolicy".to_owned()),
+            described.contains(&"coral.updatePolicy"),
             "{principal:?}: {listed}"
         );
     }
@@ -122,13 +110,13 @@ async fn a_program_pages_a_listing_with_the_offset_it_returned() {
             &scope.owner,
             submission(
                 r#"
-                const first = await coral.workspace.search({ provider: "coral.workspace", limit: 2 });
-                const next = await coral.workspace.search({
-                    provider: "coral.workspace",
+                const first = await coral.search({ provider: "coral", limit: 2 });
+                const next = await coral.search({
+                    provider: "coral",
                     limit: 2,
                     offset: first.data.next_offset,
                 });
-                const all = await coral.workspace.search({ provider: "coral.workspace", limit: 4 });
+                const all = await coral.search({ provider: "coral", limit: 4 });
                 return { first, next, all };
                 "#,
             ),
@@ -153,7 +141,7 @@ async fn an_invalid_argument_names_what_to_correct() {
     let scope = AdminScope::new("user:search-invalid").await;
     for (arguments, message) in [
         (
-            json!({ "query": "providers", "paths": ["coral.workspace.search"] }),
+            json!({ "query": "providers", "paths": ["coral.search"] }),
             " at `query`: leave it out with paths",
         ),
         (
@@ -161,7 +149,7 @@ async fn an_invalid_argument_names_what_to_correct() {
             " at `types`: pass types with paths",
         ),
         (
-            json!({ "paths": ["coral.workspace.search", "coral.workspace.getPolicy"], "types": ["Search"] }),
+            json!({ "paths": ["coral.search", "coral.getPolicy"], "types": ["Search"] }),
             " at `types`: pass types with one path",
         ),
         (
@@ -171,13 +159,12 @@ async fn an_invalid_argument_names_what_to_correct() {
         (json!({ "limit": 51 }), " at `limit`: pass 1 to 50"),
         (
             json!({ "provider": "coral.providers.github" }),
-            " at `provider`: No Provider you can search has this namespace. Use one of: \
-             coral.workspace.",
+            " at `provider`: pass a namespace from coral.providers.<namespace>, or coral",
         ),
         (
             json!({ "provider": "github" }),
             " at `provider`: No Provider you can search has this namespace. Use one of: \
-             coral.workspace.",
+             coral.",
         ),
         (
             json!({ "provider": ["coral.workspace", "github"] }),
@@ -199,7 +186,7 @@ async fn an_invalid_argument_names_what_to_correct() {
         ),
         (json!({ "offset": -1 }), " at `offset`: expected u32"),
         (
-            json!({ "paths": ["coral.workspace.getPolicy"], "types": ["Missing"] }),
+            json!({ "paths": ["coral.getPolicy"], "types": ["Missing"] }),
             " at `types`: Type \"Missing\" is not declared by this path. Coral cannot list the \
              types it declares.",
         ),
@@ -259,10 +246,7 @@ async fn a_lookup_fails_rather_than_round_a_saved_diagnostic_integer() {
     let run = scope
         .start(
             &scope.owner,
-            workspace_call(
-                "search",
-                r#"{ "paths": ["coral.functions.reports.weekly"] }"#,
-            ),
+            workspace_call("search", r#"{ "paths": ["coral.private.reports.weekly"] }"#),
         )
         .await;
     // Corrupt stored data ends the Run as any other host error in this

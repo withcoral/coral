@@ -1,4 +1,4 @@
-//! The batch describe that types `coral.providers` and `coral.workspace`
+//! The batch describe that types `coral.providers` and the Built-in Tools on `coral`
 //! keeps `describe`'s visibility.
 
 use coral_policy::ToolAccessState;

@@ -1024,7 +1024,7 @@ async fn saved_function_save_rejects_missing_and_computed_dependencies_atomicall
                 path.clone(),
                 SavedFunctionDescription::parse("Compose one report").expect("description"),
                 SavedFunctionSource::parse(
-                    "export default function compose() {\n  return coral.functions.missing.value();\n}",
+                    "export default function compose() {\n  return coral.private.missing.value();\n}",
                 )
                 .expect("source"),
             ),
@@ -1033,15 +1033,15 @@ async fn saved_function_save_rejects_missing_and_computed_dependencies_atomicall
     assert!(matches!(
         missing,
         Err(Error::SavedFunctionAdmission(message))
-            if message.contains("coral.functions.reports.compose")
-                && message.contains("coral.functions.missing.value")
+            if message.contains("coral.private.reports.compose")
+                && message.contains("coral.private.missing.value")
     ));
 
     for source in [
-        "const dependency = 'value'; export default function compose() { return coral.functions.reports[dependency](); }",
-        "const dependency = 'value'; export default function compose() { return (coral.functions.reports as any)[dependency](); }",
-        "const reports = coral.functions.reports; export default function compose() { return reports.value(); }",
-        "function pick(root: any, key: string) { return root[key]; } export default function compose() { return pick(coral.functions, 'reports')(); }",
+        "const dependency = 'value'; export default function compose() { return coral.private.reports[dependency](); }",
+        "const dependency = 'value'; export default function compose() { return (coral.private.reports as any)[dependency](); }",
+        "const reports = coral.private.reports; export default function compose() { return reports.value(); }",
+        "function pick(root: any, key: string) { return root[key]; } export default function compose() { return pick(coral.private, 'reports')(); }",
     ] {
         let rejected = fixture
             .saved_functions
@@ -1058,7 +1058,7 @@ async fn saved_function_save_rejects_missing_and_computed_dependencies_atomicall
         assert!(matches!(
             rejected,
             Err(Error::SavedFunctionAdmission(message))
-                if message.contains("Saved Function coral.functions.reports.compose")
+                if message.contains("Saved Function coral.private.reports.compose")
                     && (message.contains(" at 1:") || message.contains(":1:"))
         ));
     }

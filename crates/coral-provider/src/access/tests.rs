@@ -195,17 +195,17 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_builtin_coral_root() 
         ("coral.providers.$_g1", Parsed::Owner("$_g1")),
         ("coral.providers.workspace", Parsed::Owner("workspace")),
         (long.as_str(), Parsed::Owner(segment.as_str())),
-        ("coral.workspace", Parsed::Builtin),
+        ("coral", Parsed::Builtin),
+        ("coral.workspace", Parsed::Rejected),
         // Coral defines no other root, so none parses.
         ("coral.billing", Parsed::Rejected),
-        ("coral.functions", Parsed::Rejected),
+        ("coral.private", Parsed::Rejected),
         ("coral.emit", Parsed::Rejected),
         ("coral.ToolError", Parsed::Rejected),
         (&format!("{long}a"), Parsed::Rejected),
         ("coral.workspace.", Parsed::Rejected),
-        ("coral.workspace.tools", Parsed::Rejected),
+        ("coral.tools", Parsed::Rejected),
         ("github", Parsed::Rejected),
-        ("coral", Parsed::Rejected),
         ("providers.github", Parsed::Rejected),
         ("coral.providers", Parsed::Rejected),
         ("coral.providers.", Parsed::Rejected),
@@ -218,7 +218,7 @@ fn call_root_parsing_accepts_owner_namespaces_and_only_the_builtin_coral_root() 
         ("coral.providers.constructor", Parsed::Rejected),
         ("coral.prototype.github", Parsed::Rejected),
         ("coral.providers.weather.v2", Parsed::Rejected),
-        ("coral.functions.github", Parsed::Rejected),
+        ("coral.private.github", Parsed::Rejected),
     ] {
         let parsed = ProviderCallRoot::parse(value);
         match expected {
@@ -441,24 +441,30 @@ fn only_one_call_root_owns_a_call_path_and_splits_it() {
             "coral.providers.github.repos.get",
             Some(("coral.providers.github", "repos.get")),
         ),
-        (
-            "coral.workspace.addProvider",
-            Some(("coral.workspace", "addProvider")),
-        ),
-        (
-            "coral.workspace.providers.create",
-            Some(("coral.workspace", "providers.create")),
-        ),
+        ("coral.addProvider", Some(("coral", "addProvider"))),
         (
             "coral.providers.workspace.create",
             Some(("coral.providers.workspace", "create")),
         ),
+        // The Built-in Call Root owns one segment, and no member of `coral`
+        // that another root or the Program host takes.
+        ("coral.search.paths", None),
+        ("coral.providers", None),
+        ("coral.private", None),
+        ("coral.private.github.get", None),
+        ("coral.shared.github.get", None),
+        ("coral.emit", None),
+        ("coral.ToolError", None),
+        ("coral.workspace", None),
+        ("coral.workspace.addProvider", None),
+        ("coral.functions.github.get", None),
         ("coral.providers.github", None),
         ("coral.providers.github.", None),
         ("coral.providers.github..get", None),
         ("coral.providers.github.get\n", None),
-        ("coral.functions.github.get", None),
-        ("coral.workspace", None),
+        ("coral.search\n", None),
+        ("coral.", None),
+        ("coral", None),
         ("github.repos.get", None),
     ] {
         assert_eq!(

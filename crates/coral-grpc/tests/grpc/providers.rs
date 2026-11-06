@@ -1992,7 +1992,7 @@ async fn list_providers_projects_the_provider_that_get_returns() {
             .iter()
             .map(|builtin| (builtin.call_root.as_str(), builtin.namespace.as_str()))
             .collect::<Vec<_>>(),
-        [("coral.workspace", "")]
+        [("coral", "")]
     );
     assert_eq!(added, vec![provider]);
 }

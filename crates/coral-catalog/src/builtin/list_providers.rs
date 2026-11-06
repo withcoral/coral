@@ -1,4 +1,4 @@
-//! `coral.workspace.listProviders`: the schemas a Program is typed from, and
+//! `coral.listProviders`: the schemas a Program is typed from, and
 //! the result Coral writes against the output schema. It takes no arguments.
 
 use coral_workspace::WorkspaceAction;
@@ -98,10 +98,10 @@ impl ListProvidersResult {
 #[schemars(rename = "Provider", deny_unknown_fields, description = "")]
 pub struct ListedProvider {
     /// The Call Root its Tools are called under, such as
-    /// `coral.providers.github`, or `coral.workspace` for the Built-in Provider.
+    /// `coral.providers.github`, or `coral` for the Built-in Provider.
     #[schemars(description = "The path you call the Provider's Tools under: \
                        coral.providers.<namespace> for a Provider a person added, or \
-                       coral.workspace for Coral's own.")]
+                       coral for Coral's own, whose tools are directly on it.")]
     pub call_root: String,
     /// The Provider Namespace; `None` for the Built-in Provider, which has
     /// none.

@@ -1672,7 +1672,7 @@ async fn provider_rules_hold_the_exact_rules_of_current_tools_by_call_path() {
             );
         }
     }
-    // The Built-in Provider's Call Root is `coral.workspace`, which no
+    // The Built-in Provider's Call Root is `coral`, which no
     // namespace names.
     for absent in ["absent", "workspace"] {
         let read = policies

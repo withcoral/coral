@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { privateToolPath } from '@/lib/call-root'
 import type {
   Description,
   DiscoveryContext,
@@ -135,12 +136,6 @@ export const descriptionSchema = z.discriminatedUnion('kind', [
   }),
 ])
 
-const FUNCTIONS = 'coral.functions.'
-/** The Saved Function Path, for a complete Saved Function Call Path. */
-export function functionTarget(callPath: string) {
-  return callPath.startsWith(FUNCTIONS) ? callPath.slice(FUNCTIONS.length) : null
-}
-
 function toolFlags(value: {
   approval_required?: boolean
   deprecated?: boolean
@@ -167,7 +162,7 @@ function toolFacts(
  * Path until the loader links it to a provider and shortens it.
  */
 function title(value: { call_path: string; title?: string | null }) {
-  return value.title || functionTarget(value.call_path) || value.call_path
+  return value.title || privateToolPath(value.call_path) || value.call_path
 }
 
 function searchCoverage({
@@ -186,11 +181,11 @@ function searchCoverage({
   }
 }
 
-/** The Call Path names the kind: Saved Functions live under `coral.functions`. */
+/** The Call Path names the kind: Saved Functions live under `coral.private`. */
 function searchPage(value: z.infer<typeof searchPageSchema>): SearchPage {
   return {
     hits: value.hits.map((hit): SearchHit => {
-      const kind = functionTarget(hit.call_path) === null ? 'provider_tool' : 'saved_function'
+      const kind = privateToolPath(hit.call_path) === null ? 'provider_tool' : 'saved_function'
       return {
         kind,
         callPath: hit.call_path,

@@ -114,7 +114,7 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
                 text(None, &[]),
                 SearchEvidence::new(vec!["title".into()], vec!["input.repo".into()]),
             ),
-            json!({ "call_path": "coral.functions.github.openPulls" }),
+            json!({ "call_path": "coral.private.github.openPulls" }),
         ),
     ] {
         let mut expected = expected;

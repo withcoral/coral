@@ -63,13 +63,13 @@ export function provider(
   return view
 }
 
-/** Coral's Built-in Provider, with its tools under `coral.workspace`. */
+/** Coral's Built-in Provider, with its tools directly on `coral`. */
 export function builtinProvider(id: string): ProviderView {
   const view: ProviderView = {
     ...provider(id, 'Coral', ''),
     builtin: true,
     icons: CORAL_ICONS,
-    callRoot: 'coral.workspace',
+    callRoot: 'coral',
   }
   view.tools = [
     tool(view, 'addProvider'),

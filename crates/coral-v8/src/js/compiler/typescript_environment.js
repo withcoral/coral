@@ -16,31 +16,32 @@ const PROGRAM_COMPILER_OPTIONS = Object.freeze({
 
 // Authoring-only types for the host root. Callers supply the declarations of
 // the Tools and Saved Functions a source names; a root without them is
-// any. Tools type `coral.providers` and `coral.workspace` together.
+// any. Tools type `coral.providers` and the Built-in Tools on `coral`
+// together.
 const CORAL_HOST_DECLARATION_FILE_NAME = 'coral.d.ts';
 // Coral's diagnostic codes are outside TypeScript's range.
-// A called `coral.providers` or `coral.workspace` path that names no
-// Tool the caller can call.
+// A called Tool path that names no Tool the caller can call.
 const UNKNOWN_TOOL_DIAGNOSTIC_CODE = 100001;
 // A typed Saved Function declaration saved untyped because it would exceed
 // the declaration limit.
 const DECLARATION_TOO_LARGE_DIAGNOSTIC_CODE = 100002;
 
-function coralHostDeclaration(providersType, workspaceType, functionsType) {
+// `coral` is a constant of an object type, not a namespace of constants, so
+// `coral.private` type-checks although `private` is a strict-mode reserved
+// word. A namespace of types alone merges with it, so `coral.ToolError` also
+// names the error's type. Every other member is any: a Built-in Tool the
+// source names only through an alias, or one that the unknown-Tool
+// diagnostic reports.
+function coralHostDeclaration({ providers, builtins, workspace, privateTools }) {
   return `
 declare namespace coral {
-  const providers: ${providersType};
-  const workspace: ${workspaceType};
-  const functions: ${functionsType};
-  function emit(value: unknown): Promise<void>;
   /**
    * Rejects a Tool call that produced no declared success. When Coral
    * rejects the upstream's response, \`data\` and \`metadata\` hold it, and
    * \`status\` its HTTP status. Without \`data\`, it carries only a Coral
    * failure code, and the call may or may not have taken effect.
    */
-  class ToolError extends Error {
-    private constructor();
+  interface ToolError extends Error {
     readonly code: string;
     readonly traceId?: string;
     readonly status?: number;
@@ -50,6 +51,19 @@ declare namespace coral {
     readonly suggestions?: readonly string[];
   }
 }
+
+declare const coral: {
+  ${builtins}
+  readonly providers: ${providers};
+  readonly private: ${privateTools};
+  /** The old name of \`coral.private\`. */
+  readonly functions: ${privateTools};
+  /** The old name of \`coral\`, whose members are the Built-in Tools. */
+  readonly workspace: ${workspace};
+  readonly emit: (value: unknown) => Promise<void>;
+  readonly ToolError: abstract new (...args: never) => coral.ToolError;
+  readonly [member: string]: any;
+};
 
 declare const console: {
   readonly debug: (...values: unknown[]) => void;
@@ -107,7 +121,7 @@ function typedRoot(sources, prefix, entries) {
   return tree;
 }
 
-// The called chains whose first prefix past `coral.<root>` is neither a
+// The called chains whose first prefix past their Call Root is neither a
 // declared Call Path nor a namespace of one: they name nothing the caller can
 // call. Their open namespaces make them any, so one Coral diagnostic replaces
 // every cascading TypeScript one. A resolved sibling must not make a callable
@@ -127,7 +141,8 @@ function unknownTools(tools, { namespaceCalls = false } = {}) {
   const unknown = [];
   for (const { segments, start, line, column, called } of tools.chains) {
     if (!called) continue;
-    for (let length = 2; length <= segments.length; length += 1) {
+    const shortest = shortestToolChain(toolCallRootLength(segments));
+    for (let length = shortest; length <= segments.length; length += 1) {
       const key = segments.slice(0, length).join('.');
       if (resolved.has(key)) break;
       if (namespaces.has(key) && (length < segments.length || !namespaceCalls)) continue;
@@ -156,24 +171,33 @@ function unknownToolCalls(chains, callPaths) {
   );
 }
 
-// The declaration files that type the `coral` namespace, and the Tool
-// chains that name nothing the caller can call. Without `declarations`, or
-// without one root's, that root is any.
+// The declaration files that type `coral`, and the Tool chains that name
+// nothing the caller can call. Without `declarations`, or without one root's,
+// that root is any.
 function coralSurface(declarations) {
   const sources = {};
   // Tool paths are relative to `coral`, so one tree holds both
-  // `providers` and `workspace`.
+  // `providers` and the Built-in Tools.
   const tools = typedRoot(sources, 'coral', declarations?.tools?.declarations);
-  const functions = typedRoot(sources, 'coral.functions', declarations?.functions);
-  const toolRoot = (root) =>
-    tools === undefined
-      ? 'any'
-      : renderCallableNode(tools.children.get(root) ?? callableNode(), true);
-  sources[CORAL_HOST_DECLARATION_FILE_NAME] = coralHostDeclaration(
-    toolRoot('providers'),
-    toolRoot('workspace'),
-    functions === undefined ? 'any' : renderCallableNode(functions, false),
-  );
+  const privateTools = typedRoot(sources, 'coral.private', declarations?.functions);
+  const builtins = callableNode();
+  for (const [member, node] of tools?.children ?? []) {
+    if (member !== 'providers') builtins.children.set(member, node);
+  }
+  sources[CORAL_HOST_DECLARATION_FILE_NAME] = coralHostDeclaration({
+    providers:
+      tools === undefined
+        ? 'any'
+        : renderCallableNode(tools.children.get('providers') ?? callableNode(), true),
+    builtins: [...builtins.children]
+      .map(
+        ([member, node]) =>
+          `readonly ${JSON.stringify(member)}: ${renderCallableNode(node, true)};`,
+      )
+      .join('\n  '),
+    workspace: tools === undefined ? 'any' : renderCallableNode(builtins, true),
+    privateTools: privateTools === undefined ? 'any' : renderCallableNode(privateTools, false),
+  });
   return {
     sources,
     unknownTools: tools === undefined ? [] : unknownTools(declarations.tools),

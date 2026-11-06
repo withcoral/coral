@@ -196,18 +196,24 @@ function linkedProgramSource(body, savedFunctions, target, saves) {
   append(`(async () => {
     ${savedFunctionCarrierDeclaration(saves.carrier)}
     let __coralFunctions = Object.freeze(Object.create(null));
-    const __coralHostDescriptors = Object.getOwnPropertyDescriptors(
-      globalThis.coral ?? Object.create(null),
-    );
-    Reflect.deleteProperty(__coralHostDescriptors, "functions");
-    const coral = Object.create(null);
-    Object.defineProperties(coral, __coralHostDescriptors);
-    Object.defineProperty(coral, "functions", {
+    const __coralHost = globalThis.coral;
+    const __coralHasOwn = Object.hasOwn;
+    const __coralPrivateRoot = {
       get() { return __coralFunctions; },
       enumerable: true,
       configurable: false,
+    };
+    const __coralLinkedMembers = Object.create(null);
+    Object.defineProperties(__coralLinkedMembers, {
+      private: __coralPrivateRoot,
+      functions: { ...__coralPrivateRoot, enumerable: false },
     });
-    Object.preventExtensions(coral);
+    Object.preventExtensions(__coralLinkedMembers);
+    const coral = new Proxy(__coralLinkedMembers, {
+      get(target, property) {
+        return __coralHasOwn(target, property) ? target[property] : __coralHost[property];
+      },
+    });
 
     const __coralLinkedPaths = ${linkedPaths};
     const __coralSavedFunctionDefaults = Object.create(null);
@@ -265,7 +271,7 @@ function linkedProgramSource(body, savedFunctions, target, saves) {
       authoredMappings.push({
         ...mapping,
         generatedLine: savedFunctionStart + mapping.generatedLine,
-        source: `Saved Function coral.functions.${module.pathSegments.join('.')}`,
+        source: `Saved Function coral.private.${module.pathSegments.join('.')}`,
       });
     }
     append(`

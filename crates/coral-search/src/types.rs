@@ -206,9 +206,8 @@ pub struct SearchRequest {
 pub struct SearchInput {
     /// Optional caller query, preserved exactly when accepted.
     pub query: Option<String>,
-    /// Provider filter: namespaces, such as `github`, or `coral.workspace`.
-    /// Empty leaves every Provider.
-    pub provider: Vec<String>,
+    /// Optional Provider filter: a namespace, such as `github`, or `coral`.
+    pub provider: Option<String>,
     /// Optional requested page size.
     pub limit: Option<u16>,
     /// Optional count of ranked results to skip: the `next_offset` of an
@@ -234,8 +233,28 @@ impl TryFrom<SearchInput> for SearchRequest {
     }
 }
 
+/// Parses the `provider` filter: a Provider Namespace, such as `github`, or
+/// `coral` for the Built-in Provider. A complete `coral.providers` Call
+/// Root is rejected with the namespace to use instead. `coral.workspace`, the
+/// Built-in Provider's old Call Root, still selects it until callers migrate.
+fn provider_filter(value: &str) -> Result<ProviderCallRoot, Error> {
+    if value == "coral.workspace" {
+        return Ok(ProviderCallRoot::Builtin);
+    }
+    match ProviderCallRoot::parse(value) {
+        Ok(ProviderCallRoot::Builtin) => Ok(ProviderCallRoot::Builtin),
+        Ok(ProviderCallRoot::Owner(namespace)) => Err(Error::InvalidInput(format!(
+            "provider must be a Provider namespace, such as `{}`",
+            namespace.as_str()
+        ))),
+        Err(_not_a_call_root) => ProviderNamespace::parse(value)
+            .map(ProviderCallRoot::Owner)
+            .map_err(|_invalid_namespace| Error::InvalidInput("invalid Provider namespace".into())),
+    }
+}
+
 /// The `provider` filter value that selects the Provider at this Call Root:
-/// its namespace, such as `github`, or `coral.workspace` for the Built-in Provider.
+/// its namespace, such as `github`, or `coral` for the Built-in Provider.
 /// Callers see this value; the Call Root stays internal.
 #[must_use]
 pub fn provider_filter_value(call_root: &ProviderCallRoot) -> &str {
@@ -314,25 +333,43 @@ impl SearchRequest {
     }
 }
 
+/// The root that every Private Tool's Call Path starts with.
+const PRIVATE_TOOL_ROOT: &str = "coral.private";
+
+/// Each old root that callers still name until they migrate, and the root
+/// that replaced it.
+const OLD_ROOTS: [(&str, &str); 2] = [
+    ("coral.workspace.", "coral."),
+    ("coral.functions.", "coral.private."),
+];
+
 /// Complete public JavaScript path for one Tool or Saved Function.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CallPath(String);
 
 impl CallPath {
-    /// Parses one complete Call Path: a Provider Call Root or `coral.functions`
-    /// followed by the relative path.
+    /// Parses one complete Call Path: a Provider Call Root or `coral.private`
+    /// followed by the relative path. A path under an old root, such as
+    /// `coral.workspace.search`, is the Call Path under the root that
+    /// replaced it.
     ///
     /// # Errors
     ///
     /// Returns [`Error::InvalidInput`] unless every path member is a safe
     /// JavaScript identifier under `coral` with a root and a relative path.
     pub fn parse(value: &str) -> Result<Self, Error> {
+        let current = OLD_ROOTS.iter().find_map(|(old, current)| {
+            value
+                .strip_prefix(old)
+                .map(|rest| format!("{current}{rest}"))
+        });
+        let value = current.as_deref().unwrap_or(value);
         let segments = value.split('.').collect::<Vec<_>>();
         let shaped = ProviderCallRoot::split_call_path(value).is_some()
-            || matches!(segments.as_slice(), ["coral", "functions", _, ..]);
+            || matches!(segments.as_slice(), ["coral", "private", _, ..]);
         if !shaped || segments.iter().any(|segment| !safe_path_segment(segment)) {
             return Err(Error::InvalidInput(
-                "Call Path must be a complete safe coral.providers, coral.workspace or coral.functions JavaScript path"
+                "Call Path must be a complete safe JavaScript path under coral, coral.providers or coral.private"
                     .to_string(),
             ));
         }
@@ -344,7 +381,15 @@ impl CallPath {
     }
 
     pub(crate) fn saved_function(relative_path: &str) -> Result<Self, Error> {
-        Self::parse(&format!("coral.functions.{relative_path}"))
+        Self::parse(&format!("{PRIVATE_TOOL_ROOT}.{relative_path}"))
+    }
+
+    /// Returns the path relative to `coral.private`, for a Private Tool's
+    /// Call Path.
+    pub(crate) fn private_tool_path(&self) -> Option<&str> {
+        self.0
+            .strip_prefix(PRIVATE_TOOL_ROOT)
+            .and_then(|path| path.strip_prefix('.'))
     }
 
     /// Returns the last segment: the name a signature line calls it by.

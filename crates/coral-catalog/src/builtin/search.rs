@@ -1,4 +1,4 @@
-//! `coral.workspace.search`: Universal Search from inside a Program. The
+//! `coral.search`: Universal Search from inside a Program. The
 //! schemas a Program is typed from, the arguments Coral reads against the
 //! input schema, and the result types Coral writes against the output schema.
 //!
@@ -98,12 +98,10 @@ struct QueryInput {
     query: Option<String>,
     #[serde(default)]
     #[schemars(
-        schema_with = "provider_schema",
-        description = "When the user names a service, all its namespaces from \
-                       coral.providers.<namespace>, or coral.workspace for Coral's own tools. \
-                       Otherwise leave it out. It narrows provider tools to those Providers; \
-                       Saved Functions stay. A namespace you cannot search is refused with \
-                       the full list."
+        with = "String",
+        description = "A namespace from coral.providers.<namespace>, or coral for Coral's own \
+                       tools. It narrows provider tools to one Provider; Saved \
+                       Functions stay. Omit it unless you know which service holds the data."
     )]
     provider: Option<String>,
     #[serde(default)]
@@ -430,9 +428,10 @@ pub struct SearchResult {
 )]
 pub struct SearchHit {
     /// The complete Call Path.
-    #[schemars(description = "`coral.providers.<namespace>.…` for a provider tool, \
-                       `coral.workspace.…` for one of Coral's own, `coral.functions.…` for a \
-                       Saved Function.")]
+    #[schemars(
+        description = "`coral.providers.<namespace>.…` for a provider tool, `coral.…` \
+                       for one of Coral's own, `coral.private.…` for a Saved Function."
+    )]
     pub call_path: String,
     /// The callable's signature, within its byte limit.
     #[schemars(
@@ -831,7 +830,7 @@ pub(super) mod tests {
                 "limit": 3,
                 "offset": 20
             }),
-            json!({ "paths": ["coral.providers.github.repos.get", "coral.functions.weekly"] }),
+            json!({ "paths": ["coral.providers.github.repos.get", "coral.private.weekly"] }),
             json!({ "paths": ["coral.providers.github.repos.get"], "types": ["Repository"] }),
         ]
     }
@@ -865,7 +864,7 @@ pub(super) mod tests {
             deprecated: true,
         };
         let bare = SearchHit {
-            call_path: "coral.functions.weekly".to_owned(),
+            call_path: "coral.private.weekly".to_owned(),
             signature_line: "weekly(input: {}): Promise<string>".to_owned(),
             complete: false,
             description_snippet: "The weekly report.".to_owned(),
@@ -922,7 +921,7 @@ pub(super) mod tests {
                         approval_required: false,
                     },
                     Description::SavedFunction {
-                        authoring: authoring("coral.functions.weekly"),
+                        authoring: authoring("coral.private.weekly"),
                         detail: Some(SavedDetail {
                             source: "export default async function weekly() {}".to_owned(),
                             diagnostics: vec![SavedDiagnostic {
@@ -936,7 +935,7 @@ pub(super) mod tests {
                         }),
                     },
                     Description::SavedFunction {
-                        authoring: authoring("coral.functions.daily"),
+                        authoring: authoring("coral.private.daily"),
                         detail: None,
                     },
                 ],
@@ -1050,7 +1049,7 @@ pub(super) mod tests {
         let paths = |code, line, column| {
             SearchOutput::Paths(PathsResult {
                 descriptions: vec![Description::SavedFunction {
-                    authoring: authoring("coral.functions.weekly"),
+                    authoring: authoring("coral.private.weekly"),
                     detail: Some(SavedDetail {
                         source: "export default async function weekly() {}".to_owned(),
                         diagnostics: vec![SavedDiagnostic {

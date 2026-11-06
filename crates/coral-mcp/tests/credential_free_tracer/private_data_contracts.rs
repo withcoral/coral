@@ -274,7 +274,7 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
         )
         .await;
     assert_eq!(
-        saved["call_path"], "coral.functions.diagnostics.fail",
+        saved["call_path"], "coral.private.diagnostics.fail",
         "{saved}"
     );
     // Coral's reason for a path it refuses never repeats the path.
@@ -297,7 +297,7 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
             "exec",
             json!({
                 "task_id": task, "intent": "Fail in a Saved Function", "wait_ms": 5000,
-                "program": "return coral.functions.diagnostics.fail();",
+                "program": "return coral.private.diagnostics.fail();",
             }),
         )
         .await;
@@ -307,7 +307,9 @@ async fn private_data_stays_out_of_telemetry_public_errors_and_lifecycle_events(
     session
         .program_value(
             task.as_str().expect("Task id"),
-            &format!(r#"return (await coral.workspace.search({{ query: "query-{CANARY}" }})).data.hits.length;"#),
+            &format!(
+                r#"return (await coral.search({{ query: "query-{CANARY}" }})).data.hits.length;"#
+            ),
         )
         .await;
 

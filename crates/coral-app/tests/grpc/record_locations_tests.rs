@@ -20,7 +20,8 @@ use tempfile::TempDir;
 
 const SAVED_FUNCTION: &str =
     "export default function forecast(city: string) {\n    console.info(city);\n}";
-const PROGRAM: &str = "console.log(\"l\");\nawait coral.emit({ step: 1 });\ncoral.functions.report.forecast(\"Oslo\");";
+const PROGRAM: &str =
+    "console.log(\"l\");\nawait coral.emit({ step: 1 });\ncoral.private.report.forecast(\"Oslo\");";
 
 /// Accepts one Run in the server's database and waits for it to succeed.
 async fn record_run(

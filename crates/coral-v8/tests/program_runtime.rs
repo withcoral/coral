@@ -347,18 +347,19 @@ fn saved_function_reference_analysis_is_static_and_runtime_only() {
     let compiler =
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let paths = compiler
-        .saved_function_paths(compilation_deadline(),
+        .saved_function_paths(
+            compilation_deadline(),
             r"
-                type Erased = typeof coral.functions.types.only;
-                interface ErasedHeritage extends coral.functions.types.interfaceOnly {}
-                declare class AmbientHeritage extends coral.functions.types.ambientOnly {}
-                class RuntimeHeritage extends coral.functions.models.base {}
+                type Erased = typeof coral.private.types.only;
+                interface ErasedHeritage extends coral.private.types.interfaceOnly {}
+                declare class AmbientHeritage extends coral.private.types.ambientOnly {}
+                class RuntimeHeritage extends coral.private.models.base {}
                 const local = (coral: { functions: { local: { value(): number } } }) =>
-                    coral.functions.local.value();
+                    coral.private.local.value();
                 const object = { coral: 1 };
                 void object.coral;
-                const first = coral.functions.alpha.one;
-                return [first, (coral.functions.beta.two as () => number)(), RuntimeHeritage, local];
+                const first = coral.private.alpha.one;
+                return [first, (coral.private.beta.two as () => number)(), RuntimeHeritage, local];
             ",
         )
         .expect("analyze literal Program references");
@@ -382,8 +383,8 @@ fn saved_function_reference_analysis_is_static_and_runtime_only() {
             compilation_deadline(),
             r"
                 export default function compose(): number {
-                    type Erased = typeof coral.functions.types.only;
-                    return coral.functions.alpha.one();
+                    type Erased = typeof coral.private.types.only;
+                    return coral.private.alpha.one();
                 }
             ",
         )
@@ -396,47 +397,47 @@ fn saved_function_reference_analysis_is_static_and_runtime_only() {
 
     let overload_only = compiler
         .saved_function_dependency_paths(compilation_deadline(),
-            "function coral(value: string): void; export default function compose() { return coral.functions.alpha.one(); }",
+            "function coral(value: string): void; export default function compose() { return coral.private.alpha.one(); }",
         )
         .expect("analyze through an erased overload declaration");
     assert_eq!(reference_paths(&overload_only), ["alpha.one"]);
     let erased_overload = compiler
         .saved_function_dependency_paths(compilation_deadline(),
-            "function erased(value = coral.functions.types.overloadOnly()): void; export default function compose() { return 42; }",
+            "function erased(value = coral.private.types.overloadOnly()): void; export default function compose() { return 42; }",
         )
         .expect("ignore an erased overload declaration");
     assert!(erased_overload.is_empty());
 
     let shadowed_global = compiler
         .saved_function_paths(compilation_deadline(),
-            "const globalThis = { coral: { functions: { local: { value: () => 42 } } } }; return globalThis.coral.functions.local.value();",
+            "const globalThis = { coral: { functions: { local: { value: () => 42 } } } }; return globalThis.coral.private.local.value();",
         )
         .expect("ignore a local globalThis binding");
     assert!(shadowed_global.is_empty());
 
     let shadowed = compiler
         .prepare_saved_function(compilation_deadline(),
-            "export default function local(coral: { functions: { local: { value(): number } } }): number { return coral.functions.local.value(); }",
+            "export default function local(coral: { functions: { local: { value(): number } } }): number { return coral.private.local.value(); }",
         )
         .expect("prepare a callable with a local coral parameter");
     assert!(shadowed.references().is_empty());
 
     for source in [
-        "const key = 'one'; return coral.functions.alpha[key]();",
-        "const key = 'one'; return (coral.functions.alpha as any)[key]();",
-        "const functions = coral.functions; return functions.alpha.one();",
+        "const key = 'one'; return coral.private.alpha[key]();",
+        "const key = 'one'; return (coral.private.alpha as any)[key]();",
+        "const functions = coral.private; return functions.alpha.one();",
         "const root = coral; return root.functions.alpha.one();",
         "const key = 'functions'; return coral[key].alpha.one();",
-        "return globalThis.coral.functions.alpha.one();",
-        "const global = globalThis; return global.coral.functions.alpha.one();",
-        "let global = globalThis; return global.coral.functions.alpha.one();",
+        "return globalThis.coral.private.alpha.one();",
+        "const global = globalThis; return global.coral.private.alpha.one();",
+        "let global = globalThis; return global.coral.private.alpha.one();",
         "const key = 'coral'; return globalThis[key].functions.alpha.one();",
         "let key = 'functions'; return globalThis.coral[key].alpha.one();",
         "const key = unknownKey; return globalThis[key].functions.alpha.one();",
         "const { coral: globalCoral } = globalThis; return globalCoral.functions.alpha.one();",
         "const { functions } = globalThis.coral; return functions.alpha.one();",
-        "const pick = (root: any, key: string) => root[key]; return pick(coral.functions, 'alpha')();",
-        "const key = 'base'; class RuntimeHeritage extends coral.functions.models[key] {} return RuntimeHeritage;",
+        "const pick = (root: any, key: string) => root[key]; return pick(coral.private, 'alpha')();",
+        "const key = 'base'; class RuntimeHeritage extends coral.private.models[key] {} return RuntimeHeritage;",
     ] {
         compiler
             .saved_function_paths(compilation_deadline(), source)
@@ -475,7 +476,7 @@ fn authored_source_cannot_reach_private_linker_bindings() {
         ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run).expect("start compiler");
     let error = compiler
         .compile_with_saved_functions(compilation_deadline(),
-            "__coralSavedFunctionDefaults[0] = () => (() => 'changed'); return coral.functions.safe.value();",
+            "__coralSavedFunctionDefaults[0] = () => (() => 'changed'); return coral.private.safe.value();",
             &[linked_source(
                 &["safe", "value"],
                 "export default function value(): string { return 'original'; }",
@@ -514,7 +515,7 @@ fn authored_source_cannot_reach_private_linker_bindings() {
 
     let local_private_name = compiler
         .compile_with_saved_functions(compilation_deadline(),
-            "const __coralSavedFunctionDefaults = 42; void coral.functions.safe.value; return __coralSavedFunctionDefaults;",
+            "const __coralSavedFunctionDefaults = 42; void coral.private.safe.value; return __coralSavedFunctionDefaults;",
             &[linked_source(
                 &["safe", "value"],
                 "export default function value(): string { return 'original'; }",
@@ -620,7 +621,7 @@ fn authored_comments_cannot_collide_with_linker_source_mapping_boundaries() {
     let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
         .expect("start compiler")
         .compile_with_saved_functions(compilation_deadline(),
-            "return coral.functions.safe.value();",
+            "return coral.private.safe.value();",
             &[
                 linked_source(
                     &["comments", "marker"],
@@ -780,7 +781,7 @@ fn saved_function_authoring_types_the_coral_host_root() {
         export default async function report(id: string): Promise<string> {
             try {
                 const issue = await coral.providers.tracker.issues.get({ id });
-                const title: string = await coral.functions.reports.title(issue.data);
+                const title: string = await coral.private.reports.title(issue.data);
                 await coral.emit(title);
                 return title;
             } catch (error) {
@@ -810,14 +811,14 @@ fn saved_function_authoring_types_the_coral_host_root() {
     let misused = compiler
         .prepare_saved_function(
             compilation_deadline(),
-            "export default function misuse(): number { console.table([]); console.log = () => {}; new coral.ToolError(); return coral.missing; }",
+            "export default function misuse(): number { console.table([]); console.log = () => {}; new coral.ToolError(); coral.emit = coral.emit; return 1; }",
         )
         .expect("host root misuse is advisory");
     for (code, name) in [
         (2339, "'table'"),
         (2540, "'log'"),
-        (2673, "ToolError"),
-        (2339, "'missing'"),
+        (2511, "abstract"),
+        (2540, "'emit'"),
     ] {
         assert!(
             misused
@@ -930,8 +931,12 @@ fn tool_paths_are_not_thenables() {
     );
 }
 
-// Catches: a misspelled member such as `coral.emitt` becoming a Tool
-// call that fails only when the Run ends, instead of throwing where it is used.
+// Catches: a Built-in Tool, an Owner's Provider Tool or another member of
+// `coral` that the runtime does not send to the host by its complete Call
+// Path, the old `workspace` root reaching anything but `coral` itself, or
+// `coral` becoming a thenable. A literal member that names no Tool, such as
+// `coral.emitt`, reaches the host here only because Program Admission, which
+// refuses it before a Run exists, is coral-run's.
 #[test]
 fn programs_call_every_call_root_under_coral_by_its_complete_path() {
     let compiler =
@@ -939,16 +944,16 @@ fn programs_call_every_call_root_under_coral_by_its_complete_path() {
     let program = compiler
         .compile(
             compilation_deadline(),
-            "await coral.providers.workspace.create({ id: 1 }); await coral.workspace.addProvider(); \
-             let typo = 'no error'; try { coral.emitt(1); } catch (error) { typo = error.name; } \
+            "await coral.providers.workspace.create({ id: 1 }); await coral.addProvider(); \
+             await coral.workspace.listProviders(); await coral.emitt(1); \
              return [typeof coral.emit, coral.ToolError.name, Object.keys(coral).sort(), \
-                     coral.then, typeof coral.billing, typo];",
+                     coral.then, coral.providers === coral.providers];",
         )
         .expect("compile Call Root calls");
     let host = Arc::new(CapturingToolHost::default());
     let outcome = ProgramExecutor::new(IsolateLimits::default())
         .execute_with_host(&program, host.clone())
-        .expect("invoke both Call Roots");
+        .expect("invoke every Call Root");
     assert_eq!(
         host.calls.lock().expect("calls").as_slice(),
         &[
@@ -956,15 +961,14 @@ fn programs_call_every_call_root_under_coral_by_its_complete_path() {
                 "coral.providers.workspace.create".to_string(),
                 "{\"id\":1}".to_string()
             ),
-            ("coral.workspace.addProvider".to_string(), "{}".to_string()),
+            ("coral.addProvider".to_string(), "{}".to_string()),
+            ("coral.listProviders".to_string(), "{}".to_string()),
+            ("coral.emitt".to_string(), "1".to_string()),
         ]
     );
     assert_eq!(
         outcome.final_value_json(),
-        Some(
-            "[\"function\",\"ToolError\",[\"ToolError\",\"emit\",\"providers\",\"workspace\"],\
-             null,\"undefined\",\"TypeError\"]"
-        )
+        Some("[\"function\",\"ToolError\",[\"ToolError\",\"emit\",\"providers\"],null,true]")
     );
 }
 
@@ -1550,7 +1554,7 @@ fn failure_stacks_name_only_authored_locations() {
     );
     let caller = linked_source(
         &["debug", "caller"],
-        "export default function caller(): never { return coral.functions.debug.failure(); }",
+        "export default function caller(): never { return coral.private.debug.failure(); }",
     );
     let fetch = linked_source(
         &["debug", "fetch"],
@@ -1572,21 +1576,21 @@ fn failure_stacks_name_only_authored_locations() {
             &["at Program:3:"],
         ),
         (
-            "return coral.functions.debug.fail();",
+            "return coral.private.debug.fail();",
             vec![fail],
             "Error: private linked canary\n",
             &[
-                "at Saved Function coral.functions.debug.fail:6:",
+                "at Saved Function coral.private.debug.fail:6:",
                 "at Program:1:",
             ],
         ),
         (
-            "return coral.functions.debug.caller();",
+            "return coral.private.debug.caller();",
             vec![failure, caller],
             "Error: authored dependency canary\n",
             &[
-                "at Saved Function coral.functions.debug.failure:1:",
-                "at Saved Function coral.functions.debug.caller:1:",
+                "at Saved Function coral.private.debug.failure:1:",
+                "at Saved Function coral.private.debug.caller:1:",
                 "at Program:1:",
             ],
         ),
@@ -1599,28 +1603,28 @@ fn failure_stacks_name_only_authored_locations() {
         ),
         // Saved Function source without semicolons keeps its frames.
         (
-            "return coral.functions.debug.asi();",
+            "return coral.private.debug.asi();",
             vec![linked_source(
                 &["debug", "asi"],
                 "export default () => {\n  const reason = 'asi canary'\n  throw new Error(reason)\n}",
             )],
             "Error: asi canary\n",
             &[
-                "at Saved Function coral.functions.debug.asi:3:",
+                "at Saved Function coral.private.debug.asi:3:",
                 "at Program:1:",
             ],
         ),
         // An error frame inside a Saved Function statement with a trailing
         // comma keeps its line.
         (
-            "return coral.functions.debug.comma();",
+            "return coral.private.debug.comma();",
             vec![linked_source(
                 &["debug", "comma"],
                 "export default function () {\n  throw new Error('comma canary', {\n    cause: 1,\n  },)\n}",
             )],
             "Error: comma canary\n",
             &[
-                "at Saved Function coral.functions.debug.comma:2:",
+                "at Saved Function coral.private.debug.comma:2:",
                 "at Program:1:",
             ],
         ),
@@ -1638,11 +1642,11 @@ fn failure_stacks_name_only_authored_locations() {
             &["at Program:3:"],
         ),
         (
-            "return await coral.functions.debug.fetch();",
+            "return await coral.private.debug.fetch();",
             vec![fetch],
             "",
             &[
-                "at Saved Function coral.functions.debug.fetch:2:",
+                "at Saved Function coral.private.debug.fetch:2:",
                 "at Program:1:",
             ],
         ),
@@ -2427,7 +2431,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         // A call inside a Saved Function names that Saved Function's source,
         // including its top-level initialization before the Program body.
         (
-            "\nawait coral.functions.debug.fetch(7);",
+            "\nawait coral.private.debug.fetch(7);",
             vec![helpers],
             vec![
                 ("log", in_saved_function("debug.fetch", 1, 9)),
@@ -2457,7 +2461,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             vec![("log", at(2, 13)), ("log", at(3, 9))],
         ),
         (
-            "coral.functions.debug.mixed();\r\nconsole.log(0);",
+            "coral.private.debug.mixed();\r\nconsole.log(0);",
             vec![linked_source(
                 &["debug", "mixed"],
                 "console.info(1);\rexport default function mixed() {\r\n    console.warn(\"a\u{2029}b\");\r}",
@@ -2472,7 +2476,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         // linker writes after a lone CR, U+2028 or U+2029 adds no line of its own
         // to the authored count.
         (
-            "coral.functions.terminators.lone()",
+            "coral.private.terminators.lone()",
             vec![linked_source(
                 &["terminators", "lone"],
                 "console.info(1)\rexport default (() => {\u{2028}  console.log(2)\u{2029}})\r",
@@ -2483,7 +2487,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             ],
         ),
         (
-            "coral.functions.terminators.clause()",
+            "coral.private.terminators.clause()",
             vec![linked_source(
                 &["terminators", "clause"],
                 "export {}\u{2028}console.info('a\u{2029}b')\u{2029}const run = () => console.log(1)\rexport { run as default }",
@@ -2507,7 +2511,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         ),
         // Calls inside Saved Function source without semicolons keep their lines.
         (
-            "await coral.functions.locations.notify()",
+            "await coral.private.locations.notify()",
             vec![linked_source(
                 &["locations", "notify"],
                 "export default async () => {\n  await coral.providers.locationFixture.lookup({})\n  console.warn('accepted-snapshot-notice')\n  return 1\n}",
@@ -2518,7 +2522,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             ],
         ),
         (
-            "coral.functions.locations.named()",
+            "coral.private.locations.named()",
             vec![linked_source(
                 &["locations", "named"],
                 "const prefix = 'n'\nexport default function named() {\n  console.info(prefix)\n  coral.emit(prefix);;\n}",
@@ -2529,7 +2533,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             ],
         ),
         (
-            "coral.functions.locations.implicit(); coral.functions.locations.guarded(true); coral.functions.locations.boxed()",
+            "coral.private.locations.implicit(); coral.private.locations.guarded(true); coral.private.locations.boxed()",
             vec![
                 linked_source(
                     &["locations", "implicit"],
@@ -2553,7 +2557,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         // A template or regular expression earlier on the line cannot shift a
         // later call's column.
         (
-            "coral.functions.locations.lexical()",
+            "coral.private.locations.lexical()",
             vec![linked_source(
                 &["locations", "lexical"],
                 "type Pair = { a: string, b: number }\nexport default () => {\n  foo(`${1}`,   coral.emit(1))\n  foo(/'/,   coral.emit(2))\n  ;[1].forEach(() => coral.emit(3))\n  console.log('after')\n}\nfunction foo(..._values: unknown[]) {}",
@@ -2566,7 +2570,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             ],
         ),
         (
-            "coral.functions.locations.documented(`${1}`)",
+            "coral.private.locations.documented(`${1}`)",
             vec![linked_source(
                 &["locations", "documented"],
                 "/** Logs one value. */\nexport default function documented(value: string) {\n  console.log(`value ${value}`, /x/g.test(value))\n}",
@@ -2576,7 +2580,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         // A trailing comma later in a Saved Function statement leaves every
         // earlier call in it mapped.
         (
-            "coral.functions.locations.reprinted()",
+            "coral.private.locations.reprinted()",
             vec![linked_source(
                 &["locations", "reprinted"],
                 "export default async function () {\n  console.log('a', {\n    b: 1,\n  },)\n}",
@@ -2585,7 +2589,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         ),
         // Export syntax spread over lines and comments leaves later lines in place.
         (
-            "coral.functions.locations.multiline()",
+            "coral.private.locations.multiline()",
             vec![linked_source(
                 &["locations", "multiline"],
                 "export /* keyword */ default\n  // the function\n  async () => {\n    console.log('multiline')\n  }",
@@ -2593,7 +2597,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             vec![("log", in_saved_function("locations.multiline", 4, 13))],
         ),
         (
-            "coral.functions.locations.generated().next()",
+            "coral.private.locations.generated().next()",
             vec![linked_source(
                 &["locations", "generated"],
                 "export default function* () { console.log('gen'); yield 1 }",
@@ -2602,7 +2606,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         ),
         // A call inside the default expression itself keeps its column.
         (
-            "coral.functions.locations.initialized()",
+            "coral.private.locations.initialized()",
             vec![linked_source(
                 &["locations", "initialized"],
                 "export default (console.log('init'), () => {})",
@@ -2611,7 +2615,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         ),
         // A removed export clause still ends the statement before it.
         (
-            "coral.functions.locations.clause()",
+            "coral.private.locations.clause()",
             vec![linked_source(
                 &["locations", "clause"],
                 "console.info('first')\nexport {}\n(() => console.log('second'))()\nconst clause = () => {}\nexport { clause as default }",
@@ -2622,7 +2626,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             ],
         ),
         (
-            "coral.functions.locations.shebang()",
+            "coral.private.locations.shebang()",
             vec![linked_source(
                 &["locations", "shebang"],
                 "#!/usr/bin/env coral\n'use strict'\nexport default () => console.log('shebang')",
@@ -2632,7 +2636,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         // The private default name cannot collide with an authored binding,
         // even one spelled with an escape.
         (
-            "coral.functions.locations.hygiene()",
+            "coral.private.locations.hygiene()",
             vec![linked_source(
                 &["locations", "hygiene"],
                 "const \\u005f_coralSavedFunctionDefaultExport_1 = 1\nexport default () => console.log(__coralSavedFunctionDefaultExport_1)",
@@ -2640,7 +2644,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             vec![("log", in_saved_function("locations.hygiene", 2, 30))],
         ),
         (
-            "await coral.functions.locations.agen().next()",
+            "await coral.private.locations.agen().next()",
             vec![linked_source(
                 &["locations", "agen"],
                 "export default async function* () { console.log('agen'); yield 1 }",
@@ -2649,7 +2653,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         ),
         // Several export removals on one line keep the rest of the line in place.
         (
-            "coral.functions.locations.removals()",
+            "coral.private.locations.removals()",
             vec![linked_source(
                 &["locations", "removals"],
                 "const one = () => console.log('one'); export {}; export { one as default }; console.info('tail')",
@@ -2660,7 +2664,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             ],
         ),
         (
-            "coral.functions.locations.template()",
+            "coral.private.locations.template()",
             vec![linked_source(
                 &["locations", "template"],
                 "export default () => {\r\n  const s = `\u{1F600}\r\n${1}`; console.log(s)\r\n}",
@@ -2670,7 +2674,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         // Repeated and parallel calls inside a Saved Function keep their own
         // call sites.
         (
-            "await coral.functions.locations.parallel()",
+            "await coral.private.locations.parallel()",
             vec![linked_source(
                 &["locations", "parallel"],
                 "export default async () => {\n  for (const id of [1, 2]) console.log(id)\n  await Promise.all([coral.providers.demo.getItem({}), coral.providers.demo.getItem({})])\n}",
@@ -2685,7 +2689,7 @@ fn host_calls_carry_the_authored_location_of_each_call() {
         // A call before an inline export that needs private source on the same
         // line keeps its UTF-16 column.
         (
-            "coral.functions.locations.inline(); coral.functions.locations.anonymous()",
+            "coral.private.locations.inline(); coral.private.locations.anonymous()",
             vec![
                 linked_source(
                     &["locations", "inline"],
@@ -2876,7 +2880,7 @@ fn private_linker_source_maps_to_no_authored_source() {
         .expect("start compiler")
         .compile_with_saved_functions(
             compilation_deadline(),
-            "coral.functions.a(); coral.functions.b(); coral.functions.c();",
+            "coral.private.a(); coral.private.b(); coral.private.c();",
             &[
                 linked_source(&["a"], "export default (() => 1)"),
                 linked_source(&["b"], "console.info(0); export default function () {}"),
@@ -2958,18 +2962,15 @@ fn source_maps_name_only_authored_sources_and_embed_no_text() {
         with("sources", serde_json::json!(["program.ts"])),
         with(
             "sources",
-            serde_json::json!(["Saved Function coral.functions.a/b"]),
+            serde_json::json!(["Saved Function coral.private.a/b"]),
         ),
         with(
             "sources",
-            serde_json::json!(["Saved Function coral.functions.a\nb"]),
+            serde_json::json!(["Saved Function coral.private.a\nb"]),
         ),
         with(
             "sources",
-            serde_json::json!([format!(
-                "Saved Function coral.functions.{}",
-                "a".repeat(257)
-            )]),
+            serde_json::json!([format!("Saved Function coral.private.{}", "a".repeat(257))]),
         ),
     ] {
         assert!(

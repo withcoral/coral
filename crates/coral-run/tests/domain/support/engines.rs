@@ -534,7 +534,7 @@ impl ProgramEngine for CompileGateEngine {
     }
 }
 
-/// Finds `coral.functions.<path>` references by scanning source text, so Saved
+/// Finds `coral.private.<path>` references by scanning source text, so Saved
 /// Function closure rules run without TypeScript compilation time. A linked
 /// Program returns how many Saved Functions it linked.
 #[derive(Clone, Default)]
@@ -542,7 +542,7 @@ pub(crate) struct ReferenceScanningEngine;
 
 impl ReferenceScanningEngine {
     fn references(source: &str) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
-        const PREFIX: &str = "coral.functions.";
+        const PREFIX: &str = "coral.private.";
         source
             .match_indices(PREFIX)
             .map(|(at, _)| {

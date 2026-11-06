@@ -315,6 +315,25 @@ function globalThisExpressionSegments(node, checker, sourceFile, seen = new Set(
   return undefined;
 }
 
+// The old roots, which Programs still reach until their call sites
+// migrate: `coral.workspace` is `coral` itself, and `coral.functions` is
+// `coral.private`. Every analysis reads segments through this, so each sees
+// only the new roots. `coral.workspace` stays as written alone, before a
+// computed segment, or before `private` or `functions`: the runtime sends
+// each of those to the host as a Tool call, so none reaches a Private Tool.
+function canonicalCoralSegments(segments) {
+  if (
+    segments[0] === 'workspace' &&
+    typeof segments[1] === 'string' &&
+    segments[1] !== 'private' &&
+    segments[1] !== 'functions'
+  ) {
+    return segments.slice(1);
+  }
+  if (segments[0] === 'functions') return ['private', ...segments.slice(1)];
+  return segments;
+}
+
 function coralAccess(node, checker, sourceFile) {
   const segments = [];
   let current = unwrapTransparentExpression(node);
@@ -328,15 +347,18 @@ function coralAccess(node, checker, sourceFile) {
   }
   if (!ts.isIdentifier(current)) return undefined;
   if (isHostCoralIdentifier(current, checker, sourceFile)) {
-    return { root: 'lexical', segments };
+    return { root: 'lexical', segments: canonicalCoralSegments(segments) };
   }
   const globalSegments = globalThisExpressionSegments(current, checker, sourceFile);
   if (globalSegments !== undefined) {
     const complete = [...globalSegments, ...segments];
     if (complete[0] === 'coral') {
-      return { root: 'global', segments: complete.slice(1) };
+      return { root: 'global', segments: canonicalCoralSegments(complete.slice(1)) };
     }
-    if (complete[0] === undefined && complete.includes('functions')) {
+    if (
+      complete[0] === undefined &&
+      (complete.includes('private') || complete.includes('functions'))
+    ) {
       return { root: 'computed_global', segments: complete };
     }
   }
@@ -347,7 +369,7 @@ function propertyPath(node, checker, sourceFile) {
   const access = coralAccess(node, checker, sourceFile);
   if (
     access?.root === 'lexical' &&
-    access.segments[0] === 'functions' &&
+    access.segments[0] === 'private' &&
     access.segments.every((segment) => segment !== undefined)
   ) {
     return access.segments.slice(1);
@@ -437,16 +459,16 @@ function savedFunctionPathAnalysis(sourceFile, program, authoredMappings) {
       const access = coralAccess(node, checker, sourceFile);
       if (
         (access?.root === 'global' &&
-          (access.segments[0] === 'functions' ||
+          (access.segments[0] === 'private' ||
             (access.segments.length > 0 && access.segments[0] === undefined))) ||
         access?.root === 'computed_global'
       ) {
-        return reject('Saved Function paths must be directly named through coral.functions', node);
+        return reject('Saved Function paths must be directly named through coral.private', node);
       }
       if (
         ts.isElementAccessExpression(node) &&
         access?.root === 'lexical' &&
-        (access.segments[0] === 'functions' || access.segments[0] === undefined)
+        (access.segments[0] === 'private' || access.segments[0] === undefined)
       ) {
         return reject('Saved Function paths must be directly named without computed access', node);
       }
@@ -551,19 +573,30 @@ function analyzeSavedFunctionDependencies(source, fileName, targetName) {
   return savedFunctionDependencyAnalysis(sourceFile, program);
 }
 
+// The members of `coral` that name no Tool: the Private Tools' root, the
+// Program host's own members, and an old root that canonical segments still
+// hold because a computed segment or nothing follows it.
+const NON_TOOL_MEMBERS = new Set(['private', 'emit', 'ToolError', 'workspace', 'functions']);
+
 // The number of segments under `coral` that name a Tool's Call Root:
-// `providers.<namespace>` for an Owner's Provider, `workspace` for the
-// Built-in Provider. Undefined for any other root.
+// `providers.<namespace>` for an Owner's Provider, none for the Built-in
+// Provider, whose Tools sit on `coral` itself. Undefined for a member of
+// `coral` that names no Tool.
 function toolCallRootLength(segments) {
-  if (segments[0] === 'providers') return 2;
-  if (segments[0] === 'workspace') return 1;
-  return undefined;
+  if (NON_TOOL_MEMBERS.has(segments[0])) return undefined;
+  return segments[0] === 'providers' ? 2 : 0;
 }
 
-// Each maximal literal `coral.providers` or `coral.workspace` chain, relative
-// to `coral` and cut before its first computed segment, where it starts, and
-// whether it is called. A cut chain is not called: its computed segment may
-// name the Tool. Aliased roots are not followed.
+// The fewest segments a chain under a Call Root of `rootLength` segments
+// has: a Built-in Tool, or an Owner's Provider namespace.
+function shortestToolChain(rootLength) {
+  return Math.max(rootLength, 1);
+}
+
+// Each maximal literal Tool chain, relative to `coral` and cut before its
+// first computed segment, where it starts, and whether it is called. A cut
+// chain is not called: its computed segment may name the Tool. Aliased roots
+// are not followed.
 function toolReferenceChains(sourceFile, program, authoredMappings) {
   const checker = program.getTypeChecker();
   const chains = [];
@@ -573,12 +606,14 @@ function toolReferenceChains(sourceFile, program, authoredMappings) {
       !parentContinuesCoralPath(node)
     ) {
       const access = coralAccess(node, checker, sourceFile);
-      if (access?.root === 'lexical' && toolCallRootLength(access.segments) !== undefined) {
+      const rootLength =
+        access?.root === 'lexical' ? toolCallRootLength(access.segments) : undefined;
+      if (rootLength !== undefined) {
         const computed = access.segments.indexOf(undefined);
         const segments = access.segments.slice(0, computed === -1 ? undefined : computed);
         const called =
           computed === -1 && ts.isCallExpression(node.parent) && node.parent.expression === node;
-        if (segments.length > 1) {
+        if (segments.length >= shortestToolChain(rootLength)) {
           chains.push({
             segments,
             start: node.getStart(sourceFile),
@@ -599,7 +634,7 @@ function candidateToolPaths(chains) {
   const paths = new Set();
   for (const { segments } of chains) {
     const rootLength = toolCallRootLength(segments);
-    for (let length = 2; length <= segments.length; length += 1) {
+    for (let length = 1; length <= segments.length; length += 1) {
       if (!ts.isIdentifierText(segments[length - 1], ts.ScriptTarget.ES2025)) break;
       if (length > rootLength) {
         paths.add(`coral.${segments.slice(0, length).join('.')}`);

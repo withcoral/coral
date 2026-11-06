@@ -45,7 +45,7 @@
       "properties": {
         "call_path": {
           "type": "string",
-          "description": "`coral.providers.<namespace>.…` for a provider tool, `coral.workspace.…` for one of Coral's own, `coral.functions.…` for a Saved Function."
+          "description": "`coral.providers.<namespace>.…` for a provider tool, `coral.…` for one of Coral's own, `coral.private.…` for a Saved Function."
         },
         "signature_line": {
           "type": "string",

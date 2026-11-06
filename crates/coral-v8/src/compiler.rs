@@ -170,7 +170,7 @@ impl ProgramCompiler {
     /// JavaScript is valid input because it is valid TypeScript source. The
     /// official compiler applies syntax and Coral capability checks here;
     /// ordinary semantic diagnostics are not an execution gate. Each literal
-    /// `coral.workspace.saveFunction` call carries the module of the function
+    /// `coral.saveFunction` call carries the module of the function
     /// it names: that top-level declaration and every top-level declaration
     /// it reaches, as written. The retained source map contains authored
     /// locations only.
@@ -189,7 +189,7 @@ impl ProgramCompiler {
 
     /// Emits and validates the self-contained declaration for one Saved Function.
     ///
-    /// `coral.providers`, `coral.workspace` and `coral.functions` are `any`.
+    /// `coral.providers`, the Built-in Tools on `coral` and `coral.private` are `any`.
     /// Strict semantic diagnostics are returned as advisory authoring evidence.
     /// Syntax, imports, invalid export shape, declaration-emission failure, and
     /// unresolved names in the emitted public declaration are blocking.
@@ -242,7 +242,7 @@ impl ProgramCompiler {
     ///
     /// # Errors
     ///
-    /// Rejects computed or aliased `coral.functions` access and malformed
+    /// Rejects computed or aliased `coral.private` access and malformed
     /// module source.
     pub fn saved_function_call_paths(
         &self,
@@ -260,7 +260,7 @@ impl ProgramCompiler {
     ///
     /// # Errors
     ///
-    /// Rejects computed or aliased `coral.functions` access and malformed
+    /// Rejects computed or aliased `coral.private` access and malformed
     /// wrapper escapes.
     pub fn program_call_paths(
         &self,
@@ -302,7 +302,7 @@ impl ProgramCompiler {
         })
     }
 
-    /// Finds directly named `coral.functions` paths in one Program body.
+    /// Finds directly named `coral.private` paths in one Program body.
     ///
     /// # Errors
     ///
@@ -318,7 +318,7 @@ impl ProgramCompiler {
         })
     }
 
-    /// Finds directly named `coral.functions` paths in one Saved Function module.
+    /// Finds directly named `coral.private` paths in one Saved Function module.
     ///
     /// # Errors
     ///
@@ -338,7 +338,7 @@ impl ProgramCompiler {
     ///
     /// Linked modules initialize once in the supplied dependency order before
     /// the submitted body. Their callables are installed under immutable
-    /// `coral.functions` paths inside the package. Saves in the body and in
+    /// `coral.private` paths inside the package. Saves in the body and in
     /// each module carry their modules as [`Self::compile`] describes, each
     /// from its own top level.
     ///

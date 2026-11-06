@@ -198,7 +198,7 @@ impl ProgramEngine for V8ProgramEngine {
         path: &SavedFunctionPath,
         source: &str,
     ) -> Result<Vec<SavedFunctionReference>, CompileFailure> {
-        let source_name = format!("Saved Function coral.functions.{}", path.as_str());
+        let source_name = format!("Saved Function coral.private.{}", path.as_str());
         let references = self
             .compiler
             .dependency_references(time_left(deadline), source)

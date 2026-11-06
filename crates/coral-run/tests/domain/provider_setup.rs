@@ -1,10 +1,10 @@
-//! `coral.workspace.addProvider` prepares and configures a Provider Setup. The
+//! `coral.addProvider` prepares and configures a Provider Setup. The
 //! call returns the Reef page where a person previews and publishes it, and
 //! never waits for that person.
-//! `coral.workspace.listProviders` lists the Providers a Program can check first.
-//! `coral.workspace.getProvider` reads one Provider's Provider Configuration.
-//! `coral.workspace.getPolicy` reads one Provider's exact Tool rules.
-//! `coral.workspace.updatePolicy` sets them.
+//! `coral.listProviders` lists the Providers a Program can check first.
+//! `coral.getProvider` reads one Provider's Provider Configuration.
+//! `coral.getPolicy` reads one Provider's exact Tool rules.
+//! `coral.updatePolicy` sets them.
 use super::*;
 use coral_provider::{ProviderSetupId, ProviderSetupState};
 
@@ -19,7 +19,7 @@ fn add_provider(arguments: &serde_json::Value, caught: &str) -> RunSubmission {
     submission(
         &"
         try {
-            return await coral.workspace.addProvider(ARGUMENTS);
+            return await coral.addProvider(ARGUMENTS);
         } catch (error) {
             if (!(error instanceof coral.ToolError)) throw error;
             return CAUGHT;
@@ -113,8 +113,7 @@ impl AdminScope {
     }
 
     async fn set_access(&self, state: ToolAccessState) {
-        self.set_access_to("coral.workspace.addProvider", state)
-            .await;
+        self.set_access_to("coral.addProvider", state).await;
     }
 
     /// Sets the Tool Access State of the Tool at `call_path`.
@@ -426,7 +425,7 @@ impl AdminScope {
             .await
             .unwrap()
             .into_iter()
-            .find(|provider| provider.call_root().as_str() == "coral.workspace")
+            .find(|provider| provider.call_root().as_str() == "coral")
             .expect("the Workspace has its Built-in Provider");
         self.fixture
             .providers
@@ -818,7 +817,7 @@ async fn a_tool_this_version_does_not_perform_fails_before_approval() {
             submission(
                 "
                 try {
-                    return await coral.workspace.listThings({});
+                    return await coral.listThings({});
                 } catch (error) {
                     if (!(error instanceof coral.ToolError)) throw error;
                     return error.code;
@@ -1380,8 +1379,8 @@ async fn members_and_agents_list_providers_and_get_policy_but_reach_no_owner_too
                 serde_json::json!({
                     "code": "tool_not_found",
                     "message": format!(
-                        "coral.workspace.{tool} names no Tool that you can call. Find one with \
-                         coral.workspace.search."
+                        "coral.{tool} names no Tool that you can call. Find one with \
+                         coral.search."
                     ),
                 }),
                 "{tool}"
@@ -1402,7 +1401,7 @@ async fn members_and_agents_list_providers_and_get_policy_but_reach_no_owner_too
         assert_eq!(
             call_roots,
             [
-                Some(serde_json::json!("coral.workspace")),
+                Some(serde_json::json!("coral")),
                 Some(serde_json::json!("coral.providers.weather"))
             ],
             "{principal:?}"
@@ -1487,7 +1486,7 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
 /// JavaScript argument list, and returns its Tool Result or the failure
 /// it catches.
 pub(super) fn workspace_call(tool: &str, arguments: &str) -> RunSubmission {
-    calling(&format!("coral.workspace.{tool}"), arguments)
+    calling(&format!("coral.{tool}"), arguments)
 }
 
 /// [`workspace_call`] through a path the Program builds as it runs, which
@@ -1542,7 +1541,7 @@ async fn list_providers_lists_every_provider_without_approval() {
         "data": {
             "providers": [
                 {
-                    "callRoot": "coral.workspace",
+                    "callRoot": "coral",
                     "namespace": null,
                     "displayName": "Coral",
                     "state": "active",
@@ -1757,7 +1756,7 @@ async fn update_policy_sets_the_sent_paths_once_an_owner_approves() {
     scope.publish_weather().await;
     let before = scope.policy_events().await;
     assert_eq!(
-        scope.access("coral.workspace.updatePolicy").await,
+        scope.access("coral.updatePolicy").await,
         (ToolAccessState::ApprovalRequired, false),
         "updatePolicy waits for approval by default"
     );
@@ -1839,7 +1838,7 @@ async fn update_policy_changes_nothing_when_a_target_is_missing() {
     let scope = AdminScope::new("user:update-policy-missing").await;
     scope.publish_weather().await;
     scope
-        .set_access_to("coral.workspace.updatePolicy", ToolAccessState::Enabled)
+        .set_access_to("coral.updatePolicy", ToolAccessState::Enabled)
         .await;
     let before = scope.policy_events().await;
     for (arguments, expected) in [
@@ -1876,7 +1875,7 @@ async fn update_policy_changes_nothing_when_a_target_is_missing() {
     }
     assert_eq!(scope.policy_events().await, before);
     assert_eq!(
-        scope.access("coral.workspace.updatePolicy").await,
+        scope.access("coral.updatePolicy").await,
         (ToolAccessState::Enabled, true)
     );
 }

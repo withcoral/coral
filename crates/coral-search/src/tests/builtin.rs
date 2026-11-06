@@ -53,7 +53,7 @@ async fn search_and_describe_show_each_builtin_tool_to_the_principals_it_reaches
             ("search", "search tools"),
         ] {
             let reaches = reached.contains(&key);
-            let call_path = format!("coral.workspace.{key}");
+            let call_path = format!("coral.{key}");
             for request in [
                 SearchRequest::list(),
                 SearchRequest::query(SearchQuery::parse(terms).unwrap()),
@@ -90,7 +90,7 @@ async fn search_and_describe_show_each_builtin_tool_to_the_principals_it_reaches
     }
 }
 
-// Catches: coral.workspace.search's hit claiming to be complete while its
+// Catches: coral.search's hit claiming to be complete while its
 // line shows only the query overload and hides the paths modes.
 #[tokio::test]
 async fn the_search_tool_hit_is_not_complete_while_its_line_shows_one_overload() {
@@ -121,7 +121,7 @@ async fn the_search_tool_hit_is_not_complete_while_its_line_shows_one_overload()
     let hit = page
         .hits()
         .iter()
-        .find(|hit| hit.call_path().as_str() == "coral.workspace.search")
+        .find(|hit| hit.call_path().as_str() == "coral.search")
         .expect("search hit");
 
     assert!(

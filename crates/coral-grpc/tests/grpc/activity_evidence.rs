@@ -548,7 +548,7 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
         .await
         .unwrap();
     let description = commands
-        .describe(&call, "coral.functions.answer", &["Answer".to_string()])
+        .describe(&call, "coral.private.answer", &["Answer".to_string()])
         .await
         .unwrap();
     commands
@@ -633,7 +633,7 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
                 discovery.context,
                 Some(wire::activity_discovery::Context::Describe(
                     wire::ActivityDescribeContext {
-                        call_path: "coral.functions.answer".into(),
+                        call_path: "coral.private.answer".into(),
                         types: vec!["Answer".into()],
                     }
                 ))
@@ -1603,7 +1603,7 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
         .unwrap();
     let run = start(
         &f,
-        "console.warn(\"w\");\nawait coral.emit({ step: 1 });\nawait coral.functions.report.forecast(\"Oslo\");\nawait coral.providers.evidence.read({ body: {} });",
+        "console.warn(\"w\");\nawait coral.emit({ step: 1 });\nawait coral.private.report.forecast(\"Oslo\");\nawait coral.providers.evidence.read({ body: {} });",
     )
     .await;
     let detail = terminal(&f, &run).await;

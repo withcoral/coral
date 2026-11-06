@@ -93,7 +93,7 @@ async fn creating_a_workspace_creates_its_builtin_provider_with_the_creator_as_a
         )
         .await
         .unwrap();
-    assert_eq!(provider.call_root().as_str(), "coral.workspace");
+    assert_eq!(provider.call_root().as_str(), "coral");
 
     // The commit notified search of every Built-in Tool; no reconcile pass ran.
     let catalog = f
@@ -112,8 +112,8 @@ async fn creating_a_workspace_creates_its_builtin_provider_with_the_creator_as_a
         .iter()
         .map(|tool| {
             (
-                format!("coral.workspace.{}", tool.key.as_str()),
-                "workspace Coral".to_string(),
+                format!("coral.{}", tool.key.as_str()),
+                "coral Coral".to_string(),
             )
         })
         .collect::<Vec<_>>();

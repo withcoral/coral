@@ -1,4 +1,4 @@
-//! Performs `coral.workspace.search`: Universal Search's one discovery
+//! Performs `coral.search`: Universal Search's one discovery
 //! operation as the invoking Principal, and the only way an agent discovers.
 //! The search is this Invocation of this Run, recorded like any other, and
 //! nothing else.
@@ -116,6 +116,7 @@ fn value_reason(field: &str) -> String {
             "pass keywords that are not blank, with no null character, in at most {} UTF-8 bytes",
             coral_search::SEARCH_QUERY_MAX_BYTES
         ),
+        "provider" => "pass a namespace from coral.providers.<namespace>, or coral".to_owned(),
         _ => format!("pass 1 to {}", coral_search::SEARCH_RESULT_LIMIT_MAX),
     }
 }

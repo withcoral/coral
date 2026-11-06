@@ -405,7 +405,7 @@ impl RunModule {
         self
     }
 
-    /// Lets `coral.workspace.updateProvider` rename a Provider, through the
+    /// Lets `coral.updateProvider` rename a Provider, through the
     /// workflow Reef renames with. Without it, such a call fails with
     /// `tool_unavailable`.
     #[must_use]
@@ -423,7 +423,7 @@ impl RunModule {
         &self.instance
     }
 
-    /// Lets `coral.workspace.saveFunction` and `deleteFunction` author the
+    /// Lets `coral.saveFunction` and `deleteFunction` author the
     /// invoking Principal's Saved Functions. Without it, such a call fails
     /// with `tool_unavailable`.
     #[must_use]

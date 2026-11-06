@@ -67,6 +67,21 @@ pub use update_provider::{
 
 /// Safe display name of the Built-in Provider.
 pub const BUILTIN_PROVIDER_DISPLAY_NAME: &str = "Coral";
+
+/// The members of a Program's `coral` that are not Built-in Tools: the other
+/// Call Roots, `emit` and `ToolError`, and the old roots `workspace` and
+/// `functions` that Programs still reach until their call sites migrate. No
+/// Built-in Tool takes one of these keys, so the Built-in Call Root `coral`
+/// never owns a path under another root.
+pub const NON_TOOL_ROOT_MEMBERS: [&str; 7] = [
+    "providers",
+    "private",
+    "shared",
+    "emit",
+    "ToolError",
+    "workspace",
+    "functions",
+];
 /// Starts the catalog identity a built-in Generation pins as its input.
 const CATALOG_IDENTITY_PREFIX: &str = "coral-admin-catalog:";
 pub(crate) const MATERIALIZER_VERSION: &str = "coral-admin-catalog-v1";

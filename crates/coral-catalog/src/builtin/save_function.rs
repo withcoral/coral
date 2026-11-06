@@ -1,4 +1,4 @@
-//! `coral.workspace.saveFunction`: the schemas a Program is typed from, the
+//! `coral.saveFunction`: the schemas a Program is typed from, the
 //! arguments Coral reads against the input schema, and the result it writes
 //! against the output schema. It creates or replaces one of the caller's own
 //! Saved Functions; coral-functions checks the path, description and source.
@@ -77,7 +77,7 @@ pub(super) const SOURCE_TYPESCRIPT_TYPE: &str = "(...args: never[]) => unknown";
 /// What to correct when no extracted module reached the Tool: a call
 /// admission could not read, such as one through a computed path, has none.
 const SOURCE_REASON: &str = "pass a function declared at the top level, through a literal \
-                             coral.workspace.saveFunction call";
+                             coral.saveFunction call";
 
 fn source_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({
@@ -99,7 +99,7 @@ pub struct SaveFunctionArguments {
 }
 
 impl SaveFunctionArguments {
-    /// The path relative to `coral.functions`.
+    /// The path relative to `coral.private`.
     #[must_use]
     pub fn path(&self) -> &str {
         &self.path
@@ -166,7 +166,7 @@ pub(super) fn valid_arguments() -> Vec<Value> {
 pub struct SaveFunctionResult {
     /// The complete Call Path.
     #[schemars(description = "The complete Call Path a later Program calls, such as \
-                       coral.functions.github.pulls.listStale.")]
+                       coral.private.github.pulls.listStale.")]
     pub call_path: String,
     /// The saved description.
     #[schemars(description = "The description search shows.")]

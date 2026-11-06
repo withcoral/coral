@@ -1,4 +1,4 @@
-//! Performs `coral.workspace.getPolicy`.
+//! Performs `coral.getPolicy`.
 
 use coral_catalog::{GetPolicyArguments, GetPolicyResult};
 use coral_provider::access::ProviderNamespace;

@@ -210,7 +210,7 @@ export const BuiltinProvider: Story = {
       ...provider,
       displayName: 'Coral',
       namespace: '',
-      callRoot: 'coral.workspace',
+      callRoot: 'coral',
       builtin: true,
       account: 'none',
     },

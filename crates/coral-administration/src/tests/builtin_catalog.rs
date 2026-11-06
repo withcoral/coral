@@ -10,7 +10,7 @@ use coral_workspace::{
     WorkspaceModule,
 };
 
-const ADDED: &str = "coral.workspace.listThings";
+const ADDED: &str = "coral.listThings";
 
 /// Catalog B: this Coral version's Tools plus a read-only one it does
 /// not perform, as a later Coral version could define.
@@ -84,7 +84,7 @@ impl Fixture {
             .await
             .unwrap()
             .into_iter()
-            .find(|provider| provider.call_root().as_str() == "coral.workspace")
+            .find(|provider| provider.call_root().as_str() == "coral")
             .expect("the Workspace has its Built-in Provider")
     }
 
@@ -177,7 +177,7 @@ async fn an_install_makes_the_builtin_tools_searchable() {
             .unwrap()
             .hits()
             .iter()
-            .any(|hit| hit.call_path().as_str() == "coral.workspace.addProvider")
+            .any(|hit| hit.call_path().as_str() == "coral.addProvider")
     };
     fixture.index.settled().await;
     assert!(!finds_add_provider().await);

@@ -13,7 +13,7 @@
 //! # Interface
 //!
 //! - [`UniversalSearchModule::discover`] is the one discovery operation, which
-//!   the Built-in Tool `coral.workspace.search` reaches, each request in one
+//!   the Built-in Tool `coral.search` reaches, each request in one
 //!   read snapshot. A query runs one ranked statement per Search Entity kind,
 //!   one retriever each, and fuses their windows by position, strong matches
 //!   first, into bounded pages of Search Hits with one status per retriever.
@@ -26,7 +26,7 @@
 //!   [`UniversalSearchModule::search`] and [`UniversalSearchModule::describe`]
 //!   are its query mode and its one-path mode.
 //! - [`projection`] turns what discovery found into the result types
-//!   coral-catalog declares for `coral.workspace.search`, the shape the
+//!   coral-catalog declares for `coral.search`, the shape the
 //!   `search` and `describe` records in Task history retain.
 //! - [`UniversalSearchModule::searchable_providers`] lists the namespaces a
 //!   search's filter accepts from the caller, each with its display name. A

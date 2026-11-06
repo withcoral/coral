@@ -17,6 +17,8 @@
   const create = Object.create;
   const keys = Object.keys;
   const isArray = Array.isArray;
+  const hasOwn = Object.hasOwn;
+  const NativeProxy = Proxy;
 
   class ToolError extends NativeError {
     // oxlint-disable-next-line constructor-super -- Programs must not construct a ToolError.
@@ -28,7 +30,7 @@
   Object.freeze(ToolError.prototype);
   Object.freeze(ToolError);
 
-  // A literal `coral.workspace.saveFunction` call passes its source in a
+  // A literal `coral.saveFunction` call passes its source in a
   // carrier that admission writes and the compiled wrapper takes before any
   // authored code runs. A carrier has no prototype, so no Program reaches
   // this class, and a private field marks it, so no Program forges one.
@@ -53,10 +55,10 @@
     configurable: true,
   });
 
-  // The arguments of `coral.workspace.saveFunction` as the Tool reads them:
-  // `source` only when a carrier holds it, so no authored value reaches the
-  // Tool as a source. Undefined unless the input is an object.
-  const SAVE_FUNCTION_PATH = 'coral.workspace.saveFunction';
+  // The arguments of `coral.saveFunction` as the Tool reads them: `source`
+  // only when a carrier holds it, so no authored value reaches the Tool as a
+  // source. Undefined unless the input is an object.
+  const SAVE_FUNCTION_PATH = 'coral.saveFunction';
   const saveFunctionArguments = (input) => {
     if (typeof input !== 'object' || input === null || isArray(input)) return undefined;
     const encoded = create(null);
@@ -70,7 +72,7 @@
   };
 
   const callablePath = (path) =>
-    new Proxy(function coralToolPath() {}, {
+    new NativeProxy(function coralToolPath() {}, {
       get(_target, property) {
         if (typeof property !== 'string' || property === 'then') {
           return undefined;
@@ -139,13 +141,22 @@
     configurable: false,
   });
 
-  // `providers` and `workspace` start the two kinds of Provider Call Root; the
-  // host resolves the Provider from the complete Call Path. Any other member
-  // is undefined, so a misspelled one throws where the Program uses it.
-  const coral = Object.create(null);
-  Object.defineProperties(coral, {
+  // The Program host's own members. Every other string member is a Call
+  // Path under `coral`: a Built-in Tool, such as `coral.search`, or another
+  // root, such as `coral.providers`. The host resolves the Tool from the
+  // complete Call Path, so a misspelled one fails as `tool_not_found` with
+  // the nearest Call Paths. `workspace` is the old name of `coral` itself,
+  // so its calls reach the Built-in Tools at their new Call Paths.
+  const members = create(null);
+  Object.defineProperties(members, {
     ToolError: {
       value: ToolError,
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    },
+    emit: {
+      value: emit,
       enumerable: true,
       writable: false,
       configurable: false,
@@ -157,19 +168,20 @@
       configurable: false,
     },
     workspace: {
-      value: callablePath('coral.workspace'),
-      enumerable: true,
-      writable: false,
-      configurable: false,
-    },
-    emit: {
-      value: emit,
-      enumerable: true,
+      value: callablePath('coral'),
+      enumerable: false,
       writable: false,
       configurable: false,
     },
   });
-  Object.preventExtensions(coral);
+  Object.preventExtensions(members);
+  const coral = new NativeProxy(members, {
+    get(target, property) {
+      if (hasOwn(target, property)) return target[property];
+      if (typeof property !== 'string' || property === 'then') return undefined;
+      return callablePath(`coral.${property}`);
+    },
+  });
   Object.defineProperty(globalThis, 'coral', {
     value: coral,
     enumerable: true,

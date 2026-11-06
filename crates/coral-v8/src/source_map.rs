@@ -6,7 +6,7 @@ use crate::Error;
 const COMPILER_SOURCE_NAME: &str = "program.ts";
 const EMITTED_FILE_NAME: &str = "program.js";
 const PROGRAM_SOURCE_NAME: &str = "Program";
-const SAVED_FUNCTION_SOURCE_PREFIX: &str = "Saved Function coral.functions.";
+const SAVED_FUNCTION_SOURCE_PREFIX: &str = "Saved Function coral.private.";
 // Keep one extra frame so the error representation can report truncation.
 const RUNTIME_STACK_MAX_FRAMES: usize = 17;
 

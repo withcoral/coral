@@ -1,4 +1,4 @@
-//! Performs `coral.workspace.updatePolicy`.
+//! Performs `coral.updatePolicy`.
 
 use std::collections::BTreeMap;
 

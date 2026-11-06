@@ -106,33 +106,37 @@ it('maps the topmost Program frame to the accepted program document', () => {
   })
 })
 
-it('maps a Saved Function frame to that linked function, by the path the Program called it with', () => {
-  const location = sourceLocationFor(
-    failed(
-      { source: 'Saved Function coral.functions.billing.calculate', line: 1, column: 8 },
-      {
-        linkedFunctions: [
-          {
-            savedFunction: 'functions/abc',
-            path: 'billing.calculate',
-            source: 'export default () => 1',
-          },
-        ],
-      },
-    ),
-  )
-  expect(location).toEqual({
-    documentId: 'saved-function:functions/abc',
-    highlight: { startLine: 1, endLine: 1 },
-  })
-})
+// A retained Run keeps the frame sources it recorded under the old root.
+it.each(['coral.private', 'coral.functions'])(
+  'maps a Saved Function frame under %s to that linked function, by the path the Program called it with',
+  (root) => {
+    const location = sourceLocationFor(
+      failed(
+        { source: `Saved Function ${root}.billing.calculate`, line: 1, column: 8 },
+        {
+          linkedFunctions: [
+            {
+              savedFunction: 'functions/abc',
+              path: 'billing.calculate',
+              source: 'export default () => 1',
+            },
+          ],
+        },
+      ),
+    )
+    expect(location).toEqual({
+      documentId: 'saved-function:functions/abc',
+      highlight: { startLine: 1, endLine: 1 },
+    })
+  },
+)
 
 it('never guesses a document for an unrecognized frame source', () => {
   // Names a linked function's prefix, but no linked function has this path: Coral
   // retained no matching source, so this must not fall back to the accepted program.
   const location = sourceLocationFor(
     failed(
-      { source: 'Saved Function coral.functions.billing.calculate', line: 1, column: 1 },
+      { source: 'Saved Function coral.private.billing.calculate', line: 1, column: 1 },
       { linkedFunctions: [] },
     ),
   )

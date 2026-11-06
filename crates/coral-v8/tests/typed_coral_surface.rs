@@ -1,4 +1,4 @@
-//! Typing `coral.providers`, `coral.workspace` and `coral.functions` from
+//! Typing `coral.providers`, the Built-in Tools on `coral` and `coral.private` from
 //! supplied declarations.
 
 use coral_telemetry as _;
@@ -66,7 +66,7 @@ fn tools() -> Vec<CallableDeclaration> {
         tool("providers.tree.get", TREE_GET),
         tool("providers.notion.search", NOTION_SEARCH),
         tool("providers.exported.get", EXPORTED_GET),
-        tool("workspace.listProviders", LIST_PROVIDERS),
+        tool("listProviders", LIST_PROVIDERS),
     ]
 }
 
@@ -115,8 +115,8 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
         ),
         (
             "a wrong Saved Function argument",
-            "export default function hot() {\n  return coral.functions.weather.forecast(42).temperatureC > 30;\n}",
-            &[(2345, Some(2), Some(43))],
+            "export default function hot() {\n  return coral.private.weather.forecast(42).temperatureC > 30;\n}",
+            &[(2345, Some(2), Some(41))],
         ),
         (
             "a reserved-word Tool segment",
@@ -135,12 +135,12 @@ fn saved_function_diagnostics_check_calls_against_declarations() {
         ),
         (
             "a wrong Built-in Tool input",
-            "export default async function namespaces() {\n  const r = await coral.workspace.listProviders({ limit: \"all\" });\n  return r.providers.map((p) => p.callRoot);\n}",
-            &[(2322, Some(2), Some(51))],
+            "export default async function namespaces() {\n  const r = await coral.listProviders({ limit: \"all\" });\n  return r.providers.map((p) => p.callRoot);\n}",
+            &[(2322, Some(2), Some(41))],
         ),
         (
             "a Built-in Tool that does not exist",
-            "export default async function wipe() {\n  return coral.workspace.deleteEverything();\n}",
+            "export default async function wipe() {\n  return coral.deleteEverything();\n}",
             &[(UNKNOWN_TOOL, Some(2), Some(10))],
         ),
         (
@@ -186,10 +186,7 @@ fn unknown_tool_diagnostic_names_the_call_path_only() {
         ("beside a resolved sibling", tools()),
         ("alone in its root", Vec::new()),
     ] {
-        for call_path in [
-            "coral.providers.github.repos.gett",
-            "coral.workspace.listProviderz",
-        ] {
+        for call_path in ["coral.providers.github.repos.gett", "coral.listProviderz"] {
             let compilation = prepare(
                 &compiler,
                 &format!("export default async function f() {{\n  return {call_path}();\n}}"),
@@ -226,7 +223,7 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
         await coral.providers.github.repos[name]({});\n\
         const repos = coral.providers.github.repos;\n\
         await repos.gett({});\n\
-        await coral.workspace.deleteEverything();\n\
+        await coral.deleteEverything();\n\
         await coral.providers.notion.retrievePage({ page_id: \"q\" });\n\
         await coral.providers.github.repos({});\n\
         return [page, repo];";
@@ -236,11 +233,11 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
     assert_eq!(
         named.tools().call_paths(),
         [
+            "coral.deleteEverything",
             "coral.providers.github.repos",
             "coral.providers.github.repos.get",
             "coral.providers.github.repos.get.call",
             "coral.providers.notion.retrievePage",
-            "coral.workspace.deleteEverything",
         ]
     );
     let callable = ["coral.providers.github.repos.get".to_owned()];
@@ -254,7 +251,7 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
             .collect::<Vec<_>>(),
         [
             ("coral.providers.notion.retrievePage", 1, 20),
-            ("coral.workspace.deleteEverything", 8, 7),
+            ("coral.deleteEverything", 8, 7),
             ("coral.providers.notion.retrievePage", 9, 7),
             ("coral.providers.github.repos", 10, 7),
         ]
@@ -268,7 +265,7 @@ fn a_program_body_names_each_called_chain_that_names_no_callable_tool() {
                 &[
                     "coral.providers.github.repos.get".to_owned(),
                     "coral.providers.notion.retrievePage".to_owned(),
-                    "coral.workspace.deleteEverything".to_owned(),
+                    "coral.deleteEverything".to_owned(),
                 ],
             )
             .expect("check the called chains")
@@ -392,25 +389,28 @@ fn call_path_analysis_names_every_candidate_tool_call_path() {
     let named = compiler
         .saved_function_call_paths(
             deadline(),
-            "export default async function f() {\n  const a = await coral.providers.github.repos.get.call(null, {});\n  const b = coral.providers[\"tree\"].get;\n  const c = coral.providers.weird[\"not-an-identifier\"].x;\n  const d = await coral.workspace.listProviders();\n  return [a, b, c, d, coral.providers, coral.workspace, coral.functions.weather.forecast];\n}",
+            "export default async function f() {\n  const a = await coral.providers.github.repos.get.call(null, {});\n  const b = coral.providers[\"tree\"].get;\n  const c = coral.providers.weird[\"not-an-identifier\"].x;\n  const d = await coral.listProviders();\n  const e = await coral.workspace.search({});\n  return [a, b, c, d, e, coral.providers, coral.workspace, coral.workspace.private.hidden, coral.private.weather.forecast, coral.functions.weather.daily];\n}",
         )
         .expect("analyze Saved Function");
     assert_eq!(
         named.tools().call_paths(),
         [
+            "coral.listProviders",
             "coral.providers.github.repos",
             "coral.providers.github.repos.get",
             "coral.providers.github.repos.get.call",
             "coral.providers.tree.get",
-            "coral.workspace.listProviders",
+            "coral.search",
         ]
     );
+    // The old roots name the same paths; `coral.workspace.private` is a Tool
+    // call the host refuses, not a Private Tool.
     assert_eq!(
         named
             .functions()
             .iter()
             .map(coral_v8::SavedFunctionReference::path)
             .collect::<Vec<_>>(),
-        ["weather.forecast"]
+        ["weather.daily", "weather.forecast"]
     );
 }

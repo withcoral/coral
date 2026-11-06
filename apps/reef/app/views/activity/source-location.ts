@@ -3,6 +3,7 @@
 // for a tool call, emission or log.
 
 import { sourceLines } from '@/wax/components/code-block'
+import { privateToolPath } from '@/lib/call-root'
 import type { ActivityRow, RunDetail } from './types'
 
 export interface SourceDocument {
@@ -26,7 +27,8 @@ export const ACCEPTED_PROGRAM_DOCUMENT_ID = 'accepted-program'
 const savedFunctionDocumentId = (savedFunction: string) => `saved-function:${savedFunction}`
 
 const PROGRAM_FRAME_SOURCE = 'Program'
-const SAVED_FUNCTION_FRAME_SOURCE_PREFIX = 'Saved Function coral.functions.'
+/** A Saved Function's frames name it by its Call Path after this prefix. */
+const SAVED_FUNCTION_FRAME_SOURCE_PREFIX = 'Saved Function '
 
 /** The accepted program, then every Saved Function the Run linked, as accepted. */
 export function sourceDocumentsFor(context: RunDetail): SourceDocument[] {
@@ -116,7 +118,7 @@ export function recordedLocationFor(context: RunDetail, row: ActivityRow): Sourc
 function documentIdForFrameSource(frameSource: string, context: RunDetail): string | null {
   if (frameSource === PROGRAM_FRAME_SOURCE) return ACCEPTED_PROGRAM_DOCUMENT_ID
   const path = frameSource.startsWith(SAVED_FUNCTION_FRAME_SOURCE_PREFIX)
-    ? frameSource.slice(SAVED_FUNCTION_FRAME_SOURCE_PREFIX.length)
+    ? privateToolPath(frameSource.slice(SAVED_FUNCTION_FRAME_SOURCE_PREFIX.length))
     : null
   if (path === null) return null
   const linked = context.linkedFunctions.find((candidate) => candidate.path === path)

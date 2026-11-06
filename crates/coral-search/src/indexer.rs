@@ -30,7 +30,8 @@ use coral_workspace::WorkspaceId;
 /// A reconcile pass then indexes again what an older indexer revision wrote.
 ///
 /// 1: schema text holds each word once.
-pub(crate) const INDEXER_REVISION: i64 = 1;
+/// 2: the Built-in Provider's text names its Call Root `coral`.
+pub(crate) const INDEXER_REVISION: i64 = 2;
 
 /// A failure to write the search index. The caller's transaction rolls back.
 #[derive(Debug, thiserror::Error)]

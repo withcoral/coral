@@ -1,4 +1,4 @@
-//! `coral.workspace.updatePolicy`: the schemas a Program is typed from, the
+//! `coral.updatePolicy`: the schemas a Program is typed from, the
 //! arguments Coral reads against the input schema, and the result it writes
 //! against the output schema. The call sets the exact Tool Access State
 //! of 1–100 Tools of one Provider, each named by its Call Path relative

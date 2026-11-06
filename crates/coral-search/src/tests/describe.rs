@@ -141,7 +141,7 @@ async fn describe_rejects_undeclared_or_oversized_types_and_changes_nothing() {
 async fn a_saved_function_described_for_types_leaves_out_its_source() {
     let fixture = TestModules::new().await;
     let scope = TracerScope::new(&fixture).await;
-    let path = CallPath::parse("coral.functions.internal.formatForecast").unwrap();
+    let path = CallPath::parse("coral.private.internal.formatForecast").unwrap();
     let describe = |types: Vec<String>| {
         let (fixture, scope, path) = (&fixture, &scope, &path);
         async move {

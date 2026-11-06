@@ -190,7 +190,7 @@ async fn builtin_add_provider_waits_for_approval_by_default() {
         &mut transaction,
         &workspace_id,
         coral_provider::InvocationCaller::new(&fixture.workspaces, &owner, 12),
-        "coral.workspace.addProvider",
+        "coral.addProvider",
     )
     .await
     .unwrap()

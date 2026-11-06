@@ -1,4 +1,4 @@
-//! Performs `coral.workspace.listProviders`.
+//! Performs `coral.listProviders`.
 
 use coral_catalog::{ListProvidersResult, ListedProvider, ListedSetup, ListedSetupState};
 use coral_policy::ExactToolRules;

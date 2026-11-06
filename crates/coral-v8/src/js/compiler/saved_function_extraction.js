@@ -1,4 +1,4 @@
-// A literal `coral.workspace.saveFunction({ source: name })` call saves the
+// A literal `coral.saveFunction({ source: name })` call saves the
 // function `name` names: a function the calling source declares at its top
 // level. Admission extracts its module, the declaration and every top-level
 // declaration statement it reaches, and replaces the `source` value with a
@@ -10,9 +10,8 @@ const SAVE_FUNCTION_SOURCE_GLOBAL = '__coralSavedFunctionSource';
 function isSaveFunctionAccess(access) {
   return (
     access?.root === 'lexical' &&
-    access.segments.length === 2 &&
-    access.segments[0] === 'workspace' &&
-    access.segments[1] === 'saveFunction'
+    access.segments.length === 1 &&
+    access.segments[0] === 'saveFunction'
   );
 }
 
@@ -205,7 +204,7 @@ function isSourceProperty(property) {
 }
 
 // The edits that carry each saved function's module to its literal
-// `coral.workspace.saveFunction` call in `sourceFile`, or the first refusal.
+// `coral.saveFunction` call in `sourceFile`, or the first refusal.
 // `container` holds the source's top-level statements, `sourceName` and
 // `scope` name it in a refusal, and `carrier` names the private function that
 // wraps each module.
@@ -283,7 +282,7 @@ function savedFunctionExtraction({
     const call = calleeCall(node);
     if (!isLiteralCoralChain(node) || call === undefined) {
       return refuse(
-        'Call coral.workspace.saveFunction by its literal path, so it can take a function as source',
+        'Call coral.saveFunction by its literal path, so it can take a function as source',
         node,
       );
     }
@@ -294,7 +293,7 @@ function savedFunctionExtraction({
         ? input.properties.filter(isSourceProperty)
         : [];
     if (sources.length === 0) {
-      return refuse('Pass coral.workspace.saveFunction one object literal with source', call);
+      return refuse('Pass coral.saveFunction one object literal with source', call);
     }
     if (sources.length > 1) {
       return refuse('Pass source once', sources[1]);
@@ -364,7 +363,7 @@ function savedFunctionModuleExtraction(sourceFile, program, pathSegments, carrie
     program,
     container: sourceFile,
     authoredMappings: undefined,
-    sourceName: `Saved Function coral.functions.${pathSegments.join('.')}`,
+    sourceName: `Saved Function coral.private.${pathSegments.join('.')}`,
     scope: 'this Saved Function',
     carrier,
   });
