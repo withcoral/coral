@@ -90,18 +90,296 @@ message TakenRun {
   string claim_id = 2;
 }
 
-// One compile call. Coral sends none yet: each call's input comes with the
-// compiler that serves it.
+// One compile call, which holds one unit of room until Compiled answers it.
+// It carries source and no Workspace, Principal or credential.
 message Compile {
   // This call's number on this pull stream, which Compiled repeats.
   uint64 number = 1;
   // The time left until the caller's compilation deadline, in milliseconds.
   uint32 time_left_ms = 2;
+  // The call: one kind per call of the compiler client.
+  oneof call {
+    // The Saved Functions and Tools a Program body names: CallPaths.
+    Source program_references = 3;
+    // The called Tool chains that name no callable Call Path:
+    // UnknownToolCalls.
+    ToolCalls unknown_tool_calls = 4;
+    // The Saved Functions one Saved Function module names: References.
+    Source dependency_references = 5;
+    // A Program body lowered with the Saved Functions it links: Package.
+    ProgramSource compile = 6;
+    // The Saved Functions and Tools a Saved Function module names:
+    // CallPaths.
+    Source call_paths = 7;
+    // One Saved Function's declaration and diagnostics: Prepared.
+    SavedFunctionSource prepare = 8;
+  }
 }
 
-// The answer to one Compile. The package and the typed error come with the
-// compiler.
+// The answer to one Compile.
 message Compiled {
   // The number of the Compile it answers.
   uint64 number = 1;
+  // The answer of the kind its call names, or why there is none.
+  oneof answer {
+    // For program_references and call_paths.
+    CallPaths call_paths = 2;
+    // For unknown_tool_calls.
+    UnknownToolCalls unknown_tool_calls = 3;
+    // For dependency_references.
+    References references = 4;
+    // For compile.
+    Package package = 5;
+    // For prepare.
+    Prepared prepared = 6;
+    // For any call that returned no result.
+    CompileFailure failure = 7;
+  }
+}
+
+// One TypeScript source.
+message Source {
+  // The source text.
+  string source = 1;
+}
+
+// Called Tool chains, checked against the Call Paths the caller can call.
+message ToolCalls {
+  // The chains, as program_references or call_paths found them.
+  ToolReferences tools = 1;
+  // The complete Call Paths the caller can call.
+  repeated string callable = 2;
+}
+
+// A Program body and the Saved Functions it links.
+message ProgramSource {
+  // The Program body.
+  string source = 1;
+  // The linked Saved Functions, in the order they initialize.
+  repeated LinkedSavedFunction saved_functions = 2;
+}
+
+// One Saved Function source linked into a Program.
+message LinkedSavedFunction {
+  // Its path under coral.functions.
+  repeated string path_segments = 1;
+  // Its module source.
+  string source = 2;
+}
+
+// One Saved Function module to prepare.
+message SavedFunctionSource {
+  // The module source.
+  string source = 1;
+  // What types the coral namespace. Unset: it stays untyped.
+  Declarations declarations = 2;
+}
+
+// The declarations that type the coral namespace for one save.
+message Declarations {
+  // Above this size, a typed declaration is saved untyped.
+  uint64 declaration_max_bytes = 1;
+  // Types coral.providers and coral.workspace. Unset: they stay untyped.
+  TypedTools tools = 2;
+  // Types coral.functions. Unset: it stays untyped.
+  TypedFunctions functions = 3;
+}
+
+// The Tools a save may call, and the chains its source names.
+message TypedTools {
+  // The chains its source names.
+  repeated ToolChain chains = 1;
+  // One declaration per Tool the caller can call.
+  repeated CallableDeclaration declarations = 2;
+}
+
+// The Saved Functions a save may call.
+message TypedFunctions {
+  // One declaration per Saved Function.
+  repeated CallableDeclaration declarations = 1;
+}
+
+// The declaration that types one Call Path.
+message CallableDeclaration {
+  // The path, relative to coral for a Tool and to coral.functions for a
+  // Saved Function.
+  repeated string path_segments = 1;
+  // Self-contained TypeScript with one default export.
+  string declaration = 2;
+}
+
+// The literal coral.providers and coral.workspace chains one source names.
+message ToolReferences {
+  // Every chain prefix that could be a Tool Call Path.
+  repeated string call_paths = 1;
+  // The chains.
+  repeated ToolChain chains = 2;
+}
+
+// One literal chain, relative to coral.
+message ToolChain {
+  // The chain's segments.
+  repeated string segments = 1;
+  // Its offset in the source.
+  uint64 start = 2;
+  // Whether the source calls it.
+  bool called = 3;
+  // The one-based authored line where it starts.
+  uint64 line = 4;
+  // The one-based authored column where it starts.
+  uint64 column = 5;
+}
+
+// The Saved Functions and Tools one source names directly.
+message CallPaths {
+  // The coral.functions paths.
+  repeated Reference functions = 1;
+  // The Tool chains.
+  ToolReferences tools = 2;
+}
+
+// Saved Function references in path order.
+message References {
+  // The references.
+  repeated Reference references = 1;
+}
+
+// One statically named Saved Function reference.
+message Reference {
+  // The dotted path relative to coral.functions.
+  string path = 1;
+  // The one-based authored line.
+  uint64 line = 2;
+  // The one-based authored column.
+  uint64 column = 3;
+}
+
+// The called chains that name no Tool the caller can call.
+message UnknownToolCalls {
+  // The chains.
+  repeated UnknownToolCall calls = 1;
+}
+
+// One called chain that names no Tool the caller can call.
+message UnknownToolCall {
+  // The complete chain as written.
+  string call_path = 1;
+  // The one-based authored line.
+  uint64 line = 2;
+  // The one-based authored column.
+  uint64 column = 3;
+}
+
+// A Program package.
+message Package {
+  // The JavaScript V8 runs.
+  string script = 1;
+  // The source map emitted with it.
+  string source_map = 2;
+  // The SHA-256 of the script's UTF-8 byte length as eight big-endian
+  // bytes, then the script's UTF-8 bytes, then the source map's. A digest
+  // that does not match breaks the protocol.
+  bytes sha256 = 3;
+  // Non-blocking diagnostics.
+  repeated Diagnostic diagnostics = 4;
+}
+
+// One prepared Saved Function.
+message Prepared {
+  // The self-contained emitted declaration.
+  string declaration = 1;
+  // The callable-rooted fields of the declaration, or why there are none.
+  oneof projection {
+    // The fields.
+    DeclarationFields fields = 2;
+    // The private reason the fields could not be prepared.
+    string fault = 3;
+  }
+  // Advisory diagnostics.
+  repeated Diagnostic diagnostics = 4;
+  // The Saved Function references the module names, in path order.
+  repeated Reference references = 5;
+}
+
+// The callable-rooted fields of one declaration.
+message DeclarationFields {
+  // The fields.
+  repeated DeclarationField fields = 1;
+}
+
+// One callable-rooted field of a declaration.
+message DeclarationField {
+  // The path rooted at input or result.
+  string path = 1;
+  // Its names, documentation and type.
+  string text = 2;
+}
+
+// One TypeScript compiler diagnostic.
+message Diagnostic {
+  // Its category.
+  DiagnosticCategory category = 1;
+  // The official TypeScript diagnostic code.
+  uint64 code = 2;
+  // The flattened message.
+  string message = 3;
+  // The one-based line, when known.
+  optional uint64 line = 4;
+  // The one-based column, when known.
+  optional uint64 column = 5;
+}
+
+// A TypeScript diagnostic category.
+enum DiagnosticCategory {
+  // Never sent.
+  DIAGNOSTIC_CATEGORY_UNSPECIFIED = 0;
+  // An informational message.
+  DIAGNOSTIC_CATEGORY_MESSAGE = 1;
+  // A non-blocking warning.
+  DIAGNOSTIC_CATEGORY_WARNING = 2;
+  // A blocking error.
+  DIAGNOSTIC_CATEGORY_ERROR = 3;
+  // A non-blocking suggestion.
+  DIAGNOSTIC_CATEGORY_SUGGESTION = 4;
+}
+
+// Why a call returned no result.
+message CompileFailure {
+  // The failure.
+  oneof failure {
+    // The call's time ran out while it waited or compiled.
+    bool timed_out = 1;
+    // The compiler rejected the source.
+    Rejection rejected = 2;
+    // A coral.functions access names no supported Saved Function path.
+    ReferenceRejection reference = 3;
+    // Compiling passed the compiler's heap limit.
+    bool memory_limit = 4;
+    // The compiler had no room for the call. No compiler sends it now that
+    // the room bounds its queue.
+    bool busy = 5;
+    // The compiler stopped before it answered.
+    bool stopped = 6;
+    // The compiler failed for a reason the source did not cause: the
+    // failure's kind, without its text.
+    string failed = 7;
+  }
+}
+
+// A rejected source.
+message Rejection {
+  // The rejection's stable kind, such as compilation.
+  string kind = 1;
+  // The safe message for the source's author.
+  string message = 2;
+}
+
+// A coral.functions access that names no supported Saved Function path.
+message ReferenceRejection {
+  // The safe reason.
+  string message = 1;
+  // The one-based authored line.
+  uint64 line = 2;
+  // The one-based authored column.
+  uint64 column = 3;
 }

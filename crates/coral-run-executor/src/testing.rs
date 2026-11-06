@@ -1,5 +1,6 @@
 //! A scripted Coral that serves the pull stream, for tests of the Run
-//! Executor's side of the link.
+//! Executor's side of the link. Each stream it holds sends compiles through a
+//! [`PullStreamCompiler`].
 
 #![allow(
     clippy::missing_panics_doc,
@@ -9,7 +10,7 @@
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::net::TcpListener;
@@ -19,9 +20,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::server::TcpIncoming;
 use tonic::{Code, Request, Response, Status, Streaming};
 
-use crate::PROTOCOL_LEVEL;
 use crate::wire::v1::link_service_server::{LinkService, LinkServiceServer};
 use crate::wire::v1::{Hello, PullRequest, PullResponse, Welcome, pull_request, pull_response};
+use crate::{MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, PullStreamCompiler};
 
 /// How the scripted Coral answers one pull stream.
 #[derive(Clone, Copy, Debug)]
@@ -48,6 +49,10 @@ pub struct PullCall {
     pub authorization: Option<String>,
     /// Its first message, unless the call was refused.
     pub hello: Option<Hello>,
+    /// Sends compiles down the stream while it is held.
+    pub compiler: Arc<PullStreamCompiler>,
+    /// The room the Run Executor reports on it, in order.
+    pub rooms: mpsc::UnboundedReceiver<u32>,
 }
 
 /// A Coral that answers pull streams from a script, and refuses each one
@@ -74,8 +79,11 @@ impl ScriptedCoral {
             released,
         };
         let server = tokio::spawn(async move {
+            let service = LinkServiceServer::new(script)
+                .max_decoding_message_size(MESSAGE_MAX_BYTES)
+                .max_encoding_message_size(MESSAGE_MAX_BYTES);
             tonic::transport::Server::builder()
-                .add_service(LinkServiceServer::new(script))
+                .add_service(service)
                 .serve_with_incoming(TcpIncoming::from(listener))
                 .await
                 .expect("the scripted Coral serves");
@@ -100,6 +108,11 @@ impl ScriptedCoral {
             .await
             .expect("a pull stream opens")
             .expect("the scripted Coral serves")
+    }
+
+    /// The next pull stream a Run Executor opened, if one has.
+    pub fn try_next_call(&mut self) -> Option<PullCall> {
+        self.calls.try_recv().ok()
     }
 
     /// Ends every held stream with `UNAVAILABLE`.
@@ -155,15 +168,26 @@ impl LinkService for Script {
                 _ => None,
             },
         };
+        let (to_send, mut sent) = mpsc::unbounded_channel();
+        let compiler = Arc::new(PullStreamCompiler::new(to_send));
+        let (rooms, reported) = mpsc::unbounded_channel();
         drop(self.calls.send(PullCall {
             at,
             peer,
             authorization,
             hello,
+            compiler: Arc::clone(&compiler),
+            rooms: reported,
         }));
         let protocol_level = match answer {
-            Answer::Refuse(code) => return Err(Status::new(code, "scripted refusal")),
-            Answer::Close => return Ok(Response::new(Box::pin(tokio_stream::empty()))),
+            Answer::Refuse(code) => {
+                compiler.close();
+                return Err(Status::new(code, "scripted refusal"));
+            }
+            Answer::Close => {
+                compiler.close();
+                return Ok(Response::new(Box::pin(tokio_stream::empty())));
+            }
             Answer::Welcome(level) => level,
             Answer::Move => PROTOCOL_LEVEL,
         };
@@ -179,13 +203,37 @@ impl LinkService for Script {
                 return;
             }
             if let Answer::Welcome(_) = answer {
-                tokio::select! {
-                    _ = released.changed() => {
-                        drop(outbound.send(Err(Status::unavailable("released"))).await);
+                loop {
+                    tokio::select! {
+                        _ = released.changed() => {
+                            drop(outbound.send(Err(Status::unavailable("released"))).await);
+                            break;
+                        }
+                        () = outbound.closed() => break,
+                        Some(compile) = sent.recv() => {
+                            if outbound.send(Ok(compile)).await.is_err() {
+                                break;
+                            }
+                        }
+                        message = inbound.message() => match message {
+                            Ok(Some(PullRequest {
+                                message: Some(pull_request::Message::Compiled(reply)),
+                            })) => {
+                                if compiler.answer(reply).is_err() {
+                                    let violation = Status::invalid_argument("broke the protocol");
+                                    drop(outbound.send(Err(violation)).await);
+                                    break;
+                                }
+                            }
+                            Ok(Some(PullRequest {
+                                message: Some(pull_request::Message::Room(room)),
+                            })) => drop(rooms.send(room.free)),
+                            _ => break,
+                        },
                     }
-                    () = outbound.closed() => {}
                 }
             }
+            compiler.close();
             // Holds the Run Executor's side open until Coral's side ends.
             drop(inbound);
         });

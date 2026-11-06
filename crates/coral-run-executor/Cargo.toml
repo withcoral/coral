@@ -18,6 +18,7 @@ coral-credentials.workspace = true
 coral-telemetry.workspace = true
 coral-v8.workspace = true
 prost.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 tonic.workspace = true

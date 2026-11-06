@@ -62,17 +62,18 @@ type CompilerJob = Box<
 /// only its own work. A request whose JavaScript ends abnormally, or that leaves
 /// the isolate overgrown, has the worker build a replacement after it answers,
 /// before the worker takes the next request. A request queued meanwhile waits
-/// for that build. A rejection leaves the isolate in place. Handles from
-/// [`Self::with_role`] share the thread and queue, which stop when the last
-/// handle drops.
+/// for that build. A rejection leaves the isolate in place. Requests wait in
+/// order on the one thread, in a queue with no bound of its own: each
+/// caller's deadline ends its wait. Handles from [`Self::with_role`] share the
+/// thread and queue, which stop when the last handle drops.
 pub struct ProgramCompiler {
     worker: Arc<CompilerWorker>,
     role: CompilerRole,
 }
 
-/// The compiler thread and its bounded queue.
+/// The compiler thread and its queue.
 struct CompilerWorker {
-    sender: mpsc::SyncSender<Option<CompilerJob>>,
+    sender: mpsc::Sender<Option<CompilerJob>>,
     thread: Option<thread::JoinHandle<()>>,
     limits: IsolateLimits,
 }
@@ -90,9 +91,9 @@ impl ProgramCompiler {
     /// compiler version differs from the profile.
     pub fn new(isolate_limits: IsolateLimits, role: CompilerRole) -> Result<Self, Error> {
         crate::v8_support::initialize()?;
-        // ponytail: one warm isolate and 32 queued requests; use a pool only if
-        // measured authoring throughput needs it. Saturation never queues unbounded work.
-        let (sender, receiver) = mpsc::sync_channel::<Option<CompilerJob>>(32);
+        // One warm isolate; use a pool only if measured authoring throughput
+        // needs it.
+        let (sender, receiver) = mpsc::channel::<Option<CompilerJob>>();
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         // The worker records rebuilds and their failures where its creator does.
         let dispatch = tracing::dispatcher::get_default(Clone::clone);
@@ -392,7 +393,7 @@ impl ProgramCompiler {
         let queued = metric::compiler_queued(role, operation);
         self.worker
             .sender
-            .try_send(Some(Box::new(move |compiler| {
+            .send(Some(Box::new(move |compiler| {
                 let active_measurement = queued.dequeued();
                 let mut rebuild = None;
                 let result = (|| {
@@ -436,10 +437,7 @@ impl ProgramCompiler {
                 let _sent = response_sender.send(result);
                 rebuild.map(|reason| (role, reason))
             })))
-            .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => Error::CompilerBusy,
-                mpsc::TrySendError::Disconnected(_) => Error::CompilerUnavailable,
-            })?;
+            .map_err(|_stopped| Error::CompilerUnavailable)?;
         match response_receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(result) => result,
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -856,7 +854,7 @@ fn decode_compiled_program(json: &str) -> Result<CompiledProgram, Error> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn timed_out_callers_stay_queued_until_dequeued_and_full_is_distinct() {
+    fn timed_out_callers_stay_queued_in_order_with_no_bound() {
         let metrics = coral_telemetry::testing::MetricCapture::default();
         let _measured = tracing::subscriber::set_default(metrics.subscriber());
         let compiler =
@@ -878,7 +876,8 @@ mod tests {
             started
                 .recv_timeout(TEST_COMPILATION_TIMEOUT)
                 .expect("worker is held");
-            for _ in 0..32 {
+            // The queue takes every call: it has no bound of its own.
+            for _ in 0..64 {
                 assert!(matches!(
                     compiler.compile(Instant::now(), "return 1;"),
                     Err(Error::CompilationTimedOut)
@@ -891,7 +890,7 @@ mod tests {
             };
             assert_eq!(
                 depth(),
-                [32.0],
+                [64.0],
                 "caller timeout does not remove the queued job"
             );
             let authoring = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Authoring)
@@ -900,7 +899,7 @@ mod tests {
                 .prepare_saved_function(deadline(), "export default () => 1;")
                 .expect("authoring queue remains available");
             let depths = metrics.named("coral.compiler.queue.depth");
-            for (role, expected) in [("run", 32.0), ("authoring", 0.0)] {
+            for (role, expected) in [("run", 64.0), ("authoring", 0.0)] {
                 let point = depths
                     .iter()
                     .find(|point| {
@@ -909,35 +908,12 @@ mod tests {
                     .expect("role-specific depth");
                 assert!((point.value - expected).abs() < f64::EPSILON);
             }
-            assert!(matches!(
-                compiler.prepare_saved_function(Instant::now(), "export default () => 1;"),
-                Err(Error::CompilerBusy)
-            ));
-            assert_eq!(
-                depth(),
-                [0.0, 32.0],
-                "a rejected enqueue releases its gauge contribution"
-            );
-            assert!(
-                metrics
-                    .named("coral.compiler.request.duration")
-                    .iter()
-                    .any(|point| point.attributes.get("outcome").map(String::as_str)
-                        == Some("queue_full"))
-            );
             release.send(()).expect("release worker");
             blocker.join().unwrap().expect("blocking work ended");
         });
-        let deadline = deadline();
-        loop {
-            match compiler.compile(deadline, "return 42;") {
-                Ok(_) => break,
-                Err(Error::CompilerBusy) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                result => panic!("worker drains expired requests and recovers: {result:?}"),
-            }
-        }
+        compiler
+            .compile(deadline(), "return 42;")
+            .expect("the worker drains expired requests, then serves the next");
         for name in ["coral.compiler.queue.depth", "coral.compiler.active"] {
             assert_eq!(metrics.values(name), [0.0, 0.0]);
         }

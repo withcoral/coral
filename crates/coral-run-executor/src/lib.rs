@@ -2,24 +2,30 @@
 //!
 //! On Coral's side it holds the compiler client that Program Admission and
 //! Saved Function save share. [`CompilerClient`] is the one interface.
-//! [`InProcessCompiler`] is its first adapter: one warm Program Compiler on
-//! its own thread in this process. Bootstrap builds one and gives it to both
-//! callers.
+//! [`InProcessCompiler`] runs one warm Program Compiler on its own thread in
+//! this process. [`PullStreamCompiler`] sends each call down one held pull
+//! stream to a Run Executor.
 //!
-//! On the Run Executor's side, [`run`] dials Coral and holds the pull stream
-//! that the [`wire`] contract defines.
+//! On the Run Executor's side, [`run`] warms its compiler, dials Coral, holds
+//! the pull stream that the [`wire`] contract defines, and serves the
+//! compiles that ride it.
 
+mod compile_wire;
 mod compiler;
 mod in_process;
 mod link;
+mod pull_compiler;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
+pub use compile_wire::ProtocolError;
 pub use compiler::{CompileError, CompilerClient, Diagnostics, Unavailable, time_left};
 pub use in_process::InProcessCompiler;
 pub use link::{
-    AddressError, CoralAddress, PROTOCOL_LEVEL, RunExecutorConfig, Token, TokenError, run,
+    AddressError, CoralAddress, MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, RunError, RunExecutorConfig,
+    Token, TokenError, run,
 };
+pub use pull_compiler::PullStreamCompiler;
 
 /// The link's wire contract, generated from `proto/`.
 #[allow(
