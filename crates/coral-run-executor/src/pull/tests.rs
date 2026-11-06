@@ -449,12 +449,11 @@ async fn a_protocol_violation_ends_its_stream_and_not_the_connection() {
 }
 
 #[tokio::test]
-async fn at_the_connection_age_or_shutdown_the_stream_ends_cleanly_once_its_compiles_are_answered_or_due()
- {
+async fn at_the_age_or_shutdown_the_stream_ends_cleanly_once_its_compiles_are_answered_or_due() {
     let connection_age = Duration::from_millis(300);
     // Whether the connection age, not shutdown, ends the stream, and whether
     // the Run Executor answers its compile.
-    for (at_age, answered) in [(true, true), (false, true), (true, false)] {
+    for (at_age, answered) in [(true, true), (false, true), (true, false), (false, false)] {
         let label = format!("at age: {at_age}, answered: {answered}");
         let mut link = start(Timing {
             connection_age: if at_age {
