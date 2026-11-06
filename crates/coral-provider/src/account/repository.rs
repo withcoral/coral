@@ -7,7 +7,7 @@ mod intent;
 pub(super) use accounts::{ensure_account, scoped_account, scoped_account_locked};
 pub(super) use encoding::{
     decode_device, decode_flow, decode_sealed_fields, decode_token, decode_values, encode_device,
-    encode_flow, encode_token, encode_values,
+    encode_flow, encode_references, encode_sealed_fields, encode_token, encode_values,
 };
 
 use super::connection::{LoadedConnection, PendingConnection};
@@ -1025,7 +1025,7 @@ pub(super) async fn connect_account(
                     ),
                     (
                         ProviderAccounts::SecretReferences,
-                        Expr::val(Option::<String>::None),
+                        Expr::val(authorized.secret_references),
                     ),
                     (
                         ProviderAccounts::TokenExpiresAtUnixNanos,

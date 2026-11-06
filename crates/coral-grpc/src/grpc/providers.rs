@@ -281,6 +281,18 @@ pub(super) fn error(value: domain::Error) -> Status {
         E::BuiltinProviderManaged => (Code::FailedPrecondition, "BUILTIN_PROVIDER_MANAGED"),
         E::OAuthClientConfiguration => (Code::FailedPrecondition, "OAUTH_CLIENT_CONFIGURATION"),
         E::AccountRequired => (Code::FailedPrecondition, "ACCOUNT_REQUIRED"),
+        E::SecretReferenceNotAllowed => (Code::FailedPrecondition, "SECRET_REFERENCE_NOT_ALLOWED"),
+        E::SecretStoreNotGranted => (Code::FailedPrecondition, "SECRET_STORE_NOT_GRANTED"),
+        E::SecretStoreRead(read) => (
+            Code::FailedPrecondition,
+            match read {
+                coral_secret_store::Error::Unreachable => "SECRET_STORE_UNREACHABLE",
+                coral_secret_store::Error::EntryNotFound => "SECRET_ENTRY_NOT_FOUND",
+                coral_secret_store::Error::KeyNotFound => "SECRET_KEY_NOT_FOUND",
+                coral_secret_store::Error::PermissionDenied => "SECRET_STORE_PERMISSION_DENIED",
+                coral_secret_store::Error::MalformedResponse => "SECRET_STORE_MALFORMED_RESPONSE",
+            },
+        ),
         E::RequestIdConflict => (Code::AlreadyExists, "REQUEST_ID_CONFLICT"),
         E::PendingAuthorizationLimit => (Code::ResourceExhausted, "PENDING_AUTHORIZATION_LIMIT"),
         E::ProviderChangedDuringPublication | E::CredentialRouteChanged => {

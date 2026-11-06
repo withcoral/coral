@@ -60,6 +60,16 @@ pub enum SecretStoreKind {
     KvV2,
 }
 
+impl SecretStoreKind {
+    /// A bounded name, safe for telemetry.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::KvV2 => "kv_v2",
+        }
+    }
+}
+
 /// A store's stable name: what a grant and a Secret Reference say.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SecretStoreName(String);

@@ -49,6 +49,7 @@ const authorization: AuthorizationView = {
   oauth: false,
   grantedScope: '',
   credentialFields: [{ name: 'token', label: 'Token', description: '', sensitive: true }],
+  secretStores: [],
   form,
 }
 const workspace = {
@@ -220,6 +221,37 @@ export const Agent: Story = {
   ),
 }
 export const SecretEntry: Story = { render: () => <AuthorizationPage view={authorization} /> }
+
+const sharedSecretEntry: AuthorizationView = {
+  ...authorization,
+  scope: 'shared',
+  secretStores: ['platform', 'research'],
+}
+// Catches: the typed input submitted beside a reference, or a store never chosen.
+export const SecretEntryWithSecretStore: Story = {
+  render: () => <AuthorizationPage view={sharedSecretEntry} />,
+  play: async ({ canvas }) => {
+    await userEvent.click(canvas.getByRole('radio', { name: 'Use a secret store' }))
+    await expect(canvas.queryByRole('textbox', { name: /token/i })).toBeNull()
+    await expect(canvas.getByRole('textbox', { name: 'Path' })).toBeRequired()
+    await expect(canvas.getByRole('textbox', { name: 'Key' })).toBeRequired()
+    // A store is always chosen, so the form cannot post without one.
+    await expect(canvas.getByRole('button', { name: 'Secret store' })).toHaveTextContent('platform')
+  },
+}
+export const SecretEntryWithSecretStoreProblem: Story = {
+  render: () => (
+    <AuthorizationPage
+      view={{
+        ...sharedSecretEntry,
+        secretStoreProblem: 'The secret store has no entry at this path. Check the path.',
+      }}
+    />
+  ),
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText(/no entry at this path/)).toBeVisible()
+  },
+}
 export const OAuthPending: Story = {
   render: () => <AuthorizationPage view={{ ...authorization, oauth: true }} />,
 }

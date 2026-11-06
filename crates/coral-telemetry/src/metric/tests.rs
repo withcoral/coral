@@ -206,6 +206,12 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         &["operation", "outcome"],
     ),
     (
+        "coral.secret_store.read.duration",
+        "histogram",
+        "s",
+        &["outcome", "secret_store.kind", "secret_store.name"],
+    ),
+    (
         "coral.telemetry.dropped",
         "counter",
         "{signal}",
@@ -259,6 +265,12 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
     let queued = run_queued();
     run_recovered(RecoveryOutcome::Ended);
     run_claimed(ClaimKind::Recover, ClaimOutcome::Won);
+    secret_store_read(
+        "team",
+        "kv_v2",
+        SecretStoreRead::EntryNotFound,
+        Duration::from_millis(4),
+    );
     let invocation = invocation_started(ProviderProtocol::Http, ToolEffect::Read);
     drop(invocation_gate(GateKind::Approval));
     invocation.end(InvocationEnd::CoralFailure, Some("account_required"));

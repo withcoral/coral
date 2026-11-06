@@ -30,6 +30,7 @@ mod resilience;
 mod run_inbox;
 mod scoping;
 mod search;
+mod secret_stores;
 mod summary;
 mod support;
 mod trace;
