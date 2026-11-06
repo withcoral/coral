@@ -11,9 +11,9 @@ a Workspace Membership. Removing one always ends access there and clears that Us
 credentials and Saved Functions.
 
 An Organization Owner keeps a small governance surface over Workspaces they are not in: list them with their state and
-designated Owners, assign a designated Owner (themselves included), archive and restore. Assigning themselves is the
-explicit, recorded way in. Rejected: a separate IT admin or auditor role, which self-assignment makes unnecessary for
-now.
+designated Owners, assign a designated Owner (themselves included), archive and restore, and grant a Secret Store to a
+Workspace or revoke that grant (ADR 0032), which shows them nothing inside it. Assigning themselves is the explicit, recorded way in.
+Rejected: a separate IT admin or auditor role, which self-assignment makes unnecessary for now.
 
 ## Every Workspace keeps a designated Owner
 
