@@ -180,8 +180,14 @@ impl LinkService for Script {
             rooms: reported,
         }));
         let protocol_level = match answer {
-            Answer::Refuse(code) => return Err(Status::new(code, "scripted refusal")),
-            Answer::Close => return Ok(Response::new(Box::pin(tokio_stream::empty()))),
+            Answer::Refuse(code) => {
+                compiler.close();
+                return Err(Status::new(code, "scripted refusal"));
+            }
+            Answer::Close => {
+                compiler.close();
+                return Ok(Response::new(Box::pin(tokio_stream::empty())));
+            }
             Answer::Welcome(level) => level,
             Answer::Move => PROTOCOL_LEVEL,
         };

@@ -364,9 +364,9 @@ pub struct Package {
     /// The source map emitted with it.
     #[prost(string, tag = "2")]
     pub source_map: ::prost::alloc::string::String,
-    /// The SHA-256 of the script's length as eight big-endian bytes, the
-    /// script, and the source map. A digest that does not match breaks the
-    /// protocol.
+    /// The SHA-256 of the script's UTF-8 byte length as eight big-endian
+    /// bytes, then the script's UTF-8 bytes, then the source map's. A digest
+    /// that does not match breaks the protocol.
     #[prost(bytes = "vec", tag = "3")]
     pub sha256: ::prost::alloc::vec::Vec<u8>,
     /// Non-blocking diagnostics.
@@ -462,7 +462,8 @@ pub mod compile_failure {
         /// Compiling passed the compiler's heap limit.
         #[prost(bool, tag = "4")]
         MemoryLimit(bool),
-        /// The compiler had no room for the call.
+        /// The compiler had no room for the call. No compiler sends it now that
+        /// the room bounds its queue.
         #[prost(bool, tag = "5")]
         Busy(bool),
         /// The compiler stopped before it answered.

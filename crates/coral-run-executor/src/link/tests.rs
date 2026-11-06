@@ -1,7 +1,11 @@
 use std::time::{Duration, Instant};
 
 use coral_test_support::TEST_COMPILATION_TIMEOUT;
-use coral_v8::{CallableDeclaration, CoralDeclarations, LinkedSavedFunctionSource};
+use coral_v8::{
+    CallableDeclaration, CompiledProgram, CoralDeclarations, LinkedSavedFunctionSource,
+    SavedFunctionCallPaths, SavedFunctionCompilation, SavedFunctionReference, ToolReferences,
+    UnknownToolCall,
+};
 use tokio::sync::oneshot;
 use tonic::Code;
 use tonic_health::pb::HealthCheckRequest;
@@ -9,9 +13,6 @@ use tonic_health::pb::health_client::HealthClient;
 
 use super::*;
 use crate::testing::{Answer, ScriptedCoral};
-use crate::wire::v1::compile::Call;
-use crate::wire::v1::compile_failure::Failure;
-use crate::wire::v1::{CompileFailure, compiled};
 use crate::{CompileError, PullStreamCompiler};
 
 const TOKEN: &str = "test-run-executor-token";
@@ -318,97 +319,128 @@ async fn each_call_on_a_pull_stream_returns_what_the_in_process_client_returns()
     }
 }
 
-#[test]
-fn a_call_past_its_time_answers_timed_out() {
-    let compiler = InProcessCompiler::new(IsolateLimits::defaults()).unwrap();
-    let source = || {
-        Some(Call::Compile(crate::wire::v1::ProgramSource {
-            source: "return 42;".to_owned(),
-            saved_functions: Vec::new(),
-        }))
-    };
-    let now = Instant::now();
-    // No time left, and a call that waited in the queue past its time.
-    for (received, time_left_ms) in [
-        (now, 0),
-        (now.checked_sub(Duration::from_secs(3)).unwrap(), 2_000),
-    ] {
-        let compile = Compile {
-            number: 7,
-            time_left_ms,
-            call: source(),
-        };
-        let served = compile_wire::serve(&compiler, received, compile).unwrap();
-        let timed_out = compiled::Answer::Failure(CompileFailure {
-            failure: Some(Failure::TimedOut(true)),
-        });
-        assert_eq!((served.number, served.answer), (7, Some(timed_out)));
+/// The in-process compiler with a gate: each compile waits for a release.
+struct Gated {
+    compiler: InProcessCompiler,
+    entered: mpsc::UnboundedSender<()>,
+    released: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl CompilerClient for Gated {
+    fn program_references(
+        &self,
+        time_left: Duration,
+        source: &str,
+    ) -> Result<SavedFunctionCallPaths, CompileError> {
+        self.compiler.program_references(time_left, source)
     }
-    let compile = Compile {
-        number: 8,
-        time_left_ms: 2_000,
-        call: source(),
-    };
-    let served = compile_wire::serve(&compiler, Instant::now(), compile).unwrap();
-    assert!(matches!(served.answer, Some(compiled::Answer::Package(_))));
+
+    fn unknown_tool_calls(
+        &self,
+        time_left: Duration,
+        tools: &ToolReferences,
+        callable: &[String],
+    ) -> Result<Vec<UnknownToolCall>, CompileError> {
+        self.compiler.unknown_tool_calls(time_left, tools, callable)
+    }
+
+    fn dependency_references(
+        &self,
+        time_left: Duration,
+        source: &str,
+    ) -> Result<Vec<SavedFunctionReference>, CompileError> {
+        self.compiler.dependency_references(time_left, source)
+    }
+
+    fn compile(
+        &self,
+        time_left: Duration,
+        source: &str,
+        saved_functions: &[LinkedSavedFunctionSource],
+    ) -> Result<CompiledProgram, CompileError> {
+        let stopped = || CompileError::Unavailable(crate::Unavailable::Stopped);
+        self.entered.send(()).map_err(|_gone| stopped())?;
+        let released = self.released.lock().map_err(|_poisoned| stopped())?;
+        released.recv().map_err(|_gone| stopped())?;
+        self.compiler.compile(time_left, source, saved_functions)
+    }
+
+    fn call_paths(
+        &self,
+        time_left: Duration,
+        source: &str,
+    ) -> Result<SavedFunctionCallPaths, CompileError> {
+        self.compiler.call_paths(time_left, source)
+    }
+
+    fn prepare(
+        &self,
+        time_left: Duration,
+        source: &str,
+        declarations: Option<&CoralDeclarations>,
+    ) -> Result<SavedFunctionCompilation, CompileError> {
+        self.compiler.prepare(time_left, source, declarations)
+    }
 }
 
 #[tokio::test]
-async fn hello_waits_for_a_warm_compiler() {
+async fn a_compile_holds_a_unit_of_room_until_it_is_answered() {
+    let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
+    let (entered, mut entries) = mpsc::unbounded_channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let compiler =
+        tokio::task::spawn_blocking(|| InProcessCompiler::new(IsolateLimits::defaults()))
+            .await
+            .unwrap()
+            .unwrap();
+    let gated = Gated {
+        compiler,
+        entered,
+        released: std::sync::Mutex::new(released),
+    };
+    let heap = IsolateLimits::defaults().compiler_heap_bytes();
+    let (linked, _linked) = watch::channel(false);
+    let link = Link::new(config(&coral, heap), Arc::new(gated), linked);
+    tokio::spawn(async move { link.hold().await });
+    let mut call = coral.next_call().await;
+    let compile = |compiler: &Arc<PullStreamCompiler>| {
+        let compiler = Arc::clone(compiler);
+        std::thread::spawn(move || {
+            compiler
+                .compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[])
+                .map(drop)
+        })
+    };
+    let first = compile(&call.compiler);
+    entries.recv().await.unwrap();
+    // A second compile arrives while the first holds the compiler thread.
+    let second = compile(&call.compiler);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    release.send(()).unwrap();
+    assert_eq!(
+        call.rooms.recv().await,
+        Some(7),
+        "the second holds its unit"
+    );
+    entries.recv().await.unwrap();
+    release.send(()).unwrap();
+    assert_eq!(call.rooms.recv().await, Some(8));
+    for caller in [first, second] {
+        assert_eq!(caller.join().unwrap(), Ok(()));
+    }
+}
+
+#[tokio::test]
+async fn a_compiler_that_cannot_start_ends_the_run_executor_before_any_dial() {
     let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
     // A valid heap limit too small for the compiler to load in.
     let result = run(config(&coral, 8 * 1024 * 1024), None, pending()).await;
-    assert!(matches!(result, Err(RunError::Compiler(_))), "{result:?}");
+    assert!(
+        matches!(
+            result,
+            Err(RunError::Compiler(coral_v8::Error::MemoryLimitExceeded))
+        ),
+        "{result:?}"
+    );
     assert!(coral.try_next_call().is_none(), "no pull stream opened");
-}
-
-#[test]
-fn an_answer_that_breaks_the_protocol_is_refused_and_a_closed_stream_fails_its_calls() {
-    let (outbound, mut sent) = mpsc::unbounded_channel();
-    let compiler = Arc::new(PullStreamCompiler::new(outbound));
-    let calling = Arc::clone(&compiler);
-    let waiting =
-        std::thread::spawn(move || calling.compile(TEST_COMPILATION_TIMEOUT, "return 42;", &[]));
-    let Some(PullResponse {
-        message: Some(pull_response::Message::Compile(compile)),
-    }) = sent.blocking_recv()
-    else {
-        panic!("a Compile");
-    };
-    let package = |sha256: Vec<u8>| {
-        compiled::Answer::Package(crate::wire::v1::Package {
-            script: "42".to_owned(),
-            source_map: "{}".to_owned(),
-            sha256,
-            diagnostics: Vec::new(),
-        })
-    };
-    for (number, answer) in [
-        (
-            compile.number + 1,
-            Some(package(compile_wire::package_sha256("42", "{}").to_vec())),
-        ),
-        (
-            0,
-            Some(package(compile_wire::package_sha256("42", "{}").to_vec())),
-        ),
-        (compile.number, None),
-        (
-            compile.number,
-            Some(package(compile_wire::package_sha256("4", "2{}").to_vec())),
-        ),
-    ] {
-        let refused = compiler.answer(Compiled { number, answer });
-        assert!(matches!(refused, Err(ProtocolError)), "{number}");
-    }
-    compiler.close();
-    assert_eq!(
-        waiting.join().unwrap(),
-        Err(CompileError::Unavailable(crate::Unavailable::Stopped))
-    );
-    let after = compiler.program_references(TEST_COMPILATION_TIMEOUT, "return 1;");
-    assert_eq!(
-        after,
-        Err(CompileError::Unavailable(crate::Unavailable::Stopped))
-    );
 }

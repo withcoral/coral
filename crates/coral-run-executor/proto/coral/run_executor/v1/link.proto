@@ -276,9 +276,9 @@ message Package {
   string script = 1;
   // The source map emitted with it.
   string source_map = 2;
-  // The SHA-256 of the script's length as eight big-endian bytes, the
-  // script, and the source map. A digest that does not match breaks the
-  // protocol.
+  // The SHA-256 of the script's UTF-8 byte length as eight big-endian
+  // bytes, then the script's UTF-8 bytes, then the source map's. A digest
+  // that does not match breaks the protocol.
   bytes sha256 = 3;
   // Non-blocking diagnostics.
   repeated Diagnostic diagnostics = 4;
@@ -355,7 +355,8 @@ message CompileFailure {
     ReferenceRejection reference = 3;
     // Compiling passed the compiler's heap limit.
     bool memory_limit = 4;
-    // The compiler had no room for the call.
+    // The compiler had no room for the call. No compiler sends it now that
+    // the room bounds its queue.
     bool busy = 5;
     // The compiler stopped before it answered.
     bool stopped = 6;

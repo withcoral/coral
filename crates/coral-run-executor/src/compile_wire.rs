@@ -37,14 +37,15 @@ const FAILURE_KINDS: [&str; 4] = [
 ];
 
 /// A compile message that breaks the protocol: a missing field, an answer
-/// of the wrong kind, or a package whose digest does not match. Where
-/// [`crate::PullStreamCompiler::answer`] finds one, the stream ends; where a
-/// call or the Run Executor's serving finds one, that call fails.
+/// of the wrong kind, or a package whose digest does not match. The side
+/// that reads one ends the stream that carried it: Coral's handler when
+/// [`crate::PullStreamCompiler::answer`] returns it, and the Run Executor
+/// when it cannot serve a `Compile`.
 #[derive(Debug, thiserror::Error)]
 #[error("a compile message broke the protocol")]
 pub struct ProtocolError;
 
-/// The caller sees a broken answer as a compiler failure.
+/// A call that cannot read the answer it took fails as a compiler failure.
 impl From<ProtocolError> for CompileError {
     fn from(ProtocolError: ProtocolError) -> Self {
         Self::Unavailable(Unavailable::Failed("compiler_protocol"))
@@ -143,7 +144,7 @@ pub(crate) fn failure(error: CompileError) -> wire::CompileFailure {
         CompileError::Diagnostics(Diagnostics::Message { kind, message }) => {
             Failure::Rejected(wire::Rejection {
                 kind: kind.to_owned(),
-                message,
+                message: coral_v8::bounded_diagnostic_message(&message),
             })
         }
         CompileError::Diagnostics(Diagnostics::Reference {
@@ -343,9 +344,11 @@ fn package(program: &CompiledProgram) -> wire::Package {
     }
 }
 
-/// The program a package carries. [`crate::PullStreamCompiler::answer`]
-/// checked its digest.
+/// The program a package carries, once its digest matches.
 pub(crate) fn compiled_program(package: wire::Package) -> Result<CompiledProgram, ProtocolError> {
+    if package.sha256 != package_sha256(&package.script, &package.source_map) {
+        return Err(ProtocolError);
+    }
     let diagnostics = package.diagnostics.into_iter().map(compiler_diagnostic);
     Ok(CompiledProgram::new(
         package.script,
@@ -434,4 +437,41 @@ fn compiler_diagnostic(diagnostic: wire::Diagnostic) -> Result<CompilerDiagnosti
         diagnostic.line,
         diagnostic.column,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use coral_test_support::TEST_COMPILATION_TIMEOUT;
+    use coral_v8::IsolateLimits;
+
+    use super::*;
+    use crate::InProcessCompiler;
+
+    #[test]
+    fn a_call_past_its_time_answers_timed_out() {
+        let compiler = InProcessCompiler::new(IsolateLimits::defaults()).unwrap();
+        let compile = |time_left_ms| Compile {
+            number: 7,
+            time_left_ms,
+            call: Some(Call::Compile(wire::ProgramSource {
+                source: "return 42;".to_owned(),
+                saved_functions: Vec::new(),
+            })),
+        };
+        let now = Instant::now();
+        // No time left, and a call that waited in the queue past its time.
+        for (received, time_left_ms) in [
+            (now, 0),
+            (now.checked_sub(Duration::from_secs(3)).unwrap(), 2_000),
+        ] {
+            let served = serve(&compiler, received, compile(time_left_ms)).unwrap();
+            let timed_out = Answer::Failure(wire::CompileFailure {
+                failure: Some(Failure::TimedOut(true)),
+            });
+            assert_eq!((served.number, served.answer), (7, Some(timed_out)));
+        }
+        let time_left_ms = u32::try_from(TEST_COMPILATION_TIMEOUT.as_millis()).unwrap();
+        let served = serve(&compiler, Instant::now(), compile(time_left_ms)).unwrap();
+        assert!(matches!(served.answer, Some(Answer::Package(_))));
+    }
 }

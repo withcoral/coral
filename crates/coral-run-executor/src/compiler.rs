@@ -136,7 +136,8 @@ pub enum Diagnostics {
 /// Why no compiler answered a call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unavailable {
-    /// The compiler's queue had no room.
+    /// The compiler's queue had no room. No compiler returns it now that
+    /// the queue has no bound.
     Busy,
     /// The compiler stopped before it answered.
     Stopped,

@@ -28,8 +28,12 @@ use crate::{CompilerClient, InProcessCompiler};
 /// The level of the link's messages and the Program Runtime Surface. A
 /// release that changes either raises it by exactly one.
 pub const PROTOCOL_LEVEL: u32 = 1;
-/// The largest message either side of the link sends or accepts. A
-/// compile's sources and declarations, and its package, fit in it.
+/// The largest message either side of the link sends or accepts. Coral's
+/// listener sets the same bound. It holds a compile's TypeScript, at most
+/// 512 KiB in all, and a package well past the 1 MiB script and 2 MiB source
+/// map Coral accepts, so Coral, not the link, refuses an oversized package.
+/// A typed prepare's declarations, up to 256 KiB for each callable Tool, have
+/// no total bound: a message past this one ends the stream.
 pub const MESSAGE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// The longest Run this Run Executor holds: the Run deadline's maximum.
@@ -244,8 +248,9 @@ impl Link {
             .max_decoding_message_size(MESSAGE_MAX_BYTES)
             .max_encoding_message_size(MESSAGE_MAX_BYTES);
         // The Run Executor's side of the stream ends when `outbound` drops,
-        // as this call returns. The room it reports is its whole room: it
-        // holds nothing yet.
+        // as this call returns. The room it reports is its whole room, though
+        // the last stream's compile can still hold the compiler thread: it
+        // finishes unanswered, as a report and a take can cross.
         let (outbound, requests) = mpsc::channel(1);
         let hello = PullRequest {
             message: Some(pull_request::Message::Hello(self.hello.clone())),
@@ -298,8 +303,13 @@ impl Link {
                 answer = answers.recv() => {
                     // A Compile that broke the protocol, or a serving task
                     // that stopped, ends the stream.
-                    let Some(Ok(compiled)) = answer else {
-                        return End::Failed;
+                    let compiled = match answer {
+                        Some(Ok(compiled)) => compiled,
+                        Some(Err(ProtocolError)) => {
+                            tracing::warn!("a Compile broke the protocol; closing the pull stream");
+                            return End::Failed;
+                        }
+                        None => return End::Failed,
                     };
                     held = held.saturating_sub(1);
                     let free = self.hello.free.saturating_sub(held);
