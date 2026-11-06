@@ -50,6 +50,8 @@ coral_failures! {
     ProviderNotFound => "provider_not_found",
     /// Coral attempted the Provider's Publication, and it failed.
     ProviderPublicationFailed => "provider_publication_failed",
+    /// None of the caller's Saved Functions is at the requested path.
+    SavedFunctionNotFound => "saved_function_not_found",
     /// Exact Tool policy disables this Invocation.
     ToolDisabled => "tool_disabled",
     /// The retained Credential Route changed.
@@ -117,6 +119,7 @@ impl CoralFailure {
             Self::ProviderNamespaceConflict => "Provider namespace is already in use",
             Self::ProviderNotFound => "Provider was not found",
             Self::ProviderPublicationFailed => "Coral could not change the Provider",
+            Self::SavedFunctionNotFound => "Saved Function was not found",
             Self::CredentialRouteChanged => "Tool credential route changed",
             Self::AccountRequired => "Tool requires a Provider Account",
             Self::CredentialRefreshFailed => "Tool credential refresh failed",

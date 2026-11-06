@@ -14,6 +14,9 @@
   const defineProperties = Object.defineProperties;
   const setPrototypeOf = Object.setPrototypeOf;
   const freeze = Object.freeze;
+  const create = Object.create;
+  const keys = Object.keys;
+  const isArray = Array.isArray;
 
   class ToolError extends NativeError {
     // oxlint-disable-next-line constructor-super -- Programs must not construct a ToolError.
@@ -24,6 +27,47 @@
   Object.defineProperty(ToolError.prototype, 'name', { value: 'ToolError' });
   Object.freeze(ToolError.prototype);
   Object.freeze(ToolError);
+
+  // A literal `coral.workspace.saveFunction` call passes its source in a
+  // carrier that admission writes and the compiled wrapper takes before any
+  // authored code runs. A carrier has no prototype, so no Program reaches
+  // this class, and a private field marks it, so no Program forges one.
+  class SavedFunctionSource {
+    #text;
+    constructor(text) {
+      this.#text = text;
+      setPrototypeOf(this, null);
+      freeze(this);
+    }
+
+    static textOf(value) {
+      return typeof value === 'object' && value !== null && #text in value
+        ? value.#text
+        : undefined;
+    }
+  }
+  Object.defineProperty(globalThis, '__coralSavedFunctionSource', {
+    value: (text) => new SavedFunctionSource(nativeString(text)),
+    enumerable: false,
+    writable: false,
+    configurable: true,
+  });
+
+  // The arguments of `coral.workspace.saveFunction` as the Tool reads them:
+  // `source` only when a carrier holds it, so no authored value reaches the
+  // Tool as a source. Undefined unless the input is an object.
+  const SAVE_FUNCTION_PATH = 'coral.workspace.saveFunction';
+  const saveFunctionArguments = (input) => {
+    if (typeof input !== 'object' || input === null || isArray(input)) return undefined;
+    const encoded = create(null);
+    for (const key of keys(input)) {
+      // A copied `toJSON` would replace what this encodes, source included.
+      if (key !== 'source' && key !== 'toJSON') encoded[key] = input[key];
+    }
+    const text = SavedFunctionSource.textOf(input.source);
+    if (text !== undefined) encoded.source = text;
+    return encoded;
+  };
 
   const callablePath = (path) =>
     new Proxy(function coralToolPath() {}, {
@@ -40,7 +84,9 @@
         let encoded = '{}';
         if (args.length === 1) {
           try {
-            encoded = nativeStringify(args[0]);
+            const input = path === SAVE_FUNCTION_PATH ? saveFunctionArguments(args[0]) : args[0];
+            if (input === undefined) return invoke(path);
+            encoded = nativeStringify(input);
           } catch {
             return invoke(path);
           }

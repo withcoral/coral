@@ -219,8 +219,8 @@ impl SavedFunctionModule {
     ///
     /// This save does not notify Universal Search: coral-search depends on
     /// this crate, so the call would be a cycle. A production caller notifies
-    /// `SearchIndex::index_function` after this returns, as the Task command's
-    /// save does. Until then, the reconcile task indexes the function.
+    /// `SearchIndex::sync_function` after its commit, as
+    /// `coral.workspace.saveFunction` does. Until then, the reconcile task indexes the function.
     ///
     /// # Errors
     ///
@@ -555,9 +555,7 @@ impl SavedFunctionModule {
             .iter()
             .any(|function| saved_function_paths_overlap(function.path(), path))
         {
-            return Err(Error::SavedFunctionAdmission(
-                "Saved Function Path conflicts with an existing virtual namespace".to_string(),
-            ));
+            return Err(Error::SavedFunctionPathConflict);
         }
 
         let mut held_paths = references

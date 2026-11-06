@@ -479,8 +479,7 @@ fn describe_material(
         rules,
         material.provider_id(),
         material.tool_key(),
-        material.hints(),
-        material.http_method(),
+        material.policy_facts(),
     ) else {
         return Ok(None);
     };

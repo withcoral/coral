@@ -21,6 +21,14 @@ pub fn has_safe_http_method(generation: ColumnRef, tool: ColumnRef) -> SimpleExp
     )
 }
 
+/// Whether the exact retained Tool's catalog declares it `enabled` when no
+/// exact rule matches. The caller supplies a trusted Generation reference
+/// after Workspace authorization.
+#[must_use]
+pub fn declares_enabled_by_default(generation: ColumnRef, tool: ColumnRef) -> SimpleExpr {
+    retained_tool_where(generation, tool, col("enabled_by_default").eq(true))
+}
+
 fn col(name: &str) -> Expr {
     Expr::col((Alias::new("retained_tool"), Alias::new(name)))
 }

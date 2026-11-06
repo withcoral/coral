@@ -44,6 +44,7 @@ pub(super) fn definition() -> Definition {
         input: empty_object_schema(),
         output: derived_schema::<ListProvidersResult>(Contract::Serialize),
         declared: Declared::Once,
+        enabled_by_default: false,
     }
 }
 

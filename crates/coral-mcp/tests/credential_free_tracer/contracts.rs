@@ -178,14 +178,6 @@ impl OutputContracts {
             &["code", "message", "trace_id"]
         } else {
             match name {
-                "save_function" => &[
-                    "call_path",
-                    "description",
-                    "declaration",
-                    "diagnostics",
-                    "diagnostics_truncated",
-                ],
-                "delete_function" => &["call_path"],
                 "exec" | "wait" | "cancel" => &[
                     "run_id",
                     "state",

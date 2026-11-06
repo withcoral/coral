@@ -304,8 +304,7 @@ async fn listing_pages_and_a_summary_by_path_read_the_catalog() {
         assert_eq!(&listing.key, tool.key());
         assert_eq!(listing.relative_path, tool.relative_path());
         assert_eq!(listing.tags, tool.presentation().tags());
-        assert_eq!(listing.hints, tool.hints());
-        assert_eq!(listing.http_method, tool.http_method());
+        assert_eq!(listing.policy, tool.policy_facts());
         assert_eq!(listing.availability, tool.availability());
         assert_eq!(listing.diagnostics, tool.diagnostics());
     }
@@ -394,6 +393,24 @@ async fn catalog_schema_rejects_drift() {
     );
 }
 
+/// Runs `statement` for each Tool column a migration after the Tool rename
+/// adds, given its definition and the value its upgrade gives every row.
+/// This version writes each one, so a fixture from before the rename holds
+/// it until the rows are read, with the upgrade's value, and drops it before
+/// the upgrade adds it.
+async fn later_columns(fixture: &TestDatabase, statement: impl Fn(&str, &str, &str) -> String) {
+    for (column, definition, upgrade_default) in [(
+        "enabled_by_default",
+        "BOOLEAN NOT NULL DEFAULT FALSE",
+        "FALSE",
+    )] {
+        fixture
+            .execute_fixture_sql(&statement(column, definition, upgrade_default))
+            .await
+            .unwrap();
+    }
+}
+
 /// A database from before Operations were Provider Tools: the upgrade renames
 /// what retained Generations stored about their tools, so each loads as it did.
 #[tokio::test]
@@ -401,6 +418,11 @@ async fn upgrade_renames_what_a_generation_stored_about_its_tools() {
     let before_tool_names = coral_test_support::migration_plan_before(46);
     let fixture = TestDatabase::new(&before_tool_names).await.unwrap();
     let database = fixture.database();
+    // This version writes every column a later migration adds.
+    later_columns(&fixture, |column, definition, _| {
+        format!("ALTER TABLE materialized_tools ADD COLUMN {column} {definition}")
+    })
+    .await;
     let input = ProviderSetupInput::from(
         OpenApiDocument::parse(
             &serde_json::json!({
@@ -441,6 +463,12 @@ async fn upgrade_renames_what_a_generation_stored_about_its_tools() {
     )
     .await
     .unwrap();
+    transaction.commit().await.unwrap();
+    later_columns(&fixture, |column, _, upgrade_default| {
+        format!("UPDATE materialized_tools SET {column} = {upgrade_default}")
+    })
+    .await;
+    let mut transaction = database.begin().await.unwrap();
     let mut before = Vec::new();
     for generation in [&openapi, &builtin] {
         before.push(
@@ -450,6 +478,10 @@ async fn upgrade_renames_what_a_generation_stored_about_its_tools() {
         );
     }
     transaction.commit().await.unwrap();
+    later_columns(&fixture, |column, _, _| {
+        format!("ALTER TABLE materialized_tools DROP COLUMN {column}")
+    })
+    .await;
     assert!(before.first().into_iter().flatten().any(|tool| {
         tool.diagnostic()
             .is_some_and(|diagnostic| diagnostic.code() == "invalid_tool_schema")

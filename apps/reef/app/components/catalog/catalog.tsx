@@ -1,5 +1,5 @@
 import classNames from 'classnames'
-import { useCallback, useRef, type MouseEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
 
 import { Button, Inputs, Menu, ScrollArea, Typography } from '@/wax/components'
@@ -171,15 +171,61 @@ export function CatalogRailItem({
   )
 }
 
+// Room the filter's input keeps beside a picker before the picker moves down,
+// and the row's gap between items.
+const FILTER_ROOM = 200
+const TOOLBAR_GAP = 12
+
+/**
+ * Whether a picker fits on the title's line beside the filter's input and the
+ * action, measured as the toolbar resizes. Its width is measured from its
+ * content, so moving it below does not change the answer.
+ */
+function usePickerPlacement(enabled: boolean) {
+  const toolbar = useRef<HTMLDivElement>(null)
+  const titleItem = useRef<HTMLDivElement>(null)
+  const pickerItem = useRef<HTMLDivElement>(null)
+  const actionItem = useRef<HTMLDivElement>(null)
+  const [pickerBelow, setPickerBelow] = useState(false)
+  const place = useCallback(() => {
+    const row = toolbar.current
+    const picker = pickerItem.current
+    if (!row || !picker) return
+    const needed =
+      (titleItem.current?.scrollWidth ?? 0) +
+      (picker.firstElementChild?.scrollWidth ?? picker.scrollWidth) +
+      FILTER_ROOM +
+      (actionItem.current?.offsetWidth ?? 0) +
+      3 * TOOLBAR_GAP
+    setPickerBelow(needed > row.clientWidth)
+  }, [])
+  useEffect(() => {
+    const row = toolbar.current
+    if (!enabled || !row || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(place)
+    observer.observe(row)
+    return () => observer.disconnect()
+  }, [enabled, place])
+  // The picker's own width changes with what it shows, such as a count that gains
+  // a digit, without the toolbar resizing, so each render measures it again. An
+  // unchanged answer does not render again.
+  useEffect(() => {
+    if (enabled) place()
+  })
+  return { toolbar, titleItem, pickerItem, actionItem, pickerBelow }
+}
+
 /**
  * The one row above the table: `leading` controls at the start, then any
- * other controls, the filter's input, and the page's `action` at the end.
+ * other controls, a `picker`, the filter's input, and the page's `action` at
+ * the end.
  */
 export function CatalogToolbar({
   title,
   titleInfo,
   filter,
   leading,
+  picker,
   children,
   action,
 }: {
@@ -198,6 +244,12 @@ export function CatalogToolbar({
   }
   /** Controls at the start of the row, such as actions on the selection. */
   leading?: ReactNode
+  /**
+   * A wide control beside the filter's input, such as a segmented filter. When
+   * the row has no room for it, it takes a line of its own below, at the end,
+   * and the rest stays on the title's line.
+   */
+  picker?: ReactNode
   children?: ReactNode
   /**
    * The page's main action, such as "Add provider", last in the row. Give it
@@ -208,6 +260,9 @@ export function CatalogToolbar({
 }) {
   const { shortcut, fill, ...field } = filter
   const input = useRef<HTMLInputElement>(null)
+  const { toolbar, titleItem, pickerItem, actionItem, pickerBelow } = usePickerPlacement(
+    Boolean(picker),
+  )
   const focusFilter = useCallback((event: KeyboardEvent) => {
     event.preventDefault()
     input.current?.focus()
@@ -225,13 +280,24 @@ export function CatalogToolbar({
       {shortcut && <KeyboardShortcut shortcut={shortcut} handler={focusFilter} />}
     </div>
   )
+  const pickerSlot = picker && (
+    <div
+      ref={pickerItem}
+      className={classNames(styles.toolbarPicker, pickerBelow && styles.toolbarPickerBelow)}
+    >
+      {picker}
+    </div>
+  )
   return (
-    <div className={classNames(styles.toolbar, Boolean(action) && styles.toolbarWithAction)}>
+    <div
+      ref={toolbar}
+      className={classNames(styles.toolbar, Boolean(action) && styles.toolbarWithAction)}
+    >
       {/* An empty group would still take a gap, and push the controls off the table's edge. */}
       {(title || leading) && (
         <div className={styles.toolbarGroup}>
           {title && (
-            <div className={styles.toolbarTitle}>
+            <div ref={titleItem} className={styles.toolbarTitle}>
               <Typography.HeadingLarge as="h1" truncate>
                 {title}
               </Typography.HeadingLarge>
@@ -243,18 +309,22 @@ export function CatalogToolbar({
       )}
       <div className={classNames(styles.toolbarGroup, styles.toolbarControls)}>
         {children}
+        {!pickerBelow && pickerSlot}
         {action ? (
           // One unit, so a wrapping row never leaves the action on a line alone.
           <div
             className={classNames(styles.toolbarFilterAndAction, fill && styles.toolbarFilterFill)}
           >
             {filterField}
-            <div className={styles.toolbarAction}>{action}</div>
+            <div ref={actionItem} className={styles.toolbarAction}>
+              {action}
+            </div>
           </div>
         ) : (
           filterField
         )}
       </div>
+      {pickerBelow && pickerSlot}
     </div>
   )
 }

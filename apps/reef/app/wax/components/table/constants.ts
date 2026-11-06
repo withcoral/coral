@@ -82,3 +82,6 @@ export type TableLayout = 'auto' | 'fixed' | 'scroll'
 
 /** `card` draws bordered, rounded chrome around the table. */
 export type TableVariant = 'card' | 'plain'
+
+/** The order a column sets for its table's rows: `aria-sort`'s values. */
+export type TableSort = 'ascending' | 'descending' | 'none'

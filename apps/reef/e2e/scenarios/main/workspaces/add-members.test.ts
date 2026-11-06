@@ -65,7 +65,7 @@ test('An Organization Owner adds several people at once and retries only the ref
         await dialog.getByRole('button', { name: `Remove ${bob.email}`, exact: true }).click()
         await pickPerson(page, carol.email)
         await pickPerson(page, dana.email)
-        await dialog.getByRole('button', { name: 'Role', exact: true }).click()
+        await dialog.getByRole('button', { name: 'Role: Member', exact: true }).click()
         await page.getByRole('menuitemradio', { name: 'Owner', exact: true }).click()
         await dialog.getByRole('button', { name: 'Add 2 owners', exact: true }).click()
         await expect.poll(() => dialog.count()).toBe(0)

@@ -48,8 +48,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     for (tool_key, hints, declared) in [
         (
             BuiltinTool::AddProvider,
-            // No read-only hint, so the default Tool Access State is approval_required.
-            ToolHints::default(),
+            // Not read-only, so the default Tool Access State is approval_required.
+            ToolHints::new(Some(false), Some(false), Some(false), Some(true)),
             &[
                 "type ProviderSourceInput =",
                 "\"openapi_document\"",
@@ -95,8 +95,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         ),
         (
             BuiltinTool::UpdateProvider,
-            // No read-only hint, so its default Tool Access State requires approval.
-            ToolHints::default(),
+            // Not read-only, so its default Tool Access State requires approval.
+            ToolHints::new(Some(false), Some(true), Some(false), Some(true)),
             &[
                 r#""namespace": string"#,
                 r#""refresh"?: true"#,
@@ -118,8 +118,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         ),
         (
             BuiltinTool::UpdatePolicy,
-            // Idempotent only, so the default Tool Access State is approval_required.
-            ToolHints::new(None, None, Some(true), None),
+            // Not read-only, so the default Tool Access State is approval_required.
+            ToolHints::new(Some(false), Some(true), Some(true), Some(false)),
             &[
                 r#""namespace": string"#,
                 r#""tools": ({} & Record<string, "enabled" | "approval_required" | "disabled">)"#,
@@ -142,6 +142,29 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 r#""suggestions": Array<string>"#,
                 r#""kind": "provider_tool""#,
                 r#""kind": "saved_function""#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
+        (
+            BuiltinTool::SaveFunction,
+            // Not read-only; its catalog declares the enabled default below.
+            ToolHints::new(Some(false), Some(true), Some(true), Some(false)),
+            &[
+                r#"export default function (input: { "description": string; "path": string; "source": (...args: never[]) => unknown })"#,
+                r#""call_path": string"#,
+                r#""declaration": string"#,
+                r#""diagnostics": Array<Diagnostic>"#,
+                r#""diagnostics_truncated": boolean"#,
+                "metadata: { kind: \"builtin\" }",
+            ][..],
+        ),
+        (
+            BuiltinTool::DeleteFunction,
+            // Deleting again fails, so it is not idempotent.
+            ToolHints::new(Some(false), Some(true), Some(false), Some(false)),
+            &[
+                r#"export default function (input: { "path": string })"#,
+                r#""call_path": string"#,
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
@@ -179,14 +202,32 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         target_keys,
         [
             "addProvider",
+            "deleteFunction",
             "getPolicy",
             "getProvider",
             "listProviders",
+            "saveFunction",
             "search",
             "updatePolicy",
             "updateProvider"
         ]
     );
+    // The retained Generation keeps the enabled default the catalog declares
+    // for the Tools that change only the caller's own Saved Functions, and
+    // for no other Tool, so policy reads it from storage.
+    let enabled_by_default = |facts: coral_catalog::ToolPolicyFacts, key: &str| {
+        assert_eq!(
+            facts.declares_enabled_by_default(),
+            ["saveFunction", "deleteFunction"].contains(&key),
+            "{key}"
+        );
+    };
+    for tool in &tools {
+        enabled_by_default(tool.policy_facts(), tool.key().as_str());
+    }
+    for target in &targets {
+        enabled_by_default(target.policy_facts(), target.key().as_str());
+    }
 
     let graph = coral_catalog::schema_graph_in_transaction(&mut transaction, &first)
         .await

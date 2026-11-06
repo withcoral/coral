@@ -281,7 +281,7 @@ impl InvocationTrace {
             ExecutionBinding::Mcp(_) => metric::ProviderProtocol::Mcp,
             ExecutionBinding::Builtin(_) => metric::ProviderProtocol::Builtin,
         };
-        let effect = if coral_policy::reads_only(tool.hints(), tool.http_method()) {
+        let effect = if coral_policy::reads_only(tool.policy_facts()) {
             metric::ToolEffect::Read
         } else {
             metric::ToolEffect::Write

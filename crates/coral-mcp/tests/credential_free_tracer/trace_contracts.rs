@@ -36,8 +36,8 @@ async fn tool_failures_name_the_trace_of_their_request() {
             ),
             (
                 "an attributed failure",
-                "delete_function",
-                json!({"task_id": task, "intent": "Delete a malformed path", "path": "not a path"}),
+                "exec",
+                json!({"task_id": task, "intent": "Run an oversized Program", "program": "x".repeat(65 * 1024)}),
                 "invalid_input",
             ),
             (
@@ -261,11 +261,12 @@ async fn caller_text_cannot_set_a_failures_trace_id() {
     }
 }
 
-/// What Coral records about a call carries the trace of that call's request:
-/// the inbound trace when one is valid, else the trace of the request and
-/// tool spans Coral exported for it. Its failures name the same trace.
+/// What a Program's Tool call records carries its Run Trace, and the Run
+/// Trace links the `exec` request that started it: the inbound trace when
+/// one is valid, else the trace of the request and tool spans Coral exported
+/// for it.
 #[tokio::test(flavor = "multi_thread")]
-async fn records_carry_the_trace_of_their_request() {
+async fn records_carry_the_run_trace_that_links_their_request() {
     let capture = capture();
     let tracer = Tracer::start().await;
     let owner = coral_workspace::AuthenticatedPrincipal::user(tracer.local_user.clone());
@@ -281,18 +282,28 @@ async fn records_carry_the_trace_of_their_request() {
                     .iter()
                     .map(|(name, value)| (*name, value.as_str()))
                     .collect::<Vec<_>>();
+                // The Program saves within the exec request's wait.
                 let saved = session
                     .tool_with_headers(
-                        "save_function",
+                        "exec",
                         json!({
-                            "task_id": task, "intent": "Save a traced function",
-                            "path": path, "description": "Return one",
-                            "source": "export default function one(): number { return 1; }",
+                            "task_id": task, "intent": "Save a traced function", "wait_ms": 30_000,
+                            "program": super::Save {
+                                path: &path,
+                                description: "Return one",
+                                declarations: "function one(): number { return 1; }",
+                                name: "one",
+                            }
+                            .program(),
                         }),
                         &headers,
                     )
                     .await;
-                assert_ne!(saved["isError"], true, "{saved}");
+                assert_eq!(
+                    saved.pointer("/structuredContent/state"),
+                    Some(&json!("succeeded")),
+                    "{saved}"
+                );
             }
         };
         let parent = format!("{:032x}", 0xc0_a200 + version_index);
@@ -327,17 +338,28 @@ async fn records_carry_the_trace_of_their_request() {
             .unwrap_or_else(|| panic!("{context}: the save is recorded"))
             .trace_id()
             .as_str();
+        let accept = spans
+            .iter()
+            .find(|span| {
+                span.span_context.trace_id().to_string() == recorded
+                    && span.name == "coral.run.accept"
+            })
+            .unwrap_or_else(|| panic!("{context}: the record names its Run Trace"));
+        let request = accept.links.iter().next().map_or_else(
+            || panic!("{context}: the Run Trace links its request"),
+            |link| link.span_context.trace_id().to_string(),
+        );
         if let Some(parent) = parent {
             assert_eq!(
-                recorded, parent,
-                "{context}: the record continues the trace"
+                request, parent,
+                "{context}: the request continues the inbound trace"
             );
         }
         assert_spans_in_trace(
             &spans,
             &context,
-            recorded,
-            "save_function",
+            &request,
+            "exec",
             &tracer,
             None,
             Some(&task),

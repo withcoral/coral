@@ -68,7 +68,7 @@ export async function liveActions(context: TestContext) {
       'actionFixture',
     )
     await page.goto(provider)
-    await setToolPolicy(page, 'charge', 'Needs approval')
+    await setToolPolicy(page, 'charge', 'Ask')
     await enableTool(page, 'gate')
     // A User's own calls do not need approval. Run as a real registered Agent so
     // the Owner reviews its calls through the normal authorization path.

@@ -54,7 +54,7 @@ fn tool_access(
         available: tool.availability == coral_catalog::ToolAvailability::Available,
         diagnostics: super::providers::blocking_diagnostics(&tool.diagnostics),
         tags: tool.tags.clone(),
-        hints: Some(super::providers::tool_hints(tool.hints)),
+        hints: Some(super::providers::tool_hints(tool.policy.hints())),
         access_state: access_state(decision.access_state()).into(),
         explicit: decision.is_explicit(),
     }

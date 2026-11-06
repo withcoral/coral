@@ -1,6 +1,8 @@
 //! Grouped, payload-free history totals. Each query restricts Runs to `authority`,
 //! resolved in the same snapshot, before it groups.
-use crate::summary::{ActorContext, ApprovalDecisions, OutcomeEvidence};
+use crate::summary::{
+    ActorContext, ApprovalDecisions, DailyEvidence, OutcomeEvidence, ToolAddress,
+};
 use crate::{CoralFailure, Error, InvocationResultKind};
 use coral_db::{Transaction, col, column};
 use coral_workspace::HistoryAuthority;
@@ -39,10 +41,20 @@ struct OutcomeRow {
     principal_id: String,
     principal_kind: String,
     agent_label: Option<String>,
+    provider_id: String,
+    tool_key: String,
     call_path: String,
     result_kind: String,
     failure_code: Option<String>,
     calls: i64,
+    last_ended_at_unix_nanos: i64,
+}
+
+fn tool_address(provider_id: &str, tool_key: &str) -> Result<ToolAddress, Error> {
+    Ok(ToolAddress {
+        provider_id: coral_provider::ProviderId::parse(provider_id)?,
+        tool_key: coral_catalog::ToolKey::parse(tool_key).map_err(coral_provider::Error::from)?,
+    })
 }
 
 fn principal(id: &str, kind: &str) -> Result<coral_workspace::Principal, Error> {
@@ -52,14 +64,20 @@ fn principal(id: &str, kind: &str) -> Result<coral_workspace::Principal, Error> 
     ))
 }
 
-/// Ended Invocations grouped by invoking Principal, Call Path and native outcome.
+/// Ended Invocations grouped by invoking Principal, Tool, Call Path and native outcome.
 pub(crate) async fn call_outcomes(
     tx: &mut Transaction<'_>,
     authority: &HistoryAuthority,
     since: i64,
 ) -> Result<Vec<OutcomeEvidence>, Error> {
     let runs = ["workspace_id", "principal_id", "principal_kind"];
-    let invocations = ["call_path", "result_kind", "failure_code"];
+    let invocations = [
+        "provider_id",
+        "tool_key",
+        "call_path",
+        "result_kind",
+        "failure_code",
+    ];
     let mut grouped = authorized_runs_with(authority, "tool_invocations", "i");
     grouped
         .columns(runs.map(|name| (Alias::new("r"), Alias::new(name))))
@@ -67,6 +85,10 @@ pub(crate) async fn call_outcomes(
         .expr_as(
             Expr::col((Alias::new("i"), Alias::new("id"))).count(),
             Alias::new("calls"),
+        )
+        .expr_as(
+            Expr::col((Alias::new("i"), Alias::new("ended_at_unix_nanos"))).max(),
+            Alias::new("last_ended_at_unix_nanos"),
         )
         .and_where(ended_since(since))
         .group_by_columns(runs.map(|name| (Alias::new("r"), Alias::new(name))))
@@ -78,10 +100,13 @@ pub(crate) async fn call_outcomes(
             [
                 "principal_id",
                 "principal_kind",
+                "provider_id",
+                "tool_key",
                 "call_path",
                 "result_kind",
                 "failure_code",
                 "calls",
+                "last_ended_at_unix_nanos",
             ]
             .map(|name| (Alias::new("g"), Alias::new(name))),
         )
@@ -99,13 +124,61 @@ pub(crate) async fn call_outcomes(
             Ok(OutcomeEvidence {
                 principal: principal(&row.principal_id, &row.principal_kind)?,
                 agent_label: row.agent_label,
+                tool: tool_address(&row.provider_id, &row.tool_key)?,
                 call_path: row.call_path,
+                last_ended_at_unix_nanos: row.last_ended_at_unix_nanos,
                 kind: InvocationResultKind::from_storage_str(&row.result_kind)?,
                 // A code this build no longer knows is still an ended failure.
                 failure: row
                     .failure_code
                     .as_deref()
                     .and_then(CoralFailure::from_code),
+                calls: row.calls,
+            })
+        })
+        .collect()
+}
+
+#[derive(sqlx::FromRow)]
+struct DailyRow {
+    provider_id: String,
+    tool_key: String,
+    day: i64,
+    calls: i64,
+}
+
+/// Ended Invocations grouped by Tool and by the day of the window they ended in,
+/// counted in whole days of `day_nanos` from `since`.
+pub(crate) async fn daily_calls(
+    tx: &mut Transaction<'_>,
+    authority: &HistoryAuthority,
+    since: i64,
+    day_nanos: i64,
+) -> Result<Vec<DailyEvidence>, Error> {
+    let day = col("i", "ended_at_unix_nanos").sub(since).div(day_nanos);
+    let mut grouped = authorized_runs_with(authority, "tool_invocations", "i");
+    grouped
+        .columns(["provider_id", "tool_key"].map(|name| (Alias::new("i"), Alias::new(name))))
+        .expr_as(day, Alias::new("day"))
+        .expr_as(
+            Expr::col((Alias::new("i"), Alias::new("id"))).count(),
+            Alias::new("calls"),
+        )
+        .and_where(ended_since(since))
+        .group_by_columns(
+            ["provider_id", "tool_key"].map(|name| (Alias::new("i"), Alias::new(name))),
+        )
+        // By the output name: Postgres matches no two copies of an expression
+        // whose bound values are separate parameters.
+        .group_by_col(Alias::new("day"));
+    let rows: Vec<DailyRow> = tx.fetch_all(grouped).await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(DailyEvidence {
+                tool: tool_address(&row.provider_id, &row.tool_key)?,
+                // Only calls that ended in the window are selected, so a day is
+                // never negative.
+                day: u32::try_from(row.day).unwrap_or_default(),
                 calls: row.calls,
             })
         })

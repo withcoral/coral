@@ -38,6 +38,8 @@ const chartFillMap: Record<string, string> = {
   blue: theme.chart.blue.fill,
   gray: theme.pill.gray.color,
   green: theme.chart.green.fill,
+  // One quiet tone, for a mark that repeats down a table.
+  neutral: theme.chart.neutral.fill,
   orange: theme.chart.orange.fill,
   purple: theme.chart.purple.fill,
   red: theme.chart.red.fill,
@@ -49,6 +51,7 @@ const chartBgMap: Record<string, string> = {
   blue: theme.pill.blue.background,
   gray: theme.pill.gray.background,
   green: theme.pill.green.background,
+  neutral: theme.chart.neutral.fill,
   orange: theme.pill.orange.background,
   purple: theme.pill.purple.background,
   red: theme.pill.red.background,

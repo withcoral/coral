@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coral_run::{RUN_EVENT_PAGE_MAX, RunCursor, RunId, RunObservation};
 use coral_task::{TaskId, TaskIntent, TaskOutcome};
-use coral_workspace::{TraceId, WorkspaceId};
+use coral_workspace::WorkspaceId;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
@@ -15,8 +15,8 @@ use rmcp::{ErrorData, ServerHandler};
 
 use crate::McpRuntime;
 use crate::arguments::{
-    self, CancelArguments, DeleteFunctionArguments, EndTaskArguments, ExecArguments,
-    SaveFunctionArguments, TaskOutcomeArgument, ToolArguments, WaitArguments,
+    self, CancelArguments, EndTaskArguments, ExecArguments, TaskOutcomeArgument, ToolArguments,
+    WaitArguments,
 };
 use crate::projection::{self, Reporter, ToolFailure};
 
@@ -88,14 +88,6 @@ impl McpServer {
         }
         let name = request.name.as_ref();
         let complete = match name {
-            SaveFunctionArguments::NAME => {
-                let arguments = arguments::parse::<SaveFunctionArguments>(request.arguments)?;
-                self.save_function(arguments).await
-            }
-            DeleteFunctionArguments::NAME => {
-                let arguments = arguments::parse::<DeleteFunctionArguments>(request.arguments)?;
-                self.delete_function(arguments).await
-            }
             ExecArguments::NAME => {
                 let arguments = arguments::parse::<ExecArguments>(request.arguments)?;
                 return self.exec(arguments).await;
@@ -120,45 +112,6 @@ impl McpServer {
         complete.map(Into::into)
     }
 
-    async fn save_function(
-        &self,
-        arguments: SaveFunctionArguments,
-    ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
-        let function = self
-            .runtime
-            .modules
-            .commands
-            .save_function(
-                &call,
-                &arguments.path,
-                &arguments.description,
-                &arguments.source,
-            )
-            .await
-            .map_err(task_failure)?;
-        projection::saved_function(&function)
-            .and_then(projection::success)
-            .map_err(DispatchError::Tool)
-    }
-
-    async fn delete_function(
-        &self,
-        arguments: DeleteFunctionArguments,
-    ) -> Result<CallToolResult, DispatchError> {
-        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
-        self.runtime
-            .modules
-            .commands
-            .delete_function(&call, &arguments.path)
-            .await
-            .map_err(task_failure)?;
-        projection::success(projection::DeletedFunction {
-            call_path: format!("coral.functions.{}", arguments.path),
-        })
-        .map_err(DispatchError::Tool)
-    }
-
     async fn exec(&self, arguments: ExecArguments) -> Result<CallToolResponse, DispatchError> {
         let target = match (&arguments.task_id, &arguments.goal) {
             (Some(task_id), None) => {
@@ -172,7 +125,6 @@ impl McpServer {
                 TaskIntent::parse(goal)
                     .map_err(|error| invalid_input(format!("`goal`: {error}")))?,
                 TaskIntent::parse(&arguments.intent).map_err(invalid_input)?,
-                TraceId::current_or_new(),
             )),
             _ => {
                 return Err(invalid_input_message(
@@ -379,7 +331,6 @@ impl McpServer {
             self.workspace_id.clone(),
             task_id,
             TaskIntent::parse(intent).map_err(invalid_input)?,
-            TraceId::current_or_new(),
         ))
     }
 }
