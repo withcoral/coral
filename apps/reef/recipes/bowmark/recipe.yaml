@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://bowmark.ai/docs/installation
+# Every tool call needs an API key; new accounts start with a free $10 of usage.
+schema_version: 1
+id: bowmark
+display_name: Bowmark
+description: Live data and site tasks on websites like LinkedIn and Amazon from Bowmark.
+source:
+  mcp:
+    url: https://api.bowmark.ai/mcp
+authentication:
+  default: api_key
+  options:
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://bowmark.ai/docs/installation
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
