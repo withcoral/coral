@@ -16,6 +16,7 @@ fn start(coral: &ScriptedCoral, health: Option<TcpListener>) -> oneshot::Sender<
         coral_address: coral.address().parse().unwrap(),
         token: Token::new(TOKEN.to_owned()).unwrap(),
         max_runs_held: 8,
+        run_limits: RunLimits::default(),
     };
     let (retire, retired) = oneshot::channel::<()>();
     tokio::spawn(run(config, health, async {

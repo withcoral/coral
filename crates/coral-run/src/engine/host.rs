@@ -134,7 +134,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
                 let _panic_guard = StopPanickingInvocation(self.stop.clone());
                 let arguments = serde_json::from_str(&arguments_json).map_err(|_error| {
                     coral_v8::ToolHostError::Rejected {
-                        code: CoralFailure::InvalidInput.code(),
+                        code: CoralFailure::InvalidInput.code().into(),
                         message: CoralFailure::InvalidInput.message().into(),
                         trace_id: trace_id.clone(),
                         suggestions: Vec::new(),
@@ -146,7 +146,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
                     .map_err(|error| match error {
                         InvocationHostError::Rejected(failure) => {
                             coral_v8::ToolHostError::Rejected {
-                                code: failure.code(),
+                                code: failure.code().into(),
                                 message: failure.message(),
                                 trace_id: trace_id.clone(),
                                 suggestions: failure.suggestions().to_vec(),
@@ -156,8 +156,8 @@ impl coral_v8::ProgramHost for RunProgramHost {
                             rejection,
                             outcome_json,
                         } => coral_v8::ToolHostError::Upstream {
-                            code: rejection.code(),
-                            message: rejection.message(),
+                            code: rejection.code().into(),
+                            message: rejection.message().into(),
                             outcome_json,
                         },
                         InvocationHostError::Fatal(_private_error) => {

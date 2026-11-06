@@ -154,6 +154,14 @@ pub trait ProgramHost: Send + Sync {
         None
     }
 
+    /// Called once the Program's script is loaded into its fresh isolate,
+    /// before any of its JavaScript runs, and returns when it may run.
+    /// `false` ends it unrun with [`Error::ProgramHostTerminated`]. The CPU
+    /// budget is read after it returns.
+    fn start(&self) -> bool {
+        true
+    }
+
     /// Invokes one Tool by complete Call Path and native-JSON arguments.
     ///
     /// `location` is the authored call site captured before the call returns
@@ -232,7 +240,7 @@ pub enum ToolHostError {
     /// Reject with a known, safe Coral Failure after durable completion.
     Rejected {
         /// Domain-owned stable `snake_case` code, not an upstream error code.
-        code: &'static str,
+        code: std::borrow::Cow<'static, str>,
         /// Safe domain message, never an upstream or host diagnostic.
         message: std::borrow::Cow<'static, str>,
         /// Optional lowercase W3C trace identifier; grants no authority.
@@ -246,9 +254,9 @@ pub enum ToolHostError {
     /// `metadata` from the `ToolError`.
     Upstream {
         /// Domain-owned stable `snake_case` code, never a Coral Failure code.
-        code: &'static str,
+        code: std::borrow::Cow<'static, str>,
         /// Safe domain message, never an upstream diagnostic.
-        message: &'static str,
+        message: std::borrow::Cow<'static, str>,
         /// The encoded Tool Result the Program does not receive.
         outcome_json: String,
     },

@@ -1288,7 +1288,7 @@ impl ProgramHost for RejectingToolHost {
         Box::pin(async move {
             if call_path.ends_with(".retrievePage") {
                 return Err(ToolHostError::Rejected {
-                    code: "tool_not_found",
+                    code: "tool_not_found".into(),
                     message: "Tool Call Path was not found".into(),
                     trace_id: None,
                     suggestions: vec![
@@ -1298,7 +1298,7 @@ impl ProgramHost for RejectingToolHost {
                 });
             }
             Err(ToolHostError::Rejected {
-                code: "upstream_incomplete",
+                code: "upstream_incomplete".into(),
                 message: "durable Tool failure".into(),
                 trace_id: call_path
                     .ends_with(".traced")
@@ -1348,8 +1348,8 @@ impl ProgramHost for UpstreamRejectingHost {
     ) -> coral_v8::ToolFuture {
         Box::pin(async move {
             Err(ToolHostError::Upstream {
-                code: "error_response",
-                message: "The upstream service returned an error",
+                code: "error_response".into(),
+                message: "The upstream service returned an error".into(),
                 outcome_json: self.outcome_json.clone(),
             })
         })
