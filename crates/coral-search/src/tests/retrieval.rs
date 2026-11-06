@@ -13,7 +13,8 @@ use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
 
 use super::{TestModules, change, organization_user, paths};
 use crate::{
-    CallPath, EntityKind, RetrieverState, RetrieverStatus, SearchPage, SearchQuery, SearchRequest,
+    CallPath, EntityKind, ProviderFilter, RetrieverState, RetrieverStatus, SearchPage, SearchQuery,
+    SearchRequest,
 };
 
 const USER: &str = "user:search-retrieval";
@@ -215,14 +216,14 @@ async fn a_mixed_query_fuses_strong_matches_first_then_by_position() {
     // The Provider filter narrows Tools only: Saved Functions stay, for
     // a query and for a listing.
     let github = ProviderCallRoot::parse("coral.providers.github").unwrap();
-    let filtered = corpus.search(issues.with_provider(github.clone())).await;
+    let filtered = corpus.search(issues.with_provider(&github)).await;
     assert_eq!(paths(&filtered), paths(&page));
     assert_eq!(
         state(&filtered, EntityKind::SavedFunction),
         RetrieverState::ResultsFound
     );
     let listed = corpus
-        .search(SearchRequest::list().with_provider(github))
+        .search(SearchRequest::list().with_provider(&github))
         .await;
     for function in [
         "coral.functions.reports.weekly",
@@ -380,7 +381,7 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
     );
 
     let weather = Corpus::query("forecast")
-        .with_provider(ProviderCallRoot::parse("coral.providers.weather").unwrap());
+        .with_provider(&ProviderCallRoot::parse("coral.providers.weather").unwrap());
     assert_eq!(
         paths(&corpus.search(weather).await),
         ["coral.providers.weather.getForecast"],
@@ -410,7 +411,7 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
         assert_eq!(
             shown
                 .iter()
-                .map(ProviderCallRoot::as_str)
+                .map(|provider| provider.call_root().as_str())
                 .collect::<Vec<_>>(),
             searchable
         );
@@ -421,14 +422,14 @@ async fn hits_leave_out_what_the_caller_may_not_see() {
                 .search(
                     principal,
                     &corpus.workspace,
-                    &request.with_provider(ProviderCallRoot::parse(call_root).unwrap()),
+                    &request.with_provider(&ProviderCallRoot::parse(call_root).unwrap()),
                 )
                 .await
                 .expect_err("an unknown Call Root is refused");
             assert!(
                 matches!(
                     &error,
-                    crate::Error::UnknownProviderCallRoot { searchable: listed }
+                    crate::Error::UnknownProviderCallRoot { searchable: listed, .. }
                         if listed.iter().map(ProviderCallRoot::as_str).eq(searchable.iter().copied())
                 ),
                 "{call_root}: {error:?}"
@@ -473,13 +474,89 @@ async fn a_filtered_search_reads_only_the_named_provider() {
     );
     let github = ProviderCallRoot::parse("coral.providers.github").unwrap();
     for request in [Corpus::query("issues"), SearchRequest::list()] {
-        let page = corpus.search(request.with_provider(github.clone())).await;
+        let page = corpus.search(request.with_provider(&github)).await;
         assert!(
             paths(&page).contains(&"coral.providers.github.issues.list"),
             "{:?}",
             paths(&page)
         );
     }
+}
+
+/// A filter of several namespaces reads each Provider it names. One entry
+/// that names no Provider the caller can search refuses the whole search, at
+/// its position, with every namespace the caller can search.
+#[tokio::test]
+async fn a_filter_of_several_namespaces_reads_each_and_refuses_an_unknown_one() {
+    let corpus = Corpus::new().await;
+    corpus
+        .modules
+        .publish_openapi(&corpus.user, &corpus.workspace, CAMEL, "weather", 90)
+        .await;
+    corpus.modules.converge().await;
+    let filter = |values: &[&str]| {
+        ProviderFilter::new(values.iter().map(|value| (*value).to_owned()).collect()).unwrap()
+    };
+    let providers = |page: &SearchPage| {
+        let mut providers = paths(page)
+            .into_iter()
+            .filter_map(|path| path.strip_prefix("coral.providers."))
+            .filter_map(|path| path.split_once('.').map(|(namespace, _rest)| namespace))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        providers.dedup();
+        providers
+    };
+    // The values a filter takes, by namespace, with what each is called.
+    let searchable = corpus
+        .modules
+        .search
+        .searchable_providers(&corpus.principal, &corpus.workspace)
+        .await
+        .unwrap();
+    assert_eq!(
+        searchable
+            .iter()
+            .map(|provider| (provider.namespace(), provider.display_name()))
+            .collect::<Vec<_>>(),
+        [("github", "GitHub"), ("weather", "Weather")]
+    );
+
+    let both = corpus
+        .search(SearchRequest::list().with_providers(filter(&["weather", "github"])))
+        .await;
+    assert_eq!(providers(&both), ["github", "weather"]);
+    let one = corpus
+        .search(SearchRequest::list().with_providers(filter(&["github"])))
+        .await;
+    assert_eq!(providers(&one), ["github"]);
+
+    let error = corpus
+        .modules
+        .search
+        .search(
+            &corpus.principal,
+            &corpus.workspace,
+            &SearchRequest::list().with_providers(filter(&[
+                "github",
+                "absent",
+                "coral.providers.weather",
+            ])),
+        )
+        .await
+        .expect_err("an entry that names no Provider is refused");
+    assert!(
+        matches!(
+            &error,
+            crate::Error::UnknownProviderCallRoot { searchable, unmatched }
+                if unmatched == &[1, 2]
+                    && searchable.iter().map(ProviderCallRoot::as_str).eq([
+                        "coral.providers.github",
+                        "coral.providers.weather",
+                    ])
+        ),
+        "{error:?}"
+    );
 }
 
 #[tokio::test]

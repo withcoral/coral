@@ -6,11 +6,14 @@ pub enum Error {
     /// Caller-supplied discovery input was invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),
-    /// The Provider filter names no Provider the caller can search.
+    /// A Provider filter value names no Provider the caller can search.
     #[error("no Provider the caller can search has the requested Call Root")]
     UnknownProviderCallRoot {
         /// The Call Roots the caller can search, in order.
         searchable: Vec<ProviderCallRoot>,
+        /// The positions of the filter values that name none of them, in
+        /// order.
+        unmatched: Vec<usize>,
     },
     /// Search results could not be ranked, or a result page could not be
     /// produced.
@@ -61,7 +64,7 @@ impl Error {
                 .safe_rejection()
                 .map(|(code, message)| (code, message.to_owned()));
         }
-        if let Self::UnknownProviderCallRoot { searchable } = self {
+        if let Self::UnknownProviderCallRoot { searchable, .. } = self {
             return Some(("invalid_input", unknown_call_root_message(searchable)));
         }
         if let Self::TypesLimit = self {
@@ -100,14 +103,27 @@ impl Error {
     }
 }
 
+/// Why one Provider filter value is refused, without the namespaces to use
+/// and without the value.
+pub const UNKNOWN_NAMESPACE_REASON: &str = "No Provider you can search has this namespace";
+
 /// Names only what the caller can search, never the value it asked for.
 fn unknown_call_root_message(searchable: &[ProviderCallRoot]) -> String {
+    format!(
+        "{UNKNOWN_NAMESPACE_REASON}. {}",
+        searchable_namespaces(searchable)
+    )
+}
+
+/// The namespaces a refused Provider filter can use instead, as one
+/// sentence.
+#[must_use]
+pub fn searchable_namespaces(searchable: &[ProviderCallRoot]) -> String {
     if searchable.is_empty() {
-        return "No Provider you can search has this namespace. You can search no Provider."
-            .to_string();
+        return "You can search no Provider.".to_owned();
     }
     format!(
-        "No Provider you can search has this namespace. Use one of: {}.",
+        "Use one of: {}.",
         searchable
             .iter()
             .map(crate::provider_filter_value)

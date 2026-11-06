@@ -337,12 +337,13 @@ impl Tracer {
             )
             .await
             .expect("register tracer Agent");
-        let commands = coral_task::TaskCommands::new(tasks.clone(), search, runs.clone());
+        let commands = coral_task::TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
         let modules = McpModules::new(
             workspaces.clone(),
             tasks.clone(),
             commands,
             runs.clone(),
+            search,
             coral_mcp::HumanInterfaceUrl::parse("https://reef.example.test")
                 .expect("human interface URL"),
         )
@@ -1570,6 +1571,44 @@ return { found: found.data, read: read.data };"#,
     assert_ne!(observed_after_closure.is_error, Some(true));
 }
 
+/// A namespace lookup that fails costs only the list: `tools/list` still
+/// serves every tool, and `exec`'s description says the list is missing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_namespace_lookup_still_lists_every_tool() {
+    let tracer = Tracer::start().await;
+    // A fault in the Provider's credential contract fails every read that
+    // checks whether the caller can reach it.
+    tracer
+        .database
+        .execute_fixture_sql(
+            "UPDATE provider_generations SET credential_contract = 'not a contract' \
+             WHERE id IN (SELECT active_generation_id FROM provider_records \
+                          WHERE namespace = 'coral.providers.weather')",
+        )
+        .await
+        .expect("break the Provider's credential contract");
+    let client = tracer.sdk().await;
+    let tools = client.list_all_tools().await.expect("list MCP tools");
+    let mut names = tools
+        .iter()
+        .map(|tool| tool.name.to_string())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["cancel", "end_task", "exec", "wait"]);
+    let description = tools
+        .iter()
+        .find(|tool| tool.name == "exec")
+        .and_then(|tool| tool.description.as_deref())
+        .expect("exec description");
+    assert!(
+        description.ends_with(
+            "\n\nCoral could not list your namespaces. A wrong `provider` is refused with the \
+             full list."
+        ),
+        "{description}"
+    );
+}
+
 /// `exec`'s description teaches discovery with one example. Its first
 /// Program type-checks against the declaration Coral publishes for
 /// `coral.workspace.search`, and runs against a real search, so the fields
@@ -1607,6 +1646,18 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
     assert!(
         call_found.starts_with("return (await coral.providers."),
         "the later Program calls a literal Call Path: {call_found}"
+    );
+    // The description ends with the namespaces this caller can search, so
+    // the first Program can pass `provider`.
+    let (_fixed, list) = description
+        .rsplit_once("\n\nNamespaces for `provider`:\n")
+        .expect("exec names the caller's namespaces");
+    assert_eq!(
+        list.lines()
+            .map(|line| line.split('\t').next().expect("a namespace"))
+            .collect::<Vec<_>>(),
+        ["coral.workspace", "weather"],
+        "{list}"
     );
 
     let task_id = start_task(&client, "Check the exec example").await;

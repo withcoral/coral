@@ -132,7 +132,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             ToolHints::new(Some(true), None, Some(true), None),
             &[
                 // One overload per mode, each returning only its own result.
-                r#"export default function (input: { "limit"?: number; "offset"?: number; "provider"?: string; "query"?: string }): Promise<{ data: SearchResult; metadata: { kind: "builtin" } }>;"#,
+                r#"export default function (input: { "limit"?: number; "offset"?: number; "provider"?: (string | Array<string>); "query"?: string }): Promise<{ data: SearchResult; metadata: { kind: "builtin" } }>;"#,
                 r#"export default function (input: { "paths": Array<string> }): Promise<{ data: PathsResult; metadata: { kind: "builtin" } }>;"#,
                 r#"export default function (input: { "paths": [string]; "types": Array<string> }): Promise<{ data: PathsResult; metadata: { kind: "builtin" } }>;"#,
                 r#""hits": Array<SearchHit>"#,

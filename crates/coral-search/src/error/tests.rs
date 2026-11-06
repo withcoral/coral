@@ -18,6 +18,7 @@ fn an_unknown_provider_filter_is_refused_with_only_the_searchable_namespaces() {
                 .iter()
                 .map(|root| ProviderCallRoot::parse(root).unwrap())
                 .collect(),
+            unmatched: vec![0],
         };
         assert_eq!(
             error.safe_rejection(),

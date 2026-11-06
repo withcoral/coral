@@ -566,7 +566,7 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_function_respon
             &call,
             coral_search::SearchInput {
                 query: Some("  private missing café  ".into()),
-                provider: Some(provider.into()),
+                provider: vec![provider.into()],
                 limit: Some(7),
                 offset: Some(3),
             },
