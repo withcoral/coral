@@ -68,7 +68,7 @@ fn principal(id: &str, kind: &str) -> Result<coral_workspace::Principal, Error> 
 
 /// Ended Invocations grouped by invoking Principal, Tool, Call Path and native outcome.
 /// Only an ended Invocation holds an ended time, by the lifecycle constraint. So
-/// the read names neither `state` nor `id`. Migration 0057 indexes ended times;
+/// the read names neither `state` nor `id`. Migration 0058 indexes ended times;
 /// Tool identity still requires row reads. The query never selects payloads.
 pub(crate) async fn call_outcomes(
     tx: &mut Transaction<'_>,
