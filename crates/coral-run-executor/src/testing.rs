@@ -9,11 +9,11 @@
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::server::TcpIncoming;
@@ -60,7 +60,7 @@ pub struct ScriptedCoral {
     address: String,
     calls: mpsc::UnboundedReceiver<PullCall>,
     release: watch::Sender<()>,
-    taken: broadcast::Sender<Taken>,
+    takers: Takers,
     rooms: mpsc::UnboundedReceiver<u32>,
     runs: mpsc::UnboundedReceiver<RunCall>,
     server: tokio::task::JoinHandle<()>,
@@ -121,14 +121,14 @@ impl ScriptedCoral {
         let address = format!("http://{}", listener.local_addr().expect("local address"));
         let (calls_tx, calls) = mpsc::unbounded_channel();
         let (release, released) = watch::channel(());
-        let (taken, _) = broadcast::channel(16);
+        let takers = Takers::default();
         let (rooms_tx, rooms) = mpsc::unbounded_channel();
         let (runs_tx, runs) = mpsc::unbounded_channel();
         let script = Script {
             answers: Mutex::new(script.into_iter().collect()),
             calls: calls_tx,
             released,
-            taken: taken.clone(),
+            takers: Arc::clone(&takers),
             rooms: rooms_tx,
             runs: runs_tx,
         };
@@ -143,7 +143,7 @@ impl ScriptedCoral {
             address,
             calls,
             release,
-            taken,
+            takers,
             rooms,
             runs,
             server,
@@ -156,7 +156,13 @@ impl ScriptedCoral {
             run_id: run_id.to_owned(),
             claim_id: claim_id.to_owned(),
         };
-        drop(self.taken.send(Taken { runs: vec![run] }));
+        self.takers.lock().expect("the takers").retain(|taker| {
+            taker
+                .send(Taken {
+                    runs: vec![run.clone()],
+                })
+                .is_ok()
+        });
     }
 
     /// The next `Room` a held pull stream reports, within 10 s.
@@ -201,11 +207,14 @@ impl Drop for ScriptedCoral {
     }
 }
 
+/// One queue of `Taken` per pull stream, which loses none.
+type Takers = Arc<Mutex<Vec<mpsc::UnboundedSender<Taken>>>>;
+
 struct Script {
     answers: Mutex<VecDeque<Answer>>,
     calls: mpsc::UnboundedSender<PullCall>,
     released: watch::Receiver<()>,
-    taken: broadcast::Sender<Taken>,
+    takers: Takers,
     rooms: mpsc::UnboundedSender<u32>,
     runs: mpsc::UnboundedSender<RunCall>,
 }
@@ -244,7 +253,8 @@ impl LinkService for Script {
         // `next_call` returns reaches this stream.
         let mut released = self.released.clone();
         released.mark_unchanged();
-        let mut taken = self.taken.subscribe();
+        let (queue, mut taken) = mpsc::unbounded_channel();
+        self.takers.lock().expect("the takers").push(queue);
         let rooms = self.rooms.clone();
         let peer = request.remote_addr();
         let authorization = request
@@ -299,7 +309,7 @@ impl LinkService for Script {
                         break;
                     }
                     () = outbound.closed() => break,
-                    Ok(taken) = taken.recv() => {
+                    Some(taken) = taken.recv() => {
                         let taken = PullResponse {
                             message: Some(pull_response::Message::Taken(taken)),
                         };

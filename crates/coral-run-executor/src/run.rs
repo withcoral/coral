@@ -17,8 +17,9 @@ use crate::wire::v1::{
 };
 use host::RunHost;
 
-/// The Applied cap: while more output bytes than this are above the
-/// committed watermark, the Program's next request waits.
+/// The Applied cap: while the requests above the committed watermark weigh
+/// more than this, the Program's next request waits. A request weighs its
+/// encoded size, so a Run holds at most the cap plus one request.
 pub const APPLIED_CAP_BYTES: usize = 8 << 20;
 /// Maximum UTF-8 byte length of one Program Log message.
 pub const PROGRAM_LOG_MESSAGE_MAX_BYTES: usize = 64 * 1024;
