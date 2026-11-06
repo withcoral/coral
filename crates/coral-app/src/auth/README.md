@@ -98,9 +98,9 @@ explicitly overrides RFC 7591's confidential default by returning
 `token_endpoint_auth_method: "none"`
 ([ADR 0030](../../../../docs/adr/0030-dcr-clients-may-authenticate-with-client-secret-post.md)). Omitted grants and response types use the RFC
 `authorization_code` and `code` defaults. Requests containing those supported values
-are accepted; the response contains only that supported subset. In particular,
-Pi's `["authorization_code", "refresh_token"]` request is accepted without claiming
-refresh-token support. A request with no usable supported flow fails.
+are accepted; the response contains only that supported subset. A request that lists
+`refresh_token` is registered for it, so Pi's `["authorization_code", "refresh_token"]`
+request gets refresh tokens. A request with no usable supported flow fails.
 
 - Supply 1–8 redirect URIs, each at most 2,048 UTF-8 bytes. Coral accepts HTTPS,
   explicit loopback HTTP, and native-app reverse-domain schemes such as
