@@ -3,7 +3,7 @@
 //! The search is this Invocation of this Run, recorded like any other, and
 //! nothing else.
 
-use coral_catalog::SearchArguments;
+use coral_catalog::{ProviderArgument, SearchArguments};
 use coral_search::{DiscoveryRequest, ExactPaths, SearchInput, SearchRequest};
 
 use super::BuiltinHost;
@@ -14,13 +14,18 @@ use crate::{CoralFailure, Error, Rejection};
 #[derive(Clone)]
 pub(crate) struct Search {
     request: DiscoveryRequest,
+    /// The `provider` argument as written, which names the values a refusal
+    /// points at.
+    provider: Option<ProviderArgument>,
 }
 
 impl Search {
     /// The call for arguments the contract accepted, with each value
     /// Universal Search checks itself, so a Program learns which to correct
-    /// before any other work.
+    /// before any other work. The namespaces are checked against the
+    /// Workspace when the search runs.
     pub(super) fn new(arguments: SearchArguments) -> Result<Self, Rejection> {
+        let mut written = None;
         let request = match arguments {
             SearchArguments::Query {
                 query,
@@ -30,10 +35,14 @@ impl Search {
             } => {
                 let input = SearchInput {
                     query,
-                    provider,
+                    provider: provider
+                        .as_ref()
+                        .map(ProviderArgument::values)
+                        .unwrap_or_default(),
                     limit,
                     offset,
                 };
+                written = provider;
                 // Each value alone, so a refusal names the one to correct.
                 // Any offset reads: one past the end is an empty last page.
                 let alone = [
@@ -41,13 +50,6 @@ impl Search {
                         "query",
                         SearchInput {
                             query: input.query.clone(),
-                            ..SearchInput::default()
-                        },
-                    ),
-                    (
-                        "provider",
-                        SearchInput {
-                            provider: input.provider.clone(),
                             ..SearchInput::default()
                         },
                     ),
@@ -80,7 +82,10 @@ impl Search {
                 })?,
             ),
         };
-        Ok(Self { request })
+        Ok(Self {
+            request,
+            provider: written,
+        })
     }
 
     /// Discovers as the invoking Principal. A path it cannot discover is in
@@ -90,7 +95,7 @@ impl Search {
             .search
             .discover(host.actor, host.workspace_id, &self.request)
             .await
-            .map_err(failure)?;
+            .map_err(|error| failure(error, self.provider.as_ref()))?;
         let output = coral_search::projection::discovery(&found);
         // As MCP `describe` does: fail rather than hand the Program a number
         // V8 rounds. Only corrupt stored data holds one.
@@ -111,9 +116,6 @@ fn value_reason(field: &str) -> String {
             "pass keywords that are not blank, with no null character, in at most {} UTF-8 bytes",
             coral_search::SEARCH_QUERY_MAX_BYTES
         ),
-        "provider" => {
-            "pass a namespace from coral.providers.<namespace>, or coral.workspace".to_owned()
-        }
         _ => format!("pass 1 to {}", coral_search::SEARCH_RESULT_LIMIT_MAX),
     }
 }
@@ -131,17 +133,41 @@ fn rejection(field: &str, reason: String) -> Rejection {
     Rejection::invalid_inputs(vec![InputProblem::new(field, reason)])
 }
 
-/// A failure the Program can read and correct, or a host error.
-fn failure(error: coral_search::Error) -> Error {
+/// A failure the Program can read and correct, or a host error. A refused
+/// namespace is named by its place in the `provider` argument as written,
+/// and the namespaces to use come once.
+fn failure(error: coral_search::Error, provider: Option<&ProviderArgument>) -> Error {
     match error {
+        coral_search::Error::UnknownProviderCallRoot {
+            ref searchable,
+            ref unmatched,
+        } => {
+            let field = |position: &usize| {
+                provider.map_or_else(
+                    || "provider".to_owned(),
+                    |provider| provider.field(*position),
+                )
+            };
+            let problems = match unmatched.as_slice() {
+                [position] => vec![InputProblem::new(field(position), search_reason(&error))],
+                positions => positions
+                    .iter()
+                    .map(|position| {
+                        InputProblem::new(field(position), coral_search::UNKNOWN_NAMESPACE_REASON)
+                    })
+                    .chain([InputProblem::new(
+                        "",
+                        coral_search::searchable_namespaces(searchable),
+                    )])
+                    .collect(),
+            };
+            Error::InvocationRejected(Rejection::invalid_inputs(problems))
+        }
         coral_search::Error::Workspace(error) if crate::enforcement::loses_authority(&error) => {
             Error::InvocationRejected(CoralFailure::AuthorityLost.into())
         }
         coral_search::Error::PermissionDenied(_) => {
             Error::InvocationRejected(CoralFailure::AuthorityLost.into())
-        }
-        coral_search::Error::UnknownProviderCallRoot { .. } => {
-            Error::InvocationRejected(rejection("provider", search_reason(&error)))
         }
         coral_search::Error::UndeclaredTypes { .. } | coral_search::Error::TypesLimit => {
             Error::InvocationRejected(rejection("types", search_reason(&error)))

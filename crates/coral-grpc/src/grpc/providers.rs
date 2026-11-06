@@ -1425,6 +1425,7 @@ mod tests {
             (
                 coral_search::Error::UnknownProviderCallRoot {
                     searchable: Vec::new(),
+                    unmatched: vec![0],
                 },
                 Code::InvalidArgument,
                 "INVALID_ARGUMENT",

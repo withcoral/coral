@@ -87,18 +87,18 @@ use retriever::{
 
 pub use caller_declarations::CallerToolDeclarations;
 pub use discovery::{Discovery, DiscoveryRequest, ExactLookup, ExactPaths, MissingPath};
-pub use error::Error;
+pub use error::{Error, UNKNOWN_NAMESPACE_REASON, searchable_namespaces};
 pub use index::SearchIndex;
 pub use storage::{StorageError, prepare_storage};
 pub use suggestion::SUGGESTIONS_MAX;
 pub use types::{
     ApprovalRequirement, AuthoringDescription, CallPath, EntityKind, ExactAuthoringDescription,
-    ExactSavedFunctionDetail, ProviderCallRoot, ProviderId, RetrieverCoverage, RetrieverState,
-    RetrieverStatus, SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX,
+    ExactSavedFunctionDetail, ProviderCallRoot, ProviderFilter, ProviderId, RetrieverCoverage,
+    RetrieverState, RetrieverStatus, SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX,
     SEARCH_EVIDENCE_PATH_MAX_BYTES, SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES,
     SEARCH_QUERY_MAX_BYTES, SEARCH_RESULT_LIMIT_MAX, SavedFunctionAuthoringDescription,
     SearchEvidence, SearchHit, SearchIndexFailure, SearchIndexState, SearchInput, SearchLimit,
-    SearchPage, SearchQuery, SearchRequest, ToolAuthoringDescription, ToolHit,
+    SearchPage, SearchQuery, SearchRequest, SearchableProvider, ToolAuthoringDescription, ToolHit,
     provider_filter_value,
 };
 
@@ -278,12 +278,13 @@ impl UniversalSearchModule {
         Ok(page)
     }
 
-    /// The Call Roots of the Providers the caller can search now, in order:
-    /// the values a search's Provider filter accepts. Reads no index.
+    /// The Providers the caller can search now, by namespace: the values a
+    /// search's Provider filter accepts, each with its display name. Reads no
+    /// index.
     ///
-    /// It needs the authority to inspect the Workspace, as a Task start
-    /// does, not discovery admission: a Task still starts in an archived
-    /// Workspace, though its searches are refused.
+    /// It needs the authority to inspect the Workspace, as listing tools
+    /// does, not discovery admission: an agent still sees the namespaces of
+    /// an archived Workspace, though its searches are refused.
     ///
     /// # Errors
     ///
@@ -292,7 +293,7 @@ impl UniversalSearchModule {
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-    ) -> Result<Vec<ProviderCallRoot>, Error> {
+    ) -> Result<Vec<SearchableProvider>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
             .workspaces
@@ -303,7 +304,7 @@ impl UniversalSearchModule {
                 now_unix_nanos()?,
             )
             .await?;
-        let call_roots = retriever::tools::searchable_call_roots(
+        let searchable = retriever::tools::searchable_providers(
             &mut transaction,
             RequestContext {
                 actor,
@@ -315,7 +316,7 @@ impl UniversalSearchModule {
         )
         .await?;
         transaction.commit().await?;
-        Ok(call_roots)
+        Ok(searchable)
     }
 
     /// Lists every visible Entity of every kind in Call Path order.
@@ -323,7 +324,7 @@ impl UniversalSearchModule {
         &self,
         transaction: &mut Transaction<'_>,
         context: RequestContext<'_>,
-        provider_filter: Option<&ProviderCallRoot>,
+        provider_filter: &ProviderFilter,
     ) -> Result<(Vec<Ranked>, Vec<RetrieverStatus>), Error> {
         let mut listed = Vec::new();
         let mut statuses = Vec::with_capacity(self.retrievers.len());

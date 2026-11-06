@@ -888,7 +888,7 @@ async fn provider_declaration_paths_match_the_authoritative_typescript_surface()
             &principal,
             &workspace_id,
             &SearchRequest::query(SearchQuery::parse("input").expect("query")).with_provider(
-                crate::ProviderCallRoot::parse("coral.providers.argumentless").expect("namespace"),
+                &crate::ProviderCallRoot::parse("coral.providers.argumentless").expect("namespace"),
             ),
         )
         .await
@@ -2065,7 +2065,7 @@ async fn provider_filter_selects_one_provider_and_keeps_saved_functions() {
             &principal,
             &workspace_id,
             &SearchRequest::list().with_provider(
-                crate::ProviderCallRoot::parse("coral.providers.weather").expect("namespace"),
+                &crate::ProviderCallRoot::parse("coral.providers.weather").expect("namespace"),
             ),
         )
         .await
@@ -2127,7 +2127,7 @@ async fn pages_current_results_by_offset_and_reapplies_visibility_on_each_page()
             &principal,
             &workspace_id,
             &SearchRequest::list().with_provider(
-                crate::ProviderCallRoot::parse("coral.providers.weather").expect("namespace"),
+                &crate::ProviderCallRoot::parse("coral.providers.weather").expect("namespace"),
             ),
         )
         .await
@@ -3354,8 +3354,8 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
             fixture.search.describe(actor, &workspace, &path, &[]).await,
             Err(Error::Workspace(coral_workspace::Error::WorkspaceArchived))
         ));
-        // A Task still starts in an archived Workspace, and its result names
-        // the Call Roots, as an inspection of the Workspace may.
+        // An agent still lists tools in an archived Workspace, and the list
+        // names the Call Roots, as an inspection of the Workspace may.
         assert_eq!(
             fixture
                 .search
@@ -3363,7 +3363,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
                 .await
                 .unwrap()
                 .iter()
-                .map(crate::ProviderCallRoot::as_str)
+                .map(|provider| provider.call_root().as_str())
                 .collect::<Vec<_>>(),
             ["coral.providers.weather", "coral.providers.weatherAgain"]
         );
