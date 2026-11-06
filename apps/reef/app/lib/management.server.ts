@@ -18,6 +18,7 @@ import { ActivityService } from '@/generated/coral/management/v1/activity_pb'
 import { ToolPolicyService } from '@/generated/coral/management/v1/policy_pb'
 import { SavedFunctionService } from '@/generated/coral/management/v1/saved_function_pb'
 import { ReleaseService } from '@/generated/coral/management/v1/release_pb'
+import { SecretStoreService } from '@/generated/coral/management/v1/secret_store_pb'
 import { managementTransportForRequest } from './coral-request.server'
 import { runtimeConfigContext } from './runtime-config.server'
 
@@ -43,6 +44,7 @@ export function management(context: Readonly<RouterContextProvider>) {
     policies: createClient(ToolPolicyService, transport),
     savedFunctions: createClient(SavedFunctionService, transport),
     releases: createClient(ReleaseService, transport),
+    secretStores: createClient(SecretStoreService, transport),
   }
 }
 export type ManagementApi = ReturnType<typeof management>

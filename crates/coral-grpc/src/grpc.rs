@@ -9,6 +9,7 @@ mod policies;
 mod providers;
 mod releases;
 mod saved_functions;
+mod secret_stores;
 mod workspaces;
 use std::sync::Arc;
 
@@ -49,6 +50,8 @@ pub struct Dependencies {
     pub access_lifecycle: coral_administration::AccessLifecycleModule,
     /// The newest published release; absent when the operator turned the check off.
     pub releases: Option<coral_release::ReleaseCheck>,
+    /// The Secret Stores the operator defined, for an Organization Owner.
+    pub secret_stores: coral_administration::SecretStoreInventory,
 }
 
 /// Resolved transport context supplied by application composition.
@@ -86,6 +89,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         runs: dependencies.runs,
         access_lifecycle: dependencies.access_lifecycle,
         releases: dependencies.releases,
+        secret_stores: dependencies.secret_stores,
     };
     let mut routes = tonic::service::Routes::default()
         .add_service(
@@ -133,6 +137,11 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
             services.clone(),
         ))
         .add_service(
+            management::secret_store_service_server::SecretStoreServiceServer::new(
+                services.clone(),
+            ),
+        )
+        .add_service(
             management::saved_function_service_server::SavedFunctionServiceServer::new(
                 services.clone(),
             ),
@@ -172,6 +181,7 @@ struct GrpcServices {
     runs: coral_run::RunModule,
     access_lifecycle: coral_administration::AccessLifecycleModule,
     releases: Option<coral_release::ReleaseCheck>,
+    secret_stores: coral_administration::SecretStoreInventory,
 }
 
 impl GrpcServices {

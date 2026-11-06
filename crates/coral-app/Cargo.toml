@@ -48,6 +48,7 @@ coral-mcp.workspace = true
 coral-policy.workspace = true
 coral-provider.workspace = true
 coral-release.workspace = true
+coral-secret-store.workspace = true
 coral-run.workspace = true
 coral-run-executor.workspace = true
 coral-functions.workspace = true

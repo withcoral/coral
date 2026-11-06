@@ -18,6 +18,7 @@ coral-workspace.workspace = true
 coral-provider.workspace = true
 coral-functions.workspace = true
 coral-search.workspace = true
+coral-secret-store.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

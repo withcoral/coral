@@ -27,6 +27,8 @@ struct ServerConfigFile {
     search: SearchSettings,
     credentials: CredentialSettings,
     updates: UpdateSettings,
+    /// Decoded entry by entry in `secret_store_config`, so a failure can name the store.
+    secret_stores: Vec<toml::Value>,
     #[serde(rename = "auth")]
     _auth: IgnoredAny,
     #[serde(rename = "database")]
@@ -115,6 +117,23 @@ impl LoadedServerConfig {
         self.parse()?.credentials.key_env()
     }
 
+    /// The Secret Stores this deployment defines. Reads each store's secret ID
+    /// from the environment and sends nothing.
+    pub(crate) fn secret_stores(
+        &self,
+        policy: coral_outbound::DestinationPolicy,
+    ) -> Result<coral_secret_store::SecretStores, AppError> {
+        self.secret_stores_from(policy, &AppEnvironment::env_var)
+    }
+
+    pub(super) fn secret_stores_from(
+        &self,
+        policy: coral_outbound::DestinationPolicy,
+        env: &dyn Fn(&str) -> Result<Option<String>, std::env::VarError>,
+    ) -> Result<coral_secret_store::SecretStores, AppError> {
+        super::secret_store_config::build(&self.parse()?.secret_stores, policy, env)
+    }
+
     /// Validates all deployment sections after the persistent-state fence.
     /// Secrets are resolved later, only for the surfaces that use them. A
     /// `credentials.key` file beside `credentials.key_env` is refused when the
@@ -125,6 +144,7 @@ impl LoadedServerConfig {
         config.runtime.resolve()?;
         config.search.reconcile_interval()?;
         config.credentials.key_env()?;
+        super::secret_store_config::validate(&config.secret_stores)?;
         self.auth_settings()?;
         crate::telemetry::TelemetryConfig::from_toml(&self.raw)?;
         Ok(())
@@ -826,7 +846,7 @@ fn required_oauth_url(label: &str, value: Option<&str>) -> Result<String, AppErr
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::fs;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -853,7 +873,7 @@ mod tests {
     }
 
     /// Captures `raw` as the deployment configuration.
-    fn load(raw: &str) -> (TempDir, LoadedServerConfig) {
+    pub(in crate::bootstrap) fn load(raw: &str) -> (TempDir, LoadedServerConfig) {
         let (temp, layout) = deployment(raw);
         (temp, LoadedServerConfig::load(&layout).expect("load"))
     }
@@ -1419,6 +1439,7 @@ client_secret = 'test-secret'
                 format!("[database]\nbackend = 'postgres://coral:{SECRET}@db.internal/coral'"),
                 "database.backend",
             ),
+            (format!("secret_stores = '{SECRET}'\n"), "secret_stores"),
         ] {
             let temp = TempDir::new().unwrap();
             fs::write(temp.path().join("config.toml"), format!("{section}{WEB}")).unwrap();

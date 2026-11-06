@@ -82,6 +82,41 @@ When the check is on, Coral reads the latest release from `api.github.com` at st
 | ------- | -------------------------------------------------- | -------- | ------- |
 | `check` | Check GitHub for a newer Coral release when `true` | No       | `false` |
 
+### `[[secret_stores]]`
+
+Defines a connection to a secrets system you run. Coral supports HashiCorp Vault and OpenBao KV version 2, and signs in with AppRole. Add one `[[secret_stores]]` table per store. Organization owners can see each store's name and kind in the account menu, under **Secret stores**.
+
+```toml
+[[secret_stores]]
+name = "platform"
+kind = "kv-v2"
+address = "https://vault.example.com:8200"
+mount = "secret"
+
+[secret_stores.auth]
+method = "approle"
+role_id = "c6f7a0e2-..."
+secret_id_env = "CORAL_PLATFORM_SECRET_ID"
+```
+
+| Key                  | Description                                                                                                | Required | Default   |
+| -------------------- | ---------------------------------------------------------------------------------------------------------- | -------- | --------- |
+| `name`               | Stable name for the store: up to 64 lowercase letters, digits, `-` or `_`, starting with a letter or digit | Yes      | N/A       |
+| `kind`               | The secrets system. Must be `kv-v2`.                                                                       | Yes      | N/A       |
+| `address`            | Origin of the store's API, http or https. May include a port; must not include a path.                     | Yes      | N/A       |
+| `mount`              | Where the KV engine is mounted                                                                             | Yes      | N/A       |
+| `auth.method`        | How Coral signs in. Must be `approle`.                                                                     | Yes      | N/A       |
+| `auth.mount`         | Where the AppRole auth method is mounted                                                                   | No       | `approle` |
+| `auth.role_id`       | The role's ID                                                                                              | Yes      | N/A       |
+| `auth.secret_id_env` | Name of the environment variable that holds the role's secret ID                                           | Yes      | N/A       |
+
+A store's name stands for one trust boundary. To move the same store to a new host, change its `address`. To point at a different store, add a new store under a new name.
+
+Coral reads this section when it starts, and stores no credential for a store in its database.
+
+- A malformed store, or a secret ID variable that is not set, stops Coral from starting. The error names the store and the field.
+- An unreachable store does not stop Coral from starting.
+
 ### `[otel]`
 
 Controls telemetry export to an OpenTelemetry endpoint.
