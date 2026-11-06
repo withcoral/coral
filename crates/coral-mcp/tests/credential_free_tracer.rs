@@ -224,6 +224,8 @@ struct Tracer {
     provider_id: coral_provider::ProviderId,
     agent_credential: String,
     workspaces: WorkspaceModule,
+    /// Publishes the Providers a test adds to Workspace A.
+    providers: ProviderModule,
     runs: RunModule,
     policies: ToolPolicyModule,
     approvals: coral_run::approval::ApprovalModule,
@@ -368,6 +370,7 @@ impl Tracer {
             provider_id,
             agent_credential: agent.credential.expose().to_owned(),
             workspaces,
+            providers,
             runs,
             policies,
             approvals,
@@ -413,6 +416,56 @@ impl Tracer {
     async fn sdk(&self) -> SdkClient {
         self.sdk_on(&self.workspace_a, protocol_window_ends().1)
             .await
+    }
+
+    /// Publishes and indexes a `github` Provider in Workspace A. Its
+    /// `createPullRequest` takes a body whose type the signature line names
+    /// but does not show, so that hit is never complete.
+    async fn publish_github(&self) {
+        let operation = |id: &str, summary: &str| {
+            json!({
+                "operationId": id,
+                "summary": summary,
+                "responses": {"200": {
+                    "description": "Tracer response",
+                    "content": {"application/json": {"schema": {"type": "object"}}}
+                }}
+            })
+        };
+        let mut create = operation("createPullRequest", "Create a pull request");
+        create.as_object_mut().expect("operation").insert(
+            "requestBody".to_owned(),
+            json!({"required": true, "content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {"title": {"type": "string"}},
+                "required": ["title"]
+            }}}}),
+        );
+        let document = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "GitHub Tracer", "version": "1"},
+            "servers": [{"url": self.upstream.url()}],
+            "security": [],
+            "paths": {"/pulls": {
+                "get": operation("listPullRequests", "List pull requests"),
+                "post": create
+            }}
+        });
+        publish_openapi(
+            &self.providers,
+            &self.policies,
+            &self.local_user,
+            &self.workspace_a,
+            &Publication {
+                namespace: "github",
+                request_id: "54000000-0000-4000-8000-000000000002",
+                document,
+                tool_keys: &["listPullRequests", "createPullRequest"],
+                at: 60,
+            },
+        )
+        .await;
+        self.index.reconcile().await;
     }
 
     /// Makes `getForecast` wait for the invoking User's approval.
@@ -1616,6 +1669,9 @@ async fn a_failed_namespace_lookup_still_lists_every_tool() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_exec_example_type_checks_and_reads_a_real_search() {
     let tracer = Tracer::start().await;
+    // The example searches `provider: "github"`, a namespace the caller must
+    // be able to search.
+    tracer.publish_github().await;
     let client = tracer.sdk().await;
     let tools = client.list_all_tools().await.expect("list MCP tools");
     let description = tools
@@ -1656,7 +1712,7 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         list.lines()
             .map(|line| line.split('\t').next().expect("a namespace"))
             .collect::<Vec<_>>(),
-        ["coral.workspace", "weather"],
+        ["coral.workspace", "github", "weather"],
         "{list}"
     );
 
@@ -1687,10 +1743,11 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         else {
             panic!("three fields of a hit: {hit}");
         };
+        // The filter keeps GitHub's tools and Saved Functions.
         assert!(
-            call_path
-                .as_str()
-                .is_some_and(|path| path.starts_with("coral.")),
+            call_path.as_str().is_some_and(|path| {
+                path.starts_with("coral.providers.github.") || path.starts_with("coral.functions.")
+            }),
             "{hit}"
         );
         assert!(
@@ -1700,16 +1757,15 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
         );
         assert!(description_snippet.is_string(), "{hit}");
     }
-    // The tracer's search for pull requests finds `coral.workspace.search`,
-    // whose line is never complete: it has one overload per mode. So the
-    // example reads that declaration by its path, and every path it read
-    // exists.
+    // The search finds `createPullRequest`, whose line names its body type
+    // without showing it. So the example reads that declaration by its path,
+    // and every path it read exists.
     let declarations = found["declarations"].as_array().expect("declarations");
     assert!(
         declarations
             .iter()
             .filter_map(Value::as_str)
-            .any(|declaration| declaration.contains("PathsResult")),
+            .any(|declaration| declaration.contains("type PostPullsBodyInput =")),
         "{found}"
     );
     assert_eq!(found["missing"], json!([]), "{found}");
@@ -3341,50 +3397,81 @@ async fn publish_tools(
             "/search-records": {"get": tool("searchRecords", "")}
         }
     });
+    publish_openapi(
+        providers,
+        policies,
+        user,
+        workspace_id,
+        &Publication {
+            namespace: "weather",
+            request_id: "54000000-0000-4000-8000-000000000001",
+            document,
+            tool_keys: &[
+                "getForecast",
+                "disconnectedFirst",
+                "disconnectedSecond",
+                "lostWorker",
+                "getPrivateRecord",
+                "searchRecords",
+            ],
+            at: 20,
+        },
+    )
+    .await
+}
+
+/// An OpenAPI Provider a tracer publishes in a Workspace, with the Tools
+/// it enables.
+struct Publication<'a> {
+    namespace: &'a str,
+    request_id: &'a str,
+    document: Value,
+    tool_keys: &'a [&'a str],
+    /// When its setup is prepared. It is published 1 later, and its Tools
+    /// are enabled from 10 later.
+    at: i64,
+}
+
+async fn publish_openapi(
+    providers: &ProviderModule,
+    policies: &ToolPolicyModule,
+    user: &AuthenticatedUser,
+    workspace_id: &WorkspaceId,
+    publication: &Publication<'_>,
+) -> coral_provider::ProviderId {
     let setup = providers
         .prepare_openapi_fixture(
-            &change(user.clone(), 20, '3'),
+            &change(user.clone(), publication.at, '3'),
             workspace_id,
-            OpenApiDocument::parse(&document.to_string()).expect("OpenAPI document"),
+            OpenApiDocument::parse(&publication.document.to_string()).expect("OpenAPI document"),
         )
         .await
         .expect("create Provider Setup");
-    let publication = providers
+    let published = providers
         .publish_workspace_provider(
-            &change(user.clone(), 21, '4'),
+            &change(user.clone(), publication.at + 1, '4'),
             WorkspaceProviderPublicationRequest::new(
-                ManagementRequestId::parse("54000000-0000-4000-8000-000000000001")
-                    .expect("management request id"),
+                ManagementRequestId::parse(publication.request_id).expect("management request id"),
                 workspace_id.clone(),
                 setup.id().clone(),
-                ProviderNamespace::parse("weather").expect("namespace"),
+                ProviderNamespace::parse(publication.namespace).expect("namespace"),
                 CredentialRoute::None,
             ),
         )
         .await
         .expect("publish tracer Provider");
-    let provider_id = publication
+    let provider_id = published
         .skip_search()
         .published_provider()
         .expect("successful Provider publication")
         .id()
         .clone();
-    for (index, tool_key) in [
-        "getForecast",
-        "disconnectedFirst",
-        "disconnectedSecond",
-        "lostWorker",
-        "getPrivateRecord",
-        "searchRecords",
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    for (index, tool_key) in publication.tool_keys.iter().enumerate() {
         policies
             .set_access_state(
                 &change(
                     user.clone(),
-                    30 + i64::try_from(index).expect("small fixture index"),
+                    publication.at + 10 + i64::try_from(index).expect("small fixture index"),
                     char::from_digit(u32::try_from(index + 5).expect("trace digit"), 16)
                         .expect("trace digit character"),
                 ),
