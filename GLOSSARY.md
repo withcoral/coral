@@ -20,14 +20,14 @@ sign-ins neither overwrite the current role nor re-enable a disabled Membership.
 disablement, and Coral protects the last enabled Organization Owner. Enabled Membership is a prerequisite for
 Workspace authority and never grants it; the `owner` role adds Organization administration and Workspace governance
 only. Removing Membership removes the User's Workspace Memberships, stored Provider Account credentials, and current
-Saved Functions from every Workspace in the Organization without deleting Administrative Lifecycle Events, retained
+Private Tools from every Workspace in the Organization without deleting Administrative Lifecycle Events, retained
 Run snapshots, or historical attribution. When the User is the sole designated Owner of a Workspace, removal needs a
 transfer target: one enabled Organization Member who becomes the designated Owner of every such Workspace in the same
 change. _Avoid_: Workspace Membership, administrator, inherited Workspace authority, role inferred from login metadata
 
 **User Disablement**: An Organization Owner's suspension of a User's Organization Membership, preventing new
 authenticated requests and later upstream dispatches by that User, including those from already accepted Runs, without
-deleting the User's stable identity, Workspace Memberships, current Saved Functions, or retained history. A disabled
+deleting the User's stable identity, Workspace Memberships, current Private Tools, or retained history. A disabled
 designated Owner is still the Owner on record. Disablement is distinct from
 Membership removal, cannot be undone by signing in again, and does not disable Workspace-owned Agents merely because
 the User created them or provisioned their Provider Accounts. _Avoid_: User deletion, automatic session-based
@@ -90,7 +90,7 @@ one designated Owner: leave, removal, and demotion of the last one are denied. T
 whatever the state of their Organization Membership, so a disabled Owner is still the Owner and User Disablement
 changes no Membership. An Organization Owner can assign a designated Owner to any active Workspace, including
 themselves; assignment promotes a current Member. Membership removal always ends the User's authority inside that Workspace and clears
-the User's stored Provider Account credentials and current Saved Functions. Rejoining after that cleanup requires
+the User's stored Provider Account credentials and current Private Tools. Rejoining after that cleanup requires
 reconnecting. _Avoid_: Organization Membership, inherited Membership, effective Owner, ownerless Workspace
 
 **Principal**: An authenticated actor, stably classified as a User or Agent, to whom Coral attributes work. Kind informs
@@ -108,7 +108,7 @@ human is not the invoking Principal. Account ownership does not become Agent aut
 dispatches, including pending Invocations, and disables its Provider Accounts while preserving attribution. An
 accepted Run whose Program execution has started can finish secret-free computation; if execution has not started, Coral
 fails it without executing the Program. Moving the Agent requires a new Agent Principal and Agent Registration. Deletion
-removes its Registration, Provider Account credentials, and current Saved Functions under host retention policy,
+removes its Registration, Provider Account credentials, and current Private Tools under host retention policy,
 but keeps its stable identifier, safe attribution metadata, Administrative Lifecycle Events, retained Run source
 snapshots, Invocations, approvals, and historical account identifiers. An Agent is a caller Principal only in v1; it is
 not a protected resource that another Agent can call. An authenticated Agent can observe and cancel its own accepted
@@ -166,14 +166,14 @@ policy. _Avoid_: MCP clientInfo, Program identity, secret URL, recoverable crede
 **Administrative Lifecycle Event**: An immutable, non-secret record of an accepted control-plane or authoring change
 that can affect future authority, configuration, or code. It covers Organization Membership, Workspace and Workspace
 Membership changes, Agents and Agent Registrations, Provider setup, publication, Credential Route and lifecycle changes,
-Provider Account authorization, connection and disconnection, Tool policy, approval decisions, and Saved Function
+Provider Account authorization, connection and disconnection, Tool policy, approval decisions, and Private Tool
 saves and deletions. It records an actor that is either the accountable Principal or Coral itself, together with the
 action, safe target, outcome, changed field paths, timestamp, and trace identifier, without copying credentials,
 before-and-after values, or Invocation arguments. It also records whether a Workspace Membership or Organization Owner
 governance authorized the change. Organization Owners can inspect Organization Membership events and the events for
 their own governance actions: Owner assignment, archive, and restore. A Workspace Owner can inspect that Workspace's
-Workspace, Membership, Agent, Agent Saved Function, Provider, Credential Route, policy, and shared or Agent Provider
-Account events. A User can inspect events for their own Provider Accounts, Membership, and Saved Functions. Ownership
+Workspace, Membership, Agent, Agent Private Tool, Provider, Credential Route, policy, and shared or Agent Provider
+Account events. A User can inspect events for their own Provider Accounts, Membership, and Private Tools, and every Member User can inspect Shared Tool events. Ownership
 does not expose another User's private work, and Agents cannot browse these events. Each event belongs to the domain
 that owns the changed state; it is not reconstructed from telemetry or duplicated as a Program Run Event. _Avoid_:
 Program Run Event, mutable audit row, secret log
@@ -245,9 +245,9 @@ Provider consumes the prepared setup; Coral does not fetch a different descripto
 or `canceled`. Only a
 ready Setup feeds Publication. Every open Setup has a host deadline one hour after it is created; a Setup still open
 then, ready or not, expires, and Publication refuses it. Expiry and explicit cancellation scrub setup-scoped credential
-material. A Setup that `coral.workspace.addProvider` prepares records the Provider Namespace and Credential Route the
+material. A Setup that `coral.addProvider` prepares records the Provider Namespace and Credential Route the
 Program asked for; the person who finishes it can change either. A Setup that regenerates a Provider, including one
-that `coral.workspace.updateProvider` prepares, starts from the Provider's saved Provider Configuration; a source of the other kind,
+that `coral.updateProvider` prepares, starts from the Provider's saved Provider Configuration; a source of the other kind,
 an MCP server for an OpenAPI document or the reverse, brings its own servers. _Avoid_: Provider Definition inspection, live Provider,
 implicit refresh
 _In Reef_: never named; preparation within "Add provider", "Refresh tools", "Edit configuration", and "Change account setting"
@@ -276,11 +276,11 @@ _Avoid_: Source, Upstream Service, Provider Definition, provider account
 _In Reef_: "provider"; revoke and restore are "Disable" and "Enable"; hard deletion is "Remove"
 
 **Built-in Provider**: The one Provider in every Workspace whose Tool catalog Coral itself defines and whose
-Tools Coral itself performs, with no upstream dispatch. Its Call Root is `coral.workspace`. It shares Universal
+Tools Coral itself performs, with no upstream dispatch. Its Call Root is `coral` itself, so its Tools sit directly on it, such as `coral.search`. It shares Universal
 Search, Tool Access State, Approval Requests, and Tool Invocation records with every other Provider. Each of
 its Tools declares the Workspace action it needs, and a Principal discovers, invokes, and inspects only the
 Tools whose action its authority permits: every Principal reaches `listProviders`, `getPolicy` and `search`, every
-Principal that authors in the Workspace, Agents included, reaches `saveFunction` and `deleteFunction`, and only a User
+Principal that authors in the Workspace, Agents included, reaches `addTool`, `updateTool` and `removeTool`, and only a User
 with effective Workspace Owner authority reaches `addProvider`, `getProvider`, `updateProvider` and `updatePolicy`. An
 Owner can disable and enable it and set its Tool policy, but nobody can rename, reconfigure, or remove it, and it
 has no Provider Accounts. Its Tools add a Provider (`addProvider`), list the Workspace's Providers
@@ -288,8 +288,9 @@ has no Provider Accounts. Its Tools add a Provider (`addProvider`), list the Wor
 (`getProvider`), change one Owner-created Provider's configuration or source (`updateProvider`), read the exact
 Tool rules a Workspace Owner set for one Owner-created Provider, keyed by each Tool's Call Path relative to
 its Call Root (`getPolicy`), set the exact Tool Access State of 1–100 of its Tools by those paths, all or
-none (`updatePolicy`), and save or delete one of the caller's own Saved Functions (`saveFunction`,
-`deleteFunction`). They never touch another Principal's functions: an Owner deletes an Agent's function in Reef only.
+none (`updatePolicy`), and add, update or remove one of the caller's own Private Tools (`addTool`, `updateTool`,
+`removeTool`). They never touch another Principal's Private Tools or any Shared Tool: an Owner removes an Agent's
+Private Tool, and publishes a Shared Tool, in Reef only.
 `updatePolicy` names a Provider under `coral.providers`, so it never reaches a Built-in
 Tool, and a Program cannot loosen the approval on the Tools that change the Workspace. When Coral boots, it
 updates every Workspace's Built-in Provider to the catalog it serves; a Workspace whose update fails keeps its catalog
@@ -306,13 +307,25 @@ name a Provider Setup; that Setup's identity grants nothing, and only the User w
 _Avoid_: admin API, administrative calls, coral.admin surface, system provider
 _In Reef_: "Coral", with the Coral logo, listed first
 
+**Private Provider**: The one Provider in every Workspace whose Tools are its Private Tools, under the Call Root
+`coral.private`. Each Principal sees only their own Tools in it. Coral performs its Tools, with no upstream dispatch and
+no Provider Accounts. A Workspace Owner can disable it, which stops every Private Tool, and can set exact rules on the
+Private Tools the Owner can read: the Owner's own and every Agent's. _Avoid_: Function provider, personal provider
+
+**Shared Provider**: The one Provider in every Workspace whose Tools are its Shared Tools, under the Call Root
+`coral.shared`. Coral performs its Tools, with no upstream dispatch and no Provider Accounts, and only a Shared Tool
+Publish changes its catalog. _Avoid_: Code Provider, function provider
+
 **Provider Namespace**: The short JavaScript identifier an Owner chooses for a Provider, such as `github`, and the
 name Reef shows and accepts. It is one segment of the Provider's Call Root. _Avoid_: Call Root, display name
 
 **Provider Call Root**: The complete, immutable, Workspace-unique JavaScript path under which one Provider's Tools
-are called: `coral.providers.<provider-namespace>` for an Owner-created Provider and `coral.workspace` for the Built-in
-Provider. Uniqueness applies to the Call Root, so a Provider named `workspace` (`coral.providers.workspace`) never clashes with
-the Built-in Provider. _Avoid_: namespace, prefix
+are called: `coral.providers.<provider-namespace>` for an Owner-created Provider and `coral` for the Built-in
+Provider. _Avoid_: namespace, prefix
+
+**Tool**: A named callable that a Program calls with data and that returns data: a Provider Tool, a Private Tool, or
+a Shared Tool. Every Tool call is asynchronous, takes and returns only data, and is one Tool Invocation with a Tool
+Access State. _Avoid_: Function, operation, action
 
 **Provider Tool**: A single callable action exposed by an Upstream Service, or by Coral for the Built-in Provider,
 through a Provider and made available by Coral.
@@ -384,7 +397,7 @@ _Avoid_: credential input, secret (a field need not be sensitive), credential pa
 shared Provider Account (`fixed`), or the invoking Principal's exact Provider Account (`caller`). A Program cannot
 choose the route or account for an Invocation, and Coral never falls back to another route or credential. A route is
 Provider configuration: an Owner chooses it in Reef, or an Owner's Program chooses it for the Provider that
-`coral.workspace.addProvider` adds. A Program can ask `coral.workspace.updateProvider` for a new route, which a
+`coral.addProvider` adds. A Program can ask `coral.updateProvider` for a new route, which a
 person confirms in Reef. A User's missing,
 disconnected, expired, or incompatible `caller` Account does not hide Tools from discovery. The User connects a
 missing or disconnected Account during Invocation, before approval and dispatch, and reconnects an expired or
@@ -415,9 +428,9 @@ reasons to authorized humans. Runtime never interprets the retained raw OpenAPI 
 the catalog. _Avoid_: Raw provider descriptor, live provider catalog, account inventory
 
 **Authoring Description**: The complete Principal-facing TypeScript call view of one currently visible Tool or
-Saved Function. It identifies the kind and call path and contains a safe summary plus one self-contained TypeScript
+Private Tool. It identifies the kind and call path and contains a safe summary plus one self-contained TypeScript
 declaration with every public type that the callable signature references. Its declaration can be projected from
-authoritative Provider schemas or emitted from Saved Function source; callers do not receive the different internal
+authoritative Provider schemas or emitted from Private Tool source; callers do not receive the different internal
 authority formats. Coral stores a Tool's own declaration and declares each named type of its Provider once per
 Provider Generation; a Tool's complete declaration is its own declaration plus every named type it reaches.
 Coral compiles Programs against it and builds Search Hit signature lines from it. Exact Principal-facing description
@@ -425,7 +438,7 @@ returns the complete inputs, the callable, an
 Tool's result wrapper, and the top level of the success data, and the other result types within a fixed byte
 budget: in full, as field-name stubs, or listed by name. Describing the same Call Path with `types` returns the named
 types of its declaration whole, with their own nested types under the same budget. Exact description of the Principal's
-own Saved Function without `types` also returns its source and saved diagnostics for later editing. _Avoid_: JSON Schema discovery result,
+own Private Tool without `types` also returns its source and saved diagnostics for later editing. _Avoid_: JSON Schema discovery result,
 shared storage format
 
 **Tool Description**: The Tool-specific Authoring Description. It also contains the Provider name, identity,
@@ -444,16 +457,16 @@ and its Credential Route can serve that Principal. Discoverability is not Accoun
 Tool can still require that User to connect an Account before dispatch. Search indexes and page offsets confer no
 discoverability. _Avoid_: Ready Tool, discovery readiness
 
-**Universal Search**: Principal-filtered relevance discovery over the Principal's Discoverable Tools and Saved
-Functions, which Programs reach through the Built-in Tool `coral.workspace.search`. A query returns Search Hits with
+**Universal Search**: Principal-filtered relevance discovery over the Principal's Discoverable Tools and Private
+Tools, which Programs reach through the Built-in Tool `coral.search`. A query returns Search Hits with
 evidence; exact Call Paths return their Authoring Descriptions fitted to the describe budget, or the types named in
 `types`, and name the paths that match nothing with nearby Discoverable Call Paths. It searches only
-secret-free catalog material and does not execute a Saved Function or dispatch to an Upstream Service. Provider-native
+secret-free catalog material and does not execute a Private Tool or dispatch to an Upstream Service. Provider-native
 search is an ordinary Tool that only a Coral Program can invoke. V1 Universal Search stores no Tool Result,
 Program Value, Run data, or observed memory. Reef exact catalog inspection is a separate administration projection. _Avoid_: Provider search fanout, observed-value memory, exact catalog administration
 
 **Search Entity**: One thing Universal Search can find: a Discoverable Tool of one current Provider, or one of
-the Principal's current Saved Functions. Each Search Entity has one complete Call Path, one Authoring Description,
+the Principal's current Private Tools. Each Search Entity has one complete Call Path, one Authoring Description,
 and one set of secret-free fields, its metadata and declaration-field paths, that Universal Search indexes for it. An
 Tool whose declaration-field paths exceed the index bound keeps only its shallower paths, and the index logs a
 warning; no search bound makes a Tool unavailable. Universal Search returns a Search Hit for it, and an exact lookup
@@ -470,7 +483,7 @@ the rank reflects why the hit matched, and an exact lookup gives
 the rest. Never the declaration.
 
 **Search Coverage**: What one search page states, per kind of Search Entity, about how much of the Principal's Search
-Entities it examined and why results may be missing: how many Providers or Saved Functions were eligible, searched, and
+Entities it examined and why results may be missing: how many Providers or Private Tools were eligible, searched, and
 failed, how many results the kind returned, and whether more remain. A kind that the Provider filter leaves out is
 skipped, not incomplete. A page states coverage only for a kind whose results may be missing. Coverage describes one
 page at the time of the search, not the current catalog.
@@ -486,7 +499,9 @@ matched query term when the description matched, otherwise its beginning.
 **Guidance Snippet**: The same bounded window over an Entity's guidance, shown only when a query term matched in it.
 
 **Tool Invocation**: One child record of a Program Run and one attempt to call one Tool, making at most one
-upstream dispatch in v1. Coral persists it and appends `invocation.started` before account or approval work; started
+upstream dispatch in v1. A call to a Private Tool or Shared Tool makes none: each Tool call its body makes is a child
+Invocation linked to it, the parent ends only after its children, and a child call made after its parent ended is
+refused. Coral persists it and appends `invocation.started` before account or approval work; started
 means admitted, not dispatched, and its duration includes gate waiting. An Invocation is `pending` before its durable
 dispatch-start record, `dispatching` after that record and before it ends, and `ended` thereafter. An ended Invocation
 records `upstream_outcome`, `coral_failure`, `run_terminated`, or `indeterminate`; Run-level termination bypasses the
@@ -556,9 +571,10 @@ one Tool policy for one Provider regardless of its Invoking Principal. A Princip
 discoverability and readiness because Credential Route, Provider Accounts, and Agent state are not policy (see
 Discoverable Tool); a stale Invocation fails safely. If no exact rule matches, a default applies: a Tool that
 declares itself read-only, or an OpenAPI/HTTP-sourced Tool with a safe HTTP method (GET, HEAD, OPTIONS, or TRACE),
-defaults to `enabled`; so does a Built-in Tool whose catalog declares `enabled` as its default, as `saveFunction` and
-`deleteFunction` do, because they change only the caller's own Saved Functions (ADR 0031); every other Tool defaults to
-`approval_required`. Only Coral's own catalog declares a default, and each retained Generation keeps it. The default applies to every Tool
+defaults to `enabled`; so does a Built-in Tool whose catalog declares `enabled` as its default, as `addTool`, `updateTool`
+and `removeTool` do, because they change only the caller's own Private Tools (ADR 0031); every other Tool defaults to
+`approval_required`. Coral's own catalog, a Private Tool's author, and the Owner at a Shared Tool Publish can declare a Tool's default, and
+each retained Generation keeps it. The default applies to every Tool
 without an exact rule, including those of existing Providers, and a Workspace Owner overrides it with an exact rule, for
 example for an upstream that changes state on GET. Provider signature and execution-binding changes do not
 stale an exact rule in v1. A changed Tool Key does. Policy for one Provider does not affect another Provider.
@@ -626,29 +642,29 @@ Coral workflow, Program Run
 **Upstream MCP Task**: An Upstream Service-owned asynchronous invocation lifecycle required or offered by an MCP-backed
 Tool. It is distinct from Coral's Program Run lifecycle. _Avoid_: Program Run, Coral task
 
-**TypeScript-only Coral**: A Coral product contract in which Tools, Saved Functions, and Coral Programs are
+**TypeScript-only Coral**: A Coral product contract in which Tools, Private Tools, and Coral Programs are
 presented and authored as TypeScript and SQL is absent from every layer. JavaScript remains valid TypeScript source, and
 Coral Programs execute with JavaScript semantics. Type information guides authoring but does not override observed
 upstream values or gate Program admission. _Avoid_: TypeScript facade, SQL hidden behind TypeScript, runtime type safety
 
-**Coral TypeScript Profile**: The single explicit authoring and admission profile shared by Reef, Saved Function save,
+**Coral TypeScript Profile**: The single explicit authoring and admission profile shared by Reef, Private Tool save,
 MCP `exec`, and server-side Run compilation. It pins one official `typescript.js` version, compiler options, source-map
 behavior, and the ECMAScript declaration libraries supported by Coral's embedded V8. It accepts JavaScript as TypeScript
-source. Reef and Saved Function save report strict semantic diagnostics without making them admission failures. Saved
-Function Save types each Tool and Saved Function that the source names from the declarations that the caller can
+source. Reef and Private Tool save report strict semantic diagnostics without making them admission failures. Private
+Tool Save types each Tool and Private Tool that the source names from the declarations that the caller can
 discover. V1 one-time Program admission parses and emits source but does not compute a full semantic check. The profile
 exposes no DOM, Web Worker, Node, npm, filesystem, authored import, or module-resolution surface. _Avoid_: Runtime
 TypeScript, client-selected compiler, Node TypeScript profile
 
-**Program Authoring Limits**: The fixed v1 bounds applied before a Saved Function save or Program Run is accepted. A
-Saved Function Path is at most 256 UTF-8 bytes and 16 segments. A submitted Program or one Saved Function source is at
-most 64 KiB. One Run links at most 64 Saved Functions, and its submitted plus linked TypeScript source is at most 512
-KiB. Its emitted JavaScript is at most 1 MiB and its source maps are at most 2 MiB. One Saved Function Declaration is at
+**Program Authoring Limits**: The fixed v1 bounds applied before a Private Tool save or Program Run is accepted. A
+Private Tool Path is at most 256 UTF-8 bytes and 16 segments. A submitted Program or one Private Tool source is at
+most 64 KiB. One Run links at most 64 Private Tools, and its submitted plus linked TypeScript source is at most 512
+KiB. Its emitted JavaScript is at most 1 MiB and its source maps are at most 2 MiB. One Private Tool Declaration is at
 most 256 KiB. One save or Run compilation has a two-second deadline. Exceeding a bound returns a safe error, creates no
-partial Run, and leaves an existing Saved Function unchanged. _Avoid_: Deployment-selected authoring limit, unbounded
+partial Run, and leaves an existing Private Tool unchanged. _Avoid_: Deployment-selected authoring limit, unbounded
 compiler input, partial save
 
-**Program Diagnostic**: Bounded information about an authored TypeScript issue, Saved Function linking issue, or the
+**Program Diagnostic**: Bounded information about an authored TypeScript issue, Private Tool linking issue, or the
 error that caused a Program Run to fail, intended to help the caller understand the cause and determine the appropriate
 correction. Runtime diagnostics expose an existing error rather than a separate diagnostic execution. Authorized Run
 readers may receive Program-controlled error messages and mapped authored stacks, including bounded cause chains and
@@ -656,7 +672,7 @@ grouped errors. Detailed runtime content is limited to information visible insid
 Program's isolate; Tool Errors retain their defined shape, and trusted Coral error codes remain distinguishable
 from Program-controlled text. This content stays out of telemetry, and host internals and credentials remain private.
 A diagnostic makes no claim that repeating a Run is safe. Syntax and linking failures identify the authored Program or
-Saved Function with a line, column, and clear message. Runtime
+Private Tool with a line, column, and clear message. Runtime
 stacks map emitted JavaScript locations back to authored TypeScript and hide generated wrappers, emitted JavaScript,
 compiler internals, and V8 frames. Reef can show advisory semantic diagnostics without making them Run failures. Emitted
 JavaScript remains private diagnostic data rather than a product authoring view. _Avoid_: Raw V8 stack, generated
@@ -728,65 +744,84 @@ A Tool whose schema Coral cannot type declares one untyped result in full.
 **MCP Resource Reference (`McpResourceRef`)**: An opaque, Provider-bound reference created from an upstream MCP resource
 link. Reading it is a separate Provider Tool; Coral never auto-fetches it. _Avoid_: Raw resource URI, Binary Value
 
-**Saved Function Path**: The Principal-owned dotted JavaScript path relative to `coral.functions` that names one Saved
-Function, such as `internal.finance.calculateTax`. Each segment is a valid JavaScript path segment, and Coral rejects
+**Private Tool Path**: The Principal-owned dotted JavaScript path relative to `coral.private` that names one Private
+Tool, such as `internal.finance.calculateTax`. Each segment is a valid JavaScript path segment, and Coral rejects
 reserved internal segments. Parent paths are virtual namespaces rather than folders or separate resources. The complete
 path identifies one current definition for that Principal in one Workspace. _Avoid_: Filesystem path, public package
-name, Saved Function version
+name, Private Tool version
 
-**Saved Function Save**: The atomic creation or replacement of one current Saved Function at an exact Saved Function
-Path. A call to the Built-in Tool `coral.workspace.saveFunction`, from a Program or from a Saved Function it links,
+**Private Tool Save**: The atomic creation (`coral.addTool`) or replacement (`coral.updateTool`) of one current
+Private Tool at an exact Private Tool Path. A call to either Built-in Tool, from a Program or from a Private Tool it links,
 supplies the path, an explicit description, and the function to save: a function that the calling source declares at
 its top level. Its source is that declaration and every top-level declaration it reaches, as written, with the function
-as its default export. A save creates an absent path and replaces an existing one, and `coral.workspace.deleteFunction`
-deletes one. Each call is a Tool Invocation of its Run, not a separate Task Interaction; MCP has no authoring tools.
-Only the owning Principal can save or replace it. The latest accepted save wins. It replaces the source, description,
+as its default export. `addTool` fails when the path exists. `updateTool` fails when the path is missing or, given an
+expected revision, when the current revision differs. Either can set the Tool's default Tool Access State, `enabled`
+when `addTool` omits it; an update that omits it keeps the current one. `coral.removeTool` removes one. Each call is a Tool Invocation of its Run, not a separate Task Interaction; MCP has no authoring tools.
+Only the owning Principal can save or replace it. Without an expected revision, the latest accepted save wins. It replaces the source, description,
 declaration, and diagnostics together, while failure leaves the current function unchanged. A save outlives its Run. A
-Program can call the function it saves, but not by its Saved Function Path: its Run linked its Saved Functions at
+Program can call the function it saves, but not by its Private Tool Path: its Run linked its Private Tools at
 admission. Reef uses a private first-party service for the same behavior, with the source as text. Saving never
-executes the saved source. A Workspace Owner can list, inspect, and delete an Agent-owned Saved Function but cannot
+executes the saved source. A Workspace Owner can list, inspect, and delete an Agent-owned Private Tool but cannot
 save or replace one as the Agent. V1 exposes no public versions, edit token, or rename operation, and updating or
-deleting a function cannot change an already accepted Run. _Avoid_: Draft save, partial publication, Saved Function
-generation, source string
+deleting a function cannot change an already accepted Run. _Avoid_: Draft save, partial publication, Private Tool
+generation, source string, saveFunction
 
-**Saved Function Declaration**: The exact, self-contained TypeScript declaration emitted from one accepted Saved
-Function source by Coral's pinned TypeScript compiler. It is the callable interface used by Universal Search, exact
-description, Reef authoring, and Program admission. A Saved Function is an accepted callable rather than an editor
-draft. Saving fails on syntax, declaration emission, forbidden capabilities, invalid exports, unresolved static Saved
-Function paths, or authoring limits. Ordinary TypeScript semantic diagnostics remain advisory and are stored with the
+**Private Tool Declaration**: The exact, self-contained TypeScript declaration emitted from one accepted Private
+Tool source by Coral's pinned TypeScript compiler. It is the callable interface used by Universal Search, exact
+description, Reef authoring, and Program admission. A Private Tool is an accepted callable rather than an editor
+draft. Saving fails on syntax, declaration emission, forbidden capabilities, invalid exports, unresolved static Private
+Tool paths, or authoring limits. Ordinary TypeScript semantic diagnostics remain advisory and are stored with the
 accepted source. The declaration can use TypeScript interfaces that have no faithful JSON Schema projection. Coral
-stores it atomically with the source that produced it and does not make JSON Schema the Saved Function's interface
-authority. _Avoid_: Saved Function schema, hand-maintained declaration, runtime type
+stores it atomically with the source that produced it and does not make JSON Schema the Private Tool's interface
+authority. _Avoid_: Private Tool schema, hand-maintained declaration, runtime type
 
-**Saved Function**: A reusable named TypeScript callable that a User or Agent saves at a Saved Function Path within one
-Workspace under that Principal's `coral.functions` namespace. A User's current Saved Functions are private to that User.
-A Workspace Owner can read the source, description, declaration, and diagnostics of an Agent-owned Saved Function and
-can delete it, but cannot author code as the Agent. Disabling a Principal retains its current Saved Functions. Deleting
-an Agent or removing a User from the Workspace removes that Principal's current Saved Functions without transferring
+**Private Tool**: A reusable named TypeScript callable that a User or Agent saves at a Private Tool Path within one
+Workspace under that Principal's `coral.private` namespace. A User's current Private Tools are private to that User.
+A Workspace Owner can read the source, description, declaration, and diagnostics of an Agent-owned Private Tool and
+can delete it, but cannot author code as the Agent. Disabling a Principal retains its current Private Tools. Deleting
+an Agent or removing a User from the Workspace removes that Principal's current Private Tools without transferring
 them; Administrative Lifecycle Events and retained Run source snapshots remain under their own retention rules. Its
 source is a no-import TypeScript module with exactly one default-exported callable. Coral owns the external name and
 call path; the module can contain local types, classes, constants, helper functions, and top-level initialization, but
 it cannot use packages or Node APIs. Top-level initialization can use the normal Program Runtime Surface, including
-Tools, Saved Functions, `coral.emit`, and `console`. It runs once for each accepted Run package before the
+Tools, Private Tools, `coral.emit`, and `console`. It runs once for each accepted Run package before the
 submitted Program body. Every resulting call, output, and failure uses the same attribution, gates, limits, deadline,
 durability, and failure rules as the rest of the Run. Coral applies no special static effect analysis to this code, and
 a linked module can invoke a Tool even when the submitted Program never calls its exported function. Its authored
-TypeScript is its behavior authority, and its Saved Function Declaration is its interface authority. It is not a
-Provider Tool, can call several Tools or Saved Functions, and can expose TypeScript interfaces that are richer
-than JSON-compatible data contracts. At Program admission Coral statically identifies literal Saved Function references,
+TypeScript is its behavior authority, and its Private Tool Declaration is its interface authority. It is not a
+Provider Tool, can call several Tools, and, like every Tool, takes and returns only data: no callback, function, or
+class instance crosses a call. At Program admission Coral statically identifies literal Private Tool references,
 rejects computed function paths, and links the exact current source closure into the Program compilation. It also
-extracts, from the Program and from each linked source, the module that each literal `coral.workspace.saveFunction`
-call saves (Saved Function Save). V1 does not
-preserve reverse-reference integrity when a Saved Function is later deleted; a missing source in the closure blocks a
-later Run at admission. Coral does not publish the Saved Function as JSON Schema or a separately retained JavaScript
-executable. Within an accepted Run it behaves as an ordinary linked synchronous or asynchronous JavaScript function: its
-thrown errors are catchable, its Tool calls, emissions, logs, time, and resource use belong to the enclosing Run,
-and it creates no separate durable Run or Invocation record. Its type information guides callers but does not create
-runtime TypeScript semantics. _Avoid_: UDF, Provider Tool, Operation, tool, Saved Function JSON Schema, dynamic function lookup
+extracts, from the Program and from each linked source, the module that each literal `coral.addTool`
+call saves (Private Tool Save). V1 does not
+preserve reverse-reference integrity when a Private Tool is later deleted; a missing source in the closure blocks a
+later Run at admission. Coral does not publish the Private Tool as JSON Schema or a separately retained JavaScript
+executable. Within an accepted Run each call to it is one asynchronous Tool Invocation of that Run, and it creates no separate Run.
+Its Tool calls, emissions, logs, time, and resource use belong to the enclosing Run. A throw in its body reaches the
+caller as a Tool Error with code `tool_failed`; a Tool Error from a nested call keeps its own code. Tool calls its
+top-level initialization makes belong to its module, under no parent Invocation. Its type information guides callers but does not create
+runtime TypeScript semantics. _Avoid_: Saved Function, UDF, Operation, Private Tool JSON Schema, dynamic function lookup
+
+**Shared Tool**: A Workspace-owned Tool under `coral.shared` that a Workspace Owner published from a Private Tool, and
+that every Principal in the Workspace can find, read, and call. It runs with the caller's own authority, policy, and
+Provider Accounts, takes and returns only data, and returns its own value rather than a Tool Result. It belongs to the
+Workspace's one Shared Provider, which Coral performs, as it does the Built-in Provider. Its author is attribution only:
+removing, disabling, or deleting the author never affects it. Only a Workspace Owner removes one; removal frees its path,
+keeps its revisions, and is refused while another Shared Tool's current revision calls it. _Avoid_: Shared function, public
+function, library function, package
+
+**Shared Tool Revision**: One immutable, numbered publication of a Shared Tool's source, description, and declaration.
+Exactly one revision is current; each Run links the current one and records which. _Avoid_: Version, pin, Provider
+Generation
+
+**Shared Tool Publish**: A Workspace Owner's act in Reef that copies one of their own or an Agent's Private Tools into
+a new Shared Tool Revision and makes it current. The Owner reviews the exact content that is published and chooses the
+Shared Tool's default Tool Access State, and the Private Tool stays as it was. Restoring publishes an earlier revision's content again. No Program, Tool, or Agent publishes.
+_Avoid_: Promote, move, deploy
 
 **Coral Program**: Principal-authored TypeScript lowered to JavaScript and executed by a Coral-owned, secret-free
-runtime against schema-typed Provider Tools under their Call Roots (`coral.providers` and `coral.workspace`) and Saved
-Functions under `coral.functions`.
+runtime against schema-typed Provider Tools under their Call Roots (`coral.providers` and `coral`), Private Tools under `coral.private`, and Shared
+Tools under `coral.shared`.
 JavaScript remains valid source, and type information guides authoring without gating admission. It receives Tool
 Results, catchable Tool Errors, `coral.emit`, and a bounded global `console`; Run cancellation and deadlines remain
 host-owned and have no Program-visible signal. It receives no Workspace, Principal, Provider Account, policy, approval,
@@ -795,7 +830,7 @@ required account, required approval, or disabled Tool, but it does not reveal au
 Coral Program can reach Upstream Services only through host-mediated Tools. _Avoid_: Trusted local script,
 arbitrary Node process, ambient authority
 
-**Program Compiler**: The component of a Run Executor that applies the Coral TypeScript Profile, links Saved Function
+**Program Compiler**: The component of a Run Executor that applies the Coral TypeScript Profile, links Private Tool
 source, emits JavaScript and source maps, and produces safe Program Diagnostics. Each Run Executor keeps an official
 `typescript.js` compiler warm in one compiler-only V8 isolate. That isolate receives only packaged compiler assets and
 the virtual source files that Coral sends. It exposes no Program host binding or ambient authority. It is recycled after
@@ -814,7 +849,7 @@ environment, direct-network, credential, or WebAssembly surface. V8 disables cod
 ambient standard library, dynamic code
 
 **Program Admission**: The host step that accepts a submitted TypeScript Program only after Coral has resolved its
-statically named Saved Functions, built the exact source closure, enforced capability and size rules, checked that every
+statically named Private Tools, built the exact source closure, enforced capability and size rules, checked that every
 literal Tool Call Path names a Tool the Principal can call, and emitted executable JavaScript and source maps. Syntax,
 missing source, unknown Call Path, forbidden capability, emission, and limit failures return safe diagnostics without
 creating a Program Run. V1 does not compute ordinary TypeScript semantic diagnostics during
@@ -823,18 +858,18 @@ Program Run. _Avoid_: Runtime compilation, partial Run, semantic type gate
 
 **Program Run**: The higher-level Workspace record for one accepted execution of a Coral Program; MCP work associates
 it with a Task, while standalone Reef execution does not require one. It stores the exact accepted Program source, the
-identities and exact source snapshots of linked Saved Functions, and enough private compiler output and provenance to
-retain the code that V8 executed. Every new Run compiles its submitted source and linked Saved Function closure with Coral's currently pinned TypeScript profile, even when a function was saved under an
+identities and exact source snapshots of linked Private Tools, and enough private compiler output and provenance to
+retain the code that V8 executed. Every new Run compiles its submitted source and linked Private Tool closure with Coral's currently pinned TypeScript profile, even when a function was saved under an
 older profile. Coral stores the selected profile and emitted output with the Run and does not retain or select old
-compilers per Saved Function. The Run identity identifies this stored source and executable package; v1 adds no separate
+compilers per Private Tool. The Run identity identifies this stored source and executable package; v1 adds no separate
 source or executable digest. A later profile update can affect future Runs but cannot change an accepted Run.
 Immediately before Program execution starts, Coral rechecks the current Organization Membership, Workspace, Principal,
 Agent, and Agent Registration authority. Authority loss after acceptance but before execution starts fails the Run
 without executing the Program or creating a Tool Invocation. After execution starts, authority loss blocks later
-upstream dispatch but does not stop secret-free computation. The accepted Run fixes its linked Saved Function code but
+upstream dispatch but does not stop secret-free computation. The accepted Run fixes its linked Private Tool code but
 does not fix one Provider generation for all later Tool calls; each Tool Invocation keeps selecting the active
 generation when that call starts. Child Tool Invocations reference this stored Program context. Authorized human
-Run detail can show the exact submitted Program source, linked Saved Function sources, and logical Invocation arguments,
+Run detail can show the exact submitted Program source, linked Private Tool sources, and logical Invocation arguments,
 but not credentials, generated authentication fields, or internal host values. The Run is attributed to its Invoking
 Principal but is not owned by that Principal. Sharing a Workspace shares Providers and policy, not Run
 history. An authenticated Agent can observe and cancel only its own accepted Run by Run identifier and cursor. It cannot

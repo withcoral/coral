@@ -4,6 +4,9 @@ status: accepted
 
 # Agents save Saved Functions from inside Programs
 
+Amended by [ADR 0032](0032-every-callable-is-a-tool.md): Saved Functions are now Private Tools at `coral.private`, the
+Built-in Tools sit directly on `coral`, and saving uses `coral.addTool`, `coral.updateTool` and `coral.removeTool`.
+
 An agent saves and deletes its own Saved Functions by calling the Built-in Tools `coral.workspace.saveFunction` and
 `coral.workspace.deleteFunction` from a Program, not through MCP `save_function` and `delete_function`. Both act only in
 the caller's own `coral.functions` namespace, and every Principal that authors in the Workspace reaches them, Agents

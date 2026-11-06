@@ -4,6 +4,9 @@ status: accepted
 
 # Saved Functions are typed from the caller's declarations, and type errors stay advisory
 
+Amended by [ADR 0032](0032-every-callable-is-a-tool.md): Saved Functions are now Private Tools at `coral.private`, the
+Built-in Tools sit directly on `coral`, and saving uses `coral.addTool`, `coral.updateTool` and `coral.removeTool`.
+
 Saving a Saved Function types each Call Path its source names under `coral.providers`, `coral.workspace` and
 `coral.functions`, from the declarations that the caller can discover. Before this those roots were `any`, so a wrong
 input or a misspelled field produced no diagnostic, and a function that returned an Operation's result was declared
