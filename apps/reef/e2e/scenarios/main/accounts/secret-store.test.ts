@@ -13,7 +13,9 @@ import {
   confirmConfiguration,
   openCustomSource,
   openDialog,
+  openProviderSettings,
   programRunner,
+  saveConfirmedSettingsChange,
   waitForPublication,
   enableTool,
 } from '../../../support/providers.ts'
@@ -129,6 +131,58 @@ test('Organization owner grants a store, a workspace owner sets a reference, and
         await page.getByRole('button', { name: 'Connect account' }).click()
         await page.getByText('Account connected.').waitFor()
       })
+      await step(
+        'A change to a shared account can name a store, and a tool sends its value',
+        async () => {
+          const individual = await api.setups.createProviderSetup({
+            parent: workspace,
+            input: {
+              case: 'openapiDocument',
+              value: openApiDocument(
+                'Tides',
+                { getTides: { summary: 'Get tides' } },
+                { security: 'bearer', server: upstream.origin },
+              ),
+            },
+          })
+          const reviewed = await api.setups.confirmProviderSetupConfiguration({
+            name: individual.name,
+            expectedRevision: individual.configuration!.revision,
+            configuration: individual.configuration!.suggested,
+          })
+          const tides = (
+            await api.providers.publishProvider({
+              parent: workspace,
+              setup: reviewed.name,
+              requestId: crypto.randomUUID(),
+              namespace: 'tides',
+              credentialRoute: { kind: CredentialRoute_Kind.CALLER },
+            })
+          ).provider
+          await page.goto(`/workspaces/${id}/providers/${tides.split('/').at(-1)}`)
+          await openProviderSettings(page)
+          await page.getByRole('button', { name: 'Change account setting', exact: true }).click()
+          await page.getByRole('radio', { name: 'Connect an account', exact: true }).check()
+          const dialog = await openDialog(
+            page,
+            page.getByRole('button', { name: 'Connect the shared account', exact: true }),
+          )
+          await checkRadio(dialog.getByRole('radio', { name: 'Use a secret store' }))
+          await dialog.getByRole('textbox', { name: 'Path' }).fill(SECRET_STORE.path)
+          await dialog.getByRole('textbox', { name: 'Key' }).fill(SECRET_STORE.key)
+          await dialog
+            .getByRole('button', { name: 'Save and share the account', exact: true })
+            .click()
+          await checkRadio(page.getByRole('radio', { name: 'Use this account', exact: true }))
+          await saveConfirmedSettingsChange(page)
+          sent = ''
+          const runner = programRunner(page, target, id, { accessToken: await mcpToken(page, id) })
+          const run = (await runner.exec('return await coral.providers.tides.getTides({});'))
+            .structuredContent
+          expect(run.state).toBe('succeeded')
+          expect(sent).toBe(`Bearer ${SECRET_STORE.value}`)
+        },
+      )
       await step('A provider added with a reference from the start calls a tool', async () => {
         await page.goto(`/workspaces/${id}/providers/new`)
         await openCustomSource(page)

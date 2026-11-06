@@ -6,6 +6,7 @@ import {
   credentialValuesFrom,
   offeredSecretStores,
   savedReferenceView,
+  savedSecretReferences,
   SECRET_STORE_PROBLEMS,
 } from './credential-fields.server'
 import { redirectToProviderConsent } from './provider-consent.server'
@@ -222,7 +223,7 @@ export async function loadAuthorization(
   const offered = takesReferences ? await offeredSecretStores(api, parent) : []
   const savedReferences =
     takesReferences && target.case === 'sharedProvider'
-      ? await savedReferencesFor(api, parent, target.value)
+      ? await savedSecretReferences(api, parent, target.value)
       : {}
   return {
     ...accountNavigation(returnTo, path, workspaceName(params.workspace)),
@@ -761,25 +762,6 @@ function withSecretStoreProblem(path: string, reason: string) {
   const url = new URL(path, 'http://reef')
   url.searchParams.set('secretStoreProblem', reason)
   return `${url.pathname}${url.search}`
-}
-
-async function savedReferencesFor(
-  api: ReturnType<typeof management>,
-  parent: string,
-  provider: string,
-) {
-  const { account } = await api.accounts.getProviderAccount({
-    parent,
-    provider,
-    scope: ProviderAccountScope.SHARED,
-    agent: '',
-  })
-  return Object.fromEntries(
-    Object.entries(account?.secretReferences ?? {}).map(([name, reference]) => [
-      name,
-      savedReferenceView(reference),
-    ]),
-  )
 }
 
 export async function authorizationAction(

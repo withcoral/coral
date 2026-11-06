@@ -18,6 +18,7 @@ import {
 } from '@/lib/provider-publication-attempt/requests.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { UpdatePage } from '@/views/providers/update-page'
+import { offeredSecretStores, savedSecretReferences } from '@/lib/credential-fields.server'
 import { EditConfigurationPage } from '@/views/providers/edit-configuration-page'
 import { ProviderSetupInputKind } from '@/generated/coral/management/v1/provider_pb'
 
@@ -67,9 +68,18 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
             summary: o.summary,
           }))
         : undefined
+    // A replacement starts from the references the shared account holds, as Reconnect
+    // does, so an update never moves a store's value into Coral unasked.
+    const takesReferences = setup?.state === 'ready' && setup.credentialFields.length > 0
+    const secretStores = takesReferences ? await offeredSecretStores(api, parent) : []
+    const savedReferences = takesReferences
+      ? await savedSecretReferences(api, parent, provider.name)
+      : {}
     return data(
       {
         workspace,
+        secretStores,
+        savedReferences,
         displayName: provider.displayName,
         etag: provider.etag,
         replacingSource: new URL(request.url).searchParams.get('replaceSource') === '1',

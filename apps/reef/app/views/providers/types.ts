@@ -474,6 +474,10 @@ export interface StepperPageProps {
 }
 
 export interface UpdatePageProps {
+  /** The stores a replacement shared account can name. Empty hides the choice. */
+  secretStores?: string[]
+  /** The references the shared account holds now, by field name. */
+  savedReferences?: Record<string, SavedReferenceView>
   replacingSource?: boolean
   source?: { url: string; kind: 'mcp' | 'url' }
   currentAccount?: AccountChoice

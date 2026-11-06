@@ -6,6 +6,7 @@ import type {
 } from '@/generated/coral/management/v1/provider_pb'
 import type { CredentialFieldView, SavedReferenceView } from '@/views/providers/types'
 import { CREDENTIAL_INPUT_PREFIX as PREFIX, REFERENCE_INPUT_PREFIX } from './credential-field-names'
+import { ProviderAccountScope } from '@/generated/coral/management/v1/account_pb'
 import type { ManagementApi } from './management.server'
 import { privateHeaders } from './management.server'
 import { secretStoreId } from './organization.server'
@@ -41,6 +42,26 @@ export function savedReferenceView(reference: CredentialFieldReference): SavedRe
     path: reference.path,
     key: reference.key,
   }
+}
+
+/** The references a Provider's shared Account holds now, by field name. */
+export async function savedSecretReferences(
+  api: ManagementApi,
+  parent: string,
+  provider: string,
+): Promise<Record<string, SavedReferenceView>> {
+  const { account } = await api.accounts.getProviderAccount({
+    parent,
+    provider,
+    scope: ProviderAccountScope.SHARED,
+    agent: '',
+  })
+  return Object.fromEntries(
+    Object.entries(account?.secretReferences ?? {}).map(([name, reference]) => [
+      name,
+      savedReferenceView(reference),
+    ]),
+  )
 }
 
 /** The fields Coral asks for, in name order, as the views show them. */

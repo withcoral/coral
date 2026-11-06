@@ -14,7 +14,13 @@ import { credentialHosts, OAuthApplicationBlock } from './oauth-application'
 import { CredentialSource } from '@/views/accounts/credential-source'
 import { CredentialFields } from '@/views/management/credential-fields'
 import { accountLabels } from './account-labels'
-import type { AccountChoice, FormContext, SetupView, StepperResult } from './types'
+import type {
+  AccountChoice,
+  FormContext,
+  SavedReferenceView,
+  SetupView,
+  StepperResult,
+} from './types'
 import { StepFrame } from './step-frame'
 import * as styles from './providers.css'
 
@@ -45,6 +51,7 @@ export function SetupSecretForm({
   id,
   extra,
   secretStores = [],
+  savedReferences = {},
   children,
 }: {
   setup: SetupView
@@ -52,6 +59,8 @@ export function SetupSecretForm({
   pending: boolean
   /** The stores each field can name instead of a typed value. Only a shared account has any. */
   secretStores?: string[]
+  /** The references the account holds now, by field name, which open filled in. */
+  savedReferences?: Record<string, SavedReferenceView>
   /** Names the form for a submit button outside it, such as in a dialog's actions. */
   id?: string
   /** Hidden fields beyond the setup revision's, such as the account choice. */
@@ -66,11 +75,12 @@ export function SetupSecretForm({
       <SetupFields setup={setup} extra={extra} />
       <CredentialFields fields={setup.credentialFields}>
         {(input, field) =>
-          secretStores.length > 0 ? (
+          secretStores.length > 0 || savedReferences[field] ? (
             <CredentialSource
               value={<Inputs.CredentialInput {...input} />}
               field={field}
               stores={secretStores}
+              saved={savedReferences[field]}
             />
           ) : (
             <Inputs.CredentialInput {...input} />
