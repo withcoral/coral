@@ -103,6 +103,31 @@ attribute! {
 }
 
 attribute! {
+    /// One phase of an Activity summary, for `activity.summary.phase`: the wait for a connection and
+    /// BEGIN, the authority read, one query each, and the commit.
+    ActivitySummaryPhase {
+        Acquire => "acquire",
+        Authorize => "authorize",
+        DiscoveryContext => "discovery_context",
+        CallOutcomes => "call_outcomes",
+        ApprovalDecisions => "approval_decisions",
+        ActorContext => "actor_context",
+        Unmeasured => "unmeasured",
+        Commit => "commit",
+    }
+}
+
+attribute! {
+    /// How one phase of an Activity summary ended, for `outcome`.
+    ActivitySummaryPhaseOutcome {
+        Completed => "completed",
+        Failed => "failed",
+        /// The caller stopped waiting, as a client deadline does, before the phase ended.
+        Canceled => "canceled",
+    }
+}
+
+attribute! {
     /// How a recovered Run Owner's one chunk ended, for `outcome`.
     RecoveryOutcome {
         /// The chunk ended the Run.

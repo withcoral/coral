@@ -5,6 +5,8 @@ import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { OrganizationRole } from '@/generated/coral/management/v1/organization_membership_pb'
 import { WorkspaceRole, WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { fakeManagementTransport } from '@/lib/management.test-support'
+import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace'
+import { createRequestTracing } from '../../server-tracing.js'
 import { loader, shouldRevalidate } from './app-shell'
 
 const transport = fakeManagementTransport({
@@ -18,6 +20,19 @@ const transport = fakeManagementTransport({
         : { workspaces: [workspace(3)], nextPageToken: '' },
   },
   organizationMemberships: { getCurrentOrganizationMembership: () => ({ role }) },
+  activity: {
+    countRequiredActions: async () => {
+      countStarted()
+      await countGate
+      return {
+        actionCount: 1n,
+        approvalCount: 1n,
+        connectionCount: 0n,
+        approvalRevision: 'a',
+        connectionRevision: 'c',
+      }
+    },
+  },
   releases: {
     getNewerRelease: () => {
       if (release === 'unavailable') throw new ConnectError('down', Code.Unavailable)
@@ -26,6 +41,8 @@ const transport = fakeManagementTransport({
   },
 })
 let role = OrganizationRole.UNSPECIFIED
+let countGate: Promise<void> = Promise.resolve()
+let countStarted = () => {}
 let release: { version: string; notesUrl: string } | undefined | 'unavailable'
 vi.mock('@/lib/coral-request.server', () => ({ managementTransportForRequest: () => transport }))
 
@@ -73,6 +90,44 @@ it.each([
     expect(result.data.newerRelease).toEqual(shown ? { version: '1.4.0', notesUrl } : undefined)
   },
 )
+
+// Catches: a shell count read outside its span, which would leave its duration unmeasured.
+it('reads the action counts inside one span that ends with the read', async () => {
+  const spans: ReadableSpan[] = []
+  const spanExporter: SpanExporter = {
+    export(batch, done) {
+      spans.push(...batch)
+      done({ code: 0 })
+    },
+    shutdown: async () => undefined,
+  }
+  const counted = () => spans.filter((span) => span.name === 'app-shell action counts').length
+  const tracing = createRequestTracing({ env: {}, spanExporter })
+  const request = new Request('http://reef/activity')
+  let open!: () => void
+  countGate = new Promise((resolve) => (open = resolve))
+  let reading!: () => void
+  const read = new Promise<void>((resolve) => (reading = resolve))
+  countStarted = reading
+  let result: Awaited<ReturnType<typeof loader>> | undefined
+  try {
+    await tracing.traceRequest(request, async () => {
+      const loading = loader(authRouteTestArgs(request, {}, null))
+      await read
+      await tracing.flush()
+      expect(counted()).toBe(0)
+      open()
+      result = await loading
+    })
+    await tracing.flush()
+  } finally {
+    countGate = Promise.resolve()
+    countStarted = () => {}
+    await tracing.shutdown()
+  }
+  expect(counted()).toBe(1)
+  expect(result?.data.actionCounts).toBeTruthy()
+})
 
 // A row opens its review through the query. The sidebar must not reload for it, but a refresh
 // and a move to another page must still read the shell.

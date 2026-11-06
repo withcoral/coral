@@ -156,29 +156,314 @@ async fn context_impact_task_total_includes_unloaded_measurements_and_ignores_no
     assert_eq!(task.context_impact_bytes(), total);
 }
 
+/// An authenticated Agent labelled `label`, owned by the Fixture's caller.
+async fn agent_named(f: &Fixture, label: &str) -> AuthenticatedPrincipal {
+    let issued = f
+        .tasks
+        .workspaces
+        .create_agent(
+            &ChangeContext::new(
+                f.actor.authenticated_user().unwrap().clone(),
+                1,
+                coral_test_support::trace('1'),
+            ),
+            &f.workspace,
+            coral_workspace::AgentDisplayName::parse(label).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    f.tasks
+        .workspaces
+        .authenticate_agent(&f.workspace, issued.credential.expose(), 2)
+        .await
+        .unwrap()
+}
+
+/// Records work whose Agent label, intents, source and Log all hold `text`.
+async fn plant_caller_text(f: &Fixture, text: &str) {
+    let agent = agent_named(f, text).await;
+    let agent_goal = f
+        .tasks
+        .start(&agent, &f.workspace, TaskIntent::parse(text).unwrap(), 3)
+        .await
+        .unwrap();
+    f.commands
+        .search(
+            &AttributedCommand::new(
+                agent,
+                f.workspace.clone(),
+                agent_goal.id().clone(),
+                TaskIntent::parse(text).unwrap(),
+            ),
+            coral_search::SearchInput::default(),
+        )
+        .await
+        .unwrap();
+    let goal = f.goal().await;
+    let run = f
+        .commands
+        .submit(
+            &f.call(&goal, text),
+            &format!("console.log('{text}'); return '{text}';"),
+            30_000,
+        )
+        .await
+        .unwrap();
+    f.wait_for_terminal(run.run_id()).await;
+}
+
+const SUMMARY_PHASES: [&str; 8] = [
+    "acquire",
+    "authorize",
+    "discovery_context",
+    "call_outcomes",
+    "approval_decisions",
+    "actor_context",
+    "unmeasured",
+    "commit",
+];
+
+/// Waits until both captures hold a summary's whole trace. SQLite's connection worker
+/// holds its last command's span after it answers, so a call can return before that
+/// span and its ancestors end, and an ended span reaches `spans` before `export`.
+async fn wait_for_summary_spans(
+    spans: &coral_telemetry::testing::SpanCapture,
+    export: &coral_telemetry::testing::ExportCapture,
+) {
+    use std::time::Duration;
+    let names: Vec<String> = ["request".to_owned(), "coral.activity.summary".to_owned()]
+        .into_iter()
+        .chain(SUMMARY_PHASES.map(|phase| format!("coral.activity.summary {phase}")))
+        .collect();
+    let missing = || {
+        let traced: Vec<String> = spans
+            .finished()
+            .iter()
+            .map(|s| s.name.to_string())
+            .collect();
+        let left: Vec<String> = export
+            .finished()
+            .iter()
+            .map(|s| s.name.to_string())
+            .collect();
+        let absent = |held: &[String]| -> Vec<String> {
+            names
+                .iter()
+                .filter(|name| !held.contains(name))
+                .cloned()
+                .collect()
+        };
+        (absent(&traced), absent(&left))
+    };
+    let all_ended = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (traced, exported) = missing();
+            if traced.is_empty() && exported.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    assert!(
+        all_ended.is_ok(),
+        "spans that never ended (traced, exported): {:?}",
+        missing()
+    );
+}
+
+/// A summary's trace shows where its time goes, phase by phase, and what leaves the
+/// host holds no caller text, though the summary itself reads the Agent's label.
+#[tokio::test]
+async fn activity_summary_traces_each_phase_without_caller_text() {
+    use coral_telemetry::testing::{ExportCapture, MetricCapture, SpanCapture, attribute};
+    use tracing::Instrument as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    const PRIVATE: &str = "private-caller-text";
+    let f = Fixture::new().await;
+    plant_caller_text(&f, PRIVATE).await;
+
+    let export = ExportCapture::default();
+    let spans = SpanCapture::exporting_to(&export);
+    let metrics = MetricCapture::default();
+    let summary = {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default()
+                .with(spans.layer())
+                .with(metrics.layer()),
+        );
+        f.tasks
+            .activity_summary(&f.runs, &f.actor, &f.workspace, 7)
+            .instrument(tracing::info_span!("request"))
+            .await
+            .unwrap()
+    };
+    assert!(
+        summary
+            .actors
+            .iter()
+            .any(|actor| actor.agent_label.as_deref() == Some(PRIVATE)),
+        "the summary read the caller text this test plants"
+    );
+
+    let phases = SUMMARY_PHASES;
+    wait_for_summary_spans(&spans, &export).await;
+
+    let finished = spans.finished();
+    let find = |name: &str| {
+        finished
+            .iter()
+            .find(|span| span.name == name)
+            .unwrap_or_else(|| panic!("{name} was not traced"))
+    };
+    let parent = find("coral.activity.summary");
+    assert_eq!(
+        parent.parent_span_id,
+        find("request").span_context.span_id()
+    );
+    assert_eq!(
+        attribute(parent, "coral.workspace.id"),
+        Some(f.workspace.to_string())
+    );
+    assert_eq!(
+        attribute(parent, "coral.activity.summary.days").as_deref(),
+        Some("7")
+    );
+    let mut children: Vec<_> = finished
+        .iter()
+        .filter(|span| span.parent_span_id == parent.span_context.span_id())
+        .collect();
+    children.sort_by_key(|span| span.start_time);
+    assert_eq!(
+        children
+            .iter()
+            .map(|span| span.name.to_string())
+            .collect::<Vec<_>>(),
+        phases.map(|phase| format!("coral.activity.summary {phase}"))
+    );
+    for (span, phase) in children.iter().zip(phases) {
+        assert_eq!(
+            attribute(span, "coral.activity.summary.phase").as_deref(),
+            Some(phase)
+        );
+    }
+    // `trace_filter` admits `coral_run` by default and not `coral_task`.
+    assert!(
+        std::iter::once(&parent)
+            .chain(&children)
+            .all(|span| attribute(span, "target").is_some_and(|t| t.starts_with("coral_run")))
+    );
+    let mut recorded: Vec<_> = metrics
+        .named("coral.activity.summary.phase.duration")
+        .into_iter()
+        .map(|point| {
+            assert_eq!(point.count, 1);
+            point
+                .attributes
+                .get("activity.summary.phase")
+                .cloned()
+                .unwrap()
+        })
+        .collect();
+    recorded.sort();
+    let mut expected = phases.map(str::to_owned);
+    expected.sort();
+    assert_eq!(recorded, expected);
+
+    let exported = export.text();
+    assert!(exported.contains("coral.activity.summary actor_context"));
+    assert!(!exported.contains(PRIVATE), "{exported}");
+}
+
+/// Measures each phase of one summary at a sandbox-sized history: 7,000 Runs in the window
+/// with 100 Invocations and 265 Events each, stored out of Run order as concurrent Runs
+/// store them. The first summary stops at Reef's 10-second deadline; the second runs out.
+/// Run it by hand on a disposable Postgres, with `--ignored` and a superuser URL.
+#[tokio::test]
+#[ignore = "manual activity-summary latency measurement"]
+#[expect(
+    clippy::print_stderr,
+    reason = "manual benchmark reports measured phase latency"
+)]
+async fn activity_summary_latency_at_scale() {
+    use coral_telemetry::testing::{SpanCapture, attribute};
+    use tracing_subscriber::layer::SubscriberExt as _;
+    coral_test_support::database_only!(Postgres);
+    let f = Fixture::new().await;
+    let (runs, invocations, events) = (7_000, 100, 265);
+    let now = i64::try_from(std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()).unwrap();
+    let (workspace, principal) = (
+        f.workspace.to_string(),
+        f.actor.principal().id().to_string(),
+    );
+    // This fixture skips foreign keys, so it needs a Postgres superuser and no Provider.
+    f.test_database
+        .execute_fixture_sql(&format!(
+            "SET session_replication_role = replica;
+             ALTER TABLE tool_invocations ALTER COLUMN arguments_json SET STORAGE EXTERNAL;
+             CREATE TEMP TABLE sized AS
+               SELECT n, {now} - (random() * 518400e9)::bigint AS at
+               FROM generate_series(1, {runs}) AS n;
+             INSERT INTO program_run_records (id, workspace_id, principal_id, principal_kind,
+                 state, accepted_at_unix_nanos, deadline_at_unix_nanos, terminal_at_unix_nanos,
+                 next_event_sequence, accumulated_output_bytes, shutdown_grace_nanos,
+                 value_limits_json)
+               SELECT 'run-' || n, '{workspace}', '{principal}', 'user', 'succeeded', at - 1000,
+                   at, at, 2, 0, 0, '{{}}' FROM sized;
+             INSERT INTO tool_invocations (id, workspace_id, run_id,
+                 provider_account_setting_version, credential_route, provider_id,
+                 provider_generation_id, tool_key, call_path, arguments_json, state,
+                 admitted_at_unix_nanos, dispatch_started_at_unix_nanos, ended_at_unix_nanos,
+                 result_kind, result_json, result_bytes)
+               SELECT 'invocation-' || n || '-' || i, '{workspace}', 'run-' || n, 1, 'none',
+                   'provider', 'generation', 'tool', 'coral.providers.p.tool' || (n % 180),
+                   repeat(md5(n::text || i), 37), 'ended', at - 1000, at - 1000, at,
+                   'upstream_outcome', '{{}}', 2000
+               FROM sized, generate_series(1, {invocations}) AS i ORDER BY random();
+             INSERT INTO program_run_events (workspace_id, run_id, sequence, event_type,
+                 occurred_at_unix_nanos, log_level, log_message, output_bytes)
+               SELECT '{workspace}', 'run-' || n, e, 'program.logged', at, 'info',
+                   repeat(md5(n::text || e), 4), 100
+               FROM sized, generate_series(1, {events}) AS e ORDER BY random();
+             ANALYZE program_run_records, tool_invocations, program_run_events;"
+        ))
+        .await
+        .unwrap();
+    for deadline in [10, 300].map(std::time::Duration::from_secs) {
+        let spans = SpanCapture::default();
+        let started = std::time::Instant::now();
+        let answer = {
+            let _subscriber = tracing::subscriber::set_default(
+                tracing_subscriber::Registry::default().with(spans.layer()),
+            );
+            tokio::time::timeout(
+                deadline,
+                f.tasks.activity_summary(&f.runs, &f.actor, &f.workspace, 7),
+            )
+            .await
+        };
+        eprintln!(
+            "deadline {deadline:?}: {:?} after {:?}",
+            answer.map(|summary| summary.map(|_| ()).unwrap()),
+            started.elapsed()
+        );
+        for span in spans.finished() {
+            let Some(phase) = attribute(&span, "coral.activity.summary.phase") else {
+                continue;
+            };
+            let elapsed = span.end_time.duration_since(span.start_time).unwrap();
+            eprintln!("  {phase}: {elapsed:?}");
+        }
+    }
+}
+
 /// The summary counts context as Activity does: discovery responses add to it, so
 /// each caller's share matches their Task total, not their Runs alone.
 #[tokio::test]
 async fn activity_summary_counts_context_as_the_task_total_does() {
     let f = Fixture::new().await;
-    let owner = f.actor.authenticated_user().unwrap().clone();
-    let issued = f
-        .tasks
-        .workspaces
-        .create_agent(
-            &ChangeContext::new(owner, 1, coral_test_support::trace('1')),
-            &f.workspace,
-            coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
-    let agent = f
-        .tasks
-        .workspaces
-        .authenticate_agent(&f.workspace, issued.credential.expose(), 2)
-        .await
-        .unwrap();
+    let agent = agent_named(&f, "Worker").await;
     let goal = f.goal().await;
     let call = f.call(&goal, "Find tools");
     f.commands

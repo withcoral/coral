@@ -40,6 +40,11 @@ const CORAL: &[&str] = &[
     // long it lasted, in milliseconds.
     "coral.shutdown.live_runs",
     "coral.shutdown.drain_ms",
+    // One Activity summary: the days its window covers, the phase a span
+    // covers, and how that phase ended.
+    "coral.activity.summary.days",
+    "coral.activity.summary.phase",
+    "coral.activity.summary.outcome",
     // The Tool Invocation, how it ended, the gate it waits at (authority,
     // identity or approval), its public failure code, and whether it passed
     // its Policy Enforcement Point.

@@ -4,7 +4,14 @@ import { test } from 'node:test'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { context, propagation, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
 
-import { createRequestTracing, requestInstrumentation, traceCoralCall } from './server-tracing.js'
+import { createRequestHandler, RouterContextProvider } from 'react-router'
+
+import {
+  createRequestTracing,
+  requestInstrumentation,
+  traceCoralCall,
+  traceLoaderStep,
+} from './server-tracing.js'
 
 const INBOUND_TRACE = '0af7651916cd43dd8448eb211c80319c'
 const INBOUND_SPAN = 'b7ad6b7169203331'
@@ -40,10 +47,10 @@ function outboundTraceparent() {
 }
 
 /** Finishes React Router's handler for the active request. */
-async function finishHandler(result, method = 'GET') {
+async function finishHandler(result, method = 'GET', url = 'https://reef.example.test/x') {
   let handle
   requestInstrumentation.handler({ instrument: (hooks) => (handle = hooks.request) })
-  await handle(async () => result, { request: { method } })
+  await handle(async () => result, { request: { method, url } })
 }
 
 /** Runs `respond` through one traced request and returns the exported spans. */
@@ -121,6 +128,10 @@ test('neither reads nor forwards baggage or tracestate', async () => {
 })
 
 /** Everything OTLP sends about a span except the IDs and timings. */
+function eventNames(span) {
+  return span.events.map((event) => event.name)
+}
+
 function exportedFields(span) {
   return {
     attributes: span.attributes,
@@ -412,6 +423,8 @@ test('fails the span when the response breaks off, not when the caller left', as
   await tracing.shutdown()
 
   const [handler, body, left] = spanExporter.spans
+  assert.deepEqual(eventNames(body), ['response ready'])
+  assert.deepEqual(eventNames(left), ['caller left'])
   assert.equal(handler.status.code, SpanStatusCode.ERROR)
   assert.equal(handler.attributes['error.type'], '_OTHER')
   assert.equal(handler.attributes['http.response.status_code'], 500)
@@ -422,6 +435,115 @@ test('fails the span when the response breaks off, not when the caller left', as
   assert.equal(left.status.code, SpanStatusCode.UNSET)
   assert.equal(left.attributes['error.type'], undefined)
   assert.equal(left.attributes['http.response.status_code'], undefined)
+})
+
+test('names a data request by its route template alone', async () => {
+  const meta = { pattern: 'workspaces/:workspace' }
+  for (const [path, expected] of [
+    ['/workspaces/42.data?_routes=secret', '/workspaces/:workspace.data'],
+    ['/workspaces/42?days=7', undefined],
+  ]) {
+    const [span] = await traced(request(path), () =>
+      finishHandler({ meta, statusCode: 200 }, 'GET', request(path).url),
+    )
+    assert.equal(span.attributes['http.route'], '/workspaces/:workspace', path)
+    assert.equal(span.attributes['url.template'], expected, path)
+    assert.doesNotMatch(JSON.stringify(exportedFields(span)), /secret|42/, path)
+  }
+})
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const millis = ([seconds, nanos]) => seconds * 1000 + nanos / 1e6
+const fails = (error) => async () => {
+  throw error
+}
+const serverRoute = (id, path, parentId, loader) => ({
+  id,
+  path,
+  parentId,
+  module: { default: () => null, loader },
+})
+
+// Catches: a later React Router that answers before its slowest loader, which would
+// end the claim that a slow shell loader holds back a data response.
+test('a data response is ready only after the slowest loader of a real request', async () => {
+  const spanExporter = collectingExporter()
+  const tracing = createRequestTracing({ env: {}, spanExporter })
+  const handler = createRequestHandler(
+    {
+      routes: {
+        root: serverRoute('root', '', undefined, () => null),
+        'routes/shell': serverRoute('routes/shell', 'page', 'root', () =>
+          traceLoaderStep('shell step', () => pause(40)),
+        ),
+        'routes/page': serverRoute('routes/page', 'child', 'routes/shell', () => 'page'),
+      },
+      entry: { module: { default: () => null, instrumentations: [requestInstrumentation] } },
+      assets: { routes: {}, entry: { module: '', imports: [] }, url: '', version: '' },
+      future: {},
+      publicPath: '/',
+      assetsBuildDirectory: 'build',
+      ssr: true,
+      isSpaMode: false,
+      prerender: [],
+      routeDiscovery: { mode: 'lazy', manifestPath: '/__manifest' },
+      allowedActionOrigins: false,
+    },
+    'production',
+  )
+  const incoming = new Request('https://reef.example.test/page/child.data')
+  let status
+  await tracing.traceRequest(incoming, async () => {
+    const response = await handler(incoming, new RouterContextProvider())
+    status = response.status
+    await response.text()
+  })
+  await tracing.shutdown()
+
+  assert.equal(status, 200)
+  const root = spanExporter.spans.at(-1)
+  const ready = root.events.find((event) => event.name === 'response ready')
+  const step = spanNamed(spanExporter.spans, 'shell step')
+  const shell = spanNamed(spanExporter.spans, 'loader routes/shell')
+  const page = spanNamed(spanExporter.spans, 'loader routes/page')
+  assert.equal(root.attributes['url.template'], '/page/child.data')
+  assert.equal(step.parentSpanContext.spanId, shell.spanContext().spanId)
+  assert.ok(millis(page.endTime) < millis(step.endTime), 'the page loader ends first')
+  assert.ok(millis(ready.time) >= millis(step.endTime), 'the response waits for the slow step')
+  assert.ok(millis(root.endTime) >= millis(ready.time), 'the body ends after the response is ready')
+})
+
+test('a loader step nests its Coral calls, and fails only for what is not a Coral status', async () => {
+  const spanExporter = collectingExporter()
+  const tracing = createRequestTracing({ env: {}, spanExporter })
+  let answer
+  await tracing.traceRequest(request(), async () => {
+    answer = await traceLoaderStep('fine', async () => {
+      await coralCall()
+      return 'answer'
+    })
+    await assert.rejects(
+      traceLoaderStep('rejected', fails(new ConnectError('x', Code.Unauthenticated))),
+    )
+    await assert.rejects(traceLoaderStep('broken', fails(new Error('secret'))))
+  })
+  await tracing.shutdown()
+
+  assert.equal(answer, 'answer')
+  const { spans } = spanExporter
+  const fine = spanNamed(spans, 'fine')
+  assert.equal(spanNamed(spans, CORAL_METHOD).parentSpanContext.spanId, fine.spanContext().spanId)
+  assert.equal(fine.parentSpanContext.spanId, spans.at(-1).spanContext().spanId)
+  assert.equal(fine.status.code, SpanStatusCode.UNSET)
+  assert.equal(spanNamed(spans, 'rejected').status.code, SpanStatusCode.UNSET)
+  const broken = spanNamed(spans, 'broken')
+  assert.equal(broken.attributes['error.type'], '_OTHER')
+  assert.doesNotMatch(JSON.stringify(exportedFields(broken)), /secret/)
+})
+
+test('a loader step outside a traced request opens no span and still answers', async () => {
+  assert.equal(await traceLoaderStep('untraced', async () => 'answer'), 'answer')
+  assert.equal(trace.getActiveSpan(), undefined)
 })
 
 test('keeps the span open until the response ends', async () => {

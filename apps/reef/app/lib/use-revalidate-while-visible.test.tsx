@@ -80,6 +80,27 @@ it.each([
   expect(screen.getByText('Read 1')).toBeTruthy()
 })
 
+// Catches: a timeline entry that ends before the refresh's data, carries anything, or
+// measures a reload this hook did not start.
+it('measures a refresh only, from its start to the commit of its data', async () => {
+  const measure = vi.spyOn(performance, 'measure')
+  const name = 'reef.visible_refresh'
+  const measured = () => measure.mock.calls.filter(([entry]) => entry === name)
+  let open!: () => void
+  await renderPage(new Promise<void>((resolve) => (open = resolve)))
+  visibility('visible')
+  await act(async () => focus())
+  expect(measured()).toEqual([])
+  await act(async () => open())
+  expect(await screen.findByText('Read 2')).toBeTruthy()
+  await act(async () => {})
+  expect(measured()).toEqual([[name, { start: expect.any(Number) }]])
+  await act(async () => screen.getByRole('button', { name: 'Reload' }).click())
+  expect(await screen.findByText('Read 3')).toBeTruthy()
+  await act(async () => {})
+  expect(measured()).toHaveLength(1)
+})
+
 // Catches: a refresh that restarts a reload the router already runs.
 it('waits for a reload the router started', async () => {
   let open!: () => void

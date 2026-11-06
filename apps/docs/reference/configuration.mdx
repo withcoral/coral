@@ -141,6 +141,7 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 | `coral.run.ended`                        | Counter   | `run.status`, `failure.code`                                            |
 | `coral.run.duration`                     | Histogram | `run.status`                                                            |
 | `coral.run.phase.duration`               | Histogram | `run.phase`                                                             |
+| `coral.activity.summary.phase.duration`  | Histogram | `activity.summary.phase`, `outcome`                                     |
 | `coral.run.active`                       | Gauge     | None                                                                    |
 | `coral.run.queue.depth`                  | Gauge     | None                                                                    |
 | `coral.run.recovery`                     | Counter   | `outcome`                                                               |

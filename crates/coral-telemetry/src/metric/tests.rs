@@ -59,6 +59,12 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         &["compiler.role"],
     ),
     (
+        "coral.activity.summary.phase.duration",
+        "histogram",
+        "s",
+        &["activity.summary.phase", "outcome"],
+    ),
+    (
         "coral.persistence.acquisition.duration",
         "histogram",
         "s",
@@ -216,6 +222,7 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
 /// Records every instrument once, with every attribute it can carry. The
 /// pool it returns is observed while it is held.
 fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObservation>) {
+    activity_summary_phase(ActivitySummaryPhase::Acquire).finish(&Ok::<(), ()>(()));
     metrics.request_duration(
         Interface::Mcp,
         "/mcp".to_string(),

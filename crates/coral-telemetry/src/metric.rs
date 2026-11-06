@@ -25,11 +25,12 @@ use opentelemetry::{InstrumentationScope, KeyValue};
 mod attribute;
 
 pub use attribute::{
-    AcquisitionOperation, AcquisitionOutcome, ClaimKind, ClaimOutcome, CompileOutcome,
-    CompilerBuildOutcome, CompilerBuildReason, CompilerOperation, CompilerOutcome, CompilerRole,
-    DbSystem, DropReason, GateKind, Interface, InvocationEnd, OutputKind, PrincipalKind,
-    ProviderProtocol, RecoveryOutcome, RequestOutcome, RunPhase, RunStatus, SignalKind,
-    TerminationReason, ToolEffect, TransactionOutcome, UpstreamOutcome, VisibilityPath,
+    AcquisitionOperation, AcquisitionOutcome, ActivitySummaryPhase, ActivitySummaryPhaseOutcome,
+    ClaimKind, ClaimOutcome, CompileOutcome, CompilerBuildOutcome, CompilerBuildReason,
+    CompilerOperation, CompilerOutcome, CompilerRole, DbSystem, DropReason, GateKind, Interface,
+    InvocationEnd, OutputKind, PrincipalKind, ProviderProtocol, RecoveryOutcome, RequestOutcome,
+    RunPhase, RunStatus, SignalKind, TerminationReason, ToolEffect, TransactionOutcome,
+    UpstreamOutcome, VisibilityPath,
 };
 
 /// Histogram bounds for a duration in seconds, from 5 ms to an hour.
@@ -94,6 +95,7 @@ struct Catalog {
     persistence_acquisition_waiters: LabeledLevel<(DbSystem, AcquisitionOperation)>,
     persistence_transaction_duration: Histogram<f64>,
     persistence_transaction_failures: Counter<u64>,
+    activity_summary_phase_duration: Histogram<f64>,
     pools: Pools,
     _persistence_pool_in_use: ObservableGauge<u64>,
     search_backlogs: SearchSources,
@@ -242,6 +244,52 @@ impl Drop for DatabaseAcquisition {
                 &[
                     KeyValue::new("db.system", self.system.as_str()),
                     KeyValue::new("operation", self.operation.as_str()),
+                    KeyValue::new("outcome", self.outcome.as_str()),
+                ],
+            );
+        }
+    }
+}
+
+/// Measures one phase of an Activity summary. Dropping it before an answer
+/// records the phase canceled, so a client deadline names the phase it stopped.
+#[derive(Debug)]
+pub struct ActivitySummaryPhaseMeasure {
+    metrics: Option<Metrics>,
+    phase: ActivitySummaryPhase,
+    outcome: ActivitySummaryPhaseOutcome,
+    started: Instant,
+}
+
+/// Starts measuring one phase of an Activity summary.
+#[must_use = "the phase counts as canceled unless it finishes"]
+pub fn activity_summary_phase(phase: ActivitySummaryPhase) -> ActivitySummaryPhaseMeasure {
+    ActivitySummaryPhaseMeasure {
+        metrics: current(),
+        phase,
+        outcome: ActivitySummaryPhaseOutcome::Canceled,
+        started: Instant::now(),
+    }
+}
+
+impl ActivitySummaryPhaseMeasure {
+    /// Ends the phase on its answer, successful or failed.
+    pub fn finish<T, E>(mut self, result: &Result<T, E>) {
+        self.outcome = if result.is_ok() {
+            ActivitySummaryPhaseOutcome::Completed
+        } else {
+            ActivitySummaryPhaseOutcome::Failed
+        };
+    }
+}
+
+impl Drop for ActivitySummaryPhaseMeasure {
+    fn drop(&mut self) {
+        if let Some(metrics) = &self.metrics {
+            metrics.0.activity_summary_phase_duration.record(
+                self.started.elapsed().as_secs_f64(),
+                &[
+                    KeyValue::new("activity.summary.phase", self.phase.as_str()),
                     KeyValue::new("outcome", self.outcome.as_str()),
                 ],
             );
@@ -454,6 +502,10 @@ impl Metrics {
             upstream_response_size: bytes(
                 "coral.upstream.response.size",
                 "The body size of a response from an Upstream Service.",
+            ),
+            activity_summary_phase_duration: seconds(
+                "coral.activity.summary.phase.duration",
+                "How long one phase of an Activity summary took, including canceled and failed phases.",
             ),
             persistence_acquisition_duration: seconds(
                 "coral.persistence.acquisition.duration",
