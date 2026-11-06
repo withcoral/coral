@@ -398,7 +398,8 @@ impl WorkspaceAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthoritySource {
     /// Organization Owner governance without a Workspace Membership: Owner
-    /// assignment, archive, restore, and Organization Membership removal.
+    /// assignment, archive, restore, Secret Store grants and revocations, and
+    /// Organization Membership removal.
     OrganizationOwner,
     /// Granted by current Organization Membership for Workspace creation.
     OrganizationMembership,
@@ -584,6 +585,10 @@ pub enum LifecycleAction {
     AgentStateUpdated,
     /// Registration enablement or expiration change.
     AgentRegistrationUpdated,
+    /// An Organization Owner granted a Secret Store to the Workspace.
+    SecretStoreGranted,
+    /// An Organization Owner revoked a Secret Store grant.
+    SecretStoreRevoked,
 }
 
 impl LifecycleAction {
@@ -602,6 +607,8 @@ impl LifecycleAction {
             Self::AgentCredentialRotated => "agent_registration.credential_rotated",
             Self::AgentStateUpdated => "agent.state_updated",
             Self::AgentRegistrationUpdated => "agent_registration.updated",
+            Self::SecretStoreGranted => "secret_store.granted",
+            Self::SecretStoreRevoked => "secret_store.revoked",
         }
     }
 
@@ -620,6 +627,8 @@ impl LifecycleAction {
             "agent_registration.credential_rotated" => Ok(Self::AgentCredentialRotated),
             "agent.state_updated" => Ok(Self::AgentStateUpdated),
             "agent_registration.updated" => Ok(Self::AgentRegistrationUpdated),
+            "secret_store.granted" => Ok(Self::SecretStoreGranted),
+            "secret_store.revoked" => Ok(Self::SecretStoreRevoked),
             _ => Err(Error::CorruptData(format!(
                 "Lifecycle Event has unrecognized action '{value}'"
             ))),
@@ -662,6 +671,8 @@ pub enum LifecycleTargetKind {
     Agent,
     /// An Agent's single Registration.
     AgentRegistration,
+    /// A Secret Store, by its name in deployment config.
+    SecretStore,
 }
 
 impl LifecycleTargetKind {
@@ -671,6 +682,7 @@ impl LifecycleTargetKind {
             Self::WorkspaceMembership => "workspace_membership",
             Self::Agent => "agent",
             Self::AgentRegistration => "agent_registration",
+            Self::SecretStore => "secret_store",
         }
     }
 
@@ -680,6 +692,7 @@ impl LifecycleTargetKind {
             "workspace_membership" => Ok(Self::WorkspaceMembership),
             "agent" => Ok(Self::Agent),
             "agent_registration" => Ok(Self::AgentRegistration),
+            "secret_store" => Ok(Self::SecretStore),
             _ => Err(Error::CorruptData(format!(
                 "Lifecycle Event has unrecognized target kind '{value}'"
             ))),

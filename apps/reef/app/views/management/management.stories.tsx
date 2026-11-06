@@ -122,6 +122,7 @@ const emptyAgentGlimpse = activityPage([], agent.name, {
 const overview: WorkspaceOverviewProps = {
   workspace,
   agents: [agent, blockedAgent],
+  secretStores: [],
   providers: [
     {
       id: 'github',
@@ -208,6 +209,23 @@ export const Unavailable: Story = { render: () => <ManagementError status={503} 
 
 // Overview
 export const OwnerOverview: Story = { render: () => <WorkspaceOverview {...overview} /> }
+
+// Catches: an owner unable to tell a granted store that works from one config removed.
+export const OverviewWithSecretStores: Story = {
+  render: () => (
+    <WorkspaceOverview
+      {...overview}
+      secretStores={[
+        { name: 'platform', available: true },
+        { name: 'retired', available: false },
+      ]}
+    />
+  ),
+  play: async ({ canvas }) => {
+    await expect(within(canvas.getByText('platform')).getByText('Available')).toBeVisible()
+    await expect(within(canvas.getByText('retired')).getByText('Unavailable')).toBeVisible()
+  },
+}
 // The last week's totals sit under the cards.
 export const SummaryOverview: Story = {
   render: () => (
@@ -1313,25 +1331,83 @@ export const RemoveSoleOwnerNoCandidate: Story = {
 }
 
 // Organization secret stores
+const secretStoreKind = 'Vault / OpenBao KV v2'
+const organizationSecretStores = {
+  form,
+  workspaces: [
+    { name: 'workspaces/research', displayName: 'Research' },
+    { name: 'workspaces/support', displayName: 'Support' },
+  ],
+  stores: [
+    {
+      name: 'platform',
+      kind: secretStoreKind,
+      workspaces: [
+        { name: 'workspaces/research', displayName: 'Research', archived: false },
+        { name: 'workspaces/closed', displayName: 'Closed', archived: true },
+      ],
+    },
+    { name: 'research', kind: secretStoreKind, workspaces: [] },
+    {
+      name: 'retired',
+      kind: null,
+      workspaces: [{ name: 'workspaces/support', displayName: 'Support', archived: false }],
+    },
+  ],
+}
 export const OrganizationSecretStores: Story = {
-  render: () => (
-    <OrganizationSecretStoresPage
-      stores={[
-        { name: 'platform', kind: 'Vault / OpenBao KV v2' },
-        { name: 'research', kind: 'Vault / OpenBao KV v2' },
-      ]}
-    />
-  ),
+  render: () => <OrganizationSecretStoresPage {...organizationSecretStores} />,
   parameters: { initialEntry: '/organization/secret-stores' },
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('heading', { level: 1, name: 'Secret stores' })).toBeVisible()
     const row = within(canvas.getByRole('row', { name: /platform/ }))
-    await expect(row.getByText('Vault / OpenBao KV v2')).toBeVisible()
+    await expect(row.getByText(secretStoreKind)).toBeVisible()
+    await expect(row.getByText('Closed · Archived')).toBeVisible()
+    // A store config removed reads as unavailable in words, and keeps its grant.
+    const retired = within(canvas.getByRole('row', { name: /retired/ }))
+    await expect(retired.getByText('Unavailable')).toBeVisible()
+    await expect(retired.getByText('Support')).toBeVisible()
   },
 }
 export const OrganizationSecretStoresEmpty: Story = {
-  render: () => <OrganizationSecretStoresPage stores={[]} />,
+  render: () => <OrganizationSecretStoresPage form={form} workspaces={[]} stores={[]} />,
   parameters: { initialEntry: '/organization/secret-stores' },
+}
+// Catches: granting to a workspace that holds the grant, a submit with no
+// workspace, or a grant offered for a store config removed.
+export const GrantSecretStore: Story = {
+  render: OrganizationSecretStores.render,
+  parameters: OrganizationSecretStores.parameters,
+  play: async ({ canvas }) => {
+    const body = within(document.body)
+    await userEvent.click(canvas.getByRole('button', { name: 'Actions for retired' }))
+    await expect(body.queryByRole('menuitem', { name: 'Grant to a workspace' })).toBeNull()
+    await userEvent.keyboard('{Escape}')
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Actions for platform' }))
+    await userEvent.click(await body.findByRole('menuitem', { name: 'Grant to a workspace' }))
+    const dialog = within(await body.findByRole('dialog'))
+    await expect(dialog.getByRole('button', { name: 'Grant' })).toBeDisabled()
+    await userEvent.click(dialog.getByRole('button', { name: 'Workspace' }))
+    const support = await body.findByRole('menuitemradio', { name: 'Support' })
+    await expect(body.queryByRole('menuitemradio', { name: 'Research' })).toBeNull()
+    await userEvent.click(support)
+    await expect(dialog.getByRole('button', { name: 'Grant' })).toBeEnabled()
+  },
+}
+// Catches: a revocation offered for an archived workspace, which Coral refuses.
+export const RevokeSecretStore: Story = {
+  render: OrganizationSecretStores.render,
+  parameters: OrganizationSecretStores.parameters,
+  play: async ({ canvas }) => {
+    const body = within(document.body)
+    await userEvent.click(canvas.getByRole('button', { name: 'Actions for platform' }))
+    await userEvent.click(await body.findByRole('menuitem', { name: 'Revoke from a workspace' }))
+    const dialog = within(await body.findByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: 'Workspace' }))
+    await body.findByRole('menuitemradio', { name: 'Research' })
+    await expect(body.queryByRole('menuitemradio', { name: 'Closed' })).toBeNull()
+  },
 }
 
 // Organization workspaces

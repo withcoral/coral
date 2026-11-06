@@ -1,3 +1,4 @@
+import { Code, ConnectError } from '@connectrpc/connect'
 import { expect, it, vi } from 'vitest'
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { ProviderState } from '@/generated/coral/management/v1/provider_pb'
@@ -12,13 +13,13 @@ vi.mock('@/lib/coral-request.server', () => ({
 const workspace = '00000000-0000-4000-8000-000000000001'
 const parent = `workspaces/${workspace}`
 
-function fakeCoral(summaries: number[] = []) {
+function fakeCoral(summaries: number[] = [], role = WorkspaceRole.OWNER) {
   coral.transport = fakeManagementTransport({
     workspaces: {
       getWorkspace: ({ name }) => ({
         name,
         displayName: 'Overview',
-        effectiveRole: WorkspaceRole.OWNER,
+        effectiveRole: role,
         state: WorkspaceState.ACTIVE,
       }),
     },
@@ -43,7 +44,22 @@ function fakeCoral(summaries: number[] = []) {
         ],
       }),
     },
-    memberships: { listWorkspaceOwners: () => ({ owners: [] }) },
+    memberships: {
+      listWorkspaceOwners: () => ({ owners: [] }),
+      getWorkspaceMembership: ({ name }) => ({ name }),
+    },
+    secretStores: {
+      listWorkspaceSecretStores: () => {
+        if (role !== WorkspaceRole.OWNER)
+          throw new ConnectError('permission denied', Code.PermissionDenied)
+        return {
+          secretStores: [
+            { name: 'secretStores/platform', available: true },
+            { name: 'secretStores/removed', available: false },
+          ],
+        }
+      },
+    },
     savedFunctions: { listSavedFunctions: () => ({ savedFunctions: [] }) },
     activity: {
       browseActivityRoots: () => ({ roots: [] }),
@@ -69,6 +85,25 @@ it('leaves the Built-in Provider out of the providers card, but not out of the s
     'coral.workspace',
     'coral.providers.weather',
   ])
+})
+
+// Catches: an owner shown a resource name, or a removed store shown as usable.
+it('shows an owner the granted secret stores and which are unavailable', async () => {
+  fakeCoral()
+  const result = await overview()
+  if (result instanceof Response) throw new Error('The workspace page renders')
+  expect(result.data.secretStores).toEqual([
+    { name: 'platform', available: true },
+    { name: 'removed', available: false },
+  ])
+})
+
+// Catches: the page failing for a member, whom Coral refuses this list.
+it('does not ask for the secret stores for a member', async () => {
+  fakeCoral([], WorkspaceRole.MEMBER)
+  const result = await overview()
+  if (result instanceof Response) throw new Error('The workspace page renders')
+  expect(result.data.secretStores).toEqual([])
 })
 
 // Catches: a reload showing another period than the URL names.

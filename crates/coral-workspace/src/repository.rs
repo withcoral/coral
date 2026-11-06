@@ -705,6 +705,8 @@ pub(super) async fn list_governance_events(
                     LifecycleAction::MembershipCreated,
                     LifecycleAction::MembershipRoleUpdated,
                     LifecycleAction::MembershipRemoved,
+                    LifecycleAction::SecretStoreGranted,
+                    LifecycleAction::SecretStoreRevoked,
                 ]
                 .map(LifecycleAction::as_storage_str),
             ),

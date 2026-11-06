@@ -10,7 +10,7 @@
 //! [`kv_v2`] is the first adapter. A later adapter implements the same port.
 //!
 //! [`SecretStores::list`] is open to anything holding the registry, so a caller
-//! serving people goes through `coral_administration::SecretStoreInventory`.
+//! serving people goes through `coral_administration::SecretStoreAdministration`.
 //!
 //! No error here carries a path, a key, a value or a store's token, so a caller
 //! may report any of them to a Program.
@@ -136,6 +136,12 @@ impl SecretStores {
     /// Each defined store's name and kind, ordered by name.
     pub fn list(&self) -> impl Iterator<Item = (&SecretStoreName, SecretStoreKind)> {
         self.0.iter().map(|(name, defined)| (name, defined.kind))
+    }
+
+    /// The kind of the store with this name, while config defines it.
+    #[must_use]
+    pub fn kind(&self, name: &str) -> Option<SecretStoreKind> {
+        self.0.get(name).map(|defined| defined.kind)
     }
 
     /// The store with this name, while config defines it.

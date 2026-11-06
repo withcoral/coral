@@ -84,7 +84,7 @@ When the check is on, Coral reads the latest release from `api.github.com` at st
 
 ### `[[secret_stores]]`
 
-Defines a connection to a secrets system you run. Coral supports HashiCorp Vault and OpenBao KV version 2, and signs in with AppRole. Add one `[[secret_stores]]` table per store. Organization owners can see each store's name and kind in the account menu, under **Secret stores**.
+Defines a connection to a secrets system you run. Coral supports HashiCorp Vault and OpenBao KV version 2, and signs in with AppRole. Add one `[[secret_stores]]` table per store. Organization owners can see each store's name and kind in the account menu, under **Secret stores**. There they grant a store to a workspace, or revoke that grant. A grant whose store you remove from this file shows as unavailable.
 
 ```toml
 [[secret_stores]]
