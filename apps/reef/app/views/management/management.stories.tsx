@@ -1612,7 +1612,7 @@ export const AddMembersSelection: Story = {
     await expect(dialog.getByRole('button', { name: 'Add member' })).toBeDisabled()
     await pickPerson(dialog, canvasElement, /Sam Rivera/)
     await pickPerson(dialog, canvasElement, /ops-bot@example\.com/)
-    await userEvent.click(dialog.getByRole('button', { name: 'Role' }))
+    await userEvent.click(dialog.getByRole('button', { name: 'Role: Member' }))
     await userEvent.click(
       await within(canvasElement.ownerDocument.body).findByRole('menuitemradio', {
         name: 'Owner',
@@ -1747,7 +1747,7 @@ export const MembershipRoleSelection: Story = {
     await userEvent.click(canvas.getByRole('button', { name: 'Actions for Alice Chen' }))
     const body = within(canvasElement.ownerDocument.body)
     await userEvent.click(await body.findByRole('menuitem', { name: 'Change role' }))
-    await userEvent.click(await body.findByRole('button', { name: 'Role for Alice Chen' }))
+    await userEvent.click(await body.findByRole('button', { name: /^Role for Alice Chen: / }))
     await userEvent.click(await body.findByRole('menuitemradio', { name: 'Member' }))
     const save = (await body.findByRole('button', {
       name: 'Save role',

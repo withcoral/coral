@@ -44,13 +44,16 @@ export function Root({
   value,
 }: RootProps) {
   const filter = BaseCombobox.useFilter({ sensitivity: 'base' })
+  // Spaces around the text, as in a pasted email, do not stop an item matching.
+  const contains: typeof filter.contains = (item, text, toLabel) =>
+    filter.contains(item, text.trim(), toLabel)
   const [inputGroupAnchor, setInputGroupAnchor] = useState<HTMLDivElement | null>(null)
   const [open, setOpen] = useState(false)
   // The text the person typed, unless the caller controls it. Passing it back
   // keeps Base UI from clearing it on its own; see onInputValueChange.
   const [typed, setTyped] = useState('')
   const query = inputValue ?? typed
-  const matches = (items ?? []).some((item) => filter.contains(item, query, itemToStringLabel))
+  const matches = (items ?? []).some((item) => contains(item, query, itemToStringLabel))
 
   return (
     <AnchorContext.Provider value={{ inputGroupAnchor, setInputGroupAnchor }}>
@@ -58,7 +61,7 @@ export function Root({
         autoHighlight={autoHighlight}
         defaultValue={defaultValue}
         disabled={disabled}
-        filter={filter.contains}
+        filter={contains}
         inputValue={query}
         itemToStringLabel={itemToStringLabel}
         items={items}
