@@ -48,7 +48,8 @@ pub mod pull_response {
 /// What a Run Executor declares when it opens its pull stream.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Hello {
-    /// A random id generated at each start, for operators only.
+    /// A random UUID generated at each start, for operators only. Coral refuses
+    /// a pull stream whose id is not a UUID.
     #[prost(string, tag = "1")]
     pub run_executor_id: ::prost::alloc::string::String,
     /// The Run Executor's protocol level.

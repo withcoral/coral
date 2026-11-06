@@ -28,7 +28,7 @@ pub const PROTOCOL_LEVEL: u32 = 1;
 const MAX_RUN_DURATION_SECONDS: u32 = 900;
 /// A PING after 10 s without a frame, and the connection closed when the
 /// PING goes 10 s unanswered: 20 s silent in all.
-const KEEPALIVE: Duration = Duration::from_secs(10);
+pub(crate) const KEEPALIVE: Duration = Duration::from_secs(10);
 /// A dial that opens no connection in 20 s fails, as a silent connection
 /// closes after 20 s.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -120,6 +120,11 @@ impl Token {
         }
         let secret = Secret::new(token).map_err(|_invalid| TokenError)?;
         Ok(Self(Arc::new(secret)))
+    }
+
+    /// The token's SHA-256 verifier, which Coral's side keeps in place of it.
+    pub(crate) fn verifier(&self) -> [u8; 32] {
+        crate::pull::verifier(self.0.expose())
     }
 
     /// The `authorization` value for one call.

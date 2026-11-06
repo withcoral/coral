@@ -130,6 +130,20 @@ impl LoadedServerConfig {
         Ok(())
     }
 
+    /// Resolves `[listeners.run_executor]`, reading each token through `env`,
+    /// [`AppEnvironment::required_env_var`] at bootstrap. Without `[auth]`
+    /// (`authenticated` false) its bind must be loopback.
+    pub(crate) fn run_executor_listener(
+        &self,
+        authenticated: bool,
+        env: &dyn Fn(&str, &str) -> Result<String, AppError>,
+    ) -> Result<RunExecutorListener, AppError> {
+        self.parse()?
+            .listeners
+            .run_executor
+            .resolve(authenticated, env)
+    }
+
     /// Resolves the `[runtime]` section: the Program runtime limits.
     pub(crate) fn runtime_limits(&self) -> Result<coral_run::RuntimeLimits, AppError> {
         self.parse()?.runtime.resolve()
@@ -490,6 +504,90 @@ struct ListenerSettings {
     mcp: RawMcpHttpSettings,
     auth: AuthListenerSettings,
     web: Option<WebSettings>,
+    run_executor: RunExecutorListenerSettings,
+}
+
+/// The shortest operator token the Run Executor listener accepts.
+const MIN_RUN_EXECUTOR_TOKEN_CHARS: usize = 32;
+
+/// `[listeners.run_executor]`: where Run Executors dial, over plaintext h2c,
+/// and the variables that hold the operator tokens they present.
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RunExecutorListenerSettings {
+    bind: SocketAddr,
+    token_env: Option<TokenEnv>,
+}
+
+impl Default for RunExecutorListenerSettings {
+    fn default() -> Self {
+        Self {
+            bind: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            token_env: None,
+        }
+    }
+}
+
+/// One variable, or two during a rotation.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TokenEnv {
+    One(String),
+    Rotation(Vec<String>),
+}
+
+/// The resolved Run Executor listener.
+pub(crate) struct RunExecutorListener {
+    pub(crate) bind: SocketAddr,
+    pub(crate) tokens: Vec<coral_run_executor::Token>,
+}
+
+impl RunExecutorListenerSettings {
+    fn resolve(
+        self,
+        authenticated: bool,
+        env: &dyn Fn(&str, &str) -> Result<String, AppError>,
+    ) -> Result<RunExecutorListener, AppError> {
+        const SETTING: &str = "listeners.run_executor.token_env";
+        const BIND: &str = "listeners.run_executor.bind";
+        let refuse = |message: String| AppError::FailedPrecondition(message);
+        let names = match self.token_env {
+            None => Vec::new(),
+            Some(TokenEnv::One(name)) => vec![name],
+            Some(TokenEnv::Rotation(names)) if (1..=2).contains(&names.len()) => names,
+            Some(TokenEnv::Rotation(_)) => {
+                return Err(refuse(format!(
+                    "{SETTING} must name one environment variable, or two during a rotation"
+                )));
+            }
+        };
+        if !is_loopback_ip(self.bind.ip()) {
+            if !authenticated {
+                return Err(refuse(format!("auth-disabled {BIND} must be loopback")));
+            }
+            if names.is_empty() {
+                return Err(refuse(format!("{BIND} off loopback requires {SETTING}")));
+            }
+        }
+        let tokens = names
+            .iter()
+            .map(|configured| {
+                let name = super::env_var_name(SETTING, configured).map_err(refuse)?;
+                let value = env(SETTING, &name)?;
+                if value.chars().count() < MIN_RUN_EXECUTOR_TOKEN_CHARS {
+                    return Err(refuse(format!(
+                        "{SETTING} names `{name}`, whose value is under {MIN_RUN_EXECUTOR_TOKEN_CHARS} characters"
+                    )));
+                }
+                coral_run_executor::Token::new(value)
+                    .map_err(|invalid| refuse(format!("{SETTING} names `{name}`: {invalid}")))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(RunExecutorListener {
+            bind: self.bind,
+            tokens,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1777,5 +1875,98 @@ client_secret = 'test-secret'
             )),
             Ok(McpHttpServeConfig::Authenticated { .. })
         ));
+    }
+
+    const MCP: &str = "[listeners.mcp]\npublic_url = 'https://mcp.example.test'\n";
+    const PUBLIC_RUN_EXECUTORS: &str = "[listeners.run_executor]\nbind = '0.0.0.0:50052'\n";
+
+    /// Resolves `[listeners.run_executor]` from `raw`, with `env` as the
+    /// process environment.
+    fn run_executor_listener(
+        raw: &str,
+        env: &[(&str, &str)],
+    ) -> Result<super::RunExecutorListener, AppError> {
+        let (_temp, config) = load(raw);
+        let authenticated = config.auth_settings()?.is_some();
+        config.run_executor_listener(authenticated, &|setting, name| {
+            let value = env.iter().find(|(key, _)| *key == name);
+            value
+                .map(|(_, value)| (*value).to_owned())
+                .ok_or_else(|| AppError::FailedPrecondition(format!("{setting} requires `{name}`")))
+        })
+    }
+
+    #[test]
+    fn the_run_executor_listener_admits_one_operator_token_or_two_during_a_rotation() {
+        let token = "t".repeat(32);
+        let env = [("TOKEN_A", token.as_str()), ("TOKEN_B", token.as_str())];
+        let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let public = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 50052));
+        let remote = authenticated(
+            &format!("{MCP}{PUBLIC_RUN_EXECUTORS}token_env = 'TOKEN_A'\n"),
+            "",
+        );
+        for (raw, bind, tokens) in [
+            (String::new(), loopback, 0),
+            (
+                "[listeners.run_executor]\ntoken_env = 'TOKEN_A'\n".to_owned(),
+                loopback,
+                1,
+            ),
+            (
+                "[listeners.run_executor]\ntoken_env = ['TOKEN_A', 'TOKEN_B']\n".to_owned(),
+                loopback,
+                2,
+            ),
+            (remote, public, 1),
+        ] {
+            let listener = run_executor_listener(&raw, &env).expect(&raw);
+            assert_eq!(
+                (listener.bind, listener.tokens.len()),
+                (bind, tokens),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_run_executor_listener_refuses_to_boot_without_a_usable_token_or_off_loopback_without_auth()
+     {
+        let short = "t".repeat(31);
+        let spaced = format!("{} t", "t".repeat(31));
+        let env = [("SHORT", short.as_str()), ("SPACED", spaced.as_str())];
+        let section = "[listeners.run_executor]\n";
+        for (raw, refusal) in [
+            (
+                PUBLIC_RUN_EXECUTORS.to_owned(),
+                "auth-disabled listeners.run_executor.bind must be loopback",
+            ),
+            (
+                authenticated(&format!("{MCP}{PUBLIC_RUN_EXECUTORS}"), ""),
+                "listeners.run_executor.bind off loopback requires listeners.run_executor.token_env",
+            ),
+            (
+                format!("{section}token_env = 'SHORT'\n"),
+                "`SHORT`, whose value is under 32 characters",
+            ),
+            (
+                format!("{section}token_env = 'SPACED'\n"),
+                "`SPACED`: the Run Executor token must be non-empty visible ASCII",
+            ),
+            (
+                format!("{section}token_env = []\n"),
+                "must name one environment variable, or two",
+            ),
+            (
+                format!("{section}token_env = ['SHORT', 'SPACED', 'MISSING']\n"),
+                "or two during a rotation",
+            ),
+        ] {
+            let error = run_executor_listener(&raw, &env).err();
+            assert!(
+                matches!(&error, Some(AppError::FailedPrecondition(message)) if message.contains(refusal)),
+                "{raw}: {error:?}"
+            );
+        }
     }
 }
