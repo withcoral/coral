@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
+import { expect, userEvent, within } from 'storybook/test'
 
 import { LocalDeploymentContext } from '@/lib/deployment'
 import type { CreationAttempt } from '@/lib/provider-publication-attempt/model'
@@ -130,6 +131,7 @@ function Account({
   setup?: SetupView
   pending?: boolean
   result?: Parameters<typeof AccountStep>[0]['result']
+  secretStores?: string[]
 }) {
   return (
     <AccountStep
@@ -231,6 +233,35 @@ export const DeviceSignIn: Story = {
       },
     },
     attempt: { ...workspaceAttempt, account: 'caller', returnFromConnect: true },
+  },
+}
+
+const typed: SetupView = {
+  ...signedIn,
+  authorized: false,
+  grantedScope: '',
+  credentialMethod: 'bearer',
+  credentialFields: [{ name: 'token', label: 'Token', description: '', sensitive: true }],
+}
+// Catches: a reference offered anywhere but the shared account's dialog.
+export const SharedDialogOffersSecretStore: Story = {
+  args: { setup: typed, secretStores: ['platform'] },
+  play: async ({ canvas }) => {
+    const page = within(document.body)
+    await userEvent.click(canvas.getByRole('button', { name: 'Connect the shared account' }))
+    await userEvent.click(await page.findByRole('radio', { name: 'Use a secret store' }))
+    await expect(page.getByRole('textbox', { name: 'Path' })).toBeRequired()
+    await expect(page.getByRole('button', { name: 'Secret store' })).toHaveTextContent('platform')
+  },
+}
+export const OwnDialogStaysTyped: Story = {
+  args: { setup: typed, secretStores: ['platform'] },
+  play: async ({ canvas }) => {
+    const page = within(document.body)
+    await userEvent.click(canvas.getByRole('radio', { name: /^Connect now/ }))
+    await userEvent.click(canvas.getByRole('button', { name: 'Connect your account' }))
+    await page.findByRole('dialog')
+    await expect(page.queryByRole('radio', { name: 'Use a secret store' })).toBeNull()
   },
 }
 

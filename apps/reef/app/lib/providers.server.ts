@@ -1,6 +1,7 @@
 import { CORAL_ICONS } from '@/views/providers/coral-icons'
 import type { ProviderMark } from '@/views/activity/call-tool'
 import { activityPageFetchKey } from './activity-page-fetch'
+import { SECRET_STORE_PROBLEMS } from './credential-fields.server'
 import { recipeChoiceById } from './provider-recipes/library.server'
 import type { ProviderLogo } from '@/views/providers/types'
 import { Code, ConnectError } from '@connectrpc/connect'
@@ -447,6 +448,7 @@ const reasons: Record<string, string> = {
   CLIENT_METADATA_UNRESOLVED:
     "Coral cannot confirm that this server can read Coral's client metadata document. Coral's host could not resolve the document address. Enter a client ID. If you run Coral, check the document address. Or set the MCP client bootstrap policy to prefer the document.",
   INVALID_PROVIDER_INPUT: 'Coral cannot use this document. Check the fields.',
+  ...SECRET_STORE_PROBLEMS,
 }
 const statuses: Partial<Record<Code, number>> = {
   [Code.PermissionDenied]: 403,

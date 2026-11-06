@@ -357,7 +357,8 @@ _Avoid_: Provider Account, credential material, scope compatibility check
 for temporary Provider Setup use, an initial Provider Account, or explicit replacement of one exact Account. Its safe
 progress and completion metadata contain no credentials, and completion cannot silently retarget another caller,
 account setting, or changed authentication requirement. Secret References apply only to a shared Account or an Agent's
-Account, so temporary Provider Setup use takes secret entry or OAuth.
+Account. Temporary Provider Setup use for discovery takes secret entry or OAuth; a Setup's grant for its shared Account can
+name references, read once to check them, and Publication copies them to that Account.
 _Avoid_: Account Connection Request, request-bound OAuth stream, credential response
 
 **Provider Account**: The durable, Provider-local authorization record and protected credentials for its shared account

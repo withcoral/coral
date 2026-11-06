@@ -8,6 +8,7 @@ import {
   mutationForm,
   privateHeaders,
 } from '@/lib/management.server'
+import { offeredSecretStores } from '@/lib/credential-fields.server'
 import { callbackRedirectUri } from '@/lib/provider-publication-attempt/setup.server'
 import { adHocSource, RECIPE_PARAM, SOURCE_PARAM, URL_PARAM } from '@/lib/provider-recipes/choice'
 import { RECIPE_CHOICES, recipeById, recipeChoiceById } from '@/lib/provider-recipes/library.server'
@@ -71,6 +72,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const providers = setup ? await listAllProviders(api, parent) : []
     const takenNamespaces = providers.map((provider) => provider.namespace)
     const takenDisplayNames = providers.map((provider) => provider.displayName)
+    // Only typed-in credentials take a reference, and only once the tools are read.
+    const secretStores =
+      setup?.state === 'ready' && setup.credentialFields.length > 0
+        ? await offeredSecretStores(api, parent)
+        : []
     return data(
       {
         // Recipes are offered only before a source is read.
@@ -84,6 +90,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
           setup && chosen ? recipeDocumentationUrl(chosen, setup.credentialMethod) : null,
         takenNamespaces,
         takenDisplayNames,
+        secretStores,
         // The shell reads a top-level Workspace to keep the sidebar in place.
         workspace,
         basePath,

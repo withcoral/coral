@@ -8,7 +8,7 @@ import { LocalDeploymentContext } from '@/lib/deployment'
 import type { CreationAttempt } from '@/lib/provider-publication-attempt/model'
 import { markupRoute, renderRoute } from '@/test-support/route'
 import { AccountStep } from './account-step'
-import type { ConfigurationReviewView, SetupView } from './types'
+import type { ConfigurationReviewView, SetupView, StepperResult } from './types'
 
 const review: ConfigurationReviewView = {
   revision: '1',
@@ -92,6 +92,7 @@ function render(
   over: Partial<SetupView> = {},
   over2: Partial<CreationAttempt> = {},
   local = false,
+  result?: StepperResult,
 ) {
   return markupRoute(
     <LocalDeploymentContext value={local}>
@@ -103,6 +104,7 @@ function render(
         pending={false}
         callbackUrl="https://coral.test/callback"
         backPath="/workspaces/demo/providers/new?setup=1"
+        result={result}
       />
     </LocalDeploymentContext>,
   )
@@ -170,6 +172,27 @@ describe('the account step', () => {
     // Shared use is the default, and it needs a credential before it can add.
     expect(html).toContain('Connect the shared account')
     expect(html).not.toContain('Add provider')
+  })
+
+  // Catches: a refused shared credential reopening on keeping a discovery token as
+  // your own account, so Add provider would do what nobody chose.
+  it('stays on connecting the shared account after Coral refuses its credential', () => {
+    const html = render(held, {}, false, {
+      error: 'The secret store has no entry at this path. Check the path.',
+      credential: null,
+      connecting: 'fixed',
+    })
+    expect(html).toContain('The secret store has no entry at this path.')
+    expect(html).toContain('Connect the shared account')
+    expect(html).not.toContain('Add provider')
+  })
+
+  // Catches: offering to keep a sign-in with references as your own account, which
+  // Coral refuses at the last step.
+  it('keeps a sign-in that names a secret store for the shared account only', () => {
+    const html = render({ ...held, holdsSecretReferences: true })
+    expect(html).toContain('Use this account')
+    expect(html).not.toContain('Connect now with this account')
   })
 
   // Catches: offering an individual-account add that Coral would refuse,

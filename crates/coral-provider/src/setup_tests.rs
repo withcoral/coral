@@ -3779,3 +3779,93 @@ async fn store_backed_discovery(scenario: StoreBackedDiscovery) {
     }
     assert_eq!(store.inner.reads(), reads + 1, "{scenario:?} reads once");
 }
+
+/// A grant revoked between a Setup's check read and its save stops the save, as
+/// the Account authorization page's lock does.
+#[tokio::test]
+async fn a_grant_revoked_after_a_setups_read_saves_nothing() {
+    let harness = harness().await;
+    let (actor, workspace) = workspace_owner(&harness, "user:store-setup").await;
+    let context = change_context(actor.clone(), 10, '2');
+    let owner = workspace.id().clone();
+    let governor = change_context(
+        organization_user(
+            harness.database.clone(),
+            "user:setup-governor",
+            OrganizationRole::Owner,
+        )
+        .await,
+        10,
+        '3',
+    );
+    harness
+        .workspaces
+        .grant_secret_store(&governor, &owner, "team")
+        .await
+        .unwrap();
+    let store = std::sync::Arc::new(InterferingStore::default());
+    store.inner.set("team/api", "token", TOKEN);
+    let accounts = harness
+        .accounts
+        .clone()
+        .with_secret_stores(coral_test_support::secret_stores([(
+            "team",
+            std::sync::Arc::clone(&store) as _,
+        )]));
+    let setup = harness
+        .providers
+        .prepare_openapi_fixture(
+            &context,
+            &owner,
+            crate::OpenApiDocument::parse(crate::account_tests::CREDENTIAL_REQUIRED_OPENAPI)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let review = harness
+        .providers
+        .review_setup_configuration(&actor, &owner, setup.id())
+        .await
+        .unwrap();
+    let workspaces = harness.workspaces.clone();
+    let revoker = (governor.clone(), owner.clone());
+    *store.change.lock().unwrap() = Some(Box::pin(async move {
+        workspaces
+            .revoke_secret_store(&revoker.0, &revoker.1, "team")
+            .await
+            .unwrap();
+    }));
+
+    let result = accounts
+        .authorize_setup_fields(
+            &context,
+            &owner,
+            setup.id(),
+            review.revision,
+            std::collections::BTreeMap::from([(
+                CredentialValues::TOKEN.to_owned(),
+                coral_credentials::CredentialField::Reference(
+                    coral_credentials::SecretReference::new(
+                        "team".into(),
+                        "team/api".into(),
+                        Some("token".into()),
+                    )
+                    .unwrap(),
+                ),
+            )]),
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(Error::SecretStoreNotGranted)),
+        "{result:?}"
+    );
+    assert!(
+        !harness
+            .providers
+            .setup_authentication(&actor, &owner, setup.id(), 11)
+            .await
+            .unwrap()
+            .authorized
+    );
+}

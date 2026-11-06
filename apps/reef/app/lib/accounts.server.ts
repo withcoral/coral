@@ -4,8 +4,11 @@ import {
   credentialFieldViews,
   credentialFieldsFrom,
   credentialValuesFrom,
+  offeredSecretStores,
+  savedReferenceView,
+  savedSecretReferences,
+  SECRET_STORE_PROBLEMS,
 } from './credential-fields.server'
-import { secretStoreId } from './organization.server'
 import { redirectToProviderConsent } from './provider-consent.server'
 import { safeInternalPath } from '@/auth/safe-path.server'
 import { ConnectError, Code } from '@connectrpc/connect'
@@ -214,13 +217,18 @@ export async function loadAuthorization(
   const oauth =
     value.userCode !== undefined || Boolean(value.consentNavigation) || value.consentRejected
   const problem = new URL(request.url).searchParams.get('secretStoreProblem')
+  // Only a shared Account's secret entry takes a reference. Reconnect starts from the saved ones.
+  const takesReferences = scope === 'shared' && !oauth && state === 'pending'
+  const parent = workspaceName(params.workspace)
+  const offered = takesReferences ? await offeredSecretStores(api, parent) : []
+  const savedReferences =
+    takesReferences && target.case === 'sharedProvider'
+      ? await savedSecretReferences(api, parent, target.value)
+      : {}
   return {
     ...accountNavigation(returnTo, path, workspaceName(params.workspace)),
-    // Only a shared Account's secret entry takes a reference.
-    secretStores:
-      scope === 'shared' && !oauth && state === 'pending'
-        ? await offeredSecretStores(api, workspaceName(params.workspace))
-        : [],
+    secretStores: offered,
+    savedReferences,
     secretStoreProblem:
       problem && Object.hasOwn(SECRET_STORE_PROBLEMS, problem)
         ? SECRET_STORE_PROBLEMS[problem]
@@ -389,6 +397,14 @@ export async function loadAccounts(
     active: view.active,
     route: view.route,
     account: current.account ? accountView(current.account) : undefined,
+    // A disconnected account holds no credential, so it has nothing to describe.
+    credentialSources:
+      current.account && current.account.state !== ProviderAccountState.DISCONNECTED
+        ? credentialFieldViews(current.credentialFields).map(({ name, label }) => {
+            const reference = current.account?.secretReferences[name]
+            return { label, reference: reference && savedReferenceView(reference) }
+          })
+        : [],
     scopes: current.requestedScopes,
     needsCredential: current.credentialMethod !== CredentialMethod.NONE,
     usesScope: view.scope === 'shared' ? view.route === 'fixed' : view.route === 'caller',
@@ -742,29 +758,10 @@ async function consentRedirect(
   return response
 }
 
-/** What each refused Secret Reference tells the Workspace Owner to do. */
-const SECRET_STORE_PROBLEMS: Record<string, string> = {
-  SECRET_STORE_NOT_GRANTED:
-    'This workspace has no grant for this secret store. Ask an organization owner to grant it.',
-  SECRET_STORE_UNREACHABLE:
-    'Coral cannot reach this secret store. Ask your operator to check its address and outbound settings.',
-  SECRET_ENTRY_NOT_FOUND: 'The secret store has no entry at this path. Check the path.',
-  SECRET_KEY_NOT_FOUND: 'This entry has no such key. Check the key.',
-  SECRET_STORE_PERMISSION_DENIED:
-    'The secret store denied this read. Check the path, or ask your operator to check its policy.',
-  SECRET_STORE_MALFORMED_RESPONSE: 'The secret store sent an unusable value. Check the entry.',
-}
-
 function withSecretStoreProblem(path: string, reason: string) {
   const url = new URL(path, 'http://reef')
   url.searchParams.set('secretStoreProblem', reason)
   return `${url.pathname}${url.search}`
-}
-
-/** The stores a shared Account may name. Only a workspace owner can list them. */
-async function offeredSecretStores(api: ReturnType<typeof management>, parent: string) {
-  const { secretStores } = await api.secretStores.listWorkspaceSecretStores({ parent })
-  return secretStores.filter((store) => store.available).map((store) => secretStoreId(store.name))
 }
 
 export async function authorizationAction(

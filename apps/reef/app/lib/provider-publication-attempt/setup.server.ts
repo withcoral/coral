@@ -35,7 +35,11 @@ import type {
   SetupView,
   StepperResult,
 } from '@/views/providers/types'
-import { credentialFieldViews, credentialValuesFrom } from '../credential-fields.server'
+import {
+  credentialFieldViews,
+  credentialFieldsFrom,
+  credentialValuesFrom,
+} from '../credential-fields.server'
 import { field, privateHeaders, type ManagementApi } from '../management.server'
 import { safeInternalPath } from '@/auth/safe-path.server'
 import { toolGroup, providerFailure, routeChoice, uuidOr404 } from '../providers.server'
@@ -146,6 +150,7 @@ export function setupView(s: ProviderSetup): SetupView {
     credentialMethod: knownCredentialMethod(s.credentialMethod),
     credentialFields: credentialFieldViews(s.credentialFields),
     authorized: s.authorized,
+    holdsSecretReferences: s.holdsSecretReferences,
     provisionalGrantId: s.provisionalGrantId || undefined,
     clientSecretConfigured: s.clientSecretConfigured,
     automaticRefresh: s.automaticRefresh,
@@ -1026,7 +1031,11 @@ export async function setupAction<Published = never>(
         const setup = await api.setups.authorizeProviderSetup({
           name,
           configurationRevision: BigInt(field(form, 'configurationRevision')),
-          credentialValues: credentialValuesFrom(form),
+          // Only the shared account's dialog offers a reference. Coral refuses one
+          // sent at discovery, and when Publication would give it to a caller's account.
+          ...(submittedAccount === 'fixed'
+            ? credentialFieldsFrom(form)
+            : { credentialValues: credentialValuesFrom(form) }),
         })
         // Runtime secret entry explicitly retains this submission's grant for shared or self use.
         // Discovery forms carry no account choice and must not silently retain credentials.
@@ -1118,7 +1127,11 @@ export async function setupAction<Published = never>(
         'Coral could not use your existing account. Authorize this update separately. ',
       cancel: 'Coral could not start over. ',
     }
-    return providerFailure(error, failures[intent])
+    const failure = providerFailure(error, failures[intent])
+    // A refused credential keeps the account question's answer, which only a saved one records.
+    return intent === 'secret' && submittedAccount
+      ? data({ ...failure.data, connecting: submittedAccount }, failure.init ?? undefined)
+      : failure
   }
 }
 

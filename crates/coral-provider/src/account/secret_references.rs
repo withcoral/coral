@@ -1,6 +1,8 @@
 //! Credential Fields a Secret Store holds (ADR 0032). A Workspace Owner names a
 //! store granted to the Workspace, and Coral reads the value once to check it.
 //! Each dispatch reads it again, outside every lock, and nothing keeps a copy.
+//! Provider setup does the same for its shared Account's fields, and Publication
+//! copies the references.
 use std::collections::BTreeMap;
 
 use coral_credentials::{CredentialField, CredentialValues, Secret, SecretReference};
@@ -14,7 +16,7 @@ use super::{
     AccountModule, Authorization, AuthorizationId, CredentialMaterial, check_values, expire,
     load_authorization,
 };
-use crate::Error;
+use crate::{Error, ProviderSetupId};
 use coral_catalog::ProviderCredentialContract;
 
 /// The name of a store this deployment defines.
@@ -70,18 +72,7 @@ impl AccountModule {
         id: AuthorizationId,
         fields: BTreeMap<String, CredentialField>,
     ) -> Result<Authorization, Error> {
-        let mut values = BTreeMap::new();
-        let mut references = BTreeMap::new();
-        for (name, field) in fields {
-            match field {
-                CredentialField::Value(secret) => {
-                    values.insert(name, secret);
-                }
-                CredentialField::Reference(reference) => {
-                    references.insert(name, reference);
-                }
-            }
-        }
+        let (values, references) = split_fields(fields);
         if references.is_empty() {
             let values = CredentialValues::new(values).map_err(|_invalid| Error::AccountInput)?;
             return self.submit_secret(context, owner, id, values).await;
@@ -90,15 +81,8 @@ impl AccountModule {
             .admit_references(context, owner, id, &references)
             .await?
         {
-            let mut checked = BTreeMap::new();
-            for (name, value) in &values {
-                checked.insert(name.clone(), Secret::new(value.expose().to_owned())?);
-            }
-            for (name, reference) in &references {
-                checked.insert(name.clone(), self.read_reference(reference).await?);
-            }
-            let checked = CredentialValues::new(checked).map_err(|_invalid| Error::AccountInput)?;
-            check_values(&contract, &checked)?;
+            self.check_read_once(&contract, &values, &references)
+                .await?;
         }
         self.complete(
             context,
@@ -107,6 +91,103 @@ impl AccountModule {
             CredentialMaterial::Fields { values, references },
         )
         .await
+    }
+
+    /// Saves Credential Fields for one Setup, for the shared Account Publication
+    /// would make. A reference is read once to check it, outside any transaction,
+    /// and the value is discarded. Discovery and OAuth methods take no reference.
+    /// # Errors
+    /// The refusals of [`Self::submit_fields`], and [`Error::SecretReferenceNotAllowed`]
+    /// while the Setup awaits discovery. A refusal leaves the Setup unchanged.
+    pub async fn authorize_setup_fields(
+        &self,
+        context: &ChangeContext,
+        owner: &WorkspaceId,
+        id: &ProviderSetupId,
+        configuration_revision: i64,
+        fields: BTreeMap<String, CredentialField>,
+    ) -> Result<super::setup::SetupAuthentication, Error> {
+        let (values, references) = split_fields(fields);
+        if references.is_empty() {
+            let values = CredentialValues::new(values).map_err(|_invalid| Error::AccountInput)?;
+            return self
+                .authorize_setup(context, owner, id, configuration_revision, values)
+                .await;
+        }
+        let contract = self
+            .admit_setup_fields(context, owner, id, configuration_revision, &references)
+            .await?;
+        self.check_read_once(&contract, &values, &references)
+            .await?;
+        self.save_setup_material(
+            context,
+            owner,
+            id,
+            configuration_revision,
+            CredentialMaterial::Fields { values, references },
+        )
+        .await
+    }
+
+    /// The contract to check a Setup's references against, before any store read.
+    async fn admit_setup_fields(
+        &self,
+        context: &ChangeContext,
+        owner: &WorkspaceId,
+        id: &ProviderSetupId,
+        configuration_revision: i64,
+        references: &BTreeMap<String, SecretReference>,
+    ) -> Result<ProviderCredentialContract, Error> {
+        let mut tx = self.providers.database.begin_read_snapshot().await?;
+        let evidence = self
+            .providers
+            .workspaces
+            .check_in_transaction(
+                &mut tx,
+                context.actor(),
+                owner,
+                coral_workspace::WorkspaceAction::Configure,
+            )
+            .await?;
+        crate::require_owner(&evidence)?;
+        let loaded = crate::started_setup(&mut tx, context.actor(), owner, id).await?;
+        if loaded.setup.state() == crate::ProviderSetupState::AwaitingAuthorization
+            && loaded.setup.input_kind() == coral_catalog::ProviderSetupInputKind::Mcp
+        {
+            return Err(Error::SecretReferenceNotAllowed);
+        }
+        crate::require_ready(&loaded.setup)?;
+        if loaded.configuration.is_none() {
+            return Err(Error::ProviderSetupNotReady);
+        }
+        if loaded.configuration_revision != configuration_revision {
+            return Err(Error::EtagMismatch);
+        }
+        let contract =
+            crate::configuration::effective_contract(self.providers.outbound_policy, &loaded)?;
+        self.admit_setup_references(&mut tx, owner, &contract, references)
+            .await?;
+        tx.commit().await?;
+        Ok(contract)
+    }
+
+    /// Reads each reference once and checks the values fit the method. The values
+    /// are discarded here, and a failed read names its cause.
+    async fn check_read_once(
+        &self,
+        contract: &ProviderCredentialContract,
+        values: &BTreeMap<String, Secret>,
+        references: &BTreeMap<String, SecretReference>,
+    ) -> Result<(), Error> {
+        let mut checked = BTreeMap::new();
+        for (name, value) in values {
+            checked.insert(name.clone(), Secret::new(value.expose().to_owned())?);
+        }
+        for (name, reference) in references {
+            checked.insert(name.clone(), self.read_reference(reference).await?);
+        }
+        let checked = CredentialValues::new(checked).map_err(|_invalid| Error::AccountInput)?;
+        check_values(contract, &checked)
     }
 
     /// The contract to check references against, or `None` when the Authorization
@@ -152,6 +233,29 @@ impl AccountModule {
         if row.intent.caller.is_some() {
             return Err(Error::SecretReferenceNotAllowed);
         }
+        self.admit_stores(tx, owner, references).await
+    }
+
+    /// The same check for a Setup, which decides its Account's scope at Publication.
+    pub(super) async fn admit_setup_references(
+        &self,
+        tx: &mut Transaction<'_>,
+        owner: &WorkspaceId,
+        contract: &ProviderCredentialContract,
+        references: &BTreeMap<String, SecretReference>,
+    ) -> Result<(), Error> {
+        if contract.authentication().credential_fields().is_empty() {
+            return Err(Error::AccountInput);
+        }
+        self.admit_stores(tx, owner, references).await
+    }
+
+    async fn admit_stores(
+        &self,
+        tx: &mut Transaction<'_>,
+        owner: &WorkspaceId,
+        references: &BTreeMap<String, SecretReference>,
+    ) -> Result<(), Error> {
         for reference in references.values() {
             if !self.store_usable(tx, owner, reference).await? {
                 return Err(Error::SecretStoreNotGranted);
@@ -218,6 +322,25 @@ impl AccountModule {
         check_values(contract, &values).map_err(|_invalid| Error::AccountRequired)?;
         Ok(values)
     }
+}
+
+/// Typed values and references, by field name.
+fn split_fields(
+    fields: BTreeMap<String, CredentialField>,
+) -> (BTreeMap<String, Secret>, BTreeMap<String, SecretReference>) {
+    let mut values = BTreeMap::new();
+    let mut references = BTreeMap::new();
+    for (name, field) in fields {
+        match field {
+            CredentialField::Value(secret) => {
+                values.insert(name, secret);
+            }
+            CredentialField::Reference(reference) => {
+                references.insert(name, reference);
+            }
+        }
+    }
+    (values, references)
 }
 
 const fn outcome(error: StoreError) -> SecretStoreRead {
