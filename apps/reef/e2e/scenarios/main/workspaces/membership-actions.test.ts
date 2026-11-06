@@ -66,7 +66,7 @@ test('Row actions keep the last Owner and removing another person keeps the admi
         expect(await page.getByText(`${owner.label} (You)`, { exact: true }).count()).toBe(1)
         await page.getByRole('button', { name: `Actions for ${owner.label}`, exact: true }).click()
         await page.getByRole('menuitem', { name: 'Change role', exact: true }).click()
-        await page.getByRole('button', { name: `Role for ${owner.label}`, exact: true }).click()
+        await page.getByRole('button', { name: `Role for ${owner.label}: Owner`, exact: true }).click()
         await page.getByRole('menuitemradio', { name: 'Member', exact: true }).click()
         await page.getByRole('button', { name: 'Save role', exact: true }).click()
         await lastOwner.waitFor()
