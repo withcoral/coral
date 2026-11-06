@@ -8,10 +8,10 @@ use tokio::time::{sleep, timeout};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Code;
 use tonic::codegen::http::Uri;
+use tonic::codegen::http::uri::PathAndQuery;
 use tonic::transport::{Channel, Endpoint};
 
 use super::*;
-use crate::wire::v1::link_service_client::LinkServiceClient;
 use crate::wire::v1::{Hello, Room};
 
 const TOKEN: &str = "an-operator-token-of-at-least-32-characters";
@@ -60,10 +60,21 @@ async fn start(timing: Timing) -> Link {
     }
 }
 
-/// A Run Executor's end of one pull stream.
-struct Pull {
-    requests: mpsc::Sender<PullRequest>,
+/// A Run Executor's end of one pull stream, which sends `M`.
+struct Pull<M = PullRequest> {
+    requests: mpsc::Sender<M>,
     responses: Streaming<PullResponse>,
+}
+
+/// A message that encodes as a `PullRequest` with `hello`, and with
+/// `undecodable` does not decode as one: its field 2 is a number where a
+/// `PullRequest`'s is a `Room`.
+#[derive(Clone, PartialEq, prost::Message)]
+struct Wire {
+    #[prost(message, optional, tag = "1")]
+    hello: Option<Hello>,
+    #[prost(uint64, optional, tag = "2")]
+    undecodable: Option<u64>,
 }
 
 impl Pull {
@@ -73,7 +84,9 @@ impl Pull {
         };
         self.requests.send(request).await.unwrap();
     }
+}
 
+impl<M> Pull<M> {
     async fn next(&mut self) -> Result<Option<Down>, Status> {
         let message = timeout(Duration::from_secs(5), self.responses.message());
         Ok(message
@@ -97,21 +110,40 @@ impl Link {
             .unwrap()
     }
 
-    /// Opens a pull stream on `channel` with `token`, whose first message is
-    /// `first`.
-    async fn open(&self, channel: &Channel, token: &str, first: Up) -> Result<Pull, Status> {
-        let (requests, outbound) = mpsc::channel(8);
+    /// Opens a pull stream on `channel` with the `authorization` header, whose
+    /// first message is `first`.
+    async fn open(
+        &self,
+        channel: &Channel,
+        authorization: &str,
+        first: Up,
+    ) -> Result<Pull, Status> {
         let first = PullRequest {
             message: Some(first),
         };
+        self.open_with(channel, authorization, first).await
+    }
+
+    /// Opens a pull stream on `channel` with the `authorization` header that
+    /// sends `M`, the first being `first`.
+    async fn open_with<M: prost::Message + 'static>(
+        &self,
+        channel: &Channel,
+        authorization: &str,
+        first: M,
+    ) -> Result<Pull<M>, Status> {
+        let (requests, outbound) = mpsc::channel(8);
         requests.send(first).await.unwrap();
         let mut request = Request::new(ReceiverStream::new(outbound));
-        let bearer = format!("Bearer {token}").parse().unwrap();
-        request.metadata_mut().insert("authorization", bearer);
-        let responses = LinkServiceClient::new(channel.clone())
-            .pull(request)
-            .await?
-            .into_inner();
+        let authorization = authorization.parse().unwrap();
+        request
+            .metadata_mut()
+            .insert("authorization", authorization);
+        let mut grpc = tonic::client::Grpc::new(channel.clone());
+        grpc.ready().await.unwrap();
+        let path = PathAndQuery::from_static("/coral.run_executor.v1.LinkService/Pull");
+        let codec = tonic_prost::ProstCodec::<M, PullResponse>::default();
+        let responses = grpc.streaming(request, path, codec).await?.into_inner();
         Ok(Pull {
             requests,
             responses,
@@ -120,7 +152,10 @@ impl Link {
 
     /// Opens a pull stream that Coral welcomes.
     async fn welcomed(&self, channel: &Channel, hello: Hello) -> Pull {
-        let mut pull = self.open(channel, TOKEN, Up::Hello(hello)).await.unwrap();
+        let mut pull = self
+            .open(channel, &bearer(TOKEN), Up::Hello(hello))
+            .await
+            .unwrap();
         let welcome = Welcome {
             protocol_level: PROTOCOL_LEVEL,
             coral_instance_id: INSTANCE.to_owned(),
@@ -174,6 +209,10 @@ fn run(number: u32) -> TakenRun {
     }
 }
 
+fn bearer(token: &str) -> String {
+    format!("Bearer {token}")
+}
+
 fn code<T>(result: Result<T, Status>) -> Option<Code> {
     result.err().map(|status| status.code())
 }
@@ -186,29 +225,36 @@ async fn the_credential_admits_both_operator_tokens_and_a_live_local_child_by_ki
         .credentials
         .admit_local(&Token::new(LOCAL.to_owned()).unwrap());
     let unknown = "an-unknown-token-of-at-least-32-characters";
-    for (token, kind) in [
-        (TOKEN, Some((Kind::Dialed, "dialed"))),
-        (ROTATED, Some((Kind::Dialed, "dialed"))),
-        (LOCAL, Some((Kind::Local, "local"))),
-        (unknown, None),
+    for (authorization, kind) in [
+        (bearer(TOKEN), Some((Kind::Dialed, "dialed"))),
+        // The scheme's name ignores case.
+        (format!("bearer {ROTATED}"), Some((Kind::Dialed, "dialed"))),
+        (bearer(LOCAL), Some((Kind::Local, "local"))),
+        (bearer(unknown), None),
+        (format!("Basic {TOKEN}"), None),
     ] {
         let hello = hello(PROTOCOL_LEVEL, 1);
         let id = hello.run_executor_id.clone();
-        let opened = link.open(&channel, token, Up::Hello(hello)).await;
+        let opened = link.open(&channel, &authorization, Up::Hello(hello)).await;
         if let Some((kind, column)) = kind {
             let _pull = opened.unwrap();
-            assert_eq!(link.held(&id, |_| true).await.kind, kind, "{token}");
+            let held = link.held(&id, |_| true).await;
+            assert_eq!(held.kind, kind, "{authorization}");
             let written = link.lease(&id).await.map(|(kind, _)| kind);
-            assert_eq!(written.as_deref(), Some(column), "{token}");
+            assert_eq!(written.as_deref(), Some(column), "{authorization}");
         } else {
-            assert_eq!(code(opened), Some(Code::Unauthenticated));
+            assert_eq!(code(opened), Some(Code::Unauthenticated), "{authorization}");
             assert_eq!(link.lease(&id).await, None);
         }
     }
     // The child exited, so its token admits nothing.
     drop(local);
     let opened = link
-        .open(&channel, LOCAL, Up::Hello(hello(PROTOCOL_LEVEL, 1)))
+        .open(
+            &channel,
+            &bearer(LOCAL),
+            Up::Hello(hello(PROTOCOL_LEVEL, 1)),
+        )
         .await;
     assert_eq!(code(opened), Some(Code::Unauthenticated));
 }
@@ -229,7 +275,7 @@ async fn hello_is_welcomed_one_level_apart_and_refused_two_apart() {
             let _pull = link.welcomed(&channel, hello).await;
             link.held(&id, |_| true).await;
         } else {
-            let opened = link.open(&channel, TOKEN, Up::Hello(hello)).await;
+            let opened = link.open(&channel, &bearer(TOKEN), Up::Hello(hello)).await;
             assert_eq!(code(opened), Some(Code::FailedPrecondition));
             assert_eq!(link.lease(&id).await, None);
             assert!(
@@ -361,8 +407,31 @@ async fn a_protocol_violation_ends_its_stream_and_not_the_connection() {
             "{label}"
         );
     }
-    let opened = link.open(&channel, TOKEN, Up::Room(Room { free: 1 })).await;
+    let opened = link
+        .open(&channel, &bearer(TOKEN), Up::Room(Room { free: 1 }))
+        .await;
     assert_eq!(code(opened), Some(Code::InvalidArgument));
+
+    // A message that does not decode, first or after Hello.
+    let undecodable = Wire {
+        hello: None,
+        undecodable: Some(1),
+    };
+    let opened = link
+        .open_with(&channel, &bearer(TOKEN), undecodable.clone())
+        .await;
+    assert_eq!(code(opened), Some(Code::InvalidArgument));
+    let hello = Wire {
+        hello: Some(hello(PROTOCOL_LEVEL, 1)),
+        undecodable: None,
+    };
+    let mut pull = link
+        .open_with(&channel, &bearer(TOKEN), hello)
+        .await
+        .unwrap();
+    assert!(matches!(pull.next().await, Ok(Some(Down::Welcome(_)))));
+    pull.requests.send(undecodable).await.unwrap();
+    assert_eq!(code(pull.next().await), Some(Code::InvalidArgument));
 
     let stream = link.held(&bystander_id, |_| true).await.stream;
     link.streams.take(stream, vec![run(1)]).unwrap();

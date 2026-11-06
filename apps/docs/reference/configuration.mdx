@@ -48,6 +48,8 @@ You can override the location of the config folder with the `CORAL_CONFIG_DIR` e
 
 To rotate the token, list both variables, move each Run Executor to the new token, then remove the old variable.
 
+The listener serves plaintext HTTP/2, and each Run Executor sends its token in every request. Off loopback, keep the listener inside a private network, such as a Compose network or a cluster. Where the traffic leaves that network, terminate TLS in front of Coral.
+
 Coral does not start when:
 
 - A variable that `token_env` names is unset, or its value is under 32 characters or is not visible ASCII.

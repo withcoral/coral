@@ -105,7 +105,12 @@ impl Credentials {
 
     /// The kind `authorization`, a request's header value, admits.
     fn admit(&self, authorization: Option<&str>) -> Option<Kind> {
-        let verifier = verifier(authorization?.strip_prefix("Bearer ")?);
+        let (scheme, token) = authorization?.split_once(' ')?;
+        // An authentication scheme's name ignores case.
+        if !scheme.eq_ignore_ascii_case("Bearer") {
+            return None;
+        }
+        let verifier = verifier(token);
         lock(&self.0).get(&verifier).copied()
     }
 }
@@ -405,7 +410,8 @@ impl LinkService for PullService {
         // within a keepalive holds nothing open, shutdown included.
         let first = timeout(KEEPALIVE, inbound.message()).await.ok();
         let Some(pull_request::Message::Hello(hello)) = first
-            .transpose()?
+            .transpose()
+            .map_err(|status| undecodable(&status).unwrap_or(status))?
             .flatten()
             .and_then(|request| request.message)
         else {
@@ -491,12 +497,14 @@ impl PullService {
                             break Err(status);
                         }
                     }
-                    // A message that does not decode.
-                    Err(status) if matches!(status.code(), Code::Internal | Code::OutOfRange) => {
-                        break Err(Status::invalid_argument("the message is not a PullRequest"));
-                    }
-                    // The Run Executor's side, or the connection, ended.
-                    Ok(None) | Err(_) => break Ok(()),
+                    // A message that does not decode is a violation; any
+                    // other error is the connection ending.
+                    Err(status) => match undecodable(&status) {
+                        Some(violation) => break Err(violation),
+                        None => break Ok(()),
+                    },
+                    // The Run Executor's side ended.
+                    Ok(None) => break Ok(()),
                 },
                 _ = renewals.tick(), if renewal.is_none() => {
                     renewal = Some(Box::pin(self.renew(&run_executor_id, kind)));
@@ -547,6 +555,14 @@ fn drain(streams: &PullStreams, stream: StreamId, deadline: Pin<&mut Sleep>) -> 
     let until = streams.close(stream);
     deadline.reset(until);
     until
+}
+
+/// The violation that ends a pull stream when `status`, an inbound error,
+/// says a message did not decode: tonic answers `INTERNAL` for bytes that are
+/// not a `PullRequest` and `OUT_OF_RANGE` for one over the size limit.
+fn undecodable(status: &Status) -> Option<Status> {
+    matches!(status.code(), Code::Internal | Code::OutOfRange)
+        .then(|| Status::invalid_argument("the message is not a PullRequest"))
 }
 
 fn renewed(written: Result<(), coral_db::Error>) {
